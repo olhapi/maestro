@@ -14,6 +14,10 @@ func (testProvider) Status() map[string]interface{} {
 	return map[string]interface{}{"active_runs": 1}
 }
 
+func (testProvider) LiveSessions() map[string]interface{} {
+	return map[string]interface{}{"sessions": map[string]interface{}{"iss-1": map[string]interface{}{"session_id": "th-tu"}}}
+}
+
 func TestServerStartsAndServesState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -33,5 +37,18 @@ func TestServerStartsAndServesState(t *testing.T) {
 	}
 	if payload["active_runs"].(float64) != 1 {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+
+	resp2, err := http.Get("http://127.0.0.1:18987/api/v1/sessions")
+	if err != nil {
+		t.Fatalf("failed GET sessions: %v", err)
+	}
+	defer resp2.Body.Close()
+	var payload2 map[string]interface{}
+	if err := json.NewDecoder(resp2.Body).Decode(&payload2); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	if _, ok := payload2["sessions"]; !ok {
+		t.Fatalf("unexpected sessions payload: %#v", payload2)
 	}
 }

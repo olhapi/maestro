@@ -29,9 +29,14 @@ type Session struct {
 	OutputTokens    int       `json:"output_tokens"`
 	TotalTokens     int       `json:"total_tokens"`
 	EventsProcessed int       `json:"events_processed"`
+	History         []Event   `json:"history,omitempty"`
+	MaxHistory      int       `json:"-"`
 }
 
 func (s *Session) ApplyEvent(e Event) {
+	if s.MaxHistory <= 0 {
+		s.MaxHistory = 50
+	}
 	s.LastEvent = e.Type
 	s.LastTimestamp = time.Now().UTC()
 	if e.Message != "" {
@@ -56,6 +61,10 @@ func (s *Session) ApplyEvent(e Event) {
 		s.TotalTokens = e.TotalTokens
 	}
 	s.EventsProcessed++
+	s.History = append(s.History, e)
+	if len(s.History) > s.MaxHistory {
+		s.History = s.History[len(s.History)-s.MaxHistory:]
+	}
 }
 
 // ParseEventLine attempts to parse one JSON line as an app-server event.

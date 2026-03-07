@@ -20,3 +20,16 @@ func TestSessionApplyEvent(t *testing.T) {
 		t.Fatalf("unexpected session id: %s", s.SessionID)
 	}
 }
+
+func TestSessionHistoryRingBuffer(t *testing.T) {
+	s := &Session{MaxHistory: 2}
+	s.ApplyEvent(Event{Type: "a"})
+	s.ApplyEvent(Event{Type: "b"})
+	s.ApplyEvent(Event{Type: "c"})
+	if len(s.History) != 2 {
+		t.Fatalf("expected 2 events kept, got %d", len(s.History))
+	}
+	if s.History[0].Type != "b" || s.History[1].Type != "c" {
+		t.Fatalf("unexpected history order: %#v", s.History)
+	}
+}

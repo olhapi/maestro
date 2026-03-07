@@ -318,7 +318,9 @@ func (o *Orchestrator) Status() map[string]interface{} {
 	}
 	live := make(map[string]*appserver.Session, len(o.liveSessions))
 	for k, v := range o.liveSessions {
-		live[k] = v
+		cp := *v
+		cp.History = append([]appserver.Event(nil), v.History...)
+		live[k] = &cp
 	}
 
 	uptimeSec := int(time.Since(o.startedAt).Seconds())
@@ -346,4 +348,16 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		},
 		"live_sessions": live,
 	}
+}
+
+func (o *Orchestrator) LiveSessions() map[string]interface{} {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	out := make(map[string]interface{}, len(o.liveSessions))
+	for issueID, s := range o.liveSessions {
+		cp := *s
+		cp.History = append([]appserver.Event(nil), s.History...)
+		out[issueID] = cp
+	}
+	return map[string]interface{}{"sessions": out}
 }

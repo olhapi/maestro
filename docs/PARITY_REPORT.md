@@ -42,7 +42,9 @@ This report tracks parity against `openai/symphony` Elixir implementation, exclu
    - locking/concurrency fixes in reconcile/run metrics
 3. App-server compatibility checkpoint:
    - `agent.mode: app_server` accepted
-   - compatibility env markers exported to subprocess
+   - JSON event parsing for app-server lines
+   - live session metadata + ring-buffer event history
+   - observability endpoint `/api/v1/sessions`
 
 ## Remaining high-priority items
 
