@@ -16,6 +16,7 @@ import (
 	"github.com/olhapi/symphony-go/internal/mcp"
 	"github.com/olhapi/symphony-go/internal/observability"
 	"github.com/olhapi/symphony-go/internal/orchestrator"
+	"github.com/olhapi/symphony-go/internal/verification"
 	"github.com/olhapi/symphony-go/pkg/config"
 )
 
@@ -40,6 +41,8 @@ func main() {
 		runProject()
 	case "status":
 		runStatus()
+	case "verify":
+		runVerify()
 	case "version":
 		fmt.Printf("symphony %s\n", version)
 	default:
@@ -61,6 +64,7 @@ Commands:
   issue            Manage issues
   project          Manage projects
   status           Show orchestrator status
+  verify           Run local parity readiness checks
   version          Show version
 
 Examples:
@@ -75,6 +79,7 @@ Examples:
   symphony issue list --state ready      # List ready issues
   symphony issue move ISS-1 in_progress  # Change issue state
   symphony project create "My App"       # Create a project
+  symphony verify                         # Verify local setup
 
 Database:
   Symphony stores data in .symphony/symphony.db by default.
@@ -577,6 +582,49 @@ os.Exit(1)
 
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
+		os.Exit(1)
+	}
+}
+
+func runVerify() {
+	var dbPath, repoPath string
+	jsonOnly := false
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--db" && i+1 < len(args) {
+			dbPath = args[i+1]
+			i++
+			continue
+		}
+		if args[i] == "--repo" && i+1 < len(args) {
+			repoPath = args[i+1]
+			i++
+			continue
+		}
+		if args[i] == "--json" {
+			jsonOnly = true
+		}
+	}
+	res := verification.Run(repoPath, dbPath)
+	if jsonOnly {
+		_ = json.NewEncoder(os.Stdout).Encode(res)
+		if !res.OK {
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Println("Verification")
+	fmt.Println(strings.Repeat("=", 40))
+	for k, v := range res.Checks {
+		fmt.Printf("%s: %s\n", k, v)
+	}
+	if len(res.Errors) > 0 {
+		fmt.Println("Errors:")
+		for _, e := range res.Errors {
+			fmt.Printf("- %s\n", e)
+		}
+	}
+	if !res.OK {
 		os.Exit(1)
 	}
 }
