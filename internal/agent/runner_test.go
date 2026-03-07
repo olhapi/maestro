@@ -224,3 +224,49 @@ func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 		t.Fatalf("expected workspace dir at %s", ws.Path)
 	}
 }
+
+func TestRunAgentAppServerModeTracksSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	workflowContent := `---
+workspace_root: ` + workspaceRoot + `
+agent:
+  executable: sh
+  args:
+    - -c
+    - |
+      echo '{"type":"turn.started","thread_id":"th1","turn_id":"tu1","input_tokens":5}'
+      echo '{"type":"turn.completed","thread_id":"th1","turn_id":"tu1","total_tokens":7}'
+  mode: app_server
+  timeout: 10
+---
+Prompt {{.Identifier}}
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := config.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(wf, store)
+	issue, _ := store.CreateIssue("", "", "AppServer", "", 0, nil)
+	res, err := r.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !res.Success || res.AppSession == nil {
+		t.Fatalf("expected app session, got %+v", res)
+	}
+	if res.AppSession.SessionID != "th1-tu1" {
+		t.Fatalf("unexpected session id: %s", res.AppSession.SessionID)
+	}
+}

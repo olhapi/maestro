@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/olhapi/symphony-go/internal/appserver"
 	"github.com/olhapi/symphony-go/internal/agent"
 	"github.com/olhapi/symphony-go/internal/kanban"
 	"github.com/olhapi/symphony-go/pkg/config"
@@ -29,6 +30,7 @@ type Orchestrator struct {
 	totalRuns      int
 	successfulRuns int
 	failedRuns     int
+	liveSessions   map[string]*appserver.Session
 }
 
 // New creates a new orchestrator
@@ -39,8 +41,9 @@ func New(store *kanban.Store, workflow *config.Workflow) *Orchestrator {
 		runner:     agent.NewRunner(workflow, store),
 		activeRuns: make(map[string]context.CancelFunc),
 		retryQueue: make(map[string]int),
-		maxRetries: 3,
-		startedAt:  time.Now().UTC(),
+		maxRetries:   3,
+		startedAt:    time.Now().UTC(),
+		liveSessions: make(map[string]*appserver.Session),
 	}
 }
 
@@ -224,6 +227,12 @@ func (o *Orchestrator) startRun(ctx context.Context, issue *kanban.Issue) {
 			return
 		}
 
+		if result.AppSession != nil {
+			o.mu.Lock()
+			o.liveSessions[issue.ID] = result.AppSession
+			o.mu.Unlock()
+		}
+
 		if result.Success {
 			slog.Info("Run completed", "issue", issue.Identifier)
 			o.mu.Lock()
@@ -307,6 +316,10 @@ func (o *Orchestrator) Status() map[string]interface{} {
 	for k, v := range o.retryQueue {
 		retryByIssue[k] = v
 	}
+	live := make(map[string]*appserver.Session, len(o.liveSessions))
+	for k, v := range o.liveSessions {
+		live[k] = v
+	}
 
 	uptimeSec := int(time.Since(o.startedAt).Seconds())
 	lastTick := ""
@@ -331,5 +344,6 @@ func (o *Orchestrator) Status() map[string]interface{} {
 			"successful": o.successfulRuns,
 			"failed":     o.failedRuns,
 		},
+		"live_sessions": live,
 	}
 }

@@ -124,7 +124,7 @@ agent:
   executable: codex
   args: []
   timeout: 3600
-  mode: stdio  # stdio | app_server (compat mode)
+  mode: stdio  # stdio | app_server
 hooks:
   timeout_sec: 60
 ---
@@ -174,7 +174,7 @@ The prompt template supports Go template syntax with access to issue fields:
 ./symphony run [repo_path] [--db <path>] [--logs-root <path>] [--port <port>]
 # Observability API (if --port set)
 # GET /health
-# GET /api/v1/state
+# GET /api/v1/state  (includes live_sessions metadata)
 
 # MCP Server
 ./symphony mcp [--db <path>] [--extensions <json-file>]

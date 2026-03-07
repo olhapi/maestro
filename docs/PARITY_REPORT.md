@@ -21,7 +21,7 @@ This report tracks parity against `openai/symphony` Elixir implementation, exclu
 | `workspace_and_config_test.exs` | Partial+ | deterministic keys, stale path recovery, hook timeout support, symlink escape checks |
 | `orchestrator_status_test.exs` | Partial+ | richer status fields and run metrics implemented |
 | `log_file_test.exs` | Partial | `--logs-root` JSON logs to file+stdout |
-| `app_server_test.exs` | Partial | `agent.mode=app_server` compatibility mode added (subprocess wrapper approach) |
+| `app_server_test.exs` | Partial+ | `agent.mode=app_server` + JSON event parsing + live session metadata tracking (`session_id`, tokens, last_event) |
 | `dynamic_tool_test.exs` | Partial | MCP tool registry and calls implemented |
 | `extensions_test.exs` | Not yet | extension runtime not added |
 | `observability_pubsub_test.exs` | Not yet | event bus not added |
