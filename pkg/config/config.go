@@ -44,6 +44,7 @@ type HooksConfig struct {
 	BeforeRun   []string `yaml:"before_run"`   // Commands to run before agent
 	AfterRun    []string `yaml:"after_run"`    // Commands to run after agent
 	AfterCreate []string `yaml:"after_create"` // Commands to run after workspace creation
+	TimeoutSec  int      `yaml:"timeout_sec"`  // Hook timeout in seconds
 }
 
 // Workflow represents a parsed WORKFLOW.md file
@@ -66,7 +67,7 @@ func DefaultConfig() Config {
 			Env:        map[string]string{},
 			Timeout:    0,
 		},
-		Hooks: HooksConfig{},
+		Hooks: HooksConfig{TimeoutSec: 60},
 	}
 }
 
@@ -128,6 +129,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Agent.Executable == "" {
 		c.Agent.Executable = defaults.Agent.Executable
+	}
+	if c.Hooks.TimeoutSec <= 0 {
+		c.Hooks.TimeoutSec = defaults.Hooks.TimeoutSec
 	}
 }
 

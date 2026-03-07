@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,16 +18,13 @@ import (
 
 // Runner handles executing coding agents for issues
 type Runner struct {
-	config  *config.Workflow
-	store   *kanban.Store
+	config *config.Workflow
+	store  *kanban.Store
 }
 
 // NewRunner creates a new agent runner
 func NewRunner(workflow *config.Workflow, store *kanban.Store) *Runner {
-	return &Runner{
-		config:  workflow,
-		store:   store,
-	}
+	return &Runner{config: workflow, store: store}
 }
 
 // RunResult contains the result of an agent run
@@ -38,60 +36,99 @@ type RunResult struct {
 
 // Run executes the coding agent for an issue
 func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, error) {
-	// Get or create workspace
 	workspace, err := r.getOrCreateWorkspace(issue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
 
-	// Build prompt from template
 	prompt, err := r.buildPrompt(issue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build prompt: %w", err)
 	}
 
-	// Run before hooks
-	if err := r.runHooks(workspace.Path, r.config.Config.Hooks.BeforeRun); err != nil {
-		return nil, fmt.Errorf("before_run hook failed: %w", err)
+	if err := r.runHooks(ctx, workspace.Path, r.config.Config.Hooks.BeforeRun, "before_run"); err != nil {
+		return nil, err
 	}
 
-	// Update issue state to in_progress
 	if issue.State == kanban.StateReady {
 		_ = r.store.UpdateIssueState(issue.ID, kanban.StateInProgress)
 	}
 
-	// Run the agent
 	result := r.executeAgent(ctx, workspace.Path, prompt)
 
-	// Run after hooks
-	_ = r.runHooks(workspace.Path, r.config.Config.Hooks.AfterRun)
-
-	// Update workspace run count
+	_ = r.runHooks(ctx, workspace.Path, r.config.Config.Hooks.AfterRun, "after_run")
 	_ = r.store.UpdateWorkspaceRun(issue.ID)
 
 	return result, nil
 }
 
+func sanitizeWorkspaceKey(identifier string) string {
+	repl := strings.NewReplacer("/", "_", "\\", "_", "..", "_", " ", "_")
+	out := repl.Replace(identifier)
+	out = strings.Trim(out, "._")
+	if out == "" {
+		return "issue"
+	}
+	return out
+}
+
 func (r *Runner) getOrCreateWorkspace(issue *kanban.Issue) (*kanban.Workspace, error) {
-	workspace, err := r.store.GetWorkspace(issue.ID)
-	if err == nil {
-		return workspace, nil
+	if existing, err := r.store.GetWorkspace(issue.ID); err == nil {
+		return existing, nil
 	}
 
-	// Create new workspace
-	workspacePath := filepath.Join(r.config.Config.WorkspaceRoot, issue.Identifier)
-	if err := os.MkdirAll(workspacePath, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create workspace directory: %w", err)
-	}
-
-	workspace, err = r.store.CreateWorkspace(issue.ID, workspacePath)
+	rootAbs, err := filepath.Abs(r.config.Config.WorkspaceRoot)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
+	}
+	if err := os.MkdirAll(rootAbs, 0o755); err != nil {
+		return nil, fmt.Errorf("create workspace root: %w", err)
 	}
 
-	// Run after_create hooks
-	_ = r.runHooks(workspacePath, r.config.Config.Hooks.AfterCreate)
+	workspaceKey := sanitizeWorkspaceKey(issue.Identifier)
+	workspacePath := filepath.Join(rootAbs, workspaceKey)
 
+	if fi, err := os.Lstat(workspacePath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(workspacePath)
+			if err != nil {
+				return nil, fmt.Errorf("workspace symlink check failed: %w", err)
+			}
+			resolvedAbs, _ := filepath.Abs(resolved)
+			if !strings.HasPrefix(resolvedAbs, rootAbs+string(os.PathSeparator)) && resolvedAbs != rootAbs {
+				return nil, fmt.Errorf("workspace symlink escape: %s outside %s", resolvedAbs, rootAbs)
+			}
+		}
+		if !fi.IsDir() {
+			if err := os.Remove(workspacePath); err != nil {
+				return nil, fmt.Errorf("remove stale workspace path: %w", err)
+			}
+		}
+	}
+
+	createdNow := false
+	if _, err := os.Stat(workspacePath); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to create workspace directory: %w", err)
+		}
+		createdNow = true
+	}
+
+	workspace, err := r.store.CreateWorkspace(issue.ID, workspacePath)
+	if err != nil {
+		// might already exist due to race, read existing
+		if existing, gerr := r.store.GetWorkspace(issue.ID); gerr == nil {
+			workspace = existing
+		} else {
+			return nil, err
+		}
+	}
+
+	if createdNow {
+		if err := r.runHooks(context.Background(), workspacePath, r.config.Config.Hooks.AfterCreate, "after_create"); err != nil {
+			return nil, err
+		}
+	}
 	return workspace, nil
 }
 
@@ -104,26 +141,36 @@ func (r *Runner) buildPrompt(issue *kanban.Issue) (string, error) {
 	data := struct {
 		*kanban.Issue
 		LabelsJoined string
-	}{
-		Issue:        issue,
-		LabelsJoined: strings.Join(issue.Labels, ", "),
-	}
+	}{Issue: issue, LabelsJoined: strings.Join(issue.Labels, ", ")}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("failed to execute prompt template: %w", err)
 	}
-
 	return buf.String(), nil
 }
 
-func (r *Runner) runHooks(workspacePath string, hooks []string) error {
+func (r *Runner) runHooks(parentCtx context.Context, workspacePath string, hooks []string, hookName string) error {
 	for _, hook := range hooks {
-		cmd := exec.Command("sh", "-c", hook)
+		hookCtx := parentCtx
+		var cancel context.CancelFunc
+		if r.config.Config.Hooks.TimeoutSec > 0 {
+			hookCtx, cancel = context.WithTimeout(parentCtx, time.Duration(r.config.Config.Hooks.TimeoutSec)*time.Second)
+			defer cancel()
+		}
+
+		cmd := exec.CommandContext(hookCtx, "sh", "-c", hook)
 		cmd.Dir = workspacePath
 		cmd.Env = append(os.Environ(), "WORKSPACE_PATH="+workspacePath)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("hook failed: %w", err)
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+		err := cmd.Run()
+		if errors.Is(hookCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("workspace hook timeout (%s): %w", hookName, hookCtx.Err())
+		}
+		if err != nil {
+			return fmt.Errorf("workspace hook failed (%s): %v: %s", hookName, err, out.String())
 		}
 	}
 	return nil
@@ -133,38 +180,29 @@ func (r *Runner) executeAgent(ctx context.Context, workspacePath, prompt string)
 	executable := r.config.Config.Agent.Executable
 	args := r.config.Config.Agent.Args
 
-	// Build command
+	if r.config.Config.Agent.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(r.config.Config.Agent.Timeout)*time.Second)
+		defer cancel()
+	}
+
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir = workspacePath
 	cmd.Env = r.config.Config.GetEnv()
-
-	// Pass prompt via stdin
 	cmd.Stdin = strings.NewReader(prompt)
 
-	// Capture output
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Set timeout if configured
-	if r.config.Config.Agent.Timeout > 0 {
-		timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(r.config.Config.Agent.Timeout)*time.Second)
-		defer cancel()
-		cmd.Cancel = func() error {
-			return cmd.Process.Kill()
-		}
-		ctx = timeoutCtx
-	}
-
 	err := cmd.Run()
 	output := stdout.String()
 	if stderr.Len() > 0 {
-		output += "\n" + stderr.String()
+		if output != "" {
+			output += "\n"
+		}
+		output += stderr.String()
 	}
 
-	return &RunResult{
-		Success: err == nil,
-		Output:  output,
-		Error:   err,
-	}
+	return &RunResult{Success: err == nil, Output: output, Error: err}
 }

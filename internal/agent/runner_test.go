@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,13 +96,13 @@ func TestBuildPrompt(t *testing.T) {
 	}
 
 	// Check template variables are replaced
-	if !contains(prompt, issue.Identifier) {
+	if !strings.Contains(prompt, issue.Identifier) {
 		t.Error("Expected prompt to contain issue identifier")
 	}
-	if !contains(prompt, "Fix Login Bug") {
+	if !strings.Contains(prompt, "Fix Login Bug") {
 		t.Error("Expected prompt to contain issue title")
 	}
-	if !contains(prompt, "Users cannot log in") {
+	if !strings.Contains(prompt, "Users cannot log in") {
 		t.Error("Expected prompt to contain issue description")
 	}
 }
@@ -164,7 +165,7 @@ func TestWorkspaceDeterministic(t *testing.T) {
 	}
 
 	// Check path uses sanitized identifier
-	expected := filepath.Join(workspaceRoot, issue.Identifier)
+	expected := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
 	if ws1.Path != expected {
 		t.Errorf("Expected path %s, got %s", expected, ws1.Path)
 	}
@@ -193,16 +194,33 @@ func TestWorkspacePreservesChanges(t *testing.T) {
 	}
 }
 
-// Helper
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsMiddle(s, substr)))
+func TestSanitizeWorkspaceKey(t *testing.T) {
+	if got := sanitizeWorkspaceKey("MT/Det"); got != "MT_Det" {
+		t.Fatalf("expected MT_Det, got %s", got)
+	}
+	if got := sanitizeWorkspaceKey("../escape"); got == "" || strings.Contains(got, "..") || strings.Contains(got, "/") {
+		t.Fatalf("unexpected sanitized key: %s", got)
+	}
 }
 
-func containsMiddle(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
+	runner, store, workspaceRoot := setupTestRunner(t)
+	issue, _ := store.CreateIssue("", "", "Stale", "", 0, nil)
+
+	path := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	return false
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := runner.getOrCreateWorkspace(issue)
+	if err != nil {
+		t.Fatalf("expected workspace recovery, got err: %v", err)
+	}
+	fi, err := os.Stat(ws.Path)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("expected workspace dir at %s", ws.Path)
+	}
 }
