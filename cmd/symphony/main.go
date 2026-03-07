@@ -528,12 +528,17 @@ os.Exit(1)
 
 func runStatus() {
 	var dbPath string
+	jsonOnly := false
 	args := os.Args[2:]
 
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--db" && i+1 < len(args) {
 			dbPath = args[i+1]
 			i++
+			continue
+		}
+		if args[i] == "--json" {
+			jsonOnly = true
 		}
 	}
 
@@ -546,8 +551,18 @@ func runStatus() {
 	for _, issue := range issues {
 		counts[issue.State]++
 	}
-
 	projects, _ := store.ListProjects()
+
+	data := map[string]interface{}{
+		"projects": len(projects),
+		"issues":   counts,
+		"total":    len(issues),
+	}
+
+	if jsonOnly {
+		_ = json.NewEncoder(os.Stdout).Encode(data)
+		return
+	}
 
 	fmt.Println("Symphony Status")
 	fmt.Println(strings.Repeat("=", 40))
@@ -557,16 +572,6 @@ func runStatus() {
 	fmt.Println("Issue Breakdown:")
 	for _, state := range []kanban.State{kanban.StateBacklog, kanban.StateReady, kanban.StateInProgress, kanban.StateInReview, kanban.StateDone, kanban.StateCancelled} {
 		fmt.Printf("  %s: %d\n", state, counts[state])
-	}
-
-	// JSON output if requested
-	if len(args) > 0 && args[0] == "--json" {
-		data := map[string]interface{}{
-			"projects": len(projects),
-			"issues":   counts,
-			"total":    len(issues),
-		}
-		json.NewEncoder(os.Stdout).Encode(data)
 	}
 }
 
