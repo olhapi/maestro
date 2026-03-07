@@ -80,7 +80,12 @@ This will:
 The MCP server exposes these tools:
 
 You can also load external extension tools via `--extensions ext.json`.
-Each entry defines a `name`, `description`, and shell `command`.
+Each entry defines `name`, `description`, `command`, and optional controls:
+- `timeout_sec` (default 15)
+- `allowed` (set false to disable)
+- `require_args` (reject call unless `args` provided)
+- `working_dir`
+- `deny_env_passthrough` (only SYMPHONY_* env)
 At runtime, arguments are provided via `SYMPHONY_ARGS_JSON` and tool name via `SYMPHONY_TOOL_NAME`.
 
 | Tool | Description |

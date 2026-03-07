@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -16,9 +18,14 @@ import (
 
 // Server implements the MCP server for the kanban board
 type ExtensionTool struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Command     string `json:"command"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Command      string `json:"command"`
+	TimeoutSec   int    `json:"timeout_sec,omitempty"`
+	Allowed      *bool  `json:"allowed,omitempty"`
+	WorkingDir   string `json:"working_dir,omitempty"`
+	RequireArgs  bool   `json:"require_args,omitempty"`
+	DenyEnvPassthrough bool `json:"deny_env_passthrough,omitempty"`
 }
 
 // Server implements the MCP server for the kanban board
@@ -244,6 +251,9 @@ func (s *Server) loadExtensions(path string) error {
 		if name == "" || strings.TrimSpace(d.Command) == "" {
 			continue
 		}
+		if d.TimeoutSec <= 0 {
+			d.TimeoutSec = 15
+		}
 		d.Name = name
 		s.extensionTools[name] = d
 		s.tools = append(s.tools, mcp.Tool{
@@ -320,11 +330,35 @@ func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[
 	if !ok {
 		return toolError(fmt.Sprintf("Unknown extension tool: %s", name)), nil
 	}
-	argsJSON, _ := json.Marshal(args)
+	if ext.Allowed != nil && !*ext.Allowed {
+		return toolError(fmt.Sprintf("extension tool %s is disabled by policy", name)), nil
+	}
+	if ext.RequireArgs {
+		if _, ok := args["args"]; !ok {
+			return toolError(fmt.Sprintf("extension tool %s requires args object", name)), nil
+		}
+	}
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", ext.Command)
-	cmd.Env = append(os.Environ(), "SYMPHONY_ARGS_JSON="+string(argsJSON), "SYMPHONY_TOOL_NAME="+name)
+	argsJSON, _ := json.Marshal(args)
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(ext.TimeoutSec)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, "sh", "-c", ext.Command)
+	if ext.WorkingDir != "" {
+		if wd, err := filepath.Abs(ext.WorkingDir); err == nil {
+			cmd.Dir = wd
+		}
+	}
+	if ext.DenyEnvPassthrough {
+		cmd.Env = []string{"SYMPHONY_ARGS_JSON=" + string(argsJSON), "SYMPHONY_TOOL_NAME=" + name}
+	} else {
+		cmd.Env = append(os.Environ(), "SYMPHONY_ARGS_JSON="+string(argsJSON), "SYMPHONY_TOOL_NAME="+name)
+	}
+
 	out, err := cmd.CombinedOutput()
+	if runCtx.Err() == context.DeadlineExceeded {
+		return toolError(fmt.Sprintf("extension tool %s timed out after %ds", name, ext.TimeoutSec)), nil
+	}
 	if err != nil {
 		return toolError(fmt.Sprintf("extension tool %s failed: %v\n%s", name, err, string(out))), nil
 	}

@@ -23,7 +23,7 @@ This report tracks parity against `openai/symphony` Elixir implementation, exclu
 | `log_file_test.exs` | Partial | `--logs-root` JSON logs to file+stdout |
 | `app_server_test.exs` | Partial+ | `agent.mode=app_server` + JSON event parsing + live session metadata tracking (`session_id`, tokens, last_event) |
 | `dynamic_tool_test.exs` | Partial | MCP tool registry and calls implemented |
-| `extensions_test.exs` | Not yet | extension runtime not added |
+| `extensions_test.exs` | Partial+ | extension runtime added with timeout/allow-policy/arg-requirement controls |
 | `observability_pubsub_test.exs` | Not yet | event bus not added |
 | `status_dashboard_snapshot_test.exs` | Not yet | no HTTP dashboard yet |
 | `specs_check_test.exs` | Partial | manual SPEC alignment; no automatic spec conformance checks |

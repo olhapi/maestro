@@ -19,10 +19,10 @@ Reach practical completion for Symphony-Go parity (excluding Linear integration)
 - [x] Add tests for session parsing/history and sessions API
 
 ### Phase B — Extension/runtime hardening
-- [ ] Add extension command timeout
-- [ ] Add optional extension allowlist
-- [ ] Return normalized extension execution error payloads
-- [ ] Add tests for timeout and allowlist
+- [x] Add extension command timeout
+- [x] Add optional extension allowlist
+- [x] Return normalized extension execution error payloads
+- [x] Add tests for timeout and allowlist
 
 ### Phase C — Verification & report
 - [ ] Full test run + build
