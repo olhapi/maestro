@@ -14,6 +14,7 @@ import (
 
 	"github.com/olhapi/symphony-go/internal/kanban"
 	"github.com/olhapi/symphony-go/internal/mcp"
+	"github.com/olhapi/symphony-go/internal/observability"
 	"github.com/olhapi/symphony-go/internal/orchestrator"
 	"github.com/olhapi/symphony-go/pkg/config"
 )
@@ -66,6 +67,7 @@ Examples:
   symphony run                           # Start orchestrator in current directory
   symphony run /path/to/repo             # Start orchestrator for a specific repo
   symphony run --logs-root ./log         # Write structured JSON logs to file + stdout
+  symphony run --port 8787               # Expose observability API on /api/v1/state
   symphony mcp                           # Start MCP server over stdio
   symphony board                         # Show kanban board
   symphony issue create "Fix bug"        # Create an issue
@@ -136,6 +138,7 @@ func runOrchestrator() {
 	var repoPath string
 	var dbPath string
 	var logsRoot string
+	var port string
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -146,6 +149,11 @@ func runOrchestrator() {
 		}
 		if args[i] == "--logs-root" && i+1 < len(args) {
 			logsRoot = args[i+1]
+			i++
+			continue
+		}
+		if args[i] == "--port" && i+1 < len(args) {
+			port = args[i+1]
 			i++
 			continue
 		}
@@ -170,6 +178,13 @@ func runOrchestrator() {
 	defer cancel()
 
 	orch := orchestrator.New(store, workflow)
+	if port != "" {
+		addr := port
+		if !strings.Contains(addr, ":") {
+			addr = ":" + addr
+		}
+		observability.Start(ctx, addr, orch)
+	}
 
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)

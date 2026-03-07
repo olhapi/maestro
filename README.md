@@ -167,7 +167,10 @@ The prompt template supports Go template syntax with access to issue fields:
 ./symphony board [--project <id>]
 
 # Orchestrator
-./symphony run [repo_path] [--db <path>] [--logs-root <path>]
+./symphony run [repo_path] [--db <path>] [--logs-root <path>] [--port <port>]
+# Observability API (if --port set)
+# GET /health
+# GET /api/v1/state
 
 # MCP Server
 ./symphony mcp [--db <path>]
