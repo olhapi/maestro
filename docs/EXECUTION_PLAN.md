@@ -25,9 +25,9 @@ Reach practical completion for Symphony-Go parity (excluding Linear integration)
 - [x] Add tests for timeout and allowlist
 
 ### Phase C — Verification & report
-- [ ] Full test run + build
-- [ ] Update `PARITY_REPORT.md` with completed deltas
-- [ ] Final checklist against upstream test-module matrix
+- [x] Full test run + build
+- [x] Update `PARITY_REPORT.md` with completed deltas
+- [x] Final checklist against upstream test-module matrix
 
 ## Done Definition
 - All tests pass
