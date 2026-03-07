@@ -120,6 +120,8 @@ agent:
   executable: codex
   args: []
   timeout: 3600
+hooks:
+  timeout_sec: 60
 ---
 
 # Instructions for {{.Identifier}}
@@ -164,7 +166,7 @@ The prompt template supports Go template syntax with access to issue fields:
 ./symphony board [--project <id>]
 
 # Orchestrator
-./symphony run [repo_path] [--db <path>]
+./symphony run [repo_path] [--db <path>] [--logs-root <path>]
 
 # MCP Server
 ./symphony mcp [--db <path>]

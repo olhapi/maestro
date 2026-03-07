@@ -20,10 +20,15 @@ type Orchestrator struct {
 	workflow *config.Workflow
 	runner   *agent.Runner
 
-	mu          sync.RWMutex
-	activeRuns  map[string]context.CancelFunc
-	retryQueue  map[string]int // issue_id -> retry count
-	maxRetries  int
+	mu             sync.RWMutex
+	activeRuns     map[string]context.CancelFunc
+	retryQueue     map[string]int // issue_id -> retry count
+	maxRetries     int
+	startedAt      time.Time
+	lastTickAt     time.Time
+	totalRuns      int
+	successfulRuns int
+	failedRuns     int
 }
 
 // New creates a new orchestrator
@@ -35,6 +40,7 @@ func New(store *kanban.Store, workflow *config.Workflow) *Orchestrator {
 		activeRuns: make(map[string]context.CancelFunc),
 		retryQueue: make(map[string]int),
 		maxRetries: 3,
+		startedAt:  time.Now().UTC(),
 	}
 }
 
@@ -67,6 +73,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 }
 
 func (o *Orchestrator) tick(ctx context.Context) error {
+	o.mu.Lock()
+	o.lastTickAt = time.Now().UTC()
+	o.mu.Unlock()
+
 	// Reconcile - check if any active runs should be stopped
 	if err := o.reconcile(); err != nil {
 		slog.Error("Reconciliation failed", "error", err)
@@ -84,35 +94,46 @@ func (o *Orchestrator) tick(ctx context.Context) error {
 }
 
 func (o *Orchestrator) reconcile() error {
-	// Get current states for all active runs
+	// Snapshot active issue IDs first
 	o.mu.RLock()
-	defer o.mu.RUnlock()
-
+	ids := make([]string, 0, len(o.activeRuns))
 	for issueID := range o.activeRuns {
+		ids = append(ids, issueID)
+	}
+	o.mu.RUnlock()
+
+	toStop := make([]string, 0)
+	for _, issueID := range ids {
 		issue, err := o.store.GetIssue(issueID)
 		if err != nil {
 			continue
 		}
 
-		// Check if issue is still in an active state
 		if !o.isActiveState(string(issue.State)) {
 			slog.Info("Stopping run for issue (state changed)", "issue", issue.Identifier, "state", issue.State)
-			o.stopRun(issueID)
+			toStop = append(toStop, issueID)
+			continue
 		}
 
-		// Check if issue is blocked
 		if len(issue.BlockedBy) > 0 {
 			for _, blocker := range issue.BlockedBy {
 				blockerIssue, err := o.store.GetIssueByIdentifier(blocker)
 				if err == nil && !o.isTerminalState(string(blockerIssue.State)) {
 					slog.Info("Stopping run for issue (blocked)", "issue", issue.Identifier, "blocked_by", blocker)
-					o.stopRun(issueID)
+					toStop = append(toStop, issueID)
 					break
 				}
 			}
 		}
 	}
 
+	if len(toStop) > 0 {
+		o.mu.Lock()
+		for _, issueID := range toStop {
+			o.stopRun(issueID)
+		}
+		o.mu.Unlock()
+	}
 	return nil
 }
 
@@ -191,18 +212,30 @@ func (o *Orchestrator) startRun(ctx context.Context, issue *kanban.Issue) {
 		}()
 
 		result, err := o.runner.Run(runCtx, issue)
+		o.mu.Lock()
+		o.totalRuns++
+		o.mu.Unlock()
 		if err != nil {
 			slog.Error("Run failed", "issue", issue.Identifier, "error", err)
+			o.mu.Lock()
 			o.retryQueue[issue.ID]++
+			o.failedRuns++
+			o.mu.Unlock()
 			return
 		}
 
 		if result.Success {
 			slog.Info("Run completed", "issue", issue.Identifier)
+			o.mu.Lock()
 			delete(o.retryQueue, issue.ID)
+			o.successfulRuns++
+			o.mu.Unlock()
 		} else {
 			slog.Error("Run unsuccessful", "issue", issue.Identifier, "error", result.Error)
+			o.mu.Lock()
 			o.retryQueue[issue.ID]++
+			o.failedRuns++
+			o.mu.Unlock()
 		}
 	}()
 }
@@ -270,10 +303,33 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		activeIDs = append(activeIDs, id)
 	}
 
+	retryByIssue := make(map[string]int, len(o.retryQueue))
+	for k, v := range o.retryQueue {
+		retryByIssue[k] = v
+	}
+
+	uptimeSec := int(time.Since(o.startedAt).Seconds())
+	lastTick := ""
+	if !o.lastTickAt.IsZero() {
+		lastTick = o.lastTickAt.Format(time.RFC3339)
+	}
+
 	return map[string]interface{}{
-		"active_runs":   len(o.activeRuns),
-		"active_issues": activeIDs,
-		"retry_queue":   len(o.retryQueue),
-		"max_concurrent": o.workflow.Config.MaxConcurrent,
+		"started_at":         o.startedAt.Format(time.RFC3339),
+		"uptime_seconds":     uptimeSec,
+		"last_tick_at":       lastTick,
+		"active_runs":        len(o.activeRuns),
+		"active_issues":      activeIDs,
+		"retry_queue_count":  len(o.retryQueue),
+		"retry_queue":        retryByIssue,
+		"max_concurrent":     o.workflow.Config.MaxConcurrent,
+		"poll_interval_sec":  o.workflow.Config.PollInterval,
+		"active_states":      o.workflow.Config.ActiveStates,
+		"terminal_states":    o.workflow.Config.TerminalStates,
+		"run_metrics": map[string]int{
+			"total":      o.totalRuns,
+			"successful": o.successfulRuns,
+			"failed":     o.failedRuns,
+		},
 	}
 }

@@ -246,14 +246,16 @@ func TestStatus(t *testing.T) {
 
 	status := orch.Status()
 
-	if _, ok := status["active_runs"]; !ok {
-		t.Error("Expected status to have active_runs")
-	}
-	if _, ok := status["max_concurrent"]; !ok {
-		t.Error("Expected status to have max_concurrent")
+	for _, key := range []string{"active_runs", "max_concurrent", "started_at", "uptime_seconds", "poll_interval_sec", "run_metrics"} {
+		if _, ok := status[key]; !ok {
+			t.Fatalf("Expected status to have key %s", key)
+		}
 	}
 	if status["max_concurrent"] != 2 {
 		t.Errorf("Expected max_concurrent 2, got %v", status["max_concurrent"])
+	}
+	if status["poll_interval_sec"] != 1 {
+		t.Errorf("Expected poll_interval_sec 1, got %v", status["poll_interval_sec"])
 	}
 }
 

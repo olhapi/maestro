@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -64,6 +65,7 @@ Commands:
 Examples:
   symphony run                           # Start orchestrator in current directory
   symphony run /path/to/repo             # Start orchestrator for a specific repo
+  symphony run --logs-root ./log         # Write structured JSON logs to file + stdout
   symphony mcp                           # Start MCP server over stdio
   symphony board                         # Show kanban board
   symphony issue create "Fix bug"        # Create an issue
@@ -112,19 +114,50 @@ func getWorkflow(repoPath string) *config.Workflow {
 	return workflow
 }
 
+func setupLogger(logsRoot string) error {
+	if err := os.MkdirAll(logsRoot, 0o755); err != nil {
+		return err
+	}
+	logPath := filepath.Join(logsRoot, "symphony.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	mw := io.MultiWriter(os.Stdout, f)
+	h := slog.NewJSONHandler(mw, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(h))
+	slog.Info("Logger initialized", "log_file", logPath)
+	return nil
+}
+
 // === Commands ===
 
 func runOrchestrator() {
 	var repoPath string
 	var dbPath string
+	var logsRoot string
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--db" && i+1 < len(args) {
 			dbPath = args[i+1]
 			i++
-		} else if !strings.HasPrefix(args[i], "--") {
+			continue
+		}
+		if args[i] == "--logs-root" && i+1 < len(args) {
+			logsRoot = args[i+1]
+			i++
+			continue
+		}
+		if !strings.HasPrefix(args[i], "--") {
 			repoPath = args[i]
+		}
+	}
+
+	if logsRoot != "" {
+		if err := setupLogger(logsRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to setup logger: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
