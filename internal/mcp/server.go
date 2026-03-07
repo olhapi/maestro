@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -12,20 +15,38 @@ import (
 )
 
 // Server implements the MCP server for the kanban board
-type Server struct {
-	store  *kanban.Store
-	server server.MCPServer
-	tools  []mcp.Tool
+type ExtensionTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Command     string `json:"command"`
 }
 
-// NewServer creates a new MCP server
+// Server implements the MCP server for the kanban board
+// and optional extension tools.
+type Server struct {
+	store          *kanban.Store
+	server         server.MCPServer
+	tools          []mcp.Tool
+	extensionTools map[string]ExtensionTool
+}
+
+// NewServer creates a new MCP server.
 func NewServer(store *kanban.Store) *Server {
+	return NewServerWithExtensions(store, "")
+}
+
+// NewServerWithExtensions creates a new MCP server and optionally loads extension tools from JSON file.
+func NewServerWithExtensions(store *kanban.Store, extensionsFile string) *Server {
 	s := &Server{
-		store:  store,
-		server: server.NewDefaultServer("symphony", "1.0.0"),
+		store:          store,
+		server:         server.NewDefaultServer("symphony", "1.0.0"),
+		extensionTools: map[string]ExtensionTool{},
 	}
 
 	s.registerTools()
+	if extensionsFile != "" {
+		_ = s.loadExtensions(extensionsFile)
+	}
 	return s
 }
 
@@ -197,6 +218,43 @@ func (s *Server) registerTools() {
 	s.server.HandleCallTool(s.handleCallTool)
 }
 
+func extensionToolSchema() mcp.ToolInputSchema {
+	return mcp.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]interface{}{
+			"args": map[string]interface{}{
+				"type":        "object",
+				"description": "Extension arguments object; passed as JSON to command via SYMPHONY_ARGS_JSON",
+			},
+		},
+	}
+}
+
+func (s *Server) loadExtensions(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var defs []ExtensionTool
+	if err := json.Unmarshal(data, &defs); err != nil {
+		return err
+	}
+	for _, d := range defs {
+		name := strings.TrimSpace(d.Name)
+		if name == "" || strings.TrimSpace(d.Command) == "" {
+			continue
+		}
+		d.Name = name
+		s.extensionTools[name] = d
+		s.tools = append(s.tools, mcp.Tool{
+			Name:        name,
+			Description: d.Description,
+			InputSchema: extensionToolSchema(),
+		})
+	}
+	return nil
+}
+
 // handleCallTool routes tool calls to appropriate handlers
 func (s *Server) handleCallTool(ctx context.Context, name string, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	switch name {
@@ -229,6 +287,9 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 	case "set_blockers":
 		return s.handleSetBlockers(ctx, args)
 	default:
+		if _, ok := s.extensionTools[name]; ok {
+			return s.handleExtensionTool(ctx, name, args)
+		}
 		return toolError(fmt.Sprintf("Unknown tool: %s", name)), nil
 	}
 }
@@ -252,6 +313,22 @@ func toolError(text string) *mcp.CallToolResult {
 			Text: text,
 		}},
 	}
+}
+
+func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	ext, ok := s.extensionTools[name]
+	if !ok {
+		return toolError(fmt.Sprintf("Unknown extension tool: %s", name)), nil
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", ext.Command)
+	cmd.Env = append(os.Environ(), "SYMPHONY_ARGS_JSON="+string(argsJSON), "SYMPHONY_TOOL_NAME="+name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return toolError(fmt.Sprintf("extension tool %s failed: %v\n%s", name, err, string(out))), nil
+	}
+	return toolResult(strings.TrimSpace(string(out))), nil
 }
 
 // ServeStdio runs the MCP server over stdin/stdout

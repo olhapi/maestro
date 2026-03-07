@@ -79,6 +79,10 @@ This will:
 
 The MCP server exposes these tools:
 
+You can also load external extension tools via `--extensions ext.json`.
+Each entry defines a `name`, `description`, and shell `command`.
+At runtime, arguments are provided via `SYMPHONY_ARGS_JSON` and tool name via `SYMPHONY_TOOL_NAME`.
+
 | Tool | Description |
 |------|-------------|
 | `create_project` | Create a new project |
@@ -173,7 +177,7 @@ The prompt template supports Go template syntax with access to issue fields:
 # GET /api/v1/state
 
 # MCP Server
-./symphony mcp [--db <path>]
+./symphony mcp [--db <path>] [--extensions <json-file>]
 
 # Status
 ./symphony status [--json]

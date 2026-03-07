@@ -69,6 +69,7 @@ Examples:
   symphony run --logs-root ./log         # Write structured JSON logs to file + stdout
   symphony run --port 8787               # Expose observability API on /api/v1/state
   symphony mcp                           # Start MCP server over stdio
+  symphony mcp --extensions ./ext.json   # Load extension tools
   symphony board                         # Show kanban board
   symphony issue create "Fix bug"        # Create an issue
   symphony issue list --state ready      # List ready issues
@@ -203,10 +204,16 @@ func runOrchestrator() {
 
 func runMCP() {
 	var dbPath string
+	var extensionsFile string
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--db" && i+1 < len(args) {
 			dbPath = args[i+1]
+			i++
+			continue
+		}
+		if args[i] == "--extensions" && i+1 < len(args) {
+			extensionsFile = args[i+1]
 			i++
 		}
 	}
@@ -214,7 +221,7 @@ func runMCP() {
 	store := getStore(dbPath)
 	defer store.Close()
 
-	server := mcp.NewServer(store)
+	server := mcp.NewServerWithExtensions(store, extensionsFile)
 	if err := server.ServeStdio(); err != nil {
 		slog.Error("MCP server error", "error", err)
 		os.Exit(1)
