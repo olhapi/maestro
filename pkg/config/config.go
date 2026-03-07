@@ -37,6 +37,7 @@ type AgentConfig struct {
 	Args       []string          `yaml:"args"`
 	Env        map[string]string `yaml:"env"`
 	Timeout    int               `yaml:"timeout"` // seconds, 0 = no timeout
+	Mode       string            `yaml:"mode"`    // stdio (default) | app_server (compat)
 }
 
 // HooksConfig configures workspace lifecycle hooks
@@ -66,6 +67,7 @@ func DefaultConfig() Config {
 			Args:       []string{},
 			Env:        map[string]string{},
 			Timeout:    0,
+			Mode:       "stdio",
 		},
 		Hooks: HooksConfig{TimeoutSec: 60},
 	}
@@ -130,6 +132,9 @@ func applyDefaults(c *Config) {
 	if c.Agent.Executable == "" {
 		c.Agent.Executable = defaults.Agent.Executable
 	}
+	if c.Agent.Mode == "" {
+		c.Agent.Mode = defaults.Agent.Mode
+	}
 	if c.Hooks.TimeoutSec <= 0 {
 		c.Hooks.TimeoutSec = defaults.Hooks.TimeoutSec
 	}
@@ -156,6 +161,7 @@ agent:
   executable: codex
   args: []
   timeout: 0
+  mode: stdio
 ---
 
 # Symphony Workflow

@@ -120,6 +120,7 @@ agent:
   executable: codex
   args: []
   timeout: 3600
+  mode: stdio  # stdio | app_server (compat mode)
 hooks:
   timeout_sec: 60
 ---

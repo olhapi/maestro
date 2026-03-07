@@ -28,6 +28,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.Executable != "codex" {
 		t.Errorf("Expected Agent.Executable 'codex', got %s", cfg.Agent.Executable)
 	}
+	if cfg.Agent.Mode != "stdio" {
+		t.Errorf("Expected Agent.Mode 'stdio', got %s", cfg.Agent.Mode)
+	}
 }
 
 func TestLoadWorkflowWithFrontMatter(t *testing.T) {
@@ -41,6 +44,7 @@ workspace_root: /tmp/workspaces
 agent:
   executable: /usr/local/bin/codex
   timeout: 3600
+  mode: app_server
 ---
 
 # Custom Workflow
@@ -72,6 +76,9 @@ You are working on issue {{.Identifier}}.
 	}
 	if workflow.Config.Agent.Timeout != 3600 {
 		t.Errorf("Expected Agent.Timeout 3600, got %d", workflow.Config.Agent.Timeout)
+	}
+	if workflow.Config.Agent.Mode != "app_server" {
+		t.Errorf("Expected Agent.Mode app_server, got %s", workflow.Config.Agent.Mode)
 	}
 	if workflow.PromptTemplate == "" {
 		t.Error("Expected non-empty prompt template")

@@ -189,7 +189,19 @@ func (r *Runner) executeAgent(ctx context.Context, workspacePath, prompt string)
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir = workspacePath
 	cmd.Env = r.config.Config.GetEnv()
-	cmd.Stdin = strings.NewReader(prompt)
+
+	mode := strings.ToLower(strings.TrimSpace(r.config.Config.Agent.Mode))
+	if mode == "" || mode == "stdio" {
+		cmd.Stdin = strings.NewReader(prompt)
+	} else if mode == "app_server" {
+		// App-server compatibility mode: still subprocess-based, but exports
+		// explicit env markers so wrappers can run Codex app-server and stream events.
+		cmd.Env = append(cmd.Env,
+			"SYMPHONY_AGENT_MODE=app_server",
+			"SYMPHONY_PROMPT_LEN="+fmt.Sprintf("%d", len(prompt)),
+		)
+		cmd.Stdin = strings.NewReader(prompt)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
