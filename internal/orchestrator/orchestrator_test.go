@@ -64,8 +64,27 @@ Test prompt for {{ issue.identifier }}
 	}
 
 	orch := New(store, manager)
+	t.Cleanup(func() {
+		orch.stopAllRuns()
+		waitForNoRunning(t, orch, time.Second)
+	})
 	t.Cleanup(func() { _ = store.Close() })
 	return orch, store, manager, workspaceRoot
+}
+
+func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		orch.mu.RLock()
+		running := len(orch.running)
+		orch.mu.RUnlock()
+		if running == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for running orchestrator jobs to stop")
 }
 
 func TestDispatchCreatesWorkspace(t *testing.T) {
@@ -85,6 +104,7 @@ func TestDispatchCreatesWorkspace(t *testing.T) {
 	if workspace.RunCount < 1 {
 		t.Fatalf("expected run count >= 1, got %d", workspace.RunCount)
 	}
+	waitForNoRunning(t, orch, time.Second)
 }
 
 func TestFailureRetryScheduling(t *testing.T) {
@@ -109,6 +129,7 @@ func TestFailureRetryScheduling(t *testing.T) {
 	if retry.DelayType != "failure" {
 		t.Fatalf("expected failure retry, got %s", retry.DelayType)
 	}
+	waitForNoRunning(t, orch, time.Second)
 }
 
 func TestContinuationRetryAfterSuccess(t *testing.T) {
@@ -130,6 +151,7 @@ func TestContinuationRetryAfterSuccess(t *testing.T) {
 	if retry.DelayType != "continuation" {
 		t.Fatalf("expected continuation retry, got %s", retry.DelayType)
 	}
+	waitForNoRunning(t, orch, time.Second)
 }
 
 func TestReconcileStopsTerminalRunsAndCleansWorkspace(t *testing.T) {
@@ -181,7 +203,7 @@ func TestDispatchBlockedByInvalidWorkflowReloadKeepsLastGood(t *testing.T) {
 	issue, _ := store.CreateIssue("", "", "Ready", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
-	if err := os.WriteFile(manager.Path(), []byte("---\npoll_interval: 30\n---\nlegacy"), 0o644); err != nil {
+	if err := os.WriteFile(manager.Path(), []byte("---\ntracker:\n  kind: linear\n---\nlegacy"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Refresh(); err != nil {
@@ -194,6 +216,7 @@ func TestDispatchBlockedByInvalidWorkflowReloadKeepsLastGood(t *testing.T) {
 	if manager.LastError() == nil {
 		t.Fatal("expected workflow reload error to be retained")
 	}
+	waitForNoRunning(t, orch, time.Second)
 }
 
 func TestStatusIncludesWorkflowAndRetryFields(t *testing.T) {

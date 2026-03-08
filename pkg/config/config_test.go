@@ -94,8 +94,15 @@ Hello {{ issue.identifier }}
 		t.Fatal(err)
 	}
 
-	if _, err := LoadWorkflow(workflowPath); err == nil {
-		t.Fatal("expected legacy flat schema rejection")
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("expected legacy flat schema aliasing, got %v", err)
+	}
+	if workflow.Config.Polling.IntervalMs != 30 {
+		t.Fatalf("expected poll interval 30, got %d", workflow.Config.Polling.IntervalMs)
+	}
+	if workflow.Config.Workspace.Root != filepath.Join(tmpDir, "workspaces") {
+		t.Fatalf("unexpected workspace root: %s", workflow.Config.Workspace.Root)
 	}
 }
 
@@ -134,6 +141,82 @@ func TestLoadWorkflowWithoutFrontMatterUsesDefaults(t *testing.T) {
 	}
 	if workflow.PromptTemplate != content {
 		t.Fatalf("unexpected prompt template: %q", workflow.PromptTemplate)
+	}
+}
+
+func TestLoadWorkflowWithConfigOnlyFrontMatterKeepsEmptyPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+---`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.PromptTemplate != "" {
+		t.Fatalf("expected empty prompt, got %q", workflow.PromptTemplate)
+	}
+}
+
+func TestLoadWorkflowAcceptsUnterminatedFrontMatter(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+polling:
+  interval_ms: 42
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Polling.IntervalMs != 42 {
+		t.Fatalf("unexpected poll interval: %d", workflow.Config.Polling.IntervalMs)
+	}
+	if workflow.PromptTemplate != "" {
+		t.Fatalf("expected empty prompt, got %q", workflow.PromptTemplate)
+	}
+}
+
+func TestResolveWorkflowPathUsesOverrideRelativeToRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+	got := ResolveWorkflowPath(tmpDir, "nested/CUSTOM.md")
+	want := filepath.Join(tmpDir, "nested", "CUSTOM.md")
+	if got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+}
+
+func TestNewManagerForPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "custom.workflow.md")
+	content := `---
+tracker:
+  kind: kanban
+---
+{{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewManagerForPath(workflowPath)
+	if err != nil {
+		t.Fatalf("NewManagerForPath: %v", err)
+	}
+	if manager.Path() != workflowPath {
+		t.Fatalf("expected path %s, got %s", workflowPath, manager.Path())
 	}
 }
 
@@ -177,7 +260,8 @@ Hello {{ issue.identifier }}
 	}
 
 	bad := `---
-poll_interval: 30
+tracker:
+  kind: linear
 ---
 {{ issue.identifier }}
 `

@@ -15,6 +15,10 @@ type Manager struct {
 
 func NewManager(repoPath string) (*Manager, error) {
 	path := WorkflowPath(repoPath)
+	return NewManagerForPath(path)
+}
+
+func NewManagerForPath(path string) (*Manager, error) {
 	workflow, err := LoadWorkflow(path)
 	if err != nil {
 		return nil, err

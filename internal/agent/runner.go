@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/olhapi/symphony-go/internal/appserver"
+	"github.com/olhapi/symphony-go/internal/extensions"
 	"github.com/olhapi/symphony-go/internal/kanban"
 	"github.com/olhapi/symphony-go/pkg/config"
 )
@@ -24,6 +26,7 @@ type WorkflowProvider interface {
 type Runner struct {
 	workflowProvider WorkflowProvider
 	store            *kanban.Store
+	extensions       *extensions.Registry
 }
 
 type RunResult struct {
@@ -34,7 +37,14 @@ type RunResult struct {
 }
 
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
-	return &Runner{workflowProvider: provider, store: store}
+	return NewRunnerWithExtensions(provider, store, nil)
+}
+
+func NewRunnerWithExtensions(provider WorkflowProvider, store *kanban.Store, registry *extensions.Registry) *Runner {
+	if registry == nil {
+		registry = extensions.EmptyRegistry()
+	}
+	return &Runner{workflowProvider: provider, store: store, extensions: registry}
 }
 
 func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, error) {
@@ -201,6 +211,8 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,
 		ReadTimeout:       time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
 		TurnTimeout:       time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
+		DynamicTools:      r.extensions.Specs(),
+		ToolExecutor:      r.extensionToolExecutor(),
 	})
 	if err != nil {
 		return &RunResult{Success: false, Error: err}, nil
@@ -354,4 +366,53 @@ func isActiveState(workflow *config.Workflow, state string) bool {
 
 func normalizeState(state string) string {
 	return strings.ToLower(strings.TrimSpace(state))
+}
+
+func (r *Runner) extensionToolExecutor() appserver.ToolExecutor {
+	if r.extensions == nil || !r.extensions.HasTools() {
+		return nil
+	}
+	return func(name string, arguments interface{}) map[string]interface{} {
+		output, err := r.extensions.Execute(context.Background(), name, arguments)
+		if err != nil {
+			return dynamicToolError(err.Error())
+		}
+		return dynamicToolSuccess(output)
+	}
+}
+
+func dynamicToolSuccess(text string) map[string]interface{} {
+	return map[string]interface{}{
+		"success": true,
+		"contentItems": []map[string]interface{}{
+			{
+				"type": "inputText",
+				"text": text,
+			},
+		},
+	}
+}
+
+func dynamicToolError(message string) map[string]interface{} {
+	return map[string]interface{}{
+		"success": false,
+		"contentItems": []map[string]interface{}{
+			{
+				"type": "inputText",
+				"text": encodeDynamicToolPayload(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": message,
+					},
+				}),
+			},
+		},
+	}
+}
+
+func encodeDynamicToolPayload(payload interface{}) string {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf("%v", payload)
+	}
+	return string(data)
 }

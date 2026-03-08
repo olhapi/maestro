@@ -12,8 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mattn/go-isatty"
+	"github.com/olhapi/symphony-go/internal/extensions"
 	"github.com/olhapi/symphony-go/internal/kanban"
 	"github.com/olhapi/symphony-go/internal/logsink"
 	"github.com/olhapi/symphony-go/internal/mcp"
@@ -25,6 +27,8 @@ import (
 )
 
 var version = "dev"
+
+const guardrailsAcknowledgementFlag = "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -80,11 +84,14 @@ Commands:
 Examples:
   symphony run                           # Start orchestrator in current directory
   symphony run /path/to/repo             # Start orchestrator for a specific repo
+  symphony run --workflow ./custom.md    # Use a non-default workflow file
+  symphony run --extensions ./ext.json   # Enable extension-backed dynamic tools
   symphony run --logs-root ./log         # Write structured JSON logs to file + stdout
   symphony run --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
   symphony run --port 8787               # Expose observability API on /api/v1/state
   symphony mcp                           # Start MCP server over stdio
   symphony mcp --extensions ./ext.json   # Load extension tools
+  symphony status --dashboard            # Render a dashboard-style snapshot
   symphony board                         # Show kanban board
   symphony issue create "Fix bug"        # Create an issue
   symphony issue list --state ready      # List ready issues
@@ -122,22 +129,23 @@ func getStore(dbPath string) *kanban.Store {
 	return store
 }
 
-func getWorkflowManager(repoPath string, allowInit bool) *config.Manager {
+func getWorkflowManager(repoPath string, allowInit bool, workflowPath string) *config.Manager {
 	if repoPath == "" {
 		repoPath, _ = os.Getwd()
 	}
+	path := config.ResolveWorkflowPath(repoPath, workflowPath)
 
 	if allowInit {
-		created, err := ensureWorkflowInitialized(repoPath)
+		created, err := ensureWorkflowInitialized(path)
 		if err != nil {
 			slog.Error("Failed to initialize workflow", "error", err)
 			os.Exit(1)
 		}
 		if created {
-			slog.Info("Created WORKFLOW.md with bootstrap defaults", "path", config.WorkflowPath(repoPath))
+			slog.Info("Created WORKFLOW.md with bootstrap defaults", "path", path)
 		}
 	}
-	manager, err := config.NewManager(repoPath)
+	manager, err := config.NewManagerForPath(path)
 	if err != nil {
 		slog.Error("Failed to load workflow", "error", err)
 		os.Exit(1)
@@ -145,14 +153,92 @@ func getWorkflowManager(repoPath string, allowInit bool) *config.Manager {
 	return manager
 }
 
-func ensureWorkflowInitialized(repoPath string) (bool, error) {
+func ensureWorkflowInitialized(path string) (bool, error) {
 	interactive := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
-	_, created, err := config.EnsureWorkflow(repoPath, config.InitOptions{
+	_, created, err := config.EnsureWorkflowAtPath(path, config.InitOptions{
 		Interactive: interactive,
 		Stdin:       bufio.NewReader(os.Stdin),
 		Stdout:      os.Stdout,
 	})
 	return created, err
+}
+
+type runOptions struct {
+	repoPath           string
+	dbPath             string
+	logsRoot           string
+	port               string
+	workflowPath       string
+	extensionsFile     string
+	logMaxBytes        int64
+	logMaxFiles        int
+	acknowledgedUnsafe bool
+}
+
+func parseRunOptions(args []string) runOptions {
+	opts := runOptions{
+		logMaxBytes: 10 * 1024 * 1024,
+		logMaxFiles: 3,
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--db":
+			if i+1 < len(args) {
+				opts.dbPath = args[i+1]
+				i++
+			}
+		case "--logs-root":
+			if i+1 < len(args) {
+				opts.logsRoot = args[i+1]
+				i++
+			}
+		case "--port":
+			if i+1 < len(args) {
+				opts.port = args[i+1]
+				i++
+			}
+		case "--log-max-bytes":
+			if i+1 < len(args) {
+				if v, err := strconv.ParseInt(args[i+1], 10, 64); err == nil {
+					opts.logMaxBytes = v
+				}
+				i++
+			}
+		case "--log-max-files":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					opts.logMaxFiles = v
+				}
+				i++
+			}
+		case "--workflow":
+			if i+1 < len(args) {
+				opts.workflowPath = args[i+1]
+				i++
+			}
+		case "--extensions":
+			if i+1 < len(args) {
+				opts.extensionsFile = args[i+1]
+				i++
+			}
+		case guardrailsAcknowledgementFlag:
+			opts.acknowledgedUnsafe = true
+		default:
+			if !strings.HasPrefix(args[i], "--") {
+				opts.repoPath = args[i]
+			}
+		}
+	}
+	return opts
+}
+
+func guardrailsAcknowledgementBanner() string {
+	return strings.Join([]string{
+		"This Symphony implementation is a low key engineering preview.",
+		"Codex will run without any guardrails.",
+		"Symphony-Go is not a supported product and is presented as-is.",
+		"To silence this warning, pass " + guardrailsAcknowledgementFlag + ".",
+	}, "\n")
 }
 
 func setupLogger(logsRoot string, maxBytes int64, maxFiles int) error {
@@ -174,67 +260,34 @@ func setupLogger(logsRoot string, maxBytes int64, maxFiles int) error {
 // === Commands ===
 
 func runOrchestrator() {
-	var repoPath string
-	var dbPath string
-	var logsRoot string
-	var port string
-	var logMaxBytes int64 = 10 * 1024 * 1024
-	var logMaxFiles int = 3
-
-	args := os.Args[2:]
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--db" && i+1 < len(args) {
-			dbPath = args[i+1]
-			i++
-			continue
-		}
-		if args[i] == "--logs-root" && i+1 < len(args) {
-			logsRoot = args[i+1]
-			i++
-			continue
-		}
-		if args[i] == "--port" && i+1 < len(args) {
-			port = args[i+1]
-			i++
-			continue
-		}
-		if args[i] == "--log-max-bytes" && i+1 < len(args) {
-			if v, err := strconv.ParseInt(args[i+1], 10, 64); err == nil {
-				logMaxBytes = v
-			}
-			i++
-			continue
-		}
-		if args[i] == "--log-max-files" && i+1 < len(args) {
-			if v, err := strconv.Atoi(args[i+1]); err == nil {
-				logMaxFiles = v
-			}
-			i++
-			continue
-		}
-		if !strings.HasPrefix(args[i], "--") {
-			repoPath = args[i]
-		}
+	opts := parseRunOptions(os.Args[2:])
+	if !opts.acknowledgedUnsafe {
+		fmt.Fprintln(os.Stderr, guardrailsAcknowledgementBanner())
 	}
 
-	if logsRoot != "" {
-		if err := setupLogger(logsRoot, logMaxBytes, logMaxFiles); err != nil {
+	if opts.logsRoot != "" {
+		if err := setupLogger(opts.logsRoot, opts.logMaxBytes, opts.logMaxFiles); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to setup logger: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
-	store := getStore(dbPath)
+	store := getStore(opts.dbPath)
 	defer store.Close()
 
-	workflowManager := getWorkflowManager(repoPath, true)
+	workflowManager := getWorkflowManager(opts.repoPath, true, opts.workflowPath)
+	registry, err := extensions.LoadFile(opts.extensionsFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load extensions: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orch := orchestrator.New(store, workflowManager)
-	if port != "" {
-		addr := port
+	orch := orchestrator.NewWithExtensions(store, workflowManager, registry)
+	if opts.port != "" {
+		addr := opts.port
 		if !strings.Contains(addr, ":") {
 			addr = ":" + addr
 		}
@@ -743,6 +796,8 @@ func runVerify() {
 func runStatus() {
 	var dbPath string
 	jsonOnly := false
+	dashboard := false
+	dashboardURL := ""
 	args := os.Args[2:]
 
 	for i := 0; i < len(args); i++ {
@@ -753,6 +808,13 @@ func runStatus() {
 		}
 		if args[i] == "--json" {
 			jsonOnly = true
+		}
+		if args[i] == "--dashboard" {
+			dashboard = true
+		}
+		if args[i] == "--dashboard-url" && i+1 < len(args) {
+			dashboardURL = args[i+1]
+			i++
 		}
 	}
 
@@ -771,6 +833,22 @@ func runStatus() {
 		"projects": len(projects),
 		"issues":   counts,
 		"total":    len(issues),
+	}
+
+	if dashboard {
+		snapshot := observability.Snapshot{
+			GeneratedAt: time.Now().UTC(),
+			CodexTotals: observability.TokenTotals{},
+		}
+		if jsonOnly {
+			_ = json.NewEncoder(os.Stdout).Encode(snapshot)
+			return
+		}
+		fmt.Println(observability.FormatDashboard(snapshot, observability.DashboardOptions{
+			Now:          time.Now().UTC(),
+			DashboardURL: dashboardURL,
+		}))
+		return
 	}
 
 	if jsonOnly {

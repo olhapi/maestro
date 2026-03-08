@@ -2,39 +2,23 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/olhapi/symphony-go/internal/extensions"
 	"github.com/olhapi/symphony-go/internal/kanban"
 )
 
 // Server implements the MCP server for the kanban board
-type ExtensionTool struct {
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	Command      string `json:"command"`
-	TimeoutSec   int    `json:"timeout_sec,omitempty"`
-	Allowed      *bool  `json:"allowed,omitempty"`
-	WorkingDir   string `json:"working_dir,omitempty"`
-	RequireArgs  bool   `json:"require_args,omitempty"`
-	DenyEnvPassthrough bool `json:"deny_env_passthrough,omitempty"`
-}
-
-// Server implements the MCP server for the kanban board
 // and optional extension tools.
 type Server struct {
-	store          *kanban.Store
-	server         server.MCPServer
-	tools          []mcp.Tool
-	extensionTools map[string]ExtensionTool
+	store      *kanban.Store
+	server     server.MCPServer
+	tools      []mcp.Tool
+	extensions *extensions.Registry
 }
 
 // NewServer creates a new MCP server.
@@ -44,16 +28,21 @@ func NewServer(store *kanban.Store) *Server {
 
 // NewServerWithExtensions creates a new MCP server and optionally loads extension tools from JSON file.
 func NewServerWithExtensions(store *kanban.Store, extensionsFile string) *Server {
+	registry, _ := extensions.LoadFile(extensionsFile)
+	return NewServerWithRegistry(store, registry)
+}
+
+func NewServerWithRegistry(store *kanban.Store, registry *extensions.Registry) *Server {
+	if registry == nil {
+		registry = extensions.EmptyRegistry()
+	}
 	s := &Server{
-		store:          store,
-		server:         server.NewDefaultServer("symphony", "1.0.0"),
-		extensionTools: map[string]ExtensionTool{},
+		store:      store,
+		server:     server.NewDefaultServer("symphony", "1.0.0"),
+		extensions: registry,
 	}
 
 	s.registerTools()
-	if extensionsFile != "" {
-		_ = s.loadExtensions(extensionsFile)
-	}
 	return s
 }
 
@@ -216,6 +205,21 @@ func (s *Server) registerTools() {
 		},
 	}
 
+	for _, spec := range s.extensions.Specs() {
+		name, _ := spec["name"].(string)
+		description, _ := spec["description"].(string)
+		inputSchema, _ := spec["inputSchema"].(map[string]interface{})
+		properties, _ := inputSchema["properties"].(map[string]interface{})
+		s.tools = append(s.tools, mcp.Tool{
+			Name:        name,
+			Description: description,
+			InputSchema: mcp.ToolInputSchema{
+				Type:       "object",
+				Properties: properties,
+			},
+		})
+	}
+
 	// Register tool list handler
 	s.server.HandleListTools(func(ctx context.Context, cursor *string) (*mcp.ListToolsResult, error) {
 		return &mcp.ListToolsResult{Tools: s.tools}, nil
@@ -223,46 +227,6 @@ func (s *Server) registerTools() {
 
 	// Register tool call handler
 	s.server.HandleCallTool(s.handleCallTool)
-}
-
-func extensionToolSchema() mcp.ToolInputSchema {
-	return mcp.ToolInputSchema{
-		Type: "object",
-		Properties: map[string]interface{}{
-			"args": map[string]interface{}{
-				"type":        "object",
-				"description": "Extension arguments object; passed as JSON to command via SYMPHONY_ARGS_JSON",
-			},
-		},
-	}
-}
-
-func (s *Server) loadExtensions(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var defs []ExtensionTool
-	if err := json.Unmarshal(data, &defs); err != nil {
-		return err
-	}
-	for _, d := range defs {
-		name := strings.TrimSpace(d.Name)
-		if name == "" || strings.TrimSpace(d.Command) == "" {
-			continue
-		}
-		if d.TimeoutSec <= 0 {
-			d.TimeoutSec = 15
-		}
-		d.Name = name
-		s.extensionTools[name] = d
-		s.tools = append(s.tools, mcp.Tool{
-			Name:        name,
-			Description: d.Description,
-			InputSchema: extensionToolSchema(),
-		})
-	}
-	return nil
 }
 
 // handleCallTool routes tool calls to appropriate handlers
@@ -297,8 +261,10 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 	case "set_blockers":
 		return s.handleSetBlockers(ctx, args)
 	default:
-		if _, ok := s.extensionTools[name]; ok {
-			return s.handleExtensionTool(ctx, name, args)
+		for _, toolName := range s.extensions.Names() {
+			if toolName == name {
+				return s.handleExtensionTool(ctx, name, args)
+			}
 		}
 		return toolError(fmt.Sprintf("Unknown tool: %s", name)), nil
 	}
@@ -326,43 +292,14 @@ func toolError(text string) *mcp.CallToolResult {
 }
 
 func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	ext, ok := s.extensionTools[name]
-	if !ok {
+	if s.extensions == nil {
 		return toolError(fmt.Sprintf("Unknown extension tool: %s", name)), nil
 	}
-	if ext.Allowed != nil && !*ext.Allowed {
-		return toolError(fmt.Sprintf("extension tool %s is disabled by policy", name)), nil
-	}
-	if ext.RequireArgs {
-		if _, ok := args["args"]; !ok {
-			return toolError(fmt.Sprintf("extension tool %s requires args object", name)), nil
-		}
-	}
-
-	argsJSON, _ := json.Marshal(args)
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(ext.TimeoutSec)*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(runCtx, "sh", "-c", ext.Command)
-	if ext.WorkingDir != "" {
-		if wd, err := filepath.Abs(ext.WorkingDir); err == nil {
-			cmd.Dir = wd
-		}
-	}
-	if ext.DenyEnvPassthrough {
-		cmd.Env = []string{"SYMPHONY_ARGS_JSON=" + string(argsJSON), "SYMPHONY_TOOL_NAME=" + name}
-	} else {
-		cmd.Env = append(os.Environ(), "SYMPHONY_ARGS_JSON="+string(argsJSON), "SYMPHONY_TOOL_NAME="+name)
-	}
-
-	out, err := cmd.CombinedOutput()
-	if runCtx.Err() == context.DeadlineExceeded {
-		return toolError(fmt.Sprintf("extension tool %s timed out after %ds", name, ext.TimeoutSec)), nil
-	}
+	out, err := s.extensions.Execute(ctx, name, args)
 	if err != nil {
-		return toolError(fmt.Sprintf("extension tool %s failed: %v\n%s", name, err, string(out))), nil
+		return toolError(err.Error()), nil
 	}
-	return toolResult(strings.TrimSpace(string(out))), nil
+	return toolResult(out), nil
 }
 
 // ServeStdio runs the MCP server over stdin/stdout

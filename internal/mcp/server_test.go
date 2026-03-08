@@ -31,7 +31,7 @@ func TestLoadExtensionsAndExecute(t *testing.T) {
 	}
 
 	s := NewServerWithExtensions(store, extPath)
-	if _, ok := s.extensionTools["ext_echo"]; !ok {
+	if s.extensions == nil || !s.extensions.HasTools() {
 		t.Fatalf("extension not loaded")
 	}
 

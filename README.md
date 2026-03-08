@@ -80,6 +80,7 @@ This will:
 The MCP server exposes these tools:
 
 You can also load external extension tools via `--extensions ext.json`.
+The same extension file can be used by both `symphony mcp` and `symphony run`, so app-server dynamic tools and MCP tools share one runtime definition.
 Each entry defines `name`, `description`, `command`, and optional controls:
 - `timeout_sec` (default 15)
 - `allowed` (set false to disable)
@@ -188,7 +189,7 @@ The prompt template uses strict Liquid-style variables. Supported values include
 - `{{ issue.state }}` - Current issue state
 - `{{ attempt }}` - Retry attempt number on continuation/retry runs
 
-Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`. `spec-check` stays non-mutating and reports missing or invalid workflow files as failures.
+Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`. `run` also accepts `--workflow <path>` for non-default locations. The loader accepts the current nested schema plus compatible prompt-only/config-only variants and selected legacy flat keys for Kanban mode. `spec-check` stays non-mutating and reports missing or invalid workflow files as failures.
 
 ## CLI Reference
 
@@ -211,10 +212,12 @@ Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`
 ./symphony board [--project <id>]
 
 # Orchestrator
-./symphony run [repo_path] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
+./symphony run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>] [--i-understand-that-this-will-be-running-without-the-usual-guardrails]
 # Observability API (if --port set)
 # GET /health
-# GET /api/v1/state                  (global status)
+# GET /api/v1/state                  (snapshot/presenter payload)
+# GET /api/v1/<issue_identifier>     (single running/retrying issue snapshot)
+# POST /api/v1/refresh               (request an observability refresh)
 # GET /api/v1/sessions               (all live app_server sessions + event history)
 # GET /api/v1/sessions?issue=ISS-1   (single issue session)
 # GET /api/v1/events?since=0&limit=100   (in-memory event feed with cursor)
@@ -225,6 +228,7 @@ Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`
 
 # Status
 ./symphony status [--json]
+./symphony status --dashboard [--dashboard-url <url>]
 
 # Verification
 ./symphony verify [--repo <path>] [--db <path>] [--json]

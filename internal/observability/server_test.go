@@ -22,6 +22,39 @@ func (testProvider) Events(since int64, limit int) map[string]interface{} {
 	return map[string]interface{}{"since": since, "last_seq": 2, "events": []map[string]interface{}{{"seq": int64(1), "kind": "tick"}, {"seq": int64(2), "kind": "run_started"}}}
 }
 
+func (testProvider) Snapshot() Snapshot {
+	now := time.Now().UTC()
+	dueAt := now.Add(5 * time.Second)
+	return Snapshot{
+		GeneratedAt:   now,
+		WorkspaceRoot: "/tmp/workspaces",
+		Running: []RunningEntry{{
+			IssueID:     "issue-1",
+			Identifier:  "iss-1",
+			State:       "running",
+			SessionID:   "th-tu",
+			TurnCount:   2,
+			LastEvent:   "turn.completed",
+			LastMessage: "done",
+			StartedAt:   now.Add(-10 * time.Second),
+			Tokens:      TokenTotals{InputTokens: 3, OutputTokens: 4, TotalTokens: 7, SecondsRunning: 10},
+		}},
+		Retrying: []RetryEntry{{
+			IssueID:    "issue-2",
+			Identifier: "iss-2",
+			Attempt:    3,
+			DueAt:      dueAt,
+			DueInMs:    5000,
+			Error:      "retry later",
+		}},
+		CodexTotals: TokenTotals{InputTokens: 3, OutputTokens: 4, TotalTokens: 7, SecondsRunning: 10},
+	}
+}
+
+func (testProvider) RequestRefresh() map[string]interface{} {
+	return map[string]interface{}{"requested_at": time.Now().UTC().Format(time.RFC3339), "status": "accepted"}
+}
+
 func TestServerStartsAndServesState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -39,8 +72,9 @@ func TestServerStartsAndServesState(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if payload["active_runs"].(float64) != 1 {
-		t.Fatalf("unexpected payload: %#v", payload)
+	counts, ok := payload["counts"].(map[string]interface{})
+	if !ok || counts["running"].(float64) != 1 {
+		t.Fatalf("unexpected state payload: %#v", payload)
 	}
 
 	resp2, err := http.Get("http://127.0.0.1:18987/api/v1/sessions")
@@ -101,5 +135,27 @@ func TestServerStartsAndServesState(t *testing.T) {
 	}
 	if _, ok := payload6["events"]; !ok {
 		t.Fatalf("dashboard missing events: %#v", payload6)
+	}
+
+	resp7, err := http.Get("http://127.0.0.1:18987/api/v1/iss-1")
+	if err != nil {
+		t.Fatalf("failed GET issue payload: %v", err)
+	}
+	defer resp7.Body.Close()
+	if resp7.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for issue payload, got %d", resp7.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:18987/api/v1/refresh", nil)
+	if err != nil {
+		t.Fatalf("request refresh: %v", err)
+	}
+	resp8, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("failed POST refresh: %v", err)
+	}
+	defer resp8.Body.Close()
+	if resp8.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp8.StatusCode)
 	}
 }

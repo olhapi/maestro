@@ -10,7 +10,9 @@ import (
 
 	"github.com/olhapi/symphony-go/internal/agent"
 	"github.com/olhapi/symphony-go/internal/appserver"
+	"github.com/olhapi/symphony-go/internal/extensions"
 	"github.com/olhapi/symphony-go/internal/kanban"
+	"github.com/olhapi/symphony-go/internal/observability"
 	"github.com/olhapi/symphony-go/pkg/config"
 )
 
@@ -51,10 +53,14 @@ type Orchestrator struct {
 }
 
 func New(store *kanban.Store, workflows *config.Manager) *Orchestrator {
+	return NewWithExtensions(store, workflows, nil)
+}
+
+func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry *extensions.Registry) *Orchestrator {
 	return &Orchestrator{
 		store:        store,
 		workflows:    workflows,
-		runner:       agent.NewRunner(workflows, store),
+		runner:       agent.NewRunnerWithExtensions(workflows, store, registry),
 		running:      make(map[string]runningEntry),
 		claimed:      make(map[string]struct{}),
 		retries:      make(map[string]retryEntry),
@@ -473,6 +479,7 @@ func (o *Orchestrator) appendEventLocked(kind string, fields map[string]interfac
 	if len(o.events) > o.maxEvents {
 		o.events = o.events[len(o.events)-o.maxEvents:]
 	}
+	observability.BroadcastUpdate()
 }
 
 func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
@@ -579,4 +586,91 @@ func (o *Orchestrator) LiveSessions() map[string]interface{} {
 		out[issueID] = cp
 	}
 	return map[string]interface{}{"sessions": out}
+}
+
+func (o *Orchestrator) Snapshot() observability.Snapshot {
+	workflow, _ := o.workflows.Current()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	snapshot := observability.Snapshot{
+		GeneratedAt: time.Now().UTC(),
+		Running:     make([]observability.RunningEntry, 0, len(o.running)),
+		Retrying:    make([]observability.RetryEntry, 0, len(o.retries)),
+		RateLimits:  nil,
+	}
+	if workflow != nil {
+		snapshot.WorkspaceRoot = workflow.Config.Workspace.Root
+	}
+
+	for issueID, entry := range o.running {
+		session := o.liveSessions[issueID]
+		running := observability.RunningEntry{
+			IssueID:    issueID,
+			Identifier: entry.issue.Identifier,
+			State:      string(entry.issue.State),
+			StartedAt:  entry.startedAt,
+		}
+		if session != nil {
+			running.SessionID = session.SessionID
+			running.CodexAppServerPID = session.AppServerPID
+			running.TurnCount = session.TurnsStarted
+			running.LastEvent = session.LastEvent
+			running.LastMessage = session.LastMessage
+			if !session.LastTimestamp.IsZero() {
+				ts := session.LastTimestamp
+				running.LastEventAt = &ts
+			}
+			running.Tokens = observability.TokenTotals{
+				InputTokens:    session.InputTokens,
+				OutputTokens:   session.OutputTokens,
+				TotalTokens:    session.TotalTokens,
+				SecondsRunning: int(time.Since(entry.startedAt).Seconds()),
+			}
+		} else {
+			running.Tokens.SecondsRunning = int(time.Since(entry.startedAt).Seconds())
+		}
+		snapshot.CodexTotals.InputTokens += running.Tokens.InputTokens
+		snapshot.CodexTotals.OutputTokens += running.Tokens.OutputTokens
+		snapshot.CodexTotals.TotalTokens += running.Tokens.TotalTokens
+		snapshot.CodexTotals.SecondsRunning += running.Tokens.SecondsRunning
+		snapshot.Running = append(snapshot.Running, running)
+	}
+
+	for issueID, entry := range o.retries {
+		identifier := issueID
+		if running, ok := o.running[issueID]; ok {
+			identifier = running.issue.Identifier
+		} else if issue, err := o.store.GetIssue(issueID); err == nil && issue != nil {
+			identifier = issue.Identifier
+		}
+		retry := observability.RetryEntry{
+			IssueID:    issueID,
+			Identifier: identifier,
+			Attempt:    entry.Attempt,
+			DueAt:      entry.DueAt,
+			DueInMs:    time.Until(entry.DueAt).Milliseconds(),
+			Error:      entry.Error,
+			DelayType:  entry.DelayType,
+		}
+		snapshot.Retrying = append(snapshot.Retrying, retry)
+	}
+
+	sort.Slice(snapshot.Running, func(i, j int) bool {
+		return snapshot.Running[i].Identifier < snapshot.Running[j].Identifier
+	})
+	sort.Slice(snapshot.Retrying, func(i, j int) bool {
+		return snapshot.Retrying[i].Identifier < snapshot.Retrying[j].Identifier
+	})
+	return snapshot
+}
+
+func (o *Orchestrator) RequestRefresh() map[string]interface{} {
+	o.mu.Lock()
+	o.appendEventLocked("refresh_requested", map[string]interface{}{})
+	o.mu.Unlock()
+	return map[string]interface{}{
+		"requested_at": time.Now().UTC().Format(time.RFC3339),
+		"status":       "accepted",
+	}
 }

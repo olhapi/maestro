@@ -20,22 +20,34 @@ type InitOptions struct {
 
 func EnsureWorkflow(repoPath string, opts InitOptions) (string, bool, error) {
 	path := WorkflowPath(repoPath)
+	return EnsureWorkflowAtPath(path, opts)
+}
+
+func EnsureWorkflowAtPath(path string, opts InitOptions) (string, bool, error) {
 	if _, err := os.Stat(path); err == nil {
 		return path, false, nil
 	} else if !os.IsNotExist(err) {
 		return path, false, err
 	}
-	if err := InitWorkflow(repoPath, opts); err != nil {
+	if err := InitWorkflowAtPath(path, opts); err != nil {
 		return path, false, err
 	}
 	return path, true, nil
 }
 
 func InitWorkflow(repoPath string, opts InitOptions) error {
-	if strings.TrimSpace(repoPath) == "" {
-		repoPath, _ = os.Getwd()
+	return InitWorkflowAtPath(WorkflowPath(repoPath), opts)
+}
+
+func InitWorkflowAtPath(path string, opts InitOptions) error {
+	if strings.TrimSpace(path) == "" {
+		path = WorkflowPath("")
 	}
-	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+	if !filepath.IsAbs(path) {
+		cwd, _ := os.Getwd()
+		path = filepath.Join(cwd, path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 
@@ -54,7 +66,7 @@ func InitWorkflow(repoPath string, opts InitOptions) error {
 	}
 
 	content := buildWorkflowFile(answers)
-	return os.WriteFile(filepath.Join(repoPath, "WORKFLOW.md"), []byte(content), 0o644)
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func defaultInitOptions() InitOptions {

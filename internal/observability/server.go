@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,12 +15,12 @@ type StatusProvider interface {
 	Status() map[string]interface{}
 }
 
-type SessionProvider interface {
-	LiveSessions() map[string]interface{}
-}
-
 type EventProvider interface {
 	Events(since int64, limit int) map[string]interface{}
+}
+
+type SessionProvider interface {
+	LiveSessions() map[string]interface{}
 }
 
 // Server is a lightweight observability HTTP API.
@@ -38,6 +39,10 @@ func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
 
 	mux.HandleFunc("/api/v1/state", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if sp, ok := provider.(SnapshotProvider); ok {
+			_ = json.NewEncoder(w).Encode(StatePayload(sp))
+			return
+		}
 		_ = json.NewEncoder(w).Encode(provider.Status())
 	})
 
@@ -85,6 +90,21 @@ func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
 		_ = json.NewEncoder(w).Encode(ep.Events(since, limit))
 	})
 
+	mux.HandleFunc("/api/v1/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "method_not_allowed"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		if rp, ok := provider.(RefreshProvider); ok {
+			_ = json.NewEncoder(w).Encode(RefreshPayload(rp))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"requested_at": time.Now().UTC().Format(time.RFC3339)})
+	})
+
 	mux.HandleFunc("/api/v1/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		out := map[string]interface{}{
@@ -97,6 +117,32 @@ func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
 			out["events"] = ep.Events(0, 25)
 		}
 		_ = json.NewEncoder(w).Encode(out)
+	})
+
+	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "method_not_allowed"})
+			return
+		}
+		identifier := strings.TrimPrefix(r.URL.Path, "/api/v1/")
+		if identifier == "" || strings.Contains(identifier, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if sp, ok := provider.(SnapshotProvider); ok {
+			payload, found := IssuePayload(sp, identifier)
+			if !found {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "issue_not_found"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(payload)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "issue_not_found"})
 	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}
