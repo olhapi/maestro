@@ -13,6 +13,8 @@ This report tracks parity against `openai/symphony` Elixir implementation, exclu
 - Observability/status: **implemented (state + sessions APIs)**
 - Extensions runtime: **implemented with safety controls**
 
+See also detailed mapping: `docs/UPSTREAM_CROSSWALK.md`.
+
 ## Matrix
 
 | Upstream area | Status | Notes |
