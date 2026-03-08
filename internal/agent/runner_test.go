@@ -229,6 +229,7 @@ func TestRunAgentAppServerModeTracksSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	traceFile := filepath.Join(tmpDir, "trace.log")
 	store, err := kanban.NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -239,20 +240,39 @@ func TestRunAgentAppServerModeTracksSession(t *testing.T) {
 	workflowContent := `---
 workspace_root: ` + workspaceRoot + `
 agent:
-  executable: sh
-  args:
-    - -c
-    - |
-      echo '{"type":"turn.started","thread_id":"th1","turn_id":"tu1","input_tokens":5}'
-      echo '{"type":"turn.completed","thread_id":"th1","turn_id":"tu1","total_tokens":7}'
+  executable: ` + filepath.Join(tmpDir, "fake-codex.sh") + `
+  args: []
   mode: app_server
   timeout: 10
 ---
 Prompt {{.Identifier}}
 `
+	script := `#!/bin/sh
+trace_file="${TRACE_FILE}"
+count=0
+while IFS= read -r line; do
+  count=$((count + 1))
+  printf 'JSON:%s\n' "$line" >> "$trace_file"
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"th1"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"tu1"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"th1","turnId":"tu1","usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}}'
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "fake-codex.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("TRACE_FILE", traceFile)
 	wf, err := config.LoadWorkflow(workflowPath)
 	if err != nil {
 		t.Fatal(err)

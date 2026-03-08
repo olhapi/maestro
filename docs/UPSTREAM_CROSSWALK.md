@@ -6,7 +6,7 @@ Checked against upstream test modules in `elixir/test/symphony_elixir`.
 
 1. `app_server_test.exs`
    - Status: **Partial+**
-   - Implemented: app_server mode, JSON event parsing, session lifecycle metadata, history ring buffer, `/api/v1/sessions`.
+   - Implemented: real app-server JSON-RPC runner (`initialize`, `thread/start`, `turn/start`), workspace cwd guard, approval auto-reply support, generic tool-input answers, dynamic tool reply path, buffered large-line parsing, session lifecycle metadata, history ring buffer, `/api/v1/sessions`.
    - Evidence: `internal/appserver/*`, `internal/agent/runner.go`, `internal/observability/server.go`.
 
 2. `cli_test.exs`
@@ -62,4 +62,4 @@ Checked against upstream test modules in `elixir/test/symphony_elixir`.
 
 For the requested scope (**excluding Linear integration**), symphony-go is functionally complete and verified with passing tests and working APIs.
 
-Remaining differences are mostly architectural/UI parity differences with Elixir/Phoenix (dashboard snapshots, pubsub implementation, exact protocol-fidelity edge cases).
+Remaining differences are mostly architectural/UI parity differences with Elixir/Phoenix plus a smaller set of protocol-fidelity edges (full dynamic-tool catalog parity, richer event/logging semantics, and exact fixture-level behavior).

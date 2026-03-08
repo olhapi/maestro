@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -10,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"text/template"
 	"time"
 
@@ -58,7 +56,7 @@ func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, erro
 		_ = r.store.UpdateIssueState(issue.ID, kanban.StateInProgress)
 	}
 
-	result := r.executeAgent(ctx, workspace.Path, prompt)
+	result := r.executeAgent(ctx, workspace.Path, prompt, issue)
 
 	_ = r.runHooks(ctx, workspace.Path, r.config.Config.Hooks.AfterRun, "after_run")
 	_ = r.store.UpdateWorkspaceRun(issue.ID)
@@ -180,7 +178,7 @@ func (r *Runner) runHooks(parentCtx context.Context, workspacePath string, hooks
 	return nil
 }
 
-func (r *Runner) executeAgent(ctx context.Context, workspacePath, prompt string) *RunResult {
+func (r *Runner) executeAgent(ctx context.Context, workspacePath, prompt string, issue *kanban.Issue) *RunResult {
 	executable := r.config.Config.Agent.Executable
 	args := r.config.Config.Agent.Args
 
@@ -192,7 +190,7 @@ func (r *Runner) executeAgent(ctx context.Context, workspacePath, prompt string)
 
 	mode := strings.ToLower(strings.TrimSpace(r.config.Config.Agent.Mode))
 	if mode == "app_server" {
-		return r.executeAgentAppServer(ctx, workspacePath, executable, args, prompt)
+		return r.executeAgentAppServer(ctx, workspacePath, executable, args, prompt, issue)
 	}
 	return r.executeAgentStdio(ctx, workspacePath, executable, args, prompt)
 }
@@ -218,55 +216,34 @@ func (r *Runner) executeAgentStdio(ctx context.Context, workspacePath, executabl
 	return &RunResult{Success: err == nil, Output: output, Error: err}
 }
 
-func (r *Runner) executeAgentAppServer(ctx context.Context, workspacePath, executable string, args []string, prompt string) *RunResult {
-	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.Dir = workspacePath
-	cmd.Env = append(r.config.Config.GetEnv(),
+func (r *Runner) executeAgentAppServer(ctx context.Context, workspacePath, executable string, args []string, prompt string, issue *kanban.Issue) *RunResult {
+	env := append(r.config.Config.GetEnv(),
 		"SYMPHONY_AGENT_MODE=app_server",
 		"SYMPHONY_PROMPT_LEN="+fmt.Sprintf("%d", len(prompt)),
 	)
-	cmd.Stdin = strings.NewReader(prompt)
-
-	stdoutPipe, err := cmd.StdoutPipe()
+	title := "Symphony turn"
+	if issue != nil {
+		title = strings.TrimSpace(fmt.Sprintf("%s: %s", issue.Identifier, issue.Title))
+	}
+	res, err := appserver.Run(ctx, appserver.ClientConfig{
+		Executable:        executable,
+		Args:              args,
+		Env:               env,
+		Workspace:         workspacePath,
+		WorkspaceRoot:     r.config.Config.WorkspaceRoot,
+		Prompt:            prompt,
+		Title:             title,
+		ApprovalPolicy:    r.config.Config.Agent.ApprovalPolicy,
+		ThreadSandbox:     r.config.Config.Agent.ThreadSandbox,
+		TurnSandboxPolicy: r.config.Config.Agent.TurnSandboxPolicy,
+		ReadTimeout:       time.Duration(r.config.Config.Agent.ReadTimeoutMs) * time.Millisecond,
+		TurnTimeout:       time.Duration(r.config.Config.Agent.Timeout) * time.Second,
+	})
 	if err != nil {
-		return &RunResult{Success: false, Error: err}
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return &RunResult{Success: false, Error: err}
-	}
-
-	if err := cmd.Start(); err != nil {
-		return &RunResult{Success: false, Error: err}
-	}
-
-	session := &appserver.Session{}
-	var outMu sync.Mutex
-	var out bytes.Buffer
-
-	consume := func(scanner *bufio.Scanner, fromErr bool) {
-		for scanner.Scan() {
-			line := scanner.Text()
-			if evt, ok := appserver.ParseEventLine(line); ok {
-				session.ApplyEvent(evt)
-			}
-			outMu.Lock()
-			if fromErr {
-				out.WriteString("[stderr] ")
-			}
-			out.WriteString(line)
-			out.WriteByte('\n')
-			outMu.Unlock()
+		if res == nil {
+			return &RunResult{Success: false, Error: err}
 		}
+		return &RunResult{Success: false, Output: res.Output, Error: err, AppSession: res.Session}
 	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); consume(bufio.NewScanner(stdoutPipe), false) }()
-	go func() { defer wg.Done(); consume(bufio.NewScanner(stderrPipe), true) }()
-
-	err = cmd.Wait()
-	wg.Wait()
-
-	return &RunResult{Success: err == nil, Output: strings.TrimSpace(out.String()), Error: err, AppSession: session}
+	return &RunResult{Success: true, Output: res.Output, AppSession: res.Session}
 }

@@ -20,22 +20,23 @@ type Event struct {
 
 // Session tracks live app-server session metadata.
 type Session struct {
-	SessionID        string    `json:"session_id"`
-	ThreadID         string    `json:"thread_id"`
-	TurnID           string    `json:"turn_id"`
-	LastEvent        string    `json:"last_event"`
-	LastTimestamp    time.Time `json:"last_timestamp"`
-	LastMessage      string    `json:"last_message,omitempty"`
-	InputTokens      int       `json:"input_tokens"`
-	OutputTokens     int       `json:"output_tokens"`
-	TotalTokens      int       `json:"total_tokens"`
-	EventsProcessed  int       `json:"events_processed"`
-	TurnsStarted     int       `json:"turns_started"`
-	TurnsCompleted   int       `json:"turns_completed"`
-	Terminal         bool      `json:"terminal"`
-	TerminalReason   string    `json:"terminal_reason,omitempty"`
-	History          []Event   `json:"history,omitempty"`
-	MaxHistory       int       `json:"-"`
+	SessionID       string    `json:"session_id"`
+	ThreadID        string    `json:"thread_id"`
+	TurnID          string    `json:"turn_id"`
+	AppServerPID    int       `json:"codex_app_server_pid,omitempty"`
+	LastEvent       string    `json:"last_event"`
+	LastTimestamp   time.Time `json:"last_timestamp"`
+	LastMessage     string    `json:"last_message,omitempty"`
+	InputTokens     int       `json:"input_tokens"`
+	OutputTokens    int       `json:"output_tokens"`
+	TotalTokens     int       `json:"total_tokens"`
+	EventsProcessed int       `json:"events_processed"`
+	TurnsStarted    int       `json:"turns_started"`
+	TurnsCompleted  int       `json:"turns_completed"`
+	Terminal        bool      `json:"terminal"`
+	TerminalReason  string    `json:"terminal_reason,omitempty"`
+	History         []Event   `json:"history,omitempty"`
+	MaxHistory      int       `json:"-"`
 }
 
 func (s *Session) ApplyEvent(e Event) {
@@ -109,6 +110,15 @@ func ParseEventLine(line string) (Event, bool) {
 			}
 		}
 	}
+	if m, ok := asMap(root["params"]); ok {
+		candidates = append(candidates, m)
+		if inner, ok := asMap(m["event"]); ok {
+			candidates = append(candidates, inner)
+		}
+		if inner, ok := asMap(m["data"]); ok {
+			candidates = append(candidates, inner)
+		}
+	}
 
 	for _, c := range candidates {
 		e := eventFromMap(c, root)
@@ -126,11 +136,20 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 		e.Type = str(m, "event_type")
 	}
 	if e.Type == "" {
-		e.Type = str(root, "type")
+		e.Type = normalizeEventType(firstStr(m, "method"))
+	}
+	if e.Type == "" {
+		e.Type = normalizeEventType(firstStr(root, "type", "method"))
 	}
 	e.ThreadID = firstStr(m, "thread_id", "threadId")
 	e.TurnID = firstStr(m, "turn_id", "turnId")
-	e.Message = firstStr(m, "message", "content")
+	e.Message = firstStr(m, "message", "content", "reason", "command")
+	if e.ThreadID == "" {
+		e.ThreadID = firstStr(root, "thread_id", "threadId")
+	}
+	if e.TurnID == "" {
+		e.TurnID = firstStr(root, "turn_id", "turnId")
+	}
 
 	if usage, ok := asMap(m["usage"]); ok {
 		e.InputTokens = firstInt(usage, "input_tokens", "prompt_tokens")
@@ -146,7 +165,18 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 	if e.TotalTokens == 0 {
 		e.TotalTokens = firstInt(m, "total_tokens")
 	}
+	if e.TotalTokens == 0 && e.InputTokens > 0 && e.OutputTokens > 0 {
+		e.TotalTokens = e.InputTokens + e.OutputTokens
+	}
 	return e
+}
+
+func normalizeEventType(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return strings.ReplaceAll(s, "/", ".")
 }
 
 func asMap(v interface{}) (map[string]interface{}, bool) {

@@ -4,7 +4,7 @@ Scope: match upstream behavior except Linear integration (replaced by local Kanb
 
 ## Upstream test modules mapped
 
-- [ ] `app_server_test.exs` → Go: codex app-server protocol compatibility tests
+- [~] `app_server_test.exs` → Go: codex app-server JSON-RPC protocol compatibility tests (handshake + approvals/tool replies implemented, full fixture parity pending)
 - [x] `cli_test.exs` → Go: CLI smoke + arg parsing tests (basic)
 - [~] `core_test.exs` → Go: config/workflow defaults + validation (partial)
 - [~] `dynamic_tool_test.exs` → Go: MCP dynamic tool behavior (partial)
@@ -19,6 +19,11 @@ Scope: match upstream behavior except Linear integration (replaced by local Kanb
 ## Phase 1 — hard gaps to close first
 
 1. Codex app-server protocol runner
+   - [x] JSON-RPC handshake (`initialize`, `thread/start`, `turn/start`)
+   - [x] workspace cwd guard
+   - [x] approval and tool-input reply handling
+   - [x] dynamic tool call reply path
+   - [~] full upstream fixture parity + event/log fidelity
 2. Workspace hardening parity
    - symlink escape checks
    - stale path replacement semantics

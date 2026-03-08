@@ -33,11 +33,15 @@ type Config struct {
 
 // AgentConfig configures the coding agent
 type AgentConfig struct {
-	Executable string            `yaml:"executable"`
-	Args       []string          `yaml:"args"`
-	Env        map[string]string `yaml:"env"`
-	Timeout    int               `yaml:"timeout"` // seconds, 0 = no timeout
-	Mode       string            `yaml:"mode"`    // stdio (default) | app_server (compat)
+	Executable        string                 `yaml:"executable"`
+	Args              []string               `yaml:"args"`
+	Env               map[string]string      `yaml:"env"`
+	Timeout           int                    `yaml:"timeout"` // seconds, 0 = no timeout
+	Mode              string                 `yaml:"mode"`    // stdio (default) | app_server
+	ApprovalPolicy    interface{}            `yaml:"approval_policy"`
+	ThreadSandbox     string                 `yaml:"thread_sandbox"`
+	TurnSandboxPolicy map[string]interface{} `yaml:"turn_sandbox_policy"`
+	ReadTimeoutMs     int                    `yaml:"read_timeout_ms"`
 }
 
 // HooksConfig configures workspace lifecycle hooks
@@ -57,10 +61,10 @@ type Workflow struct {
 // DefaultConfig returns the default configuration
 func DefaultConfig() Config {
 	return Config{
-		PollInterval:  30,
-		MaxConcurrent: 3,
-		WorkspaceRoot: "./workspaces",
-		ActiveStates:  []string{"ready", "in_progress", "in_review"},
+		PollInterval:   30,
+		MaxConcurrent:  3,
+		WorkspaceRoot:  "./workspaces",
+		ActiveStates:   []string{"ready", "in_progress", "in_review"},
 		TerminalStates: []string{"done", "cancelled"},
 		Agent: AgentConfig{
 			Executable: "codex",
@@ -68,6 +72,15 @@ func DefaultConfig() Config {
 			Env:        map[string]string{},
 			Timeout:    0,
 			Mode:       "stdio",
+			ApprovalPolicy: map[string]interface{}{
+				"reject": map[string]interface{}{
+					"sandbox_approval": true,
+					"rules":            true,
+					"mcp_elicitations": true,
+				},
+			},
+			ThreadSandbox: "workspace-write",
+			ReadTimeoutMs: 5000,
 		},
 		Hooks: HooksConfig{TimeoutSec: 60},
 	}
@@ -132,8 +145,23 @@ func applyDefaults(c *Config) {
 	if c.Agent.Executable == "" {
 		c.Agent.Executable = defaults.Agent.Executable
 	}
+	if c.Agent.Args == nil {
+		c.Agent.Args = defaults.Agent.Args
+	}
+	if c.Agent.Env == nil {
+		c.Agent.Env = defaults.Agent.Env
+	}
 	if c.Agent.Mode == "" {
 		c.Agent.Mode = defaults.Agent.Mode
+	}
+	if c.Agent.ApprovalPolicy == nil {
+		c.Agent.ApprovalPolicy = defaults.Agent.ApprovalPolicy
+	}
+	if c.Agent.ThreadSandbox == "" {
+		c.Agent.ThreadSandbox = defaults.Agent.ThreadSandbox
+	}
+	if c.Agent.ReadTimeoutMs <= 0 {
+		c.Agent.ReadTimeoutMs = defaults.Agent.ReadTimeoutMs
 	}
 	if c.Hooks.TimeoutSec <= 0 {
 		c.Hooks.TimeoutSec = defaults.Hooks.TimeoutSec

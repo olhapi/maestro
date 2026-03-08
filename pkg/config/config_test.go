@@ -45,6 +45,9 @@ agent:
   executable: /usr/local/bin/codex
   timeout: 3600
   mode: app_server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  read_timeout_ms: 9000
 ---
 
 # Custom Workflow
@@ -79,6 +82,15 @@ You are working on issue {{.Identifier}}.
 	}
 	if workflow.Config.Agent.Mode != "app_server" {
 		t.Errorf("Expected Agent.Mode app_server, got %s", workflow.Config.Agent.Mode)
+	}
+	if workflow.Config.Agent.ApprovalPolicy != "never" {
+		t.Errorf("Expected approval policy never, got %#v", workflow.Config.Agent.ApprovalPolicy)
+	}
+	if workflow.Config.Agent.ThreadSandbox != "workspace-write" {
+		t.Errorf("Expected thread sandbox workspace-write, got %s", workflow.Config.Agent.ThreadSandbox)
+	}
+	if workflow.Config.Agent.ReadTimeoutMs != 9000 {
+		t.Errorf("Expected read timeout 9000, got %d", workflow.Config.Agent.ReadTimeoutMs)
 	}
 	if workflow.PromptTemplate == "" {
 		t.Error("Expected non-empty prompt template")
