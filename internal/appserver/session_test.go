@@ -16,8 +16,15 @@ func TestParseEventLine(t *testing.T) {
 func TestSessionApplyEvent(t *testing.T) {
 	s := &Session{}
 	s.ApplyEvent(Event{Type: "turn.started", ThreadID: "th", TurnID: "tu", InputTokens: 1})
+	s.ApplyEvent(Event{Type: "turn.completed", ThreadID: "th", TurnID: "tu", TotalTokens: 5})
 	if s.SessionID != "th-tu" {
 		t.Fatalf("unexpected session id: %s", s.SessionID)
+	}
+	if s.TurnsStarted != 1 || s.TurnsCompleted != 1 {
+		t.Fatalf("unexpected turn counters: %+v", s)
+	}
+	if !s.Terminal || s.TerminalReason != "turn.completed" {
+		t.Fatalf("expected terminal turn.completed, got %+v", s)
 	}
 }
 

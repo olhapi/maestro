@@ -39,7 +39,20 @@ func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
 	mux.HandleFunc("/api/v1/sessions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if sp, ok := provider.(SessionProvider); ok {
-			_ = json.NewEncoder(w).Encode(sp.LiveSessions())
+			all := sp.LiveSessions()
+			issue := r.URL.Query().Get("issue")
+			if issue == "" {
+				_ = json.NewEncoder(w).Encode(all)
+				return
+			}
+			if sessions, ok := all["sessions"].(map[string]interface{}); ok {
+				if one, ok := sessions[issue]; ok {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"issue": issue, "session": one})
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "session_not_found", "issue": issue})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": map[string]interface{}{}})

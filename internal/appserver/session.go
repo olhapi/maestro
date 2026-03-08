@@ -19,18 +19,22 @@ type Event struct {
 
 // Session tracks live app-server session metadata.
 type Session struct {
-	SessionID       string    `json:"session_id"`
-	ThreadID        string    `json:"thread_id"`
-	TurnID          string    `json:"turn_id"`
-	LastEvent       string    `json:"last_event"`
-	LastTimestamp   time.Time `json:"last_timestamp"`
-	LastMessage     string    `json:"last_message,omitempty"`
-	InputTokens     int       `json:"input_tokens"`
-	OutputTokens    int       `json:"output_tokens"`
-	TotalTokens     int       `json:"total_tokens"`
-	EventsProcessed int       `json:"events_processed"`
-	History         []Event   `json:"history,omitempty"`
-	MaxHistory      int       `json:"-"`
+	SessionID        string    `json:"session_id"`
+	ThreadID         string    `json:"thread_id"`
+	TurnID           string    `json:"turn_id"`
+	LastEvent        string    `json:"last_event"`
+	LastTimestamp    time.Time `json:"last_timestamp"`
+	LastMessage      string    `json:"last_message,omitempty"`
+	InputTokens      int       `json:"input_tokens"`
+	OutputTokens     int       `json:"output_tokens"`
+	TotalTokens      int       `json:"total_tokens"`
+	EventsProcessed  int       `json:"events_processed"`
+	TurnsStarted     int       `json:"turns_started"`
+	TurnsCompleted   int       `json:"turns_completed"`
+	Terminal         bool      `json:"terminal"`
+	TerminalReason   string    `json:"terminal_reason,omitempty"`
+	History          []Event   `json:"history,omitempty"`
+	MaxHistory       int       `json:"-"`
 }
 
 func (s *Session) ApplyEvent(e Event) {
@@ -61,6 +65,19 @@ func (s *Session) ApplyEvent(e Event) {
 		s.TotalTokens = e.TotalTokens
 	}
 	s.EventsProcessed++
+
+	switch e.Type {
+	case "turn.started":
+		s.TurnsStarted++
+	case "turn.completed":
+		s.TurnsCompleted++
+		s.Terminal = true
+		s.TerminalReason = e.Type
+	case "session.completed", "run.completed", "run.failed", "error":
+		s.Terminal = true
+		s.TerminalReason = e.Type
+	}
+
 	s.History = append(s.History, e)
 	if len(s.History) > s.MaxHistory {
 		s.History = s.History[len(s.History)-s.MaxHistory:]
