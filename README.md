@@ -236,6 +236,26 @@ Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`
 ./symphony workflow init [repo_path]
 ```
 
+## Real Codex E2E
+
+There is a reproducible real-Codex harness that creates two issues, lets Codex complete both, and verifies the resulting artifacts:
+
+```bash
+make e2e-real-codex
+```
+
+The harness:
+
+- builds `symphony`
+- creates a temporary repo root and SQLite database
+- writes a dedicated `WORKFLOW.md`
+- creates two simple artifact-based issues
+- starts `symphony run`
+- waits for both issues to reach `done`
+- verifies `artifact-one.txt` and `artifact-two.txt`
+
+Details and environment overrides are documented in [`docs/E2E_REAL_CODEX.md`](/Users/olhapi/Projects/symphony-go/docs/E2E_REAL_CODEX.md).
+
 ## Architecture
 
 ```
