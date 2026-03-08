@@ -16,6 +16,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"github.com/olhapi/symphony-go/internal/extensions"
+	"github.com/olhapi/symphony-go/internal/httpserver"
 	"github.com/olhapi/symphony-go/internal/kanban"
 	"github.com/olhapi/symphony-go/internal/logsink"
 	"github.com/olhapi/symphony-go/internal/mcp"
@@ -291,7 +292,7 @@ func runOrchestrator() {
 		if !strings.Contains(addr, ":") {
 			addr = ":" + addr
 		}
-		observability.Start(ctx, addr, orch)
+		httpserver.Start(ctx, addr, store, orch)
 	}
 
 	// Handle signals

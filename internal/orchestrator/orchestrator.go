@@ -288,12 +288,14 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	case err != nil:
 		o.mu.Lock()
 		o.failedRuns++
-		o.appendEventLocked("run_failed", map[string]interface{}{
+		fields := map[string]interface{}{
 			"issue_id":   issue.ID,
 			"identifier": issue.Identifier,
 			"attempt":    attempt,
 			"error":      err.Error(),
-		})
+		}
+		attachResultMetrics(fields, result)
+		o.appendEventLocked("run_failed", fields)
 		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", err.Error(), workflow.Config.Agent.MaxRetryBackoffMs)
 		o.mu.Unlock()
 	case result != nil && !result.Success:
@@ -303,24 +305,28 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		}
 		o.mu.Lock()
 		o.failedRuns++
-		o.appendEventLocked("run_unsuccessful", map[string]interface{}{
+		fields := map[string]interface{}{
 			"issue_id":   issue.ID,
 			"identifier": issue.Identifier,
 			"attempt":    attempt,
 			"error":      errText,
-		})
+		}
+		attachResultMetrics(fields, result)
+		o.appendEventLocked("run_unsuccessful", fields)
 		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", errText, workflow.Config.Agent.MaxRetryBackoffMs)
 		o.mu.Unlock()
 	default:
 		o.mu.Lock()
 		o.successfulRuns++
 		next := nextAttempt(attempt)
-		o.appendEventLocked("run_completed", map[string]interface{}{
+		fields := map[string]interface{}{
 			"issue_id":   issue.ID,
 			"identifier": issue.Identifier,
 			"attempt":    attempt,
 			"next_retry": next,
-		})
+		}
+		attachResultMetrics(fields, result)
+		o.appendEventLocked("run_completed", fields)
 		o.scheduleRetryLocked(issue, next, "continuation", "", workflow.Config.Agent.MaxRetryBackoffMs)
 		o.mu.Unlock()
 	}
@@ -478,6 +484,9 @@ func (o *Orchestrator) appendEventLocked(kind string, fields map[string]interfac
 	o.events = append(o.events, event)
 	if len(o.events) > o.maxEvents {
 		o.events = o.events[len(o.events)-o.maxEvents:]
+	}
+	if err := o.store.AppendRuntimeEvent(kind, event); err != nil {
+		slog.Warn("Failed to persist runtime event", "kind", kind, "error", err)
 	}
 	observability.BroadcastUpdate()
 }
@@ -673,4 +682,59 @@ func (o *Orchestrator) RequestRefresh() map[string]interface{} {
 		"requested_at": time.Now().UTC().Format(time.RFC3339),
 		"status":       "accepted",
 	}
+}
+
+func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	issue, err := o.store.GetIssueByIdentifier(identifier)
+	if err != nil {
+		return map[string]interface{}{
+			"status": "not_found",
+			"issue":  identifier,
+		}
+	}
+
+	if entry, ok := o.retries[issue.ID]; ok {
+		entry.DueAt = time.Now().UTC()
+		o.retries[issue.ID] = entry
+		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+		})
+		return map[string]interface{}{
+			"status":       "queued_now",
+			"issue":        identifier,
+			"retry_due_at": entry.DueAt.Format(time.RFC3339),
+		}
+	}
+
+	if issue.State == kanban.StateDone || issue.State == kanban.StateCancelled {
+		if err := o.store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+			return map[string]interface{}{
+				"status": "error",
+				"error":  err.Error(),
+				"issue":  identifier,
+			}
+		}
+	}
+
+	o.appendEventLocked("manual_retry_requested", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+	})
+	return map[string]interface{}{
+		"status": "refresh_requested",
+		"issue":  identifier,
+	}
+}
+
+func attachResultMetrics(fields map[string]interface{}, result *agent.RunResult) {
+	if result == nil || result.AppSession == nil {
+		return
+	}
+	fields["input_tokens"] = result.AppSession.InputTokens
+	fields["output_tokens"] = result.AppSession.OutputTokens
+	fields["total_tokens"] = result.AppSession.TotalTokens
 }

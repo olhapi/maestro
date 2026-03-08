@@ -28,10 +28,12 @@ type Server struct {
 	http *http.Server
 }
 
-// Start launches an HTTP server exposing runtime status endpoints.
-func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
-	mux := http.NewServeMux()
+func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
+	if mux == nil {
+		return
+	}
 
+	// Start launches an HTTP server exposing runtime status endpoints.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "ts": time.Now().UTC().Format(time.RFC3339)})
@@ -144,6 +146,12 @@ func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "issue_not_found"})
 	})
+}
+
+// Start launches an HTTP server exposing runtime status endpoints.
+func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, provider)
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 
