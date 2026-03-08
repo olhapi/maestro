@@ -1,11 +1,24 @@
-import { Command } from 'cmdk'
-import { FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, Search } from 'lucide-react'
+import { useMemo } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
+import { FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw } from 'lucide-react'
 
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+  CommandShortcut,
+} from '@/components/ui/command'
+import { DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
 
-const items = [
+const navigationItems = [
   { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard },
   { label: 'Work', to: appRoutes.work, icon: ListTodo },
   { label: 'Projects', to: appRoutes.projects, icon: FolderKanban },
@@ -14,38 +27,73 @@ const items = [
 
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const recentIssues = useMemo(() => bootstrap.data?.issues.items.slice(0, 8) ?? [], [bootstrap.data?.issues.items])
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl p-0">
-        <Command className="overflow-hidden rounded-[1.75rem] bg-transparent">
-          <div className="flex items-center gap-3 border-b border-white/10 px-4">
-            <Search className="size-4 text-[var(--muted-foreground)]" />
-            <Command.Input className="h-14 w-full bg-transparent text-sm outline-none placeholder:text-[var(--muted-foreground)]" placeholder="Jump to a section..." />
-          </div>
-          <Command.List className="max-h-[360px] overflow-auto p-2">
-            <Command.Empty className="p-4 text-sm text-[var(--muted-foreground)]">No results.</Command.Empty>
-            <Command.Group heading="Navigate" className="text-xs text-[var(--muted-foreground)]">
-              {items.map((item) => {
-                const Icon = item.icon
-                return (
-                  <Command.Item
-                    key={item.to}
-                    className="flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-3 text-sm text-white outline-none data-[selected=true]:bg-white/8"
+    <CommandDialog open={open} onOpenChange={onOpenChange}>
+      <DialogTitle className="sr-only">Command palette</DialogTitle>
+      <DialogDescription className="sr-only">Search navigation, issues, and quick actions.</DialogDescription>
+      <Command>
+        <CommandInput placeholder="Type a command or search for an issue..." />
+        <CommandList>
+          <CommandEmpty>No results found.</CommandEmpty>
+
+          <CommandGroup heading="Navigate">
+            {navigationItems.map((item) => {
+              const Icon = item.icon
+              return (
+                <CommandItem
+                  key={item.to}
+                  onSelect={() => {
+                    onOpenChange(false)
+                    void navigate({ to: item.to })
+                  }}
+                >
+                  <Icon className="size-4 text-[var(--accent)]" />
+                  <span>{item.label}</span>
+                </CommandItem>
+              )
+            })}
+          </CommandGroup>
+
+          <CommandSeparator />
+
+          <CommandGroup heading="Actions">
+            <CommandItem
+              onSelect={() => {
+                onOpenChange(false)
+                void queryClient.invalidateQueries()
+              }}
+            >
+              <RefreshCw className="size-4 text-[var(--accent)]" />
+              <span>Refresh data</span>
+              <CommandShortcut>R</CommandShortcut>
+            </CommandItem>
+          </CommandGroup>
+
+          {recentIssues.length > 0 ? (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading="Issues">
+                {recentIssues.map((issue) => (
+                  <CommandItem
+                    key={issue.id}
                     onSelect={() => {
                       onOpenChange(false)
-                      void navigate({ to: item.to })
+                      void navigate({ to: appRoutes.issueDetail, params: { identifier: issue.identifier } })
                     }}
                   >
-                    <Icon className="size-4 text-[var(--accent)]" />
-                    {item.label}
-                  </Command.Item>
-                )
-              })}
-            </Command.Group>
-          </Command.List>
-        </Command>
-      </DialogContent>
-    </Dialog>
+                    <span className="font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{issue.identifier}</span>
+                    <span className="truncate">{issue.title}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </>
+          ) : null}
+        </CommandList>
+      </Command>
+    </CommandDialog>
   )
 }

@@ -1,28 +1,27 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { IssueCard } from '@/components/dashboard/issue-card'
+import { KanbanBoard } from '@/components/dashboard/kanban-board'
 import { PageHeader } from '@/components/dashboard/page-header'
 import { IssuePreviewSheet } from '@/components/dashboard/issue-preview-sheet'
-import { IssueDialog } from '@/components/forms'
+import { EpicDialog, IssueDialog } from '@/components/forms'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { api } from '@/lib/api'
-import { groupIssuesByState, issueStates, stateMeta } from '@/lib/dashboard'
+import { stateMeta } from '@/lib/dashboard'
 import { appRoutes } from '@/lib/routes'
 import type { IssueDetail, IssueState, IssueSummary } from '@/lib/types'
 import { formatRelativeTime } from '@/lib/utils'
 
 function ProjectStat({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
-    <div className="min-w-0 border-r border-white/8 px-4 py-3 last:border-r-0">
+    <div className="min-w-0 border-r border-white/8 px-3 py-2.5 last:border-r-0">
       <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
-      <p className="mt-2 font-display text-3xl text-white">{value}</p>
-      <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">{detail}</p>
+      <p className="mt-1.5 font-display text-2xl text-white">{value}</p>
+      <p className="mt-1.5 text-xs leading-4 text-[var(--muted-foreground)] md:line-clamp-2">{detail}</p>
     </div>
   )
 }
@@ -31,6 +30,8 @@ export function ProjectDetailPage() {
   const { projectId } = useParams({ from: '/projects/$projectId' })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [epicDialogOpen, setEpicDialogOpen] = useState(false)
+  const [issueDialogInitial, setIssueDialogInitial] = useState<Partial<IssueDetail>>({ project_id: projectId, state: 'backlog' })
   const [issueDialogOpen, setIssueDialogOpen] = useState(false)
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>()
 
@@ -64,8 +65,6 @@ export function ProjectDetailPage() {
     },
   })
 
-  const groupedIssues = useMemo(() => groupIssuesByState(project.data?.issues.items ?? []), [project.data?.issues.items])
-
   if (!bootstrap.data || !project.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />
   }
@@ -83,7 +82,13 @@ export function ProjectDetailPage() {
         ]}
         actions={
           <>
-            <Button variant="secondary" onClick={() => setIssueDialogOpen(true)}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setIssueDialogInitial({ project_id: projectId, state: 'backlog' })
+                setIssueDialogOpen(true)
+              }}
+            >
               <Plus className="size-4" />
               New issue
             </Button>
@@ -100,7 +105,7 @@ export function ProjectDetailPage() {
             <ProjectStat label="Completed" value={String(project.data.project.counts.done)} detail="Closed out work items." />
           </>
         }
-        statsClassName="overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.04] xl:grid-cols-4 xl:gap-0"
+        statsClassName="overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.04] md:grid-cols-4 md:gap-0"
       />
 
       <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
@@ -110,6 +115,16 @@ export function ProjectDetailPage() {
               <div>
                 <h2 className="text-2xl font-semibold text-white">Epics driving this project</h2>
               </div>
+              <Button
+                variant="secondary"
+                size="icon"
+                className="border-white/12 bg-white/6 text-white hover:bg-white/10"
+                aria-label="Create epic"
+                title="Create epic"
+                onClick={() => setEpicDialogOpen(true)}
+              >
+                <Plus className="size-4 shrink-0 text-[var(--accent)]" />
+              </Button>
             </div>
             <div className="mt-5 grid gap-3">
               {project.data.epics.map((epic) => (
@@ -160,56 +175,38 @@ export function ProjectDetailPage() {
         </Card>
       </div>
 
-        <Card>
-          <CardContent className="p-5">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-2xl font-semibold text-white">Project work mapped by state</h2>
-            </div>
-            <Link className="inline-flex items-center gap-2 text-sm text-[var(--accent)]" to={appRoutes.work}>
-              Open full board
-              <ArrowRight className="size-4" />
-            </Link>
-          </div>
-          <div className="mt-5 grid gap-4 xl:grid-cols-3">
-            {issueStates.map((state) => (
-              <div key={state} className="rounded-[1.5rem] border border-white/8 bg-white/[0.03] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{stateMeta[state].label}</p>
-                    <p className="mt-2 text-2xl font-semibold text-white">{groupedIssues[state].length}</p>
-                  </div>
-                </div>
-                <div className="mt-4 grid gap-3">
-                  {groupedIssues[state].length > 0 ? (
-                    groupedIssues[state].map((issue) => <IssueCard key={issue.id} issue={issue} bootstrap={bootstrap.data} compact onOpen={setPreviewIssue} onStateChange={(item, nextState) => stateMutation.mutate({ identifier: item.identifier, nextState })} />)
-                  ) : (
-                    <Empty className="min-h-[180px]">
-                      <EmptyHeader>
-                        <EmptyMedia variant="icon">
-                          <Plus />
-                        </EmptyMedia>
-                        <EmptyTitle>No issues in {stateMeta[state].label.toLowerCase()}</EmptyTitle>
-                        <EmptyDescription>Move work here from the main board or create a fresh issue for this project.</EmptyDescription>
-                      </EmptyHeader>
-                    </Empty>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      <KanbanBoard
+        items={project.data.issues.items}
+        bootstrap={bootstrap.data}
+        onOpenIssue={setPreviewIssue}
+        onMoveIssue={(issue, nextState) => stateMutation.mutate({ identifier: issue.identifier, nextState })}
+        onCreateIssue={(nextState) => {
+          setIssueDialogInitial({ project_id: projectId, state: nextState ?? 'backlog' })
+          setIssueDialogOpen(true)
+        }}
+      />
 
       <IssueDialog
         open={issueDialogOpen}
         onOpenChange={setIssueDialogOpen}
-        initial={{ project_id: projectId } as Partial<IssueDetail>}
+        initial={issueDialogInitial}
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics.filter((epic) => epic.project_id === projectId)}
         onSubmit={async (body) => {
           await api.createIssue(body)
           toast.success('Issue created')
+          await invalidate()
+        }}
+      />
+
+      <EpicDialog
+        open={epicDialogOpen}
+        onOpenChange={setEpicDialogOpen}
+        initial={{ project_id: projectId }}
+        projects={[project.data.project]}
+        onSubmit={async (body) => {
+          await api.createEpic(body)
+          toast.success('Epic created')
           await invalidate()
         }}
       />

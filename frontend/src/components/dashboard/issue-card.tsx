@@ -10,7 +10,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { BootstrapResponse, IssueState, IssueSummary } from '@/lib/types'
 import { getRetryForIssue, getSessionForIssue, stateMeta } from '@/lib/dashboard'
 import { cn, formatRelativeTime } from '@/lib/utils'
@@ -94,14 +94,14 @@ export function IssueCard({
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div>
-          <HoverCard openDelay={120}>
-            <HoverCardTrigger asChild>{content}</HoverCardTrigger>
-            <HoverCardContent className="space-y-3">
+          <Tooltip>
+            <TooltipTrigger asChild>{content}</TooltipTrigger>
+            <TooltipContent align="start" className="space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="font-medium text-white">{issue.identifier}</p>
                 <Badge className="border-white/12 bg-white/5 text-white">{stateMeta[issue.state].label}</Badge>
               </div>
-              <p className="text-sm leading-6 text-[var(--muted-foreground)]">{issue.description || 'No description available.'}</p>
+              <p className="line-clamp-3 text-sm leading-6 text-[var(--muted-foreground)]">{issue.description || 'No description available.'}</p>
               <div className="grid gap-2 text-xs text-[var(--muted-foreground)]">
                 {session ? (
                   <div className="inline-flex items-center gap-2">
@@ -122,8 +122,8 @@ export function IssueCard({
                   </div>
                 ) : null}
               </div>
-            </HoverCardContent>
-          </HoverCard>
+            </TooltipContent>
+          </Tooltip>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>

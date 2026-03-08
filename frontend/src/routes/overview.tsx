@@ -4,7 +4,9 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { api } from '@/lib/api'
+import type { RuntimeEvent } from '@/lib/types'
 import { formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
 function Metric({
@@ -36,6 +38,38 @@ function Metric({
   )
 }
 
+function EventRail({ events }: { events: RuntimeEvent[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <Badge>Recent signals</Badge>
+          <CardTitle className="mt-4">Event rail</CardTitle>
+          <CardDescription>Most recent orchestration events persisted for operator triage.</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ScrollArea className="h-[320px] md:h-[420px]">
+          <div className="space-y-3 pr-4">
+            {events.map((event) => (
+              <div key={event.seq} className="rounded-2xl border border-white/8 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-white">{toTitleCase(event.kind)}</p>
+                  <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(event.ts)}</span>
+                </div>
+                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
+                  {event.identifier ? `${event.identifier} · ` : ''}
+                  {event.error || event.title || 'Runtime signal captured'}
+                </p>
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function OverviewPage() {
   const { data, isLoading } = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
 
@@ -47,6 +81,7 @@ export function OverviewPage() {
   const status = data.overview.status
   const activeRuns = Number(status.active_runs ?? snapshot.running.length)
   const retryQueue = Number(status.retry_queue_count ?? snapshot.retrying.length)
+  const recentEvents = data.overview.recent_events.slice(-8).reverse()
 
   return (
     <div className="grid gap-5">
@@ -62,7 +97,7 @@ export function OverviewPage() {
         />
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-[1.5fr_1fr]">
+      <section>
         <Card>
           <CardHeader>
             <div>
@@ -92,30 +127,6 @@ export function OverviewPage() {
                 <Area type="monotone" dataKey="retries" stroke="#53d9ff" fill="url(#retries)" strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <div>
-              <Badge>Recent signals</Badge>
-              <CardTitle className="mt-4">Event rail</CardTitle>
-              <CardDescription>Most recent orchestration events persisted for operator triage.</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {data.overview.recent_events.slice(-8).reverse().map((event) => (
-              <div key={event.seq} className="rounded-2xl border border-white/8 bg-black/20 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium text-white">{toTitleCase(event.kind)}</p>
-                  <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(event.ts)}</span>
-                </div>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                  {event.identifier ? `${event.identifier} · ` : ''}
-                  {event.error || event.title || 'Runtime signal captured'}
-                </p>
-              </div>
-            ))}
           </CardContent>
         </Card>
       </section>
@@ -185,6 +196,10 @@ export function OverviewPage() {
             </CardContent>
           </Card>
         ))}
+      </section>
+
+      <section>
+        <EventRail events={recentEvents} />
       </section>
     </div>
   )

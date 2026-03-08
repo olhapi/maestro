@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, BellDot, Command, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw, RotateCcw } from 'lucide-react'
+import { Activity, Command, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw, RotateCcw } from 'lucide-react'
 
 import { CommandPalette } from '@/components/command-palette'
 import { Badge } from '@/components/ui/badge'
@@ -17,6 +17,19 @@ const nav = [
   { label: 'Projects', to: appRoutes.projects, icon: FolderKanban, match: isProjectsPath },
   { label: 'Sessions', to: appRoutes.sessions, icon: MonitorPlay, match: (pathname: string) => pathname === appRoutes.sessions },
 ]
+
+const APP_TITLE = 'Symphony Control Center'
+
+function getPageTitle(pathname: string) {
+  if (pathname === appRoutes.overview) return 'Overview'
+  if (pathname === appRoutes.work) return 'Work'
+  if (pathname === appRoutes.projects) return 'Projects'
+  if (pathname.startsWith('/projects/')) return 'Project'
+  if (pathname.startsWith('/epics/')) return 'Epic'
+  if (pathname.startsWith('/issues/')) return 'Issue'
+  if (pathname === appRoutes.sessions) return 'Sessions'
+  return ''
+}
 
 export function AppShell() {
   const { location } = useRouterState()
@@ -45,19 +58,18 @@ export function AppShell() {
 
   const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
 
+  useEffect(() => {
+    const pageTitle = getPageTitle(activePath)
+    document.title = pageTitle ? `${pageTitle} · ${APP_TITLE}` : APP_TITLE
+  }, [activePath])
+
   return (
     <div className="min-h-screen bg-[var(--page)] text-white">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(196,255,87,.12),transparent_24%),radial-gradient(circle_at_top_right,rgba(83,217,255,.1),transparent_26%),linear-gradient(180deg,rgba(255,255,255,.05),transparent_40%)]" />
       <div className="relative grid min-h-screen lg:grid-cols-[280px_1fr]">
         <aside className="border-r border-white/8 bg-black/25 p-5 backdrop-blur-2xl">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.28em] text-[var(--muted-foreground)]">Symphony</p>
-              <h1 className="mt-2 font-display text-2xl font-semibold">Mission Control</h1>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-              <BellDot className="size-5 text-[var(--accent)]" />
-            </div>
+          <div>
+            <h1 className="font-display text-2xl font-semibold">{APP_TITLE}</h1>
           </div>
 
           <div className="mt-8 space-y-2">
@@ -87,9 +99,6 @@ export function AppShell() {
               <Badge>Live link</Badge>
               <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">now</span>
             </div>
-            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-              WebSocket invalidation is active. The board refreshes itself when orchestration state changes.
-            </p>
             <div className="grid gap-2 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-[var(--muted-foreground)]">Active runs</span>
