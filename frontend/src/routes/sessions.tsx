@@ -18,8 +18,7 @@ export function SessionsPage() {
   return (
     <div className="grid gap-5">
       <div>
-        <Badge>Runtime sessions</Badge>
-        <h3 className="mt-4 font-display text-4xl font-semibold">Threads, turns, and event traces</h3>
+        <h3 className="font-display text-4xl font-semibold">Threads, turns, and event traces</h3>
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
         <Card>

@@ -1,18 +1,20 @@
 import { Command } from 'cmdk'
-import { LayoutDashboard, ListTodo, FolderKanban, MonitorPlay, Search } from 'lucide-react'
+import { FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, Search } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { appRoutes } from '@/lib/routes'
 
 const items = [
-  { label: 'Overview', to: '/dashboard', icon: LayoutDashboard },
-  { label: 'Work Explorer', to: '/dashboard/work', icon: ListTodo },
-  { label: 'Projects & Epics', to: '/dashboard/projects', icon: FolderKanban },
-  { label: 'Sessions', to: '/dashboard/sessions', icon: MonitorPlay },
+  { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard },
+  { label: 'Work', to: appRoutes.work, icon: ListTodo },
+  { label: 'Projects', to: appRoutes.projects, icon: FolderKanban },
+  { label: 'Sessions', to: appRoutes.sessions, icon: MonitorPlay },
 ]
 
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const navigate = useNavigate()
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl p-0">

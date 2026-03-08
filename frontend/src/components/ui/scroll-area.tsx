@@ -10,6 +10,10 @@ export function ScrollArea({ className, children }: PropsWithChildren<{ classNam
       <ScrollAreaPrimitive.Scrollbar orientation="vertical" className="w-2.5 p-0.5">
         <ScrollAreaPrimitive.Thumb className="rounded-full bg-white/15" />
       </ScrollAreaPrimitive.Scrollbar>
+      <ScrollAreaPrimitive.Scrollbar orientation="horizontal" className="h-2.5 p-0.5">
+        <ScrollAreaPrimitive.Thumb className="rounded-full bg-white/15" />
+      </ScrollAreaPrimitive.Scrollbar>
+      <ScrollAreaPrimitive.Corner />
     </ScrollAreaPrimitive.Root>
   )
 }

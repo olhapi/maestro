@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
-import { BellDot, Command, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Activity, BellDot, Command, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw, RotateCcw } from 'lucide-react'
 
 import { CommandPalette } from '@/components/command-palette'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { api } from '@/lib/api'
+import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
 import { cn, formatRelativeTime } from '@/lib/utils'
 
 const nav = [
-  { label: 'Overview', to: '/dashboard', icon: LayoutDashboard },
-  { label: 'Work', to: '/dashboard/work', icon: ListTodo },
-  { label: 'Projects', to: '/dashboard/projects', icon: FolderKanban },
-  { label: 'Sessions', to: '/dashboard/sessions', icon: MonitorPlay },
+  { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard, match: (pathname: string) => pathname === appRoutes.overview },
+  { label: 'Work', to: appRoutes.work, icon: ListTodo, match: (pathname: string) => pathname === appRoutes.work || pathname.startsWith('/issues/') },
+  { label: 'Projects', to: appRoutes.projects, icon: FolderKanban, match: isProjectsPath },
+  { label: 'Sessions', to: appRoutes.sessions, icon: MonitorPlay, match: (pathname: string) => pathname === appRoutes.sessions },
 ]
 
 export function AppShell() {
@@ -21,6 +23,7 @@ export function AppShell() {
   const queryClient = useQueryClient()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
+  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
 
   useEffect(() => {
     return connectDashboardSocket(() => {
@@ -40,7 +43,7 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const activePath = useMemo(() => location.pathname || '/dashboard', [location.pathname])
+  const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
 
   return (
     <div className="min-h-screen bg-[var(--page)] text-white">
@@ -56,10 +59,11 @@ export function AppShell() {
               <BellDot className="size-5 text-[var(--accent)]" />
             </div>
           </div>
+
           <div className="mt-8 space-y-2">
             {nav.map((item) => {
               const Icon = item.icon
-              const active = activePath === item.to
+              const active = item.match(activePath)
               return (
                 <Link
                   key={item.to}
@@ -77,21 +81,43 @@ export function AppShell() {
               )
             })}
           </div>
-          <div className="mt-8 rounded-[1.75rem] border border-white/10 bg-white/5 p-4">
-            <Badge>Live link</Badge>
-            <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
-              WebSocket invalidation is active. The dashboard automatically refetches when orchestration state changes.
+
+          <div className="mt-8 grid gap-3 rounded-[1.75rem] border border-white/10 bg-white/5 p-4">
+            <div className="flex items-center justify-between">
+              <Badge>Live link</Badge>
+              <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">now</span>
+            </div>
+            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+              WebSocket invalidation is active. The board refreshes itself when orchestration state changes.
             </p>
-            <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Last signal</p>
-            <p className="mt-1 text-sm text-white">{formatRelativeTime(lastRefresh)}</p>
+            <div className="grid gap-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--muted-foreground)]">Active runs</span>
+                <span className="text-white">{bootstrap.data?.overview.snapshot.running.length ?? 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--muted-foreground)]">Queued retries</span>
+                <span className="text-white">{bootstrap.data?.overview.snapshot.retrying.length ?? 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--muted-foreground)]">Last signal</span>
+                <span className="text-white">{formatRelativeTime(lastRefresh)}</span>
+              </div>
+            </div>
           </div>
         </aside>
 
         <main className="relative flex min-h-screen flex-col">
           <header className="flex flex-wrap items-center justify-between gap-4 border-b border-white/8 px-5 py-4 backdrop-blur-xl">
-            <div>
-              <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted-foreground)]">Operator dashboard</p>
-              <h2 className="font-display text-3xl font-semibold">Dense, live, and controllable</h2>
+            <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--muted-foreground)]">
+              <span className="inline-flex items-center gap-2">
+                <Activity className="size-4 text-lime-300" />
+                {bootstrap.data?.overview.snapshot.running.length ?? 0} running
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <RotateCcw className="size-4 text-amber-300" />
+                {bootstrap.data?.overview.snapshot.retrying.length ?? 0} retries
+              </span>
             </div>
             <div className="flex items-center gap-3">
               <Button variant="secondary" onClick={() => void queryClient.invalidateQueries()}>

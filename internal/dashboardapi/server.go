@@ -153,6 +153,48 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodGet:
+		projectSummaries, err := s.store.ListProjectSummaries()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		var projectSummary *kanban.ProjectSummary
+		for i := range projectSummaries {
+			if projectSummaries[i].ID == id {
+				projectSummary = &projectSummaries[i]
+				break
+			}
+		}
+		if projectSummary == nil {
+			writeErrorStatus(w, http.StatusNotFound, sql.ErrNoRows)
+			return
+		}
+		epics, err := s.store.ListEpicSummaries(id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		issues, total, err := s.store.ListIssueSummaries(kanban.IssueQuery{
+			ProjectID: id,
+			Sort:      "updated_desc",
+			Limit:     200,
+			Offset:    0,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"project": projectSummary,
+			"epics":   epics,
+			"issues": map[string]interface{}{
+				"items":  issues,
+				"total":  total,
+				"limit":  200,
+				"offset": 0,
+			},
+		})
 	case http.MethodPatch:
 		var body struct {
 			Name        string `json:"name"`
@@ -219,6 +261,57 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodGet:
+		epicSummaries, err := s.store.ListEpicSummaries("")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		var epicSummary *kanban.EpicSummary
+		for i := range epicSummaries {
+			if epicSummaries[i].ID == id {
+				epicSummary = &epicSummaries[i]
+				break
+			}
+		}
+		if epicSummary == nil {
+			writeErrorStatus(w, http.StatusNotFound, sql.ErrNoRows)
+			return
+		}
+		var project *kanban.Project
+		if epicSummary.ProjectID != "" {
+			project, err = s.store.GetProject(epicSummary.ProjectID)
+			if err != nil && err != sql.ErrNoRows {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
+		siblingEpics, err := s.store.ListEpicSummaries(epicSummary.ProjectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		issues, total, err := s.store.ListIssueSummaries(kanban.IssueQuery{
+			EpicID: id,
+			Sort:   "updated_desc",
+			Limit:  200,
+			Offset: 0,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"epic":          epicSummary,
+			"project":       project,
+			"sibling_epics": siblingEpics,
+			"issues": map[string]interface{}{
+				"items":  issues,
+				"total":  total,
+				"limit":  200,
+				"offset": 0,
+			},
+		})
 	case http.MethodPatch:
 		var body struct {
 			ProjectID   string `json:"project_id"`

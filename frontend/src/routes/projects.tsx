@@ -1,17 +1,29 @@
 import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
+import { ArrowRight, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { PageHeader } from '@/components/dashboard/page-header'
 import { EpicDialog, IssueDialog, ProjectDialog } from '@/components/forms'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { api } from '@/lib/api'
+import { appRoutes } from '@/lib/routes'
 import type { EpicSummary, ProjectSummary } from '@/lib/types'
 
 function activeCount(counts: ProjectSummary['counts']) {
   return counts.ready + counts.in_progress + counts.in_review
+}
+
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[1.25rem] border border-white/8 bg-black/20 p-4">
+      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
+      <p className="mt-3 font-display text-3xl text-white">{value}</p>
+    </div>
+  )
 }
 
 export function ProjectsPage() {
@@ -56,49 +68,56 @@ export function ProjectsPage() {
 
   return (
     <div className="grid gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <Badge>Portfolio surface</Badge>
-          <h3 className="mt-4 font-display text-4xl font-semibold">Projects, epics, and issue rollups</h3>
-        </div>
-        <div className="flex gap-3">
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setEditingProject(undefined)
-              setProjectDialogOpen(true)
-            }}
-          >
-            <Plus className="size-4" />
-            New project
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setEditingEpic(undefined)
-              setEpicDialogOpen(true)
-            }}
-          >
-            <Plus className="size-4" />
-            New epic
-          </Button>
-          <Button onClick={() => setIssueDialogOpen(true)}>
-            <Plus className="size-4" />
-            New issue
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Portfolio surface"
+        title="Projects are now entry points, not dead-end rollups"
+        description="Open a project or epic to see execution health, linked work, and recent movement. This page stays focused on choosing the right delivery stream."
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setEditingProject(undefined)
+                setProjectDialogOpen(true)
+              }}
+            >
+              <Plus className="size-4" />
+              New project
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setEditingEpic(undefined)
+                setEpicDialogOpen(true)
+              }}
+            >
+              <Plus className="size-4" />
+              New epic
+            </Button>
+            <Button onClick={() => setIssueDialogOpen(true)}>
+              <Plus className="size-4" />
+              New issue
+            </Button>
+          </>
+        }
+      />
 
       <div className="grid gap-4 xl:grid-cols-2">
         {projects.data.items.map((project) => {
           const projectEpics = epics.data.items.filter((epic) => epic.project_id === project.id)
           return (
-            <Card key={project.id}>
-              <CardHeader>
-                <div>
+            <Card key={project.id} className="overflow-hidden">
+              <CardHeader className="items-start">
+                <div className="space-y-3">
                   <Badge>{activeCount(project.counts)} active</Badge>
-                  <CardTitle className="mt-4">{project.name}</CardTitle>
-                  <CardDescription className="mt-2">{project.description || 'No description yet.'}</CardDescription>
+                  <div>
+                    <CardTitle className="text-2xl">
+                      <Link params={{ projectId: project.id }} to={appRoutes.projectDetail}>
+                        {project.name}
+                      </Link>
+                    </CardTitle>
+                    <p className="mt-3 max-w-xl text-sm leading-7 text-[var(--muted-foreground)]">{project.description || 'No description yet.'}</p>
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <Button
@@ -110,54 +129,70 @@ export function ProjectsPage() {
                   >
                     Edit
                   </Button>
-                  <Button variant="ghost" onClick={() => deleteProject.mutate(project.id)}>
+                  <Button variant="ghost" size="icon" onClick={() => deleteProject.mutate(project.id)}>
                     <Trash2 className="size-4" />
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-3">
+
+              <CardContent className="grid gap-4">
                 <div className="grid grid-cols-3 gap-3">
-                  <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Total</p>
-                    <p className="mt-2 font-display text-3xl">{project.counts.backlog + project.counts.ready + project.counts.in_progress + project.counts.in_review + project.counts.done + project.counts.cancelled}</p>
+                  <StatCard label="Total" value={String(project.counts.backlog + project.counts.ready + project.counts.in_progress + project.counts.in_review + project.counts.done + project.counts.cancelled)} />
+                  <StatCard label="Done" value={String(project.counts.done)} />
+                  <StatCard label="Blocked/active" value={String(activeCount(project.counts))} />
+                </div>
+
+                <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Epics</p>
+                      <p className="mt-2 text-sm text-white">{projectEpics.length} delivery arcs</p>
+                    </div>
                   </div>
-                  <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Done</p>
-                    <p className="mt-2 font-display text-3xl">{project.counts.done}</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Blocked/active</p>
-                    <p className="mt-2 font-display text-3xl">{project.counts.ready + project.counts.in_progress + project.counts.in_review}</p>
+                  <div className="mt-4 grid gap-3">
+                    {projectEpics.length === 0 ? (
+                      <p className="text-sm text-[var(--muted-foreground)]">No epics yet for this project.</p>
+                    ) : (
+                      projectEpics.map((epic) => (
+                        <div key={epic.id} className="flex items-center justify-between gap-3 rounded-[1.25rem] border border-white/8 bg-white/[0.04] p-4">
+                          <div className="min-w-0">
+                            <p className="font-medium text-white">
+                              <Link params={{ epicId: epic.id }} to={appRoutes.epicDetail}>
+                                {epic.name}
+                              </Link>
+                            </p>
+                            <p className="mt-1 text-sm text-[var(--muted-foreground)]">{epic.description || 'No epic description.'}</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <Badge>{activeCount(epic.counts)} active</Badge>
+                            <Button
+                              variant="ghost"
+                              onClick={() => {
+                                setEditingEpic(epic)
+                                setEpicDialogOpen(true)
+                              }}
+                            >
+                              Edit
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => deleteEpic.mutate(epic.id)}>
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
-                <div className="space-y-2">
-                  {projectEpics.length === 0 ? (
-                    <p className="text-sm text-[var(--muted-foreground)]">No epics yet for this project.</p>
-                  ) : (
-                    projectEpics.map((epic) => (
-                      <div key={epic.id} className="flex items-center justify-between rounded-2xl border border-white/8 bg-black/20 p-4">
-                        <div>
-                          <p className="font-medium text-white">{epic.name}</p>
-                          <p className="text-sm text-[var(--muted-foreground)]">{epic.description || 'No epic description.'}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge>{activeCount(epic.counts)} active</Badge>
-                          <Button
-                            variant="ghost"
-                            onClick={() => {
-                              setEditingEpic(epic)
-                              setEpicDialogOpen(true)
-                            }}
-                          >
-                            Edit
-                          </Button>
-                          <Button variant="ghost" onClick={() => deleteEpic.mutate(epic.id)}>
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))
-                  )}
+
+                <div className="flex items-center justify-between rounded-[1.5rem] border border-white/8 bg-[linear-gradient(135deg,rgba(196,255,87,.10),rgba(83,217,255,.06))] p-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Execution hub</p>
+                    <p className="mt-2 text-sm text-white">Open the full project page for linked issues, health, and recent work.</p>
+                  </div>
+                  <Link className="inline-flex items-center gap-2 text-sm text-[var(--accent)]" params={{ projectId: project.id }} to={appRoutes.projectDetail}>
+                    Open project
+                    <ArrowRight className="size-4" />
+                  </Link>
                 </div>
               </CardContent>
             </Card>

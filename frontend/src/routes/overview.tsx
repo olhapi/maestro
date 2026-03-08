@@ -124,8 +124,7 @@ export function OverviewPage() {
         <Card>
           <CardHeader>
             <div>
-              <Badge>Current running work</Badge>
-              <CardTitle className="mt-4">Active runs</CardTitle>
+              <CardTitle>Active runs</CardTitle>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -150,8 +149,7 @@ export function OverviewPage() {
         <Card>
           <CardHeader>
             <div>
-              <Badge>Retry queue</Badge>
-              <CardTitle className="mt-4">Pending retries</CardTitle>
+              <CardTitle>Pending retries</CardTitle>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">

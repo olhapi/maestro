@@ -1,24 +1,28 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams } from '@tanstack/react-router'
-import { ArrowLeft, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { RotateCcw, Save, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { PageHeader } from '@/components/dashboard/page-header'
 import { IssueDialog } from '@/components/forms'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api'
-import { formatRelativeTime, formatNumber, toTitleCase } from '@/lib/utils'
+import { appRoutes } from '@/lib/routes'
+import { stateMeta } from '@/lib/dashboard'
+import type { IssueState } from '@/lib/types'
+import { formatDateTime, formatNumber, formatRelativeTime } from '@/lib/utils'
 
 export function IssueDetailPage() {
-  const { identifier } = useParams({ from: '/dashboard/issues/$identifier' })
+  const { identifier } = useParams({ from: '/issues/$identifier' })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [editOpen, setEditOpen] = useState(false)
-  const [blockersValue, setBlockersValue] = useState('')
+  const [blockersDraft, setBlockersDraft] = useState<string | null>(null)
 
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
   const issue = useQuery({
@@ -26,15 +30,13 @@ export function IssueDetailPage() {
     queryFn: () => api.getIssue(identifier),
   })
 
-  useEffect(() => {
-    setBlockersValue(issue.data?.blocked_by?.join(', ') ?? '')
-  }, [issue.data?.blocked_by])
-
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['bootstrap'] }),
       queryClient.invalidateQueries({ queryKey: ['issues'] }),
       queryClient.invalidateQueries({ queryKey: ['issue', identifier] }),
+      queryClient.invalidateQueries({ queryKey: ['project'] }),
+      queryClient.invalidateQueries({ queryKey: ['epic'] }),
     ])
   }
 
@@ -51,7 +53,7 @@ export function IssueDetailPage() {
     onSuccess: async () => {
       toast.success('Issue deleted')
       await invalidate()
-      void navigate({ to: '/dashboard/work' })
+      void navigate({ to: appRoutes.work })
     },
   })
 
@@ -60,73 +62,93 @@ export function IssueDetailPage() {
   }
 
   const session = bootstrap.data.sessions.sessions[issue.data.id]
+  const retry = bootstrap.data.overview.snapshot.retrying.find((item) => item.issue_id === issue.data?.id)
+  const blockersValue = blockersDraft ?? issue.data.blocked_by?.join(', ') ?? ''
 
   return (
     <div className="grid gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button variant="secondary" onClick={() => void navigate({ to: '/dashboard/work' })}>
-          <ArrowLeft className="size-4" />
-          Back to work
-        </Button>
-        <div className="flex gap-3">
-          <Button variant="secondary" onClick={() => setEditOpen(true)}>
-            Edit issue
-          </Button>
-          <Button variant="secondary" onClick={() => retryMutation.mutate()}>
-            <RotateCcw className="size-4" />
-            Retry now
-          </Button>
-          <Button variant="destructive" onClick={() => deleteMutation.mutate()}>
-            <Trash2 className="size-4" />
-            Delete
-          </Button>
-        </div>
+      <PageHeader
+        eyebrow="Issue detail"
+        title={issue.data.title}
+        description={issue.data.description || 'No description provided.'}
+        crumbs={[
+          { label: 'Work', to: appRoutes.work },
+          issue.data.project_id && issue.data.project_name ? { label: issue.data.project_name, to: appRoutes.projectDetail, params: { projectId: issue.data.project_id } } : { label: 'Issue' },
+          issue.data.epic_id && issue.data.epic_name ? { label: issue.data.epic_name, to: appRoutes.epicDetail, params: { epicId: issue.data.epic_id } } : { label: issue.data.identifier },
+          { label: issue.data.identifier },
+        ]}
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => setEditOpen(true)}>
+              Edit issue
+            </Button>
+            <Button variant="secondary" onClick={() => retryMutation.mutate()}>
+              <RotateCcw className="size-4" />
+              Retry now
+            </Button>
+            <Button variant="destructive" onClick={() => deleteMutation.mutate()}>
+              <Trash2 className="size-4" />
+              Delete
+            </Button>
+          </>
+        }
+      />
+
+      <div className="flex flex-wrap gap-2">
+        <Badge>{issue.data.identifier}</Badge>
+        <Badge className="border-white/10 bg-white/5 text-white">{stateMeta[issue.data.state].label}</Badge>
+        {issue.data.project_name ? (
+          <Badge className="border-white/10 bg-white/5 text-white">
+            <Link params={{ projectId: issue.data.project_id! }} to={appRoutes.projectDetail}>
+              {issue.data.project_name}
+            </Link>
+          </Badge>
+        ) : null}
+        {issue.data.epic_name ? (
+          <Badge className="border-white/10 bg-white/5 text-white">
+            <Link params={{ epicId: issue.data.epic_id! }} to={appRoutes.epicDetail}>
+              {issue.data.epic_name}
+            </Link>
+          </Badge>
+        ) : null}
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[1.25fr_.75fr]">
-        <Card>
-          <CardHeader>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge>{issue.data.identifier}</Badge>
-                <Badge>{toTitleCase(issue.data.state)}</Badge>
-                <Badge>{issue.data.project_name || 'No project'}</Badge>
-                {issue.data.epic_name ? <Badge>{issue.data.epic_name}</Badge> : null}
+      <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
+        <div className="grid gap-5">
+          <Card>
+            <CardContent className="grid gap-4 p-5 md:grid-cols-3">
+              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Updated</p>
+                <p className="mt-3 text-white">{formatRelativeTime(issue.data.updated_at)}</p>
+                <p className="mt-2 text-sm text-[var(--muted-foreground)]">{formatDateTime(issue.data.updated_at)}</p>
               </div>
-              <CardTitle className="mt-4 text-3xl">{issue.data.title}</CardTitle>
-              <CardDescription className="mt-3">
-                Updated {formatRelativeTime(issue.data.updated_at)} · Priority {issue.data.priority}
-              </CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
-              <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Description</p>
-              <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-200">{issue.data.description || 'No description provided.'}</p>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
+              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Workspace</p>
-                <p className="mt-3 break-all text-sm text-white">{issue.data.workspace_path || 'Not created yet'}</p>
+                <p className="mt-3 break-all text-white">{issue.data.workspace_path || 'Not created yet'}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">Runs: {formatNumber(issue.data.workspace_run_count)}</p>
               </div>
-              <div className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">PR & branch</p>
-                <p className="mt-3 text-sm text-white">{issue.data.branch_name || 'No branch linked'}</p>
+              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Branch / PR</p>
+                <p className="mt-3 text-white">{issue.data.branch_name || 'No branch linked'}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">{issue.data.pr_url || 'No pull request linked'}</p>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Description</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="whitespace-pre-wrap text-sm leading-7 text-[var(--muted-foreground)]">{issue.data.description || 'No description provided.'}</p>
+            </CardContent>
+          </Card>
+        </div>
 
         <div className="grid gap-5">
           <Card>
             <CardHeader>
-              <div>
-                <Badge>Operator controls</Badge>
-                <CardTitle className="mt-4">Live adjustments</CardTitle>
-              </div>
+              <CardTitle>Live adjustments</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-2">
@@ -134,21 +156,22 @@ export function IssueDetailPage() {
                 <Select
                   value={issue.data.state}
                   onChange={async (event) => {
-                    await api.setIssueState(identifier, event.target.value)
+                    await api.setIssueState(identifier, event.target.value as IssueState)
                     toast.success('State updated')
                     await invalidate()
                   }}
                 >
-                  {['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled'].map((value) => (
+                  {(['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled'] as IssueState[]).map((value) => (
                     <option key={value} value={value}>
-                      {toTitleCase(value)}
+                      {stateMeta[value].label}
                     </option>
                   ))}
                 </Select>
               </div>
+
               <div className="grid gap-2">
                 <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Blockers</span>
-                <Textarea value={blockersValue} onChange={(event) => setBlockersValue(event.target.value)} />
+                <Textarea value={blockersValue} onChange={(event) => setBlockersDraft(event.target.value)} className="min-h-[120px]" />
                 <Button
                   variant="secondary"
                   onClick={async () => {
@@ -160,6 +183,7 @@ export function IssueDetailPage() {
                         .filter(Boolean),
                     )
                     toast.success('Blockers updated')
+                    setBlockersDraft(null)
                     await invalidate()
                   }}
                 >
@@ -172,33 +196,29 @@ export function IssueDetailPage() {
 
           <Card>
             <CardHeader>
-              <div>
-                <Badge>Session telemetry</Badge>
-                <CardTitle className="mt-4">Execution context</CardTitle>
-              </div>
+              <CardTitle>Execution context</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {session ? (
-                <>
-                  <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
-                    <p className="text-sm text-[var(--muted-foreground)]">Last event</p>
-                    <p className="mt-2 font-medium text-white">{session.last_event || 'n/a'}</p>
-                    <p className="mt-2 text-sm text-[var(--muted-foreground)]">{session.last_message || 'No message'}</p>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
-                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Turns</p>
-                      <p className="mt-2 font-display text-3xl">{session.turns_started}</p>
-                    </div>
-                    <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
-                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Tokens</p>
-                      <p className="mt-2 font-display text-3xl">{formatNumber(session.total_tokens)}</p>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-[var(--muted-foreground)]">No live session currently attached to this issue.</p>
-              )}
+              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                <p className="text-sm text-[var(--muted-foreground)]">Last event</p>
+                <p className="mt-2 font-medium text-white">{session?.last_event || 'No live session'}</p>
+                <p className="mt-2 text-sm text-[var(--muted-foreground)]">{session?.last_message || 'No message'}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Turns</p>
+                  <p className="mt-2 font-display text-3xl text-white">{session?.turns_started ?? 0}</p>
+                </div>
+                <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Tokens</p>
+                  <p className="mt-2 font-display text-3xl text-white">{formatNumber(session?.total_tokens)}</p>
+                </div>
+              </div>
+              {retry ? (
+                <div className="rounded-[1.5rem] border border-amber-400/15 bg-amber-400/10 p-4 text-sm text-amber-100">
+                  Retry scheduled for {formatDateTime(retry.due_at)}.
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </div>

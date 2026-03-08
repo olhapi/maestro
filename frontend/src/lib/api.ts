@@ -1,10 +1,12 @@
 import type {
   BootstrapResponse,
   Epic,
+  EpicDetailResponse,
   EpicSummary,
   IssueDetail,
   IssueSummary,
   Project,
+  ProjectDetailResponse,
   ProjectSummary,
   RuntimeEvent,
   RuntimeSeriesPoint,
@@ -39,6 +41,7 @@ export interface IssueFilters {
 export const api = {
   bootstrap: () => request<BootstrapResponse>('/api/v1/app/bootstrap'),
   listProjects: () => request<{ items: ProjectSummary[] }>('/api/v1/app/projects'),
+  getProject: (id: string) => request<ProjectDetailResponse>(`/api/v1/app/projects/${id}`),
   createProject: (body: { name: string; description?: string }) =>
     request<Project>('/api/v1/app/projects', { method: 'POST', body: JSON.stringify(body) }),
   updateProject: (id: string, body: { name: string; description?: string }) =>
@@ -46,6 +49,7 @@ export const api = {
   deleteProject: (id: string) => request<{ deleted: boolean }>(`/api/v1/app/projects/${id}`, { method: 'DELETE' }),
   listEpics: (projectID?: string) =>
     request<{ items: EpicSummary[] }>(`/api/v1/app/epics${projectID ? `?project_id=${projectID}` : ''}`),
+  getEpic: (id: string) => request<EpicDetailResponse>(`/api/v1/app/epics/${id}`),
   createEpic: (body: { project_id: string; name: string; description?: string }) =>
     request<Epic>('/api/v1/app/epics', { method: 'POST', body: JSON.stringify(body) }),
   updateEpic: (id: string, body: { project_id: string; name: string; description?: string }) =>

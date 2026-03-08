@@ -27,6 +27,17 @@ export interface ProjectSummary extends Project {
   counts: IssueStateCounts
 }
 
+export interface ProjectDetailResponse {
+  project: ProjectSummary
+  epics: EpicSummary[]
+  issues: {
+    items: IssueSummary[]
+    total: number
+    limit: number
+    offset: number
+  }
+}
+
 export interface Epic {
   id: string
   project_id: string
@@ -39,6 +50,18 @@ export interface Epic {
 export interface EpicSummary extends Epic {
   project_name?: string
   counts: IssueStateCounts
+}
+
+export interface EpicDetailResponse {
+  epic: EpicSummary
+  project?: Project
+  sibling_epics: EpicSummary[]
+  issues: {
+    items: IssueSummary[]
+    total: number
+    limit: number
+    offset: number
+  }
 }
 
 export interface Issue {

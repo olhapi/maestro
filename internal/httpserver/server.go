@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/olhapi/symphony-go/internal/dashboardapi"
@@ -21,15 +22,21 @@ func Start(ctx context.Context, addr string, store *kanban.Store, provider dashb
 	dashboardapi.NewServer(store, provider).Register(mux)
 	observability.RegisterRoutes(mux, provider)
 
-	dashboardHandler := http.StripPrefix("/dashboard/", dashboardui.Handler())
-	mux.Handle("/dashboard/", dashboardHandler)
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/dashboard" {
 			http.NotFound(w, r)
 			return
 		}
-		dashboardui.Handler().ServeHTTP(w, r)
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 	})
+	mux.HandleFunc("/dashboard/", func(w http.ResponseWriter, r *http.Request) {
+		target := strings.TrimPrefix(r.URL.Path, "/dashboard")
+		if target == "" {
+			target = "/"
+		}
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	})
+	mux.Handle("/", dashboardui.Handler())
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 

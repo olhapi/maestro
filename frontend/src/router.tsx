@@ -1,59 +1,86 @@
+import { Suspense, lazy, type ComponentType } from 'react'
 import {
-  Outlet,
   createRootRoute,
   createRoute,
   createRouter,
 } from '@tanstack/react-router'
 
 import { AppShell } from '@/components/app-shell'
-import { IssueDetailPage } from '@/routes/issue-detail'
-import { OverviewPage } from '@/routes/overview'
-import { ProjectsPage } from '@/routes/projects'
-import { SessionsPage } from '@/routes/sessions'
-import { WorkPage } from '@/routes/work'
+import { Card } from '@/components/ui/card'
+
+function lazyPage<T extends Record<string, ComponentType>>(loader: () => Promise<T>, key: keyof T) {
+  const Component = lazy(async () => ({ default: (await loader())[key] as ComponentType }))
+  return function LazyComponent() {
+    return (
+      <Suspense fallback={<Card className="h-[420px] animate-pulse bg-white/5" />}>
+        <Component />
+      </Suspense>
+    )
+  }
+}
+
+const OverviewPage = lazyPage(() => import('@/routes/overview'), 'OverviewPage')
+const WorkPage = lazyPage(() => import('@/routes/work'), 'WorkPage')
+const ProjectsPage = lazyPage(() => import('@/routes/projects'), 'ProjectsPage')
+const ProjectDetailPage = lazyPage(() => import('@/routes/project-detail'), 'ProjectDetailPage')
+const EpicDetailPage = lazyPage(() => import('@/routes/epic-detail'), 'EpicDetailPage')
+const IssueDetailPage = lazyPage(() => import('@/routes/issue-detail'), 'IssueDetailPage')
+const SessionsPage = lazyPage(() => import('@/routes/sessions'), 'SessionsPage')
 
 const rootRoute = createRootRoute({
-  component: () => <Outlet />,
-})
-
-const shellRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/dashboard',
   component: AppShell,
 })
 
 const overviewRoute = createRoute({
-  getParentRoute: () => shellRoute,
+  getParentRoute: () => rootRoute,
   path: '/',
   component: OverviewPage,
 })
 
 const workRoute = createRoute({
-  getParentRoute: () => shellRoute,
+  getParentRoute: () => rootRoute,
   path: '/work',
   component: WorkPage,
 })
 
 const projectsRoute = createRoute({
-  getParentRoute: () => shellRoute,
+  getParentRoute: () => rootRoute,
   path: '/projects',
   component: ProjectsPage,
 })
 
+const projectDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects/$projectId',
+  component: ProjectDetailPage,
+})
+
+const epicDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/epics/$epicId',
+  component: EpicDetailPage,
+})
+
 const issueDetailRoute = createRoute({
-  getParentRoute: () => shellRoute,
+  getParentRoute: () => rootRoute,
   path: '/issues/$identifier',
   component: IssueDetailPage,
 })
 
 const sessionsRoute = createRoute({
-  getParentRoute: () => shellRoute,
+  getParentRoute: () => rootRoute,
   path: '/sessions',
   component: SessionsPage,
 })
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([overviewRoute, workRoute, projectsRoute, issueDetailRoute, sessionsRoute]),
+  overviewRoute,
+  workRoute,
+  projectsRoute,
+  projectDetailRoute,
+  epicDetailRoute,
+  issueDetailRoute,
+  sessionsRoute,
 ])
 
 export const router = createRouter({

@@ -171,7 +171,9 @@ export function IssueDialog({
   epics: EpicSummary[]
   onSubmit: (body: Record<string, unknown>) => Promise<void>
 }) {
-  const [projectID, setProjectID] = useState(initial?.project_id ?? '')
+  const isEditing = Boolean(initial?.identifier)
+  const defaultProjectID = initial?.project_id ?? projects[0]?.id ?? ''
+  const [projectID, setProjectID] = useState(defaultProjectID)
   const [epicID, setEpicID] = useState(initial?.epic_id ?? '')
   const [title, setTitle] = useState(initial?.title ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
@@ -185,7 +187,7 @@ export function IssueDialog({
   const [pending, setPending] = useState(false)
 
   useEffect(() => {
-    setProjectID(initial?.project_id ?? '')
+    setProjectID(initial?.project_id ?? projects[0]?.id ?? '')
     setEpicID(initial?.epic_id ?? '')
     setTitle(initial?.title ?? '')
     setDescription(initial?.description ?? '')
@@ -196,16 +198,23 @@ export function IssueDialog({
     setBranchName(initial?.branch_name ?? '')
     setPrNumber(String(initial?.pr_number ?? 0))
     setPrURL(initial?.pr_url ?? '')
-  }, [initial, open])
+  }, [initial, open, projects])
 
   const filteredEpics = epics.filter((epic) => !projectID || epic.project_id === projectID)
+
+  useEffect(() => {
+    if (!epicID) return
+    if (!filteredEpics.some((epic) => epic.id === epicID)) {
+      setEpicID('')
+    }
+  }, [epicID, filteredEpics])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(96vw,920px)]">
         <div className="space-y-6">
           <div>
-            <DialogTitle className="text-xl font-semibold text-white">{initial ? `Edit ${initial.identifier}` : 'Create issue'}</DialogTitle>
+            <DialogTitle className="text-xl font-semibold text-white">{isEditing ? `Edit ${initial?.identifier}` : 'Create issue'}</DialogTitle>
             <DialogDescription className="mt-2 text-sm text-[var(--muted-foreground)]">
               Shape the issue, set operational metadata, and make it immediately actionable.
             </DialogDescription>
@@ -299,7 +308,7 @@ export function IssueDialog({
                 }
               }}
             >
-              {pending ? 'Saving…' : initial ? 'Update issue' : 'Create issue'}
+              {pending ? 'Saving…' : isEditing ? 'Update issue' : 'Create issue'}
             </Button>
           </div>
         </div>
