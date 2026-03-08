@@ -16,6 +16,7 @@ import (
 	"github.com/olhapi/symphony-go/internal/mcp"
 	"github.com/olhapi/symphony-go/internal/observability"
 	"github.com/olhapi/symphony-go/internal/orchestrator"
+	"github.com/olhapi/symphony-go/internal/speccheck"
 	"github.com/olhapi/symphony-go/internal/verification"
 	"github.com/olhapi/symphony-go/pkg/config"
 )
@@ -43,6 +44,8 @@ func main() {
 		runStatus()
 	case "verify":
 		runVerify()
+	case "spec-check":
+		runSpecCheck()
 	case "version":
 		fmt.Printf("symphony %s\n", version)
 	default:
@@ -65,6 +68,7 @@ Commands:
   project          Manage projects
   status           Show orchestrator status
   verify           Run local parity readiness checks
+  spec-check       Run lightweight Symphony spec conformance checks
   version          Show version
 
 Examples:
@@ -80,6 +84,7 @@ Examples:
   symphony issue move ISS-1 in_progress  # Change issue state
   symphony project create "My App"       # Create a project
   symphony verify                         # Verify local setup
+  symphony spec-check --json              # Run spec conformance checks
 
 Database:
   Symphony stores data in .symphony/symphony.db by default.
@@ -582,6 +587,38 @@ os.Exit(1)
 
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
+		os.Exit(1)
+	}
+}
+
+func runSpecCheck() {
+	var repoPath string
+	jsonOnly := false
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--repo" && i+1 < len(args) {
+			repoPath = args[i+1]
+			i++
+			continue
+		}
+		if args[i] == "--json" {
+			jsonOnly = true
+		}
+	}
+	r := speccheck.Run(repoPath)
+	if jsonOnly {
+		_ = json.NewEncoder(os.Stdout).Encode(r)
+		if !r.OK {
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Println("Spec Check")
+	fmt.Println(strings.Repeat("=", 40))
+	for k, v := range r.Checks {
+		fmt.Printf("%s: %s\n", k, v)
+	}
+	if !r.OK {
 		os.Exit(1)
 	}
 }

@@ -191,6 +191,7 @@ The prompt template supports Go template syntax with access to issue fields:
 
 # Verification
 ./symphony verify [--repo <path>] [--db <path>] [--json]
+./symphony spec-check [--repo <path>] [--json]
 ```
 
 ## Architecture

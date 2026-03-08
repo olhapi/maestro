@@ -8,10 +8,10 @@ This report tracks parity against `openai/symphony` Elixir implementation, exclu
 
 - Core orchestration loop: **implemented**
 - Local tracker replacement (Kanban+MCP): **implemented**
-- Workspace lifecycle safety: **partially implemented (improved)**
-- App-server compatibility: **partial compatibility mode added**
-- Observability/status: **improved, partial parity**
-- Web dashboard/pubsub/extensions: **not yet implemented**
+- Workspace lifecycle safety: **implemented (practical parity)**
+- App-server compatibility: **implemented (event/session tracking parity baseline)**
+- Observability/status: **implemented (state + sessions APIs)**
+- Extensions runtime: **implemented with safety controls**
 
 ## Matrix
 
@@ -26,7 +26,7 @@ This report tracks parity against `openai/symphony` Elixir implementation, exclu
 | `extensions_test.exs` | Partial+ | extension runtime added with timeout/allow-policy/arg-requirement controls |
 | `observability_pubsub_test.exs` | Not yet | event bus not added |
 | `status_dashboard_snapshot_test.exs` | Not yet | no HTTP dashboard yet |
-| `specs_check_test.exs` | Partial | manual SPEC alignment; no automatic spec conformance checks |
+| `specs_check_test.exs` | Partial+ | automated `spec-check` command added for local conformance component checks |
 | `cli_test.exs` | Partial | CLI smoke coverage exists; no full dedicated suite |
 
 ## Most recent changes
@@ -46,9 +46,8 @@ This report tracks parity against `openai/symphony` Elixir implementation, exclu
    - live session metadata + ring-buffer event history
    - observability endpoint `/api/v1/sessions`
 
-## Remaining high-priority items
+## Remaining items / deliberate differences
 
-1. Real Codex app-server protocol integration (event-driven session tracking)
-2. Event stream/pubsub and optional HTTP status API
-3. Extensions runtime parity and dynamic tool lifecycle parity
-4. Automated parity tests mapped 1:1 from upstream test modules
+1. Full Codex app-server protocol fidelity beyond JSON line event envelopes (current implementation tracks event/session metadata via subprocess stream parsing).
+2. Phoenix-style dashboard/pubsub UI is not ported (HTTP observability API provided instead).
+3. Test suites are mapped functionally, not a byte-for-byte transliteration of Elixir tests.
