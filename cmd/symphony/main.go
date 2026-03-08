@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
+	"strconv"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/olhapi/symphony-go/internal/kanban"
+	"github.com/olhapi/symphony-go/internal/logsink"
 	"github.com/olhapi/symphony-go/internal/mcp"
 	"github.com/olhapi/symphony-go/internal/observability"
 	"github.com/olhapi/symphony-go/internal/orchestrator"
@@ -75,6 +76,7 @@ Examples:
   symphony run                           # Start orchestrator in current directory
   symphony run /path/to/repo             # Start orchestrator for a specific repo
   symphony run --logs-root ./log         # Write structured JSON logs to file + stdout
+  symphony run --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
   symphony run --port 8787               # Expose observability API on /api/v1/state
   symphony mcp                           # Start MCP server over stdio
   symphony mcp --extensions ./ext.json   # Load extension tools
@@ -127,19 +129,19 @@ func getWorkflow(repoPath string) *config.Workflow {
 	return workflow
 }
 
-func setupLogger(logsRoot string) error {
+func setupLogger(logsRoot string, maxBytes int64, maxFiles int) error {
 	if err := os.MkdirAll(logsRoot, 0o755); err != nil {
 		return err
 	}
 	logPath := filepath.Join(logsRoot, "symphony.log")
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := logsink.New(logPath, maxBytes, maxFiles)
 	if err != nil {
 		return err
 	}
-	mw := io.MultiWriter(os.Stdout, f)
+	mw := logsink.Multi(os.Stdout, f)
 	h := slog.NewJSONHandler(mw, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(h))
-	slog.Info("Logger initialized", "log_file", logPath)
+	slog.Info("Logger initialized", "log_file", logPath, "rotate_max_bytes", maxBytes, "rotate_max_files", maxFiles)
 	return nil
 }
 
@@ -150,6 +152,8 @@ func runOrchestrator() {
 	var dbPath string
 	var logsRoot string
 	var port string
+	var logMaxBytes int64 = 10 * 1024 * 1024
+	var logMaxFiles int = 3
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -168,13 +172,27 @@ func runOrchestrator() {
 			i++
 			continue
 		}
+		if args[i] == "--log-max-bytes" && i+1 < len(args) {
+			if v, err := strconv.ParseInt(args[i+1], 10, 64); err == nil {
+				logMaxBytes = v
+			}
+			i++
+			continue
+		}
+		if args[i] == "--log-max-files" && i+1 < len(args) {
+			if v, err := strconv.Atoi(args[i+1]); err == nil {
+				logMaxFiles = v
+			}
+			i++
+			continue
+		}
 		if !strings.HasPrefix(args[i], "--") {
 			repoPath = args[i]
 		}
 	}
 
 	if logsRoot != "" {
-		if err := setupLogger(logsRoot); err != nil {
+		if err := setupLogger(logsRoot, logMaxBytes, logMaxFiles); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to setup logger: %v\n", err)
 			os.Exit(1)
 		}

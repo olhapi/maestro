@@ -146,6 +146,12 @@ Validation after these changes:
 - `./symphony verify --repo . --json` ✅
 - Live endpoint checks for `/api/v1/events` and `/api/v1/dashboard` ✅
 
+Additional completion update:
+
+- Added size-based log rotation for structured logs.
+- Added parser hardening for nested app-server event envelopes and usage fields.
+- Verified log rotation smoke (`--log-max-bytes 100`) creates `symphony.log.1`/`.2`.
+
 ## 8) Handoff conclusion
 
 For the current project goals, implementation is stable and handoff-ready, with observability parity moved forward materially.

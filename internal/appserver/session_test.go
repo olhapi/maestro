@@ -13,6 +13,23 @@ func TestParseEventLine(t *testing.T) {
 	}
 }
 
+func TestParseEventNestedEnvelope(t *testing.T) {
+	line := `{"event":{"type":"turn.completed","threadId":"th1","turnId":"tu1","usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18},"content":"done"}}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "turn.completed" || e.ThreadID != "th1" || e.TurnID != "tu1" {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+	if e.InputTokens != 11 || e.OutputTokens != 7 || e.TotalTokens != 18 {
+		t.Fatalf("unexpected token usage: %#v", e)
+	}
+	if e.Message != "done" {
+		t.Fatalf("unexpected message: %#v", e)
+	}
+}
+
 func TestSessionApplyEvent(t *testing.T) {
 	s := &Session{}
 	s.ApplyEvent(Event{Type: "turn.started", ThreadID: "th", TurnID: "tu", InputTokens: 1})

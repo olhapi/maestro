@@ -176,7 +176,7 @@ The prompt template supports Go template syntax with access to issue fields:
 ./symphony board [--project <id>]
 
 # Orchestrator
-./symphony run [repo_path] [--db <path>] [--logs-root <path>] [--port <port>]
+./symphony run [repo_path] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
 # Observability API (if --port set)
 # GET /health
 # GET /api/v1/state                  (global status)

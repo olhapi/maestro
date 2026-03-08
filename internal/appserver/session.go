@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -90,12 +91,105 @@ func ParseEventLine(line string) (Event, bool) {
 	if line == "" || !strings.HasPrefix(line, "{") {
 		return Event{}, false
 	}
-	var e Event
-	if err := json.Unmarshal([]byte(line), &e); err != nil {
+
+	var root map[string]interface{}
+	if err := json.Unmarshal([]byte(line), &root); err != nil {
 		return Event{}, false
+	}
+
+	candidates := []map[string]interface{}{root}
+	for _, k := range []string{"event", "data", "payload"} {
+		if m, ok := asMap(root[k]); ok {
+			candidates = append(candidates, m)
+			if inner, ok := asMap(m["event"]); ok {
+				candidates = append(candidates, inner)
+			}
+			if inner, ok := asMap(m["data"]); ok {
+				candidates = append(candidates, inner)
+			}
+		}
+	}
+
+	for _, c := range candidates {
+		e := eventFromMap(c, root)
+		if e.Type != "" {
+			return e, true
+		}
+	}
+	return Event{}, false
+}
+
+func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
+	e := Event{}
+	e.Type = str(m, "type")
+	if e.Type == "" {
+		e.Type = str(m, "event_type")
 	}
 	if e.Type == "" {
-		return Event{}, false
+		e.Type = str(root, "type")
 	}
-	return e, true
+	e.ThreadID = firstStr(m, "thread_id", "threadId")
+	e.TurnID = firstStr(m, "turn_id", "turnId")
+	e.Message = firstStr(m, "message", "content")
+
+	if usage, ok := asMap(m["usage"]); ok {
+		e.InputTokens = firstInt(usage, "input_tokens", "prompt_tokens")
+		e.OutputTokens = firstInt(usage, "output_tokens", "completion_tokens")
+		e.TotalTokens = firstInt(usage, "total_tokens")
+	}
+	if e.InputTokens == 0 {
+		e.InputTokens = firstInt(m, "input_tokens")
+	}
+	if e.OutputTokens == 0 {
+		e.OutputTokens = firstInt(m, "output_tokens")
+	}
+	if e.TotalTokens == 0 {
+		e.TotalTokens = firstInt(m, "total_tokens")
+	}
+	return e
+}
+
+func asMap(v interface{}) (map[string]interface{}, bool) {
+	m, ok := v.(map[string]interface{})
+	return m, ok
+}
+
+func str(m map[string]interface{}, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstStr(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if s := str(m, k); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstInt(m map[string]interface{}, keys ...string) int {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch x := v.(type) {
+			case float64:
+				return int(x)
+			case int:
+				return x
+			case int64:
+				return int(x)
+			case string:
+				var out int
+				_, _ = fmt.Sscanf(x, "%d", &out)
+				if out > 0 {
+					return out
+				}
+			}
+		}
+	}
+	return 0
 }
