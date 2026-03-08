@@ -1,14 +1,14 @@
 # Real Codex E2E Harness
 
-This repository now includes a reproducible end-to-end harness that exercises the real Symphony flow with Codex executing the work:
+This harness exercises the full Symphony-Go loop with the real Codex CLI:
 
-1. Build `symphony`
-2. Create a temporary Symphony repo root and database
-3. Create two issues
-4. Move both issues to `ready`
-5. Start `symphony run`
-6. Let Codex complete both issues
-7. Verify the resulting artifacts
+1. build `symphony`
+2. create a temporary repo root and SQLite database
+3. write a dedicated `WORKFLOW.md`
+4. create two simple issues and move them to `ready`
+5. start `symphony run`
+6. wait for Codex to complete both issues
+7. verify the expected output artifacts
 
 ## Entry Point
 
@@ -16,41 +16,40 @@ This repository now includes a reproducible end-to-end harness that exercises th
 make e2e-real-codex
 ```
 
-The target runs [`scripts/e2e_real_codex.sh`](/Users/olhapi/Projects/symphony-go/scripts/e2e_real_codex.sh).
+The target runs [`scripts/e2e_real_codex.sh`](../scripts/e2e_real_codex.sh).
 
-## What The Prompt Asks Codex To Do
+## What It Verifies
 
-For each issue, the generated `WORKFLOW.md` tells Codex to:
+The generated workflow asks Codex to:
 
 - read the issue description
-- create the requested artifact in a shared artifacts directory
-- verify the file contents with shell commands
-- mark the issue `done` with `symphony issue move <id> done --db <db>`
-- stop
+- create the requested artifact in a shared output directory
+- confirm the file contents from the shell
+- mark the issue `done`
 
-The two issues are intentionally simple and deterministic:
+The test issues are intentionally deterministic:
 
 - `artifact-one.txt` must contain `symphony e2e ok 1`
 - `artifact-two.txt` must contain `symphony e2e ok 2`
 
-## Why This Uses `codex exec`
+## Why It Uses `codex exec`
 
-The harness runs the real Codex CLI in `stdio` mode via `codex exec`. That keeps the flow fully end-to-end while making the harness easier to run deterministically from a shell task:
+The harness uses the real Codex CLI in `stdio` mode via `codex exec` so the run stays end-to-end while remaining easy to launch from a shell script:
 
-- prompt comes from Symphony
-- Codex executes real shell actions
-- Symphony still owns issue creation, scheduling, workspaces, and completion checks
+- Symphony still creates issues, manages workspaces, and drives scheduling
+- Codex still performs the file and shell actions
+- the verification remains deterministic and local
 
 ## Requirements
 
 - `go`
 - `codex`
-- a working Codex login/session
+- an active Codex login/session
 
-## Useful Environment Variables
+## Environment Overrides
 
-- `E2E_TIMEOUT_SEC`: overall wait time per issue. Default `600`.
-- `E2E_POLL_SEC`: poll interval while waiting for issues to finish. Default `2`.
+- `E2E_TIMEOUT_SEC`: total wait time per issue. Default `600`.
+- `E2E_POLL_SEC`: poll interval while waiting. Default `2`.
 - `E2E_KEEP_HARNESS`: keep the temporary harness directory after success. Default `1`.
-- `E2E_ROOT`: reuse a specific harness directory instead of a new temp directory.
-- `E2E_CODEX_COMMAND`: override the Codex command. This is mainly useful for local harness validation without a real Codex run.
+- `E2E_ROOT`: reuse a specific harness directory instead of creating a new temp directory.
+- `E2E_CODEX_COMMAND`: override the Codex command, mainly for local harness validation.

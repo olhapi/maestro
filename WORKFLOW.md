@@ -1,4 +1,5 @@
 ---
+# Supported tracker kind today: kanban.
 tracker:
   kind: kanban
   active_states:
@@ -10,6 +11,7 @@ tracker:
     - cancelled
 polling:
   interval_ms: 30000
+# Workspaces are created relative to this repo unless you use an absolute path.
 workspace:
   root: ./workspaces
 hooks:
@@ -30,33 +32,23 @@ codex:
   stall_timeout_ms: 300000
 ---
 
-You are an autonomous coding agent working on issue {{ issue.identifier }}.
+You are working on issue {{ issue.identifier }}.
 
 {% if attempt %}
 Continuation attempt: {{ attempt }}
 {% endif %}
 
-## Issue Details
+Title: {{ issue.title }}
+State: {{ issue.state }}
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
 
-- **Title**: {{ issue.title }}
-- **Description**:
-  {% if issue.description %}
-  {{ issue.description }}
-  {% else %}
-  No description provided.
-  {% endif %}
-- **State**: {{ issue.state }}
-
-## Instructions
-
-1. Create a branch for this issue
-2. Implement the changes described
-3. Run tests and ensure they pass
-4. Create a pull request
-5. Update the issue with the PR link
-
-## Guidelines
-
-- Follow the project's coding standards
-- Write clear commit messages
-- Keep changes focused and minimal
+Requirements:
+1. Keep the change focused on the issue.
+2. Run the relevant tests or checks.
+3. Update issue metadata with PR details when applicable.
+4. Leave the workspace in a reviewable state.

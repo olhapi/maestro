@@ -1,197 +1,85 @@
 # Symphony-Go
 
-A Go implementation of [OpenAI's Symphony](https://github.com/openai/symphony) - agent orchestration with a local Kanban board.
+Symphony-Go is a Go implementation of the Symphony orchestration loop with a local SQLite-backed Kanban tracker instead of Linear.
 
-**Key difference:** Instead of Linear, this uses a local SQLite-backed Kanban board with MCP support for Codex/ChatGPT integration.
+It gives you three durable surfaces:
 
-## Features
+- a local tracker for projects and issues
+- an MCP server so Codex or ChatGPT can manage that tracker
+- an orchestrator that reads `WORKFLOW.md`, picks up `ready` issues, and dispatches them to an agent
 
-- 🗂️ **Local Kanban Board** - Projects, Epics, Issues with full state management
-- 🔌 **MCP Server** - Let Codex or ChatGPT manage your backlog
-- 🤖 **Agent Orchestration** - Poll for work, dispatch to coding agents
-- 📝 **WORKFLOW.md** - Version your agent prompts with your code
-- 🔒 **Single Binary** - No dependencies, just SQLite
-
-## Installation
+## Build
 
 ```bash
-# Build
-cd symphony-go
 go build -o symphony ./cmd/symphony
+```
 
-# Or with Docker
+Optional Docker build:
+
+```bash
 docker build -t symphony .
 ```
 
 ## Quick Start
 
-### 1. Create a Project
+### 1. Initialize a workflow file
 
 ```bash
-./symphony project create "My App" --desc "My awesome application"
+./symphony workflow init .
 ```
 
-### 2. Create Issues
+This writes a repo-local `WORKFLOW.md` with the default Kanban workflow, Codex command, and prompt template.
+
+### 2. Create a project and some issues
 
 ```bash
-./symphony issue create "Add authentication" --project <project_id> --labels feature,security
-./symphony issue create "Fix login bug" --priority 1 --labels bug
-```
-
-### 3. View the Board
-
-```bash
+./symphony project create "My App" --desc "Example project"
+./symphony issue create "Add login page" --project <project_id> --labels feature,ui
+./symphony issue create "Fix auth bug" --priority 1 --labels bug
+./symphony issue list
 ./symphony board
 ```
 
-### 4. Start the MCP Server
+Move an issue into the ready queue when you want the orchestrator to pick it up:
 
-Add to your Codex/ChatGPT config:
+```bash
+./symphony issue move ISS-1 ready
+```
+
+### 3. Expose the tracker to MCP clients
+
+Add the built binary to your MCP client config:
 
 ```json
 {
   "mcpServers": {
     "symphony": {
-      "command": "/path/to/symphony",
+      "command": "/absolute/path/to/symphony",
       "args": ["mcp"]
     }
   }
 }
 ```
 
-Now you can ask Codex to manage your backlog:
-- "Create an issue for implementing the login page"
-- "Show me all issues in the backlog"
-- "Move issue APP-1 to in_progress"
+The MCP server exposes project, issue, board, and blocker-management tools backed by the local Kanban store.
 
-### 5. Run the Orchestrator
+### 4. Start the orchestrator
 
 ```bash
-./symphony run /path/to/your/repo
+./symphony run /path/to/repo
 ```
 
-This will:
-1. Poll for issues in "ready" state
-2. Spawn coding agents (Codex by default) for each issue
-3. Track progress and handle retries
+The orchestrator:
 
-## MCP Tools
+1. loads `WORKFLOW.md`
+2. polls for issues in the `ready` state
+3. creates per-issue workspaces
+4. dispatches work to the configured agent command
+5. tracks retries, logs, and runtime status
 
-The MCP server exposes these tools:
+`run` prints a preview warning because the default workflow can launch Codex without extra guardrails. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when that is intentional for your environment.
 
-You can also load external extension tools via `--extensions ext.json`.
-The same extension file can be used by both `symphony mcp` and `symphony run`, so app-server dynamic tools and MCP tools share one runtime definition.
-Each entry defines `name`, `description`, `command`, and optional controls:
-- `timeout_sec` (default 15)
-- `allowed` (set false to disable)
-- `require_args` (reject call unless `args` provided)
-- `working_dir`
-- `deny_env_passthrough` (only SYMPHONY_* env)
-At runtime, arguments are provided via `SYMPHONY_ARGS_JSON` and tool name via `SYMPHONY_TOOL_NAME`.
-
-| Tool | Description |
-|------|-------------|
-| `create_project` | Create a new project |
-| `list_projects` | List all projects |
-| `delete_project` | Delete a project |
-| `create_epic` | Create an epic within a project |
-| `list_epics` | List epics (optionally filtered) |
-| `delete_epic` | Delete an epic |
-| `create_issue` | Create a new issue |
-| `get_issue` | Get issue details |
-| `list_issues` | List issues with filters |
-| `update_issue` | Update an issue |
-| `set_issue_state` | Change issue state |
-| `delete_issue` | Delete an issue |
-| `board_overview` | Get kanban board overview |
-| `set_blockers` | Set issue blockers |
-
-## Issue States
-
-| State | Description |
-|-------|-------------|
-| `backlog` | Not yet prioritized |
-| `ready` | Ready to be picked up |
-| `in_progress` | Currently being worked on |
-| `in_review` | PR created, awaiting review |
-| `done` | Completed |
-| `cancelled` | Cancelled |
-
-## WORKFLOW.md
-
-Create a `WORKFLOW.md` in your repo to customize agent behavior:
-
-You can bootstrap one with:
-
-```bash
-./symphony workflow init /path/to/repo
-```
-
-```yaml
----
-tracker:
-  kind: kanban
-  active_states:
-    - ready
-    - in_progress
-    - in_review
-  terminal_states:
-    - done
-    - cancelled
-polling:
-  interval_ms: 30000
-workspace:
-  root: ./workspaces
-hooks:
-  timeout_ms: 60000
-agent:
-  max_concurrent_agents: 3
-  max_turns: 20
-  max_retry_backoff_ms: 300000
-  mode: app_server # or stdio
-codex:
-  command: codex app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  turn_timeout_ms: 3600000
-  read_timeout_ms: 5000
-  stall_timeout_ms: 300000
----
-
-You are working on issue {{ issue.identifier }}.
-
-{% if attempt %}
-Continuation attempt: {{ attempt }}
-{% endif %}
-
-Title: {{ issue.title }}
-Description:
-{% if issue.description %}
-{{ issue.description }}
-{% else %}
-No description provided.
-{% endif %}
-
-## Your Tasks
-
-1. Create a feature branch
-2. Implement the changes
-3. Write tests
-4. Create a pull request
-```
-
-The prompt template uses strict Liquid-style variables. Supported values include:
-- `{{ issue.identifier }}` - Issue ID (for example `APP-123`)
-- `{{ issue.title }}` - Issue title
-- `{{ issue.description }}` - Issue description
-- `{{ issue.state }}` - Current issue state
-- `{{ attempt }}` - Retry attempt number on continuation/retry runs
-
-Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`. `run` also accepts `--workflow <path>` for non-default locations. The loader accepts the current nested schema plus compatible prompt-only/config-only variants and selected legacy flat keys for Kanban mode. `spec-check` stays non-mutating and reports missing or invalid workflow files as failures.
-
-## CLI Reference
+## Core Commands
 
 ```bash
 # Projects
@@ -200,112 +88,88 @@ Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`
 ./symphony project delete <id>
 
 # Issues
-./symphony issue create <title> [--project <id>] [--priority <n>] [--labels <l1,l2>]
+./symphony issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
 ./symphony issue list [--state <state>] [--project <id>]
 ./symphony issue show <identifier>
 ./symphony issue move <identifier> <state>
-./symphony issue update <identifier> [--title <title>] [--pr <number> <url>]
+./symphony issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
 ./symphony issue delete <identifier>
 ./symphony issue block <identifier> <blocker_identifier...>
 
-# Board
-./symphony board [--project <id>]
-
-# Orchestrator
-./symphony run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>] [--i-understand-that-this-will-be-running-without-the-usual-guardrails]
-# Observability API (if --port set)
-# GET /health
-# GET /api/v1/state                  (snapshot/presenter payload)
-# GET /api/v1/<issue_identifier>     (single running/retrying issue snapshot)
-# POST /api/v1/refresh               (request an observability refresh)
-# GET /api/v1/sessions               (all live app_server sessions + event history)
-# GET /api/v1/sessions?issue=ISS-1   (single issue session)
-# GET /api/v1/events?since=0&limit=100   (in-memory event feed with cursor)
-# GET /api/v1/dashboard              (state + sessions + recent events snapshot)
-
-# MCP Server
+# Orchestration
+./symphony run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
 ./symphony mcp [--db <path>] [--extensions <json-file>]
-
-# Status
 ./symphony status [--json]
 ./symphony status --dashboard [--dashboard-url <url>]
-
-# Verification
 ./symphony verify [--repo <path>] [--db <path>] [--json]
 ./symphony spec-check [--repo <path>] [--json]
 ./symphony workflow init [repo_path]
 ```
 
-## Real Codex E2E
+## Issue States
 
-There is a reproducible real-Codex harness that creates two issues, lets Codex complete both, and verifies the resulting artifacts:
+| State | Meaning |
+| --- | --- |
+| `backlog` | Not yet prioritized |
+| `ready` | Available for the orchestrator |
+| `in_progress` | Actively being worked |
+| `in_review` | Waiting for human review |
+| `done` | Completed |
+| `cancelled` | Closed without completion |
 
-```bash
-make e2e-real-codex
-```
+## Workflow Configuration
 
-The harness:
+`WORKFLOW.md` is the repo-local source of truth for:
 
-- builds `symphony`
-- creates a temporary repo root and SQLite database
-- writes a dedicated `WORKFLOW.md`
-- creates two simple artifact-based issues
-- starts `symphony run`
-- waits for both issues to reach `done`
-- verifies `artifact-one.txt` and `artifact-two.txt`
+- tracker settings
+- workspace root
+- hook commands and timeout
+- agent concurrency and mode
+- Codex command and sandbox settings
+- the prompt template rendered for each issue
 
-Details and environment overrides are documented in [`docs/E2E_REAL_CODEX.md`](/Users/olhapi/Projects/symphony-go/docs/E2E_REAL_CODEX.md).
+The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported template variables are:
+
+- `{{ issue.identifier }}`
+- `{{ issue.title }}`
+- `{{ issue.description }}`
+- `{{ issue.state }}`
+- `{{ attempt }}`
+
+Bootstrap behavior matters:
+
+- `symphony workflow init` creates the file explicitly
+- `symphony run` bootstraps a missing file automatically
+- `symphony verify` also bootstraps a missing file
+- `symphony spec-check` does not mutate the repo and fails if the workflow file is missing or invalid
+
+## Operations and Advanced Usage
+
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) covers observability endpoints, `verify` and `spec-check`, extension tool files, logs, and current non-goals.
+- [`docs/E2E_REAL_CODEX.md`](docs/E2E_REAL_CODEX.md) documents the end-to-end harness that runs the real Codex CLI against simple deterministic issues.
 
 ## Architecture
 
-```
-┌─────────────────┐     ┌──────────────────┐
-│   Codex/GPT     │────▶│   MCP Server     │
-│   (via MCP)     │◀────│   (stdio)        │
-└─────────────────┘     └────────┬─────────┘
-                                 │
-                                 ▼
-                        ┌────────────────┐
-                        │  Kanban Store  │
-                        │   (SQLite)     │
-                        └────────┬───────┘
-                                 │
-                                 ▼
-┌─────────────────┐     ┌──────────────────┐
-│  WORKFLOW.md    │────▶│  Orchestrator    │
-│  (repo config)  │     │  (polls/dispatch)│
-└─────────────────┘     └────────┬─────────┘
-                                 │
-                                 ▼
-                        ┌──────────────────┐
-                        │  Agent Runner    │
-                        │  (Codex/other)   │
-                        └──────────────────┘
+```text
+Codex or ChatGPT (via MCP)
+        |
+        v
+MCP server <-> SQLite Kanban store
+        |
+        v
+Orchestrator -> workspace lifecycle -> agent runner
+        ^
+        |
+   WORKFLOW.md
 ```
 
 ## Docker
 
 ```bash
-# Build
 docker build -t symphony .
-
-# Run MCP server
 docker run --rm -i -v ./data:/data symphony mcp --db /data/symphony.db
-
-# Run orchestrator
-docker run --rm -v ./my-repo:/repo -v ./data:/data symphony run /repo --db /data/symphony.db
+docker run --rm -v ./repo:/repo -v ./data:/data symphony run /repo --db /data/symphony.db
 ```
-
-## Comparison with Original Symphony
-
-| Feature | Original (Elixir) | This (Go) |
-|---------|-------------------|-----------|
-| Issue Tracker | Linear | Local Kanban |
-| MCP Support | ❌ | ✅ |
-| Single Binary | ❌ | ✅ |
-| WORKFLOW.md | ✅ | ✅ |
-| Orchestrator | ✅ | ✅ |
-| Language | Elixir | Go |
 
 ## License
 

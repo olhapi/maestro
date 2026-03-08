@@ -76,9 +76,9 @@ Commands:
   issue            Manage issues
   project          Manage projects
   status           Show orchestrator status
-  verify           Run local parity readiness checks
+  verify           Run local readiness checks
   spec-check       Run lightweight Symphony spec conformance checks
-  workflow         Initialize or inspect WORKFLOW.md
+  workflow         Initialize WORKFLOW.md
   version          Show version
 
 Examples:
@@ -99,7 +99,7 @@ Examples:
   symphony project create "My App"       # Create a project
   symphony verify                         # Verify local setup
   symphony spec-check --json              # Run spec conformance checks
-  symphony workflow init                  # Create a nested WORKFLOW.md
+  symphony workflow init                  # Create a WORKFLOW.md
 
 Database:
   Symphony stores data in .symphony/symphony.db by default.
