@@ -83,10 +83,10 @@ Confirmed log sink created:
 
 These are known non-finished parity areas vs upstream Elixir behavior:
 
-1. Full event-bus/pubsub parity (Phoenix-style stream semantics)
-2. Full dashboard snapshot parity from upstream UI tests
-3. Byte-for-byte protocol parity for all app-server edge cases
-4. Full transliteration of upstream test suite (current is functional crosswalk, not exact copy)
+1. Full event-bus/pubsub parity (Phoenix-style stream semantics) — **improved** with in-memory cursor feed at `/api/v1/events`, but not full pubsub transport parity.
+2. Full dashboard snapshot parity from upstream UI tests — **improved** with `/api/v1/dashboard` API snapshot endpoint.
+3. Byte-for-byte protocol parity for all app-server edge cases.
+4. Full transliteration of upstream test suite (current is functional crosswalk, not exact copy).
 
 ## 5) Recommended next plan (if continuing)
 
@@ -129,8 +129,23 @@ go test ./...
 ./symphony verify --repo . --json
 ```
 
-## 7) Handoff conclusion
+## 7) Additional completion update (same day)
 
-For the current project goals, implementation is stable and handoff-ready.
+Completed follow-up missing parts:
 
-If you want, next I can execute Phase 1 immediately (event stream/pubsub layer) and keep shipping in small, reviewable commits.
+- Added orchestrator in-memory event ring buffer (seq + timestamp + kind + metadata).
+- Added lifecycle event publishing (`tick`, `run_started`, `run_completed`, `run_failed`, retry and stop events).
+- Added `GET /api/v1/events?since=&limit=` cursor endpoint.
+- Added `GET /api/v1/dashboard` consolidated snapshot endpoint (`state`, `sessions`, `events`).
+- Added/updated tests for observability and event feed behavior.
+
+Validation after these changes:
+
+- `go test ./...` ✅
+- `./symphony spec-check --repo . --json` ✅
+- `./symphony verify --repo . --json` ✅
+- Live endpoint checks for `/api/v1/events` and `/api/v1/dashboard` ✅
+
+## 8) Handoff conclusion
+
+For the current project goals, implementation is stable and handoff-ready, with observability parity moved forward materially.

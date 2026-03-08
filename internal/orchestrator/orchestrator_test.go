@@ -246,7 +246,7 @@ func TestStatus(t *testing.T) {
 
 	status := orch.Status()
 
-	for _, key := range []string{"active_runs", "max_concurrent", "started_at", "uptime_seconds", "poll_interval_sec", "run_metrics"} {
+	for _, key := range []string{"active_runs", "max_concurrent", "started_at", "uptime_seconds", "poll_interval_sec", "run_metrics", "events_count", "last_event_seq"} {
 		if _, ok := status[key]; !ok {
 			t.Fatalf("Expected status to have key %s", key)
 		}
@@ -256,6 +256,31 @@ func TestStatus(t *testing.T) {
 	}
 	if status["poll_interval_sec"] != 1 {
 		t.Errorf("Expected poll_interval_sec 1, got %v", status["poll_interval_sec"])
+	}
+}
+
+func TestEventsFeed(t *testing.T) {
+	orch, _, _ := setupTestOrchestrator(t)
+
+	orch.mu.Lock()
+	orch.appendEventLocked("a", map[string]interface{}{"x": 1})
+	orch.appendEventLocked("b", map[string]interface{}{"x": 2})
+	orch.appendEventLocked("c", map[string]interface{}{"x": 3})
+	orch.mu.Unlock()
+
+	feed := orch.Events(1, 2)
+	events, ok := feed["events"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected events slice, got %#v", feed["events"])
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0]["kind"] != "b" || events[1]["kind"] != "c" {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	if feed["last_seq"].(int64) != 3 {
+		t.Fatalf("unexpected last_seq: %#v", feed)
 	}
 }
 

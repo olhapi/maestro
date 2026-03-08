@@ -182,6 +182,8 @@ The prompt template supports Go template syntax with access to issue fields:
 # GET /api/v1/state                  (global status)
 # GET /api/v1/sessions               (all live app_server sessions + event history)
 # GET /api/v1/sessions?issue=ISS-1   (single issue session)
+# GET /api/v1/events?since=0&limit=100   (in-memory event feed with cursor)
+# GET /api/v1/dashboard              (state + sessions + recent events snapshot)
 
 # MCP Server
 ./symphony mcp [--db <path>] [--extensions <json-file>]

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -31,6 +32,9 @@ type Orchestrator struct {
 	successfulRuns int
 	failedRuns     int
 	liveSessions   map[string]*appserver.Session
+	eventSeq       int64
+	events         []map[string]interface{}
+	maxEvents      int
 }
 
 // New creates a new orchestrator
@@ -44,6 +48,7 @@ func New(store *kanban.Store, workflow *config.Workflow) *Orchestrator {
 		maxRetries:   3,
 		startedAt:    time.Now().UTC(),
 		liveSessions: make(map[string]*appserver.Session),
+		maxEvents:    500,
 	}
 }
 
@@ -78,6 +83,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 func (o *Orchestrator) tick(ctx context.Context) error {
 	o.mu.Lock()
 	o.lastTickAt = time.Now().UTC()
+	o.appendEventLocked("tick", map[string]interface{}{})
 	o.mu.Unlock()
 
 	// Reconcile - check if any active runs should be stopped
@@ -206,6 +212,7 @@ func (o *Orchestrator) startRun(ctx context.Context, issue *kanban.Issue) {
 	o.activeRuns[issue.ID] = cancel
 
 	slog.Info("Starting run", "issue", issue.Identifier, "title", issue.Title)
+	o.appendEventLocked("run_started", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "title": issue.Title})
 
 	go func() {
 		defer func() {
@@ -223,6 +230,7 @@ func (o *Orchestrator) startRun(ctx context.Context, issue *kanban.Issue) {
 			o.mu.Lock()
 			o.retryQueue[issue.ID]++
 			o.failedRuns++
+			o.appendEventLocked("run_failed", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "error": err.Error()})
 			o.mu.Unlock()
 			return
 		}
@@ -230,6 +238,7 @@ func (o *Orchestrator) startRun(ctx context.Context, issue *kanban.Issue) {
 		if result.AppSession != nil {
 			o.mu.Lock()
 			o.liveSessions[issue.ID] = result.AppSession
+			o.appendEventLocked("session_updated", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "events_processed": result.AppSession.EventsProcessed, "terminal": result.AppSession.Terminal})
 			o.mu.Unlock()
 		}
 
@@ -238,12 +247,18 @@ func (o *Orchestrator) startRun(ctx context.Context, issue *kanban.Issue) {
 			o.mu.Lock()
 			delete(o.retryQueue, issue.ID)
 			o.successfulRuns++
+			o.appendEventLocked("run_completed", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier})
 			o.mu.Unlock()
 		} else {
 			slog.Error("Run unsuccessful", "issue", issue.Identifier, "error", result.Error)
 			o.mu.Lock()
 			o.retryQueue[issue.ID]++
 			o.failedRuns++
+			errText := "unsuccessful"
+			if result.Error != nil {
+				errText = result.Error.Error()
+			}
+			o.appendEventLocked("run_unsuccessful", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "error": errText})
 			o.mu.Unlock()
 		}
 	}()
@@ -253,6 +268,7 @@ func (o *Orchestrator) stopRun(issueID string) {
 	if cancel, ok := o.activeRuns[issueID]; ok {
 		cancel()
 		delete(o.activeRuns, issueID)
+		o.appendEventLocked("run_stopped", map[string]interface{}{"issue_id": issueID})
 	}
 }
 
@@ -275,12 +291,14 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 		if retries >= o.maxRetries {
 			slog.Warn("Max retries exceeded, moving to backlog", "issue_id", issueID)
 			_ = o.store.UpdateIssueState(issueID, kanban.StateBacklog)
+			o.appendEventLocked("retry_exhausted", map[string]interface{}{"issue_id": issueID, "retries": retries})
 			delete(o.retryQueue, issueID)
 			continue
 		}
 
 		// Reset to ready for retry
 		_ = o.store.UpdateIssueState(issueID, kanban.StateReady)
+		o.appendEventLocked("retry_scheduled", map[string]interface{}{"issue_id": issueID, "retries": retries})
 	}
 }
 
@@ -302,6 +320,53 @@ func (o *Orchestrator) isTerminalState(state string) bool {
 	return false
 }
 
+func (o *Orchestrator) appendEventLocked(kind string, fields map[string]interface{}) {
+	o.eventSeq++
+	e := map[string]interface{}{
+		"seq":  o.eventSeq,
+		"kind": kind,
+		"ts":   time.Now().UTC().Format(time.RFC3339),
+	}
+	for k, v := range fields {
+		e[k] = v
+	}
+	o.events = append(o.events, e)
+	if len(o.events) > o.maxEvents {
+		o.events = o.events[len(o.events)-o.maxEvents:]
+	}
+}
+
+// Events returns an in-memory event feed with simple cursor semantics.
+func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	filtered := make([]map[string]interface{}, 0, limit)
+	for _, evt := range o.events {
+		seq, _ := evt["seq"].(int64)
+		if seq <= since {
+			continue
+		}
+		cp := make(map[string]interface{}, len(evt))
+		for k, v := range evt {
+			cp[k] = v
+		}
+		filtered = append(filtered, cp)
+	}
+	if len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
+	lastSeq := since
+	if len(filtered) > 0 {
+		if s, ok := filtered[len(filtered)-1]["seq"].(int64); ok {
+			lastSeq = s
+		}
+	}
+	return map[string]interface{}{"since": since, "last_seq": lastSeq, "events": filtered}
+}
+
 // Status returns the current orchestrator status
 func (o *Orchestrator) Status() map[string]interface{} {
 	o.mu.RLock()
@@ -311,6 +376,7 @@ func (o *Orchestrator) Status() map[string]interface{} {
 	for id := range o.activeRuns {
 		activeIDs = append(activeIDs, id)
 	}
+	sort.Strings(activeIDs)
 
 	retryByIssue := make(map[string]int, len(o.retryQueue))
 	for k, v := range o.retryQueue {
@@ -341,6 +407,8 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		"poll_interval_sec":  o.workflow.Config.PollInterval,
 		"active_states":      o.workflow.Config.ActiveStates,
 		"terminal_states":    o.workflow.Config.TerminalStates,
+		"events_count":       len(o.events),
+		"last_event_seq":     o.eventSeq,
 		"run_metrics": map[string]int{
 			"total":      o.totalRuns,
 			"successful": o.successfulRuns,

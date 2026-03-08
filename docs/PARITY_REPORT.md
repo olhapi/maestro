@@ -26,8 +26,8 @@ See also detailed mapping: `docs/UPSTREAM_CROSSWALK.md`.
 | `app_server_test.exs` | Partial+ | `agent.mode=app_server` + JSON event parsing + live session metadata tracking (`session_id`, tokens, last_event) + terminal semantics and event history |
 | `dynamic_tool_test.exs` | Partial | MCP tool registry and calls implemented |
 | `extensions_test.exs` | Partial+ | extension runtime added with timeout/allow-policy/arg-requirement controls |
-| `observability_pubsub_test.exs` | Not yet | event bus not added |
-| `status_dashboard_snapshot_test.exs` | Not yet | no HTTP dashboard yet |
+| `observability_pubsub_test.exs` | Partial+ | in-memory event feed with cursor/limit via `/api/v1/events` |
+| `status_dashboard_snapshot_test.exs` | Partial+ | dashboard snapshot endpoint `/api/v1/dashboard` |
 | `specs_check_test.exs` | Partial+ | automated `spec-check` command added for local conformance component checks |
 | `cli_test.exs` | Partial | CLI smoke coverage exists; no full dedicated suite |
 

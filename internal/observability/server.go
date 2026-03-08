@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -15,6 +16,10 @@ type StatusProvider interface {
 
 type SessionProvider interface {
 	LiveSessions() map[string]interface{}
+}
+
+type EventProvider interface {
+	Events(since int64, limit int) map[string]interface{}
 }
 
 // Server is a lightweight observability HTTP API.
@@ -56,6 +61,42 @@ func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": map[string]interface{}{}})
+	})
+
+	mux.HandleFunc("/api/v1/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		ep, ok := provider.(EventProvider)
+		if !ok {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"since": 0, "last_seq": 0, "events": []interface{}{}})
+			return
+		}
+		var since int64
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				since = v
+			}
+		}
+		limit := 100
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil {
+				limit = v
+			}
+		}
+		_ = json.NewEncoder(w).Encode(ep.Events(since, limit))
+	})
+
+	mux.HandleFunc("/api/v1/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		out := map[string]interface{}{
+			"state": provider.Status(),
+		}
+		if sp, ok := provider.(SessionProvider); ok {
+			out["sessions"] = sp.LiveSessions()
+		}
+		if ep, ok := provider.(EventProvider); ok {
+			out["events"] = ep.Events(0, 25)
+		}
+		_ = json.NewEncoder(w).Encode(out)
 	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}
