@@ -8,8 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/olhapi/symphony-go/internal/appserver"
@@ -17,18 +17,15 @@ import (
 	"github.com/olhapi/symphony-go/pkg/config"
 )
 
-// Runner handles executing coding agents for issues
+type WorkflowProvider interface {
+	Current() (*config.Workflow, error)
+}
+
 type Runner struct {
-	config *config.Workflow
-	store  *kanban.Store
+	workflowProvider WorkflowProvider
+	store            *kanban.Store
 }
 
-// NewRunner creates a new agent runner
-func NewRunner(workflow *config.Workflow, store *kanban.Store) *Runner {
-	return &Runner{config: workflow, store: store}
-}
-
-// RunResult contains the result of an agent run
 type RunResult struct {
 	Success    bool
 	Output     string
@@ -36,19 +33,25 @@ type RunResult struct {
 	AppSession *appserver.Session
 }
 
-// Run executes the coding agent for an issue
+func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
+	return &Runner{workflowProvider: provider, store: store}
+}
+
 func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, error) {
-	workspace, err := r.getOrCreateWorkspace(issue)
+	return r.RunAttempt(ctx, issue, 0)
+}
+
+func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*RunResult, error) {
+	workflow, err := r.workflowProvider.Current()
+	if err != nil {
+		return nil, err
+	}
+
+	workspace, err := r.getOrCreateWorkspace(workflow, issue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
-
-	prompt, err := r.buildPrompt(issue)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build prompt: %w", err)
-	}
-
-	if err := r.runHooks(ctx, workspace.Path, r.config.Config.Hooks.BeforeRun, "before_run"); err != nil {
+	if err := r.runHook(ctx, workspace.Path, workflow.Config.Hooks.BeforeRun, "before_run"); err != nil {
 		return nil, err
 	}
 
@@ -56,17 +59,38 @@ func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, erro
 		_ = r.store.UpdateIssueState(issue.ID, kanban.StateInProgress)
 	}
 
-	result := r.executeAgent(ctx, workspace.Path, prompt, issue)
+	result, runErr := r.executeTurns(ctx, workflow, workspace.Path, issue, attempt)
 
-	_ = r.runHooks(ctx, workspace.Path, r.config.Config.Hooks.AfterRun, "after_run")
+	_ = r.runHook(ctx, workspace.Path, workflow.Config.Hooks.AfterRun, "after_run")
 	_ = r.store.UpdateWorkspaceRun(issue.ID)
 
+	if runErr != nil {
+		return result, runErr
+	}
 	return result, nil
 }
 
+func (r *Runner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
+	workflow, err := r.workflowProvider.Current()
+	if err != nil {
+		return err
+	}
+	workspace, err := r.store.GetWorkspace(issue.ID)
+	if err != nil {
+		return nil
+	}
+	if err := r.runHook(ctx, workspace.Path, workflow.Config.Hooks.BeforeRemove, "before_remove"); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(workspace.Path); err != nil {
+		return err
+	}
+	return r.store.DeleteWorkspace(issue.ID)
+}
+
 func sanitizeWorkspaceKey(identifier string) string {
-	repl := strings.NewReplacer("/", "_", "\\", "_", "..", "_", " ", "_")
-	out := repl.Replace(identifier)
+	re := regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+	out := re.ReplaceAllString(identifier, "_")
 	out = strings.Trim(out, "._")
 	if out == "" {
 		return "issue"
@@ -74,12 +98,12 @@ func sanitizeWorkspaceKey(identifier string) string {
 	return out
 }
 
-func (r *Runner) getOrCreateWorkspace(issue *kanban.Issue) (*kanban.Workspace, error) {
+func (r *Runner) getOrCreateWorkspace(workflow *config.Workflow, issue *kanban.Issue) (*kanban.Workspace, error) {
 	if existing, err := r.store.GetWorkspace(issue.ID); err == nil {
 		return existing, nil
 	}
 
-	rootAbs, err := filepath.Abs(r.config.Config.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(workflow.Config.Workspace.Root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
@@ -87,9 +111,7 @@ func (r *Runner) getOrCreateWorkspace(issue *kanban.Issue) (*kanban.Workspace, e
 		return nil, fmt.Errorf("create workspace root: %w", err)
 	}
 
-	workspaceKey := sanitizeWorkspaceKey(issue.Identifier)
-	workspacePath := filepath.Join(rootAbs, workspaceKey)
-
+	workspacePath := filepath.Join(rootAbs, sanitizeWorkspaceKey(issue.Identifier))
 	if fi, err := os.Lstat(workspacePath); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
 			resolved, err := filepath.EvalSymlinks(workspacePath)
@@ -118,93 +140,197 @@ func (r *Runner) getOrCreateWorkspace(issue *kanban.Issue) (*kanban.Workspace, e
 
 	workspace, err := r.store.CreateWorkspace(issue.ID, workspacePath)
 	if err != nil {
-		// might already exist due to race, read existing
 		if existing, gerr := r.store.GetWorkspace(issue.ID); gerr == nil {
 			workspace = existing
 		} else {
 			return nil, err
 		}
 	}
-
 	if createdNow {
-		if err := r.runHooks(context.Background(), workspacePath, r.config.Config.Hooks.AfterCreate, "after_create"); err != nil {
+		if err := r.runHook(context.Background(), workspacePath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
 			return nil, err
 		}
 	}
 	return workspace, nil
 }
 
-func (r *Runner) buildPrompt(issue *kanban.Issue) (string, error) {
-	tmpl, err := template.New("prompt").Parse(r.config.PromptTemplate)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse prompt template: %w", err)
+func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int) (*RunResult, error) {
+	var allOutput strings.Builder
+	mode := strings.ToLower(strings.TrimSpace(workflow.Config.Agent.Mode))
+	if mode == config.AgentModeAppServer {
+		return r.executeAppServerTurns(ctx, workflow, workspacePath, issue, attempt, &allOutput)
 	}
-
-	data := struct {
-		*kanban.Issue
-		LabelsJoined string
-	}{Issue: issue, LabelsJoined: strings.Join(issue.Labels, ", ")}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("failed to execute prompt template: %w", err)
-	}
-	return buf.String(), nil
+	return r.executeStdioTurns(ctx, workflow, workspacePath, issue, attempt, &allOutput)
 }
 
-func (r *Runner) runHooks(parentCtx context.Context, workspacePath string, hooks []string, hookName string) error {
-	for _, hook := range hooks {
-		hookCtx := parentCtx
-		var cancel context.CancelFunc
-		if r.config.Config.Hooks.TimeoutSec > 0 {
-			hookCtx, cancel = context.WithTimeout(parentCtx, time.Duration(r.config.Config.Hooks.TimeoutSec)*time.Second)
-			defer cancel()
+func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int, allOutput *strings.Builder) (*RunResult, error) {
+	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
+		prompt, err := r.buildTurnPrompt(workflow, issue, attempt, turn)
+		if err != nil {
+			return nil, err
 		}
-
-		cmd := exec.CommandContext(hookCtx, "sh", "-c", hook)
-		cmd.Dir = workspacePath
-		cmd.Env = append(os.Environ(), "WORKSPACE_PATH="+workspacePath)
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-		err := cmd.Run()
-		if errors.Is(hookCtx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("workspace hook timeout (%s): %w", hookName, hookCtx.Err())
+		out, err := r.executeStdioTurn(ctx, workspacePath, workflow.Config.Codex.Command, prompt, workflow.Config.Codex.TurnTimeoutMs)
+		if out != "" {
+			if allOutput.Len() > 0 {
+				allOutput.WriteString("\n")
+			}
+			allOutput.WriteString(out)
 		}
 		if err != nil {
-			return fmt.Errorf("workspace hook failed (%s): %v: %s", hookName, err, out.String())
+			return &RunResult{Success: false, Output: allOutput.String(), Error: err}, nil
 		}
+
+		refreshed, continueRun := r.refreshForContinuation(workflow, issue.ID)
+		if !continueRun {
+			return &RunResult{Success: true, Output: allOutput.String()}, nil
+		}
+		issue = refreshed
+	}
+	return &RunResult{Success: true, Output: allOutput.String()}, nil
+}
+
+func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int, allOutput *strings.Builder) (*RunResult, error) {
+	client, err := appserver.Start(ctx, appserver.ClientConfig{
+		Executable:        "sh",
+		Args:              []string{"-lc", workflow.Config.Codex.Command},
+		Env:               os.Environ(),
+		Workspace:         workspacePath,
+		WorkspaceRoot:     workflow.Config.Workspace.Root,
+		ApprovalPolicy:    workflow.Config.Codex.ApprovalPolicy,
+		ThreadSandbox:     workflow.Config.Codex.ThreadSandbox,
+		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,
+		ReadTimeout:       time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
+		TurnTimeout:       time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
+	})
+	if err != nil {
+		return &RunResult{Success: false, Error: err}, nil
+	}
+	defer client.Close()
+
+	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
+		prompt, err := r.buildTurnPrompt(workflow, issue, attempt, turn)
+		if err != nil {
+			return nil, err
+		}
+		title := strings.TrimSpace(fmt.Sprintf("%s: %s", issue.Identifier, issue.Title))
+		if title == ":" {
+			title = "Symphony turn"
+		}
+		if err := client.RunTurn(ctx, prompt, title); err != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+
+		refreshed, continueRun := r.refreshForContinuation(workflow, issue.ID)
+		if !continueRun {
+			return &RunResult{
+				Success:    true,
+				Output:     client.Output(),
+				AppSession: client.Session(),
+			}, nil
+		}
+		issue = refreshed
+	}
+	return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+}
+
+func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID string) (*kanban.Issue, bool) {
+	refreshed, err := r.store.GetIssue(issueID)
+	if err != nil {
+		return nil, false
+	}
+	return refreshed, isActiveState(workflow, string(refreshed.State))
+}
+
+func (r *Runner) buildTurnPrompt(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int) (string, error) {
+	if turn > 1 {
+		return fmt.Sprintf(strings.TrimSpace(`
+Continuation guidance:
+
+- The previous turn completed normally, but the issue is still in an active state.
+- This is continuation turn #%d of %d for the current agent run.
+- Resume from the current workspace state instead of restarting from scratch.
+- The original task instructions are already present in the thread history; do not restate them before acting.
+`), turn, workflow.Config.Agent.MaxTurns), nil
+	}
+	ctx := map[string]interface{}{
+		"issue": map[string]interface{}{
+			"id":          issue.ID,
+			"identifier":  issue.Identifier,
+			"title":       issue.Title,
+			"description": issue.Description,
+			"state":       string(issue.State),
+			"priority":    issue.Priority,
+			"labels":      issue.Labels,
+			"branch_name": issue.BranchName,
+			"pr_number":   issue.PRNumber,
+			"pr_url":      issue.PRURL,
+			"blocked_by":  issue.BlockedBy,
+			"created_at":  issue.CreatedAt.Format(time.RFC3339),
+			"updated_at":  issue.UpdatedAt.Format(time.RFC3339),
+		},
+		"attempt": nil,
+	}
+	if attempt > 0 {
+		ctx["attempt"] = attempt
+	}
+	rendered, err := config.RenderLiquidTemplate(workflow.PromptTemplate, ctx)
+	if err != nil {
+		return "", fmt.Errorf("template_render_error: %w", err)
+	}
+	return rendered, nil
+}
+
+func (r *Runner) runHook(parentCtx context.Context, workspacePath, hook, hookName string) error {
+	if strings.TrimSpace(hook) == "" {
+		return nil
+	}
+	workflow, err := r.workflowProvider.Current()
+	if err != nil {
+		return err
+	}
+	hookCtx := parentCtx
+	var cancel context.CancelFunc
+	if workflow.Config.Hooks.TimeoutMs > 0 {
+		hookCtx, cancel = context.WithTimeout(parentCtx, time.Duration(workflow.Config.Hooks.TimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(hookCtx, "sh", "-lc", hook)
+	cmd.Dir = workspacePath
+	cmd.Env = append(os.Environ(), "WORKSPACE_PATH="+workspacePath)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err = cmd.Run()
+	if errors.Is(hookCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("workspace hook timeout (%s): %w", hookName, hookCtx.Err())
+	}
+	if err != nil {
+		return fmt.Errorf("workspace hook failed (%s): %v: %s", hookName, err, out.String())
 	}
 	return nil
 }
 
-func (r *Runner) executeAgent(ctx context.Context, workspacePath, prompt string, issue *kanban.Issue) *RunResult {
-	executable := r.config.Config.Agent.Executable
-	args := r.config.Config.Agent.Args
-
-	if r.config.Config.Agent.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(r.config.Config.Agent.Timeout)*time.Second)
+func (r *Runner) executeStdioTurn(ctx context.Context, workspacePath, command, prompt string, timeoutMs int) (string, error) {
+	turnCtx := ctx
+	var cancel context.CancelFunc
+	if timeoutMs > 0 {
+		turnCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 		defer cancel()
 	}
-
-	mode := strings.ToLower(strings.TrimSpace(r.config.Config.Agent.Mode))
-	if mode == "app_server" {
-		return r.executeAgentAppServer(ctx, workspacePath, executable, args, prompt, issue)
-	}
-	return r.executeAgentStdio(ctx, workspacePath, executable, args, prompt)
-}
-
-func (r *Runner) executeAgentStdio(ctx context.Context, workspacePath, executable string, args []string, prompt string) *RunResult {
-	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd := exec.CommandContext(turnCtx, "sh", "-lc", command)
 	cmd.Dir = workspacePath
-	cmd.Env = r.config.Config.GetEnv()
+	cmd.Env = os.Environ()
 	cmd.Stdin = strings.NewReader(prompt)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
 	err := cmd.Run()
 	output := stdout.String()
 	if stderr.Len() > 0 {
@@ -213,37 +339,19 @@ func (r *Runner) executeAgentStdio(ctx context.Context, workspacePath, executabl
 		}
 		output += stderr.String()
 	}
-	return &RunResult{Success: err == nil, Output: output, Error: err}
+	return strings.TrimSpace(output), err
 }
 
-func (r *Runner) executeAgentAppServer(ctx context.Context, workspacePath, executable string, args []string, prompt string, issue *kanban.Issue) *RunResult {
-	env := append(r.config.Config.GetEnv(),
-		"SYMPHONY_AGENT_MODE=app_server",
-		"SYMPHONY_PROMPT_LEN="+fmt.Sprintf("%d", len(prompt)),
-	)
-	title := "Symphony turn"
-	if issue != nil {
-		title = strings.TrimSpace(fmt.Sprintf("%s: %s", issue.Identifier, issue.Title))
-	}
-	res, err := appserver.Run(ctx, appserver.ClientConfig{
-		Executable:        executable,
-		Args:              args,
-		Env:               env,
-		Workspace:         workspacePath,
-		WorkspaceRoot:     r.config.Config.WorkspaceRoot,
-		Prompt:            prompt,
-		Title:             title,
-		ApprovalPolicy:    r.config.Config.Agent.ApprovalPolicy,
-		ThreadSandbox:     r.config.Config.Agent.ThreadSandbox,
-		TurnSandboxPolicy: r.config.Config.Agent.TurnSandboxPolicy,
-		ReadTimeout:       time.Duration(r.config.Config.Agent.ReadTimeoutMs) * time.Millisecond,
-		TurnTimeout:       time.Duration(r.config.Config.Agent.Timeout) * time.Second,
-	})
-	if err != nil {
-		if res == nil {
-			return &RunResult{Success: false, Error: err}
+func isActiveState(workflow *config.Workflow, state string) bool {
+	normalized := normalizeState(state)
+	for _, s := range workflow.Config.Tracker.ActiveStates {
+		if normalizeState(s) == normalized {
+			return true
 		}
-		return &RunResult{Success: false, Output: res.Output, Error: err, AppSession: res.Session}
 	}
-	return &RunResult{Success: true, Output: res.Output, AppSession: res.Session}
+	return false
+}
+
+func normalizeState(state string) string {
+	return strings.ToLower(strings.TrimSpace(state))
 }

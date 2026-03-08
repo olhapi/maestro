@@ -19,10 +19,8 @@ import (
 
 const nonInteractiveToolInputAnswer = "This is a non-interactive session. Operator input is unavailable."
 
-// ToolExecutor handles app-server dynamic tool calls.
 type ToolExecutor func(name string, arguments interface{}) map[string]interface{}
 
-// ClientConfig defines how to run an app-server session.
 type ClientConfig struct {
 	Executable        string
 	Args              []string
@@ -41,13 +39,11 @@ type ClientConfig struct {
 	OnMessage         func(map[string]interface{})
 }
 
-// Result contains the app-server transcript and session metadata.
 type Result struct {
 	Output  string
 	Session *Session
 }
 
-// RunError exposes structured app-server failures.
 type RunError struct {
 	Kind    string
 	Payload map[string]interface{}
@@ -71,8 +67,25 @@ func (e *RunError) Unwrap() error {
 	return e.Err
 }
 
-// Run speaks the Codex app-server JSON-RPC protocol over stdio.
-func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
+type Client struct {
+	cfg     ClientConfig
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	session *Session
+
+	lines   chan string
+	lineErr chan error
+	waitCh  chan error
+
+	outputMu sync.Mutex
+	output   bytes.Buffer
+
+	requestMu sync.Mutex
+	nextID    int
+	closeOnce sync.Once
+}
+
+func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if err := validateWorkspaceCWD(cfg.Workspace, cfg.WorkspaceRoot); err != nil {
 		return nil, err
 	}
@@ -116,18 +129,19 @@ func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 
-	client := &protocolClient{
+	client := &Client{
 		cfg:     cfg,
 		cmd:     cmd,
 		stdin:   stdin,
 		session: &Session{MaxHistory: 50},
 		lines:   make(chan string, 128),
 		lineErr: make(chan error, 1),
+		waitCh:  make(chan error, 1),
+		nextID:  1,
 	}
 	client.session.AppServerPID = cmd.Process.Pid
 
@@ -135,13 +149,56 @@ func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
 	wg.Add(2)
 	go client.readStdout(&wg, stdoutPipe)
 	go client.readStderr(&wg, stderrPipe)
-
-	waitErr := func() error {
+	go func() {
 		err := cmd.Wait()
 		wg.Wait()
+		select {
+		case client.waitCh <- err:
+		default:
+		}
+	}()
+
+	if err := client.initialize(ctx); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
+	client, err := Start(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	if err := client.RunTurn(ctx, cfg.Prompt, cfg.Title); err != nil {
+		return &Result{Output: client.Output(), Session: client.Session()}, err
+	}
+	if err := client.Wait(); err != nil {
+		return &Result{Output: client.Output(), Session: client.Session()}, err
+	}
+	return &Result{Output: client.Output(), Session: client.Session()}, nil
+}
+
+func (c *Client) Session() *Session {
+	cp := *c.session
+	cp.History = append([]Event(nil), c.session.History...)
+	return &cp
+}
+
+func (c *Client) Output() string {
+	c.outputMu.Lock()
+	defer c.outputMu.Unlock()
+	return strings.TrimSpace(c.output.String())
+}
+
+func (c *Client) Wait() error {
+	select {
+	case err := <-c.waitCh:
 		if err == nil {
 			select {
-			case readErr := <-client.lineErr:
+			case readErr := <-c.lineErr:
 				if readErr != nil && !errors.Is(readErr, io.EOF) {
 					return readErr
 				}
@@ -149,49 +206,73 @@ func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
 			}
 		}
 		return err
-	}
-
-	if err := client.initialize(ctx); err != nil {
-		_ = stdin.Close()
-		_ = waitErr()
-		return nil, err
-	}
-
-	turnErr := client.awaitTurnCompletion(ctx)
-	_ = stdin.Close()
-	cmdErr := waitErr()
-
-	switch {
-	case turnErr != nil:
-		return &Result{Output: client.outputString(), Session: client.session}, turnErr
-	case cmdErr != nil:
-		return &Result{Output: client.outputString(), Session: client.session}, cmdErr
 	default:
-		return &Result{Output: client.outputString(), Session: client.session}, nil
+		return nil
 	}
 }
 
-type protocolClient struct {
-	cfg     ClientConfig
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	session *Session
-
-	lines   chan string
-	lineErr chan error
-
-	outputMu sync.Mutex
-	output   bytes.Buffer
+func (c *Client) Close() error {
+	var closeErr error
+	c.closeOnce.Do(func() {
+		if c.stdin != nil {
+			_ = c.stdin.Close()
+		}
+		if c.cmd != nil && c.cmd.Process != nil {
+			select {
+			case err := <-c.waitCh:
+				closeErr = err
+			case <-time.After(100 * time.Millisecond):
+				_ = c.cmd.Process.Kill()
+				select {
+				case err := <-c.waitCh:
+					closeErr = err
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+		}
+	})
+	return closeErr
 }
 
-func (c *protocolClient) initialize(ctx context.Context) error {
+func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
+	requestID := c.nextRequestID()
 	if err := c.sendMessage(map[string]interface{}{
-		"id":     1,
+		"id":     requestID,
+		"method": "turn/start",
+		"params": map[string]interface{}{
+			"threadId":       c.session.ThreadID,
+			"input":          []map[string]interface{}{{"type": "text", "text": prompt}},
+			"cwd":            filepath.Clean(c.cfg.Workspace),
+			"title":          title,
+			"approvalPolicy": c.cfg.ApprovalPolicy,
+			"sandboxPolicy":  c.cfg.TurnSandboxPolicy,
+		},
+	}); err != nil {
+		return err
+	}
+	resp, err := c.awaitResponse(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	turnID := nestedString(resp, "turn", "id")
+	if turnID == "" {
+		return fmt.Errorf("invalid turn/start response: missing turn.id")
+	}
+	c.session.ApplyEvent(Event{Type: "turn.started", ThreadID: c.session.ThreadID, TurnID: turnID})
+	c.emitMessage("session_started", map[string]interface{}{
+		"session_id": c.session.SessionID,
+		"thread_id":  c.session.ThreadID,
+		"turn_id":    turnID,
+	})
+	return c.awaitTurnCompletion(ctx)
+}
+
+func (c *Client) initialize(ctx context.Context) error {
+	if err := c.sendMessage(map[string]interface{}{
+		"id":     c.nextRequestID(),
 		"method": "initialize",
 		"params": map[string]interface{}{
-			"capabilities": map[string]interface{}{
-				"experimentalApi": true,
-			},
+			"capabilities": map[string]interface{}{"experimentalApi": true},
 			"clientInfo": map[string]interface{}{
 				"name":    "symphony-go",
 				"title":   "Symphony Go",
@@ -211,8 +292,9 @@ func (c *protocolClient) initialize(ctx context.Context) error {
 		return err
 	}
 
+	threadRequestID := c.nextRequestID()
 	if err := c.sendMessage(map[string]interface{}{
-		"id":     2,
+		"id":     threadRequestID,
 		"method": "thread/start",
 		"params": map[string]interface{}{
 			"approvalPolicy": c.cfg.ApprovalPolicy,
@@ -223,7 +305,7 @@ func (c *protocolClient) initialize(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	threadResp, err := c.awaitResponse(ctx, 2)
+	threadResp, err := c.awaitResponse(ctx, threadRequestID)
 	if err != nil {
 		return err
 	}
@@ -232,39 +314,18 @@ func (c *protocolClient) initialize(ctx context.Context) error {
 		return fmt.Errorf("invalid thread/start response: missing thread.id")
 	}
 	c.session.ThreadID = threadID
-
-	if err := c.sendMessage(map[string]interface{}{
-		"id":     3,
-		"method": "turn/start",
-		"params": map[string]interface{}{
-			"threadId":       threadID,
-			"input":          []map[string]interface{}{{"type": "text", "text": c.cfg.Prompt}},
-			"cwd":            filepath.Clean(c.cfg.Workspace),
-			"title":          c.cfg.Title,
-			"approvalPolicy": c.cfg.ApprovalPolicy,
-			"sandboxPolicy":  c.cfg.TurnSandboxPolicy,
-		},
-	}); err != nil {
-		return err
-	}
-	turnResp, err := c.awaitResponse(ctx, 3)
-	if err != nil {
-		return err
-	}
-	turnID := nestedString(turnResp, "turn", "id")
-	if turnID == "" {
-		return fmt.Errorf("invalid turn/start response: missing turn.id")
-	}
-	c.session.ApplyEvent(Event{Type: "turn.started", ThreadID: threadID, TurnID: turnID})
-	c.emitMessage("session_started", map[string]interface{}{
-		"session_id": c.session.SessionID,
-		"thread_id":  threadID,
-		"turn_id":    turnID,
-	})
 	return nil
 }
 
-func (c *protocolClient) awaitResponse(ctx context.Context, requestID int) (map[string]interface{}, error) {
+func (c *Client) nextRequestID() int {
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	id := c.nextID
+	c.nextID++
+	return id
+}
+
+func (c *Client) awaitResponse(ctx context.Context, requestID int) (map[string]interface{}, error) {
 	for {
 		line, err := c.nextLine(ctx, c.cfg.ReadTimeout)
 		if err != nil {
@@ -288,7 +349,7 @@ func (c *protocolClient) awaitResponse(ctx context.Context, requestID int) (map[
 	}
 }
 
-func (c *protocolClient) awaitTurnCompletion(ctx context.Context) error {
+func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 	var deadline time.Time
 	if c.cfg.TurnTimeout > 0 {
 		deadline = time.Now().Add(c.cfg.TurnTimeout)
@@ -341,7 +402,7 @@ func (c *protocolClient) awaitTurnCompletion(ctx context.Context) error {
 	}
 }
 
-func (c *protocolClient) handleRequest(payload map[string]interface{}) (bool, error) {
+func (c *Client) handleRequest(payload map[string]interface{}) (bool, error) {
 	method := nestedString(payload, "method")
 	id, hasID := payload["id"]
 	if method == "" || !hasID {
@@ -416,14 +477,14 @@ func (c *protocolClient) handleRequest(payload map[string]interface{}) (bool, er
 	}
 }
 
-func (c *protocolClient) autoApproveRequests() bool {
+func (c *Client) autoApproveRequests() bool {
 	if s, ok := c.cfg.ApprovalPolicy.(string); ok {
 		return strings.EqualFold(strings.TrimSpace(s), "never")
 	}
 	return false
 }
 
-func (c *protocolClient) nextLine(ctx context.Context, timeout time.Duration) (string, error) {
+func (c *Client) nextLine(ctx context.Context, timeout time.Duration) (string, error) {
 	var timer <-chan time.Time
 	if timeout > 0 {
 		timer = time.After(timeout)
@@ -449,14 +510,15 @@ func (c *protocolClient) nextLine(ctx context.Context, timeout time.Duration) (s
 	}
 }
 
-func (c *protocolClient) readStdout(wg *sync.WaitGroup, r io.Reader) {
+func (c *Client) readStdout(wg *sync.WaitGroup, r io.Reader) {
 	defer wg.Done()
 	reader := bufio.NewReader(r)
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
-			c.writeOutput(strings.TrimRight(line, "\r\n"), false)
-			c.lines <- strings.TrimRight(line, "\r\n")
+			trimmed := strings.TrimRight(line, "\r\n")
+			c.writeOutput(trimmed, false)
+			c.lines <- trimmed
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -476,7 +538,7 @@ func (c *protocolClient) readStdout(wg *sync.WaitGroup, r io.Reader) {
 	}
 }
 
-func (c *protocolClient) readStderr(wg *sync.WaitGroup, r io.Reader) {
+func (c *Client) readStderr(wg *sync.WaitGroup, r io.Reader) {
 	defer wg.Done()
 	reader := bufio.NewReader(r)
 	for {
@@ -492,7 +554,7 @@ func (c *protocolClient) readStderr(wg *sync.WaitGroup, r io.Reader) {
 	}
 }
 
-func (c *protocolClient) sendMessage(payload map[string]interface{}) error {
+func (c *Client) sendMessage(payload map[string]interface{}) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -501,7 +563,7 @@ func (c *protocolClient) sendMessage(payload map[string]interface{}) error {
 	return err
 }
 
-func (c *protocolClient) captureEvent(payload map[string]interface{}) {
+func (c *Client) captureEvent(payload map[string]interface{}) {
 	encoded, err := json.Marshal(payload)
 	if err == nil {
 		if evt, ok := ParseEventLine(string(encoded)); ok {
@@ -510,7 +572,7 @@ func (c *protocolClient) captureEvent(payload map[string]interface{}) {
 	}
 }
 
-func (c *protocolClient) emitMessage(event string, details map[string]interface{}) {
+func (c *Client) emitMessage(event string, details map[string]interface{}) {
 	if c.cfg.OnMessage == nil {
 		return
 	}
@@ -524,7 +586,7 @@ func (c *protocolClient) emitMessage(event string, details map[string]interface{
 	c.cfg.OnMessage(msg)
 }
 
-func (c *protocolClient) writeOutput(line string, stderr bool) {
+func (c *Client) writeOutput(line string, stderr bool) {
 	c.outputMu.Lock()
 	defer c.outputMu.Unlock()
 	if stderr {
@@ -532,12 +594,6 @@ func (c *protocolClient) writeOutput(line string, stderr bool) {
 	}
 	c.output.WriteString(line)
 	c.output.WriteByte('\n')
-}
-
-func (c *protocolClient) outputString() string {
-	c.outputMu.Lock()
-	defer c.outputMu.Unlock()
-	return strings.TrimSpace(c.output.String())
 }
 
 func validateWorkspaceCWD(workspace, workspaceRoot string) error {
@@ -773,7 +829,7 @@ func needsInputField(payload map[string]interface{}) bool {
 	return false
 }
 
-func (c *protocolClient) logStreamOutput(stream, line string) {
+func (c *Client) logStreamOutput(stream, line string) {
 	text := strings.TrimSpace(line)
 	if text == "" {
 		return

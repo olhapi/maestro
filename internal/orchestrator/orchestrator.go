@@ -3,29 +3,42 @@ package orchestrator
 import (
 	"context"
 	"log/slog"
-	"os"
-	"os/signal"
 	"sort"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/olhapi/symphony-go/internal/appserver"
 	"github.com/olhapi/symphony-go/internal/agent"
+	"github.com/olhapi/symphony-go/internal/appserver"
 	"github.com/olhapi/symphony-go/internal/kanban"
 	"github.com/olhapi/symphony-go/pkg/config"
 )
 
-// Orchestrator manages the polling and dispatch of issues to agents
+const continuationRetryDelay = time.Second
+
+type runningEntry struct {
+	cancel    context.CancelFunc
+	issue     kanban.Issue
+	attempt   int
+	startedAt time.Time
+}
+
+type retryEntry struct {
+	Attempt   int       `json:"attempt"`
+	DueAt     time.Time `json:"due_at"`
+	Error     string    `json:"error,omitempty"`
+	DelayType string    `json:"delay_type,omitempty"`
+}
+
 type Orchestrator struct {
-	store    *kanban.Store
-	workflow *config.Workflow
-	runner   *agent.Runner
+	store     *kanban.Store
+	workflows *config.Manager
+	runner    *agent.Runner
 
 	mu             sync.RWMutex
-	activeRuns     map[string]context.CancelFunc
-	retryQueue     map[string]int // issue_id -> retry count
-	maxRetries     int
+	running        map[string]runningEntry
+	claimed        map[string]struct{}
+	retries        map[string]retryEntry
 	startedAt      time.Time
 	lastTickAt     time.Time
 	totalRuns      int
@@ -37,42 +50,39 @@ type Orchestrator struct {
 	maxEvents      int
 }
 
-// New creates a new orchestrator
-func New(store *kanban.Store, workflow *config.Workflow) *Orchestrator {
+func New(store *kanban.Store, workflows *config.Manager) *Orchestrator {
 	return &Orchestrator{
-		store:      store,
-		workflow:   workflow,
-		runner:     agent.NewRunner(workflow, store),
-		activeRuns: make(map[string]context.CancelFunc),
-		retryQueue: make(map[string]int),
-		maxRetries:   3,
+		store:        store,
+		workflows:    workflows,
+		runner:       agent.NewRunner(workflows, store),
+		running:      make(map[string]runningEntry),
+		claimed:      make(map[string]struct{}),
+		retries:      make(map[string]retryEntry),
 		startedAt:    time.Now().UTC(),
 		liveSessions: make(map[string]*appserver.Session),
 		maxEvents:    500,
 	}
 }
 
-// Run starts the orchestrator loop
 func (o *Orchestrator) Run(ctx context.Context) error {
-	ticker := time.NewTicker(time.Duration(o.workflow.Config.PollInterval) * time.Second)
-	defer ticker.Stop()
-
-	slog.Info("Orchestrator started", "poll_interval", o.workflow.Config.PollInterval)
-
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
+	o.cleanupTerminalWorkspaces(ctx)
 	for {
+		workflow, err := o.workflows.Current()
+		if err != nil {
+			return err
+		}
+		wait := time.Duration(workflow.Config.Polling.IntervalMs) * time.Millisecond
+		if wait <= 0 {
+			wait = 30 * time.Second
+		}
+
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			slog.Info("Orchestrator stopped (context cancelled)")
-			return ctx.Err()
-		case <-sigChan:
-			slog.Info("Orchestrator stopping (signal received)")
+			timer.Stop()
 			o.stopAllRuns()
-			return nil
-		case <-ticker.C:
+			return ctx.Err()
+		case <-timer.C:
 			if err := o.tick(ctx); err != nil {
 				slog.Error("Tick failed", "error", err)
 			}
@@ -86,188 +96,301 @@ func (o *Orchestrator) tick(ctx context.Context) error {
 	o.appendEventLocked("tick", map[string]interface{}{})
 	o.mu.Unlock()
 
-	// Reconcile - check if any active runs should be stopped
-	if err := o.reconcile(); err != nil {
-		slog.Error("Reconciliation failed", "error", err)
-	}
-
-	// Dispatch new runs
-	if err := o.dispatch(ctx); err != nil {
-		slog.Error("Dispatch failed", "error", err)
-	}
-
-	// Process retry queue
+	o.reconcile(ctx)
 	o.processRetries(ctx)
-
-	return nil
+	return o.dispatch(ctx)
 }
 
-func (o *Orchestrator) reconcile() error {
-	// Snapshot active issue IDs first
+func (o *Orchestrator) reconcile(ctx context.Context) {
+	workflow, err := o.workflows.Current()
+	if err != nil {
+		return
+	}
+
 	o.mu.RLock()
-	ids := make([]string, 0, len(o.activeRuns))
-	for issueID := range o.activeRuns {
+	ids := make([]string, 0, len(o.running))
+	for issueID := range o.running {
 		ids = append(ids, issueID)
 	}
 	o.mu.RUnlock()
 
-	toStop := make([]string, 0)
 	for _, issueID := range ids {
 		issue, err := o.store.GetIssue(issueID)
 		if err != nil {
 			continue
 		}
-
-		if !o.isActiveState(string(issue.State)) {
-			slog.Info("Stopping run for issue (state changed)", "issue", issue.Identifier, "state", issue.State)
-			toStop = append(toStop, issueID)
+		if o.isTerminalState(workflow, string(issue.State)) {
+			o.stopRun(issueID)
+			if err := o.runner.CleanupWorkspace(ctx, issue); err != nil {
+				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
+			}
+			o.releaseClaim(issueID)
 			continue
 		}
-
-		if len(issue.BlockedBy) > 0 {
-			for _, blocker := range issue.BlockedBy {
-				blockerIssue, err := o.store.GetIssueByIdentifier(blocker)
-				if err == nil && !o.isTerminalState(string(blockerIssue.State)) {
-					slog.Info("Stopping run for issue (blocked)", "issue", issue.Identifier, "blocked_by", blocker)
-					toStop = append(toStop, issueID)
-					break
-				}
-			}
-		}
-	}
-
-	if len(toStop) > 0 {
-		o.mu.Lock()
-		for _, issueID := range toStop {
+		if !o.isActiveState(workflow, string(issue.State)) || o.isBlocked(workflow, *issue) {
 			o.stopRun(issueID)
+			o.releaseClaim(issueID)
 		}
-		o.mu.Unlock()
 	}
-	return nil
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+	workflow, err := o.workflows.Current()
+	if err != nil {
+		return err
+	}
 
-	// Check capacity
-	if len(o.activeRuns) >= o.workflow.Config.MaxConcurrent {
+	capacity := workflow.Config.Agent.MaxConcurrentAgents
+	if capacity <= 0 {
 		return nil
 	}
 
-	// Get issues in active states (prioritizing "ready")
+	o.mu.RLock()
+	runningCount := len(o.running)
+	o.mu.RUnlock()
+	if runningCount >= capacity {
+		return nil
+	}
+
 	issues, err := o.store.ListIssues(map[string]interface{}{
-		"state": string(kanban.StateReady),
+		"states": workflow.Config.Tracker.ActiveStates,
 	})
 	if err != nil {
 		return err
 	}
 
-	// Also get in_progress issues that aren't running
-	inProgress, err := o.store.ListIssues(map[string]interface{}{
-		"state": string(kanban.StateInProgress),
-	})
-	if err == nil {
-		for _, issue := range inProgress {
-			if _, running := o.activeRuns[issue.ID]; !running {
-				issues = append(issues, issue)
-			}
-		}
-	}
-
-	// Filter out blocked issues
-	var eligible []kanban.Issue
+	available := capacity - runningCount
 	for _, issue := range issues {
-		if o.isBlocked(issue) {
+		if available == 0 {
+			break
+		}
+		if o.isBlocked(workflow, issue) {
 			continue
 		}
-		eligible = append(eligible, issue)
+		if !o.tryClaim(issue.ID) {
+			continue
+		}
+		if !o.isActiveState(workflow, string(issue.State)) {
+			o.releaseClaim(issue.ID)
+			continue
+		}
+		o.startRun(ctx, workflow, &issue, 0)
+		available--
 	}
-
-	// Dispatch up to capacity
-	available := o.workflow.Config.MaxConcurrent - len(o.activeRuns)
-	for i := 0; i < len(eligible) && i < available; i++ {
-		issue := eligible[i]
-		o.startRun(ctx, &issue)
-	}
-
 	return nil
 }
 
-func (o *Orchestrator) isBlocked(issue kanban.Issue) bool {
-	for _, blocker := range issue.BlockedBy {
-		blockerIssue, err := o.store.GetIssueByIdentifier(blocker)
-		if err != nil {
-			continue
-		}
-		if !o.isTerminalState(string(blockerIssue.State)) {
-			return true
+func (o *Orchestrator) processRetries(ctx context.Context) {
+	workflow, err := o.workflows.Current()
+	if err != nil {
+		return
+	}
+	now := time.Now()
+
+	o.mu.RLock()
+	dueIDs := make([]string, 0, len(o.retries))
+	for issueID, entry := range o.retries {
+		if !entry.DueAt.After(now) {
+			dueIDs = append(dueIDs, issueID)
 		}
 	}
-	return false
+	o.mu.RUnlock()
+	sort.Strings(dueIDs)
+
+	for _, issueID := range dueIDs {
+		o.mu.RLock()
+		entry, ok := o.retries[issueID]
+		_, running := o.running[issueID]
+		o.mu.RUnlock()
+		if !ok || running {
+			continue
+		}
+
+		issue, err := o.store.GetIssue(issueID)
+		if err != nil {
+			o.releaseClaim(issueID)
+			o.mu.Lock()
+			delete(o.retries, issueID)
+			o.mu.Unlock()
+			continue
+		}
+		if o.isTerminalState(workflow, string(issue.State)) {
+			if err := o.runner.CleanupWorkspace(ctx, issue); err != nil {
+				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
+			}
+			o.releaseClaim(issueID)
+			o.mu.Lock()
+			delete(o.retries, issueID)
+			o.mu.Unlock()
+			continue
+		}
+		if !o.isActiveState(workflow, string(issue.State)) || o.isBlocked(workflow, *issue) {
+			o.releaseClaim(issueID)
+			o.mu.Lock()
+			delete(o.retries, issueID)
+			o.mu.Unlock()
+			continue
+		}
+
+		o.mu.RLock()
+		capacity := workflow.Config.Agent.MaxConcurrentAgents
+		runningCount := len(o.running)
+		o.mu.RUnlock()
+		if runningCount >= capacity {
+			continue
+		}
+		o.startRun(ctx, workflow, issue, entry.Attempt)
+	}
 }
 
-func (o *Orchestrator) startRun(ctx context.Context, issue *kanban.Issue) {
+func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, attempt int) {
 	runCtx, cancel := context.WithCancel(ctx)
-	o.activeRuns[issue.ID] = cancel
-
-	slog.Info("Starting run", "issue", issue.Identifier, "title", issue.Title)
-	o.appendEventLocked("run_started", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "title": issue.Title})
+	entry := runningEntry{
+		cancel:    cancel,
+		issue:     *issue,
+		attempt:   attempt,
+		startedAt: time.Now().UTC(),
+	}
+	o.mu.Lock()
+	o.running[issue.ID] = entry
+	delete(o.retries, issue.ID)
+	o.appendEventLocked("run_started", map[string]interface{}{
+		"issue_id":    issue.ID,
+		"identifier":  issue.Identifier,
+		"title":       issue.Title,
+		"attempt":     attempt,
+		"issue_state": string(issue.State),
+	})
+	o.mu.Unlock()
 
 	go func() {
-		defer func() {
-			o.mu.Lock()
-			delete(o.activeRuns, issue.ID)
-			o.mu.Unlock()
-		}()
-
-		result, err := o.runner.Run(runCtx, issue)
-		o.mu.Lock()
-		o.totalRuns++
-		o.mu.Unlock()
-		if err != nil {
-			slog.Error("Run failed", "issue", issue.Identifier, "error", err)
-			o.mu.Lock()
-			o.retryQueue[issue.ID]++
-			o.failedRuns++
-			o.appendEventLocked("run_failed", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "error": err.Error()})
-			o.mu.Unlock()
-			return
-		}
-
-		if result.AppSession != nil {
-			o.mu.Lock()
-			o.liveSessions[issue.ID] = result.AppSession
-			o.appendEventLocked("session_updated", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "events_processed": result.AppSession.EventsProcessed, "terminal": result.AppSession.Terminal})
-			o.mu.Unlock()
-		}
-
-		if result.Success {
-			slog.Info("Run completed", "issue", issue.Identifier)
-			o.mu.Lock()
-			delete(o.retryQueue, issue.ID)
-			o.successfulRuns++
-			o.appendEventLocked("run_completed", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier})
-			o.mu.Unlock()
-		} else {
-			slog.Error("Run unsuccessful", "issue", issue.Identifier, "error", result.Error)
-			o.mu.Lock()
-			o.retryQueue[issue.ID]++
-			o.failedRuns++
-			errText := "unsuccessful"
-			if result.Error != nil {
-				errText = result.Error.Error()
-			}
-			o.appendEventLocked("run_unsuccessful", map[string]interface{}{"issue_id": issue.ID, "identifier": issue.Identifier, "error": errText})
-			o.mu.Unlock()
-		}
+		result, err := o.runner.RunAttempt(runCtx, issue, attempt)
+		o.finishRun(workflow, issue, attempt, result, err)
 	}()
 }
 
+func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue, attempt int, result *agent.RunResult, err error) {
+	o.mu.Lock()
+	delete(o.running, issue.ID)
+	o.totalRuns++
+	if result != nil && result.AppSession != nil {
+		o.liveSessions[issue.ID] = result.AppSession
+	}
+	o.mu.Unlock()
+
+	switch {
+	case err != nil:
+		o.mu.Lock()
+		o.failedRuns++
+		o.appendEventLocked("run_failed", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"attempt":    attempt,
+			"error":      err.Error(),
+		})
+		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", err.Error(), workflow.Config.Agent.MaxRetryBackoffMs)
+		o.mu.Unlock()
+	case result != nil && !result.Success:
+		errText := "unsuccessful"
+		if result.Error != nil {
+			errText = result.Error.Error()
+		}
+		o.mu.Lock()
+		o.failedRuns++
+		o.appendEventLocked("run_unsuccessful", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"attempt":    attempt,
+			"error":      errText,
+		})
+		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", errText, workflow.Config.Agent.MaxRetryBackoffMs)
+		o.mu.Unlock()
+	default:
+		o.mu.Lock()
+		o.successfulRuns++
+		next := nextAttempt(attempt)
+		o.appendEventLocked("run_completed", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"attempt":    attempt,
+			"next_retry": next,
+		})
+		o.scheduleRetryLocked(issue, next, "continuation", "", workflow.Config.Agent.MaxRetryBackoffMs)
+		o.mu.Unlock()
+	}
+}
+
+func nextAttempt(attempt int) int {
+	if attempt > 0 {
+		return attempt + 1
+	}
+	return 1
+}
+
+func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, delayType, errText string, maxBackoffMs int) {
+	delay := continuationRetryDelay
+	if delayType != "continuation" {
+		delay = failureRetryDelay(attempt, maxBackoffMs)
+	}
+	o.retries[issue.ID] = retryEntry{
+		Attempt:   attempt,
+		DueAt:     time.Now().Add(delay),
+		Error:     errText,
+		DelayType: delayType,
+	}
+	o.claimed[issue.ID] = struct{}{}
+	o.appendEventLocked("retry_scheduled", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"attempt":    attempt,
+		"due_at":     time.Now().Add(delay).UTC().Format(time.RFC3339),
+		"delay_ms":   delay.Milliseconds(),
+		"delay_type": delayType,
+		"error":      errText,
+	})
+}
+
+func failureRetryDelay(attempt, maxBackoffMs int) time.Duration {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	delay := 10 * time.Second
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+	}
+	maxDelay := time.Duration(maxBackoffMs) * time.Millisecond
+	if maxDelay <= 0 {
+		maxDelay = 5 * time.Minute
+	}
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
+}
+
+func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
+	workflow, err := o.workflows.Current()
+	if err != nil {
+		return
+	}
+	issues, err := o.store.ListIssues(map[string]interface{}{"states": workflow.Config.Tracker.TerminalStates})
+	if err != nil {
+		slog.Warn("Skipping startup terminal workspace cleanup", "error", err)
+		return
+	}
+	for i := range issues {
+		if err := o.runner.CleanupWorkspace(ctx, &issues[i]); err != nil {
+			slog.Warn("Failed to cleanup terminal workspace", "issue", issues[i].Identifier, "error", err)
+		}
+	}
+}
+
 func (o *Orchestrator) stopRun(issueID string) {
-	if cancel, ok := o.activeRuns[issueID]; ok {
-		cancel()
-		delete(o.activeRuns, issueID)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if entry, ok := o.running[issueID]; ok {
+		entry.cancel()
+		delete(o.running, issueID)
 		o.appendEventLocked("run_stopped", map[string]interface{}{"issue_id": issueID})
 	}
 }
@@ -275,68 +398,83 @@ func (o *Orchestrator) stopRun(issueID string) {
 func (o *Orchestrator) stopAllRuns() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	for _, cancel := range o.activeRuns {
-		cancel()
+	for issueID, entry := range o.running {
+		entry.cancel()
+		delete(o.running, issueID)
 	}
-	o.activeRuns = make(map[string]context.CancelFunc)
 }
 
-func (o *Orchestrator) processRetries(ctx context.Context) {
+func (o *Orchestrator) tryClaim(issueID string) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if _, ok := o.claimed[issueID]; ok {
+		return false
+	}
+	o.claimed[issueID] = struct{}{}
+	return true
+}
 
-	// Simple retry logic - move failed issues back to ready state
-	for issueID, retries := range o.retryQueue {
-		if retries >= o.maxRetries {
-			slog.Warn("Max retries exceeded, moving to backlog", "issue_id", issueID)
-			_ = o.store.UpdateIssueState(issueID, kanban.StateBacklog)
-			o.appendEventLocked("retry_exhausted", map[string]interface{}{"issue_id": issueID, "retries": retries})
-			delete(o.retryQueue, issueID)
+func (o *Orchestrator) releaseClaim(issueID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.claimed, issueID)
+	delete(o.retries, issueID)
+	o.appendEventLocked("claim_released", map[string]interface{}{"issue_id": issueID})
+}
+
+func (o *Orchestrator) isBlocked(workflow *config.Workflow, issue kanban.Issue) bool {
+	for _, blocker := range issue.BlockedBy {
+		blockerIssue, err := o.store.GetIssueByIdentifier(blocker)
+		if err != nil {
 			continue
 		}
-
-		// Reset to ready for retry
-		_ = o.store.UpdateIssueState(issueID, kanban.StateReady)
-		o.appendEventLocked("retry_scheduled", map[string]interface{}{"issue_id": issueID, "retries": retries})
-	}
-}
-
-func (o *Orchestrator) isActiveState(state string) bool {
-	for _, s := range o.workflow.Config.ActiveStates {
-		if s == state {
+		if !o.isTerminalState(workflow, string(blockerIssue.State)) {
 			return true
 		}
 	}
 	return false
 }
 
-func (o *Orchestrator) isTerminalState(state string) bool {
-	for _, s := range o.workflow.Config.TerminalStates {
-		if s == state {
+func (o *Orchestrator) isActiveState(workflow *config.Workflow, state string) bool {
+	normalized := normalizeState(state)
+	for _, candidate := range workflow.Config.Tracker.ActiveStates {
+		if normalizeState(candidate) == normalized {
 			return true
 		}
 	}
 	return false
+}
+
+func (o *Orchestrator) isTerminalState(workflow *config.Workflow, state string) bool {
+	normalized := normalizeState(state)
+	for _, candidate := range workflow.Config.Tracker.TerminalStates {
+		if normalizeState(candidate) == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeState(state string) string {
+	return strings.ToLower(strings.TrimSpace(state))
 }
 
 func (o *Orchestrator) appendEventLocked(kind string, fields map[string]interface{}) {
 	o.eventSeq++
-	e := map[string]interface{}{
+	event := map[string]interface{}{
 		"seq":  o.eventSeq,
 		"kind": kind,
 		"ts":   time.Now().UTC().Format(time.RFC3339),
 	}
 	for k, v := range fields {
-		e[k] = v
+		event[k] = v
 	}
-	o.events = append(o.events, e)
+	o.events = append(o.events, event)
 	if len(o.events) > o.maxEvents {
 		o.events = o.events[len(o.events)-o.maxEvents:]
 	}
 }
 
-// Events returns an in-memory event feed with simple cursor semantics.
 func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -344,13 +482,13 @@ func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
 		limit = 100
 	}
 	filtered := make([]map[string]interface{}, 0, limit)
-	for _, evt := range o.events {
-		seq, _ := evt["seq"].(int64)
+	for _, event := range o.events {
+		seq, _ := event["seq"].(int64)
 		if seq <= since {
 			continue
 		}
-		cp := make(map[string]interface{}, len(evt))
-		for k, v := range evt {
+		cp := make(map[string]interface{}, len(event))
+		for k, v := range event {
 			cp[k] = v
 		}
 		filtered = append(filtered, cp)
@@ -360,28 +498,34 @@ func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
 	}
 	lastSeq := since
 	if len(filtered) > 0 {
-		if s, ok := filtered[len(filtered)-1]["seq"].(int64); ok {
-			lastSeq = s
+		if seq, ok := filtered[len(filtered)-1]["seq"].(int64); ok {
+			lastSeq = seq
 		}
 	}
 	return map[string]interface{}{"since": since, "last_seq": lastSeq, "events": filtered}
 }
 
-// Status returns the current orchestrator status
 func (o *Orchestrator) Status() map[string]interface{} {
+	workflow, _ := o.workflows.Current()
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	activeIDs := make([]string, 0, len(o.activeRuns))
-	for id := range o.activeRuns {
+	activeIDs := make([]string, 0, len(o.running))
+	for id := range o.running {
 		activeIDs = append(activeIDs, id)
 	}
 	sort.Strings(activeIDs)
 
-	retryByIssue := make(map[string]int, len(o.retryQueue))
-	for k, v := range o.retryQueue {
-		retryByIssue[k] = v
+	retryQueue := make(map[string]interface{}, len(o.retries))
+	for id, entry := range o.retries {
+		retryQueue[id] = map[string]interface{}{
+			"attempt":    entry.Attempt,
+			"due_at":     entry.DueAt.UTC().Format(time.RFC3339),
+			"error":      entry.Error,
+			"delay_type": entry.DelayType,
+		}
 	}
+
 	live := make(map[string]*appserver.Session, len(o.liveSessions))
 	for k, v := range o.liveSessions {
 		cp := *v
@@ -395,20 +539,16 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		lastTick = o.lastTickAt.Format(time.RFC3339)
 	}
 
-	return map[string]interface{}{
-		"started_at":         o.startedAt.Format(time.RFC3339),
-		"uptime_seconds":     uptimeSec,
-		"last_tick_at":       lastTick,
-		"active_runs":        len(o.activeRuns),
-		"active_issues":      activeIDs,
-		"retry_queue_count":  len(o.retryQueue),
-		"retry_queue":        retryByIssue,
-		"max_concurrent":     o.workflow.Config.MaxConcurrent,
-		"poll_interval_sec":  o.workflow.Config.PollInterval,
-		"active_states":      o.workflow.Config.ActiveStates,
-		"terminal_states":    o.workflow.Config.TerminalStates,
-		"events_count":       len(o.events),
-		"last_event_seq":     o.eventSeq,
+	out := map[string]interface{}{
+		"started_at":        o.startedAt.Format(time.RFC3339),
+		"uptime_seconds":    uptimeSec,
+		"last_tick_at":      lastTick,
+		"active_runs":       len(o.running),
+		"active_issues":     activeIDs,
+		"retry_queue_count": len(o.retries),
+		"retry_queue":       retryQueue,
+		"events_count":      len(o.events),
+		"last_event_seq":    o.eventSeq,
 		"run_metrics": map[string]int{
 			"total":      o.totalRuns,
 			"successful": o.successfulRuns,
@@ -416,15 +556,26 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		},
 		"live_sessions": live,
 	}
+	if workflow != nil {
+		out["max_concurrent"] = workflow.Config.Agent.MaxConcurrentAgents
+		out["poll_interval_ms"] = workflow.Config.Polling.IntervalMs
+		out["active_states"] = workflow.Config.Tracker.ActiveStates
+		out["terminal_states"] = workflow.Config.Tracker.TerminalStates
+		out["workflow_path"] = workflow.Path
+	}
+	if err := o.workflows.LastError(); err != nil {
+		out["workflow_error"] = err.Error()
+	}
+	return out
 }
 
 func (o *Orchestrator) LiveSessions() map[string]interface{} {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	out := make(map[string]interface{}, len(o.liveSessions))
-	for issueID, s := range o.liveSessions {
-		cp := *s
-		cp.History = append([]appserver.Event(nil), s.History...)
+	for issueID, session := range o.liveSessions {
+		cp := *session
+		cp.History = append([]appserver.Event(nil), session.History...)
 		out[issueID] = cp
 	}
 	return map[string]interface{}{"sessions": out}

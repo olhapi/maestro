@@ -10,184 +10,225 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if cfg.PollInterval != 30 {
-		t.Errorf("Expected PollInterval 30, got %d", cfg.PollInterval)
+	if cfg.Tracker.Kind != TrackerKindKanban {
+		t.Fatalf("expected tracker kind %q, got %q", TrackerKindKanban, cfg.Tracker.Kind)
 	}
-	if cfg.MaxConcurrent != 3 {
-		t.Errorf("Expected MaxConcurrent 3, got %d", cfg.MaxConcurrent)
+	if cfg.Polling.IntervalMs != 30000 {
+		t.Fatalf("expected poll interval 30000, got %d", cfg.Polling.IntervalMs)
 	}
-	if cfg.WorkspaceRoot != "./workspaces" {
-		t.Errorf("Expected WorkspaceRoot './workspaces', got %s", cfg.WorkspaceRoot)
+	if cfg.Agent.MaxConcurrentAgents != 3 {
+		t.Fatalf("expected max concurrent 3, got %d", cfg.Agent.MaxConcurrentAgents)
 	}
-	if len(cfg.ActiveStates) != 3 {
-		t.Errorf("Expected 3 active states, got %d", len(cfg.ActiveStates))
-	}
-	if len(cfg.TerminalStates) != 2 {
-		t.Errorf("Expected 2 terminal states, got %d", len(cfg.TerminalStates))
-	}
-	if cfg.Agent.Executable != "codex" {
-		t.Errorf("Expected Agent.Executable 'codex', got %s", cfg.Agent.Executable)
-	}
-	if cfg.Agent.Mode != "stdio" {
-		t.Errorf("Expected Agent.Mode 'stdio', got %s", cfg.Agent.Mode)
+	if cfg.Agent.Mode != AgentModeAppServer {
+		t.Fatalf("expected app_server mode, got %q", cfg.Agent.Mode)
 	}
 }
 
-func TestLoadWorkflowWithFrontMatter(t *testing.T) {
+func TestLoadWorkflowNestedSchema(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
-
 	content := `---
-poll_interval: 60
-max_concurrent: 5
-workspace_root: /tmp/workspaces
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+  terminal_states:
+    - done
+polling:
+  interval_ms: 1500
+workspace:
+  root: ./custom-workspaces
+hooks:
+  before_run: echo setup
+  before_remove: echo cleanup
+  timeout_ms: 1234
 agent:
-  executable: /usr/local/bin/codex
-  timeout: 3600
-  mode: app_server
+  max_concurrent_agents: 5
+  max_turns: 4
+  max_retry_backoff_ms: 9000
+  mode: stdio
+codex:
+  command: codex --model test app-server
   approval_policy: never
   thread_sandbox: workspace-write
-  read_timeout_ms: 9000
+  read_timeout_ms: 9999
+  turn_timeout_ms: 120000
 ---
-
-# Custom Workflow
-
-You are working on issue {{.Identifier}}.
-
-## Instructions
-1. Read the issue
-2. Implement the solution
-3. Run tests
+Issue {{ issue.identifier }}
 `
-	if err := os.WriteFile(workflowPath, []byte(content), 0644); err != nil {
-		t.Fatalf("Failed to write workflow: %v", err)
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	workflow, err := LoadWorkflow(workflowPath)
 	if err != nil {
-		t.Fatalf("Failed to load workflow: %v", err)
+		t.Fatalf("LoadWorkflow: %v", err)
 	}
 
-	if workflow.Config.PollInterval != 60 {
-		t.Errorf("Expected PollInterval 60, got %d", workflow.Config.PollInterval)
+	if workflow.Config.Polling.IntervalMs != 1500 {
+		t.Fatalf("unexpected poll interval: %d", workflow.Config.Polling.IntervalMs)
 	}
-	if workflow.Config.MaxConcurrent != 5 {
-		t.Errorf("Expected MaxConcurrent 5, got %d", workflow.Config.MaxConcurrent)
+	if workflow.Config.Agent.Mode != AgentModeStdio {
+		t.Fatalf("unexpected agent mode: %s", workflow.Config.Agent.Mode)
 	}
-	if workflow.Config.WorkspaceRoot != "/tmp/workspaces" {
-		t.Errorf("Expected WorkspaceRoot '/tmp/workspaces', got %s", workflow.Config.WorkspaceRoot)
+	if workflow.Config.Hooks.BeforeRemove != "echo cleanup" {
+		t.Fatalf("unexpected before_remove hook: %q", workflow.Config.Hooks.BeforeRemove)
 	}
-	if workflow.Config.Agent.Timeout != 3600 {
-		t.Errorf("Expected Agent.Timeout 3600, got %d", workflow.Config.Agent.Timeout)
-	}
-	if workflow.Config.Agent.Mode != "app_server" {
-		t.Errorf("Expected Agent.Mode app_server, got %s", workflow.Config.Agent.Mode)
-	}
-	if workflow.Config.Agent.ApprovalPolicy != "never" {
-		t.Errorf("Expected approval policy never, got %#v", workflow.Config.Agent.ApprovalPolicy)
-	}
-	if workflow.Config.Agent.ThreadSandbox != "workspace-write" {
-		t.Errorf("Expected thread sandbox workspace-write, got %s", workflow.Config.Agent.ThreadSandbox)
-	}
-	if workflow.Config.Agent.ReadTimeoutMs != 9000 {
-		t.Errorf("Expected read timeout 9000, got %d", workflow.Config.Agent.ReadTimeoutMs)
-	}
-	if workflow.PromptTemplate == "" {
-		t.Error("Expected non-empty prompt template")
+	expectedRoot := filepath.Join(tmpDir, "custom-workspaces")
+	if workflow.Config.Workspace.Root != expectedRoot {
+		t.Fatalf("expected resolved workspace root %s, got %s", expectedRoot, workflow.Config.Workspace.Root)
 	}
 }
 
-func TestLoadWorkflowWithoutFrontMatter(t *testing.T) {
+func TestLoadWorkflowRejectsLegacyFlatSchema(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
-
-	content := `# Prompt Only
-
-This is just a prompt without front matter.
+	content := `---
+poll_interval: 30
+workspace_root: ./workspaces
+---
+Hello {{ issue.identifier }}
 `
-	if err := os.WriteFile(workflowPath, []byte(content), 0644); err != nil {
-		t.Fatalf("Failed to write workflow: %v", err)
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadWorkflow(workflowPath); err == nil {
+		t.Fatal("expected legacy flat schema rejection")
+	}
+}
+
+func TestLoadWorkflowRejectsUnsupportedTrackerKind(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+---
+Hello {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadWorkflow(workflowPath); err == nil || !strings.Contains(err.Error(), "unsupported tracker.kind") {
+		t.Fatalf("expected unsupported tracker kind error, got %v", err)
+	}
+}
+
+func TestLoadWorkflowWithoutFrontMatterUsesDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `Issue {{ issue.identifier }}`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	workflow, err := LoadWorkflow(workflowPath)
 	if err != nil {
-		t.Fatalf("Failed to load workflow: %v", err)
+		t.Fatalf("LoadWorkflow: %v", err)
 	}
-
-	// Should use defaults
-	if workflow.Config.PollInterval != 30 {
-		t.Errorf("Expected default PollInterval 30, got %d", workflow.Config.PollInterval)
+	if workflow.Config.Tracker.Kind != TrackerKindKanban {
+		t.Fatalf("unexpected tracker kind: %s", workflow.Config.Tracker.Kind)
 	}
-	// TrimSpace for comparison since LoadWorkflow trims the template
-	if strings.TrimSpace(workflow.PromptTemplate) != strings.TrimSpace(content) {
-		t.Errorf("Expected prompt template to match content, got: %q", workflow.PromptTemplate)
+	if workflow.PromptTemplate != content {
+		t.Fatalf("unexpected prompt template: %q", workflow.PromptTemplate)
 	}
 }
 
-func TestLoadOrCreateWorkflow(t *testing.T) {
+func TestRenderLiquidTemplate(t *testing.T) {
+	rendered, err := RenderLiquidTemplate(`Hello {{ issue.identifier }}{% if attempt %} #{{ attempt }}{% endif %}`, map[string]interface{}{
+		"issue":   map[string]interface{}{"identifier": "ISS-1"},
+		"attempt": 2,
+	})
+	if err != nil {
+		t.Fatalf("RenderLiquidTemplate: %v", err)
+	}
+	if rendered != "Hello ISS-1 #2" {
+		t.Fatalf("unexpected render output: %q", rendered)
+	}
+}
+
+func TestRenderLiquidTemplateRejectsUnknownVariable(t *testing.T) {
+	if _, err := RenderLiquidTemplate(`{{ issue.missing }}`, map[string]interface{}{
+		"issue": map[string]interface{}{"identifier": "ISS-1"},
+	}); err == nil {
+		t.Fatal("expected unknown variable error")
+	}
+}
+
+func TestManagerReloadKeepsLastKnownGood(t *testing.T) {
 	tmpDir := t.TempDir()
-
-	// Should create default workflow
-	workflow, err := LoadOrCreateWorkflow(tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to load/create workflow: %v", err)
-	}
-
-	if workflow == nil {
-		t.Fatal("Expected non-nil workflow")
-	}
-
-	// Check that WORKFLOW.md was created
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
-	if _, err := os.Stat(workflowPath); os.IsNotExist(err) {
-		t.Error("Expected WORKFLOW.md to be created")
+	initial := `---
+tracker:
+  kind: kanban
+---
+Hello {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	// Load again - should load existing
-	workflow2, err := LoadOrCreateWorkflow(tmpDir)
+	manager, err := NewManager(tmpDir)
 	if err != nil {
-		t.Fatalf("Failed to load existing workflow: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 
-	if workflow2.Config.PollInterval != workflow.Config.PollInterval {
-		t.Error("Expected same config on reload")
+	bad := `---
+poll_interval: 30
+---
+{{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if !strings.Contains(current.PromptTemplate, "Hello") {
+		t.Fatalf("expected last known good workflow, got %q", current.PromptTemplate)
+	}
+	if manager.LastError() == nil {
+		t.Fatal("expected reload error to be retained")
 	}
 }
 
-func TestApplyDefaults(t *testing.T) {
-	cfg := Config{
-		PollInterval: 0, // Should get default
-	}
-	applyDefaults(&cfg)
-
-	if cfg.PollInterval != 30 {
-		t.Errorf("Expected default PollInterval 30, got %d", cfg.PollInterval)
-	}
-	if cfg.MaxConcurrent != 3 {
-		t.Errorf("Expected default MaxConcurrent 3, got %d", cfg.MaxConcurrent)
-	}
-}
-
-func TestGetEnv(t *testing.T) {
-	cfg := Config{
-		Agent: AgentConfig{
-			Env: map[string]string{
-				"CUSTOM_VAR": "custom_value",
-			},
-		},
+func TestInitWorkflowWritesExpectedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := InitWorkflow(tmpDir, InitOptions{
+		WorkspaceRoot: "./ws",
+		CodexCommand:  "codex app-server --model test",
+		AgentMode:     AgentModeStdio,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
 	}
 
-	env := cfg.GetEnv()
-
-	hasCustom := false
-	for _, e := range env {
-		if e == "CUSTOM_VAR=custom_value" {
-			hasCustom = true
-			break
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "codex app-server --model test", "{{ issue.identifier }}"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
+}
 
-	if !hasCustom {
-		t.Error("Expected custom env var to be included")
+func TestEnsureWorkflowCreatesMissingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	path, created, err := EnsureWorkflow(tmpDir, InitOptions{})
+	if err != nil {
+		t.Fatalf("EnsureWorkflow: %v", err)
+	}
+	if !created {
+		t.Fatal("expected workflow to be created")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected workflow file at %s: %v", path, err)
 	}
 }

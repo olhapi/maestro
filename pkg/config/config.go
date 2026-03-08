@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,69 +11,101 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the runtime configuration
+const (
+	TrackerKindKanban  = "kanban"
+	AgentModeAppServer = "app_server"
+	AgentModeStdio     = "stdio"
+)
+
+var (
+	ErrMissingWorkflowFile = errors.New("missing_workflow_file")
+	ErrWorkflowParse       = errors.New("workflow_parse_error")
+	ErrWorkflowFrontMatter = errors.New("workflow_front_matter_not_a_map")
+)
+
 type Config struct {
-	// Polling
-	PollInterval int `yaml:"poll_interval"` // seconds
-
-	// Concurrency
-	MaxConcurrent int `yaml:"max_concurrent"`
-
-	// Workspace
-	WorkspaceRoot string `yaml:"workspace_root"`
-
-	// States
-	ActiveStates   []string `yaml:"active_states"`
-	TerminalStates []string `yaml:"terminal_states"`
-
-	// Agent configuration
-	Agent AgentConfig `yaml:"agent"`
-
-	// Hooks
-	Hooks HooksConfig `yaml:"hooks"`
+	Tracker   TrackerConfig   `yaml:"tracker"`
+	Polling   PollingConfig   `yaml:"polling"`
+	Workspace WorkspaceConfig `yaml:"workspace"`
+	Hooks     HooksConfig     `yaml:"hooks"`
+	Agent     AgentConfig     `yaml:"agent"`
+	Codex     CodexConfig     `yaml:"codex"`
 }
 
-// AgentConfig configures the coding agent
+type TrackerConfig struct {
+	Kind           string   `yaml:"kind"`
+	ActiveStates   []string `yaml:"active_states"`
+	TerminalStates []string `yaml:"terminal_states"`
+}
+
+type PollingConfig struct {
+	IntervalMs int `yaml:"interval_ms"`
+}
+
+type WorkspaceConfig struct {
+	Root string `yaml:"root"`
+}
+
+type HooksConfig struct {
+	AfterCreate  string `yaml:"after_create"`
+	BeforeRun    string `yaml:"before_run"`
+	AfterRun     string `yaml:"after_run"`
+	BeforeRemove string `yaml:"before_remove"`
+	TimeoutMs    int    `yaml:"timeout_ms"`
+}
+
 type AgentConfig struct {
-	Executable        string                 `yaml:"executable"`
-	Args              []string               `yaml:"args"`
-	Env               map[string]string      `yaml:"env"`
-	Timeout           int                    `yaml:"timeout"` // seconds, 0 = no timeout
-	Mode              string                 `yaml:"mode"`    // stdio (default) | app_server
+	MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
+	MaxTurns            int    `yaml:"max_turns"`
+	MaxRetryBackoffMs   int    `yaml:"max_retry_backoff_ms"`
+	Mode                string `yaml:"mode"`
+}
+
+type CodexConfig struct {
+	Command           string                 `yaml:"command"`
 	ApprovalPolicy    interface{}            `yaml:"approval_policy"`
 	ThreadSandbox     string                 `yaml:"thread_sandbox"`
 	TurnSandboxPolicy map[string]interface{} `yaml:"turn_sandbox_policy"`
+	TurnTimeoutMs     int                    `yaml:"turn_timeout_ms"`
 	ReadTimeoutMs     int                    `yaml:"read_timeout_ms"`
+	StallTimeoutMs    int                    `yaml:"stall_timeout_ms"`
 }
 
-// HooksConfig configures workspace lifecycle hooks
-type HooksConfig struct {
-	BeforeRun   []string `yaml:"before_run"`   // Commands to run before agent
-	AfterRun    []string `yaml:"after_run"`    // Commands to run after agent
-	AfterCreate []string `yaml:"after_create"` // Commands to run after workspace creation
-	TimeoutSec  int      `yaml:"timeout_sec"`  // Hook timeout in seconds
-}
-
-// Workflow represents a parsed WORKFLOW.md file
 type Workflow struct {
+	Path           string
 	Config         Config
 	PromptTemplate string
 }
 
-// DefaultConfig returns the default configuration
+type workflowPayload struct {
+	Config Config
+	Prompt string
+}
+
+type fileStamp struct {
+	ModTime int64
+	Size    int64
+	Hash    uint64
+}
+
 func DefaultConfig() Config {
 	return Config{
-		PollInterval:   30,
-		MaxConcurrent:  3,
-		WorkspaceRoot:  "./workspaces",
-		ActiveStates:   []string{"ready", "in_progress", "in_review"},
-		TerminalStates: []string{"done", "cancelled"},
+		Tracker: TrackerConfig{
+			Kind:           TrackerKindKanban,
+			ActiveStates:   []string{"ready", "in_progress", "in_review"},
+			TerminalStates: []string{"done", "cancelled"},
+		},
+		Polling:   PollingConfig{IntervalMs: 30000},
+		Workspace: WorkspaceConfig{Root: "./workspaces"},
+		Hooks:     HooksConfig{TimeoutMs: 60000},
 		Agent: AgentConfig{
-			Executable: "codex",
-			Args:       []string{},
-			Env:        map[string]string{},
-			Timeout:    0,
-			Mode:       "stdio",
+			MaxConcurrentAgents: 3,
+			MaxTurns:            20,
+			MaxRetryBackoffMs:   300000,
+			Mode:                AgentModeAppServer,
+		},
+		Codex: CodexConfig{
+			Command: "codex app-server",
 			ApprovalPolicy: map[string]interface{}{
 				"reject": map[string]interface{}{
 					"sandbox_approval": true,
@@ -79,156 +113,241 @@ func DefaultConfig() Config {
 					"mcp_elicitations": true,
 				},
 			},
-			ThreadSandbox: "workspace-write",
-			ReadTimeoutMs: 5000,
+			ThreadSandbox:     "workspace-write",
+			TurnSandboxPolicy: map[string]interface{}{"type": "workspaceWrite"},
+			TurnTimeoutMs:     3600000,
+			ReadTimeoutMs:     5000,
+			StallTimeoutMs:    300000,
 		},
-		Hooks: HooksConfig{TimeoutSec: 60},
 	}
 }
 
-// LoadWorkflow loads a WORKFLOW.md file
+func DefaultPromptTemplate() string {
+	return strings.TrimSpace(`
+You are working on issue {{ issue.identifier }}.
+
+{% if attempt %}
+Continuation attempt: {{ attempt }}
+{% endif %}
+
+Title: {{ issue.title }}
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
+`)
+}
+
+func WorkflowPath(repoPath string) string {
+	if strings.TrimSpace(repoPath) == "" {
+		repoPath, _ = os.Getwd()
+	}
+	return filepath.Join(repoPath, "WORKFLOW.md")
+}
+
 func LoadWorkflow(path string) (*Workflow, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read workflow file: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrMissingWorkflowFile
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMissingWorkflowFile, err)
 	}
 
-	content := string(data)
+	payload, err := parseWorkflowPayload(path, string(data))
+	if err != nil {
+		return nil, err
+	}
 
-	// Parse YAML front matter
-	var config Config
+	cfg := payload.Config
+	applyDefaults(&cfg)
+	if err := validateConfig(&cfg); err != nil {
+		return nil, err
+	}
+
+	return &Workflow{
+		Path:           path,
+		Config:         cfg,
+		PromptTemplate: payload.Prompt,
+	}, nil
+}
+
+func parseWorkflowPayload(path, content string) (*workflowPayload, error) {
+	var raw map[string]interface{}
 	promptStart := 0
 
 	if strings.HasPrefix(content, "---\n") {
 		end := strings.Index(content[4:], "\n---\n")
-		if end != -1 {
-			frontMatter := content[4 : end+4]
-			if err := yaml.Unmarshal([]byte(frontMatter), &config); err != nil {
-				return nil, fmt.Errorf("failed to parse front matter: %w", err)
-			}
-			promptStart = end + 8 // After "---\n---\n"
+		if end == -1 {
+			return nil, fmt.Errorf("%w: unterminated front matter", ErrWorkflowParse)
 		}
+		frontMatter := content[4 : end+4]
+		if err := yaml.Unmarshal([]byte(frontMatter), &raw); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
+		}
+		if raw == nil {
+			raw = map[string]interface{}{}
+		}
+		promptStart = end + 8
 	} else {
-		config = DefaultConfig()
+		raw = map[string]interface{}{}
 	}
 
-	// Apply defaults for missing fields
-	applyDefaults(&config)
+	if err := rejectLegacyKeys(raw); err != nil {
+		return nil, err
+	}
 
-	// Extract prompt template
-	promptTemplate := strings.TrimSpace(content[promptStart:])
+	encoded, err := yaml.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
+	}
 
-	return &Workflow{
-		Config:         config,
-		PromptTemplate: promptTemplate,
-	}, nil
+	var cfg Config
+	if len(raw) > 0 {
+		if err := yaml.Unmarshal(encoded, &cfg); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
+		}
+	}
+
+	prompt := strings.TrimSpace(content[promptStart:])
+	if prompt == "" {
+		prompt = DefaultPromptTemplate()
+	}
+	if _, err := ParseLiquidTemplate(prompt); err != nil {
+		return nil, fmt.Errorf("template_parse_error: %w", err)
+	}
+
+	cfg.Workspace.Root = resolvePathValue(filepath.Dir(path), cfg.Workspace.Root, DefaultConfig().Workspace.Root)
+	return &workflowPayload{Config: cfg, Prompt: prompt}, nil
+}
+
+func rejectLegacyKeys(raw map[string]interface{}) error {
+	legacy := []string{"poll_interval", "max_concurrent", "workspace_root", "active_states", "terminal_states"}
+	for _, key := range legacy {
+		if _, ok := raw[key]; ok {
+			return fmt.Errorf("%w: legacy workflow key %q is not supported", ErrWorkflowParse, key)
+		}
+	}
+	return nil
 }
 
 func applyDefaults(c *Config) {
 	defaults := DefaultConfig()
 
-	if c.PollInterval == 0 {
-		c.PollInterval = defaults.PollInterval
+	if strings.TrimSpace(c.Tracker.Kind) == "" {
+		c.Tracker.Kind = defaults.Tracker.Kind
 	}
-	if c.MaxConcurrent == 0 {
-		c.MaxConcurrent = defaults.MaxConcurrent
+	if len(c.Tracker.ActiveStates) == 0 {
+		c.Tracker.ActiveStates = append([]string(nil), defaults.Tracker.ActiveStates...)
 	}
-	if c.WorkspaceRoot == "" {
-		c.WorkspaceRoot = defaults.WorkspaceRoot
+	if len(c.Tracker.TerminalStates) == 0 {
+		c.Tracker.TerminalStates = append([]string(nil), defaults.Tracker.TerminalStates...)
 	}
-	if len(c.ActiveStates) == 0 {
-		c.ActiveStates = defaults.ActiveStates
+	if c.Polling.IntervalMs <= 0 {
+		c.Polling.IntervalMs = defaults.Polling.IntervalMs
 	}
-	if len(c.TerminalStates) == 0 {
-		c.TerminalStates = defaults.TerminalStates
+	if strings.TrimSpace(c.Workspace.Root) == "" {
+		c.Workspace.Root = defaults.Workspace.Root
 	}
-	if c.Agent.Executable == "" {
-		c.Agent.Executable = defaults.Agent.Executable
+	if c.Hooks.TimeoutMs <= 0 {
+		c.Hooks.TimeoutMs = defaults.Hooks.TimeoutMs
 	}
-	if c.Agent.Args == nil {
-		c.Agent.Args = defaults.Agent.Args
+	if c.Agent.MaxConcurrentAgents <= 0 {
+		c.Agent.MaxConcurrentAgents = defaults.Agent.MaxConcurrentAgents
 	}
-	if c.Agent.Env == nil {
-		c.Agent.Env = defaults.Agent.Env
+	if c.Agent.MaxTurns <= 0 {
+		c.Agent.MaxTurns = defaults.Agent.MaxTurns
 	}
-	if c.Agent.Mode == "" {
+	if c.Agent.MaxRetryBackoffMs <= 0 {
+		c.Agent.MaxRetryBackoffMs = defaults.Agent.MaxRetryBackoffMs
+	}
+	if strings.TrimSpace(c.Agent.Mode) == "" {
 		c.Agent.Mode = defaults.Agent.Mode
 	}
-	if c.Agent.ApprovalPolicy == nil {
-		c.Agent.ApprovalPolicy = defaults.Agent.ApprovalPolicy
+	if strings.TrimSpace(c.Codex.Command) == "" {
+		c.Codex.Command = defaults.Codex.Command
 	}
-	if c.Agent.ThreadSandbox == "" {
-		c.Agent.ThreadSandbox = defaults.Agent.ThreadSandbox
+	if c.Codex.ApprovalPolicy == nil {
+		c.Codex.ApprovalPolicy = defaults.Codex.ApprovalPolicy
 	}
-	if c.Agent.ReadTimeoutMs <= 0 {
-		c.Agent.ReadTimeoutMs = defaults.Agent.ReadTimeoutMs
+	if strings.TrimSpace(c.Codex.ThreadSandbox) == "" {
+		c.Codex.ThreadSandbox = defaults.Codex.ThreadSandbox
 	}
-	if c.Hooks.TimeoutSec <= 0 {
-		c.Hooks.TimeoutSec = defaults.Hooks.TimeoutSec
+	if c.Codex.TurnSandboxPolicy == nil {
+		c.Codex.TurnSandboxPolicy = defaults.Codex.TurnSandboxPolicy
+	}
+	if c.Codex.TurnTimeoutMs <= 0 {
+		c.Codex.TurnTimeoutMs = defaults.Codex.TurnTimeoutMs
+	}
+	if c.Codex.ReadTimeoutMs <= 0 {
+		c.Codex.ReadTimeoutMs = defaults.Codex.ReadTimeoutMs
+	}
+	if c.Codex.StallTimeoutMs == 0 {
+		c.Codex.StallTimeoutMs = defaults.Codex.StallTimeoutMs
 	}
 }
 
-// LoadOrCreateWorkflow loads WORKFLOW.md or creates a default one
-func LoadOrCreateWorkflow(path string) (*Workflow, error) {
-	workflowPath := filepath.Join(path, "WORKFLOW.md")
+func validateConfig(c *Config) error {
+	if strings.TrimSpace(c.Tracker.Kind) != TrackerKindKanban {
+		return fmt.Errorf("unsupported tracker.kind %q", strings.TrimSpace(c.Tracker.Kind))
+	}
+	if strings.TrimSpace(c.Agent.Mode) != AgentModeAppServer && strings.TrimSpace(c.Agent.Mode) != AgentModeStdio {
+		return fmt.Errorf("unsupported agent.mode %q", c.Agent.Mode)
+	}
+	if strings.TrimSpace(c.Codex.Command) == "" {
+		return fmt.Errorf("codex.command is required")
+	}
+	return nil
+}
 
-	if _, err := os.Stat(workflowPath); os.IsNotExist(err) {
-		// Create default workflow
-		defaultWorkflow := `---
-poll_interval: 30
-max_concurrent: 3
-workspace_root: ./workspaces
-active_states:
-  - ready
-  - in_progress
-  - in_review
-terminal_states:
-  - done
-  - cancelled
-agent:
-  executable: codex
-  args: []
-  timeout: 0
-  mode: stdio
----
-
-# Symphony Workflow
-
-You are an autonomous coding agent working on issue {{.Identifier}}.
-
-## Issue Details
-
-- **Title**: {{.Title}}
-- **Description**: {{.Description}}
-- **Labels**: {{range .Labels}}{{.}}, {{end}}
-
-## Instructions
-
-1. Create a branch for this issue
-2. Implement the changes described
-3. Run tests and ensure they pass
-4. Create a pull request
-5. Update the issue with the PR link
-
-## Guidelines
-
-- Follow the project's coding standards
-- Write clear commit messages
-- Keep changes focused and minimal
-`
-		if err := os.WriteFile(workflowPath, []byte(defaultWorkflow), 0644); err != nil {
-			return nil, fmt.Errorf("failed to create default workflow: %w", err)
+func resolvePathValue(baseDir, raw, fallback string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		value = fallback
+	}
+	if strings.HasPrefix(value, "$") {
+		if env := strings.TrimSpace(strings.TrimPrefix(value, "$")); env != "" {
+			resolved := strings.TrimSpace(os.Getenv(env))
+			if resolved != "" {
+				value = resolved
+			}
 		}
 	}
-
-	return LoadWorkflow(workflowPath)
+	if strings.HasPrefix(value, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			value = filepath.Join(home, strings.TrimPrefix(value, "~"))
+		}
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	if baseDir == "" {
+		baseDir, _ = os.Getwd()
+	}
+	return filepath.Clean(filepath.Join(baseDir, value))
 }
 
-// GetEnv returns the environment variables for the agent
-func (c *Config) GetEnv() []string {
-	env := os.Environ()
-	for k, v := range c.Agent.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
+func hashContent(data []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(data)
+	return h.Sum64()
+}
+
+func currentStamp(path string) (fileStamp, error) {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}, err
 	}
-	return env
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fileStamp{}, err
+	}
+	return fileStamp{
+		ModTime: stat.ModTime().UnixNano(),
+		Size:    stat.Size(),
+		Hash:    hashContent(data),
+	}, nil
 }

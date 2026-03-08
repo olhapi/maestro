@@ -1,17 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/mattn/go-isatty"
 	"github.com/olhapi/symphony-go/internal/kanban"
 	"github.com/olhapi/symphony-go/internal/logsink"
 	"github.com/olhapi/symphony-go/internal/mcp"
@@ -49,6 +51,8 @@ func main() {
 		runSpecCheck()
 	case "version":
 		fmt.Printf("symphony %s\n", version)
+	case "workflow":
+		runWorkflow()
 	default:
 		printUsage()
 		os.Exit(1)
@@ -70,6 +74,7 @@ Commands:
   status           Show orchestrator status
   verify           Run local parity readiness checks
   spec-check       Run lightweight Symphony spec conformance checks
+  workflow         Initialize or inspect WORKFLOW.md
   version          Show version
 
 Examples:
@@ -87,6 +92,7 @@ Examples:
   symphony project create "My App"       # Create a project
   symphony verify                         # Verify local setup
   symphony spec-check --json              # Run spec conformance checks
+  symphony workflow init                  # Create a nested WORKFLOW.md
 
 Database:
   Symphony stores data in .symphony/symphony.db by default.
@@ -116,17 +122,37 @@ func getStore(dbPath string) *kanban.Store {
 	return store
 }
 
-func getWorkflow(repoPath string) *config.Workflow {
+func getWorkflowManager(repoPath string, allowInit bool) *config.Manager {
 	if repoPath == "" {
 		repoPath, _ = os.Getwd()
 	}
 
-	workflow, err := config.LoadOrCreateWorkflow(repoPath)
+	if allowInit {
+		created, err := ensureWorkflowInitialized(repoPath)
+		if err != nil {
+			slog.Error("Failed to initialize workflow", "error", err)
+			os.Exit(1)
+		}
+		if created {
+			slog.Info("Created WORKFLOW.md with bootstrap defaults", "path", config.WorkflowPath(repoPath))
+		}
+	}
+	manager, err := config.NewManager(repoPath)
 	if err != nil {
 		slog.Error("Failed to load workflow", "error", err)
 		os.Exit(1)
 	}
-	return workflow
+	return manager
+}
+
+func ensureWorkflowInitialized(repoPath string) (bool, error) {
+	interactive := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+	_, created, err := config.EnsureWorkflow(repoPath, config.InitOptions{
+		Interactive: interactive,
+		Stdin:       bufio.NewReader(os.Stdin),
+		Stdout:      os.Stdout,
+	})
+	return created, err
 }
 
 func setupLogger(logsRoot string, maxBytes int64, maxFiles int) error {
@@ -201,12 +227,12 @@ func runOrchestrator() {
 	store := getStore(dbPath)
 	defer store.Close()
 
-	workflow := getWorkflow(repoPath)
+	workflowManager := getWorkflowManager(repoPath, true)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orch := orchestrator.New(store, workflow)
+	orch := orchestrator.New(store, workflowManager)
 	if port != "" {
 		addr := port
 		if !strings.Contains(addr, ":") {
@@ -252,6 +278,36 @@ func runMCP() {
 	server := mcp.NewServerWithExtensions(store, extensionsFile)
 	if err := server.ServeStdio(); err != nil {
 		slog.Error("MCP server error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func runWorkflow() {
+	if len(os.Args) < 3 {
+		fmt.Print(`Usage:
+  symphony workflow init [repo_path]
+`)
+		os.Exit(1)
+	}
+
+	switch os.Args[2] {
+	case "init":
+		repoPath := ""
+		if len(os.Args) > 3 {
+			repoPath = os.Args[3]
+		}
+		interactive := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+		if err := config.InitWorkflow(repoPath, config.InitOptions{
+			Interactive: interactive,
+			Stdin:       bufio.NewReader(os.Stdin),
+			Stdout:      os.Stdout,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to initialize workflow: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Initialized %s\n", config.WorkflowPath(repoPath))
+	default:
+		fmt.Printf("Unknown workflow command: %s\n", os.Args[2])
 		os.Exit(1)
 	}
 }
@@ -325,7 +381,7 @@ func runBoard() {
 
 func runIssue() {
 	if len(os.Args) < 3 {
-	fmt.Print(`Usage:
+		fmt.Print(`Usage:
   symphony issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
   symphony issue list [--state <state>] [--project <id>]
   symphony issue show <identifier>
@@ -358,7 +414,7 @@ func runIssue() {
 	case "create":
 		if len(args) < 1 {
 			fmt.Println("Usage: symphony issue create <title> [options]")
-os.Exit(1)
+			os.Exit(1)
 		}
 		title := args[0]
 		description := ""
@@ -386,7 +442,7 @@ os.Exit(1)
 		issue, err := store.CreateIssue(projectID, "", title, description, priority, labels)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		fmt.Printf("Created issue %s: %s\n", issue.Identifier, issue.Title)
 
@@ -406,7 +462,7 @@ os.Exit(1)
 		issues, err := store.ListIssues(filter)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 
 		for _, issue := range issues {
@@ -416,12 +472,12 @@ os.Exit(1)
 	case "show":
 		if len(args) < 1 {
 			fmt.Println("Usage: symphony issue show <identifier>")
-os.Exit(1)
+			os.Exit(1)
 		}
 		issue, err := store.GetIssueByIdentifier(args[0])
 		if err != nil {
 			fmt.Printf("Issue not found: %s\n", args[0])
-os.Exit(1)
+			os.Exit(1)
 		}
 
 		fmt.Printf("ID:          %s\n", issue.ID)
@@ -445,29 +501,29 @@ os.Exit(1)
 	case "move":
 		if len(args) < 2 {
 			fmt.Println("Usage: symphony issue move <identifier> <state>")
-os.Exit(1)
+			os.Exit(1)
 		}
 		issue, err := store.GetIssueByIdentifier(args[0])
 		if err != nil {
 			fmt.Printf("Issue not found: %s\n", args[0])
-os.Exit(1)
+			os.Exit(1)
 		}
 		if err := store.UpdateIssueState(issue.ID, kanban.State(args[1])); err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		fmt.Printf("Moved %s to %s\n", args[0], args[1])
 
 	case "update":
 		if len(args) < 1 {
 			fmt.Println("Usage: symphony issue update <identifier> [options]")
-os.Exit(1)
+			os.Exit(1)
 		}
 		identifier := args[0]
 		issue, err := store.GetIssueByIdentifier(identifier)
 		if err != nil {
 			fmt.Printf("Issue not found: %s\n", identifier)
-os.Exit(1)
+			os.Exit(1)
 		}
 
 		updates := make(map[string]interface{})
@@ -490,30 +546,30 @@ os.Exit(1)
 
 		if err := store.UpdateIssue(issue.ID, updates); err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		fmt.Printf("Updated issue %s\n", identifier)
 
 	case "delete":
 		if len(args) < 1 {
 			fmt.Println("Usage: symphony issue delete <identifier>")
-os.Exit(1)
+			os.Exit(1)
 		}
 		issue, err := store.GetIssueByIdentifier(args[0])
 		if err != nil {
 			fmt.Printf("Issue not found: %s\n", args[0])
-os.Exit(1)
+			os.Exit(1)
 		}
 		if err := store.DeleteIssue(issue.ID); err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		fmt.Printf("Deleted issue %s\n", args[0])
 
 	case "block":
 		if len(args) < 2 {
 			fmt.Println("Usage: symphony issue block <identifier> <blocker_identifier...>")
-os.Exit(1)
+			os.Exit(1)
 		}
 		identifier := args[0]
 		blockers := args[1:]
@@ -521,13 +577,13 @@ os.Exit(1)
 		issue, err := store.GetIssueByIdentifier(identifier)
 		if err != nil {
 			fmt.Printf("Issue not found: %s\n", identifier)
-os.Exit(1)
+			os.Exit(1)
 		}
 
 		updates := map[string]interface{}{"blocked_by": blockers}
 		if err := store.UpdateIssue(issue.ID, updates); err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		fmt.Printf("Set blockers for %s: %s\n", identifier, strings.Join(blockers, ", "))
 
@@ -539,7 +595,7 @@ os.Exit(1)
 
 func runProject() {
 	if len(os.Args) < 3 {
-	fmt.Print(`Usage:
+		fmt.Print(`Usage:
   symphony project create <name> [--desc <description>]
   symphony project list
   symphony project delete <id>
@@ -567,7 +623,7 @@ func runProject() {
 	case "create":
 		if len(args) < 1 {
 			fmt.Println("Usage: symphony project create <name> [--desc <description>]")
-os.Exit(1)
+			os.Exit(1)
 		}
 		name := args[0]
 		description := ""
@@ -578,7 +634,7 @@ os.Exit(1)
 		project, err := store.CreateProject(name, description)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		fmt.Printf("Created project %s (ID: %s)\n", project.Name, project.ID)
 
@@ -586,7 +642,7 @@ os.Exit(1)
 		projects, err := store.ListProjects()
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		for _, p := range projects {
 			fmt.Printf("%s\t%s\t%s\n", p.ID, p.Name, p.Description)
@@ -595,11 +651,11 @@ os.Exit(1)
 	case "delete":
 		if len(args) < 1 {
 			fmt.Println("Usage: symphony project delete <id>")
-os.Exit(1)
+			os.Exit(1)
 		}
 		if err := store.DeleteProject(args[0]); err != nil {
 			fmt.Printf("Error: %v\n", err)
-os.Exit(1)
+			os.Exit(1)
 		}
 		fmt.Println("Project deleted")
 
@@ -732,5 +788,3 @@ func runStatus() {
 		fmt.Printf("  %s: %d\n", state, counts[state])
 	}
 }
-
-

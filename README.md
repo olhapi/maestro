@@ -120,25 +120,58 @@ At runtime, arguments are provided via `SYMPHONY_ARGS_JSON` and tool name via `S
 
 Create a `WORKFLOW.md` in your repo to customize agent behavior:
 
+You can bootstrap one with:
+
+```bash
+./symphony workflow init /path/to/repo
+```
+
 ```yaml
 ---
-poll_interval: 30
-max_concurrent: 3
-workspace_root: ./workspaces
-agent:
-  executable: codex
-  args: []
-  timeout: 3600
-  mode: stdio  # stdio | app_server
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 30000
+workspace:
+  root: ./workspaces
 hooks:
-  timeout_sec: 60
+  timeout_ms: 60000
+agent:
+  max_concurrent_agents: 3
+  max_turns: 20
+  max_retry_backoff_ms: 300000
+  mode: app_server # or stdio
+codex:
+  command: codex app-server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  turn_timeout_ms: 3600000
+  read_timeout_ms: 5000
+  stall_timeout_ms: 300000
 ---
 
-# Instructions for {{.Identifier}}
+You are working on issue {{ issue.identifier }}.
 
-You are working on: **{{.Title}}**
+{% if attempt %}
+Continuation attempt: {{ attempt }}
+{% endif %}
 
-{{.Description}}
+Title: {{ issue.title }}
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
 
 ## Your Tasks
 
@@ -148,12 +181,14 @@ You are working on: **{{.Title}}**
 4. Create a pull request
 ```
 
-The prompt template supports Go template syntax with access to issue fields:
-- `{{.Identifier}}` - Issue ID (e.g., APP-123)
-- `{{.Title}}` - Issue title
-- `{{.Description}}` - Issue description
-- `{{.Labels}}` - Issue labels
-- `{{.Priority}}` - Issue priority
+The prompt template uses strict Liquid-style variables. Supported values include:
+- `{{ issue.identifier }}` - Issue ID (for example `APP-123`)
+- `{{ issue.title }}` - Issue title
+- `{{ issue.description }}` - Issue description
+- `{{ issue.state }}` - Current issue state
+- `{{ attempt }}` - Retry attempt number on continuation/retry runs
+
+Missing `WORKFLOW.md` files are bootstrapped automatically by `run` and `verify`. `spec-check` stays non-mutating and reports missing or invalid workflow files as failures.
 
 ## CLI Reference
 
@@ -194,6 +229,7 @@ The prompt template supports Go template syntax with access to issue fields:
 # Verification
 ./symphony verify [--repo <path>] [--db <path>] [--json]
 ./symphony spec-check [--repo <path>] [--json]
+./symphony workflow init [repo_path]
 ```
 
 ## Architecture

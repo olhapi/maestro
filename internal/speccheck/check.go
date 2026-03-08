@@ -3,6 +3,8 @@ package speccheck
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/olhapi/symphony-go/pkg/config"
 )
 
 type Report struct {
@@ -19,11 +21,13 @@ func Run(repoRoot string) Report {
 	ok := true
 
 	required := map[string]string{
-		"workflow_loader":   "pkg/config/config.go",
-		"orchestrator":      "internal/orchestrator/orchestrator.go",
-		"workspace_runner":  "internal/agent/runner.go",
-		"kanban_tracker":    "internal/kanban/store.go",
-		"mcp_tools":         "internal/mcp/server.go",
+		"workflow_loader":    "pkg/config/config.go",
+		"workflow_manager":   "pkg/config/manager.go",
+		"workflow_init":      "pkg/config/init.go",
+		"orchestrator":       "internal/orchestrator/orchestrator.go",
+		"workspace_runner":   "internal/agent/runner.go",
+		"kanban_tracker":     "internal/kanban/store.go",
+		"mcp_tools":          "internal/mcp/server.go",
 		"observability_http": "internal/observability/server.go",
 	}
 
@@ -33,6 +37,37 @@ func Run(repoRoot string) Report {
 			ok = false
 		} else {
 			checks[name] = "ok"
+		}
+	}
+
+	workflowPath := config.WorkflowPath(repoRoot)
+	if _, err := os.Stat(workflowPath); err != nil {
+		checks["workflow_file"] = "missing"
+		ok = false
+	} else if workflow, err := config.LoadWorkflow(workflowPath); err != nil {
+		checks["workflow_file"] = "invalid"
+		ok = false
+	} else {
+		checks["workflow_file"] = "ok"
+		if workflow.Config.Tracker.Kind == config.TrackerKindKanban {
+			checks["workflow_tracker_kind"] = "ok"
+		} else {
+			checks["workflow_tracker_kind"] = "invalid"
+			ok = false
+		}
+		if _, err := config.RenderLiquidTemplate(workflow.PromptTemplate, map[string]interface{}{
+			"issue": map[string]interface{}{
+				"identifier":  "ISS-1",
+				"title":       "Spec check",
+				"description": "Parses correctly",
+				"state":       "ready",
+			},
+			"attempt": 1,
+		}); err != nil {
+			checks["workflow_prompt_render"] = "invalid"
+			ok = false
+		} else {
+			checks["workflow_prompt_render"] = "ok"
 		}
 	}
 

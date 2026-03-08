@@ -60,6 +60,6 @@ Checked against upstream test modules in `elixir/test/symphony_elixir`.
 
 ## Practical completion statement
 
-For the requested scope (**excluding Linear integration**), symphony-go is functionally complete and verified with passing tests and working APIs.
+This document is a historical checkpoint, not a permanent “done” claim. After the nested-workflow and orchestrator parity pass, the repo has stronger workflow, retry, and multi-turn behavior, but parity should still be treated as an evolving target rather than a final state.
 
-Remaining differences are mostly architectural/UI parity differences with Elixir/Phoenix plus a smaller set of protocol-fidelity edges (full dynamic-tool catalog parity, richer event/logging semantics, and exact fixture-level behavior).
+Remaining differences are primarily in upstream Linear-specific behavior, richer protocol fidelity, and dashboard/UI parity with the Elixir reference implementation.
