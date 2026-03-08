@@ -1,0 +1,38 @@
+name: Release npm Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish-npm:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Build and pack npm release
+        run: ./scripts/package_npm_release.sh "${GITHUB_REF_NAME}"
+
+      - name: Publish npm package
+        run: npm publish --access public
+        working-directory: dist/npm-package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -41,5 +44,28 @@ func TestGuardrailsAcknowledgementBannerMentionsFlag(t *testing.T) {
 		if !strings.Contains(strings.ToLower(banner), strings.ToLower(want)) {
 			t.Fatalf("expected %q in banner %q", want, banner)
 		}
+	}
+}
+
+func TestReleaseBuildReportsInjectedVersion(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to resolve test file path")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	binPath := filepath.Join(t.TempDir(), "symphony")
+	const releaseVersion = "1.2.3-test"
+
+	buildCmd := exec.Command("go", "build", "-ldflags", "-X main.version="+releaseVersion, "-o", binPath, "./cmd/symphony")
+	buildCmd.Dir = repoRoot
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, output)
+	}
+
+	versionCmd := exec.Command(binPath, "version")
+	if output, err := versionCmd.CombinedOutput(); err != nil {
+		t.Fatalf("version command failed: %v\n%s", err, output)
+	} else if got := strings.TrimSpace(string(output)); got != "symphony "+releaseVersion {
+		t.Fatalf("unexpected version output: %q", got)
 	}
 }

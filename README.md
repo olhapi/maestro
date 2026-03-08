@@ -20,12 +20,34 @@ Optional Docker build:
 docker build -t symphony .
 ```
 
+## Install
+
+Preferred global install for macOS arm64:
+
+```bash
+npm install -g @olhapi/symphony-go
+```
+
+Update an existing global install:
+
+```bash
+npm update -g @olhapi/symphony-go
+```
+
+The npm package currently supports macOS arm64 only. The installed command name is still `symphony`.
+
+For local development or unsupported platforms, build from source with Go:
+
+```bash
+go build -o symphony ./cmd/symphony
+```
+
 ## Quick Start
 
 ### 1. Initialize a workflow file
 
 ```bash
-./symphony workflow init .
+symphony workflow init .
 ```
 
 This writes a repo-local `WORKFLOW.md` with the default Kanban workflow, Codex command, and prompt template.
@@ -33,17 +55,17 @@ This writes a repo-local `WORKFLOW.md` with the default Kanban workflow, Codex c
 ### 2. Create a project and some issues
 
 ```bash
-./symphony project create "My App" --desc "Example project"
-./symphony issue create "Add login page" --project <project_id> --labels feature,ui
-./symphony issue create "Fix auth bug" --priority 1 --labels bug
-./symphony issue list
-./symphony board
+symphony project create "My App" --desc "Example project"
+symphony issue create "Add login page" --project <project_id> --labels feature,ui
+symphony issue create "Fix auth bug" --priority 1 --labels bug
+symphony issue list
+symphony board
 ```
 
 Move an issue into the ready queue when you want the orchestrator to pick it up:
 
 ```bash
-./symphony issue move ISS-1 ready
+symphony issue move ISS-1 ready
 ```
 
 ### 3. Expose the tracker to MCP clients
@@ -66,7 +88,7 @@ The MCP server exposes project, issue, board, and blocker-management tools backe
 ### 4. Start the orchestrator
 
 ```bash
-./symphony run /path/to/repo
+symphony run /path/to/repo
 ```
 
 The orchestrator:
@@ -83,27 +105,27 @@ The orchestrator:
 
 ```bash
 # Projects
-./symphony project create <name> [--desc <description>]
-./symphony project list
-./symphony project delete <id>
+symphony project create <name> [--desc <description>]
+symphony project list
+symphony project delete <id>
 
 # Issues
-./symphony issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
-./symphony issue list [--state <state>] [--project <id>]
-./symphony issue show <identifier>
-./symphony issue move <identifier> <state>
-./symphony issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
-./symphony issue delete <identifier>
-./symphony issue block <identifier> <blocker_identifier...>
+symphony issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
+symphony issue list [--state <state>] [--project <id>]
+symphony issue show <identifier>
+symphony issue move <identifier> <state>
+symphony issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
+symphony issue delete <identifier>
+symphony issue block <identifier> <blocker_identifier...>
 
 # Orchestration
-./symphony run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
-./symphony mcp [--db <path>] [--extensions <json-file>]
-./symphony status [--json]
-./symphony status --dashboard [--dashboard-url <url>]
-./symphony verify [--repo <path>] [--db <path>] [--json]
-./symphony spec-check [--repo <path>] [--json]
-./symphony workflow init [repo_path]
+symphony run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
+symphony mcp [--db <path>] [--extensions <json-file>]
+symphony status [--json]
+symphony status --dashboard [--dashboard-url <url>]
+symphony verify [--repo <path>] [--db <path>] [--json]
+symphony spec-check [--repo <path>] [--json]
+symphony workflow init [repo_path]
 ```
 
 ## Issue States
