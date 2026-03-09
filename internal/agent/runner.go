@@ -81,7 +81,9 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	}
 
 	if issue.State == kanban.StateReady {
-		_ = r.store.UpdateIssueState(issue.ID, kanban.StateInProgress)
+		if err := r.store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+			return nil, err
+		}
 	}
 
 	result, runErr := r.executeTurns(ctx, workflow, workspace.Path, issue, attempt)

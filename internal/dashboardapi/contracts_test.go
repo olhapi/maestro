@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -445,6 +446,67 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 		t.Fatalf("delete issue expected 200, got %d", deleteIssue.StatusCode)
 	}
 	_ = decodeResponse(t, deleteIssue)
+}
+
+func TestIssueStateEndpointRejectsBlockedInProgress(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	blocked, err := store.CreateIssue("", "", "Blocked", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+blocked.Identifier+"/state", map[string]interface{}{"state": "in_progress"})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	if !strings.Contains(body["error"].(string), "cannot move issue to in_progress: blocked by "+blocker.Identifier) {
+		t.Fatalf("unexpected error payload: %#v", body)
+	}
+
+	reloaded, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked: %v", err)
+	}
+	if reloaded.State != kanban.StateBacklog {
+		t.Fatalf("expected blocked issue to stay in backlog, got %s", reloaded.State)
+	}
+}
+
+func TestCreateIssueRejectsBlockedInProgressWithConflict(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateInReview); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues", map[string]interface{}{
+		"title":      "Blocked create",
+		"state":      "in_progress",
+		"blocked_by": []string{blocker.Identifier},
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	if !strings.Contains(body["error"].(string), "cannot move issue to in_progress: blocked by "+blocker.Identifier) {
+		t.Fatalf("unexpected error payload: %#v", body)
+	}
 }
 
 func TestDashboardAPIReturnsMethodAndPathErrors(t *testing.T) {

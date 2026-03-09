@@ -404,7 +404,7 @@ func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interfac
 	}
 	if state != "" && state != string(kanban.StateBacklog) {
 		if err := s.store.UpdateIssueState(issue.ID, kanban.State(state)); err != nil {
-			return s.toolError("create_issue", fmt.Sprintf("Failed to set issue state: %v", err)), nil
+			return s.issueTransitionToolError("create_issue", "Failed to set issue state", err), nil
 		}
 	}
 	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
@@ -488,7 +488,7 @@ func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interf
 		return s.toolError("set_issue_state", fmt.Sprintf("Invalid state: %s. Valid states: backlog, ready, in_progress, in_review, done, cancelled", state)), nil
 	}
 	if err := s.store.UpdateIssueState(issue.ID, state); err != nil {
-		return s.toolError("set_issue_state", fmt.Sprintf("Failed to update issue state: %v", err)), nil
+		return s.issueTransitionToolError("set_issue_state", "Failed to update issue state", err), nil
 	}
 	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
 	if err != nil {
@@ -678,6 +678,13 @@ func (s *Server) toolResult(name string, data interface{}) *mcpapi.CallToolResul
 
 func (s *Server) toolError(name, message string) *mcpapi.CallToolResult {
 	return s.envelopeResult(name, nil, message, true)
+}
+
+func (s *Server) issueTransitionToolError(name, prefix string, err error) *mcpapi.CallToolResult {
+	if kanban.IsBlockedTransition(err) {
+		return s.toolError(name, err.Error())
+	}
+	return s.toolError(name, fmt.Sprintf("%s: %v", prefix, err))
 }
 
 func (s *Server) runtimeUnavailable(name string) *mcpapi.CallToolResult {

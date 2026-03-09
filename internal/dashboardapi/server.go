@@ -423,7 +423,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.State != "" && body.State != string(kanban.StateBacklog) {
 			if err := s.store.UpdateIssueState(issue.ID, kanban.State(body.State)); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
+				writeError(w, issueTransitionStatus(err), err)
 				return
 			}
 		}
@@ -562,7 +562,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.UpdateIssueState(issue.ID, kanban.State(body.State)); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, issueTransitionStatus(err), err)
 			return
 		}
 		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "state": body.State})
@@ -708,6 +708,13 @@ func writeJSONStatus(w http.ResponseWriter, status int, payload interface{}) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeErrorStatus(w, status, err)
+}
+
+func issueTransitionStatus(err error) int {
+	if kanban.IsBlockedTransition(err) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 func writeErrorStatus(w http.ResponseWriter, status int, err error) {

@@ -3,6 +3,8 @@ package kanban
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -341,6 +343,78 @@ func TestUpdateIssueStateRejectsInvalidState(t *testing.T) {
 	}
 	if !IsValidation(err) {
 		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestUpdateIssueStateRejectsBlockedInProgress(t *testing.T) {
+	store := setupTestStore(t)
+
+	blockerB, _ := store.CreateIssue("", "", "Blocker B", "", 0, nil)
+	blockerA, _ := store.CreateIssue("", "", "Blocker A", "", 0, nil)
+	blocked, _ := store.CreateIssue("", "", "Blocked", "", 0, nil)
+
+	if err := store.UpdateIssueState(blockerA.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blockerA: %v", err)
+	}
+	if err := store.UpdateIssueState(blockerB.ID, StateInReview); err != nil {
+		t.Fatalf("UpdateIssueState blockerB: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blockerA.Identifier, blockerB.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers failed: %v", err)
+	}
+
+	err := store.UpdateIssueState(blocked.ID, StateInProgress)
+	if err == nil {
+		t.Fatal("expected blocked transition error")
+	}
+	if !IsBlockedTransition(err) {
+		t.Fatalf("expected blocked transition error, got %v", err)
+	}
+	if !IsValidation(err) {
+		t.Fatalf("expected validation classification, got %v", err)
+	}
+	blockers := []string{blockerA.Identifier, blockerB.Identifier}
+	sort.Strings(blockers)
+	want := "cannot move issue to in_progress: blocked by " + strings.Join(blockers, ", ") + ". Move those blockers to done or cancelled, or remove them from blocked_by first"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected blocker message %q, got %q", want, err.Error())
+	}
+
+	reloaded, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue failed: %v", err)
+	}
+	if reloaded.State != StateBacklog {
+		t.Fatalf("expected blocked issue to stay in backlog, got %s", reloaded.State)
+	}
+	if reloaded.StartedAt != nil {
+		t.Fatal("expected blocked issue to remain unstarted")
+	}
+
+	if err := store.UpdateIssueState(blocked.ID, StateReady); err != nil {
+		t.Fatalf("expected non-in_progress transition to succeed, got %v", err)
+	}
+}
+
+func TestUpdateIssueStateAllowsTerminalBlockers(t *testing.T) {
+	store := setupTestStore(t)
+
+	doneBlocker, _ := store.CreateIssue("", "", "Done blocker", "", 0, nil)
+	cancelledBlocker, _ := store.CreateIssue("", "", "Cancelled blocker", "", 0, nil)
+	blocked, _ := store.CreateIssue("", "", "Blocked", "", 0, nil)
+
+	if err := store.UpdateIssueState(doneBlocker.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState doneBlocker: %v", err)
+	}
+	if err := store.UpdateIssueState(cancelledBlocker.ID, StateCancelled); err != nil {
+		t.Fatalf("UpdateIssueState cancelledBlocker: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{doneBlocker.Identifier, cancelledBlocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers failed: %v", err)
+	}
+
+	if err := store.UpdateIssueState(blocked.ID, StateInProgress); err != nil {
+		t.Fatalf("expected terminal blockers to allow in_progress, got %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -787,6 +788,15 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 	if !state.IsValid() {
 		return invalidStateError(state)
 	}
+	if state == StateInProgress {
+		unresolved, err := s.unresolvedBlockersForIssue(id)
+		if err != nil {
+			return err
+		}
+		if len(unresolved) > 0 {
+			return blockedInProgressError(unresolved)
+		}
+	}
 	now := time.Now()
 	var startedAt, completedAt interface{}
 	if !phase.IsValid() {
@@ -813,6 +823,36 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 		return notFoundError("issue", id)
 	}
 	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase})
+}
+
+func (s *Store) unresolvedBlockersForIssue(id string) ([]string, error) {
+	issue, err := s.GetIssue(id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, notFoundError("issue", id)
+		}
+		return nil, err
+	}
+	if len(issue.BlockedBy) == 0 {
+		return nil, nil
+	}
+
+	unresolved := make([]string, 0, len(issue.BlockedBy))
+	for _, blocker := range issue.BlockedBy {
+		blockerIssue, err := s.GetIssueByIdentifier(blocker)
+		switch {
+		case err == nil:
+			if blockerIssue.State != StateDone && blockerIssue.State != StateCancelled {
+				unresolved = append(unresolved, blockerIssue.Identifier)
+			}
+		case err == sql.ErrNoRows:
+			unresolved = append(unresolved, blocker)
+		default:
+			return nil, err
+		}
+	}
+	sort.Strings(unresolved)
+	return unresolved, nil
 }
 
 func (s *Store) UpdateIssueWorkflowPhase(id string, phase WorkflowPhase) error {

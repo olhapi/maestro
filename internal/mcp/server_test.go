@@ -761,6 +761,74 @@ func TestStdioRuntimeToolsWithProvider(t *testing.T) {
 	}
 }
 
+func TestSetIssueStateRejectsBlockedInProgress(t *testing.T) {
+	store := testStore(t, "")
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	blocked, err := store.CreateIssue("", "", "Blocked", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	client := newTestMCPClient(t, store.DBPath(), testClientOptions{})
+	defer client.Close()
+
+	res, err := client.CallTool(context.Background(), "set_issue_state", map[string]interface{}{
+		"identifier": blocked.Identifier,
+		"state":      "in_progress",
+	})
+	if err != nil {
+		t.Fatalf("set_issue_state failed: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected tool error, got %#v", res)
+	}
+	env := decodeEnvelope(t, res)
+	message := asString(env["error"].(map[string]interface{})["message"])
+	if !strings.Contains(message, "cannot move issue to in_progress: blocked by "+blocker.Identifier) {
+		t.Fatalf("unexpected error message: %q", message)
+	}
+}
+
+func TestCreateIssueRejectsBlockedInitialInProgress(t *testing.T) {
+	store := testStore(t, "")
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateInReview); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+
+	client := newTestMCPClient(t, store.DBPath(), testClientOptions{})
+	defer client.Close()
+
+	res, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
+		"title":      "Blocked create",
+		"state":      "in_progress",
+		"blocked_by": []interface{}{blocker.Identifier},
+	})
+	if err != nil {
+		t.Fatalf("create_issue failed: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected tool error, got %#v", res)
+	}
+	env := decodeEnvelope(t, res)
+	message := asString(env["error"].(map[string]interface{})["message"])
+	if !strings.Contains(message, "cannot move issue to in_progress: blocked by "+blocker.Identifier) {
+		t.Fatalf("unexpected error message: %q", message)
+	}
+}
+
 func TestStdioRuntimeToolsWithoutProviderReturnExplicitErrors(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	client := newTestMCPClient(t, dbPath, testClientOptions{})

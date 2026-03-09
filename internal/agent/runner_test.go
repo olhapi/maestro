@@ -215,6 +215,48 @@ func TestRunAttemptIncludesAttempt(t *testing.T) {
 	}
 }
 
+func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	blocked, _ := store.CreateIssue("", "", "Blocked", "", 0, nil)
+
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocked.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocked: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+	blocked, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked: %v", err)
+	}
+
+	result, err := runner.RunAttempt(context.Background(), blocked, 0)
+	if err == nil {
+		t.Fatal("expected blocked transition error")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on blocked transition, got %#v", result)
+	}
+	if !kanban.IsBlockedTransition(err) {
+		t.Fatalf("expected blocked transition error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "cannot move issue to in_progress: blocked by "+blocker.Identifier) {
+		t.Fatalf("unexpected error message: %q", err.Error())
+	}
+
+	reloaded, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked: %v", err)
+	}
+	if reloaded.State != kanban.StateReady {
+		t.Fatalf("expected blocked issue to remain ready, got %s", reloaded.State)
+	}
+}
+
 func TestWorkspaceDeterministic(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
