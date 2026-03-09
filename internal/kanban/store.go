@@ -19,11 +19,24 @@ type Store struct {
 	storeID string
 }
 
+func DefaultDBPath() string {
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".maestro", "maestro.db")
+	}
+	return filepath.Join(".", ".maestro", "maestro.db")
+}
+
+func ResolveDBPath(dbPath string) string {
+	if strings.TrimSpace(dbPath) == "" {
+		return DefaultDBPath()
+	}
+	return dbPath
+}
+
 // NewStore creates a new store with the given database path
 func NewStore(dbPath string) (*Store, error) {
-	if dbPath == "" {
-		dbPath = filepath.Join(".", ".maestro", "maestro.db")
-	}
+	dbPath = ResolveDBPath(dbPath)
 	absDBPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve database path: %w", err)

@@ -22,6 +22,22 @@ func TestRunVerification(t *testing.T) {
 	}
 }
 
+func TestRunVerificationUsesHomeDefaultDBPath(t *testing.T) {
+	tmp := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	res := Run(tmp, "")
+	if !res.OK {
+		t.Fatalf("expected ok result, got %+v", res)
+	}
+
+	dbPath := filepath.Join(home, ".maestro", "maestro.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected db at %s: %v", dbPath, err)
+	}
+}
+
 func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	codexPath := filepath.Join(tmp, "codex")

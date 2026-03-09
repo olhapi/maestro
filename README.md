@@ -101,7 +101,7 @@ For a shared multi-project setup, point both `maestro mcp` and `maestro run` at 
 maestro run /path/to/repo
 ```
 
-When `--db` is omitted, Maestro uses the current Maestro workspace's `.maestro/maestro.db` by default.
+When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default.
 
 The orchestrator:
 

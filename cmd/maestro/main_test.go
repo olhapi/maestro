@@ -109,6 +109,24 @@ func TestSetupLoggerWithWriterFiltersByLevelAndWritesFile(t *testing.T) {
 	}
 }
 
+func TestOpenStoreUsesHomeDefaultPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	store, err := openStore("")
+	if err != nil {
+		t.Fatalf("openStore failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	dbPath := filepath.Join(home, ".maestro", "maestro.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected db at %s: %v", dbPath, err)
+	}
+}
+
 func TestGuardrailsAcknowledgementBannerMentionsFlag(t *testing.T) {
 	banner := guardrailsAcknowledgementBanner()
 	for _, want := range []string{

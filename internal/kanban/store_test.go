@@ -25,6 +25,35 @@ func setupTestStore(t *testing.T) *Store {
 	return store
 }
 
+func TestDefaultDBPathUsesHomeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := DefaultDBPath()
+	want := filepath.Join(home, ".maestro", "maestro.db")
+	if got != want {
+		t.Fatalf("DefaultDBPath() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDBPathUsesDefaultWhenEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ResolveDBPath("")
+	want := filepath.Join(home, ".maestro", "maestro.db")
+	if got != want {
+		t.Fatalf("ResolveDBPath(\"\") = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDBPathPreservesExplicitPath(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "custom.db")
+	if got := ResolveDBPath(want); got != want {
+		t.Fatalf("ResolveDBPath(%q) = %q", want, got)
+	}
+}
+
 func TestStateValidation(t *testing.T) {
 	tests := []struct {
 		state    State

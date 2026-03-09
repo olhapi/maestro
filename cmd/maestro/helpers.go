@@ -71,9 +71,7 @@ func setupLoggerWithWriter(stdout io.Writer, logsRoot string, maxBytes int64, ma
 }
 
 func openStore(dbPath string) (*kanban.Store, error) {
-	if dbPath == "" {
-		dbPath = filepath.Join(".", ".maestro", "maestro.db")
-	}
+	dbPath = kanban.ResolveDBPath(dbPath)
 	if err := ensureDir(filepath.Dir(dbPath)); err != nil {
 		return nil, err
 	}

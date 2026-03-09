@@ -25,9 +25,7 @@ func Run(repoPath, dbPath string) Result {
 	if repoPath == "" {
 		repoPath, _ = os.Getwd()
 	}
-	if dbPath == "" {
-		dbPath = filepath.Join(repoPath, ".maestro", "maestro.db")
-	}
+	dbPath = kanban.ResolveDBPath(dbPath)
 
 	if _, created, err := config.EnsureWorkflow(repoPath, config.InitOptions{}); err != nil {
 		res.OK = false
@@ -71,7 +69,7 @@ func Run(repoPath, dbPath string) Result {
 		res.OK = false
 		res.Errors = append(res.Errors, fmt.Sprintf("db_dir: %v", err))
 		res.Checks["db_dir"] = "fail"
-		res.Remediation["db_dir"] = "Create or fix permissions on the `.maestro` directory, or pass `--db` to a writable path."
+		res.Remediation["db_dir"] = "Create or fix permissions on the `~/.maestro` directory, or pass `--db` to a writable path."
 	} else {
 		res.Checks["db_dir"] = "ok"
 	}
