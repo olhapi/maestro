@@ -4,3 +4,5 @@ dist/
 .maestro/
 /maestro
 /workspaces/
+node_modules/
+.husky/_/

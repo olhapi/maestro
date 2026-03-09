@@ -1,10 +1,18 @@
-.PHONY: build test dev e2e-real-codex e2e-real-codex-phases
+.PHONY: build test test-cover test-race dev e2e-real-codex e2e-real-codex-phases
+
+GO_TEST_PACKAGES := ./cmd/... ./internal/... ./pkg/...
 
 build:
 	go build -o ./maestro ./cmd/maestro
 
 test:
-	go test ./...
+	go test $(GO_TEST_PACKAGES)
+
+test-cover:
+	./scripts/check_coverage.sh
+
+test-race:
+	go test -race $(GO_TEST_PACKAGES)
 
 dev:
 	./scripts/dev.sh

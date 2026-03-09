@@ -380,40 +380,57 @@ func runMCP() {
 }
 
 func runWorkflow() {
-	if len(os.Args) < 3 {
-		fmt.Print(`Usage:
+	if code := workflowCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func workflowCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprint(stdout, `Usage:
   maestro workflow init [repo_path]
 `)
-		os.Exit(1)
+		return 1
 	}
 
-	switch os.Args[2] {
+	switch args[0] {
 	case "init":
 		repoPath := ""
-		if len(os.Args) > 3 {
-			repoPath = os.Args[3]
+		if len(args) > 1 {
+			repoPath = args[1]
 		}
-		interactive := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+		interactive := false
+		if in, ok := stdin.(*os.File); ok {
+			if out, ok := stdout.(*os.File); ok {
+				interactive = isatty.IsTerminal(in.Fd()) && isatty.IsTerminal(out.Fd())
+			}
+		}
 		if err := config.InitWorkflow(repoPath, config.InitOptions{
 			Interactive: interactive,
-			Stdin:       bufio.NewReader(os.Stdin),
-			Stdout:      os.Stdout,
+			Stdin:       bufio.NewReader(stdin),
+			Stdout:      stdout,
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to initialize workflow: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "failed to initialize workflow: %v\n", err)
+			return 1
 		}
-		fmt.Printf("Initialized %s\n", config.WorkflowPath(repoPath))
+		fmt.Fprintf(stdout, "Initialized %s\n", config.WorkflowPath(repoPath))
+		return 0
 	default:
-		fmt.Printf("Unknown workflow command: %s\n", os.Args[2])
-		os.Exit(1)
+		fmt.Fprintf(stdout, "Unknown workflow command: %s\n", args[0])
+		return 1
 	}
 }
 
 func runBoard() {
+	if code := boardCommand(os.Args[2:], os.Stdout); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func boardCommand(args []string, stdout io.Writer) int {
 	var dbPath string
 	var projectID string
 
-	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--db" && i+1 < len(args) {
 			dbPath = args[i+1]
@@ -427,23 +444,20 @@ func runBoard() {
 	store := getStore(dbPath)
 	defer store.Close()
 
-	// Get issues grouped by state
 	issues, err := store.ListIssues(map[string]interface{}{"project_id": projectID})
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stdout, "Error: %v\n", err)
+		return 1
 	}
 
-	// Group by state
 	states := map[kanban.State][]kanban.Issue{}
 	for _, issue := range issues {
 		states[issue.State] = append(states[issue.State], issue)
 	}
 
-	// Print board
-	fmt.Println("\n╔══════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                        MAESTRO KANBAN                            ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════════════╝")
+	fmt.Fprintln(stdout, "\n╔══════════════════════════════════════════════════════════════════╗")
+	fmt.Fprintln(stdout, "║                        MAESTRO KANBAN                            ║")
+	fmt.Fprintln(stdout, "╚══════════════════════════════════════════════════════════════════╝")
 
 	columns := []struct {
 		state kanban.State
@@ -459,26 +473,39 @@ func runBoard() {
 	}
 
 	for _, col := range columns {
-		issues := states[col.state]
-		fmt.Printf("\n%s %s (%d)\n", col.icon, col.name, len(issues))
-		fmt.Println(strings.Repeat("─", 50))
-		if len(issues) == 0 {
-			fmt.Println("  (empty)")
-		} else {
-			for _, issue := range issues {
-				fmt.Printf("  [%s] %s\n", issue.Identifier, issue.Title)
-				if len(issue.Labels) > 0 {
-					fmt.Printf("    Labels: %s\n", strings.Join(issue.Labels, ", "))
-				}
+		items := states[col.state]
+		fmt.Fprintf(stdout, "\n%s %s (%d)\n", col.icon, col.name, len(items))
+		fmt.Fprintln(stdout, strings.Repeat("─", 50))
+		if len(items) == 0 {
+			fmt.Fprintln(stdout, "  (empty)")
+			continue
+		}
+		for _, issue := range items {
+			fmt.Fprintf(stdout, "  [%s] %s\n", issue.Identifier, issue.Title)
+			if len(issue.Labels) > 0 {
+				fmt.Fprintf(stdout, "    Labels: %s\n", strings.Join(issue.Labels, ", "))
 			}
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(stdout)
+	return 0
 }
 
 func runIssue() {
-	if len(os.Args) < 3 {
-		fmt.Print(`Usage:
+	if code := issueCommand(os.Args[2:], os.Stdout); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func runProject() {
+	if code := projectCommand(os.Args[2:], os.Stdout); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func issueCommand(args []string, stdout io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprint(stdout, `Usage:
   maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
   maestro issue list [--state <state>] [--project <id>]
   maestro issue show <identifier>
@@ -487,17 +514,16 @@ func runIssue() {
   maestro issue delete <identifier>
   maestro issue block <identifier> <blocker_identifier...>
 `)
-		os.Exit(1)
+		return 1
 	}
 
+	cmd := args[0]
+	subargs := append([]string(nil), args[1:]...)
 	var dbPath string
-	args := os.Args[3:]
-
-	// Parse db flag
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--db" && i+1 < len(args) {
-			dbPath = args[i+1]
-			args = append(args[:i], args[i+2:]...)
+	for i := 0; i < len(subargs); i++ {
+		if subargs[i] == "--db" && i+1 < len(subargs) {
+			dbPath = subargs[i+1]
+			subargs = append(subargs[:i], subargs[i+2:]...)
 			break
 		}
 	}
@@ -505,209 +531,191 @@ func runIssue() {
 	store := getStore(dbPath)
 	defer store.Close()
 
-	cmd := os.Args[2]
-
 	switch cmd {
 	case "create":
-		if len(args) < 1 {
-			fmt.Println("Usage: maestro issue create <title> [options]")
-			os.Exit(1)
+		if len(subargs) < 1 {
+			fmt.Fprintln(stdout, "Usage: maestro issue create <title> [options]")
+			return 1
 		}
-		title := args[0]
+		title := subargs[0]
 		description := ""
 		projectID := ""
 		priority := 0
 		var labels []string
-
-		for i := 1; i < len(args); i++ {
-			switch args[i] {
+		for i := 1; i < len(subargs); i++ {
+			switch subargs[i] {
 			case "--desc":
-				description = args[i+1]
+				description = subargs[i+1]
 				i++
 			case "--project":
-				projectID = args[i+1]
+				projectID = subargs[i+1]
 				i++
 			case "--priority":
-				fmt.Sscanf(args[i+1], "%d", &priority)
+				fmt.Sscanf(subargs[i+1], "%d", &priority)
 				i++
 			case "--labels":
-				labels = strings.Split(args[i+1], ",")
+				labels = strings.Split(subargs[i+1], ",")
 				i++
 			}
 		}
-
 		issue, err := store.CreateIssue(projectID, "", title, description, priority, labels)
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-		fmt.Printf("Created issue %s: %s\n", issue.Identifier, issue.Title)
-
+		fmt.Fprintf(stdout, "Created issue %s: %s\n", issue.Identifier, issue.Title)
 	case "list":
 		filter := make(map[string]interface{})
-		for i := 0; i < len(args); i++ {
-			switch args[i] {
+		for i := 0; i < len(subargs); i++ {
+			switch subargs[i] {
 			case "--state":
-				filter["state"] = args[i+1]
+				filter["state"] = subargs[i+1]
 				i++
 			case "--project":
-				filter["project_id"] = args[i+1]
+				filter["project_id"] = subargs[i+1]
 				i++
 			}
 		}
-
 		issues, err := store.ListIssues(filter)
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-
 		for _, issue := range issues {
-			fmt.Printf("[%s] %s: %s\n", issue.State, issue.Identifier, issue.Title)
+			fmt.Fprintf(stdout, "[%s] %s: %s\n", issue.State, issue.Identifier, issue.Title)
 		}
-
 	case "show":
-		if len(args) < 1 {
-			fmt.Println("Usage: maestro issue show <identifier>")
-			os.Exit(1)
+		if len(subargs) < 1 {
+			fmt.Fprintln(stdout, "Usage: maestro issue show <identifier>")
+			return 1
 		}
-		issue, err := store.GetIssueByIdentifier(args[0])
+		issue, err := store.GetIssueByIdentifier(subargs[0])
 		if err != nil {
-			fmt.Printf("Issue not found: %s\n", args[0])
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Issue not found: %s\n", subargs[0])
+			return 1
 		}
-
-		fmt.Printf("ID:          %s\n", issue.ID)
-		fmt.Printf("Identifier:  %s\n", issue.Identifier)
-		fmt.Printf("Title:       %s\n", issue.Title)
-		fmt.Printf("State:       %s\n", issue.State)
-		fmt.Printf("Phase:       %s\n", issue.WorkflowPhase)
-		fmt.Printf("Priority:    %d\n", issue.Priority)
+		fmt.Fprintf(stdout, "ID:          %s\n", issue.ID)
+		fmt.Fprintf(stdout, "Identifier:  %s\n", issue.Identifier)
+		fmt.Fprintf(stdout, "Title:       %s\n", issue.Title)
+		fmt.Fprintf(stdout, "State:       %s\n", issue.State)
+		fmt.Fprintf(stdout, "Phase:       %s\n", issue.WorkflowPhase)
+		fmt.Fprintf(stdout, "Priority:    %d\n", issue.Priority)
 		if issue.Description != "" {
-			fmt.Printf("Description: %s\n", issue.Description)
+			fmt.Fprintf(stdout, "Description: %s\n", issue.Description)
 		}
 		if len(issue.Labels) > 0 {
-			fmt.Printf("Labels:      %s\n", strings.Join(issue.Labels, ", "))
+			fmt.Fprintf(stdout, "Labels:      %s\n", strings.Join(issue.Labels, ", "))
 		}
 		if issue.PRURL != "" {
-			fmt.Printf("PR:          #%d - %s\n", issue.PRNumber, issue.PRURL)
+			fmt.Fprintf(stdout, "PR:          #%d - %s\n", issue.PRNumber, issue.PRURL)
 		}
 		if len(issue.BlockedBy) > 0 {
-			fmt.Printf("Blocked by:  %s\n", strings.Join(issue.BlockedBy, ", "))
+			fmt.Fprintf(stdout, "Blocked by:  %s\n", strings.Join(issue.BlockedBy, ", "))
 		}
-
 	case "move":
-		if len(args) < 2 {
-			fmt.Println("Usage: maestro issue move <identifier> <state>")
-			os.Exit(1)
+		if len(subargs) < 2 {
+			fmt.Fprintln(stdout, "Usage: maestro issue move <identifier> <state>")
+			return 1
 		}
-		issue, err := store.GetIssueByIdentifier(args[0])
+		issue, err := store.GetIssueByIdentifier(subargs[0])
 		if err != nil {
-			fmt.Printf("Issue not found: %s\n", args[0])
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Issue not found: %s\n", subargs[0])
+			return 1
 		}
-		if err := store.UpdateIssueState(issue.ID, kanban.State(args[1])); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+		if err := store.UpdateIssueState(issue.ID, kanban.State(subargs[1])); err != nil {
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-		fmt.Printf("Moved %s to %s\n", args[0], args[1])
-
+		fmt.Fprintf(stdout, "Moved %s to %s\n", subargs[0], subargs[1])
 	case "update":
-		if len(args) < 1 {
-			fmt.Println("Usage: maestro issue update <identifier> [options]")
-			os.Exit(1)
+		if len(subargs) < 1 {
+			fmt.Fprintln(stdout, "Usage: maestro issue update <identifier> [options]")
+			return 1
 		}
-		identifier := args[0]
+		identifier := subargs[0]
 		issue, err := store.GetIssueByIdentifier(identifier)
 		if err != nil {
-			fmt.Printf("Issue not found: %s\n", identifier)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Issue not found: %s\n", identifier)
+			return 1
 		}
-
 		updates := make(map[string]interface{})
-		for i := 1; i < len(args); i++ {
-			switch args[i] {
+		for i := 1; i < len(subargs); i++ {
+			switch subargs[i] {
 			case "--title":
-				updates["title"] = args[i+1]
+				updates["title"] = subargs[i+1]
 				i++
 			case "--desc":
-				updates["description"] = args[i+1]
+				updates["description"] = subargs[i+1]
 				i++
 			case "--pr":
 				var prNum int
-				fmt.Sscanf(args[i+1], "%d", &prNum)
+				fmt.Sscanf(subargs[i+1], "%d", &prNum)
 				updates["pr_number"] = prNum
-				updates["pr_url"] = args[i+2]
+				updates["pr_url"] = subargs[i+2]
 				i += 2
 			}
 		}
-
 		if err := store.UpdateIssue(issue.ID, updates); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-		fmt.Printf("Updated issue %s\n", identifier)
-
+		fmt.Fprintf(stdout, "Updated issue %s\n", identifier)
 	case "delete":
-		if len(args) < 1 {
-			fmt.Println("Usage: maestro issue delete <identifier>")
-			os.Exit(1)
+		if len(subargs) < 1 {
+			fmt.Fprintln(stdout, "Usage: maestro issue delete <identifier>")
+			return 1
 		}
-		issue, err := store.GetIssueByIdentifier(args[0])
+		issue, err := store.GetIssueByIdentifier(subargs[0])
 		if err != nil {
-			fmt.Printf("Issue not found: %s\n", args[0])
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Issue not found: %s\n", subargs[0])
+			return 1
 		}
 		if err := store.DeleteIssue(issue.ID); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-		fmt.Printf("Deleted issue %s\n", args[0])
-
+		fmt.Fprintf(stdout, "Deleted issue %s\n", subargs[0])
 	case "block":
-		if len(args) < 2 {
-			fmt.Println("Usage: maestro issue block <identifier> <blocker_identifier...>")
-			os.Exit(1)
+		if len(subargs) < 2 {
+			fmt.Fprintln(stdout, "Usage: maestro issue block <identifier> <blocker_identifier...>")
+			return 1
 		}
-		identifier := args[0]
-		blockers := args[1:]
-
+		identifier := subargs[0]
 		issue, err := store.GetIssueByIdentifier(identifier)
 		if err != nil {
-			fmt.Printf("Issue not found: %s\n", identifier)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Issue not found: %s\n", identifier)
+			return 1
 		}
-
-		updates := map[string]interface{}{"blocked_by": blockers}
-		if err := store.UpdateIssue(issue.ID, updates); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+		blockers := subargs[1:]
+		if err := store.UpdateIssue(issue.ID, map[string]interface{}{"blocked_by": blockers}); err != nil {
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-		fmt.Printf("Set blockers for %s: %s\n", identifier, strings.Join(blockers, ", "))
-
+		fmt.Fprintf(stdout, "Set blockers for %s: %s\n", identifier, strings.Join(blockers, ", "))
 	default:
-		fmt.Printf("Unknown command: %s\n", cmd)
-		os.Exit(1)
+		fmt.Fprintf(stdout, "Unknown command: %s\n", cmd)
+		return 1
 	}
+	return 0
 }
 
-func runProject() {
-	if len(os.Args) < 3 {
-		fmt.Print(`Usage:
+func projectCommand(args []string, stdout io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprint(stdout, `Usage:
   maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
   maestro project list
   maestro project delete <id>
 `)
-		os.Exit(1)
+		return 1
 	}
 
+	cmd := args[0]
+	subargs := append([]string(nil), args[1:]...)
 	var dbPath string
-	args := os.Args[3:]
-
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--db" && i+1 < len(args) {
-			dbPath = args[i+1]
-			args = append(args[:i], args[i+2:]...)
+	for i := 0; i < len(subargs); i++ {
+		if subargs[i] == "--db" && i+1 < len(subargs) {
+			dbPath = subargs[i+1]
+			subargs = append(subargs[:i], subargs[i+2:]...)
 			break
 		}
 	}
@@ -715,80 +723,92 @@ func runProject() {
 	store := getStore(dbPath)
 	defer store.Close()
 
-	cmd := os.Args[2]
-
 	switch cmd {
 	case "create":
-		if len(args) < 1 {
-			fmt.Println("Usage: maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]")
-			os.Exit(1)
+		if len(subargs) < 1 {
+			fmt.Fprintln(stdout, "Usage: maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]")
+			return 1
 		}
-		name := args[0]
+		name := subargs[0]
 		description := ""
 		repoPath := ""
 		workflowPath := ""
-		for i := 1; i < len(args); i++ {
-			switch args[i] {
+		for i := 1; i < len(subargs); i++ {
+			switch subargs[i] {
 			case "--desc":
-				if i+1 < len(args) {
-					description = args[i+1]
+				if i+1 < len(subargs) {
+					description = subargs[i+1]
 					i++
 				}
 			case "--repo":
-				if i+1 < len(args) {
-					repoPath = args[i+1]
+				if i+1 < len(subargs) {
+					repoPath = subargs[i+1]
 					i++
 				}
 			case "--workflow":
-				if i+1 < len(args) {
-					workflowPath = args[i+1]
+				if i+1 < len(subargs) {
+					workflowPath = subargs[i+1]
 					i++
 				}
 			}
 		}
 		if strings.TrimSpace(repoPath) == "" {
-			fmt.Println("Error: --repo is required")
-			os.Exit(1)
+			fmt.Fprintln(stdout, "Error: --repo is required")
+			return 1
 		}
-
 		project, err := store.CreateProject(name, description, repoPath, workflowPath)
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-		fmt.Printf("Created project %s (ID: %s, Repo: %s)\n", project.Name, project.ID, project.RepoPath)
-
+		fmt.Fprintf(stdout, "Created project %s (ID: %s, Repo: %s)\n", project.Name, project.ID, project.RepoPath)
 	case "list":
 		projects, err := store.ListProjects()
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
 		for _, p := range projects {
-			fmt.Printf("%s\t%s\t%s\t%s\n", p.ID, p.Name, p.RepoPath, p.Description)
+			fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.RepoPath, p.Description)
 		}
-
 	case "delete":
-		if len(args) < 1 {
-			fmt.Println("Usage: maestro project delete <id>")
-			os.Exit(1)
+		if len(subargs) < 1 {
+			fmt.Fprintln(stdout, "Usage: maestro project delete <id>")
+			return 1
 		}
-		if err := store.DeleteProject(args[0]); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+		if err := store.DeleteProject(subargs[0]); err != nil {
+			fmt.Fprintf(stdout, "Error: %v\n", err)
+			return 1
 		}
-		fmt.Println("Project deleted")
-
+		fmt.Fprintln(stdout, "Project deleted")
 	default:
-		fmt.Printf("Unknown command: %s\n", cmd)
-		os.Exit(1)
+		fmt.Fprintf(stdout, "Unknown command: %s\n", cmd)
+		return 1
 	}
+	return 0
 }
 
 func runSpecCheck() {
+	if code := specCheckCommand(os.Args[2:], os.Stdout); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func runVerify() {
+	if code := verifyCommand(os.Args[2:], os.Stdout); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func runStatus() {
+	if code := statusCommand(os.Args[2:], os.Stdout); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func specCheckCommand(args []string, stdout io.Writer) int {
 	var repoPath string
 	jsonOnly := false
-	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--repo" && i+1 < len(args) {
 			repoPath = args[i+1]
@@ -801,26 +821,26 @@ func runSpecCheck() {
 	}
 	r := speccheck.Run(repoPath)
 	if jsonOnly {
-		_ = json.NewEncoder(os.Stdout).Encode(r)
+		_ = json.NewEncoder(stdout).Encode(r)
 		if !r.OK {
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
-	fmt.Println("Spec Check")
-	fmt.Println(strings.Repeat("=", 40))
+	fmt.Fprintln(stdout, "Spec Check")
+	fmt.Fprintln(stdout, strings.Repeat("=", 40))
 	for k, v := range r.Checks {
-		fmt.Printf("%s: %s\n", k, v)
+		fmt.Fprintf(stdout, "%s: %s\n", k, v)
 	}
 	if !r.OK {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
-func runVerify() {
+func verifyCommand(args []string, stdout io.Writer) int {
 	var dbPath, repoPath string
 	jsonOnly := false
-	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--db" && i+1 < len(args) {
 			dbPath = args[i+1]
@@ -838,34 +858,34 @@ func runVerify() {
 	}
 	res := verification.Run(repoPath, dbPath)
 	if jsonOnly {
-		_ = json.NewEncoder(os.Stdout).Encode(res)
+		_ = json.NewEncoder(stdout).Encode(res)
 		if !res.OK {
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
-	fmt.Println("Verification")
-	fmt.Println(strings.Repeat("=", 40))
+	fmt.Fprintln(stdout, "Verification")
+	fmt.Fprintln(stdout, strings.Repeat("=", 40))
 	for k, v := range res.Checks {
-		fmt.Printf("%s: %s\n", k, v)
+		fmt.Fprintf(stdout, "%s: %s\n", k, v)
 	}
 	if len(res.Errors) > 0 {
-		fmt.Println("Errors:")
+		fmt.Fprintln(stdout, "Errors:")
 		for _, e := range res.Errors {
-			fmt.Printf("- %s\n", e)
+			fmt.Fprintf(stdout, "- %s\n", e)
 		}
 	}
 	if !res.OK {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
-func runStatus() {
+func statusCommand(args []string, stdout io.Writer) int {
 	var dbPath string
 	jsonOnly := false
 	dashboard := false
 	dashboardURL := ""
-	args := os.Args[2:]
 
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--db" && i+1 < len(args) {
@@ -908,28 +928,29 @@ func runStatus() {
 			CodexTotals: observability.TokenTotals{},
 		}
 		if jsonOnly {
-			_ = json.NewEncoder(os.Stdout).Encode(snapshot)
-			return
+			_ = json.NewEncoder(stdout).Encode(snapshot)
+			return 0
 		}
-		fmt.Println(observability.FormatDashboard(snapshot, observability.DashboardOptions{
+		fmt.Fprintln(stdout, observability.FormatDashboard(snapshot, observability.DashboardOptions{
 			Now:          time.Now().UTC(),
 			DashboardURL: dashboardURL,
 		}))
-		return
+		return 0
 	}
 
 	if jsonOnly {
-		_ = json.NewEncoder(os.Stdout).Encode(data)
-		return
+		_ = json.NewEncoder(stdout).Encode(data)
+		return 0
 	}
 
-	fmt.Println("Maestro Status")
-	fmt.Println(strings.Repeat("=", 40))
-	fmt.Printf("Projects: %d\n", len(projects))
-	fmt.Printf("Total Issues: %d\n", len(issues))
-	fmt.Println()
-	fmt.Println("Issue Breakdown:")
+	fmt.Fprintln(stdout, "Maestro Status")
+	fmt.Fprintln(stdout, strings.Repeat("=", 40))
+	fmt.Fprintf(stdout, "Projects: %d\n", len(projects))
+	fmt.Fprintf(stdout, "Total Issues: %d\n", len(issues))
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Issue Breakdown:")
 	for _, state := range []kanban.State{kanban.StateBacklog, kanban.StateReady, kanban.StateInProgress, kanban.StateInReview, kanban.StateDone, kanban.StateCancelled} {
-		fmt.Printf("  %s: %d\n", state, counts[state])
+		fmt.Fprintf(stdout, "  %s: %d\n", state, counts[state])
 	}
+	return 0
 }

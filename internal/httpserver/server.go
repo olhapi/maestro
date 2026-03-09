@@ -17,7 +17,7 @@ type Server struct {
 	http *http.Server
 }
 
-func Start(ctx context.Context, addr string, store *kanban.Store, provider dashboardapi.Provider) *Server {
+func newHandler(store *kanban.Store, provider dashboardapi.Provider) http.Handler {
 	mux := http.NewServeMux()
 	dashboardapi.NewServer(store, provider).Register(mux)
 	observability.RegisterRoutes(mux, provider)
@@ -37,8 +37,11 @@ func Start(ctx context.Context, addr string, store *kanban.Store, provider dashb
 		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 	})
 	mux.Handle("/", dashboardui.Handler())
+	return mux
+}
 
-	srv := &http.Server{Addr: addr, Handler: mux}
+func Start(ctx context.Context, addr string, store *kanban.Store, provider dashboardapi.Provider) *Server {
+	srv := &http.Server{Addr: addr, Handler: newHandler(store, provider)}
 
 	go func() {
 		<-ctx.Done()

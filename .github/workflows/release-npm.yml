@@ -26,7 +26,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Run Go tests
-        run: go test ./...
+        run: make test
 
       - name: Build and pack npm release
         run: ./scripts/package_npm_release.sh "${GITHUB_REF_NAME}"

@@ -29,4 +29,10 @@ export default defineConfig({
     emptyOutDir: true,
     outDir: '../internal/dashboardui/dist',
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    css: true,
+    setupFiles: './src/test/setup.ts',
+  },
 })

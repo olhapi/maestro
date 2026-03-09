@@ -709,3 +709,113 @@ func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected updated snapshot: %+v", loaded)
 	}
 }
+
+func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "extra.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if store.DBPath() == "" {
+		t.Fatal("expected DBPath to be populated")
+	}
+	if store.StoreID() == "" {
+		t.Fatal("expected StoreID to be populated")
+	}
+
+	repoPath := t.TempDir()
+	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: kanban\n---\n"), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	project, err := store.CreateProject("Project", "", repoPath, workflowPath)
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	updatedRepo := t.TempDir()
+	updatedWorkflow := filepath.Join(updatedRepo, "ALT_WORKFLOW.md")
+	if err := os.WriteFile(updatedWorkflow, []byte("---\ntracker:\n  kind: kanban\n---\n"), 0o644); err != nil {
+		t.Fatalf("write updated workflow: %v", err)
+	}
+	if err := store.UpdateProject(project.ID, "Project Updated", "desc", updatedRepo, updatedWorkflow); err != nil {
+		t.Fatalf("UpdateProject failed: %v", err)
+	}
+	project, err = store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject after update failed: %v", err)
+	}
+	if project.Name != "Project Updated" || project.RepoPath != updatedRepo || project.WorkflowPath != updatedWorkflow {
+		t.Fatalf("unexpected updated project: %+v", project)
+	}
+
+	epic, err := store.CreateEpic(project.ID, "Epic", "desc")
+	if err != nil {
+		t.Fatalf("CreateEpic failed: %v", err)
+	}
+	if err := store.UpdateEpic(epic.ID, project.ID, "Epic Updated", "updated"); err != nil {
+		t.Fatalf("UpdateEpic failed: %v", err)
+	}
+	epic, err = store.GetEpic(epic.ID)
+	if err != nil {
+		t.Fatalf("GetEpic after update failed: %v", err)
+	}
+	if epic.Name != "Epic Updated" {
+		t.Fatalf("unexpected updated epic: %+v", epic)
+	}
+
+	issue, err := store.CreateIssue(project.ID, epic.ID, "Tracked", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, WorkflowPhaseReview); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase failed: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after phase update failed: %v", err)
+	}
+	if issue.WorkflowPhase != WorkflowPhaseReview {
+		t.Fatalf("expected review phase, got %s", issue.WorkflowPhase)
+	}
+
+	for _, kind := range []string{"run_started", "tick", "manual_retry_requested"} {
+		if err := store.AppendRuntimeEvent(kind, map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+			"attempt":    1,
+		}); err != nil {
+			t.Fatalf("AppendRuntimeEvent(%s) failed: %v", kind, err)
+		}
+	}
+	events, err := store.ListRuntimeEvents(0, 10)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents failed: %v", err)
+	}
+	if len(events) < 3 {
+		t.Fatalf("expected runtime events, got %d", len(events))
+	}
+	if events[len(events)-1].Kind != "manual_retry_requested" {
+		t.Fatalf("unexpected runtime event ordering: %#v", events)
+	}
+
+	if err := store.DeleteEpic(epic.ID); err != nil {
+		t.Fatalf("DeleteEpic failed: %v", err)
+	}
+	if _, err := store.GetEpic(epic.ID); err == nil {
+		t.Fatal("expected deleted epic lookup to fail")
+	}
+}
+
+func TestHelperUtilities(t *testing.T) {
+	if min(2, 5) != 2 || min(9, 3) != 3 {
+		t.Fatal("expected min helper to pick the smaller value")
+	}
+	if asInt(4) != 4 || asInt(int64(5)) != 5 || asInt(float64(3)) != 3 {
+		t.Fatal("expected asInt helper to decode common numeric forms")
+	}
+}

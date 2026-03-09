@@ -42,6 +42,14 @@ For local development or unsupported platforms, build from source with Go:
 go build -o maestro ./cmd/maestro
 ```
 
+For local contributor tooling, install the repo-root dev dependency once:
+
+```bash
+npm install
+```
+
+This installs the repo-managed Git hooks with Husky and bootstraps the frontend dev dependencies used by the hooks.
+
 ## Quick Start
 
 ### 1. Initialize a workflow file
@@ -139,6 +147,18 @@ maestro --log-level <debug|info|warn|error> workflow init [repo_path]
 ```
 
 `--log-level` defaults to `info`. Use `debug` to include raw app-server stream output and session churn in the structured logs.
+
+## Git Hooks
+
+Repo-managed Git hooks are installed by running `npm install` at the repo root.
+
+- `pre-commit` stays fast and only runs checks relevant to staged files.
+- staged Go changes run `go test` for the impacted package directories under `./cmd`, `./internal`, and `./pkg`.
+- staged changes to `go.mod`, `go.sum`, `Makefile`, or `scripts/check_coverage.sh` run `make test`.
+- staged frontend changes run `npm --prefix frontend run lint` and `npm --prefix frontend run test:ci`.
+- `pre-push` runs `make test-cover`, `make test-race`, `npm --prefix frontend run lint`, and `npm --prefix frontend run test:ci`.
+
+Use standard Git `--no-verify` only when you intentionally need to bypass hooks.
 
 ## Issue States
 

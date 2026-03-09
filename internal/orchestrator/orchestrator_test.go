@@ -12,6 +12,7 @@ import (
 	"github.com/olhapi/maestro/internal/agent"
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -129,6 +130,89 @@ Implement {{ issue.identifier }} in {{ phase }}
 	if _, err := manager.Refresh(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeAppServerWorkflow(t *testing.T, manager *config.Manager, workspaceRoot, command, approvalPolicy string, turnTimeoutMs, stallTimeoutMs int) {
+	t.Helper()
+	workflowContent := `---
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 50
+workspace:
+  root: ` + workspaceRoot + `
+hooks:
+  timeout_ms: 1000
+agent:
+  max_concurrent_agents: 1
+  max_turns: 1
+  max_retry_backoff_ms: 100
+  mode: app_server
+codex:
+  command: ` + command + `
+  approval_policy: ` + approvalPolicy + `
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 500
+  turn_timeout_ms: ` + fmt.Sprintf("%d", turnTimeoutMs) + `
+  stall_timeout_ms: ` + fmt.Sprintf("%d", stallTimeoutMs) + `
+---
+Test prompt for {{ issue.identifier }}
+`
+	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForLiveSession(t *testing.T, orch *Orchestrator, identifier string, timeout time.Duration) appserver.Session {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
+		if session, ok := sessions[identifier].(appserver.Session); ok {
+			return session
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for live session %s", identifier)
+	return appserver.Session{}
+}
+
+func waitForWorkspaceRemoval(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := store.GetWorkspace(issueID); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for workspace %s removal", issueID)
+}
+
+func waitForExecutionSnapshot(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration) *kanban.ExecutionSessionSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snapshot, err := store.GetIssueExecutionSession(issueID)
+		if err == nil {
+			return snapshot
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for execution snapshot %s", issueID)
+	return nil
 }
 
 func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
@@ -476,68 +560,27 @@ func TestDoneSuccessMarksIssueCompleteAndAllowsCleanup(t *testing.T) {
 }
 
 func TestLiveSessionsTracksOnlyActiveRuns(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptPath := filepath.Join(tmpDir, "fake-codex.sh")
-	script := `#!/bin/sh
-count=0
-while IFS= read -r line; do
-  count=$((count + 1))
-  case "$count" in
-    1) printf '%s\n' '{"id":1,"result":{}}' ;;
-    2) ;;
-    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-live"}}}' ;;
-    4)
-      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-live"}}}'
-      sleep 1
-      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-live","turnId":"turn-live"}}'
-      exit 0
-      ;;
-  esac
-done
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
-	workflowContent := `---
-tracker:
-  kind: kanban
-  active_states:
-    - ready
-    - in_progress
-    - in_review
-  terminal_states:
-    - done
-    - cancelled
-polling:
-  interval_ms: 50
-workspace:
-  root: ` + workspaceRoot + `
-hooks:
-  timeout_ms: 1000
-agent:
-  max_concurrent_agents: 1
-  max_turns: 1
-  max_retry_backoff_ms: 100
-  mode: app_server
-codex:
-  command: sh ` + scriptPath + `
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: 3000
----
-Test prompt for {{ issue.identifier }}
-`
-	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Refresh(); err != nil {
-		t.Fatal(err)
-	}
+	command, release := fakeappserver.CommandString(t, func() fakeappserver.Scenario {
+		scenario := fakeappserver.Scenario{
+			Steps: []fakeappserver.Step{
+				{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+				{Match: fakeappserver.Match{Method: "initialized"}},
+				{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-live"}}}}}},
+				{
+					Match:          fakeappserver.Match{Method: "turn/start"},
+					Emit:           []fakeappserver.Output{{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-live"}}}}},
+					WaitForRelease: "complete",
+					EmitAfterRelease: []fakeappserver.Output{{
+						JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-live", "turnId": "turn-live"}},
+					}},
+					ExitCode: fakeappserver.Int(0),
+				},
+			},
+		}
+		return scenario
+	}())
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 0)
 
 	issue, _ := store.CreateIssue("", "", "Live Session", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
@@ -546,19 +589,11 @@ Test prompt for {{ issue.identifier }}
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
-		if session, ok := sessions[issue.Identifier].(appserver.Session); ok {
-			if session.SessionID == "thread-live-turn-live" && session.TurnsStarted == 1 && session.IssueID == issue.ID && session.IssueIdentifier == issue.Identifier {
-				goto completed
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	session := waitForLiveSession(t, orch, issue.Identifier, 2*time.Second)
+	if session.SessionID != "thread-live-turn-live" || session.TurnsStarted != 1 || session.IssueID != issue.ID || session.IssueIdentifier != issue.Identifier {
+		t.Fatalf("unexpected live session: %+v", session)
 	}
-	t.Fatal("expected live session while run is active")
-
-completed:
+	release("complete")
 	waitForNoRunning(t, orch, 3*time.Second)
 	sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
 	if len(sessions) != 0 {
@@ -567,68 +602,19 @@ completed:
 }
 
 func TestInterruptedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptPath := filepath.Join(tmpDir, "approval-required.sh")
-	script := `#!/bin/sh
-count=0
-while IFS= read -r line; do
-  count=$((count + 1))
-  case "$count" in
-    1) printf '%s\n' '{"id":1,"result":{}}' ;;
-    2) ;;
-    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-approval"}}}' ;;
-    4)
-      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-approval"}}}'
-      printf '%s\n' '{"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"gh pr view"}}'
-      ;;
-    *) sleep 1 ;;
-  esac
-done
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
-	workflowContent := `---
-tracker:
-  kind: kanban
-  active_states:
-    - ready
-    - in_progress
-    - in_review
-  terminal_states:
-    - done
-    - cancelled
-polling:
-  interval_ms: 50
-workspace:
-  root: ` + workspaceRoot + `
-hooks:
-  timeout_ms: 1000
-agent:
-  max_concurrent_agents: 1
-  max_turns: 1
-  max_retry_backoff_ms: 100
-  mode: app_server
-codex:
-  command: sh ` + scriptPath + `
-  approval_policy: on_request
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: 3000
-  stall_timeout_ms: 3000
----
-Test prompt for {{ issue.identifier }}
-`
-	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Refresh(); err != nil {
-		t.Fatal(err)
-	}
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-approval"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-approval"}}}},
+				{JSON: map[string]interface{}{"id": 99, "method": "item/commandExecution/requestApproval", "params": map[string]interface{}{"command": "gh pr view"}}},
+			}},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "on_request", 3000, 3000)
 
 	issue, _ := store.CreateIssue("", "", "Approval snapshot", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
@@ -636,12 +622,9 @@ Test prompt for {{ issue.identifier }}
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 3*time.Second)
 	waitForNoRunning(t, orch, 3*time.Second)
 
-	snapshot, err := store.GetIssueExecutionSession(issue.ID)
-	if err != nil {
-		t.Fatalf("GetIssueExecutionSession failed: %v", err)
-	}
 	if snapshot.RunKind != "run_unsuccessful" || snapshot.Error != "approval_required" || snapshot.Attempt != 0 {
 		t.Fatalf("unexpected execution snapshot: %+v", snapshot)
 	}
@@ -658,70 +641,16 @@ Test prompt for {{ issue.identifier }}
 }
 
 func TestStalledRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptPath := filepath.Join(tmpDir, "stall.sh")
-	script := `#!/bin/sh
-count=0
-while IFS= read -r _line; do
-  count=$((count + 1))
-  case "$count" in
-    1) printf '%s\n' '{"id":1,"result":{}}' ;;
-    2) ;;
-    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-stall"}}}' ;;
-    4)
-      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-stall"}}}'
-      sleep 4
-      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-stall","turnId":"turn-stall"}}'
-      exit 0
-      ;;
-    *) exit 0 ;;
-  esac
-done
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
-	workflowContent := `---
-tracker:
-  kind: kanban
-  active_states:
-    - ready
-    - in_progress
-    - in_review
-  terminal_states:
-    - done
-    - cancelled
-polling:
-  interval_ms: 50
-workspace:
-  root: ` + workspaceRoot + `
-hooks:
-  timeout_ms: 1000
-agent:
-  max_concurrent_agents: 1
-  max_turns: 1
-  max_retry_backoff_ms: 100
-  mode: app_server
-codex:
-  command: sh ` + scriptPath + `
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: 6000
-  stall_timeout_ms: 2500
----
-Test prompt for {{ issue.identifier }}
-`
-	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Refresh(); err != nil {
-		t.Fatal(err)
-	}
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-stall"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-stall"}}}}}, WaitForRelease: "never"},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 6000, 2500)
 
 	issue, _ := store.CreateIssue("", "", "Stall snapshot", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
@@ -729,12 +658,9 @@ Test prompt for {{ issue.identifier }}
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 5*time.Second)
 	waitForNoRunning(t, orch, 5*time.Second)
 
-	snapshot, err := store.GetIssueExecutionSession(issue.ID)
-	if err != nil {
-		t.Fatalf("GetIssueExecutionSession failed: %v", err)
-	}
 	if snapshot.Error != "stall_timeout" || snapshot.RunKind != "run_unsuccessful" || snapshot.Attempt != 0 {
 		t.Fatalf("unexpected stall snapshot: %+v", snapshot)
 	}
@@ -744,69 +670,19 @@ Test prompt for {{ issue.identifier }}
 }
 
 func TestCompletedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptPath := filepath.Join(tmpDir, "complete.sh")
-	script := `#!/bin/sh
-count=0
-while IFS= read -r line; do
-  count=$((count + 1))
-  case "$count" in
-    1) printf '%s\n' '{"id":1,"result":{}}' ;;
-    2) ;;
-    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-complete"}}}' ;;
-    4)
-      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-complete"}}}'
-      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-complete","turnId":"turn-complete"}}'
-      exit 0
-      ;;
-    *) exit 0 ;;
-  esac
-done
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
-	workflowContent := `---
-tracker:
-  kind: kanban
-  active_states:
-    - ready
-    - in_progress
-    - in_review
-  terminal_states:
-    - done
-    - cancelled
-polling:
-  interval_ms: 50
-workspace:
-  root: ` + workspaceRoot + `
-hooks:
-  timeout_ms: 1000
-agent:
-  max_concurrent_agents: 1
-  max_turns: 1
-  max_retry_backoff_ms: 100
-  mode: app_server
-codex:
-  command: sh ` + scriptPath + `
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: 3000
-  stall_timeout_ms: 3000
----
-Test prompt for {{ issue.identifier }}
-`
-	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Refresh(); err != nil {
-		t.Fatal(err)
-	}
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-complete"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-complete"}}}},
+				{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-complete", "turnId": "turn-complete"}}},
+			}, ExitCode: fakeappserver.Int(0)},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 3000)
 
 	issue, _ := store.CreateIssue("", "", "Completion snapshot", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
@@ -814,12 +690,9 @@ Test prompt for {{ issue.identifier }}
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 3*time.Second)
 	waitForNoRunning(t, orch, 3*time.Second)
 
-	snapshot, err := store.GetIssueExecutionSession(issue.ID)
-	if err != nil {
-		t.Fatalf("GetIssueExecutionSession failed: %v", err)
-	}
 	if snapshot.RunKind != "run_completed" || snapshot.Error != "" {
 		t.Fatalf("unexpected completion snapshot: %+v", snapshot)
 	}
@@ -829,28 +702,22 @@ Test prompt for {{ issue.identifier }}
 }
 
 func TestReconcileStopsCancelledRunsAndCleansWorkspace(t *testing.T) {
-	sleepScript := filepath.Join(t.TempDir(), "sleep.sh")
-	if err := os.WriteFile(sleepScript, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	orch, store, _, _ := setupTestOrchestrator(t, sleepScript)
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runner := newControlledRunner(store)
+	orch.runner = runner
 	issue, _ := store.CreateIssue("", "", "Sleep", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	runner.waitForStarts(t, 1, time.Second)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateCancelled); err != nil {
 		t.Fatal(err)
 	}
 
 	orch.reconcile(context.Background())
-	time.Sleep(50 * time.Millisecond)
-
-	if _, err := store.GetWorkspace(issue.ID); err == nil {
-		t.Fatal("expected workspace to be removed after terminal reconciliation")
-	}
+	waitForWorkspaceRemoval(t, store, issue.ID, time.Second)
 }
 
 func TestCleanupTerminalWorkspacesOnStartup(t *testing.T) {
@@ -931,6 +798,143 @@ func TestStatusLiveSessionsUseIssueIdentifiers(t *testing.T) {
 	}
 	if session.IssueID != issue.ID || session.IssueIdentifier != issue.Identifier {
 		t.Fatalf("unexpected session metadata: %+v", session)
+	}
+}
+
+func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runningIssue, err := store.CreateIssue("", "", "Running", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue running: %v", err)
+	}
+	if err := store.UpdateIssueState(runningIssue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState running: %v", err)
+	}
+	doneIssue, err := store.CreateIssue("", "", "Done", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue done: %v", err)
+	}
+	if err := store.UpdateIssueState(doneIssue.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(doneIssue.ID, kanban.WorkflowPhaseDone); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase done: %v", err)
+	}
+
+	startedAt := time.Now().UTC().Add(-10 * time.Second)
+	orch.mu.Lock()
+	orch.running[runningIssue.ID] = runningEntry{
+		cancel:    func() {},
+		issue:     *runningIssue,
+		attempt:   2,
+		phase:     kanban.WorkflowPhaseImplementation,
+		startedAt: startedAt,
+	}
+	orch.liveSessions[runningIssue.ID] = &appserver.Session{
+		SessionID:       "thread-live-turn-live",
+		ThreadID:        "thread-live",
+		TurnID:          "turn-live",
+		LastEvent:       "turn.started",
+		LastMessage:     "Working",
+		LastTimestamp:   startedAt.Add(8 * time.Second),
+		InputTokens:     11,
+		OutputTokens:    7,
+		TotalTokens:     18,
+		TurnsStarted:    2,
+		TurnsCompleted:  1,
+		IssueID:         runningIssue.ID,
+		IssueIdentifier: runningIssue.Identifier,
+	}
+	orch.retries[doneIssue.ID] = retryEntry{
+		Attempt:   3,
+		Phase:     string(kanban.WorkflowPhaseDone),
+		DueAt:     time.Now().UTC().Add(5 * time.Minute),
+		Error:     "approval_required",
+		DelayType: "failure",
+	}
+	orch.mu.Unlock()
+
+	snapshot := orch.Snapshot()
+	if len(snapshot.Running) != 1 || len(snapshot.Retrying) != 1 {
+		t.Fatalf("unexpected snapshot shape: %+v", snapshot)
+	}
+	if snapshot.Running[0].Identifier != runningIssue.Identifier || snapshot.Running[0].Tokens.TotalTokens != 18 {
+		t.Fatalf("unexpected running payload: %+v", snapshot.Running[0])
+	}
+	if snapshot.Retrying[0].Identifier != doneIssue.Identifier || snapshot.Retrying[0].DelayType != "failure" {
+		t.Fatalf("unexpected retry payload: %+v", snapshot.Retrying[0])
+	}
+
+	live := orch.LiveSessions()["sessions"].(map[string]interface{})
+	session, ok := live[runningIssue.Identifier].(appserver.Session)
+	if !ok {
+		t.Fatalf("expected live session for %s, got %#v", runningIssue.Identifier, live)
+	}
+	if session.SessionID != "thread-live-turn-live" || session.IssueIdentifier != runningIssue.Identifier {
+		t.Fatalf("unexpected live session payload: %+v", session)
+	}
+
+	result := orch.RetryIssueNow(doneIssue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("unexpected retry-now result: %#v", result)
+	}
+
+	updated := orch.Snapshot()
+	if updated.Retrying[0].DueInMs > 1000 {
+		t.Fatalf("expected retry to be due immediately, got %+v", updated.Retrying[0])
+	}
+
+	events, err := store.ListRuntimeEvents(0, 10)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	if len(events) == 0 || events[0].Kind != "manual_retry_requested" {
+		t.Fatalf("expected manual retry event, got %#v", events)
+	}
+}
+
+func TestRetryNowAndRefreshHandleAdditionalControlPaths(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	if result := orch.RetryIssueNow("ISS-404"); result["status"] != "not_found" {
+		t.Fatalf("expected not_found retry result, got %#v", result)
+	}
+
+	readyIssue, err := store.CreateIssue("", "", "Ready", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue ready: %v", err)
+	}
+	if err := store.UpdateIssueState(readyIssue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState ready: %v", err)
+	}
+	if result := orch.RetryIssueNow(readyIssue.Identifier); result["status"] != "refresh_requested" {
+		t.Fatalf("expected refresh_requested for ready issue, got %#v", result)
+	}
+
+	doneIssue, err := store.CreateIssue("", "", "Done", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue done: %v", err)
+	}
+	if err := store.UpdateIssueState(doneIssue.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(doneIssue.ID, kanban.WorkflowPhaseDone); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase done: %v", err)
+	}
+	if result := orch.RetryIssueNow(doneIssue.Identifier); result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now for done issue, got %#v", result)
+	}
+
+	refresh := orch.RequestRefresh()
+	if refresh["status"] != "accepted" {
+		t.Fatalf("unexpected refresh payload: %#v", refresh)
+	}
+	events, err := store.ListRuntimeEvents(0, 10)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	if len(events) < 3 {
+		t.Fatalf("expected retry/refresh events, got %#v", events)
 	}
 }
 
