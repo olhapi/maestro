@@ -1,5 +1,5 @@
 {
-  "name": "symphony-go-hooks",
+  "name": "maestro-hooks",
   "private": true,
   "scripts": {
     "prepare": "husky",

@@ -65,7 +65,7 @@ func TestBootstrapContractsExposePortfolioAndRuntimeOverview(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	project, err := store.CreateProject("Symphony", "Main repo", "/repo", "/repo/WORKFLOW.md")
+	project, err := store.CreateProject("Maestro", "Main repo", "/repo", "/repo/WORKFLOW.md")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
