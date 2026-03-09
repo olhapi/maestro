@@ -4,6 +4,7 @@ import type {
   EpicDetailResponse,
   EpicSummary,
   IssueDetail,
+  IssueExecutionDetail,
   IssueSummary,
   Project,
   ProjectDetailResponse,
@@ -75,6 +76,7 @@ export const api = {
   createIssue: (body: Record<string, unknown>) =>
     request<IssueDetail>('/api/v1/app/issues', { method: 'POST', body: JSON.stringify(body) }),
   getIssue: (identifier: string) => request<IssueDetail>(`/api/v1/app/issues/${identifier}`),
+  getIssueExecution: (identifier: string) => request<IssueExecutionDetail>(`/api/v1/app/issues/${identifier}/execution`),
   updateIssue: (identifier: string, body: Record<string, unknown>) =>
     request<IssueDetail>(`/api/v1/app/issues/${identifier}`, {
       method: 'PATCH',

@@ -14,6 +14,7 @@ type RunningEntry struct {
 	Identifier        string      `json:"identifier"`
 	State             string      `json:"state"`
 	Phase             string      `json:"phase,omitempty"`
+	Attempt           int         `json:"attempt,omitempty"`
 	SessionID         string      `json:"session_id,omitempty"`
 	CodexAppServerPID int         `json:"codex_app_server_pid,omitempty"`
 	TurnCount         int         `json:"turn_count"`

@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/olhapi/maestro/internal/appserver"
 )
 
 func setupTestStore(t *testing.T) *Store {
@@ -603,5 +606,106 @@ func TestStoreIdentityStable(t *testing.T) {
 	absDBPath, _ := filepath.Abs(dbPath)
 	if identity2.DBPath != absDBPath {
 		t.Fatalf("expected db path %q, got %q", absDBPath, identity2.DBPath)
+	}
+}
+
+func TestListIssueRuntimeEventsFiltersAndOrdersExecutionEvents(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Runtime issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	for _, kind := range []string{"run_started", "tick", "run_failed", "retry_scheduled", "manual_retry_requested"} {
+		if err := store.AppendRuntimeEvent(kind, map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+		}); err != nil {
+			t.Fatalf("AppendRuntimeEvent(%s) failed: %v", kind, err)
+		}
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents failed: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("expected 4 execution events, got %d", len(events))
+	}
+	if events[0].Kind != "run_started" || events[len(events)-1].Kind != "manual_retry_requested" {
+		t.Fatalf("expected oldest-to-newest execution events, got %#v", events)
+	}
+	for _, event := range events {
+		if event.Kind == "tick" {
+			t.Fatalf("unexpected non-execution event returned: %#v", event)
+		}
+		if event.IssueID != issue.ID {
+			t.Fatalf("unexpected issue id: %#v", event)
+		}
+	}
+}
+
+func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Session issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	snapshot := ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "run_failed",
+		Error:      "approval_required",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-1-turn-1",
+			ThreadID:        "thread-1",
+			TurnID:          "turn-1",
+			LastEvent:       "turn.started",
+			LastTimestamp:   now,
+			LastMessage:     "Waiting for approval",
+			TotalTokens:     42,
+			TurnsStarted:    1,
+			History: []appserver.Event{
+				{Type: "turn.started", Message: "Start"},
+				{Type: "turn.approval_required", Message: "Waiting for approval"},
+			},
+		},
+	}
+
+	if err := store.UpsertIssueExecutionSession(snapshot); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession failed: %v", err)
+	}
+
+	loaded, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession failed: %v", err)
+	}
+	if loaded.Attempt != 2 || loaded.RunKind != "run_failed" || loaded.Error != "approval_required" {
+		t.Fatalf("unexpected snapshot metadata: %+v", loaded)
+	}
+	if loaded.AppSession.SessionID != "thread-1-turn-1" || len(loaded.AppSession.History) != 2 {
+		t.Fatalf("unexpected session payload: %+v", loaded.AppSession)
+	}
+
+	snapshot.Attempt = 3
+	snapshot.RunKind = "run_completed"
+	snapshot.Error = ""
+	snapshot.AppSession.LastEvent = "turn.completed"
+	if err := store.UpsertIssueExecutionSession(snapshot); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession update failed: %v", err)
+	}
+	loaded, err = store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession after update failed: %v", err)
+	}
+	if loaded.Attempt != 3 || loaded.RunKind != "run_completed" || loaded.AppSession.LastEvent != "turn.completed" {
+		t.Fatalf("unexpected updated snapshot: %+v", loaded)
 	}
 }

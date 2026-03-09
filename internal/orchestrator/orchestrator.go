@@ -596,7 +596,6 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	o.mu.Lock()
 	delete(o.running, issue.ID)
 	o.totalRuns++
-	delete(o.liveSessions, issue.ID)
 	o.mu.Unlock()
 
 	current := issue
@@ -610,6 +609,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 
 	switch {
 	case err != nil:
+		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_failed", err.Error(), result)
 		next := o.handleFailedRun(workflow, current, phase, attempt, result, "run_failed", err.Error())
 		slog.Warn("Agent run failed",
 			issueLogAttrs(current, attempt, "error", err, "next_attempt", next, "phase", phase)...,
@@ -619,11 +619,13 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		if result.Error != nil {
 			errText = result.Error.Error()
 		}
+		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_unsuccessful", errText, result)
 		next := o.handleFailedRun(workflow, current, phase, attempt, result, "run_unsuccessful", errText)
 		slog.Warn("Agent run completed unsuccessfully",
 			issueLogAttrs(current, attempt, "error", errText, "next_attempt", next, "phase", phase)...,
 		)
 	default:
+		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_completed", "", result)
 		next, scheduled := o.handleSuccessfulRun(workflow, current, phase, attempt, result)
 		extra := []interface{}{"phase", phase}
 		if scheduled {
@@ -633,6 +635,10 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 			issueLogAttrs(current, attempt, extra...)...,
 		)
 	}
+
+	o.mu.Lock()
+	delete(o.liveSessions, issue.ID)
+	o.mu.Unlock()
 }
 
 func nextAttempt(attempt int) int {
@@ -1178,6 +1184,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 			Identifier: entry.issue.Identifier,
 			State:      string(entry.issue.State),
 			Phase:      string(entry.phase),
+			Attempt:    entry.attempt,
 			StartedAt:  entry.startedAt,
 		}
 		if session != nil {
@@ -1374,6 +1381,25 @@ func attachResultMetrics(fields map[string]interface{}, result *agent.RunResult)
 	fields["input_tokens"] = result.AppSession.InputTokens
 	fields["output_tokens"] = result.AppSession.OutputTokens
 	fields["total_tokens"] = result.AppSession.TotalTokens
+}
+
+func (o *Orchestrator) persistExecutionSessionSnapshot(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, result *agent.RunResult) {
+	if issue == nil || result == nil || result.AppSession == nil {
+		return
+	}
+	session := cloneSessionWithIssue(result.AppSession, issue.ID, issue.Identifier)
+	if err := o.store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(phase),
+		Attempt:    attempt,
+		RunKind:    runKind,
+		Error:      errText,
+		UpdatedAt:  time.Now().UTC(),
+		AppSession: session,
+	}); err != nil {
+		slog.Warn("Failed to persist issue execution session", "issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+	}
 }
 
 func issueLogAttrs(issue *kanban.Issue, attempt int, extra ...interface{}) []interface{} {

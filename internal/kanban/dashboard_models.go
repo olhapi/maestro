@@ -1,6 +1,10 @@
 package kanban
 
-import "time"
+import (
+	"time"
+
+	"github.com/olhapi/maestro/internal/appserver"
+)
 
 type IssueStateCounts struct {
 	Backlog    int `json:"backlog"`
@@ -97,4 +101,15 @@ type RuntimeSeriesPoint struct {
 	RunsFailed    int    `json:"runs_failed"`
 	Retries       int    `json:"retries"`
 	Tokens        int    `json:"tokens"`
+}
+
+type ExecutionSessionSnapshot struct {
+	IssueID    string            `json:"issue_id"`
+	Identifier string            `json:"identifier"`
+	Phase      string            `json:"phase,omitempty"`
+	Attempt    int               `json:"attempt"`
+	RunKind    string            `json:"run_kind,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	UpdatedAt  time.Time         `json:"updated_at"`
+	AppSession appserver.Session `json:"session"`
 }

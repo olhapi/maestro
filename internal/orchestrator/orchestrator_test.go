@@ -566,6 +566,268 @@ completed:
 	}
 }
 
+func TestInterruptedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "approval-required.sh")
+	script := `#!/bin/sh
+count=0
+while IFS= read -r line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-approval"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-approval"}}}'
+      printf '%s\n' '{"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"gh pr view"}}'
+      ;;
+    *) sleep 1 ;;
+  esac
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	workflowContent := `---
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 50
+workspace:
+  root: ` + workspaceRoot + `
+hooks:
+  timeout_ms: 1000
+agent:
+  max_concurrent_agents: 1
+  max_turns: 1
+  max_retry_backoff_ms: 100
+  mode: app_server
+codex:
+  command: sh ` + scriptPath + `
+  approval_policy: on_request
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 500
+  turn_timeout_ms: 3000
+  stall_timeout_ms: 3000
+---
+Test prompt for {{ issue.identifier }}
+`
+	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	issue, _ := store.CreateIssue("", "", "Approval snapshot", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession failed: %v", err)
+	}
+	if snapshot.RunKind != "run_unsuccessful" || snapshot.Error != "approval_required" || snapshot.Attempt != 0 {
+		t.Fatalf("unexpected execution snapshot: %+v", snapshot)
+	}
+	if snapshot.AppSession.SessionID != "thread-approval-turn-approval" {
+		t.Fatalf("unexpected persisted session id: %+v", snapshot.AppSession)
+	}
+	if len(snapshot.AppSession.History) == 0 {
+		t.Fatalf("expected persisted session history, got %+v", snapshot.AppSession)
+	}
+	sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
+	if len(sessions) != 0 {
+		t.Fatalf("expected no live sessions after interrupted run, got %#v", sessions)
+	}
+}
+
+func TestStalledRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "stall.sh")
+	script := `#!/bin/sh
+count=0
+while IFS= read -r _line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-stall"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-stall"}}}'
+      sleep 4
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-stall","turnId":"turn-stall"}}'
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	workflowContent := `---
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 50
+workspace:
+  root: ` + workspaceRoot + `
+hooks:
+  timeout_ms: 1000
+agent:
+  max_concurrent_agents: 1
+  max_turns: 1
+  max_retry_backoff_ms: 100
+  mode: app_server
+codex:
+  command: sh ` + scriptPath + `
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 500
+  turn_timeout_ms: 6000
+  stall_timeout_ms: 2500
+---
+Test prompt for {{ issue.identifier }}
+`
+	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	issue, _ := store.CreateIssue("", "", "Stall snapshot", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, 5*time.Second)
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession failed: %v", err)
+	}
+	if snapshot.Error != "stall_timeout" || snapshot.RunKind != "run_unsuccessful" || snapshot.Attempt != 0 {
+		t.Fatalf("unexpected stall snapshot: %+v", snapshot)
+	}
+	if snapshot.AppSession.SessionID != "thread-stall-turn-stall" {
+		t.Fatalf("unexpected persisted stall session: %+v", snapshot.AppSession)
+	}
+}
+
+func TestCompletedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "complete.sh")
+	script := `#!/bin/sh
+count=0
+while IFS= read -r line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-complete"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-complete"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-complete","turnId":"turn-complete"}}'
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	workflowContent := `---
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 50
+workspace:
+  root: ` + workspaceRoot + `
+hooks:
+  timeout_ms: 1000
+agent:
+  max_concurrent_agents: 1
+  max_turns: 1
+  max_retry_backoff_ms: 100
+  mode: app_server
+codex:
+  command: sh ` + scriptPath + `
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 500
+  turn_timeout_ms: 3000
+  stall_timeout_ms: 3000
+---
+Test prompt for {{ issue.identifier }}
+`
+	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	issue, _ := store.CreateIssue("", "", "Completion snapshot", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession failed: %v", err)
+	}
+	if snapshot.RunKind != "run_completed" || snapshot.Error != "" {
+		t.Fatalf("unexpected completion snapshot: %+v", snapshot)
+	}
+	if snapshot.AppSession.SessionID != "thread-complete-turn-complete" || snapshot.AppSession.TerminalReason != "turn.completed" {
+		t.Fatalf("unexpected persisted completed session: %+v", snapshot.AppSession)
+	}
+}
+
 func TestReconcileStopsCancelledRunsAndCleansWorkspace(t *testing.T) {
 	sleepScript := filepath.Join(t.TempDir(), "sleep.sh")
 	if err := os.WriteFile(sleepScript, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {

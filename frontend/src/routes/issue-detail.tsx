@@ -15,7 +15,7 @@ import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
 import { stateMeta } from '@/lib/dashboard'
 import type { IssueState } from '@/lib/types'
-import { formatDateTime, formatNumber, formatRelativeTime } from '@/lib/utils'
+import { formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
 export function IssueDetailPage() {
   const { identifier } = useParams({ from: '/issues/$identifier' })
@@ -29,12 +29,19 @@ export function IssueDetailPage() {
     queryKey: ['issue', identifier],
     queryFn: () => api.getIssue(identifier),
   })
+  const execution = useQuery({
+    queryKey: ['issue-execution', identifier],
+    queryFn: () => api.getIssueExecution(identifier),
+    refetchInterval: (query) => (query.state.data?.active ? 1500 : false),
+    refetchIntervalInBackground: true,
+  })
 
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['bootstrap'] }),
       queryClient.invalidateQueries({ queryKey: ['issues'] }),
       queryClient.invalidateQueries({ queryKey: ['issue', identifier] }),
+      queryClient.invalidateQueries({ queryKey: ['issue-execution', identifier] }),
       queryClient.invalidateQueries({ queryKey: ['project'] }),
       queryClient.invalidateQueries({ queryKey: ['epic'] }),
     ])
@@ -57,13 +64,14 @@ export function IssueDetailPage() {
     },
   })
 
-  if (!bootstrap.data || !issue.data) {
+  if (!bootstrap.data || !issue.data || !execution.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />
   }
 
-  const session = bootstrap.data.sessions.sessions[issue.data.id]
-  const retry = bootstrap.data.overview.snapshot.retrying.find((item) => item.issue_id === issue.data?.id)
   const blockersValue = blockersDraft ?? issue.data.blocked_by?.join(', ') ?? ''
+  const session = execution.data.session
+  const sessionHistory = session?.history?.slice(-8) ?? []
+  const runtimeEvents = execution.data.runtime_events.slice(-8)
 
   return (
     <div className="grid gap-5">
@@ -196,29 +204,109 @@ export function IssueDetailPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Execution context</CardTitle>
+              <CardTitle>Execution triage</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
-                <p className="text-sm text-[var(--muted-foreground)]">Last event</p>
-                <p className="mt-2 font-medium text-white">{session?.last_event || 'No live session'}</p>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">{session?.last_message || 'No message'}</p>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Badge className="border-white/10 bg-white/5 text-white">{execution.data.active ? 'Active session' : 'Idle'}</Badge>
+                <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.data.retry_state)}</Badge>
+                <Badge className="border-white/10 bg-white/5 text-white">Attempt {execution.data.attempt_number || 0}</Badge>
+                <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.data.phase || 'implementation')}</Badge>
+                {execution.data.failure_class ? (
+                  <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">{toTitleCase(execution.data.failure_class)}</Badge>
+                ) : null}
+                {execution.data.next_retry_at ? (
+                  <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">
+                    Retry {formatRelativeTime(execution.data.next_retry_at)}
+                  </Badge>
+                ) : null}
               </div>
+
+              {execution.data.current_error ? (
+                <div className="rounded-[1.5rem] border border-rose-400/15 bg-rose-400/10 p-4 text-sm text-rose-100">
+                  <p className="text-xs uppercase tracking-[0.18em] text-rose-200/80">Current error</p>
+                  <p className="mt-2 whitespace-pre-wrap break-words">{execution.data.current_error}</p>
+                </div>
+              ) : null}
+
+              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm text-[var(--muted-foreground)]">Session snapshot</p>
+                    <p className="mt-2 font-medium text-white">{session?.last_event || 'No app-server session recorded'}</p>
+                    <p className="mt-2 text-sm text-[var(--muted-foreground)]">{session?.last_message || 'No message'}</p>
+                  </div>
+                  <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.data.session_source)}</Badge>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Turns</p>
                   <p className="mt-2 font-display text-3xl text-white">{session?.turns_started ?? 0}</p>
+                  <p className="mt-2 text-sm text-[var(--muted-foreground)]">Completed: {formatNumber(session?.turns_completed)}</p>
                 </div>
                 <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Tokens</p>
                   <p className="mt-2 font-display text-3xl text-white">{formatNumber(session?.total_tokens)}</p>
+                  <p className="mt-2 text-sm text-[var(--muted-foreground)]">
+                    Updated: {session ? formatDateTime(session.last_timestamp) : 'n/a'}
+                  </p>
                 </div>
               </div>
-              {retry ? (
-                <div className="rounded-[1.5rem] border border-amber-400/15 bg-amber-400/10 p-4 text-sm text-amber-100">
-                  Retry scheduled for {formatDateTime(retry.due_at)}.
+
+              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-white">Recent session history</p>
+                  <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                    {sessionHistory.length} events
+                  </span>
                 </div>
-              ) : null}
+                <div className="mt-4 space-y-3">
+                  {sessionHistory.length === 0 ? (
+                    <p className="text-sm text-[var(--muted-foreground)]">No session history captured for this issue yet.</p>
+                  ) : (
+                    sessionHistory.map((event, index) => (
+                      <div key={`${event.type}-${event.turn_id || index}`} className="rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-medium text-white">{event.type}</p>
+                          <span className="text-xs text-[var(--muted-foreground)]">{formatNumber(event.total_tokens)} tokens</span>
+                        </div>
+                        <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.message || 'No message'}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-white">Runtime events</p>
+                  <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                    {execution.data.runtime_events.length} tracked
+                  </span>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {runtimeEvents.length === 0 ? (
+                    <p className="text-sm text-[var(--muted-foreground)]">No persisted runtime events for this issue yet.</p>
+                  ) : (
+                    runtimeEvents.map((event) => (
+                      <div key={event.seq} className="rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-medium text-white">{toTitleCase(event.kind)}</p>
+                          <span className="text-xs text-[var(--muted-foreground)]">{formatDateTime(event.ts)}</span>
+                        </div>
+                        <p className="mt-2 text-sm text-[var(--muted-foreground)]">
+                          {[event.phase && toTitleCase(event.phase), event.attempt ? `Attempt ${event.attempt}` : '', event.delay_type && toTitleCase(event.delay_type)]
+                            .filter(Boolean)
+                            .join(' · ') || 'Execution signal'}
+                        </p>
+                        {event.error ? <p className="mt-2 text-sm text-rose-100">{event.error}</p> : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>

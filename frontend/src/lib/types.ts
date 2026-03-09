@@ -201,6 +201,21 @@ export interface Session {
   history?: SessionEvent[]
 }
 
+export interface IssueExecutionDetail {
+  issue_id: string
+  identifier: string
+  active: boolean
+  phase: string
+  attempt_number: number
+  failure_class?: string
+  current_error?: string
+  retry_state: 'none' | 'active' | 'scheduled'
+  next_retry_at?: string
+  session_source: 'none' | 'live' | 'persisted'
+  session?: Session
+  runtime_events: RuntimeEvent[]
+}
+
 export interface BootstrapResponse {
   generated_at: string
   overview: {

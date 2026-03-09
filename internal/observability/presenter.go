@@ -119,6 +119,7 @@ func runningEntryPayload(entry RunningEntry) map[string]interface{} {
 		"issue_identifier": entry.Identifier,
 		"state":            entry.State,
 		"phase":            entry.Phase,
+		"attempt":          entry.Attempt,
 		"session_id":       entry.SessionID,
 		"turn_count":       entry.TurnCount,
 		"last_event":       entry.LastEvent,

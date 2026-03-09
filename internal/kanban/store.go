@@ -134,6 +134,18 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_events_ts ON runtime_events(event_ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_events_kind ON runtime_events(kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_runtime_events_issue_id ON runtime_events(issue_id)`,
+		`CREATE TABLE IF NOT EXISTS issue_execution_sessions (
+			issue_id TEXT PRIMARY KEY,
+			identifier TEXT NOT NULL DEFAULT '',
+			phase TEXT NOT NULL DEFAULT '',
+			attempt INTEGER NOT NULL DEFAULT 0,
+			run_kind TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL,
+			session_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS change_events (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT,
 			entity_type TEXT NOT NULL,
@@ -1343,6 +1355,127 @@ func (s *Store) ListRuntimeEvents(since int64, limit int) ([]RuntimeEvent, error
 		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
+}
+
+func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEvent, error) {
+	if strings.TrimSpace(issueID) == "" {
+		return []RuntimeEvent{}, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT seq, kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json
+		FROM runtime_events
+		WHERE issue_id = ?
+			AND kind IN ('run_started', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'manual_retry_requested', 'run_completed')
+		ORDER BY seq DESC
+		LIMIT ?`, issueID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]RuntimeEvent, 0, limit)
+	for rows.Next() {
+		var event RuntimeEvent
+		var rawPayload string
+		if err := rows.Scan(
+			&event.Seq, &event.Kind, &event.IssueID, &event.Identifier, &event.Title, &event.Attempt, &event.DelayType,
+			&event.InputTokens, &event.OutputTokens, &event.TotalTokens, &event.Error, &event.TS, &rawPayload,
+		); err != nil {
+			return nil, err
+		}
+		if rawPayload != "" {
+			_ = json.Unmarshal([]byte(rawPayload), &event.Payload)
+		}
+		if event.Payload != nil {
+			event.Phase = asString(event.Payload["phase"])
+		}
+		out = append(out, event)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+func (s *Store) UpsertIssueExecutionSession(snapshot ExecutionSessionSnapshot) error {
+	if strings.TrimSpace(snapshot.IssueID) == "" {
+		return fmt.Errorf("missing issue_id")
+	}
+	if snapshot.UpdatedAt.IsZero() {
+		snapshot.UpdatedAt = time.Now().UTC()
+	}
+	body, err := json.Marshal(snapshot.AppSession)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO issue_execution_sessions (issue_id, identifier, phase, attempt, run_kind, error, updated_at, session_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_id) DO UPDATE SET
+			identifier = excluded.identifier,
+			phase = excluded.phase,
+			attempt = excluded.attempt,
+			run_kind = excluded.run_kind,
+			error = excluded.error,
+			updated_at = excluded.updated_at,
+			session_json = excluded.session_json`,
+		snapshot.IssueID,
+		snapshot.Identifier,
+		snapshot.Phase,
+		snapshot.Attempt,
+		snapshot.RunKind,
+		snapshot.Error,
+		snapshot.UpdatedAt.UTC(),
+		string(body),
+	)
+	if err != nil {
+		return err
+	}
+	return s.appendChange("issue_execution_session", snapshot.IssueID, "upserted", map[string]interface{}{
+		"issue_id":    snapshot.IssueID,
+		"identifier":  snapshot.Identifier,
+		"phase":       snapshot.Phase,
+		"attempt":     snapshot.Attempt,
+		"run_kind":    snapshot.RunKind,
+		"error":       snapshot.Error,
+		"updated_at":  snapshot.UpdatedAt.UTC().Format(time.RFC3339),
+		"session_id":  snapshot.AppSession.SessionID,
+		"last_event":  snapshot.AppSession.LastEvent,
+		"last_reason": snapshot.AppSession.TerminalReason,
+	})
+}
+
+func (s *Store) GetIssueExecutionSession(issueID string) (*ExecutionSessionSnapshot, error) {
+	if strings.TrimSpace(issueID) == "" {
+		return nil, sql.ErrNoRows
+	}
+	var snapshot ExecutionSessionSnapshot
+	var rawSession string
+	err := s.db.QueryRow(`
+		SELECT issue_id, identifier, phase, attempt, run_kind, error, updated_at, session_json
+		FROM issue_execution_sessions
+		WHERE issue_id = ?`, issueID).Scan(
+		&snapshot.IssueID,
+		&snapshot.Identifier,
+		&snapshot.Phase,
+		&snapshot.Attempt,
+		&snapshot.RunKind,
+		&snapshot.Error,
+		&snapshot.UpdatedAt,
+		&rawSession,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if rawSession != "" {
+		if err := json.Unmarshal([]byte(rawSession), &snapshot.AppSession); err != nil {
+			return nil, err
+		}
+	}
+	return &snapshot, nil
 }
 
 func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
