@@ -24,14 +24,20 @@ import (
 type testClientOptions struct {
 	provider       bool
 	extensionsFile string
+	scopedRepoPath string
 }
 
 type testRuntimeProvider struct {
-	store *kanban.Store
+	store          *kanban.Store
+	scopedRepoPath string
 }
 
 func (p testRuntimeProvider) Status() map[string]interface{} {
-	return map[string]interface{}{"active_runs": len(p.snapshot().Running)}
+	status := map[string]interface{}{"active_runs": len(p.snapshot().Running)}
+	if strings.TrimSpace(p.scopedRepoPath) != "" {
+		status["scoped_repo_path"] = p.scopedRepoPath
+	}
+	return status
 }
 
 func (p testRuntimeProvider) Snapshot() observability.Snapshot {
@@ -245,7 +251,7 @@ func TestHelperProcessMCPServer(t *testing.T) {
 
 	var provider RuntimeProvider
 	if os.Getenv("GO_WANT_MCP_PROVIDER") == "1" {
-		provider = testRuntimeProvider{store: store}
+		provider = testRuntimeProvider{store: store, scopedRepoPath: os.Getenv("GO_WANT_MCP_SCOPED_REPO")}
 	}
 
 	server := NewServerWithRegistry(store, provider, registry)
@@ -829,6 +835,90 @@ func TestCreateIssueRejectsBlockedInitialInProgress(t *testing.T) {
 	}
 }
 
+func TestScopedProjectMutationsAndProjectPayloads(t *testing.T) {
+	store := testStore(t, "")
+	scopedRepoPath := t.TempDir()
+	outOfScopeRepoPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scopedRepoPath, "WORKFLOW.md"), []byte("---\ntracker:\n  kind: kanban\n---\n"), 0o644); err != nil {
+		t.Fatalf("write scoped WORKFLOW.md: %v", err)
+	}
+
+	outOfScopeProject, err := store.CreateProject("Outside", "", outOfScopeRepoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject out-of-scope: %v", err)
+	}
+	inScopeProject, err := store.CreateProject("Inside", "", scopedRepoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject in-scope: %v", err)
+	}
+
+	client := newTestMCPClient(t, store.DBPath(), testClientOptions{provider: true, scopedRepoPath: scopedRepoPath})
+	defer client.Close()
+
+	createRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Blocked",
+		"repo_path": outOfScopeRepoPath,
+	})
+	if err != nil {
+		t.Fatalf("create_project failed: %v", err)
+	}
+	if !createRes.IsError {
+		t.Fatalf("expected scoped create_project error, got %#v", createRes)
+	}
+	createMessage := asString(decodeEnvelope(t, createRes)["error"].(map[string]interface{})["message"])
+	if !strings.Contains(createMessage, "repo_path must match the current server scope ("+scopedRepoPath+")") {
+		t.Fatalf("unexpected create_project message: %q", createMessage)
+	}
+
+	updateRes, err := client.CallTool(context.Background(), "update_project", map[string]interface{}{
+		"id":        inScopeProject.ID,
+		"name":      "Inside",
+		"repo_path": outOfScopeRepoPath,
+	})
+	if err != nil {
+		t.Fatalf("update_project failed: %v", err)
+	}
+	if !updateRes.IsError {
+		t.Fatalf("expected scoped update_project error, got %#v", updateRes)
+	}
+	updateMessage := asString(decodeEnvelope(t, updateRes)["error"].(map[string]interface{})["message"])
+	if !strings.Contains(updateMessage, "repo_path must match the current server scope ("+scopedRepoPath+")") {
+		t.Fatalf("unexpected update_project message: %q", updateMessage)
+	}
+
+	listRes, err := client.CallTool(context.Background(), "list_projects", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("list_projects failed: %v", err)
+	}
+	items := decodeEnvelope(t, listRes)["data"].(map[string]interface{})["items"].([]interface{})
+	var sawOutOfScope bool
+	var sawInScope bool
+	for _, item := range items {
+		project := item.(map[string]interface{})
+		switch asString(project["id"]) {
+		case outOfScopeProject.ID:
+			sawOutOfScope = true
+			if project["dispatch_ready"] != false {
+				t.Fatalf("expected out-of-scope project dispatch_ready=false, got %#v", project["dispatch_ready"])
+			}
+			if got := asString(project["dispatch_error"]); got != "Project repo is outside the current server scope ("+scopedRepoPath+")" {
+				t.Fatalf("unexpected out-of-scope dispatch_error: %#v", got)
+			}
+		case inScopeProject.ID:
+			sawInScope = true
+			if project["dispatch_ready"] != true {
+				t.Fatalf("expected in-scope project dispatch_ready=true, got %#v", project["dispatch_ready"])
+			}
+			if got := asString(project["dispatch_error"]); got != "" {
+				t.Fatalf("expected empty dispatch_error for in-scope project, got %#v", got)
+			}
+		}
+	}
+	if !sawOutOfScope || !sawInScope {
+		t.Fatalf("expected both seeded projects in list_projects payload, got %#v", items)
+	}
+}
+
 func TestStdioRuntimeToolsWithoutProviderReturnExplicitErrors(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	client := newTestMCPClient(t, dbPath, testClientOptions{})
@@ -893,6 +983,9 @@ func newTestMCPClient(t *testing.T, dbPath string, opts testClientOptions) *mcpc
 	args := []string{"GO_WANT_MCP_SERVER=1"}
 	if opts.provider {
 		args = append(args, "GO_WANT_MCP_PROVIDER=1")
+	}
+	if opts.scopedRepoPath != "" {
+		args = append(args, "GO_WANT_MCP_SCOPED_REPO="+opts.scopedRepoPath)
 	}
 	if opts.extensionsFile != "" {
 		args = append(args, "GO_WANT_MCP_EXTENSIONS="+opts.extensionsFile)

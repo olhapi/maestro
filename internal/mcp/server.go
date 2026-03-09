@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
@@ -298,15 +299,20 @@ func (s *Server) handleServerInfo(ctx context.Context, args map[string]interface
 }
 
 func (s *Server) handleCreateProject(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	repoPath := asString(args["repo_path"])
+	if err := s.validateScopedRepoPath(repoPath); err != nil {
+		return s.toolError("create_project", err.Error()), nil
+	}
 	project, err := s.store.CreateProject(
 		asString(args["name"]),
 		asString(args["description"]),
-		asString(args["repo_path"]),
+		repoPath,
 		asString(args["workflow_path"]),
 	)
 	if err != nil {
 		return s.toolError("create_project", fmt.Sprintf("Failed to create project: %v", err)), nil
 	}
+	s.decorateProject(project)
 	return s.toolResult("create_project", project), nil
 }
 
@@ -316,6 +322,9 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	if strings.TrimSpace(repoPath) == "" {
 		return s.toolError("update_project", "repo_path is required"), nil
 	}
+	if err := s.validateScopedRepoPath(repoPath); err != nil {
+		return s.toolError("update_project", err.Error()), nil
+	}
 	if err := s.store.UpdateProject(id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"])); err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
 	}
@@ -323,6 +332,7 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	if err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to reload project: %v", err)), nil
 	}
+	s.decorateProject(project)
 	return s.toolResult("update_project", project), nil
 }
 
@@ -331,6 +341,7 @@ func (s *Server) handleListProjects(ctx context.Context, args map[string]interfa
 	if err != nil {
 		return s.toolError("list_projects", fmt.Sprintf("Failed to list projects: %v", err)), nil
 	}
+	s.decorateProjects(projects)
 	return s.toolResult("list_projects", map[string]interface{}{"items": projects}), nil
 }
 
@@ -678,6 +689,57 @@ func (s *Server) toolResult(name string, data interface{}) *mcpapi.CallToolResul
 
 func (s *Server) toolError(name, message string) *mcpapi.CallToolResult {
 	return s.envelopeResult(name, nil, message, true)
+}
+
+func (s *Server) scopedRepoPath() string {
+	if s.provider == nil {
+		return ""
+	}
+	status := s.provider.Status()
+	if status == nil {
+		return ""
+	}
+	value, _ := status["scoped_repo_path"].(string)
+	return strings.TrimSpace(value)
+}
+
+func (s *Server) validateScopedRepoPath(repoPath string) error {
+	scopedRepoPath := s.scopedRepoPath()
+	if scopedRepoPath == "" {
+		return nil
+	}
+	absRepoPath, err := filepath.Abs(strings.TrimSpace(repoPath))
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(absRepoPath) == filepath.Clean(scopedRepoPath) {
+		return nil
+	}
+	return fmt.Errorf("repo_path must match the current server scope (%s)", scopedRepoPath)
+}
+
+func (s *Server) decorateProject(project *kanban.Project) {
+	if project == nil {
+		return
+	}
+	project.DispatchReady = project.OrchestrationReady
+	project.DispatchError = ""
+
+	scopedRepoPath := s.scopedRepoPath()
+	if scopedRepoPath == "" || strings.TrimSpace(project.RepoPath) == "" {
+		return
+	}
+	if filepath.Clean(project.RepoPath) == filepath.Clean(scopedRepoPath) {
+		return
+	}
+	project.DispatchReady = false
+	project.DispatchError = "Project repo is outside the current server scope (" + scopedRepoPath + ")"
+}
+
+func (s *Server) decorateProjects(projects []kanban.Project) {
+	for i := range projects {
+		s.decorateProject(&projects[i])
+	}
 }
 
 func (s *Server) issueTransitionToolError(name, prefix string, err error) *mcpapi.CallToolResult {
