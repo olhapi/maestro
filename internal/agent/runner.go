@@ -27,6 +27,7 @@ type Runner struct {
 	workflowProvider WorkflowProvider
 	store            *kanban.Store
 	extensions       *extensions.Registry
+	sessionObserver  func(issueID string, session *appserver.Session)
 }
 
 type RunResult struct {
@@ -35,6 +36,16 @@ type RunResult struct {
 	Error      error
 	AppSession *appserver.Session
 }
+
+const firstTurnExecutionGuidance = `
+Execution guidance:
+
+- Act on the issue instead of restating the task before doing work.
+- Prefer deterministic local verification first: existing tests, targeted shell commands, HTTP checks, and file/content inspection.
+- Use browser automation only when the issue explicitly requires browser interaction or local shell checks cannot validate the result.
+- For static or local web pages, verify with local commands before considering browser tooling.
+- If a verification path is blocked by local environment issues such as browser-session conflicts, stop retrying that path and choose another deterministic local check.
+`
 
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
 	return NewRunnerWithExtensions(provider, store, nil)
@@ -45,6 +56,10 @@ func NewRunnerWithExtensions(provider WorkflowProvider, store *kanban.Store, reg
 		registry = extensions.EmptyRegistry()
 	}
 	return &Runner{workflowProvider: provider, store: store, extensions: registry}
+}
+
+func (r *Runner) SetSessionObserver(observer func(issueID string, session *appserver.Session)) {
+	r.sessionObserver = observer
 }
 
 func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, error) {
@@ -206,13 +221,22 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		Env:               os.Environ(),
 		Workspace:         workspacePath,
 		WorkspaceRoot:     workflow.Config.Workspace.Root,
+		IssueID:           issue.ID,
+		IssueIdentifier:   issue.Identifier,
 		ApprovalPolicy:    workflow.Config.Codex.ApprovalPolicy,
 		ThreadSandbox:     workflow.Config.Codex.ThreadSandbox,
 		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,
 		ReadTimeout:       time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
 		TurnTimeout:       time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
+		StallTimeout:      time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
 		DynamicTools:      r.extensions.Specs(),
 		ToolExecutor:      r.extensionToolExecutor(),
+		OnSessionUpdate: func(session *appserver.Session) {
+			if r.sessionObserver == nil || issue == nil || session == nil {
+				return
+			}
+			r.sessionObserver(issue.ID, session)
+		},
 	})
 	if err != nil {
 		return &RunResult{Success: false, Error: err}, nil
@@ -267,6 +291,7 @@ Continuation guidance:
 - This is continuation turn #%d of %d for the current agent run.
 - Resume from the current workspace state instead of restarting from scratch.
 - The original task instructions are already present in the thread history; do not restate them before acting.
+- If a verification approach was blocked by local tooling or browser issues, switch to another deterministic local check instead of retrying the same path.
 `), turn, workflow.Config.Agent.MaxTurns), nil
 	}
 	ctx := map[string]interface{}{
@@ -294,7 +319,11 @@ Continuation guidance:
 	if err != nil {
 		return "", fmt.Errorf("template_render_error: %w", err)
 	}
-	return rendered, nil
+	rendered = strings.TrimSpace(rendered)
+	if rendered == "" {
+		return strings.TrimSpace(firstTurnExecutionGuidance), nil
+	}
+	return rendered + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance), nil
 }
 
 func (r *Runner) runHook(parentCtx context.Context, workspacePath, hook, hookName string) error {

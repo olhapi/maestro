@@ -19,6 +19,9 @@ export interface Project {
   id: string
   name: string
   description?: string
+  repo_path?: string
+  workflow_path?: string
+  orchestration_ready: boolean
   created_at: string
   updated_at: string
 }
@@ -172,6 +175,8 @@ export interface SessionEvent {
 }
 
 export interface Session {
+  issue_id?: string
+  issue_identifier?: string
   session_id: string
   thread_id: string
   turn_id: string

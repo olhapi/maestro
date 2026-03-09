@@ -1,12 +1,34 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestParseGlobalOptions(t *testing.T) {
+	opts, remaining, err := parseGlobalOptions([]string{"run", "--log-level", "debug", "--db", "./db.sqlite"})
+	if err != nil {
+		t.Fatalf("parseGlobalOptions failed: %v", err)
+	}
+	if opts.logLevel != slog.LevelDebug || opts.logLevelName != "debug" {
+		t.Fatalf("unexpected global options: %+v", opts)
+	}
+	if got := strings.Join(remaining, " "); got != "run --db ./db.sqlite" {
+		t.Fatalf("unexpected remaining args: %q", got)
+	}
+}
+
+func TestParseGlobalOptionsRejectsInvalidLevel(t *testing.T) {
+	if _, _, err := parseGlobalOptions([]string{"run", "--log-level", "verbose"}); err == nil {
+		t.Fatal("expected invalid log level error")
+	}
+}
 
 func TestParseRunOptions(t *testing.T) {
 	opts := parseRunOptions([]string{
@@ -31,6 +53,41 @@ func TestParseRunOptions(t *testing.T) {
 	}
 	if opts.logMaxBytes != 1234 || opts.logMaxFiles != 9 {
 		t.Fatalf("unexpected log rotation settings: %+v", opts)
+	}
+}
+
+func TestSetupLoggerWithWriterFiltersByLevelAndWritesFile(t *testing.T) {
+	old := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	logDir := t.TempDir()
+	var stdout bytes.Buffer
+	logPath, err := setupLoggerWithWriter(&stdout, logDir, 1024, 2, slog.LevelWarn)
+	if err != nil {
+		t.Fatalf("setupLoggerWithWriter failed: %v", err)
+	}
+	slog.Info("hidden info")
+	slog.Warn("visible warn", "component", "test")
+
+	if strings.Contains(stdout.String(), "hidden info") {
+		t.Fatalf("expected info log to be filtered, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "visible warn") {
+		t.Fatalf("expected warn log in stdout, got %q", stdout.String())
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "hidden info") {
+		t.Fatalf("expected info log to be filtered from file, got %q", text)
+	}
+	if !strings.Contains(text, "visible warn") {
+		t.Fatalf("expected warn log in file, got %q", text)
 	}
 }
 

@@ -117,9 +117,13 @@ export function ProjectsPage() {
                       </Link>
                     </CardTitle>
                     <p className="mt-3 max-w-xl text-sm leading-7 text-[var(--muted-foreground)]">{project.description || 'No description yet.'}</p>
+                    <p className="mt-2 text-xs text-[var(--muted-foreground)]">{project.repo_path || 'No repo path configured yet.'}</p>
                   </div>
                 </div>
                 <div className="flex gap-2">
+                  <Badge className={project.orchestration_ready ? 'border-lime-400/30 bg-lime-400/10 text-lime-200' : 'border-amber-400/30 bg-amber-400/10 text-amber-200'}>
+                    {project.orchestration_ready ? 'Runnable' : 'Needs repo setup'}
+                  </Badge>
                   <Button
                     variant="ghost"
                     onClick={() => {

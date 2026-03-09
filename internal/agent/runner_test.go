@@ -99,6 +99,9 @@ func TestBuildTurnPrompt(t *testing.T) {
 			t.Fatalf("expected prompt to contain %q, got %q", part, prompt)
 		}
 	}
+	if !strings.Contains(prompt, "Prefer deterministic local verification first") {
+		t.Fatalf("expected execution guidance in prompt, got %q", prompt)
+	}
 }
 
 func TestContinuationPrompt(t *testing.T) {
@@ -112,6 +115,9 @@ func TestContinuationPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Continuation guidance") {
 		t.Fatalf("expected continuation prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "switch to another deterministic local check") {
+		t.Fatalf("expected blocked-verification guidance, got %q", prompt)
 	}
 }
 
@@ -128,6 +134,9 @@ func TestRunAgentStdio(t *testing.T) {
 	}
 	if !strings.Contains(result.Output, issue.Identifier) {
 		t.Fatalf("expected output to contain rendered prompt, got %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "Prefer deterministic local verification first") {
+		t.Fatalf("expected execution guidance in output, got %q", result.Output)
 	}
 }
 

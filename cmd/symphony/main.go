@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,13 +32,39 @@ var version = "dev"
 
 const guardrailsAcknowledgementFlag = "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
 
+type globalOptions struct {
+	logLevel     slog.Level
+	logLevelName string
+}
+
 func main() {
-	if len(os.Args) < 2 {
+	globalOpts, args, err := parseGlobalOptions(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid global options: %v\n", err)
+		os.Exit(1)
+	}
+	if len(args) == 0 {
 		printUsage()
 		os.Exit(1)
 	}
+	os.Args = append([]string{os.Args[0]}, args...)
 
-	switch os.Args[1] {
+	command := os.Args[1]
+	logsRoot := ""
+	logMaxBytes := int64(0)
+	logMaxFiles := 0
+	if command == "run" {
+		runOpts := parseRunOptions(os.Args[2:])
+		logsRoot = runOpts.logsRoot
+		logMaxBytes = runOpts.logMaxBytes
+		logMaxFiles = runOpts.logMaxFiles
+	}
+	if _, err := setupLoggerWithWriter(os.Stdout, logsRoot, logMaxBytes, logMaxFiles, globalOpts.logLevel); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to setup logger: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch command {
 	case "run":
 		runOrchestrator()
 	case "mcp":
@@ -83,6 +110,7 @@ Commands:
   version          Show version
 
 Examples:
+  symphony --log-level debug run /path/to/repo
   symphony run                           # Start orchestrator in current directory
   symphony run /path/to/repo             # Start orchestrator for a specific repo
   symphony run --workflow ./custom.md    # Use a non-default workflow file
@@ -103,8 +131,11 @@ Examples:
   symphony workflow init                  # Create a WORKFLOW.md
 
 Database:
-  Symphony stores data in .symphony/symphony.db by default.
+  Symphony stores data in the current workspace's .symphony/symphony.db by default.
   Use --db flag to specify a different location.
+
+Global options:
+  --log-level <debug|info|warn|error>
 
 `)
 }
@@ -130,40 +161,6 @@ func getStore(dbPath string) *kanban.Store {
 	return store
 }
 
-func getWorkflowManager(repoPath string, allowInit bool, workflowPath string) *config.Manager {
-	if repoPath == "" {
-		repoPath, _ = os.Getwd()
-	}
-	path := config.ResolveWorkflowPath(repoPath, workflowPath)
-
-	if allowInit {
-		created, err := ensureWorkflowInitialized(path)
-		if err != nil {
-			slog.Error("Failed to initialize workflow", "error", err)
-			os.Exit(1)
-		}
-		if created {
-			slog.Info("Created WORKFLOW.md with bootstrap defaults", "path", path)
-		}
-	}
-	manager, err := config.NewManagerForPath(path)
-	if err != nil {
-		slog.Error("Failed to load workflow", "error", err)
-		os.Exit(1)
-	}
-	return manager
-}
-
-func ensureWorkflowInitialized(path string) (bool, error) {
-	interactive := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
-	_, created, err := config.EnsureWorkflowAtPath(path, config.InitOptions{
-		Interactive: interactive,
-		Stdin:       bufio.NewReader(os.Stdin),
-		Stdout:      os.Stdout,
-	})
-	return created, err
-}
-
 type runOptions struct {
 	repoPath           string
 	dbPath             string
@@ -174,6 +171,47 @@ type runOptions struct {
 	logMaxBytes        int64
 	logMaxFiles        int
 	acknowledgedUnsafe bool
+}
+
+func parseGlobalOptions(args []string) (globalOptions, []string, error) {
+	opts := globalOptions{
+		logLevel:     slog.LevelInfo,
+		logLevelName: "info",
+	}
+	remaining := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--log-level":
+			if i+1 >= len(args) {
+				return opts, nil, fmt.Errorf("--log-level requires a value")
+			}
+			level, normalized, err := parseLogLevel(args[i+1])
+			if err != nil {
+				return opts, nil, err
+			}
+			opts.logLevel = level
+			opts.logLevelName = normalized
+			i++
+		default:
+			remaining = append(remaining, args[i])
+		}
+	}
+	return opts, remaining, nil
+}
+
+func parseLogLevel(raw string) (slog.Level, string, error) {
+	switch normalized := strings.ToLower(strings.TrimSpace(raw)); normalized {
+	case "", "info":
+		return slog.LevelInfo, "info", nil
+	case "debug":
+		return slog.LevelDebug, "debug", nil
+	case "warn", "warning":
+		return slog.LevelWarn, "warn", nil
+	case "error":
+		return slog.LevelError, "error", nil
+	default:
+		return slog.LevelInfo, "", fmt.Errorf("unsupported log level %q", raw)
+	}
 }
 
 func parseRunOptions(args []string) runOptions {
@@ -242,20 +280,34 @@ func guardrailsAcknowledgementBanner() string {
 	}, "\n")
 }
 
-func setupLogger(logsRoot string, maxBytes int64, maxFiles int) error {
-	if err := os.MkdirAll(logsRoot, 0o755); err != nil {
-		return err
+func setupLoggerWithWriter(stdout io.Writer, logsRoot string, maxBytes int64, maxFiles int, level slog.Level) (string, error) {
+	if stdout == nil {
+		stdout = io.Discard
 	}
-	logPath := filepath.Join(logsRoot, "symphony.log")
-	f, err := logsink.New(logPath, maxBytes, maxFiles)
-	if err != nil {
-		return err
+	writer := io.Writer(stdout)
+	logPath := ""
+	if strings.TrimSpace(logsRoot) != "" {
+		if err := os.MkdirAll(logsRoot, 0o755); err != nil {
+			return "", err
+		}
+		logPath = filepath.Join(logsRoot, "symphony.log")
+		f, err := logsink.New(logPath, maxBytes, maxFiles)
+		if err != nil {
+			return "", err
+		}
+		writer = logsink.Multi(stdout, f)
 	}
-	mw := logsink.Multi(os.Stdout, f)
-	h := slog.NewJSONHandler(mw, &slog.HandlerOptions{Level: slog.LevelInfo})
+	h := slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: level})
 	slog.SetDefault(slog.New(h))
-	slog.Info("Logger initialized", "log_file", logPath, "rotate_max_bytes", maxBytes, "rotate_max_files", maxFiles)
-	return nil
+	if logPath != "" {
+		slog.Info("Logger initialized",
+			"log_file", logPath,
+			"log_level", level.String(),
+			"rotate_max_bytes", maxBytes,
+			"rotate_max_files", maxFiles,
+		)
+	}
+	return logPath, nil
 }
 
 // === Commands ===
@@ -266,17 +318,8 @@ func runOrchestrator() {
 		fmt.Fprintln(os.Stderr, guardrailsAcknowledgementBanner())
 	}
 
-	if opts.logsRoot != "" {
-		if err := setupLogger(opts.logsRoot, opts.logMaxBytes, opts.logMaxFiles); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to setup logger: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
 	store := getStore(opts.dbPath)
 	defer store.Close()
-
-	workflowManager := getWorkflowManager(opts.repoPath, true, opts.workflowPath)
 	registry, err := extensions.LoadFile(opts.extensionsFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load extensions: %v\n", err)
@@ -286,7 +329,7 @@ func runOrchestrator() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orch := orchestrator.NewWithExtensions(store, workflowManager, registry)
+	orch := orchestrator.NewSharedWithExtensions(store, registry, opts.repoPath, opts.workflowPath)
 	if opts.port != "" {
 		addr := opts.port
 		if !strings.Contains(addr, ":") {
@@ -650,7 +693,7 @@ func runIssue() {
 func runProject() {
 	if len(os.Args) < 3 {
 		fmt.Print(`Usage:
-  symphony project create <name> [--desc <description>]
+  symphony project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
   symphony project list
   symphony project delete <id>
 `)
@@ -676,21 +719,43 @@ func runProject() {
 	switch cmd {
 	case "create":
 		if len(args) < 1 {
-			fmt.Println("Usage: symphony project create <name> [--desc <description>]")
+			fmt.Println("Usage: symphony project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]")
 			os.Exit(1)
 		}
 		name := args[0]
 		description := ""
-		if len(args) > 2 && args[1] == "--desc" {
-			description = args[2]
+		repoPath := ""
+		workflowPath := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--desc":
+				if i+1 < len(args) {
+					description = args[i+1]
+					i++
+				}
+			case "--repo":
+				if i+1 < len(args) {
+					repoPath = args[i+1]
+					i++
+				}
+			case "--workflow":
+				if i+1 < len(args) {
+					workflowPath = args[i+1]
+					i++
+				}
+			}
+		}
+		if strings.TrimSpace(repoPath) == "" {
+			fmt.Println("Error: --repo is required")
+			os.Exit(1)
 		}
 
-		project, err := store.CreateProject(name, description)
+		project, err := store.CreateProject(name, description, repoPath, workflowPath)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("Created project %s (ID: %s)\n", project.Name, project.ID)
+		fmt.Printf("Created project %s (ID: %s, Repo: %s)\n", project.Name, project.ID, project.RepoPath)
 
 	case "list":
 		projects, err := store.ListProjects()
@@ -699,7 +764,7 @@ func runProject() {
 			os.Exit(1)
 		}
 		for _, p := range projects {
-			fmt.Printf("%s\t%s\t%s\n", p.ID, p.Name, p.Description)
+			fmt.Printf("%s\t%s\t%s\t%s\n", p.ID, p.Name, p.RepoPath, p.Description)
 		}
 
 	case "delete":

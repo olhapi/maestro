@@ -1,6 +1,7 @@
 package kanban
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -62,7 +63,7 @@ func TestTerminalStates(t *testing.T) {
 func TestCreateProject(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, err := store.CreateProject("Test Project", "A test project")
+	project, err := store.CreateProject("Test Project", "A test project", "", "")
 	if err != nil {
 		t.Fatalf("Failed to create project: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestCreateProject(t *testing.T) {
 func TestGetProject(t *testing.T) {
 	store := setupTestStore(t)
 
-	created, err := store.CreateProject("Test", "Desc")
+	created, err := store.CreateProject("Test", "Desc", "", "")
 	if err != nil {
 		t.Fatalf("Failed to create project: %v", err)
 	}
@@ -99,8 +100,8 @@ func TestGetProject(t *testing.T) {
 func TestListProjects(t *testing.T) {
 	store := setupTestStore(t)
 
-	_, _ = store.CreateProject("Project A", "")
-	_, _ = store.CreateProject("Project B", "")
+	_, _ = store.CreateProject("Project A", "", "", "")
+	_, _ = store.CreateProject("Project B", "", "", "")
 
 	projects, err := store.ListProjects()
 	if err != nil {
@@ -115,7 +116,7 @@ func TestListProjects(t *testing.T) {
 func TestDeleteProject(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, _ := store.CreateProject("To Delete", "")
+	project, _ := store.CreateProject("To Delete", "", "", "")
 
 	if err := store.DeleteProject(project.ID); err != nil {
 		t.Fatalf("Failed to delete project: %v", err)
@@ -132,7 +133,7 @@ func TestDeleteProject(t *testing.T) {
 func TestCreateEpic(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, _ := store.CreateProject("Project", "")
+	project, _ := store.CreateProject("Project", "", "", "")
 
 	epic, err := store.CreateEpic(project.ID, "Epic 1", "Epic description")
 	if err != nil {
@@ -150,7 +151,7 @@ func TestCreateEpic(t *testing.T) {
 func TestListEpics(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, _ := store.CreateProject("Project", "")
+	project, _ := store.CreateProject("Project", "", "", "")
 	_, _ = store.CreateEpic(project.ID, "Epic 1", "")
 	_, _ = store.CreateEpic(project.ID, "Epic 2", "")
 
@@ -169,7 +170,7 @@ func TestListEpics(t *testing.T) {
 func TestCreateIssue(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, _ := store.CreateProject("MyApp", "")
+	project, _ := store.CreateProject("MyApp", "", "", "")
 	labels := []string{"bug", "urgent"}
 
 	issue, err := store.CreateIssue(project.ID, "", "Fix login bug", "Description here", 1, labels)
@@ -209,7 +210,7 @@ func TestGetIssueByIdentifier(t *testing.T) {
 func TestListIssues(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, _ := store.CreateProject("Project", "")
+	project, _ := store.CreateProject("Project", "", "", "")
 	_, _ = store.CreateIssue(project.ID, "", "Issue 1", "", 0, nil)
 	_, _ = store.CreateIssue(project.ID, "", "Issue 2", "", 0, nil)
 	_, _ = store.CreateIssue("", "", "Issue 3 (no project)", "", 0, nil)
@@ -315,21 +316,78 @@ func TestDeleteIssue(t *testing.T) {
 func TestIssueBlockers(t *testing.T) {
 	store := setupTestStore(t)
 
-	issue1, _ := store.CreateIssue("", "", "Issue 1", "", 0, nil)
-	issue2, _ := store.CreateIssue("", "", "Issue 2", "", 0, nil)
+	project, _ := store.CreateProject("Project", "", "", "")
+	issue1, _ := store.CreateIssue(project.ID, "", "Issue 1", "", 0, nil)
+	issue2, _ := store.CreateIssue(project.ID, "", "Issue 2", "", 0, nil)
 
-	// Set issue2 as blocker for issue1
-	updates := map[string]interface{}{
-		"blocked_by": []string{issue2.Identifier},
-	}
-
-	if err := store.UpdateIssue(issue1.ID, updates); err != nil {
+	if _, err := store.SetIssueBlockers(issue1.ID, []string{issue2.Identifier}); err != nil {
 		t.Fatalf("Failed to set blockers: %v", err)
 	}
 
 	updated, _ := store.GetIssue(issue1.ID)
 	if len(updated.BlockedBy) != 1 || updated.BlockedBy[0] != issue2.Identifier {
 		t.Errorf("Expected blocker %s, got %v", issue2.Identifier, updated.BlockedBy)
+	}
+}
+
+func TestSetIssueBlockersNormalizesDuplicates(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, _ := store.CreateProject("Project", "", "", "")
+	issue1, _ := store.CreateIssue(project.ID, "", "Issue 1", "", 0, nil)
+	issue2, _ := store.CreateIssue(project.ID, "", "Issue 2", "", 0, nil)
+
+	blockers, err := store.SetIssueBlockers(issue1.ID, []string{issue2.Identifier, " ", issue2.Identifier})
+	if err != nil {
+		t.Fatalf("SetIssueBlockers failed: %v", err)
+	}
+	if len(blockers) != 1 || blockers[0] != issue2.Identifier {
+		t.Fatalf("expected normalized blocker set [%s], got %v", issue2.Identifier, blockers)
+	}
+}
+
+func TestSetIssueBlockersRejectsCrossProjectAndRollsBack(t *testing.T) {
+	store := setupTestStore(t)
+
+	projectA, _ := store.CreateProject("Project A", "", "", "")
+	projectB, _ := store.CreateProject("Project B", "", "", "")
+	issueA, _ := store.CreateIssue(projectA.ID, "", "Issue A", "", 0, nil)
+	issueB, _ := store.CreateIssue(projectB.ID, "", "Issue B", "", 0, nil)
+
+	if _, err := store.SetIssueBlockers(issueA.ID, []string{issueB.Identifier}); err == nil {
+		t.Fatal("expected cross-project blocker validation error")
+	}
+
+	updated, _ := store.GetIssue(issueA.ID)
+	if len(updated.BlockedBy) != 0 {
+		t.Fatalf("expected blocker set to remain empty, got %v", updated.BlockedBy)
+	}
+}
+
+func TestUpdateIssueWithInvalidBlockerRollsBackIssueFields(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, _ := store.CreateProject("Project", "", "", "")
+	issue, _ := store.CreateIssue(project.ID, "", "Original", "", 0, nil)
+
+	err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"title":       "Changed",
+		"description": "Changed description",
+		"blocked_by":  []string{"MISSING-1"},
+	})
+	if err == nil {
+		t.Fatal("expected invalid blocker update to fail")
+	}
+
+	updated, _ := store.GetIssue(issue.ID)
+	if updated.Title != "Original" {
+		t.Fatalf("expected title rollback, got %q", updated.Title)
+	}
+	if updated.Description != "" {
+		t.Fatalf("expected description rollback, got %q", updated.Description)
+	}
+	if len(updated.BlockedBy) != 0 {
+		t.Fatalf("expected blockers rollback, got %v", updated.BlockedBy)
 	}
 }
 
@@ -391,7 +449,7 @@ func TestDeleteWorkspace(t *testing.T) {
 func TestGenerateIdentifier(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, _ := store.CreateProject("MyApp", "")
+	project, _ := store.CreateProject("MyApp", "", "", "")
 
 	issue1, _ := store.CreateIssue(project.ID, "", "First", "", 0, nil)
 	issue2, _ := store.CreateIssue(project.ID, "", "Second", "", 0, nil)
@@ -454,5 +512,79 @@ func TestConcurrentAccess(t *testing.T) {
 	issues, _ := store.ListIssues(nil)
 	if len(issues) < 1 {
 		t.Errorf("Expected at least 1 issue, got %d", len(issues))
+	}
+}
+
+func TestCreateProjectNormalizesPathsAndReadiness(t *testing.T) {
+	store := setupTestStore(t)
+	repoDir := t.TempDir()
+	workflowPath := filepath.Join(repoDir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: kanban\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	project, err := store.CreateProject("Repo Project", "desc", repoDir, "")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	if project.RepoPath != repoDir {
+		t.Fatalf("expected repo path %q, got %q", repoDir, project.RepoPath)
+	}
+	if project.WorkflowPath != workflowPath {
+		t.Fatalf("expected workflow path %q, got %q", workflowPath, project.WorkflowPath)
+	}
+	if !project.OrchestrationReady {
+		t.Fatal("expected project to be orchestration ready")
+	}
+}
+
+func TestLatestChangeSeqAdvancesOnMutations(t *testing.T) {
+	store := setupTestStore(t)
+	before, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq failed: %v", err)
+	}
+
+	if _, err := store.CreateProject("Tracked", "", "", ""); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	after, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq failed: %v", err)
+	}
+	if after <= before {
+		t.Fatalf("expected change seq to increase, before=%d after=%d", before, after)
+	}
+}
+
+func TestStoreIdentityStable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "identity.db")
+
+	store1, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	identity1 := store1.Identity()
+	if identity1.StoreID == "" {
+		t.Fatal("expected non-empty store id")
+	}
+	if err := store1.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	store2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store2.Close()
+
+	identity2 := store2.Identity()
+	if identity1.StoreID != identity2.StoreID {
+		t.Fatalf("expected stable store id, got %q then %q", identity1.StoreID, identity2.StoreID)
+	}
+	absDBPath, _ := filepath.Abs(dbPath)
+	if identity2.DBPath != absDBPath {
+		t.Fatalf("expected db path %q, got %q", absDBPath, identity2.DBPath)
 	}
 }

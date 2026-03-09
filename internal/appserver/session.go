@@ -20,6 +20,8 @@ type Event struct {
 
 // Session tracks live app-server session metadata.
 type Session struct {
+	IssueID         string    `json:"issue_id,omitempty"`
+	IssueIdentifier string    `json:"issue_identifier,omitempty"`
 	SessionID       string    `json:"session_id"`
 	ThreadID        string    `json:"thread_id"`
 	TurnID          string    `json:"turn_id"`

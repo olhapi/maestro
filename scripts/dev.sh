@@ -3,10 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_PATH="${REPO_PATH:-}"
 BACKEND_PORT="${BACKEND_PORT:-8787}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-4173}"
-DB_PATH="${DB_PATH:-$ROOT_DIR/.symphony/symphony.db}"
 BACKEND_HEALTH_URL="${BACKEND_HEALTH_URL:-http://127.0.0.1:${BACKEND_PORT}/health}"
 STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-20}"
 
@@ -30,6 +30,15 @@ cleanup() {
 }
 
 trap cleanup EXIT INT TERM
+
+if [[ -n "$REPO_PATH" ]]; then
+  if [[ ! -d "$REPO_PATH" ]]; then
+    echo "Repo path does not exist: $REPO_PATH" >&2
+    exit 1
+  fi
+  REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+fi
+DB_PATH="${DB_PATH:-$ROOT_DIR/.symphony/symphony.db}"
 
 wait_for_backend() {
   local elapsed=0
@@ -70,7 +79,11 @@ wait_for_port_release "$BACKEND_PORT" "backend"
 wait_for_port_release "$FRONTEND_PORT" "frontend"
 
 cd "$ROOT_DIR"
-go run ./cmd/symphony run . --db "$DB_PATH" --port "$BACKEND_PORT" &
+backend_cmd=(go run ./cmd/symphony run --db "$DB_PATH" --port "$BACKEND_PORT")
+if [[ -n "$REPO_PATH" ]]; then
+  backend_cmd+=( "$REPO_PATH" )
+fi
+"${backend_cmd[@]}" &
 backend_pid=$!
 
 wait_for_backend
@@ -79,6 +92,12 @@ cd "$ROOT_DIR/frontend"
 npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort &
 frontend_pid=$!
 
+if [[ -n "$REPO_PATH" ]]; then
+  echo "Repo:     ${REPO_PATH}"
+else
+  echo "Repo:     all shared projects"
+fi
+echo "DB:       ${DB_PATH}"
 echo "Backend:  http://127.0.0.1:${BACKEND_PORT}"
 echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"
 echo "Press Ctrl+C to stop both."

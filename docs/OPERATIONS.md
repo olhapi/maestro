@@ -10,6 +10,8 @@ Start the orchestrator with an HTTP port to expose runtime state:
 ./symphony run /path/to/repo --port 8787
 ```
 
+If `--db` is omitted, `run` uses the current Symphony workspace's `.symphony/symphony.db`.
+
 Available endpoints:
 
 - `GET /health`: process health and timestamp
@@ -22,6 +24,8 @@ Available endpoints:
 - `GET /api/v1/dashboard`: combined snapshot of state, sessions, and recent events
 
 `symphony status --dashboard` is a local CLI rendering helper. It is not the same thing as the live HTTP observability API and should not be treated as a remote status feed.
+
+Session payloads include both `issue_id` and `issue_identifier`, and the `sessions` map is keyed by issue identifier.
 
 ## Workflow Bootstrap and Checks
 
@@ -75,14 +79,16 @@ These commands execute on the local machine. Review them with the same care you 
 Write structured JSON logs to both stdout and a rotating file sink:
 
 ```bash
-./symphony run /path/to/repo --logs-root ./log
-./symphony run /path/to/repo --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
+./symphony --log-level info run /path/to/repo --logs-root ./log
+./symphony --log-level debug run /path/to/repo --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
 ```
 
 Behavior:
 
 - the main log file is `symphony.log`
 - rotation is size-based
+- `--log-level` is global and applies to every CLI command
+- `debug` includes raw app-server stream output; `info` keeps logs focused on lifecycle and status transitions
 - `--log-max-bytes` controls the rotation threshold
 - `--log-max-files` controls how many rotated files are retained
 

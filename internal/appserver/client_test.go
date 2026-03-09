@@ -1,9 +1,11 @@
 package appserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -389,4 +391,219 @@ func nestedBool(m map[string]interface{}, path ...string) bool {
 	}
 	v, _ := cur.(bool)
 	return v
+}
+
+func TestRunAllowsQuietPeriodsShorterThanStallTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-6")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := writeExecutable(t, tmpDir, "fake-codex.sh", `#!/bin/sh
+count=0
+while IFS= read -r _line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-stall-ok"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-stall-ok"}}}'
+      sleep 2
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-stall-ok","turnId":"turn-stall-ok"}}'
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+done
+`)
+
+	res, err := Run(context.Background(), ClientConfig{
+		Executable:    script,
+		Workspace:     workspace,
+		WorkspaceRoot: workspaceRoot,
+		Prompt:        "prompt",
+		Title:         "ISS-6: Quiet period",
+		ReadTimeout:   1 * time.Second,
+		TurnTimeout:   5 * time.Second,
+		StallTimeout:  3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("run failed after short quiet period: %v", err)
+	}
+	if res.Session == nil || res.Session.SessionID != "thread-stall-ok-turn-stall-ok" {
+		t.Fatalf("unexpected session after quiet period: %+v", res.Session)
+	}
+}
+
+func TestRunFailsWhenQuietPeriodExceedsStallTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-7")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := writeExecutable(t, tmpDir, "fake-codex.sh", `#!/bin/sh
+count=0
+while IFS= read -r _line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-stall-fail"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-stall-fail"}}}'
+      sleep 4
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-stall-fail","turnId":"turn-stall-fail"}}'
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+done
+`)
+
+	_, err := Run(context.Background(), ClientConfig{
+		Executable:    script,
+		Workspace:     workspace,
+		WorkspaceRoot: workspaceRoot,
+		Prompt:        "prompt",
+		Title:         "ISS-7: Stalled",
+		ReadTimeout:   1 * time.Second,
+		TurnTimeout:   5 * time.Second,
+		StallTimeout:  2500 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected stall timeout")
+	}
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != "stall_timeout" {
+		t.Fatalf("expected stall_timeout, got %v", err)
+	}
+}
+
+func captureLogs(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	old := slog.Default()
+	buf := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+	return buf
+}
+
+func TestRunLogsLifecycleAtInfoWithoutRawStreams(t *testing.T) {
+	logs := captureLogs(t, slog.LevelInfo)
+
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-6")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := writeExecutable(t, tmpDir, "fake-codex.sh", `#!/bin/sh
+count=0
+while IFS= read -r _line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-6"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-6"}}}'
+      printf '%s\n' 'plain stderr-ish text'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-6","turnId":"turn-6"}}'
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+done
+`)
+
+	_, err := Run(context.Background(), ClientConfig{
+		Executable:      script,
+		Workspace:       workspace,
+		WorkspaceRoot:   workspaceRoot,
+		IssueID:         "issue-6",
+		IssueIdentifier: "ISS-6",
+		Prompt:          "prompt",
+		Title:           "ISS-6: Logging",
+		ReadTimeout:     2 * time.Second,
+		TurnTimeout:     3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	text := logs.String()
+	for _, want := range []string{
+		"Codex app-server process started",
+		"Codex session initialized",
+		"Codex thread started",
+		"Codex turn started",
+		"Codex turn completed",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in logs: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Codex app-server stream output") {
+		t.Fatalf("expected raw stream logs to be hidden at info level: %s", text)
+	}
+	if !strings.Contains(text, "\"issue_identifier\":\"ISS-6\"") {
+		t.Fatalf("expected issue metadata in logs: %s", text)
+	}
+}
+
+func TestRunLogsRawStreamsAtDebug(t *testing.T) {
+	logs := captureLogs(t, slog.LevelDebug)
+
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-7")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := writeExecutable(t, tmpDir, "fake-codex.sh", `#!/bin/sh
+count=0
+while IFS= read -r _line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-7"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-7"}}}'
+      printf '%s\n' 'stderr stream line' >&2
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-7","turnId":"turn-7"}}'
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+done
+`)
+
+	_, err := Run(context.Background(), ClientConfig{
+		Executable:      script,
+		Workspace:       workspace,
+		WorkspaceRoot:   workspaceRoot,
+		IssueID:         "issue-7",
+		IssueIdentifier: "ISS-7",
+		Prompt:          "prompt",
+		Title:           "ISS-7: Debug stream logging",
+		ReadTimeout:     2 * time.Second,
+		TurnTimeout:     3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	text := logs.String()
+	if !strings.Contains(text, "Codex app-server stream output") {
+		t.Fatalf("expected raw stream logs at debug level: %s", text)
+	}
+	if !strings.Contains(text, "\"stream\":\"stderr\"") {
+		t.Fatalf("expected stderr stream metadata: %s", text)
+	}
 }

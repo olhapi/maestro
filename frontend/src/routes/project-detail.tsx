@@ -8,6 +8,7 @@ import { KanbanBoard } from '@/components/dashboard/kanban-board'
 import { PageHeader } from '@/components/dashboard/page-header'
 import { IssuePreviewSheet } from '@/components/dashboard/issue-preview-sheet'
 import { EpicDialog, IssueDialog } from '@/components/forms'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { api } from '@/lib/api'
@@ -107,6 +108,19 @@ export function ProjectDetailPage() {
         }
         statsClassName="overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.04] md:grid-cols-4 md:gap-0"
       />
+
+      <Card>
+        <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Repo binding</p>
+            <p className="mt-2 truncate text-sm text-white">{project.data.project.repo_path || 'No repo path configured yet.'}</p>
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">{project.data.project.workflow_path || 'Workflow defaults to <repo>/WORKFLOW.md.'}</p>
+          </div>
+          <Badge className={project.data.project.orchestration_ready ? 'border-lime-400/30 bg-lime-400/10 text-lime-200' : 'border-amber-400/30 bg-amber-400/10 text-amber-200'}>
+            {project.data.project.orchestration_ready ? 'Orchestration ready' : 'Needs repo or workflow setup'}
+          </Badge>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
         <Card>

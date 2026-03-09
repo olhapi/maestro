@@ -2,6 +2,9 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -19,6 +22,7 @@ type Server struct {
 	server     server.MCPServer
 	tools      []mcp.Tool
 	extensions *extensions.Registry
+	instanceID string
 }
 
 // NewServer creates a new MCP server.
@@ -40,6 +44,7 @@ func NewServerWithRegistry(store *kanban.Store, registry *extensions.Registry) *
 		store:      store,
 		server:     server.NewDefaultServer("symphony", "1.0.0"),
 		extensions: registry,
+		instanceID: generateServerInstanceID(),
 	}
 
 	s.registerTools()
@@ -50,13 +55,34 @@ func (s *Server) registerTools() {
 	// Define tools
 	s.tools = []mcp.Tool{
 		{
+			Name:        "server_info",
+			Description: "Get Symphony MCP server identity and store metadata",
+			InputSchema: mcp.ToolInputSchema{Type: "object"},
+		},
+		{
 			Name:        "create_project",
 			Description: "Create a new project",
 			InputSchema: mcp.ToolInputSchema{
 				Type: "object",
 				Properties: map[string]interface{}{
-					"name":        map[string]interface{}{"type": "string", "description": "Project name"},
-					"description": map[string]interface{}{"type": "string", "description": "Project description"},
+					"name":          map[string]interface{}{"type": "string", "description": "Project name"},
+					"description":   map[string]interface{}{"type": "string", "description": "Project description"},
+					"repo_path":     map[string]interface{}{"type": "string", "description": "Absolute path to the repo this project orchestrates"},
+					"workflow_path": map[string]interface{}{"type": "string", "description": "Optional workflow path override"},
+				},
+			},
+		},
+		{
+			Name:        "update_project",
+			Description: "Update an existing project",
+			InputSchema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"id":            map[string]interface{}{"type": "string", "description": "Project ID"},
+					"name":          map[string]interface{}{"type": "string", "description": "Project name"},
+					"description":   map[string]interface{}{"type": "string", "description": "Project description"},
+					"repo_path":     map[string]interface{}{"type": "string", "description": "Absolute path to the repo this project orchestrates"},
+					"workflow_path": map[string]interface{}{"type": "string", "description": "Optional workflow path override"},
 				},
 			},
 		},
@@ -230,10 +256,20 @@ func (s *Server) registerTools() {
 }
 
 // handleCallTool routes tool calls to appropriate handlers
-func (s *Server) handleCallTool(ctx context.Context, name string, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *Server) handleCallTool(ctx context.Context, name string, args map[string]interface{}) (result *mcp.CallToolResult, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = s.toolError(name, fmt.Sprintf("panic recovered: %v", recovered))
+			err = nil
+		}
+	}()
 	switch name {
+	case "server_info":
+		return s.handleServerInfo(ctx, args)
 	case "create_project":
 		return s.handleCreateProject(ctx, args)
+	case "update_project":
+		return s.handleUpdateProject(ctx, args)
 	case "list_projects":
 		return s.handleListProjects(ctx, args)
 	case "delete_project":
@@ -266,40 +302,25 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 				return s.handleExtensionTool(ctx, name, args)
 			}
 		}
-		return toolError(fmt.Sprintf("Unknown tool: %s", name)), nil
+		return s.toolError(name, fmt.Sprintf("Unknown tool: %s", name)), nil
 	}
 }
 
-// toolResult creates a successful tool result with text
-func toolResult(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{mcp.TextContent{
-			Type: "text",
-			Text: text,
-		}},
-	}
-}
-
-// toolError creates an error tool result
-func toolError(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		IsError: true,
-		Content: []mcp.Content{mcp.TextContent{
-			Type: "text",
-			Text: text,
-		}},
-	}
+func generateServerInstanceID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return "mcp_" + hex.EncodeToString(b)
 }
 
 func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	if s.extensions == nil {
-		return toolError(fmt.Sprintf("Unknown extension tool: %s", name)), nil
+		return s.toolError(name, fmt.Sprintf("Unknown extension tool: %s", name)), nil
 	}
 	out, err := s.extensions.Execute(ctx, name, args)
 	if err != nil {
-		return toolError(err.Error()), nil
+		return s.toolError(name, err.Error()), nil
 	}
-	return toolResult(out), nil
+	return s.toolResult(name, map[string]interface{}{"output": out}), nil
 }
 
 // ServeStdio runs the MCP server over stdin/stdout
@@ -309,45 +330,72 @@ func (s *Server) ServeStdio() error {
 
 // Handlers
 
+func (s *Server) handleServerInfo(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	projects, err := s.store.ListProjects()
+	if err != nil {
+		return s.toolError("server_info", fmt.Sprintf("Failed to list projects: %v", err)), nil
+	}
+	issues, err := s.store.ListIssues(nil)
+	if err != nil {
+		return s.toolError("server_info", fmt.Sprintf("Failed to list issues: %v", err)), nil
+	}
+	return s.toolResult("server_info", map[string]interface{}{
+		"project_count": len(projects),
+		"issue_count":   len(issues),
+	}), nil
+}
+
 func (s *Server) handleCreateProject(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	name, _ := args["name"].(string)
 	description, _ := args["description"].(string)
-
-	project, err := s.store.CreateProject(name, description)
-	if err != nil {
-		return toolError(fmt.Sprintf("Failed to create project: %v", err)), nil
+	repoPath, _ := args["repo_path"].(string)
+	workflowPath, _ := args["workflow_path"].(string)
+	if strings.TrimSpace(repoPath) == "" {
+		return s.toolError("create_project", "repo_path is required"), nil
 	}
 
-	return toolResult(fmt.Sprintf("Created project %s (ID: %s)", project.Name, project.ID)), nil
+	project, err := s.store.CreateProject(name, description, repoPath, workflowPath)
+	if err != nil {
+		return s.toolError("create_project", fmt.Sprintf("Failed to create project: %v", err)), nil
+	}
+
+	return s.toolResult("create_project", project), nil
+}
+
+func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	id, _ := args["id"].(string)
+	name, _ := args["name"].(string)
+	description, _ := args["description"].(string)
+	repoPath, _ := args["repo_path"].(string)
+	workflowPath, _ := args["workflow_path"].(string)
+	if strings.TrimSpace(repoPath) == "" {
+		return s.toolError("update_project", "repo_path is required"), nil
+	}
+
+	if err := s.store.UpdateProject(id, name, description, repoPath, workflowPath); err != nil {
+		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
+	}
+	project, err := s.store.GetProject(id)
+	if err != nil {
+		return s.toolError("update_project", fmt.Sprintf("Failed to reload project: %v", err)), nil
+	}
+	return s.toolResult("update_project", project), nil
 }
 
 func (s *Server) handleListProjects(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	projects, err := s.store.ListProjects()
 	if err != nil {
-		return toolError(fmt.Sprintf("Failed to list projects: %v", err)), nil
+		return s.toolError("list_projects", fmt.Sprintf("Failed to list projects: %v", err)), nil
 	}
-
-	if len(projects) == 0 {
-		return toolResult("No projects found. Create one with create_project."), nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Projects:\n")
-	for _, p := range projects {
-		sb.WriteString(fmt.Sprintf("- %s (ID: %s)\n", p.Name, p.ID))
-		if p.Description != "" {
-			sb.WriteString(fmt.Sprintf("  %s\n", p.Description))
-		}
-	}
-	return toolResult(sb.String()), nil
+	return s.toolResult("list_projects", map[string]interface{}{"items": projects}), nil
 }
 
 func (s *Server) handleDeleteProject(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	id, _ := args["id"].(string)
 	if err := s.store.DeleteProject(id); err != nil {
-		return toolError(fmt.Sprintf("Failed to delete project: %v", err)), nil
+		return s.toolError("delete_project", fmt.Sprintf("Failed to delete project: %v", err)), nil
 	}
-	return toolResult("Project deleted"), nil
+	return s.toolResult("delete_project", map[string]interface{}{"id": id}), nil
 }
 
 func (s *Server) handleCreateEpic(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -357,10 +405,10 @@ func (s *Server) handleCreateEpic(ctx context.Context, args map[string]interface
 
 	epic, err := s.store.CreateEpic(projectID, name, description)
 	if err != nil {
-		return toolError(fmt.Sprintf("Failed to create epic: %v", err)), nil
+		return s.toolError("create_epic", fmt.Sprintf("Failed to create epic: %v", err)), nil
 	}
 
-	return toolResult(fmt.Sprintf("Created epic %s (ID: %s)", epic.Name, epic.ID)), nil
+	return s.toolResult("create_epic", epic), nil
 }
 
 func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -368,27 +416,17 @@ func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{
 
 	epics, err := s.store.ListEpics(projectID)
 	if err != nil {
-		return toolError(fmt.Sprintf("Failed to list epics: %v", err)), nil
+		return s.toolError("list_epics", fmt.Sprintf("Failed to list epics: %v", err)), nil
 	}
-
-	if len(epics) == 0 {
-		return toolResult("No epics found."), nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Epics:\n")
-	for _, e := range epics {
-		sb.WriteString(fmt.Sprintf("- %s (ID: %s, Project: %s)\n", e.Name, e.ID, e.ProjectID))
-	}
-	return toolResult(sb.String()), nil
+	return s.toolResult("list_epics", map[string]interface{}{"items": epics}), nil
 }
 
 func (s *Server) handleDeleteEpic(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	id, _ := args["id"].(string)
 	if err := s.store.DeleteEpic(id); err != nil {
-		return toolError(fmt.Sprintf("Failed to delete epic: %v", err)), nil
+		return s.toolError("delete_epic", fmt.Sprintf("Failed to delete epic: %v", err)), nil
 	}
-	return toolResult("Epic deleted"), nil
+	return s.toolResult("delete_epic", map[string]interface{}{"id": id}), nil
 }
 
 func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -409,10 +447,10 @@ func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interfac
 
 	issue, err := s.store.CreateIssue(projectID, epicID, title, description, int(priority), labels)
 	if err != nil {
-		return toolError(fmt.Sprintf("Failed to create issue: %v", err)), nil
+		return s.toolError("create_issue", fmt.Sprintf("Failed to create issue: %v", err)), nil
 	}
 
-	return toolResult(fmt.Sprintf("Created issue %s: %s", issue.Identifier, issue.Title)), nil
+	return s.toolResult("create_issue", issue), nil
 }
 
 func (s *Server) handleGetIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -423,27 +461,10 @@ func (s *Server) handleGetIssue(ctx context.Context, args map[string]interface{}
 		// Try by identifier
 		issue, err = s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
-			return toolError(fmt.Sprintf("Issue not found: %s", identifier)), nil
+			return s.toolError("get_issue", fmt.Sprintf("Issue not found: %s", identifier)), nil
 		}
 	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**%s**: %s\n", issue.Identifier, issue.Title))
-	sb.WriteString(fmt.Sprintf("State: %s | Priority: %d\n", issue.State, issue.Priority))
-	if issue.Description != "" {
-		sb.WriteString(fmt.Sprintf("\n%s\n", issue.Description))
-	}
-	if len(issue.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("\nLabels: %s\n", strings.Join(issue.Labels, ", ")))
-	}
-	if issue.PRURL != "" {
-		sb.WriteString(fmt.Sprintf("\nPR: %s\n", issue.PRURL))
-	}
-	if len(issue.BlockedBy) > 0 {
-		sb.WriteString(fmt.Sprintf("\nBlocked by: %s\n", strings.Join(issue.BlockedBy, ", ")))
-	}
-
-	return toolResult(sb.String()), nil
+	return s.toolResult("get_issue", issue), nil
 }
 
 func (s *Server) handleListIssues(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -460,19 +481,9 @@ func (s *Server) handleListIssues(ctx context.Context, args map[string]interface
 
 	issues, err := s.store.ListIssues(filter)
 	if err != nil {
-		return toolError(fmt.Sprintf("Failed to list issues: %v", err)), nil
+		return s.toolError("list_issues", fmt.Sprintf("Failed to list issues: %v", err)), nil
 	}
-
-	if len(issues) == 0 {
-		return toolResult("No issues found."), nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Issues:\n")
-	for _, i := range issues {
-		sb.WriteString(fmt.Sprintf("- [%s] %s: %s\n", i.State, i.Identifier, i.Title))
-	}
-	return toolResult(sb.String()), nil
+	return s.toolResult("list_issues", map[string]interface{}{"items": issues}), nil
 }
 
 func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -482,7 +493,7 @@ func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interfac
 	if err != nil {
 		issue, err = s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
-			return toolError(fmt.Sprintf("Issue not found: %s", identifier)), nil
+			return s.toolError("update_issue", fmt.Sprintf("Issue not found: %s", identifier)), nil
 		}
 	}
 
@@ -516,14 +527,17 @@ func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interfac
 	}
 
 	if len(updates) == 0 {
-		return toolResult("No updates provided"), nil
+		return s.toolResult("update_issue", map[string]interface{}{"identifier": issue.Identifier, "updated": false}), nil
 	}
 
 	if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
-		return toolError(fmt.Sprintf("Failed to update issue: %v", err)), nil
+		return s.toolError("update_issue", fmt.Sprintf("Failed to update issue: %v", err)), nil
 	}
-
-	return toolResult(fmt.Sprintf("Updated issue %s", issue.Identifier)), nil
+	updated, err := s.store.GetIssue(issue.ID)
+	if err != nil {
+		return s.toolError("update_issue", fmt.Sprintf("Failed to reload issue: %v", err)), nil
+	}
+	return s.toolResult("update_issue", updated), nil
 }
 
 func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -534,19 +548,22 @@ func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interf
 	if err != nil {
 		issue, err = s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
-			return toolError(fmt.Sprintf("Issue not found: %s", identifier)), nil
+			return s.toolError("set_issue_state", fmt.Sprintf("Issue not found: %s", identifier)), nil
 		}
 	}
 
 	if !kanban.State(state).IsValid() {
-		return toolError(fmt.Sprintf("Invalid state: %s. Valid states: backlog, ready, in_progress, in_review, done, cancelled", state)), nil
+		return s.toolError("set_issue_state", fmt.Sprintf("Invalid state: %s. Valid states: backlog, ready, in_progress, in_review, done, cancelled", state)), nil
 	}
 
 	if err := s.store.UpdateIssueState(issue.ID, kanban.State(state)); err != nil {
-		return toolError(fmt.Sprintf("Failed to update issue state: %v", err)), nil
+		return s.toolError("set_issue_state", fmt.Sprintf("Failed to update issue state: %v", err)), nil
 	}
-
-	return toolResult(fmt.Sprintf("Issue %s state changed to %s", issue.Identifier, state)), nil
+	updated, err := s.store.GetIssue(issue.ID)
+	if err != nil {
+		return s.toolError("set_issue_state", fmt.Sprintf("Failed to reload issue: %v", err)), nil
+	}
+	return s.toolResult("set_issue_state", updated), nil
 }
 
 func (s *Server) handleDeleteIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -556,15 +573,14 @@ func (s *Server) handleDeleteIssue(ctx context.Context, args map[string]interfac
 	if err != nil {
 		issue, err = s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
-			return toolError(fmt.Sprintf("Issue not found: %s", identifier)), nil
+			return s.toolError("delete_issue", fmt.Sprintf("Issue not found: %s", identifier)), nil
 		}
 	}
 
 	if err := s.store.DeleteIssue(issue.ID); err != nil {
-		return toolError(fmt.Sprintf("Failed to delete issue: %v", err)), nil
+		return s.toolError("delete_issue", fmt.Sprintf("Failed to delete issue: %v", err)), nil
 	}
-
-	return toolResult(fmt.Sprintf("Deleted issue %s", issue.Identifier)), nil
+	return s.toolResult("delete_issue", map[string]interface{}{"identifier": issue.Identifier, "id": issue.ID}), nil
 }
 
 func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -575,7 +591,7 @@ func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interf
 
 	issues, err := s.store.ListIssues(filter)
 	if err != nil {
-		return toolError(fmt.Sprintf("Failed to get board overview: %v", err)), nil
+		return s.toolError("board_overview", fmt.Sprintf("Failed to get board overview: %v", err)), nil
 	}
 
 	counts := make(map[kanban.State]int)
@@ -583,15 +599,14 @@ func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interf
 		counts[i.State]++
 	}
 
-	result := fmt.Sprintf("Kanban Board Overview:\n\n[Backlog]     %d\n[Ready]       %d\n[In Progress] %d\n[In Review]   %d\n[Done]        %d\n[Cancelled]   %d\n",
-		counts[kanban.StateBacklog],
-		counts[kanban.StateReady],
-		counts[kanban.StateInProgress],
-		counts[kanban.StateInReview],
-		counts[kanban.StateDone],
-		counts[kanban.StateCancelled])
-
-	return toolResult(result), nil
+	return s.toolResult("board_overview", map[string]int{
+		string(kanban.StateBacklog):    counts[kanban.StateBacklog],
+		string(kanban.StateReady):      counts[kanban.StateReady],
+		string(kanban.StateInProgress): counts[kanban.StateInProgress],
+		string(kanban.StateInReview):   counts[kanban.StateInReview],
+		string(kanban.StateDone):       counts[kanban.StateDone],
+		string(kanban.StateCancelled):  counts[kanban.StateCancelled],
+	}), nil
 }
 
 func (s *Server) handleSetBlockers(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -601,7 +616,7 @@ func (s *Server) handleSetBlockers(ctx context.Context, args map[string]interfac
 	if err != nil {
 		issue, err = s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
-			return toolError(fmt.Sprintf("Issue not found: %s", identifier)), nil
+			return s.toolError("set_blockers", fmt.Sprintf("Issue not found: %s", identifier)), nil
 		}
 	}
 
@@ -614,13 +629,83 @@ func (s *Server) handleSetBlockers(ctx context.Context, args map[string]interfac
 		}
 	}
 
-	updates := map[string]interface{}{"blocked_by": blockers}
-	if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
-		return toolError(fmt.Sprintf("Failed to set blockers: %v", err)), nil
+	persisted, err := s.store.SetIssueBlockers(issue.ID, blockers)
+	if err != nil {
+		return s.toolError("set_blockers", fmt.Sprintf("Failed to set blockers: %v", err)), nil
 	}
+	updated, err := s.store.GetIssue(issue.ID)
+	if err != nil {
+		return s.toolError("set_blockers", fmt.Sprintf("Failed to reload issue: %v", err)), nil
+	}
+	return s.toolResult("set_blockers", map[string]interface{}{
+		"identifier": issue.Identifier,
+		"blocked_by": persisted,
+		"issue":      updated,
+	}), nil
+}
 
-	if len(blockers) == 0 {
-		return toolResult(fmt.Sprintf("Cleared blockers for %s", issue.Identifier)), nil
+type responseEnvelope struct {
+	OK    bool                 `json:"ok"`
+	Tool  string               `json:"tool"`
+	Meta  responseEnvelopeMeta `json:"meta"`
+	Data  interface{}          `json:"data,omitempty"`
+	Error *responseError       `json:"error,omitempty"`
+}
+
+type responseEnvelopeMeta struct {
+	DBPath           string `json:"db_path"`
+	StoreID          string `json:"store_id"`
+	ServerInstanceID string `json:"server_instance_id"`
+	ChangeSeq        int64  `json:"change_seq"`
+}
+
+type responseError struct {
+	Message string `json:"message"`
+}
+
+func (s *Server) responseMeta() responseEnvelopeMeta {
+	meta := responseEnvelopeMeta{
+		ServerInstanceID: s.instanceID,
 	}
-	return toolResult(fmt.Sprintf("Set blockers for %s: %s", issue.Identifier, strings.Join(blockers, ", "))), nil
+	if s.store == nil {
+		return meta
+	}
+	changeSeq, _ := s.store.LatestChangeSeq()
+	identity := s.store.Identity()
+	meta.DBPath = identity.DBPath
+	meta.StoreID = identity.StoreID
+	meta.ChangeSeq = changeSeq
+	return meta
+}
+
+func (s *Server) toolResult(name string, data interface{}) *mcp.CallToolResult {
+	return s.envelopeResult(name, data, "", false)
+}
+
+func (s *Server) toolError(name, message string) *mcp.CallToolResult {
+	return s.envelopeResult(name, nil, message, true)
+}
+
+func (s *Server) envelopeResult(name string, data interface{}, message string, isError bool) *mcp.CallToolResult {
+	envelope := responseEnvelope{
+		OK:   !isError,
+		Tool: name,
+		Meta: s.responseMeta(),
+		Data: data,
+	}
+	if isError {
+		envelope.Error = &responseError{Message: message}
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		body = []byte(fmt.Sprintf(`{"ok":false,"tool":%q,"error":{"message":"failed to encode response: %s"}}`, name, strings.ReplaceAll(err.Error(), `"`, `'`)))
+		isError = true
+	}
+	return &mcp.CallToolResult{
+		IsError: isError,
+		Content: []mcp.Content{mcp.TextContent{
+			Type: "text",
+			Text: string(body),
+		}},
+	}
 }

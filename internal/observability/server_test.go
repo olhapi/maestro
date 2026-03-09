@@ -15,7 +15,7 @@ func (testProvider) Status() map[string]interface{} {
 }
 
 func (testProvider) LiveSessions() map[string]interface{} {
-	return map[string]interface{}{"sessions": map[string]interface{}{"iss-1": map[string]interface{}{"session_id": "th-tu", "terminal": true}}}
+	return map[string]interface{}{"sessions": map[string]interface{}{"iss-1": map[string]interface{}{"issue_id": "issue-1", "issue_identifier": "iss-1", "session_id": "th-tu", "terminal": true}}}
 }
 
 func (testProvider) Events(since int64, limit int) map[string]interface{} {

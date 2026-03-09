@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,17 +14,26 @@ import (
 
 // Store manages persistence for the kanban board
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	dbPath  string
+	storeID string
 }
 
 // NewStore creates a new store with the given database path
 func NewStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	if dbPath == "" {
+		dbPath = filepath.Join(".", ".symphony", "symphony.db")
+	}
+	absDBPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve database path: %w", err)
+	}
+	db, err := sql.Open("sqlite3", absDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	store := &Store{db: db}
+	store := &Store{db: db, dbPath: absDBPath}
 	if err := store.migrate(); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
@@ -37,10 +48,16 @@ func (s *Store) Close() error {
 
 func (s *Store) migrate() error {
 	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS store_metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS projects (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			description TEXT,
+			repo_path TEXT NOT NULL DEFAULT '',
+			workflow_path TEXT NOT NULL DEFAULT '',
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL
 		)`,
@@ -116,6 +133,15 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_events_ts ON runtime_events(event_ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_events_kind ON runtime_events(kind)`,
+		`CREATE TABLE IF NOT EXISTS change_events (
+			seq INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT NOT NULL,
+			entity_id TEXT,
+			action TEXT NOT NULL,
+			event_ts DATETIME NOT NULL,
+			payload_json TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_change_events_ts ON change_events(event_ts)`,
 	}
 
 	for _, m := range migrations {
@@ -123,41 +149,152 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if err := s.ensureProjectColumns(); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_projects_repo_path_unique`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_repo_path_unique ON projects(repo_path) WHERE repo_path <> ''`); err != nil {
+		return err
+	}
+	return s.ensureStoreID()
+}
+
+func (s *Store) ensureProjectColumns() error {
+	for _, stmt := range []string{
+		`ALTER TABLE projects ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN workflow_path TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
 	return nil
+}
+
+func (s *Store) ensureStoreID() error {
+	var storeID string
+	err := s.db.QueryRow(`SELECT value FROM store_metadata WHERE key = 'store_id'`).Scan(&storeID)
+	switch {
+	case err == sql.ErrNoRows:
+		storeID = generateID("store")
+		if _, err := s.db.Exec(`INSERT INTO store_metadata (key, value) VALUES ('store_id', ?)`, storeID); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	}
+	s.storeID = storeID
+	return nil
+}
+
+func (s *Store) Identity() StoreIdentity {
+	return StoreIdentity{
+		DBPath:  s.dbPath,
+		StoreID: s.storeID,
+	}
+}
+
+func (s *Store) DBPath() string {
+	return s.dbPath
+}
+
+func (s *Store) StoreID() string {
+	return s.storeID
+}
+
+func normalizeProjectPaths(repoPath, workflowPath string) (string, string, error) {
+	repoPath = strings.TrimSpace(repoPath)
+	workflowPath = strings.TrimSpace(workflowPath)
+	if repoPath == "" {
+		return "", "", nil
+	}
+	absRepoPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		return "", "", err
+	}
+	if workflowPath == "" {
+		return absRepoPath, filepath.Join(absRepoPath, "WORKFLOW.md"), nil
+	}
+	absWorkflowPath, err := filepath.Abs(workflowPath)
+	if err != nil {
+		return "", "", err
+	}
+	return absRepoPath, absWorkflowPath, nil
+}
+
+func hydrateProject(project *Project) {
+	if project == nil {
+		return
+	}
+	project.RepoPath = strings.TrimSpace(project.RepoPath)
+	project.WorkflowPath = strings.TrimSpace(project.WorkflowPath)
+	if project.RepoPath != "" && project.WorkflowPath == "" {
+		project.WorkflowPath = filepath.Join(project.RepoPath, "WORKFLOW.md")
+	}
+	if project.RepoPath == "" {
+		project.OrchestrationReady = false
+		return
+	}
+	repoInfo, repoErr := os.Stat(project.RepoPath)
+	if repoErr != nil || !repoInfo.IsDir() {
+		project.OrchestrationReady = false
+		return
+	}
+	workflowInfo, workflowErr := os.Stat(project.WorkflowPath)
+	project.OrchestrationReady = workflowErr == nil && !workflowInfo.IsDir()
 }
 
 // Project operations
 
-func (s *Store) CreateProject(name, description string) (*Project, error) {
+func (s *Store) CreateProject(name, description, repoPath, workflowPath string) (*Project, error) {
 	now := time.Now()
 	id := generateID("proj")
-
-	_, err := s.db.Exec(`
-		INSERT INTO projects (id, name, description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		id, name, description, now, now,
-	)
+	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Project{ID: id, Name: name, Description: description, CreatedAt: now, UpdatedAt: now}, nil
+	_, err = s.db.Exec(`
+		INSERT INTO projects (id, name, description, repo_path, workflow_path, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, name, description, repoPath, workflowPath, now, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	project := &Project{
+		ID:           id,
+		Name:         name,
+		Description:  description,
+		RepoPath:     repoPath,
+		WorkflowPath: workflowPath,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	hydrateProject(project)
+	if err := s.appendChange("project", id, "created", map[string]interface{}{"name": name, "repo_path": repoPath}); err != nil {
+		return nil, err
+	}
+	return project, nil
 }
 
 func (s *Store) GetProject(id string) (*Project, error) {
 	p := &Project{}
 	err := s.db.QueryRow(`
-		SELECT id, name, description, created_at, updated_at
+		SELECT id, name, description, repo_path, workflow_path, created_at, updated_at
 		FROM projects WHERE id = ?`, id,
-	).Scan(&p.ID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	hydrateProject(p)
 	return p, nil
 }
 
 func (s *Store) ListProjects() ([]Project, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, created_at, updated_at FROM projects ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, description, repo_path, workflow_path, created_at, updated_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -166,26 +303,37 @@ func (s *Store) ListProjects() ([]Project, error) {
 	var projects []Project
 	for rows.Next() {
 		p := Project{}
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		hydrateProject(&p)
 		projects = append(projects, p)
 	}
 	return projects, nil
 }
 
-func (s *Store) UpdateProject(id, name, description string) error {
-	_, err := s.db.Exec(`
-		UPDATE projects SET name = ?, description = ?, updated_at = ?
+func (s *Store) UpdateProject(id, name, description, repoPath, workflowPath string) error {
+	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		UPDATE projects SET name = ?, description = ?, repo_path = ?, workflow_path = ?, updated_at = ?
 		WHERE id = ?`,
-		name, description, time.Now(), id,
+		name, description, repoPath, workflowPath, time.Now(), id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("project", id, "updated", map[string]interface{}{"name": name, "repo_path": repoPath})
 }
 
 func (s *Store) DeleteProject(id string) error {
 	_, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("project", id, "deleted", nil)
 }
 
 // Epic operations
@@ -202,7 +350,9 @@ func (s *Store) CreateEpic(projectID, name, description string) (*Epic, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	if err := s.appendChange("epic", id, "created", map[string]interface{}{"project_id": projectID, "name": name}); err != nil {
+		return nil, err
+	}
 	return &Epic{ID: id, ProjectID: projectID, Name: name, Description: description, CreatedAt: now, UpdatedAt: now}, nil
 }
 
@@ -251,12 +401,18 @@ func (s *Store) UpdateEpic(id, projectID, name, description string) error {
 		WHERE id = ?`,
 		projectID, name, description, time.Now(), id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("epic", id, "updated", map[string]interface{}{"project_id": projectID, "name": name})
 }
 
 func (s *Store) DeleteEpic(id string) error {
 	_, err := s.db.Exec(`DELETE FROM epics WHERE id = ?`, id)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("epic", id, "deleted", nil)
 }
 
 // Issue operations
@@ -312,6 +468,9 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 	// Insert labels
 	for _, label := range labels {
 		_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
+	}
+	if err := s.appendChange("issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": identifier, "title": title}); err != nil {
+		return nil, err
 	}
 
 	return s.GetIssue(id)
@@ -454,11 +613,23 @@ func (s *Store) UpdateIssueState(id string, state State) error {
 		WHERE id = ?`,
 		state, now, startedAt, completedAt, id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state})
 }
 
 func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	now := time.Now()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
 
 	// Build dynamic update
 	query := "UPDATE issues SET updated_at = ?"
@@ -500,25 +671,63 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	query += " WHERE id = ?"
 	args = append(args, id)
 
-	_, err := s.db.Exec(query, args...)
+	if _, err := tx.Exec(query, args...); err != nil {
+		return err
+	}
 
 	// Handle labels separately
 	if labels, ok := updates["labels"].([]string); ok {
-		_, _ = s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id)
+		if _, err := tx.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
+			return err
+		}
 		for _, label := range labels {
-			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Handle blockers
 	if blockers, ok := updates["blocked_by"].([]string); ok {
-		_, _ = s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id)
-		for _, blocker := range blockers {
-			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_blockers (issue_id, blocked_by) VALUES (?, ?)`, id, blocker)
+		persisted, err := s.setIssueBlockersTx(tx, id, blockers)
+		if err != nil {
+			return err
 		}
+		updates["blocked_by"] = persisted
 	}
+	if err := s.appendChangeTx(tx, "issue", id, "updated", updates); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
+}
 
-	return err
+func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	persisted, err := s.setIssueBlockersTx(tx, issueID, blockers)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.appendChangeTx(tx, "issue", issueID, "updated", map[string]interface{}{"blocked_by": persisted}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return persisted, nil
 }
 
 func (s *Store) DeleteIssue(id string) error {
@@ -526,7 +735,10 @@ func (s *Store) DeleteIssue(id string) error {
 	_, _ = s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id)
 	_, err := s.db.Exec(`DELETE FROM issues WHERE id = ?`, id)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("issue", id, "deleted", nil)
 }
 
 // Workspace operations
@@ -539,6 +751,9 @@ func (s *Store) CreateWorkspace(issueID, path string) (*Workspace, error) {
 		issueID, path, now,
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.appendChange("workspace", issueID, "created", map[string]interface{}{"path": path}); err != nil {
 		return nil, err
 	}
 	return &Workspace{IssueID: issueID, Path: path, CreatedAt: now, RunCount: 0}, nil
@@ -567,12 +782,18 @@ func (s *Store) UpdateWorkspaceRun(issueID string) error {
 		WHERE issue_id = ?`,
 		now, issueID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("workspace", issueID, "run_updated", nil)
 }
 
 func (s *Store) DeleteWorkspace(issueID string) error {
 	_, err := s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, issueID)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendChange("workspace", issueID, "deleted", nil)
 }
 
 func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
@@ -872,7 +1093,146 @@ func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) 
 		ts,
 		string(body),
 	)
+	if err != nil {
+		return err
+	}
+	return s.appendChange("runtime_event", asString(payload["issue_id"]), kind, payload)
+}
+
+func (s *Store) appendChange(entityType, entityID, action string, payload map[string]interface{}) error {
+	if payload == nil {
+		payload = map[string]interface{}{}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO change_events (entity_type, entity_id, action, event_ts, payload_json)
+		VALUES (?, ?, ?, ?, ?)`,
+		entityType,
+		entityID,
+		action,
+		time.Now().UTC(),
+		string(body),
+	)
 	return err
+}
+
+func (s *Store) appendChangeTx(tx *sql.Tx, entityType, entityID, action string, payload map[string]interface{}) error {
+	if payload == nil {
+		payload = map[string]interface{}{}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
+		INSERT INTO change_events (entity_type, entity_id, action, event_ts, payload_json)
+		VALUES (?, ?, ?, ?, ?)`,
+		entityType,
+		entityID,
+		action,
+		time.Now().UTC(),
+		string(body),
+	)
+	return err
+}
+
+func (s *Store) setIssueBlockersTx(tx *sql.Tx, issueID string, blockers []string) ([]string, error) {
+	current, err := s.getIssueIdentityTx(tx, issueID)
+	if err != nil {
+		return nil, err
+	}
+
+	normalized := normalizeBlockers(blockers)
+	validated := make([]string, 0, len(normalized))
+	for _, blocker := range normalized {
+		blockerIssue, err := s.getIssueIdentityByIdentifierTx(tx, blocker)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("blocker issue not found: %s", blocker)
+			}
+			return nil, err
+		}
+		if blockerIssue.ID == current.ID || blockerIssue.Identifier == current.Identifier {
+			return nil, fmt.Errorf("issue %s cannot block itself", current.Identifier)
+		}
+		if blockerIssue.ProjectID != current.ProjectID {
+			return nil, fmt.Errorf("blocker %s must belong to the same project", blockerIssue.Identifier)
+		}
+		validated = append(validated, blockerIssue.Identifier)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, issueID); err != nil {
+		return nil, err
+	}
+	for _, blocker := range validated {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO issue_blockers (issue_id, blocked_by) VALUES (?, ?)`, issueID, blocker); err != nil {
+			return nil, err
+		}
+	}
+	return validated, nil
+}
+
+type issueIdentity struct {
+	ID         string
+	Identifier string
+	ProjectID  string
+}
+
+func (s *Store) getIssueIdentityTx(tx *sql.Tx, issueID string) (*issueIdentity, error) {
+	ident := &issueIdentity{}
+	var projectID sql.NullString
+	err := tx.QueryRow(`SELECT id, identifier, project_id FROM issues WHERE id = ?`, issueID).Scan(&ident.ID, &ident.Identifier, &projectID)
+	if err != nil {
+		return nil, err
+	}
+	if projectID.Valid {
+		ident.ProjectID = projectID.String
+	}
+	return ident, nil
+}
+
+func (s *Store) getIssueIdentityByIdentifierTx(tx *sql.Tx, identifier string) (*issueIdentity, error) {
+	ident := &issueIdentity{}
+	var projectID sql.NullString
+	err := tx.QueryRow(`SELECT id, identifier, project_id FROM issues WHERE identifier = ?`, identifier).Scan(&ident.ID, &ident.Identifier, &projectID)
+	if err != nil {
+		return nil, err
+	}
+	if projectID.Valid {
+		ident.ProjectID = projectID.String
+	}
+	return ident, nil
+}
+
+func normalizeBlockers(blockers []string) []string {
+	seen := make(map[string]struct{}, len(blockers))
+	out := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		blocker = strings.TrimSpace(blocker)
+		if blocker == "" {
+			continue
+		}
+		if _, ok := seen[blocker]; ok {
+			continue
+		}
+		seen[blocker] = struct{}{}
+		out = append(out, blocker)
+	}
+	return out
+}
+
+func (s *Store) LatestChangeSeq() (int64, error) {
+	var seq sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(seq) FROM change_events`).Scan(&seq); err != nil {
+		return 0, err
+	}
+	if !seq.Valid {
+		return 0, nil
+	}
+	return seq.Int64, nil
 }
 
 func (s *Store) ListRuntimeEvents(since int64, limit int) ([]RuntimeEvent, error) {

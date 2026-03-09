@@ -25,15 +25,19 @@ export function ProjectDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   initial?: Partial<ProjectSummary>
-  onSubmit: (body: { name: string; description?: string }) => Promise<void>
+  onSubmit: (body: { name: string; description?: string; repo_path: string; workflow_path?: string }) => Promise<void>
 }) {
   const [name, setName] = useState(initial?.name ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
+  const [repoPath, setRepoPath] = useState(initial?.repo_path ?? '')
+  const [workflowPath, setWorkflowPath] = useState(initial?.workflow_path ?? '')
   const [pending, setPending] = useState(false)
 
   useEffect(() => {
     setName(initial?.name ?? '')
     setDescription(initial?.description ?? '')
+    setRepoPath(initial?.repo_path ?? '')
+    setWorkflowPath(initial?.workflow_path ?? '')
   }, [initial, open])
 
   return (
@@ -53,17 +57,23 @@ export function ProjectDialog({
             <Field label="Description">
               <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
             </Field>
+            <Field label="Repo path">
+              <Input value={repoPath} onChange={(event) => setRepoPath(event.target.value)} placeholder="/absolute/path/to/repo" />
+            </Field>
+            <Field label="Workflow path override">
+              <Input value={workflowPath} onChange={(event) => setWorkflowPath(event.target.value)} placeholder="Optional; defaults to <repo>/WORKFLOW.md" />
+            </Field>
           </div>
           <div className="flex justify-end gap-3">
             <Button variant="secondary" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button
-              disabled={!name.trim() || pending}
+              disabled={!name.trim() || !repoPath.trim() || pending}
               onClick={async () => {
                 setPending(true)
                 try {
-                  await onSubmit({ name, description })
+                  await onSubmit({ name, description, repo_path: repoPath, workflow_path: workflowPath || undefined })
                   onOpenChange(false)
                 } finally {
                   setPending(false)

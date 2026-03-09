@@ -55,7 +55,7 @@ This writes a repo-local `WORKFLOW.md` with the default Kanban workflow, Codex c
 ### 2. Create a project and some issues
 
 ```bash
-symphony project create "My App" --desc "Example project"
+symphony project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
 symphony issue create "Add login page" --project <project_id> --labels feature,ui
 symphony issue create "Fix auth bug" --priority 1 --labels bug
 symphony issue list
@@ -85,11 +85,15 @@ Add the built binary to your MCP client config:
 
 The MCP server exposes project, issue, board, and blocker-management tools backed by the local Kanban store.
 
+For a shared multi-project setup, point both `symphony mcp` and `symphony run` at the same central DB.
+
 ### 4. Start the orchestrator
 
 ```bash
 symphony run /path/to/repo
 ```
+
+When `--db` is omitted, Symphony uses the current Symphony workspace's `.symphony/symphony.db` by default.
 
 The orchestrator:
 
@@ -101,11 +105,17 @@ The orchestrator:
 
 `run` prints a preview warning because the default workflow can launch Codex without extra guardrails. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when that is intentional for your environment.
 
+For local UI development against another repo:
+
+```bash
+REPO_PATH=/path/to/repo make dev
+```
+
 ## Core Commands
 
 ```bash
 # Projects
-symphony project create <name> [--desc <description>]
+symphony project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
 symphony project list
 symphony project delete <id>
 
@@ -119,14 +129,16 @@ symphony issue delete <identifier>
 symphony issue block <identifier> <blocker_identifier...>
 
 # Orchestration
-symphony run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
-symphony mcp [--db <path>] [--extensions <json-file>]
-symphony status [--json]
-symphony status --dashboard [--dashboard-url <url>]
-symphony verify [--repo <path>] [--db <path>] [--json]
-symphony spec-check [--repo <path>] [--json]
-symphony workflow init [repo_path]
+symphony --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
+symphony --log-level <debug|info|warn|error> mcp [--db <path>] [--extensions <json-file>]
+symphony --log-level <debug|info|warn|error> status [--json]
+symphony --log-level <debug|info|warn|error> status --dashboard [--dashboard-url <url>]
+symphony --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
+symphony --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
+symphony --log-level <debug|info|warn|error> workflow init [repo_path]
 ```
+
+`--log-level` defaults to `info`. Use `debug` to include raw app-server stream output and session churn in the structured logs.
 
 ## Issue States
 

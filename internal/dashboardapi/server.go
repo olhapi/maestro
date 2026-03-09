@@ -129,13 +129,24 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"items": projects})
 	case http.MethodPost:
 		var body struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			RepoPath     string `json:"repo_path"`
+			WorkflowPath string `json:"workflow_path"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		project, err := s.store.CreateProject(strings.TrimSpace(body.Name), strings.TrimSpace(body.Description))
+		if strings.TrimSpace(body.RepoPath) == "" {
+			writeJSONStatus(w, http.StatusBadRequest, map[string]interface{}{"error": "repo_path is required"})
+			return
+		}
+		project, err := s.store.CreateProject(
+			strings.TrimSpace(body.Name),
+			strings.TrimSpace(body.Description),
+			strings.TrimSpace(body.RepoPath),
+			strings.TrimSpace(body.WorkflowPath),
+		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -197,13 +208,25 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPatch:
 		var body struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			RepoPath     string `json:"repo_path"`
+			WorkflowPath string `json:"workflow_path"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		if err := s.store.UpdateProject(id, strings.TrimSpace(body.Name), strings.TrimSpace(body.Description)); err != nil {
+		if strings.TrimSpace(body.RepoPath) == "" {
+			writeJSONStatus(w, http.StatusBadRequest, map[string]interface{}{"error": "repo_path is required"})
+			return
+		}
+		if err := s.store.UpdateProject(
+			id,
+			strings.TrimSpace(body.Name),
+			strings.TrimSpace(body.Description),
+			strings.TrimSpace(body.RepoPath),
+			strings.TrimSpace(body.WorkflowPath),
+		); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -590,13 +613,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-
-	updates, unsubscribe := observability.Subscribe()
-	defer unsubscribe()
+	lastSeq, _ := s.store.LatestChangeSeq()
 
 	_ = conn.WriteJSON(map[string]interface{}{
 		"type": "connected",
 		"at":   time.Now().UTC().Format(time.RFC3339),
+		"seq":  lastSeq,
 	})
 
 	go func() {
@@ -612,10 +634,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-updates:
+		case <-time.After(750 * time.Millisecond):
+			seq, err := s.store.LatestChangeSeq()
+			if err != nil || seq <= lastSeq {
+				continue
+			}
+			lastSeq = seq
 			if err := conn.WriteJSON(map[string]interface{}{
 				"type": "invalidate",
 				"at":   time.Now().UTC().Format(time.RFC3339),
+				"seq":  seq,
 			}); err != nil {
 				return
 			}

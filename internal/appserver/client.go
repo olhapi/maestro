@@ -27,6 +27,8 @@ type ClientConfig struct {
 	Env               []string
 	Workspace         string
 	WorkspaceRoot     string
+	IssueID           string
+	IssueIdentifier   string
 	Prompt            string
 	Title             string
 	ApprovalPolicy    interface{}
@@ -34,9 +36,12 @@ type ClientConfig struct {
 	TurnSandboxPolicy map[string]interface{}
 	ReadTimeout       time.Duration
 	TurnTimeout       time.Duration
+	StallTimeout      time.Duration
 	DynamicTools      []map[string]interface{}
 	ToolExecutor      ToolExecutor
+	Logger            *slog.Logger
 	OnMessage         func(map[string]interface{})
+	OnSessionUpdate   func(*Session)
 }
 
 type Result struct {
@@ -72,6 +77,7 @@ type Client struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	session *Session
+	logger  *slog.Logger
 
 	lines   chan string
 	lineErr chan error
@@ -94,6 +100,9 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	}
 	if cfg.ReadTimeout <= 0 {
 		cfg.ReadTimeout = 5 * time.Second
+	}
+	if cfg.StallTimeout <= 0 {
+		cfg.StallTimeout = 5 * time.Minute
 	}
 	if cfg.ThreadSandbox == "" {
 		cfg.ThreadSandbox = "workspace-write"
@@ -143,7 +152,11 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		waitCh:  make(chan error, 1),
 		nextID:  1,
 	}
+	client.session.IssueID = cfg.IssueID
+	client.session.IssueIdentifier = cfg.IssueIdentifier
+	client.logger = client.newLogger()
 	client.session.AppServerPID = cmd.Process.Pid
+	client.logger.Info("Codex app-server process started", "pid", cmd.Process.Pid)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -152,6 +165,11 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	go func() {
 		err := cmd.Wait()
 		wg.Wait()
+		if err != nil {
+			client.logger.Warn("Codex app-server process exited with error", "error", err)
+		} else {
+			client.logger.Info("Codex app-server process exited cleanly")
+		}
 		select {
 		case client.waitCh <- err:
 		default:
@@ -258,7 +276,13 @@ func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
 	if turnID == "" {
 		return fmt.Errorf("invalid turn/start response: missing turn.id")
 	}
-	c.session.ApplyEvent(Event{Type: "turn.started", ThreadID: c.session.ThreadID, TurnID: turnID})
+	c.applyEvent(Event{Type: "turn.started", ThreadID: c.session.ThreadID, TurnID: turnID})
+	c.logger.Info("Codex turn started",
+		"session_id", c.session.SessionID,
+		"thread_id", c.session.ThreadID,
+		"turn_id", turnID,
+		"title", title,
+	)
 	c.emitMessage("session_started", map[string]interface{}{
 		"session_id": c.session.SessionID,
 		"thread_id":  c.session.ThreadID,
@@ -285,6 +309,7 @@ func (c *Client) initialize(ctx context.Context) error {
 	if _, err := c.awaitResponse(ctx, 1); err != nil {
 		return err
 	}
+	c.logger.Info("Codex session initialized")
 	if err := c.sendMessage(map[string]interface{}{
 		"method": "initialized",
 		"params": map[string]interface{}{},
@@ -314,6 +339,7 @@ func (c *Client) initialize(ctx context.Context) error {
 		return fmt.Errorf("invalid thread/start response: missing thread.id")
 	}
 	c.session.ThreadID = threadID
+	c.logger.Info("Codex thread started", "thread_id", threadID)
 	return nil
 }
 
@@ -354,6 +380,7 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 	if c.cfg.TurnTimeout > 0 {
 		deadline = time.Now().Add(c.cfg.TurnTimeout)
 	}
+	lastProgressAt := time.Now()
 
 	for {
 		timeout := c.cfg.ReadTimeout
@@ -369,8 +396,22 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 
 		line, err := c.nextLine(ctx, timeout)
 		if err != nil {
+			var runErr *RunError
+			if errors.As(err, &runErr) && runErr.Kind == "read_timeout" {
+				if c.cfg.StallTimeout > 0 && time.Since(lastProgressAt) >= c.cfg.StallTimeout {
+					c.logger.Warn("Codex turn stalled",
+						"session_id", c.session.SessionID,
+						"thread_id", c.session.ThreadID,
+						"turn_id", c.session.TurnID,
+						"stall_timeout_ms", c.cfg.StallTimeout.Milliseconds(),
+					)
+					return &RunError{Kind: "stall_timeout"}
+				}
+				continue
+			}
 			return err
 		}
+		lastProgressAt = time.Now()
 		payload, ok := decodeJSONObject(line)
 		if !ok {
 			c.logStreamOutput("turn", line)
@@ -381,11 +422,25 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 		method := nestedString(payload, "method")
 		switch method {
 		case "turn/completed":
-			c.session.ApplyEvent(Event{Type: "turn.completed", ThreadID: c.session.ThreadID, TurnID: c.session.TurnID})
+			c.logger.Info("Codex turn completed",
+				"session_id", c.session.SessionID,
+				"thread_id", c.session.ThreadID,
+				"turn_id", c.session.TurnID,
+			)
 			return nil
 		case "turn/failed":
+			c.logger.Warn("Codex turn failed",
+				"session_id", c.session.SessionID,
+				"thread_id", c.session.ThreadID,
+				"turn_id", c.session.TurnID,
+			)
 			return &RunError{Kind: "turn_failed", Payload: payload}
 		case "turn/cancelled":
+			c.logger.Warn("Codex turn cancelled",
+				"session_id", c.session.SessionID,
+				"thread_id", c.session.ThreadID,
+				"turn_id", c.session.TurnID,
+			)
 			return &RunError{Kind: "turn_cancelled", Payload: payload}
 		}
 
@@ -419,9 +474,11 @@ func (c *Client) handleRequest(payload map[string]interface{}) (bool, error) {
 			}); err != nil {
 				return true, err
 			}
+			c.logger.Info("Codex approval auto-approved", "method", method)
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload})
 			return true, nil
 		}
+		c.logger.Warn("Codex approval required", "method", method)
 		return true, &RunError{Kind: "approval_required", Payload: payload}
 	case "execCommandApproval", "applyPatchApproval":
 		if c.autoApproveRequests() {
@@ -431,13 +488,16 @@ func (c *Client) handleRequest(payload map[string]interface{}) (bool, error) {
 			}); err != nil {
 				return true, err
 			}
+			c.logger.Info("Codex approval auto-approved", "method", method)
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload})
 			return true, nil
 		}
+		c.logger.Warn("Codex approval required", "method", method)
 		return true, &RunError{Kind: "approval_required", Payload: payload}
 	case "item/tool/requestUserInput":
 		answers, autoApproved := answersForToolInput(params, c.autoApproveRequests())
 		if answers == nil {
+			c.logger.Warn("Codex turn input required", "method", method)
 			return true, &RunError{Kind: "turn_input_required", Payload: payload}
 		}
 		if err := c.sendMessage(map[string]interface{}{
@@ -447,8 +507,10 @@ func (c *Client) handleRequest(payload map[string]interface{}) (bool, error) {
 			return true, err
 		}
 		if autoApproved {
+			c.logger.Info("Codex tool input auto-approved", "method", method)
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload})
 		} else {
+			c.logger.Info("Codex tool input auto-answered", "method", method)
 			c.emitMessage("tool_input_auto_answered", map[string]interface{}{
 				"payload": payload,
 				"answer":  nonInteractiveToolInputAnswer,
@@ -468,7 +530,10 @@ func (c *Client) handleRequest(payload map[string]interface{}) (bool, error) {
 		}
 		eventName := "tool_call_completed"
 		if success, _ := result["success"].(bool); !success {
+			c.logger.Warn("Codex tool call failed", "tool", toolCallName(params))
 			eventName = "tool_call_failed"
+		} else {
+			c.logger.Info("Codex tool call completed", "tool", toolCallName(params))
 		}
 		c.emitMessage(eventName, map[string]interface{}{"payload": payload})
 		return true, nil
@@ -493,6 +558,7 @@ func (c *Client) nextLine(ctx context.Context, timeout time.Duration) (string, e
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case <-timer:
+		c.logger.Warn("Codex app-server read timeout", "timeout_ms", timeout.Milliseconds())
 		return "", &RunError{Kind: "read_timeout"}
 	case line, ok := <-c.lines:
 		if !ok {
@@ -567,9 +633,19 @@ func (c *Client) captureEvent(payload map[string]interface{}) {
 	encoded, err := json.Marshal(payload)
 	if err == nil {
 		if evt, ok := ParseEventLine(string(encoded)); ok {
-			c.session.ApplyEvent(evt)
+			c.applyEvent(evt)
 		}
 	}
+}
+
+func (c *Client) applyEvent(evt Event) {
+	c.session.ApplyEvent(evt)
+	if c.cfg.OnSessionUpdate == nil {
+		return
+	}
+	cp := *c.session
+	cp.History = append([]Event(nil), c.session.History...)
+	c.cfg.OnSessionUpdate(&cp)
 }
 
 func (c *Client) emitMessage(event string, details map[string]interface{}) {
@@ -834,11 +910,23 @@ func (c *Client) logStreamOutput(stream, line string) {
 	if text == "" {
 		return
 	}
-	lower := strings.ToLower(text)
-	switch {
-	case strings.Contains(lower, "error"), strings.Contains(lower, "warn"), strings.Contains(lower, "failed"), strings.Contains(lower, "fatal"), strings.Contains(lower, "panic"), strings.Contains(lower, "exception"):
-		slog.Warn("Codex app-server stream output", "stream", stream, "text", text)
-	default:
-		slog.Info("Codex app-server stream output", "stream", stream, "text", text)
+	c.logger.Debug("Codex app-server stream output", "stream", stream, "text", text)
+}
+
+func (c *Client) newLogger() *slog.Logger {
+	logger := c.cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
+	attrs := []any{
+		"component", "appserver",
+		"workspace", filepath.Clean(c.cfg.Workspace),
+	}
+	if c.cfg.IssueID != "" {
+		attrs = append(attrs, "issue_id", c.cfg.IssueID)
+	}
+	if c.cfg.IssueIdentifier != "" {
+		attrs = append(attrs, "issue_identifier", c.cfg.IssueIdentifier)
+	}
+	return logger.With(attrs...)
 }

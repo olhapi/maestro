@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -32,10 +34,33 @@ type retryEntry struct {
 	DelayType string    `json:"delay_type,omitempty"`
 }
 
+type projectRuntime struct {
+	projectID    string
+	repoPath     string
+	workflowPath string
+	workflow     *config.Manager
+	runner       runnerExecutor
+}
+
+type runnerExecutor interface {
+	RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error)
+	CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error
+}
+
 type Orchestrator struct {
-	store     *kanban.Store
+	store      *kanban.Store
+	extensions *extensions.Registry
+
 	workflows *config.Manager
-	runner    *agent.Runner
+	runner    runnerExecutor
+
+	scopedRepoPath     string
+	scopedWorkflowPath string
+
+	runnerFactory func(*config.Manager) runnerExecutor
+
+	runtimeMu       sync.Mutex
+	projectRuntimes map[string]*projectRuntime
 
 	mu             sync.RWMutex
 	running        map[string]runningEntry
@@ -57,29 +82,177 @@ func New(store *kanban.Store, workflows *config.Manager) *Orchestrator {
 }
 
 func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry *extensions.Registry) *Orchestrator {
-	return &Orchestrator{
-		store:        store,
-		workflows:    workflows,
-		runner:       agent.NewRunnerWithExtensions(workflows, store, registry),
-		running:      make(map[string]runningEntry),
-		claimed:      make(map[string]struct{}),
-		retries:      make(map[string]retryEntry),
-		startedAt:    time.Now().UTC(),
-		liveSessions: make(map[string]*appserver.Session),
-		maxEvents:    500,
+	if registry == nil {
+		registry = extensions.EmptyRegistry()
 	}
+	o := &Orchestrator{
+		store:           store,
+		extensions:      registry,
+		projectRuntimes: make(map[string]*projectRuntime),
+		running:         make(map[string]runningEntry),
+		claimed:         make(map[string]struct{}),
+		retries:         make(map[string]retryEntry),
+		startedAt:       time.Now().UTC(),
+		liveSessions:    make(map[string]*appserver.Session),
+		maxEvents:       500,
+	}
+	o.workflows = workflows
+	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
+		runner := agent.NewRunnerWithExtensions(manager, store, registry)
+		runner.SetSessionObserver(o.updateLiveSession)
+		return runner
+	}
+	o.runner = o.runnerFactory(workflows)
+	return o
+}
+
+func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry, scopedRepoPath, scopedWorkflowPath string) *Orchestrator {
+	if registry == nil {
+		registry = extensions.EmptyRegistry()
+	}
+	if strings.TrimSpace(scopedRepoPath) != "" {
+		if abs, err := filepath.Abs(scopedRepoPath); err == nil {
+			scopedRepoPath = abs
+		}
+	}
+	if strings.TrimSpace(scopedWorkflowPath) != "" {
+		if abs, err := filepath.Abs(scopedWorkflowPath); err == nil {
+			scopedWorkflowPath = abs
+		}
+	}
+	o := &Orchestrator{
+		store:              store,
+		extensions:         registry,
+		scopedRepoPath:     scopedRepoPath,
+		scopedWorkflowPath: scopedWorkflowPath,
+		projectRuntimes:    make(map[string]*projectRuntime),
+		running:            make(map[string]runningEntry),
+		claimed:            make(map[string]struct{}),
+		retries:            make(map[string]retryEntry),
+		startedAt:          time.Now().UTC(),
+		liveSessions:       make(map[string]*appserver.Session),
+		maxEvents:          500,
+	}
+	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
+		runner := agent.NewRunnerWithExtensions(manager, store, registry)
+		runner.SetSessionObserver(o.updateLiveSession)
+		return runner
+	}
+	return o
+}
+
+func (o *Orchestrator) isSharedMode() bool {
+	return o.workflows == nil
+}
+
+func (o *Orchestrator) runtimeForProject(project *kanban.Project) (*projectRuntime, error) {
+	if !o.isSharedMode() {
+		return &projectRuntime{
+			projectID:    project.ID,
+			workflow:     o.workflows,
+			runner:       o.runner,
+			repoPath:     project.RepoPath,
+			workflowPath: project.WorkflowPath,
+		}, nil
+	}
+	if project == nil {
+		return nil, fmt.Errorf("project_not_found")
+	}
+	if strings.TrimSpace(project.RepoPath) == "" {
+		return nil, fmt.Errorf("project_missing_repo_path")
+	}
+	if o.scopedRepoPath != "" && filepath.Clean(project.RepoPath) != filepath.Clean(o.scopedRepoPath) {
+		return nil, fmt.Errorf("project_out_of_scope")
+	}
+
+	o.runtimeMu.Lock()
+	defer o.runtimeMu.Unlock()
+
+	if cached, ok := o.projectRuntimes[project.ID]; ok {
+		if cached.repoPath == project.RepoPath && cached.workflowPath == project.WorkflowPath {
+			return cached, nil
+		}
+	}
+
+	workflowPath := project.WorkflowPath
+	if strings.TrimSpace(workflowPath) == "" {
+		workflowPath = filepath.Join(project.RepoPath, "WORKFLOW.md")
+	}
+	if o.scopedWorkflowPath != "" {
+		workflowPath = o.scopedWorkflowPath
+	}
+	if _, created, err := config.EnsureWorkflowAtPath(workflowPath, config.InitOptions{}); err != nil {
+		return nil, err
+	} else if created {
+		slog.Info("Created WORKFLOW.md with bootstrap defaults", "path", workflowPath, "project", project.Name)
+	}
+
+	manager, err := config.NewManagerForPath(workflowPath)
+	if err != nil {
+		return nil, err
+	}
+	runtime := &projectRuntime{
+		projectID:    project.ID,
+		repoPath:     project.RepoPath,
+		workflowPath: workflowPath,
+		workflow:     manager,
+		runner:       o.runnerFactory(manager),
+	}
+	o.projectRuntimes[project.ID] = runtime
+	return runtime, nil
+}
+
+func (o *Orchestrator) runtimeForIssue(issue *kanban.Issue) (*projectRuntime, *config.Workflow, error) {
+	if !o.isSharedMode() {
+		workflow, err := o.workflows.Current()
+		if err != nil {
+			return nil, nil, err
+		}
+		return &projectRuntime{projectID: issue.ProjectID, workflow: o.workflows, runner: o.runner}, workflow, nil
+	}
+	if issue == nil || strings.TrimSpace(issue.ProjectID) == "" {
+		return nil, nil, fmt.Errorf("issue_missing_project")
+	}
+	project, err := o.store.GetProject(issue.ProjectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	runtime, err := o.runtimeForProject(project)
+	if err != nil {
+		return nil, nil, err
+	}
+	workflow, err := runtime.workflow.Current()
+	if err != nil {
+		return nil, nil, err
+	}
+	return runtime, workflow, nil
+}
+
+func (o *Orchestrator) runningCountForProject(projectID string) int {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	count := 0
+	for _, entry := range o.running {
+		if entry.issue.ProjectID == projectID {
+			count++
+		}
+	}
+	return count
 }
 
 func (o *Orchestrator) Run(ctx context.Context) error {
 	o.cleanupTerminalWorkspaces(ctx)
 	for {
-		workflow, err := o.workflows.Current()
-		if err != nil {
-			return err
-		}
-		wait := time.Duration(workflow.Config.Polling.IntervalMs) * time.Millisecond
-		if wait <= 0 {
-			wait = 30 * time.Second
+		wait := 30 * time.Second
+		if !o.isSharedMode() {
+			workflow, err := o.workflows.Current()
+			if err != nil {
+				return err
+			}
+			wait = time.Duration(workflow.Config.Polling.IntervalMs) * time.Millisecond
+			if wait <= 0 {
+				wait = 30 * time.Second
+			}
 		}
 
 		timer := time.NewTimer(wait)
@@ -108,11 +281,6 @@ func (o *Orchestrator) tick(ctx context.Context) error {
 }
 
 func (o *Orchestrator) reconcile(ctx context.Context) {
-	workflow, err := o.workflows.Current()
-	if err != nil {
-		return
-	}
-
 	o.mu.RLock()
 	ids := make([]string, 0, len(o.running))
 	for issueID := range o.running {
@@ -123,17 +291,41 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 	for _, issueID := range ids {
 		issue, err := o.store.GetIssue(issueID)
 		if err != nil {
+			slog.Warn("Skipping reconciliation for missing issue", "issue_id", issueID, "error", err)
+			continue
+		}
+		runtime, workflow, err := o.runtimeForIssue(issue)
+		if err != nil {
+			slog.Warn("Stopping run because runtime resolution failed",
+				issueLogAttrs(issue, -1, "reason", "runtime_resolution_failed", "error", err)...,
+			)
+			o.stopRun(issueID)
+			o.releaseClaim(issueID)
 			continue
 		}
 		if o.isTerminalState(workflow, string(issue.State)) {
+			slog.Info("Stopping run because issue reached terminal state",
+				issueLogAttrs(issue, -1, "reason", "terminal_state")...,
+			)
 			o.stopRun(issueID)
-			if err := o.runner.CleanupWorkspace(ctx, issue); err != nil {
+			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
 				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
+			} else {
+				slog.Info("Cleaned up terminal workspace",
+					issueLogAttrs(issue, -1)...,
+				)
 			}
 			o.releaseClaim(issueID)
 			continue
 		}
 		if !o.isActiveState(workflow, string(issue.State)) || o.isBlocked(workflow, *issue) {
+			reason := "inactive_state"
+			if o.isBlocked(workflow, *issue) {
+				reason = "blocked"
+			}
+			slog.Info("Stopping run during reconciliation",
+				issueLogAttrs(issue, -1, "reason", reason)...,
+			)
 			o.stopRun(issueID)
 			o.releaseClaim(issueID)
 		}
@@ -141,56 +333,66 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context) error {
-	workflow, err := o.workflows.Current()
-	if err != nil {
-		return err
-	}
-
-	capacity := workflow.Config.Agent.MaxConcurrentAgents
-	if capacity <= 0 {
-		return nil
-	}
-
-	o.mu.RLock()
-	runningCount := len(o.running)
-	o.mu.RUnlock()
-	if runningCount >= capacity {
-		return nil
+	states := []string{"ready", "in_progress", "in_review"}
+	if !o.isSharedMode() {
+		workflow, err := o.workflows.Current()
+		if err != nil {
+			return err
+		}
+		states = workflow.Config.Tracker.ActiveStates
 	}
 
 	issues, err := o.store.ListIssues(map[string]interface{}{
-		"states": workflow.Config.Tracker.ActiveStates,
+		"states": states,
 	})
 	if err != nil {
 		return err
 	}
+	sort.SliceStable(issues, func(i, j int) bool {
+		if issues[i].Priority != issues[j].Priority {
+			return issues[i].Priority < issues[j].Priority
+		}
+		if !issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
+			return issues[i].CreatedAt.Before(issues[j].CreatedAt)
+		}
+		return issues[i].Identifier < issues[j].Identifier
+	})
 
-	available := capacity - runningCount
 	for _, issue := range issues {
-		if available == 0 {
-			break
+		runtime, workflow, err := o.runtimeForIssue(&issue)
+		if err != nil {
+			slog.Warn("Skipping issue dispatch because runtime resolution failed",
+				issueLogAttrs(&issue, 0, "error", err)...,
+			)
+			continue
+		}
+		capacity := workflow.Config.Agent.MaxConcurrentAgents
+		if capacity <= 0 || o.runningCountForProject(issue.ProjectID) >= capacity {
+			continue
 		}
 		if o.isBlocked(workflow, issue) {
 			continue
 		}
 		if !o.tryClaim(issue.ID) {
+			slog.Debug("Issue claim rejected because it is already claimed",
+				issueLogAttrs(&issue, 0)...,
+			)
 			continue
 		}
+		slog.Info("Issue claim accepted", issueLogAttrs(&issue, 0)...)
 		if !o.isActiveState(workflow, string(issue.State)) {
+			slog.Info("Releasing issue claim because state is no longer active",
+				issueLogAttrs(&issue, 0)...,
+			)
 			o.releaseClaim(issue.ID)
 			continue
 		}
-		o.startRun(ctx, workflow, &issue, 0)
-		available--
+		o.startRun(ctx, workflow, runtime.runner, &issue, 0)
 	}
 	return nil
 }
 
 func (o *Orchestrator) processRetries(ctx context.Context) {
-	workflow, err := o.workflows.Current()
-	if err != nil {
-		return
-	}
 	now := time.Now()
 
 	o.mu.RLock()
@@ -214,6 +416,22 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 
 		issue, err := o.store.GetIssue(issueID)
 		if err != nil {
+			slog.Warn("Dropping retry because issue lookup failed",
+				"issue_id", issueID,
+				"attempt", entry.Attempt,
+				"error", err,
+			)
+			o.releaseClaim(issueID)
+			o.mu.Lock()
+			delete(o.retries, issueID)
+			o.mu.Unlock()
+			continue
+		}
+		runtime, workflow, err := o.runtimeForIssue(issue)
+		if err != nil {
+			slog.Warn("Dropping retry because runtime resolution failed",
+				issueLogAttrs(issue, entry.Attempt, "error", err)...,
+			)
 			o.releaseClaim(issueID)
 			o.mu.Lock()
 			delete(o.retries, issueID)
@@ -221,8 +439,15 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			continue
 		}
 		if o.isTerminalState(workflow, string(issue.State)) {
-			if err := o.runner.CleanupWorkspace(ctx, issue); err != nil {
+			slog.Info("Dropping retry because issue reached terminal state",
+				issueLogAttrs(issue, entry.Attempt)...,
+			)
+			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
 				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
+			} else {
+				slog.Info("Cleaned up terminal workspace",
+					issueLogAttrs(issue, entry.Attempt)...,
+				)
 			}
 			o.releaseClaim(issueID)
 			o.mu.Lock()
@@ -231,6 +456,13 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			continue
 		}
 		if !o.isActiveState(workflow, string(issue.State)) || o.isBlocked(workflow, *issue) {
+			reason := "inactive_state"
+			if o.isBlocked(workflow, *issue) {
+				reason = "blocked"
+			}
+			slog.Info("Dropping retry because issue is not dispatchable",
+				issueLogAttrs(issue, entry.Attempt, "reason", reason)...,
+			)
 			o.releaseClaim(issueID)
 			o.mu.Lock()
 			delete(o.retries, issueID)
@@ -238,18 +470,18 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			continue
 		}
 
-		o.mu.RLock()
 		capacity := workflow.Config.Agent.MaxConcurrentAgents
-		runningCount := len(o.running)
-		o.mu.RUnlock()
-		if runningCount >= capacity {
+		if capacity > 0 && o.runningCountForProject(issue.ProjectID) >= capacity {
 			continue
 		}
-		o.startRun(ctx, workflow, issue, entry.Attempt)
+		slog.Info("Retry is due; starting issue run",
+			issueLogAttrs(issue, entry.Attempt, "delay_type", entry.DelayType)...,
+		)
+		o.startRun(ctx, workflow, runtime.runner, issue, entry.Attempt)
 	}
 }
 
-func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, attempt int) {
+func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, runner runnerExecutor, issue *kanban.Issue, attempt int) {
 	runCtx, cancel := context.WithCancel(ctx)
 	entry := runningEntry{
 		cancel:    cancel,
@@ -258,6 +490,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 		startedAt: time.Now().UTC(),
 	}
 	o.mu.Lock()
+	delete(o.liveSessions, issue.ID)
 	o.running[issue.ID] = entry
 	delete(o.retries, issue.ID)
 	o.appendEventLocked("run_started", map[string]interface{}{
@@ -268,9 +501,10 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 		"issue_state": string(issue.State),
 	})
 	o.mu.Unlock()
+	slog.Info("Agent run started", issueLogAttrs(issue, attempt)...)
 
 	go func() {
-		result, err := o.runner.RunAttempt(runCtx, issue, attempt)
+		result, err := runner.RunAttempt(runCtx, issue, attempt)
 		o.finishRun(workflow, issue, attempt, result, err)
 	}()
 }
@@ -279,9 +513,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	o.mu.Lock()
 	delete(o.running, issue.ID)
 	o.totalRuns++
-	if result != nil && result.AppSession != nil {
-		o.liveSessions[issue.ID] = result.AppSession
-	}
+	delete(o.liveSessions, issue.ID)
 	o.mu.Unlock()
 
 	switch {
@@ -298,6 +530,9 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		o.appendEventLocked("run_failed", fields)
 		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", err.Error(), workflow.Config.Agent.MaxRetryBackoffMs)
 		o.mu.Unlock()
+		slog.Warn("Agent run failed",
+			issueLogAttrs(issue, attempt, "error", err, "next_attempt", nextAttempt(attempt))...,
+		)
 	case result != nil && !result.Success:
 		errText := "unsuccessful"
 		if result.Error != nil {
@@ -315,6 +550,9 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		o.appendEventLocked("run_unsuccessful", fields)
 		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", errText, workflow.Config.Agent.MaxRetryBackoffMs)
 		o.mu.Unlock()
+		slog.Warn("Agent run completed unsuccessfully",
+			issueLogAttrs(issue, attempt, "error", errText, "next_attempt", nextAttempt(attempt))...,
+		)
 	default:
 		o.mu.Lock()
 		o.successfulRuns++
@@ -329,6 +567,9 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		o.appendEventLocked("run_completed", fields)
 		o.scheduleRetryLocked(issue, next, "continuation", "", workflow.Config.Agent.MaxRetryBackoffMs)
 		o.mu.Unlock()
+		slog.Info("Agent run completed",
+			issueLogAttrs(issue, attempt, "next_attempt", next)...,
+		)
 	}
 }
 
@@ -360,6 +601,13 @@ func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, del
 		"delay_type": delayType,
 		"error":      errText,
 	})
+	slog.Info("Retry scheduled",
+		issueLogAttrs(issue, attempt,
+			"delay_ms", delay.Milliseconds(),
+			"delay_type", delayType,
+			"error", errText,
+		)...,
+	)
 }
 
 func failureRetryDelay(attempt, maxBackoffMs int) time.Duration {
@@ -381,18 +629,33 @@ func failureRetryDelay(attempt, maxBackoffMs int) time.Duration {
 }
 
 func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
-	workflow, err := o.workflows.Current()
-	if err != nil {
-		return
+	states := []string{"done", "cancelled"}
+	if !o.isSharedMode() {
+		workflow, err := o.workflows.Current()
+		if err != nil {
+			return
+		}
+		states = workflow.Config.Tracker.TerminalStates
 	}
-	issues, err := o.store.ListIssues(map[string]interface{}{"states": workflow.Config.Tracker.TerminalStates})
+	issues, err := o.store.ListIssues(map[string]interface{}{"states": states})
 	if err != nil {
 		slog.Warn("Skipping startup terminal workspace cleanup", "error", err)
 		return
 	}
 	for i := range issues {
-		if err := o.runner.CleanupWorkspace(ctx, &issues[i]); err != nil {
+		runtime, _, err := o.runtimeForIssue(&issues[i])
+		if err != nil {
+			slog.Warn("Skipping startup terminal workspace cleanup because runtime resolution failed",
+				issueLogAttrs(&issues[i], -1, "error", err)...,
+			)
+			continue
+		}
+		if err := runtime.runner.CleanupWorkspace(ctx, &issues[i]); err != nil {
 			slog.Warn("Failed to cleanup terminal workspace", "issue", issues[i].Identifier, "error", err)
+		} else {
+			slog.Info("Cleaned up terminal workspace",
+				issueLogAttrs(&issues[i], -1)...,
+			)
 		}
 	}
 }
@@ -404,6 +667,7 @@ func (o *Orchestrator) stopRun(issueID string) {
 		entry.cancel()
 		delete(o.running, issueID)
 		o.appendEventLocked("run_stopped", map[string]interface{}{"issue_id": issueID})
+		slog.Info("Agent run stopped", issueLogAttrs(&entry.issue, entry.attempt)...)
 	}
 }
 
@@ -522,7 +786,10 @@ func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
 }
 
 func (o *Orchestrator) Status() map[string]interface{} {
-	workflow, _ := o.workflows.Current()
+	var workflow *config.Workflow
+	if !o.isSharedMode() {
+		workflow, _ = o.workflows.Current()
+	}
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
@@ -540,13 +807,6 @@ func (o *Orchestrator) Status() map[string]interface{} {
 			"error":      entry.Error,
 			"delay_type": entry.DelayType,
 		}
-	}
-
-	live := make(map[string]*appserver.Session, len(o.liveSessions))
-	for k, v := range o.liveSessions {
-		cp := *v
-		cp.History = append([]appserver.Event(nil), v.History...)
-		live[k] = &cp
 	}
 
 	uptimeSec := int(time.Since(o.startedAt).Seconds())
@@ -570,7 +830,7 @@ func (o *Orchestrator) Status() map[string]interface{} {
 			"successful": o.successfulRuns,
 			"failed":     o.failedRuns,
 		},
-		"live_sessions": live,
+		"live_sessions": o.copyLiveSessionsLocked(),
 	}
 	if workflow != nil {
 		out["max_concurrent"] = workflow.Config.Agent.MaxConcurrentAgents
@@ -578,27 +838,25 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		out["active_states"] = workflow.Config.Tracker.ActiveStates
 		out["terminal_states"] = workflow.Config.Tracker.TerminalStates
 		out["workflow_path"] = workflow.Path
+	} else if o.isSharedMode() {
+		out["mode"] = "shared"
+		if o.scopedRepoPath != "" {
+			out["scoped_repo_path"] = o.scopedRepoPath
+		}
 	}
-	if err := o.workflows.LastError(); err != nil {
-		out["workflow_error"] = err.Error()
+	if o.workflows != nil {
+		if err := o.workflows.LastError(); err != nil {
+			out["workflow_error"] = err.Error()
+		}
 	}
 	return out
 }
 
-func (o *Orchestrator) LiveSessions() map[string]interface{} {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	out := make(map[string]interface{}, len(o.liveSessions))
-	for issueID, session := range o.liveSessions {
-		cp := *session
-		cp.History = append([]appserver.Event(nil), session.History...)
-		out[issueID] = cp
-	}
-	return map[string]interface{}{"sessions": out}
-}
-
 func (o *Orchestrator) Snapshot() observability.Snapshot {
-	workflow, _ := o.workflows.Current()
+	var workflow *config.Workflow
+	if !o.isSharedMode() {
+		workflow, _ = o.workflows.Current()
+	}
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
@@ -674,6 +932,60 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 	return snapshot
 }
 
+func (o *Orchestrator) LiveSessions() map[string]interface{} {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	out := make(map[string]interface{}, len(o.running))
+	for issueID := range o.running {
+		entry, ok := o.running[issueID]
+		if !ok {
+			continue
+		}
+		session, ok := o.liveSessions[issueID]
+		if !ok || session == nil {
+			continue
+		}
+		cp := cloneSessionWithIssue(session, issueID, entry.issue.Identifier)
+		out[entry.issue.Identifier] = cp
+	}
+	return map[string]interface{}{"sessions": out}
+}
+
+func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Session) {
+	if session == nil {
+		return
+	}
+	cp := *session
+	cp.History = append([]appserver.Event(nil), session.History...)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	entry, ok := o.running[issueID]
+	if !ok {
+		return
+	}
+	cp.IssueID = issueID
+	cp.IssueIdentifier = entry.issue.Identifier
+	o.liveSessions[issueID] = &cp
+}
+
+func (o *Orchestrator) copyLiveSessionsLocked() map[string]*appserver.Session {
+	out := make(map[string]*appserver.Session, len(o.running))
+	for issueID := range o.running {
+		entry, ok := o.running[issueID]
+		if !ok {
+			continue
+		}
+		session, ok := o.liveSessions[issueID]
+		if !ok || session == nil {
+			continue
+		}
+		cp := cloneSessionWithIssue(session, issueID, entry.issue.Identifier)
+		out[entry.issue.Identifier] = &cp
+	}
+	return out
+}
+
 func (o *Orchestrator) RequestRefresh() map[string]interface{} {
 	o.mu.Lock()
 	o.appendEventLocked("refresh_requested", map[string]interface{}{})
@@ -737,4 +1049,31 @@ func attachResultMetrics(fields map[string]interface{}, result *agent.RunResult)
 	fields["input_tokens"] = result.AppSession.InputTokens
 	fields["output_tokens"] = result.AppSession.OutputTokens
 	fields["total_tokens"] = result.AppSession.TotalTokens
+}
+
+func issueLogAttrs(issue *kanban.Issue, attempt int, extra ...interface{}) []interface{} {
+	attrs := make([]interface{}, 0, 10+len(extra))
+	if issue != nil {
+		attrs = append(attrs,
+			"issue_id", issue.ID,
+			"issue_identifier", issue.Identifier,
+			"state", string(issue.State),
+		)
+		if issue.ProjectID != "" {
+			attrs = append(attrs, "project_id", issue.ProjectID)
+		}
+	}
+	if attempt >= 0 {
+		attrs = append(attrs, "attempt", attempt)
+	}
+	attrs = append(attrs, extra...)
+	return attrs
+}
+
+func cloneSessionWithIssue(session *appserver.Session, issueID, identifier string) appserver.Session {
+	cp := *session
+	cp.History = append([]appserver.Event(nil), session.History...)
+	cp.IssueID = issueID
+	cp.IssueIdentifier = identifier
+	return cp
 }

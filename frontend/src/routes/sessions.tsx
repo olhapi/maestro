@@ -32,11 +32,12 @@ export function SessionsPage() {
             {entries.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No sessions are currently active.</p>
             ) : (
-              entries.map(([issueID, session]) => (
-                <div key={issueID} className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
+              entries.map(([issueIdentifier, session]) => (
+                <div key={issueIdentifier} className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="font-medium text-white">{issueID}</p>
+                      <p className="font-medium text-white">{session.issue_identifier || issueIdentifier}</p>
+                      {session.issue_id ? <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{session.issue_id}</p> : null}
                       <p className="mt-1 text-sm text-[var(--muted-foreground)]">{session.last_message || session.last_event || 'No event message yet.'}</p>
                     </div>
                     <div className="flex gap-2">

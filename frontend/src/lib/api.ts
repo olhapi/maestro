@@ -38,13 +38,20 @@ export interface IssueFilters {
   offset?: number
 }
 
+export interface ProjectInput {
+  name: string
+  description?: string
+  repo_path: string
+  workflow_path?: string
+}
+
 export const api = {
   bootstrap: () => request<BootstrapResponse>('/api/v1/app/bootstrap'),
   listProjects: () => request<{ items: ProjectSummary[] }>('/api/v1/app/projects'),
   getProject: (id: string) => request<ProjectDetailResponse>(`/api/v1/app/projects/${id}`),
-  createProject: (body: { name: string; description?: string }) =>
+  createProject: (body: ProjectInput) =>
     request<Project>('/api/v1/app/projects', { method: 'POST', body: JSON.stringify(body) }),
-  updateProject: (id: string, body: { name: string; description?: string }) =>
+  updateProject: (id: string, body: ProjectInput) =>
     request<Project>(`/api/v1/app/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteProject: (id: string) => request<{ deleted: boolean }>(`/api/v1/app/projects/${id}`, { method: 'DELETE' }),
   listEpics: (projectID?: string) =>
