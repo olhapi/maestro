@@ -1,0 +1,267 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/olhapi/maestro/internal/kanban"
+)
+
+func repoRootFromCaller(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve caller")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
+
+func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := setupRepo(t)
+	opsRepoPath := setupRepo(t)
+
+	initRepo := t.TempDir()
+	code, stdout, stderr := runCLI(t, "workflow", "init", initRepo)
+	if code != 0 {
+		t.Fatalf("workflow init failed: %d stderr=%s", code, stderr)
+	}
+	workflowPath := filepath.Join(initRepo, "WORKFLOW.md")
+	if _, err := os.Stat(workflowPath); err != nil {
+		t.Fatalf("expected workflow file: %v", err)
+	}
+	if !strings.Contains(stdout, "Initialized "+workflowPath) {
+		t.Fatalf("unexpected workflow init output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "create", "Platform", "--repo", repoPath)
+	if code != 0 {
+		t.Fatalf("project create failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Created project ") {
+		t.Fatalf("unexpected project create output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "create", "Ops", "--repo", opsRepoPath, "--quiet")
+	if code != 0 {
+		t.Fatalf("project quiet create failed: %d stderr=%s", code, stderr)
+	}
+	opsID := strings.TrimSpace(stdout)
+	if opsID == "" {
+		t.Fatal("expected quiet project id")
+	}
+
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	projects, err := store.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects failed: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(projects))
+	}
+	var platform kanban.Project
+	for _, project := range projects {
+		if project.Name == "Platform" {
+			platform = project
+			break
+		}
+	}
+	if platform.ID == "" {
+		t.Fatal("expected Platform project to exist")
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "epic", "create", "CLI", "--project", platform.ID)
+	if code != 0 {
+		t.Fatalf("epic create failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Created epic ") {
+		t.Fatalf("unexpected epic create output %q", stdout)
+	}
+
+	epics, err := store.ListEpics("")
+	if err != nil {
+		t.Fatalf("ListEpics failed: %v", err)
+	}
+	if len(epics) != 1 {
+		t.Fatalf("expected 1 epic, got %d", len(epics))
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "create", "Ship text coverage", "--project", platform.ID, "--epic", epics[0].ID, "--labels", "cli,coverage")
+	if code != 0 {
+		t.Fatalf("issue create failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Created issue ") {
+		t.Fatalf("unexpected issue create output %q", stdout)
+	}
+	issues, err := store.ListIssues(nil)
+	if err != nil {
+		t.Fatalf("ListIssues failed: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(issues))
+	}
+	issue := issues[0]
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "list")
+	if code != 0 {
+		t.Fatalf("project list failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Platform") || !strings.Contains(stdout, "Ops") {
+		t.Fatalf("unexpected project list output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "show", platform.ID)
+	if code != 0 {
+		t.Fatalf("project show failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Project:\tPlatform") || !strings.Contains(stdout, issue.Identifier) {
+		t.Fatalf("unexpected project show output %q", stdout)
+	}
+
+	updatedWorkflow := filepath.Join(repoPath, "ALT_WORKFLOW.md")
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "update", platform.ID, "--name", "Platform Core", "--desc", "Updated project", "--repo", repoPath, "--workflow", updatedWorkflow)
+	if code != 0 {
+		t.Fatalf("project update failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Updated project "+platform.ID) {
+		t.Fatalf("unexpected project update output %q", stdout)
+	}
+	updatedProject, err := store.GetProject(platform.ID)
+	if err != nil {
+		t.Fatalf("GetProject failed: %v", err)
+	}
+	if updatedProject.Name != "Platform Core" || updatedProject.WorkflowPath != updatedWorkflow {
+		t.Fatalf("unexpected updated project: %+v", updatedProject)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "epic", "list", "--project", platform.ID)
+	if code != 0 {
+		t.Fatalf("epic list failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "CLI") {
+		t.Fatalf("unexpected epic list output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "epic", "show", epics[0].ID)
+	if code != 0 {
+		t.Fatalf("epic show failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Epic:\tCLI") || !strings.Contains(stdout, issue.Identifier) {
+		t.Fatalf("unexpected epic show output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "epic", "update", epics[0].ID, "--name", "CLI Delivery", "--desc", "Updated epic", "--project", platform.ID, "--quiet")
+	if code != 0 {
+		t.Fatalf("epic update failed: %d stderr=%s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != epics[0].ID {
+		t.Fatalf("unexpected epic quiet output %q", stdout)
+	}
+	updatedEpic, err := store.GetEpic(epics[0].ID)
+	if err != nil {
+		t.Fatalf("GetEpic failed: %v", err)
+	}
+	if updatedEpic.Name != "CLI Delivery" || updatedEpic.Description != "Updated epic" {
+		t.Fatalf("unexpected updated epic: %+v", updatedEpic)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "show", issue.Identifier)
+	if code != 0 {
+		t.Fatalf("issue show failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Identifier:\t"+issue.Identifier) || !strings.Contains(stdout, "Title:\t"+issue.Title) {
+		t.Fatalf("unexpected issue show output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "move", issue.Identifier, "done", "--quiet")
+	if code != 0 {
+		t.Fatalf("issue move failed: %d stderr=%s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != issue.Identifier {
+		t.Fatalf("unexpected issue move quiet output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", issue.Identifier, "--clear-labels", "--clear-priority", "--clear-project", "--clear-epic", "--clear-branch", "--clear-pr")
+	if code != 0 {
+		t.Fatalf("issue clear update failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Updated issue "+issue.Identifier) {
+		t.Fatalf("unexpected issue update output %q", stdout)
+	}
+	detail, err := store.GetIssueDetailByIdentifier(issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier failed: %v", err)
+	}
+	if detail.ProjectID != "" || detail.EpicID != "" || detail.Priority != 0 || len(detail.Labels) != 0 || detail.BranchName != "" || detail.PRNumber != 0 || detail.PRURL != "" {
+		t.Fatalf("expected cleared issue fields, got %+v", detail)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "delete", issue.Identifier)
+	if code != 0 {
+		t.Fatalf("issue delete failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Deleted issue "+issue.Identifier) {
+		t.Fatalf("unexpected issue delete output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "epic", "delete", epics[0].ID)
+	if code != 0 {
+		t.Fatalf("epic delete failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Deleted epic "+epics[0].ID) {
+		t.Fatalf("unexpected epic delete output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "delete", opsID, "--quiet")
+	if code != 0 {
+		t.Fatalf("project delete failed: %d stderr=%s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != opsID {
+		t.Fatalf("unexpected quiet project delete output %q", stdout)
+	}
+}
+
+func TestStatusSpecCheckAndBlockAliasTextModes(t *testing.T) {
+	dbPath, _, project, issue := setupProjectAndIssue(t)
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+	blocker, err := store.CreateIssue(project.ID, "", "Blocked by", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker failed: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "issue", "block", issue.Identifier, blocker.Identifier, "--quiet")
+	if code != 0 {
+		t.Fatalf("issue block alias failed: %d stderr=%s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != issue.Identifier {
+		t.Fatalf("unexpected issue block quiet output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "status")
+	if code != 0 {
+		t.Fatalf("status failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Maestro Status") || !strings.Contains(stdout, "Projects: 1") {
+		t.Fatalf("unexpected status output %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "spec-check", "--repo", repoRootFromCaller(t))
+	if code != exitCodeRuntime {
+		t.Fatalf("expected failing spec-check exit code, got %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Spec Check") || !strings.Contains(stdout, "workflow_prompt_render: invalid") {
+		t.Fatalf("unexpected spec-check output %q", stdout)
+	}
+}
