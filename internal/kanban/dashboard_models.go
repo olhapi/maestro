@@ -79,6 +79,7 @@ type RuntimeEvent struct {
 	IssueID      string                 `json:"issue_id,omitempty"`
 	Identifier   string                 `json:"identifier,omitempty"`
 	Title        string                 `json:"title,omitempty"`
+	Phase        string                 `json:"phase,omitempty"`
 	Attempt      int                    `json:"attempt,omitempty"`
 	DelayType    string                 `json:"delay_type,omitempty"`
 	InputTokens  int                    `json:"input_tokens,omitempty"`

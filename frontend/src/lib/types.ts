@@ -6,6 +6,8 @@ export type IssueState =
   | 'done'
   | 'cancelled'
 
+export type WorkflowPhase = 'implementation' | 'review' | 'done' | 'complete'
+
 export interface IssueStateCounts {
   backlog: number
   ready: number
@@ -75,6 +77,7 @@ export interface Issue {
   title: string
   description?: string
   state: IssueState
+  workflow_phase: WorkflowPhase
   priority: number
   labels?: string[]
   branch_name?: string
@@ -112,6 +115,7 @@ export interface RunningEntry {
   issue_id: string
   identifier: string
   state: string
+  phase?: string
   session_id?: string
   turn_count: number
   last_event?: string
@@ -124,6 +128,7 @@ export interface RunningEntry {
 export interface RetryEntry {
   issue_id: string
   identifier: string
+  phase?: string
   attempt: number
   due_at: string
   due_in_ms: number
@@ -145,6 +150,7 @@ export interface RuntimeEvent {
   issue_id?: string
   identifier?: string
   title?: string
+  phase?: string
   attempt?: number
   delay_type?: string
   input_tokens?: number

@@ -30,6 +30,7 @@ type Config struct {
 	Hooks     HooksConfig     `yaml:"hooks"`
 	Agent     AgentConfig     `yaml:"agent"`
 	Codex     CodexConfig     `yaml:"codex"`
+	Phases    PhasesConfig    `yaml:"phases"`
 }
 
 type TrackerConfig struct {
@@ -69,6 +70,16 @@ type CodexConfig struct {
 	TurnTimeoutMs     int                    `yaml:"turn_timeout_ms"`
 	ReadTimeoutMs     int                    `yaml:"read_timeout_ms"`
 	StallTimeoutMs    int                    `yaml:"stall_timeout_ms"`
+}
+
+type PhasesConfig struct {
+	Review PhasePromptConfig `yaml:"review"`
+	Done   PhasePromptConfig `yaml:"done"`
+}
+
+type PhasePromptConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Prompt  string `yaml:"prompt"`
 }
 
 type Workflow struct {
@@ -126,6 +137,8 @@ func DefaultPromptTemplate() string {
 	return strings.TrimSpace(`
 You are working on issue {{ issue.identifier }}.
 
+Current phase: {{ phase }}
+
 {% if attempt %}
 Continuation attempt: {{ attempt }}
 {% endif %}
@@ -137,6 +150,45 @@ Description:
 {% else %}
 No description provided.
 {% endif %}
+`)
+}
+
+func DefaultReviewPromptTemplate() string {
+	return strings.TrimSpace(`
+You are performing the review pass for issue {{ issue.identifier }}.
+
+Title: {{ issue.title }}
+State: {{ issue.state }}
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
+
+Review the implementation in the current workspace, run focused verification, and fix any issues you find.
+
+- If additional implementation is still required after review, move the issue back to in_progress.
+- If the issue is ready to finalize, move it to done.
+`)
+}
+
+func DefaultDonePromptTemplate() string {
+	return strings.TrimSpace(`
+You are performing the done pass for issue {{ issue.identifier }}.
+
+Title: {{ issue.title }}
+State: {{ issue.state }}
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
+
+The implementation is already complete. Perform the project-specific finalization steps for a done issue from the current workspace, such as preparing or updating a PR, merging, or other release bookkeeping.
+
+- Keep the issue in done unless the work truly needs to be reopened.
 `)
 }
 
@@ -257,6 +309,9 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	hooks := ensureMap(out, "hooks")
 	agent := ensureMap(out, "agent")
 	codex := ensureMap(out, "codex")
+	phases := ensureMap(out, "phases")
+	ensureMap(phases, "review")
+	ensureMap(phases, "done")
 
 	moveString(out, tracker, "tracker_kind", "kind")
 	moveStringSlice(out, tracker, "tracker_active_states", "active_states")
@@ -443,6 +498,12 @@ func applyDefaults(c *Config) {
 	if c.Codex.StallTimeoutMs == 0 {
 		c.Codex.StallTimeoutMs = defaults.Codex.StallTimeoutMs
 	}
+	if c.Phases.Review.Enabled && strings.TrimSpace(c.Phases.Review.Prompt) == "" {
+		c.Phases.Review.Prompt = DefaultReviewPromptTemplate()
+	}
+	if c.Phases.Done.Enabled && strings.TrimSpace(c.Phases.Done.Prompt) == "" {
+		c.Phases.Done.Prompt = DefaultDonePromptTemplate()
+	}
 }
 
 func validateConfig(c *Config) error {
@@ -454,6 +515,14 @@ func validateConfig(c *Config) error {
 	}
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		return fmt.Errorf("codex.command is required")
+	}
+	for _, prompt := range []string{strings.TrimSpace(c.Phases.Review.Prompt), strings.TrimSpace(c.Phases.Done.Prompt)} {
+		if prompt == "" {
+			continue
+		}
+		if _, err := ParseLiquidTemplate(prompt); err != nil {
+			return fmt.Errorf("template_parse_error: %w", err)
+		}
 	}
 	return nil
 }

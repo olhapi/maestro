@@ -69,6 +69,7 @@ func IssuePayload(provider SnapshotProvider, issueIdentifier string) (map[string
 	if running != nil {
 		payload["issue_id"] = running.IssueID
 		payload["status"] = "running"
+		payload["phase"] = running.Phase
 		payload["running"] = runningEntryPayload(*running)
 		payload["recent_events"] = recentEventsPayload(*running)
 	}
@@ -78,6 +79,7 @@ func IssuePayload(provider SnapshotProvider, issueIdentifier string) (map[string
 			payload["status"] = "retrying"
 			payload["recent_events"] = []map[string]interface{}{}
 		}
+		payload["phase"] = retry.Phase
 		payload["retry"] = retryEntryPayload(*retry)
 		payload["last_error"] = retry.Error
 	}
@@ -116,6 +118,7 @@ func runningEntryPayload(entry RunningEntry) map[string]interface{} {
 		"issue_id":         entry.IssueID,
 		"issue_identifier": entry.Identifier,
 		"state":            entry.State,
+		"phase":            entry.Phase,
 		"session_id":       entry.SessionID,
 		"turn_count":       entry.TurnCount,
 		"last_event":       entry.LastEvent,
@@ -133,6 +136,7 @@ func retryEntryPayload(entry RetryEntry) map[string]interface{} {
 	return map[string]interface{}{
 		"issue_id":         entry.IssueID,
 		"issue_identifier": entry.Identifier,
+		"phase":            entry.Phase,
 		"attempt":          entry.Attempt,
 		"due_at":           entry.DueAt.UTC().Format(time.RFC3339),
 		"error":            sanitizeMessage(entry.Error),

@@ -80,6 +80,57 @@ Test prompt for {{ issue.identifier }}
 	return orch, store, manager, workspaceRoot
 }
 
+func enablePhaseWorkflow(t *testing.T, manager *config.Manager, workspaceRoot string) {
+	t.Helper()
+	workflowContent := `---
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 50
+workspace:
+  root: ` + workspaceRoot + `
+hooks:
+  timeout_ms: 1000
+agent:
+  max_concurrent_agents: 1
+  max_turns: 2
+  max_retry_backoff_ms: 100
+  mode: stdio
+codex:
+  command: cat
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 500
+  turn_timeout_ms: 1000
+phases:
+  review:
+    enabled: true
+    prompt: |
+      Review {{ issue.identifier }} in {{ phase }}
+  done:
+    enabled: true
+    prompt: |
+      Finalize {{ issue.identifier }} in {{ phase }}
+---
+Implement {{ issue.identifier }} in {{ phase }}
+`
+	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -177,6 +228,253 @@ func TestContinuationRetryAfterSuccess(t *testing.T) {
 	waitForNoRunning(t, orch, time.Second)
 }
 
+func TestImplementationSuccessTransitionsToReviewPhase(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	orch.runner = &phaseScriptRunner{store: store}
+
+	issue, _ := store.CreateIssue("", "", "Needs review", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != kanban.StateInReview || updated.WorkflowPhase != kanban.WorkflowPhaseReview {
+		t.Fatalf("expected in_review/review, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+
+	orch.mu.RLock()
+	retry := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if retry.Phase != string(kanban.WorkflowPhaseReview) {
+		t.Fatalf("expected review retry, got %+v", retry)
+	}
+}
+
+func TestImplementationSuccessCanSkipReviewAndQueueDonePhase(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseImplementation: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+					return nil, err
+				}
+				return &agent.RunResult{Success: true}, nil
+			},
+		},
+	}
+
+	issue, _ := store.CreateIssue("", "", "Skip review", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != kanban.StateDone || updated.WorkflowPhase != kanban.WorkflowPhaseDone {
+		t.Fatalf("expected done/done, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+
+	orch.mu.RLock()
+	retry := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if retry.Phase != string(kanban.WorkflowPhaseDone) {
+		t.Fatalf("expected done retry, got %+v", retry)
+	}
+}
+
+func TestReviewFailureMovesIssueBackToImplementation(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseReview: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				return nil, fmt.Errorf("review failed")
+			},
+		},
+	}
+
+	issue, _ := store.CreateIssue("", "", "Review failure", "", 0, nil)
+	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != kanban.StateInProgress || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
+		t.Fatalf("expected in_progress/implementation, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+
+	orch.mu.RLock()
+	retry := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if retry.Phase != string(kanban.WorkflowPhaseImplementation) || retry.DelayType != "failure" {
+		t.Fatalf("expected implementation failure retry, got %+v", retry)
+	}
+}
+
+func TestReviewSuccessTransitionsToDonePhase(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	orch.runner = &phaseScriptRunner{store: store}
+
+	issue, _ := store.CreateIssue("", "", "Review success", "", 0, nil)
+	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != kanban.StateDone || updated.WorkflowPhase != kanban.WorkflowPhaseDone {
+		t.Fatalf("expected done/done, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+
+	orch.mu.RLock()
+	retry := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if retry.Phase != string(kanban.WorkflowPhaseDone) {
+		t.Fatalf("expected done retry, got %+v", retry)
+	}
+}
+
+func TestDoneFailureRetriesInDonePhase(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseDone: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				return nil, fmt.Errorf("finalization failed")
+			},
+		},
+	}
+
+	issue, _ := store.CreateIssue("", "", "Done failure", "", 0, nil)
+	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != kanban.StateDone || updated.WorkflowPhase != kanban.WorkflowPhaseDone {
+		t.Fatalf("expected done/done, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+
+	orch.mu.RLock()
+	retry := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if retry.Phase != string(kanban.WorkflowPhaseDone) || retry.DelayType != "failure" {
+		t.Fatalf("expected done failure retry, got %+v", retry)
+	}
+}
+
+func TestReconcileDoesNotKillImplementationRunThatMovedIssueToDone(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	runner := newTerminalTransitionRunner(store)
+	orch.runner = runner
+
+	issue, _ := store.CreateIssue("", "", "Skip review race", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.waitForMovedToDone(t, time.Second)
+
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	_, stillRunning := orch.running[issue.ID]
+	orch.mu.RUnlock()
+	if !stillRunning {
+		t.Fatal("expected run to remain active after reconcile")
+	}
+
+	runner.complete()
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != kanban.StateDone || updated.WorkflowPhase != kanban.WorkflowPhaseDone {
+		t.Fatalf("expected done/done after implementation completion, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+}
+
+func TestDoneSuccessMarksIssueCompleteAndAllowsCleanup(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	orch.runner = &phaseScriptRunner{store: store}
+
+	issue, _ := store.CreateIssue("", "", "Done success", "", 0, nil)
+	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone); err != nil {
+		t.Fatal(err)
+	}
+	wsPath := filepath.Join(workspaceRoot, issue.Identifier)
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, wsPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.WorkflowPhase != kanban.WorkflowPhaseComplete {
+		t.Fatalf("expected complete phase, got %s", updated.WorkflowPhase)
+	}
+	orch.cleanupTerminalWorkspaces(context.Background())
+	if _, err := store.GetWorkspace(issue.ID); err == nil {
+		t.Fatal("expected workspace cleanup after done phase completion")
+	}
+}
+
 func TestLiveSessionsTracksOnlyActiveRuns(t *testing.T) {
 	tmpDir := t.TempDir()
 	scriptPath := filepath.Join(tmpDir, "fake-codex.sh")
@@ -268,7 +566,7 @@ completed:
 	}
 }
 
-func TestReconcileStopsTerminalRunsAndCleansWorkspace(t *testing.T) {
+func TestReconcileStopsCancelledRunsAndCleansWorkspace(t *testing.T) {
 	sleepScript := filepath.Join(t.TempDir(), "sleep.sh")
 	if err := os.WriteFile(sleepScript, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -281,7 +579,7 @@ func TestReconcileStopsTerminalRunsAndCleansWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+	if err := store.UpdateIssueState(issue.ID, kanban.StateCancelled); err != nil {
 		t.Fatal(err)
 	}
 
@@ -458,6 +756,84 @@ Test prompt for {{ issue.identifier }}
 type runnerEvent struct {
 	kind       string
 	identifier string
+}
+
+type phaseRunHandler func(issue *kanban.Issue) (*agent.RunResult, error)
+
+type phaseScriptRunner struct {
+	store    *kanban.Store
+	handlers map[kanban.WorkflowPhase]phaseRunHandler
+}
+
+func (r *phaseScriptRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
+	if issue.State == kanban.StateReady {
+		if err := r.store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+			return nil, err
+		}
+	}
+	if handler := r.handlers[issue.WorkflowPhase]; handler != nil {
+		return handler(issue)
+	}
+	return &agent.RunResult{Success: true}, nil
+}
+
+func (r *phaseScriptRunner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
+	workspace, err := r.store.GetWorkspace(issue.ID)
+	if err == nil && workspace != nil {
+		_ = os.RemoveAll(workspace.Path)
+	}
+	return r.store.DeleteWorkspace(issue.ID)
+}
+
+type terminalTransitionRunner struct {
+	store       *kanban.Store
+	movedToDone chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+func newTerminalTransitionRunner(store *kanban.Store) *terminalTransitionRunner {
+	return &terminalTransitionRunner{
+		store:       store,
+		movedToDone: make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (r *terminalTransitionRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
+	if issue.State == kanban.StateReady {
+		if err := r.store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+			return nil, err
+		}
+	}
+	if err := r.store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+		return nil, err
+	}
+	r.once.Do(func() { close(r.movedToDone) })
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-r.release:
+	}
+	return &agent.RunResult{Success: true}, nil
+}
+
+func (r *terminalTransitionRunner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
+	return nil
+}
+
+func (r *terminalTransitionRunner) waitForMovedToDone(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-r.movedToDone:
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for issue to move to done")
+	}
+}
+
+func (r *terminalTransitionRunner) complete() {
+	close(r.release)
 }
 
 type controlledRunner struct {

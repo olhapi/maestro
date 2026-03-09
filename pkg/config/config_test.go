@@ -54,6 +54,11 @@ codex:
   thread_sandbox: workspace-write
   read_timeout_ms: 9999
   turn_timeout_ms: 120000
+phases:
+  review:
+    enabled: true
+  done:
+    enabled: true
 ---
 Issue {{ issue.identifier }}
 `
@@ -75,9 +80,49 @@ Issue {{ issue.identifier }}
 	if workflow.Config.Hooks.BeforeRemove != "echo cleanup" {
 		t.Fatalf("unexpected before_remove hook: %q", workflow.Config.Hooks.BeforeRemove)
 	}
+	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
+		t.Fatalf("expected default review prompt, got %+v", workflow.Config.Phases.Review)
+	}
+	if !workflow.Config.Phases.Done.Enabled || !strings.Contains(workflow.Config.Phases.Done.Prompt, "done pass") {
+		t.Fatalf("expected default done prompt, got %+v", workflow.Config.Phases.Done)
+	}
 	expectedRoot := filepath.Join(tmpDir, "custom-workspaces")
 	if workflow.Config.Workspace.Root != expectedRoot {
 		t.Fatalf("expected resolved workspace root %s, got %s", expectedRoot, workflow.Config.Workspace.Root)
+	}
+}
+
+func TestLoadWorkflowAcceptsCustomPhasePrompts(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+phases:
+  review:
+    enabled: true
+    prompt: |
+      Review {{ issue.identifier }} during {{ phase }}
+  done:
+    enabled: true
+    prompt: |
+      Finalize {{ issue.identifier }} during {{ phase }}
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if strings.TrimSpace(workflow.Config.Phases.Review.Prompt) != "Review {{ issue.identifier }} during {{ phase }}" {
+		t.Fatalf("unexpected review prompt: %q", workflow.Config.Phases.Review.Prompt)
+	}
+	if strings.TrimSpace(workflow.Config.Phases.Done.Prompt) != "Finalize {{ issue.identifier }} during {{ phase }}" {
+		t.Fatalf("unexpected done prompt: %q", workflow.Config.Phases.Done.Prompt)
 	}
 }
 
@@ -296,7 +341,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "codex app-server --model test", "{{ issue.identifier }}"} {
+	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "phases:", "enabled: false", "codex app-server --model test", "{{ issue.identifier }}"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}

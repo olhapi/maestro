@@ -159,6 +159,7 @@ maestro --log-level <debug|info|warn|error> workflow init [repo_path]
 - workspace root
 - hook commands and timeout
 - agent concurrency and mode
+- optional review/done phase prompts
 - Codex command and sandbox settings
 - the prompt template rendered for each issue
 
@@ -168,6 +169,7 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 - `{{ issue.title }}`
 - `{{ issue.description }}`
 - `{{ issue.state }}`
+- `{{ phase }}`
 - `{{ attempt }}`
 
 Bootstrap behavior matters:

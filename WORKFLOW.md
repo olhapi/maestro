@@ -16,6 +16,17 @@ workspace:
   root: ./workspaces
 hooks:
   timeout_ms: 60000
+phases:
+  review:
+    enabled: false
+    prompt: |
+      Review the implementation for issue {{ issue.identifier }} in the current workspace.
+      Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
+  done:
+    enabled: false
+    prompt: |
+      Finalize issue {{ issue.identifier }} from the current workspace.
+      Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
 agent:
   max_concurrent_agents: 3
   max_turns: 20
@@ -33,6 +44,8 @@ codex:
 ---
 
 You are working on issue {{ issue.identifier }}.
+
+Current phase: {{ phase }}
 
 {% if attempt %}
 Continuation attempt: {{ attempt }}

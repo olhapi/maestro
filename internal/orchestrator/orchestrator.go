@@ -23,12 +23,14 @@ const continuationRetryDelay = time.Second
 type runningEntry struct {
 	cancel    context.CancelFunc
 	issue     kanban.Issue
+	phase     kanban.WorkflowPhase
 	attempt   int
 	startedAt time.Time
 }
 
 type retryEntry struct {
 	Attempt   int       `json:"attempt"`
+	Phase     string    `json:"phase,omitempty"`
 	DueAt     time.Time `json:"due_at"`
 	Error     string    `json:"error,omitempty"`
 	DelayType string    `json:"delay_type,omitempty"`
@@ -341,6 +343,10 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 	o.mu.RUnlock()
 
 	for _, issueID := range ids {
+		o.mu.RLock()
+		entry, hasEntry := o.running[issueID]
+		o.mu.RUnlock()
+
 		issue, err := o.store.GetIssue(issueID)
 		if err != nil {
 			slog.Warn("Skipping reconciliation for missing issue", "issue_id", issueID, "error", err)
@@ -355,7 +361,10 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 			o.releaseClaim(issueID)
 			continue
 		}
-		if o.isTerminalState(workflow, string(issue.State)) {
+		if hasEntry && o.shouldAllowRunningTerminalTransition(workflow, issue, entry.phase) {
+			continue
+		}
+		if o.shouldCleanupTerminalIssue(workflow, issue) {
 			slog.Info("Stopping run because issue reached terminal state",
 				issueLogAttrs(issue, -1, "reason", "terminal_state")...,
 			)
@@ -370,11 +379,8 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 			o.releaseClaim(issueID)
 			continue
 		}
-		if !o.isActiveState(workflow, string(issue.State)) || o.isBlocked(workflow, *issue) {
-			reason := "inactive_state"
-			if o.isBlocked(workflow, *issue) {
-				reason = "blocked"
-			}
+		dispatchable, reason, _ := o.isDispatchable(workflow, issue)
+		if !dispatchable {
 			slog.Info("Stopping run during reconciliation",
 				issueLogAttrs(issue, -1, "reason", reason)...,
 			)
@@ -384,14 +390,29 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 	}
 }
 
+func (o *Orchestrator) shouldAllowRunningTerminalTransition(workflow *config.Workflow, issue *kanban.Issue, runningPhase kanban.WorkflowPhase) bool {
+	if issue == nil || !o.isTerminalState(workflow, string(issue.State)) {
+		return false
+	}
+	if issue.State == kanban.StateCancelled {
+		return false
+	}
+	switch runningPhase {
+	case kanban.WorkflowPhaseImplementation, kanban.WorkflowPhaseReview, kanban.WorkflowPhaseDone:
+		return issue.State == kanban.StateDone
+	default:
+		return false
+	}
+}
+
 func (o *Orchestrator) dispatch(ctx context.Context) error {
-	states := []string{"ready", "in_progress", "in_review"}
+	states := []string{"ready", "in_progress", "in_review", "done"}
 	if !o.isSharedMode() {
 		workflow, err := o.workflows.Current()
 		if err != nil {
 			return err
 		}
-		states = workflow.Config.Tracker.ActiveStates
+		states = o.dispatchCandidateStates(workflow)
 	}
 
 	issues, err := o.store.ListIssues(map[string]interface{}{
@@ -422,7 +443,13 @@ func (o *Orchestrator) dispatch(ctx context.Context) error {
 		if capacity <= 0 || o.runningCountForProject(issue.ProjectID) >= capacity {
 			continue
 		}
-		if o.isBlocked(workflow, issue) {
+		dispatchable, reason, phase := o.isDispatchable(workflow, &issue)
+		if !dispatchable {
+			if reason != "terminal_state" {
+				slog.Debug("Skipping issue dispatch because it is not dispatchable",
+					issueLogAttrs(&issue, 0, "reason", reason)...,
+				)
+			}
 			continue
 		}
 		if !o.tryClaim(issue.ID) {
@@ -432,13 +459,14 @@ func (o *Orchestrator) dispatch(ctx context.Context) error {
 			continue
 		}
 		slog.Info("Issue claim accepted", issueLogAttrs(&issue, 0)...)
-		if !o.isActiveState(workflow, string(issue.State)) {
-			slog.Info("Releasing issue claim because state is no longer active",
-				issueLogAttrs(&issue, 0)...,
+		if ok, reason, _ := o.isDispatchable(workflow, &issue); !ok {
+			slog.Info("Releasing issue claim because issue is no longer dispatchable",
+				issueLogAttrs(&issue, 0, "reason", reason)...,
 			)
 			o.releaseClaim(issue.ID)
 			continue
 		}
+		issue.WorkflowPhase = phase
 		o.startRun(ctx, workflow, runtime.runner, &issue, 0)
 	}
 	return nil
@@ -490,7 +518,7 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			o.mu.Unlock()
 			continue
 		}
-		if o.isTerminalState(workflow, string(issue.State)) {
+		if o.shouldCleanupTerminalIssue(workflow, issue) {
 			slog.Info("Dropping retry because issue reached terminal state",
 				issueLogAttrs(issue, entry.Attempt)...,
 			)
@@ -507,11 +535,8 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			o.mu.Unlock()
 			continue
 		}
-		if !o.isActiveState(workflow, string(issue.State)) || o.isBlocked(workflow, *issue) {
-			reason := "inactive_state"
-			if o.isBlocked(workflow, *issue) {
-				reason = "blocked"
-			}
+		dispatchable, reason, phase := o.isDispatchable(workflow, issue)
+		if !dispatchable {
 			slog.Info("Dropping retry because issue is not dispatchable",
 				issueLogAttrs(issue, entry.Attempt, "reason", reason)...,
 			)
@@ -527,100 +552,85 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			continue
 		}
 		slog.Info("Retry is due; starting issue run",
-			issueLogAttrs(issue, entry.Attempt, "delay_type", entry.DelayType)...,
+			issueLogAttrs(issue, entry.Attempt, "delay_type", entry.DelayType, "phase", phase)...,
 		)
+		issue.WorkflowPhase = phase
 		o.startRun(ctx, workflow, runtime.runner, issue, entry.Attempt)
 	}
 }
 
 func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, runner runnerExecutor, issue *kanban.Issue, attempt int) {
+	phase := o.executionPhase(workflow, issue)
+	runIssue := *issue
+	runIssue.WorkflowPhase = phase
 	runCtx, cancel := context.WithCancel(ctx)
 	entry := runningEntry{
 		cancel:    cancel,
-		issue:     *issue,
+		issue:     runIssue,
+		phase:     phase,
 		attempt:   attempt,
 		startedAt: time.Now().UTC(),
 	}
 	o.mu.Lock()
-	delete(o.liveSessions, issue.ID)
-	o.running[issue.ID] = entry
-	delete(o.retries, issue.ID)
+	delete(o.liveSessions, runIssue.ID)
+	o.running[runIssue.ID] = entry
+	delete(o.retries, runIssue.ID)
 	o.appendEventLocked("run_started", map[string]interface{}{
-		"issue_id":    issue.ID,
-		"identifier":  issue.Identifier,
-		"title":       issue.Title,
+		"issue_id":    runIssue.ID,
+		"identifier":  runIssue.Identifier,
+		"title":       runIssue.Title,
+		"phase":       string(phase),
 		"attempt":     attempt,
-		"issue_state": string(issue.State),
+		"issue_state": string(runIssue.State),
 	})
 	o.mu.Unlock()
-	slog.Info("Agent run started", issueLogAttrs(issue, attempt)...)
+	slog.Info("Agent run started", issueLogAttrs(&runIssue, attempt, "phase", phase)...)
 
 	go func() {
-		result, err := runner.RunAttempt(runCtx, issue, attempt)
-		o.finishRun(workflow, issue, attempt, result, err)
+		result, err := runner.RunAttempt(runCtx, &runIssue, attempt)
+		o.finishRun(workflow, &runIssue, phase, attempt, result, err)
 	}()
 }
 
-func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue, attempt int, result *agent.RunResult, err error) {
+func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, result *agent.RunResult, err error) {
 	o.mu.Lock()
 	delete(o.running, issue.ID)
 	o.totalRuns++
 	delete(o.liveSessions, issue.ID)
 	o.mu.Unlock()
 
+	current := issue
+	if refreshed, getErr := o.store.GetIssue(issue.ID); getErr == nil && refreshed != nil {
+		current = refreshed
+	} else {
+		cloned := *issue
+		current = &cloned
+	}
+	current.WorkflowPhase = phase
+
 	switch {
 	case err != nil:
-		o.mu.Lock()
-		o.failedRuns++
-		fields := map[string]interface{}{
-			"issue_id":   issue.ID,
-			"identifier": issue.Identifier,
-			"attempt":    attempt,
-			"error":      err.Error(),
-		}
-		attachResultMetrics(fields, result)
-		o.appendEventLocked("run_failed", fields)
-		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", err.Error(), workflow.Config.Agent.MaxRetryBackoffMs)
-		o.mu.Unlock()
+		next := o.handleFailedRun(workflow, current, phase, attempt, result, "run_failed", err.Error())
 		slog.Warn("Agent run failed",
-			issueLogAttrs(issue, attempt, "error", err, "next_attempt", nextAttempt(attempt))...,
+			issueLogAttrs(current, attempt, "error", err, "next_attempt", next, "phase", phase)...,
 		)
 	case result != nil && !result.Success:
 		errText := "unsuccessful"
 		if result.Error != nil {
 			errText = result.Error.Error()
 		}
-		o.mu.Lock()
-		o.failedRuns++
-		fields := map[string]interface{}{
-			"issue_id":   issue.ID,
-			"identifier": issue.Identifier,
-			"attempt":    attempt,
-			"error":      errText,
-		}
-		attachResultMetrics(fields, result)
-		o.appendEventLocked("run_unsuccessful", fields)
-		o.scheduleRetryLocked(issue, nextAttempt(attempt), "failure", errText, workflow.Config.Agent.MaxRetryBackoffMs)
-		o.mu.Unlock()
+		next := o.handleFailedRun(workflow, current, phase, attempt, result, "run_unsuccessful", errText)
 		slog.Warn("Agent run completed unsuccessfully",
-			issueLogAttrs(issue, attempt, "error", errText, "next_attempt", nextAttempt(attempt))...,
+			issueLogAttrs(current, attempt, "error", errText, "next_attempt", next, "phase", phase)...,
 		)
 	default:
-		o.mu.Lock()
-		o.successfulRuns++
-		next := nextAttempt(attempt)
-		fields := map[string]interface{}{
-			"issue_id":   issue.ID,
-			"identifier": issue.Identifier,
-			"attempt":    attempt,
-			"next_retry": next,
+		next, scheduled := o.handleSuccessfulRun(workflow, current, phase, attempt, result)
+		extra := []interface{}{"phase", phase}
+		if scheduled {
+			extra = append(extra, "next_attempt", next)
 		}
-		attachResultMetrics(fields, result)
-		o.appendEventLocked("run_completed", fields)
-		o.scheduleRetryLocked(issue, next, "continuation", "", workflow.Config.Agent.MaxRetryBackoffMs)
-		o.mu.Unlock()
 		slog.Info("Agent run completed",
-			issueLogAttrs(issue, attempt, "next_attempt", next)...,
+			issueLogAttrs(current, attempt, extra...)...,
 		)
 	}
 }
@@ -632,13 +642,152 @@ func nextAttempt(attempt int) int {
 	return 1
 }
 
-func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, delayType, errText string, maxBackoffMs int) {
+func (o *Orchestrator) handleFailedRun(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, result *agent.RunResult, eventKind, errText string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.failedRuns++
+	nextPhase := phase
+	switch phase {
+	case kanban.WorkflowPhaseReview:
+		o.updateIssueStatePhase(issue, kanban.StateInProgress, kanban.WorkflowPhaseImplementation)
+		nextPhase = kanban.WorkflowPhaseImplementation
+	case kanban.WorkflowPhaseDone:
+		o.updateIssueStatePhase(issue, kanban.StateDone, kanban.WorkflowPhaseDone)
+		nextPhase = kanban.WorkflowPhaseDone
+	default:
+		if issue.State != kanban.StateReady && issue.State != kanban.StateInProgress {
+			o.updateIssueStatePhase(issue, kanban.StateInProgress, kanban.WorkflowPhaseImplementation)
+		} else {
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+		}
+		nextPhase = kanban.WorkflowPhaseImplementation
+	}
+
+	next := nextAttempt(attempt)
+	fields := map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      string(phase),
+		"attempt":    attempt,
+		"error":      errText,
+	}
+	attachResultMetrics(fields, result)
+	o.appendEventLocked(eventKind, fields)
+	o.scheduleRetryLocked(issue, next, nextPhase, "failure", errText, workflow.Config.Agent.MaxRetryBackoffMs)
+	return next
+}
+
+func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, result *agent.RunResult) (int, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.successfulRuns++
+	nextPhase, shouldContinue := o.advanceIssueAfterSuccess(workflow, issue, phase)
+	fields := map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      string(phase),
+		"attempt":    attempt,
+	}
+	attachResultMetrics(fields, result)
+	if shouldContinue {
+		next := nextAttempt(attempt)
+		fields["next_retry"] = next
+		fields["next_phase"] = string(nextPhase)
+		o.appendEventLocked("run_completed", fields)
+		o.scheduleRetryLocked(issue, next, nextPhase, "continuation", "", workflow.Config.Agent.MaxRetryBackoffMs)
+		return next, true
+	}
+	o.appendEventLocked("run_completed", fields)
+	return 0, false
+}
+
+func (o *Orchestrator) advanceIssueAfterSuccess(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase) (kanban.WorkflowPhase, bool) {
+	switch phase {
+	case kanban.WorkflowPhaseReview:
+		switch issue.State {
+		case kanban.StateReady, kanban.StateInProgress:
+			o.updateIssueStatePhase(issue, kanban.StateInProgress, kanban.WorkflowPhaseImplementation)
+			return kanban.WorkflowPhaseImplementation, true
+		case kanban.StateInReview:
+			if workflow.Config.Phases.Done.Enabled {
+				o.updateIssueStatePhase(issue, kanban.StateDone, kanban.WorkflowPhaseDone)
+				return kanban.WorkflowPhaseDone, true
+			}
+			o.updateIssueStatePhase(issue, kanban.StateDone, kanban.WorkflowPhaseComplete)
+			return kanban.WorkflowPhaseComplete, false
+		case kanban.StateDone:
+			if workflow.Config.Phases.Done.Enabled {
+				o.updateIssuePhase(issue, kanban.WorkflowPhaseDone)
+				return kanban.WorkflowPhaseDone, true
+			}
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseComplete)
+			return kanban.WorkflowPhaseComplete, false
+		case kanban.StateCancelled:
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseComplete)
+			return kanban.WorkflowPhaseComplete, false
+		default:
+			return kanban.WorkflowPhaseComplete, false
+		}
+	case kanban.WorkflowPhaseDone:
+		switch issue.State {
+		case kanban.StateDone, kanban.StateCancelled:
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseComplete)
+			return kanban.WorkflowPhaseComplete, false
+		case kanban.StateInReview:
+			if workflow.Config.Phases.Review.Enabled {
+				o.updateIssuePhase(issue, kanban.WorkflowPhaseReview)
+				return kanban.WorkflowPhaseReview, true
+			}
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			return kanban.WorkflowPhaseImplementation, true
+		case kanban.StateReady, kanban.StateInProgress:
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			return kanban.WorkflowPhaseImplementation, true
+		default:
+			return kanban.WorkflowPhaseComplete, false
+		}
+	default:
+		switch issue.State {
+		case kanban.StateDone:
+			if workflow.Config.Phases.Done.Enabled {
+				o.updateIssuePhase(issue, kanban.WorkflowPhaseDone)
+				return kanban.WorkflowPhaseDone, true
+			}
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseComplete)
+			return kanban.WorkflowPhaseComplete, false
+		case kanban.StateCancelled:
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseComplete)
+			return kanban.WorkflowPhaseComplete, false
+		case kanban.StateInReview:
+			if workflow.Config.Phases.Review.Enabled {
+				o.updateIssuePhase(issue, kanban.WorkflowPhaseReview)
+				return kanban.WorkflowPhaseReview, true
+			}
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			return kanban.WorkflowPhaseImplementation, true
+		case kanban.StateReady, kanban.StateInProgress:
+			if workflow.Config.Phases.Review.Enabled {
+				o.updateIssueStatePhase(issue, kanban.StateInReview, kanban.WorkflowPhaseReview)
+				return kanban.WorkflowPhaseReview, true
+			}
+			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			return kanban.WorkflowPhaseImplementation, true
+		default:
+			return kanban.WorkflowPhaseComplete, false
+		}
+	}
+}
+
+func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, delayType, errText string, maxBackoffMs int) {
 	delay := continuationRetryDelay
 	if delayType != "continuation" {
 		delay = failureRetryDelay(attempt, maxBackoffMs)
 	}
 	o.retries[issue.ID] = retryEntry{
 		Attempt:   attempt,
+		Phase:     string(phase),
 		DueAt:     time.Now().Add(delay),
 		Error:     errText,
 		DelayType: delayType,
@@ -647,6 +796,7 @@ func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, del
 	o.appendEventLocked("retry_scheduled", map[string]interface{}{
 		"issue_id":   issue.ID,
 		"identifier": issue.Identifier,
+		"phase":      string(phase),
 		"attempt":    attempt,
 		"due_at":     time.Now().Add(delay).UTC().Format(time.RFC3339),
 		"delay_ms":   delay.Milliseconds(),
@@ -655,11 +805,106 @@ func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, del
 	})
 	slog.Info("Retry scheduled",
 		issueLogAttrs(issue, attempt,
+			"phase", phase,
 			"delay_ms", delay.Milliseconds(),
 			"delay_type", delayType,
 			"error", errText,
 		)...,
 	)
+}
+
+func (o *Orchestrator) updateIssuePhase(issue *kanban.Issue, phase kanban.WorkflowPhase) {
+	if err := o.store.UpdateIssueWorkflowPhase(issue.ID, phase); err != nil {
+		slog.Warn("Failed to update issue phase", "issue", issue.Identifier, "phase", phase, "error", err)
+		return
+	}
+	issue.WorkflowPhase = phase
+}
+
+func (o *Orchestrator) updateIssueStatePhase(issue *kanban.Issue, state kanban.State, phase kanban.WorkflowPhase) {
+	if err := o.store.UpdateIssueStateAndPhase(issue.ID, state, phase); err != nil {
+		slog.Warn("Failed to update issue state and phase", "issue", issue.Identifier, "state", state, "phase", phase, "error", err)
+		return
+	}
+	issue.State = state
+	issue.WorkflowPhase = phase
+}
+
+func (o *Orchestrator) dispatchCandidateStates(workflow *config.Workflow) []string {
+	states := append([]string(nil), workflow.Config.Tracker.ActiveStates...)
+	states = append(states, string(kanban.StateDone))
+	return uniqueStrings(states)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func (o *Orchestrator) executionPhase(workflow *config.Workflow, issue *kanban.Issue) kanban.WorkflowPhase {
+	phase := issue.WorkflowPhase
+	if !phase.IsValid() {
+		phase = kanban.DefaultWorkflowPhaseForState(issue.State)
+	}
+	switch issue.State {
+	case kanban.StateDone:
+		if workflow.Config.Phases.Done.Enabled && phase == kanban.WorkflowPhaseDone {
+			return kanban.WorkflowPhaseDone
+		}
+		return kanban.WorkflowPhaseComplete
+	case kanban.StateCancelled:
+		return kanban.WorkflowPhaseComplete
+	case kanban.StateInReview:
+		if workflow.Config.Phases.Review.Enabled && phase == kanban.WorkflowPhaseReview {
+			return kanban.WorkflowPhaseReview
+		}
+		return kanban.WorkflowPhaseImplementation
+	default:
+		return kanban.WorkflowPhaseImplementation
+	}
+}
+
+func (o *Orchestrator) shouldCleanupTerminalIssue(workflow *config.Workflow, issue *kanban.Issue) bool {
+	if !o.isTerminalState(workflow, string(issue.State)) {
+		return false
+	}
+	return o.executionPhase(workflow, issue) == kanban.WorkflowPhaseComplete
+}
+
+func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.Issue) (bool, string, kanban.WorkflowPhase) {
+	phase := o.executionPhase(workflow, issue)
+	switch phase {
+	case kanban.WorkflowPhaseComplete:
+		if o.isTerminalState(workflow, string(issue.State)) {
+			return false, "terminal_state", phase
+		}
+		return false, "inactive_state", phase
+	case kanban.WorkflowPhaseDone:
+		if issue.State != kanban.StateDone {
+			return false, "phase_state_mismatch", phase
+		}
+		return true, "", phase
+	default:
+		if !o.isActiveState(workflow, string(issue.State)) {
+			return false, "inactive_state", phase
+		}
+		if o.isBlocked(workflow, *issue) {
+			return false, "blocked", phase
+		}
+		return true, "", phase
+	}
 }
 
 func failureRetryDelay(attempt, maxBackoffMs int) time.Duration {
@@ -695,11 +940,14 @@ func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
 		return
 	}
 	for i := range issues {
-		runtime, _, err := o.runtimeForIssue(&issues[i])
+		runtime, workflow, err := o.runtimeForIssue(&issues[i])
 		if err != nil {
 			slog.Warn("Skipping startup terminal workspace cleanup because runtime resolution failed",
 				issueLogAttrs(&issues[i], -1, "error", err)...,
 			)
+			continue
+		}
+		if !o.shouldCleanupTerminalIssue(workflow, &issues[i]) {
 			continue
 		}
 		if err := runtime.runner.CleanupWorkspace(ctx, &issues[i]); err != nil {
@@ -855,6 +1103,7 @@ func (o *Orchestrator) Status() map[string]interface{} {
 	for id, entry := range o.retries {
 		retryQueue[id] = map[string]interface{}{
 			"attempt":    entry.Attempt,
+			"phase":      entry.Phase,
 			"due_at":     entry.DueAt.UTC().Format(time.RFC3339),
 			"error":      entry.Error,
 			"delay_type": entry.DelayType,
@@ -928,6 +1177,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 			IssueID:    issueID,
 			Identifier: entry.issue.Identifier,
 			State:      string(entry.issue.State),
+			Phase:      string(entry.phase),
 			StartedAt:  entry.startedAt,
 		}
 		if session != nil {
@@ -966,6 +1216,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		retry := observability.RetryEntry{
 			IssueID:    issueID,
 			Identifier: identifier,
+			Phase:      entry.Phase,
 			Attempt:    entry.Attempt,
 			DueAt:      entry.DueAt,
 			DueInMs:    time.Until(entry.DueAt).Milliseconds(),
@@ -1066,11 +1317,32 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
 			"issue_id":   issue.ID,
 			"identifier": issue.Identifier,
+			"phase":      entry.Phase,
 		})
 		return map[string]interface{}{
 			"status":       "queued_now",
 			"issue":        identifier,
 			"retry_due_at": entry.DueAt.Format(time.RFC3339),
+		}
+	}
+
+	if issue.WorkflowPhase == kanban.WorkflowPhaseDone && issue.State == kanban.StateDone {
+		o.retries[issue.ID] = retryEntry{
+			Attempt:   0,
+			Phase:     string(kanban.WorkflowPhaseDone),
+			DueAt:     time.Now().UTC(),
+			DelayType: "manual",
+		}
+		o.claimed[issue.ID] = struct{}{}
+		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      string(kanban.WorkflowPhaseDone),
+		})
+		return map[string]interface{}{
+			"status":       "queued_now",
+			"issue":        identifier,
+			"retry_due_at": time.Now().UTC().Format(time.RFC3339),
 		}
 	}
 
@@ -1087,6 +1359,7 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 	o.appendEventLocked("manual_retry_requested", map[string]interface{}{
 		"issue_id":   issue.ID,
 		"identifier": issue.Identifier,
+		"phase":      string(issue.WorkflowPhase),
 	})
 	return map[string]interface{}{
 		"status": "refresh_requested",

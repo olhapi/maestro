@@ -248,6 +248,9 @@ func TestUpdateIssueState(t *testing.T) {
 	if updated.State != StateReady {
 		t.Errorf("Expected state 'ready', got %s", updated.State)
 	}
+	if updated.WorkflowPhase != WorkflowPhaseImplementation {
+		t.Fatalf("expected implementation phase for ready issue, got %s", updated.WorkflowPhase)
+	}
 
 	// Move to in_progress - should set started_at
 	if err := store.UpdateIssueState(issue.ID, StateInProgress); err != nil {
@@ -258,6 +261,17 @@ func TestUpdateIssueState(t *testing.T) {
 	if updated.StartedAt == nil {
 		t.Error("Expected started_at to be set")
 	}
+	if updated.WorkflowPhase != WorkflowPhaseImplementation {
+		t.Fatalf("expected implementation phase for in_progress issue, got %s", updated.WorkflowPhase)
+	}
+
+	if err := store.UpdateIssueState(issue.ID, StateInReview); err != nil {
+		t.Fatalf("Failed to update state: %v", err)
+	}
+	updated, _ = store.GetIssue(issue.ID)
+	if updated.WorkflowPhase != WorkflowPhaseImplementation {
+		t.Fatalf("expected manual in_review move to stay in implementation phase, got %s", updated.WorkflowPhase)
+	}
 
 	// Move to done - should set completed_at
 	if err := store.UpdateIssueState(issue.ID, StateDone); err != nil {
@@ -267,6 +281,9 @@ func TestUpdateIssueState(t *testing.T) {
 	updated, _ = store.GetIssue(issue.ID)
 	if updated.CompletedAt == nil {
 		t.Error("Expected completed_at to be set")
+	}
+	if updated.WorkflowPhase != WorkflowPhaseComplete {
+		t.Fatalf("expected complete phase for done issue, got %s", updated.WorkflowPhase)
 	}
 }
 

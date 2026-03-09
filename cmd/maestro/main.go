@@ -581,6 +581,7 @@ func runIssue() {
 		fmt.Printf("Identifier:  %s\n", issue.Identifier)
 		fmt.Printf("Title:       %s\n", issue.Title)
 		fmt.Printf("State:       %s\n", issue.State)
+		fmt.Printf("Phase:       %s\n", issue.WorkflowPhase)
 		fmt.Printf("Priority:    %d\n", issue.Priority)
 		if issue.Description != "" {
 			fmt.Printf("Description: %s\n", issue.Description)

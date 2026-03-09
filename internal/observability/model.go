@@ -13,6 +13,7 @@ type RunningEntry struct {
 	IssueID           string      `json:"issue_id"`
 	Identifier        string      `json:"identifier"`
 	State             string      `json:"state"`
+	Phase             string      `json:"phase,omitempty"`
 	SessionID         string      `json:"session_id,omitempty"`
 	CodexAppServerPID int         `json:"codex_app_server_pid,omitempty"`
 	TurnCount         int         `json:"turn_count"`
@@ -26,6 +27,7 @@ type RunningEntry struct {
 type RetryEntry struct {
 	IssueID    string    `json:"issue_id"`
 	Identifier string    `json:"identifier"`
+	Phase      string    `json:"phase,omitempty"`
 	Attempt    int       `json:"attempt"`
 	DueAt      time.Time `json:"due_at"`
 	DueInMs    int64     `json:"due_in_ms"`

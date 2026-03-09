@@ -78,6 +78,7 @@ func (s *Store) migrate() error {
 			title TEXT NOT NULL,
 			description TEXT,
 			state TEXT NOT NULL DEFAULT 'backlog',
+			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
 			priority INTEGER DEFAULT 0,
 			branch_name TEXT,
 			pr_number INTEGER,
@@ -152,6 +153,9 @@ func (s *Store) migrate() error {
 	if err := s.ensureProjectColumns(); err != nil {
 		return err
 	}
+	if err := s.ensureIssueColumns(); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_projects_repo_path_unique`); err != nil {
 		return err
 	}
@@ -169,6 +173,45 @@ func (s *Store) ensureProjectColumns() error {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *Store) ensureIssueColumns() error {
+	for _, stmt := range []string{
+		`ALTER TABLE issues ADD COLUMN workflow_phase TEXT NOT NULL DEFAULT 'implementation'`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
+	return s.backfillWorkflowPhases()
+}
+
+func (s *Store) backfillWorkflowPhases() error {
+	var applied string
+	err := s.db.QueryRow(`SELECT value FROM store_metadata WHERE key = 'workflow_phase_backfill_v1'`).Scan(&applied)
+	switch {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return err
+	default:
+		if applied == "done" {
+			return nil
+		}
+	}
+
+	if _, err := s.db.Exec(`
+		UPDATE issues
+		SET workflow_phase = CASE
+			WHEN state IN ('done', 'cancelled') THEN 'complete'
+			ELSE 'implementation'
+		END
+		WHERE workflow_phase IS NULL OR workflow_phase = '' OR workflow_phase = 'implementation'`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO store_metadata (key, value) VALUES ('workflow_phase_backfill_v1', 'done')`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -457,9 +500,9 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO issues (id, project_id, epic_id, identifier, title, description, state, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, projectID, epicID, identifier, title, description, StateBacklog, priority, now, now,
+		INSERT INTO issues (id, project_id, epic_id, identifier, title, description, state, workflow_phase, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, projectID, epicID, identifier, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -483,13 +526,16 @@ func (s *Store) GetIssue(id string) (*Issue, error) {
 	var projectID, epicID, branchName, prURL sql.NullString
 
 	err := s.db.QueryRow(`
-		SELECT id, project_id, epic_id, identifier, title, description, state, priority,
+		SELECT id, project_id, epic_id, identifier, title, description, state, workflow_phase, priority,
 		       branch_name, pr_number, pr_url, created_at, updated_at, started_at, completed_at
 		FROM issues WHERE id = ?`, id,
-	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.Title, &i.Description, &i.State, &i.Priority,
+	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
 		&branchName, &prNumber, &prURL, &i.CreatedAt, &i.UpdatedAt, &startedAt, &completedAt)
 	if err != nil {
 		return nil, err
+	}
+	if !i.WorkflowPhase.IsValid() {
+		i.WorkflowPhase = DefaultWorkflowPhaseForState(i.State)
 	}
 
 	if projectID.Valid {
@@ -598,8 +644,15 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 }
 
 func (s *Store) UpdateIssueState(id string, state State) error {
+	return s.UpdateIssueStateAndPhase(id, state, DefaultWorkflowPhaseForState(state))
+}
+
+func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowPhase) error {
 	now := time.Now()
 	var startedAt, completedAt interface{}
+	if !phase.IsValid() {
+		phase = DefaultWorkflowPhaseForState(state)
+	}
 
 	if state == StateInProgress {
 		startedAt = now
@@ -609,14 +662,29 @@ func (s *Store) UpdateIssueState(id string, state State) error {
 	}
 
 	_, err := s.db.Exec(`
-		UPDATE issues SET state = ?, updated_at = ?, started_at = COALESCE(?, started_at), completed_at = COALESCE(?, completed_at)
+		UPDATE issues
+		SET state = ?, workflow_phase = ?, updated_at = ?, started_at = COALESCE(?, started_at), completed_at = COALESCE(?, completed_at)
 		WHERE id = ?`,
-		state, now, startedAt, completedAt, id,
+		state, phase, now, startedAt, completedAt, id,
 	)
 	if err != nil {
 		return err
 	}
-	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state})
+	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase})
+}
+
+func (s *Store) UpdateIssueWorkflowPhase(id string, phase WorkflowPhase) error {
+	if !phase.IsValid() {
+		current, err := s.GetIssue(id)
+		if err != nil {
+			return err
+		}
+		phase = DefaultWorkflowPhaseForState(current.State)
+	}
+	if _, err := s.db.Exec(`UPDATE issues SET workflow_phase = ?, updated_at = ? WHERE id = ?`, phase, time.Now(), id); err != nil {
+		return err
+	}
+	return s.appendChange("issue", id, "phase_changed", map[string]interface{}{"workflow_phase": phase})
 }
 
 func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
@@ -928,7 +996,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	}
 
 	rows, err := s.db.Query(`
-		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.title, i.description, i.state, i.priority,
+		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.title, i.description, i.state, i.workflow_phase, i.priority,
 		       i.branch_name, i.pr_number, i.pr_url, i.created_at, i.updated_at, i.started_at, i.completed_at,
 		       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
@@ -953,11 +1021,14 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		var startedAt, completedAt, lastRun sql.NullTime
 		var projectDesc, epicDesc string
 		if err := rows.Scan(
-			&item.ID, &projectID, &epicID, &item.Identifier, &item.Title, &item.Description, &item.State, &item.Priority,
+			&item.ID, &projectID, &epicID, &item.Identifier, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
 			&branchName, &prNumber, &prURL, &item.CreatedAt, &item.UpdatedAt, &startedAt, &completedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
 			return nil, 0, err
+		}
+		if !item.WorkflowPhase.IsValid() {
+			item.WorkflowPhase = DefaultWorkflowPhaseForState(item.State)
 		}
 		if projectID.Valid {
 			item.ProjectID = projectID.String
@@ -1262,6 +1333,9 @@ func (s *Store) ListRuntimeEvents(since int64, limit int) ([]RuntimeEvent, error
 		}
 		if rawPayload != "" {
 			_ = json.Unmarshal([]byte(rawPayload), &event.Payload)
+		}
+		if event.Payload != nil {
+			event.Phase = asString(event.Payload["phase"])
 		}
 		out = append(out, event)
 	}

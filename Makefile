@@ -1,4 +1,4 @@
-.PHONY: build test dev e2e-real-codex
+.PHONY: build test dev e2e-real-codex e2e-real-codex-phases
 
 build:
 	go build -o ./maestro ./cmd/maestro
@@ -14,3 +14,6 @@ package-npm:
 
 e2e-real-codex:
 	./scripts/e2e_real_codex.sh
+
+e2e-real-codex-phases:
+	./scripts/e2e_real_codex_phases.sh

@@ -104,6 +104,68 @@ func TestBuildTurnPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildTurnPromptUsesPhasePrompt(t *testing.T) {
+	runner, store, manager, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflowContent := `---
+tracker:
+  kind: kanban
+workspace:
+  root: ./workspaces
+hooks:
+  timeout_ms: 1000
+agent:
+  max_concurrent_agents: 2
+  max_turns: 3
+  max_retry_backoff_ms: 10000
+  mode: stdio
+codex:
+  command: cat
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 1000
+  turn_timeout_ms: 10000
+phases:
+  review:
+    enabled: true
+    prompt: |
+      Review {{ issue.identifier }} in {{ phase }}
+  done:
+    enabled: true
+    prompt: |
+      Finalize {{ issue.identifier }} in {{ phase }}
+---
+Implement {{ issue.identifier }} in {{ phase }}
+`
+	if err := os.WriteFile(manager.Path(), []byte(workflowContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := manager.Refresh()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issue, _ := store.CreateIssue("", "", "Phased", "", 0, nil)
+	issue.WorkflowPhase = kanban.WorkflowPhaseReview
+	prompt, err := runner.buildTurnPrompt(workflow, issue, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Review "+issue.Identifier+" in review") {
+		t.Fatalf("expected review prompt, got %q", prompt)
+	}
+
+	issue.WorkflowPhase = kanban.WorkflowPhaseDone
+	prompt, err = runner.buildTurnPrompt(workflow, issue, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Finalize "+issue.Identifier+" in done") {
+		t.Fatalf("expected done prompt, got %q", prompt)
+	}
+}
+
 func TestContinuationPrompt(t *testing.T) {
 	runner, store, manager, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Continue", "", 0, nil)

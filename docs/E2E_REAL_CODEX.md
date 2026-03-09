@@ -14,9 +14,13 @@ This harness exercises the full Maestro loop with the real Codex CLI:
 
 ```bash
 make e2e-real-codex
+make e2e-real-codex-phases
 ```
 
-The target runs [`scripts/e2e_real_codex.sh`](../scripts/e2e_real_codex.sh).
+The targets run:
+
+- [`scripts/e2e_real_codex.sh`](../scripts/e2e_real_codex.sh) for the basic single-pass artifact flow
+- [`scripts/e2e_real_codex_phases.sh`](../scripts/e2e_real_codex_phases.sh) for the implementation/review/done phase flow
 
 ## What It Verifies
 
@@ -31,6 +35,13 @@ The test issues are intentionally deterministic:
 
 - `artifact-one.txt` must contain `maestro e2e ok 1`
 - `artifact-two.txt` must contain `maestro e2e ok 2`
+
+The phase harness verifies two additional deterministic paths:
+
+- one issue must go `implementation -> review -> done -> complete`
+- one issue must go `implementation -> done -> complete` without running review
+- each phase writes a dedicated artifact and appends to a phase log in the expected order
+- restarting `maestro run` cleans up completed workspaces on startup
 
 ## Why It Uses `codex exec`
 

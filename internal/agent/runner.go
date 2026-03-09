@@ -294,6 +294,10 @@ Continuation guidance:
 - If a verification approach was blocked by local tooling or browser issues, switch to another deterministic local check instead of retrying the same path.
 `), turn, workflow.Config.Agent.MaxTurns), nil
 	}
+	phase := issue.WorkflowPhase
+	if !phase.IsValid() {
+		phase = kanban.DefaultWorkflowPhaseForState(issue.State)
+	}
 	ctx := map[string]interface{}{
 		"issue": map[string]interface{}{
 			"id":          issue.ID,
@@ -311,11 +315,12 @@ Continuation guidance:
 			"updated_at":  issue.UpdatedAt.Format(time.RFC3339),
 		},
 		"attempt": nil,
+		"phase":   string(phase),
 	}
 	if attempt > 0 {
 		ctx["attempt"] = attempt
 	}
-	rendered, err := config.RenderLiquidTemplate(workflow.PromptTemplate, ctx)
+	rendered, err := config.RenderLiquidTemplate(promptTemplateForPhase(workflow, phase), ctx)
 	if err != nil {
 		return "", fmt.Errorf("template_render_error: %w", err)
 	}
@@ -324,6 +329,17 @@ Continuation guidance:
 		return strings.TrimSpace(firstTurnExecutionGuidance), nil
 	}
 	return rendered + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance), nil
+}
+
+func promptTemplateForPhase(workflow *config.Workflow, phase kanban.WorkflowPhase) string {
+	switch phase {
+	case kanban.WorkflowPhaseReview:
+		return workflow.Config.Phases.Review.Prompt
+	case kanban.WorkflowPhaseDone:
+		return workflow.Config.Phases.Done.Prompt
+	default:
+		return workflow.PromptTemplate
+	}
 }
 
 func (r *Runner) runHook(parentCtx context.Context, workspacePath, hook, hookName string) error {
