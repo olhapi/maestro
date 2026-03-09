@@ -1,0 +1,96 @@
+package gen
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+)
+
+func isNullJSON(data []byte) bool {
+	return bytes.Equal(bytes.TrimSpace(data), []byte("null"))
+}
+
+func unmarshalStringOrObject[E ~string, O any](data []byte, enumTarget **E, objectTarget **O) error {
+	if isNullJSON(data) {
+		*enumTarget = nil
+		*objectTarget = nil
+		return nil
+	}
+
+	var enumValue E
+	enumErr := json.Unmarshal(data, &enumValue)
+	if enumErr == nil {
+		*enumTarget = &enumValue
+		*objectTarget = nil
+		return nil
+	}
+
+	var objectValue O
+	objectErr := json.Unmarshal(data, &objectValue)
+	if objectErr == nil {
+		*enumTarget = nil
+		*objectTarget = &objectValue
+		return nil
+	}
+
+	return fmt.Errorf("decode union string/object: %w", errors.Join(enumErr, objectErr))
+}
+
+func unmarshalBoolOrString[E ~string](data []byte, boolTarget **bool, enumTarget **E) error {
+	if isNullJSON(data) {
+		*boolTarget = nil
+		*enumTarget = nil
+		return nil
+	}
+
+	var boolValue bool
+	boolErr := json.Unmarshal(data, &boolValue)
+	if boolErr == nil {
+		*boolTarget = &boolValue
+		*enumTarget = nil
+		return nil
+	}
+
+	var enumValue E
+	enumErr := json.Unmarshal(data, &enumValue)
+	if enumErr == nil {
+		*boolTarget = nil
+		*enumTarget = &enumValue
+		return nil
+	}
+
+	return fmt.Errorf("decode union bool/string: %w", errors.Join(boolErr, enumErr))
+}
+
+func (s *PurpleSessionSource) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[SessionSource, PurpleSubAgentSessionSource](data, &s.Enum, &s.PurpleSubAgentSessionSource)
+}
+
+func (s *FluffySessionSource) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[SessionSource, FluffySubAgentSessionSource](data, &s.Enum, &s.FluffySubAgentSessionSource)
+}
+
+func (p *ThreadStartParamsApprovalPolicy) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[ApprovalPolicyEnum, PurpleRejectAskForApproval](data, &p.Enum, &p.PurpleRejectAskForApproval)
+}
+
+func (p *AskForApproval) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[ApprovalPolicyEnum, AskForApprovalRejectAskForApproval](data, &p.Enum, &p.AskForApprovalRejectAskForApproval)
+}
+
+func (p *TurnStartParamsApprovalPolicy) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[ApprovalPolicyEnum, FluffyRejectAskForApproval](data, &p.Enum, &p.FluffyRejectAskForApproval)
+}
+
+func (n *NetworkAccessUnion) UnmarshalJSON(data []byte) error {
+	return unmarshalBoolOrString[NetworkAccess](data, &n.Bool, &n.Enum)
+}
+
+func (s *TentacledSubAgentSource) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[SubAgentSource, PurpleSubAgentSource](data, &s.Enum, &s.PurpleSubAgentSource)
+}
+
+func (s *StickySubAgentSource) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[SubAgentSource, FluffySubAgentSource](data, &s.Enum, &s.FluffySubAgentSource)
+}

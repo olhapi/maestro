@@ -177,3 +177,42 @@ func TestResponseBuildersWireShape(t *testing.T) {
 		t.Fatalf("unexpected content item type: %+v", dynamicResult.ContentItems[0])
 	}
 }
+
+func TestThreadStartResponseDecodesStringSessionSource(t *testing.T) {
+	msg, ok := DecodeMessage(`{"id":2,"result":{"approvalPolicy":"on-request","cwd":"/tmp/work","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess","networkAccess":true},"thread":{"id":"thread-1","cliVersion":"0.111.0","createdAt":1,"cwd":"/tmp/work","ephemeral":false,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":2}}}`)
+	if !ok {
+		t.Fatal("expected decode ok")
+	}
+
+	var result gen.ThreadStartResponse
+	if err := msg.UnmarshalResult(&result); err != nil {
+		t.Fatalf("unmarshal thread/start result: %v", err)
+	}
+	if result.Thread.Source == nil || result.Thread.Source.Enum == nil {
+		t.Fatalf("expected string session source, got %+v", result.Thread.Source)
+	}
+	if *result.Thread.Source.Enum != gen.AppServer {
+		t.Fatalf("unexpected session source: %+v", *result.Thread.Source.Enum)
+	}
+	if result.ApprovalPolicy == nil || result.ApprovalPolicy.Enum == nil || *result.ApprovalPolicy.Enum != gen.OnRequest {
+		t.Fatalf("unexpected approval policy: %+v", result.ApprovalPolicy)
+	}
+}
+
+func TestThreadStartedNotificationDecodesNestedSubAgentSource(t *testing.T) {
+	msg, ok := DecodeMessage(`{"method":"thread/started","params":{"thread":{"id":"thread-2","cliVersion":"0.111.0","createdAt":1,"cwd":"/tmp/work","ephemeral":false,"modelProvider":"openai","preview":"","source":{"subAgent":"review"},"status":{"type":"active"},"turns":[],"updatedAt":2}}}`)
+	if !ok {
+		t.Fatal("expected decode ok")
+	}
+
+	var params gen.ThreadStartedNotification
+	if err := msg.UnmarshalParams(&params); err != nil {
+		t.Fatalf("unmarshal thread/started params: %v", err)
+	}
+	if params.Thread.Source == nil || params.Thread.Source.FluffySubAgentSessionSource == nil || params.Thread.Source.FluffySubAgentSessionSource.SubAgent == nil || params.Thread.Source.FluffySubAgentSessionSource.SubAgent.Enum == nil {
+		t.Fatalf("expected nested sub-agent session source, got %+v", params.Thread.Source)
+	}
+	if *params.Thread.Source.FluffySubAgentSessionSource.SubAgent.Enum != gen.Review {
+		t.Fatalf("unexpected sub-agent source: %+v", *params.Thread.Source.FluffySubAgentSessionSource.SubAgent.Enum)
+	}
+}

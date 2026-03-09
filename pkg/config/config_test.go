@@ -13,8 +13,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Tracker.Kind != TrackerKindKanban {
 		t.Fatalf("expected tracker kind %q, got %q", TrackerKindKanban, cfg.Tracker.Kind)
 	}
-	if cfg.Polling.IntervalMs != 30000 {
-		t.Fatalf("expected poll interval 30000, got %d", cfg.Polling.IntervalMs)
+	if cfg.Polling.IntervalMs != 10000 {
+		t.Fatalf("expected poll interval 10000, got %d", cfg.Polling.IntervalMs)
 	}
 	if cfg.Agent.MaxConcurrentAgents != 3 {
 		t.Fatalf("expected max concurrent 3, got %d", cfg.Agent.MaxConcurrentAgents)
@@ -24,6 +24,12 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Codex.ExpectedVersion != "0.111.0" {
 		t.Fatalf("expected codex expected version 0.111.0, got %q", cfg.Codex.ExpectedVersion)
+	}
+	if cfg.Agent.MaxTurns != 4 || cfg.Agent.MaxRetryBackoffMs != 60000 {
+		t.Fatalf("unexpected agent defaults: %+v", cfg.Agent)
+	}
+	if cfg.Codex.TurnTimeoutMs != 600000 || cfg.Codex.ReadTimeoutMs != 5000 || cfg.Codex.StallTimeoutMs != 60000 {
+		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
 }
 

@@ -569,7 +569,7 @@ func (c *Client) nextLine(ctx context.Context, timeout time.Duration) (string, e
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case <-timer:
-		c.logger.Warn("Codex app-server read timeout", "timeout_ms", timeout.Milliseconds())
+		c.logger.Debug("Codex app-server read timeout", "timeout_ms", timeout.Milliseconds())
 		return "", &RunError{Kind: "read_timeout"}
 	case line, ok := <-c.lines:
 		if !ok {

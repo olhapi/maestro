@@ -141,10 +141,150 @@ func TestIssueExecutionPayloadFallsBackToPersistedDataWithoutProvider(t *testing
 	if payload["runtime_available"] != false || payload["session_source"] != "persisted" {
 		t.Fatalf("unexpected persisted-only payload: %#v", payload)
 	}
+	if payload["active"] != false {
+		t.Fatalf("expected inactive persisted-only payload: %#v", payload)
+	}
 	if payload["failure_class"] != "turn_input_required" {
 		t.Fatalf("unexpected failure class: %#v", payload["failure_class"])
 	}
 	if payload["attempt_number"].(int) != 3 {
 		t.Fatalf("expected persisted attempt number, got %#v", payload["attempt_number"])
+	}
+}
+
+func TestIssueExecutionPayloadMarksStaleRunStartedSnapshotAsInterrupted(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Interrupted issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 12, 5, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-stale-turn-stale",
+			LastEvent:       "turn.started",
+			LastTimestamp:   now,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    2,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["active"] != false || payload["session_source"] != "persisted" {
+		t.Fatalf("unexpected interrupted payload: %#v", payload)
+	}
+	if payload["failure_class"] != "run_interrupted" {
+		t.Fatalf("expected run_interrupted failure class, got %#v", payload["failure_class"])
+	}
+}
+
+func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Recovered issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 12, 10, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-recovered-turn-recovered",
+			LastEvent:       "item.started",
+			LastTimestamp:   now,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	for _, event := range []struct {
+		kind    string
+		attempt int
+		error   string
+	}{
+		{kind: "run_interrupted", attempt: 1, error: "run_interrupted"},
+		{kind: "retry_scheduled", attempt: 2, error: "run_interrupted"},
+		{kind: "run_started", attempt: 2},
+	} {
+		payload := map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+			"attempt":    event.attempt,
+		}
+		if event.error != "" {
+			payload["error"] = event.error
+		}
+		if err := store.AppendRuntimeEvent(event.kind, payload); err != nil {
+			t.Fatalf("AppendRuntimeEvent(%s): %v", event.kind, err)
+		}
+	}
+
+	payload, err := IssueExecutionPayload(store, testProvider{
+		snapshot: observability.Snapshot{
+			Running: []observability.RunningEntry{{
+				IssueID:    issue.ID,
+				Identifier: issue.Identifier,
+				Phase:      "implementation",
+				Attempt:    2,
+			}},
+		},
+		sessions: map[string]interface{}{
+			issue.Identifier: appserver.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				SessionID:       "thread-live-turn-live",
+				LastEvent:       "item.started",
+				LastTimestamp:   now,
+			},
+		},
+	}, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["active"] != true || payload["retry_state"] != "active" {
+		t.Fatalf("expected active recovered payload, got %#v", payload)
+	}
+	if payload["failure_class"] != "" {
+		t.Fatalf("expected cleared failure class for active recovered run, got %#v", payload["failure_class"])
+	}
+	if payload["current_error"] != "" {
+		t.Fatalf("expected cleared current error for active recovered run, got %#v", payload["current_error"])
 	}
 }

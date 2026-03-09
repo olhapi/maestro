@@ -377,6 +377,81 @@ func TestRunBuffersLargeProtocolLines(t *testing.T) {
 	}
 }
 
+func TestRunAcceptsStringThreadSessionSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-5A")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id": 2,
+						"result": map[string]interface{}{
+							"approvalPolicy": "on-request",
+							"cwd":            workspace,
+							"model":          "gpt-5",
+							"modelProvider":  "openai",
+							"sandbox": map[string]interface{}{
+								"type":          "dangerFullAccess",
+								"networkAccess": true,
+							},
+							"thread": map[string]interface{}{
+								"id":            "thread-5a",
+								"cliVersion":    "0.111.0",
+								"createdAt":     1,
+								"cwd":           workspace,
+								"ephemeral":     false,
+								"modelProvider": "openai",
+								"preview":       "",
+								"source":        "appServer",
+								"status":        map[string]interface{}{"type": "idle"},
+								"turns":         []interface{}{},
+								"updatedAt":     2,
+							},
+						},
+					},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{
+						JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-5a"}}},
+					},
+					{
+						JSON: map[string]interface{}{
+							"method": "turn/completed",
+							"params": map[string]interface{}{"threadId": "thread-5a", "turnId": "turn-5a"},
+						},
+					},
+				},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.Title = "ISS-5A: String source"
+	res, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if res.Session == nil || res.Session.SessionID != "thread-5a-turn-5a" {
+		t.Fatalf("unexpected session: %+v", res.Session)
+	}
+}
+
 func nestedMap(m map[string]interface{}, path ...string) (map[string]interface{}, bool) {
 	var cur interface{} = m
 	for _, part := range path {
@@ -471,6 +546,50 @@ func TestRunFailsWhenQuietPeriodExceedsStallTimeout(t *testing.T) {
 	var runErr *RunError
 	if !errors.As(err, &runErr) || runErr.Kind != "stall_timeout" {
 		t.Fatalf("expected stall_timeout, got %v", err)
+	}
+}
+
+func TestRunDoesNotLogReadTimeoutNoiseAtInfo(t *testing.T) {
+	logs := captureLogs(t, slog.LevelInfo)
+
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-7A")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scenario := baseScenario("thread-quiet", "turn-quiet")
+	scenario.Steps[3].WaitForRelease = "complete"
+	scenario.Steps[3].EmitAfterRelease = []fakeappserver.Output{{
+		JSON: map[string]interface{}{
+			"method": "turn/completed",
+			"params": map[string]interface{}{"threadId": "thread-quiet", "turnId": "turn-quiet"},
+		},
+	}}
+	scenario.Steps[3].ExitCode = fakeappserver.Int(0)
+
+	cfg, release := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.Title = "ISS-7A: Quiet logging"
+	cfg.ReadTimeout = 200 * time.Millisecond
+	cfg.TurnTimeout = 2 * time.Second
+	cfg.StallTimeout = 1500 * time.Millisecond
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		release("complete")
+	}()
+
+	_, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	text := logs.String()
+	if strings.Contains(text, "Codex app-server read timeout") {
+		t.Fatalf("expected read timeout polling to stay below info level: %s", text)
+	}
+	if strings.Contains(text, "Codex turn stalled") {
+		t.Fatalf("expected quiet successful turn not to be marked stalled: %s", text)
 	}
 }
 

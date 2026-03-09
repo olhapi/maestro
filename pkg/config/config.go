@@ -108,13 +108,13 @@ func DefaultConfig() Config {
 			ActiveStates:   []string{"ready", "in_progress", "in_review"},
 			TerminalStates: []string{"done", "cancelled"},
 		},
-		Polling:   PollingConfig{IntervalMs: 30000},
+		Polling:   PollingConfig{IntervalMs: 10000},
 		Workspace: WorkspaceConfig{Root: "./workspaces"},
 		Hooks:     HooksConfig{TimeoutMs: 60000},
 		Agent: AgentConfig{
 			MaxConcurrentAgents: 3,
-			MaxTurns:            20,
-			MaxRetryBackoffMs:   300000,
+			MaxTurns:            4,
+			MaxRetryBackoffMs:   60000,
 			Mode:                AgentModeAppServer,
 		},
 		Codex: CodexConfig{
@@ -129,9 +129,9 @@ func DefaultConfig() Config {
 			},
 			ThreadSandbox:     "workspace-write",
 			TurnSandboxPolicy: map[string]interface{}{"type": "workspaceWrite"},
-			TurnTimeoutMs:     3600000,
+			TurnTimeoutMs:     600000,
 			ReadTimeoutMs:     5000,
-			StallTimeoutMs:    300000,
+			StallTimeoutMs:    60000,
 		},
 	}
 }

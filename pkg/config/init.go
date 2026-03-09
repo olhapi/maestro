@@ -126,7 +126,7 @@ tracker:
     - done
     - cancelled
 polling:
-  interval_ms: 30000
+  interval_ms: 10000
 workspace:
   root: %s
 hooks:
@@ -144,8 +144,8 @@ phases:
       Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
 agent:
   max_concurrent_agents: 3
-  max_turns: 20
-  max_retry_backoff_ms: 300000
+  max_turns: 4
+  max_retry_backoff_ms: 60000
   mode: %s
 codex:
   command: %s
@@ -154,9 +154,9 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
-  turn_timeout_ms: 3600000
+  turn_timeout_ms: 600000
   read_timeout_ms: 5000
-  stall_timeout_ms: 300000
+  stall_timeout_ms: 60000
 ---
 
 You are working on issue {{ issue.identifier }}.

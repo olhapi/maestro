@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 
 import {
@@ -41,18 +41,20 @@ export function PageHeader({
         <Breadcrumb>
           <BreadcrumbList>
             {crumbs.map((crumb, index) => (
-              <BreadcrumbItem key={`${crumb.label}-${index}`}>
-                {crumb.to ? (
-                  <BreadcrumbLink asChild>
-                    <Link to={crumb.to} params={crumb.params}>
-                      {crumb.label}
-                    </Link>
-                  </BreadcrumbLink>
-                ) : (
-                  <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
-                )}
+              <Fragment key={`${crumb.label}-${index}`}>
+                <BreadcrumbItem>
+                  {crumb.to ? (
+                    <BreadcrumbLink asChild>
+                      <Link to={crumb.to} params={crumb.params}>
+                        {crumb.label}
+                      </Link>
+                    </BreadcrumbLink>
+                  ) : (
+                    <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+                  )}
+                </BreadcrumbItem>
                 {index < crumbs.length - 1 ? <BreadcrumbSeparator /> : null}
-              </BreadcrumbItem>
+              </Fragment>
             ))}
           </BreadcrumbList>
         </Breadcrumb>

@@ -75,22 +75,8 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		phase = persistedSession.Phase
 	}
 
-	currentError := ""
-	switch {
-	case retry != nil && strings.TrimSpace(retry.Error) != "":
-		currentError = retry.Error
-	case persistedSession != nil && strings.TrimSpace(persistedSession.Error) != "":
-		currentError = persistedSession.Error
-	default:
-		for i := len(events) - 1; i >= 0; i-- {
-			if strings.TrimSpace(events[i].Error) != "" {
-				currentError = events[i].Error
-				break
-			}
-		}
-	}
-
-	failureClass := deriveFailureClass(retry, persistedSession, events)
+	currentError := deriveCurrentError(running != nil, retry, persistedSession, events)
+	failureClass := deriveFailureClass(running != nil, retry, persistedSession, events)
 	retryState := "none"
 	if running != nil {
 		retryState = "active"
@@ -171,7 +157,18 @@ func findLiveSession(all map[string]interface{}, identifier string) (appserver.S
 	}
 }
 
-func deriveFailureClass(retry *observability.RetryEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
+func deriveFailureClass(active bool, retry *observability.RetryEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
+	if active {
+		return ""
+	}
+	if !active && retry == nil {
+		if persisted != nil && strings.TrimSpace(persisted.RunKind) == "run_started" {
+			return "run_interrupted"
+		}
+		if len(events) > 0 && events[len(events)-1].Kind == "run_started" {
+			return "run_interrupted"
+		}
+	}
 	switch {
 	case retry != nil:
 		if class := normalizeFailureClass(retry.Error); class != "" {
@@ -191,6 +188,25 @@ func deriveFailureClass(retry *observability.RetryEntry, persisted *kanban.Execu
 		}
 		if class := normalizeFailureClass(events[i].Kind); class != "" {
 			return class
+		}
+	}
+	return ""
+}
+
+func deriveCurrentError(active bool, retry *observability.RetryEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
+	if active {
+		return ""
+	}
+	switch {
+	case retry != nil && strings.TrimSpace(retry.Error) != "":
+		return retry.Error
+	case persisted != nil && strings.TrimSpace(persisted.Error) != "":
+		return persisted.Error
+	default:
+		for i := len(events) - 1; i >= 0; i-- {
+			if strings.TrimSpace(events[i].Error) != "" {
+				return events[i].Error
+			}
 		}
 	}
 	return ""

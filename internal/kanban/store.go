@@ -298,20 +298,24 @@ func hydrateProject(project *Project) {
 	}
 	project.RepoPath = strings.TrimSpace(project.RepoPath)
 	project.WorkflowPath = strings.TrimSpace(project.WorkflowPath)
+	project.DispatchError = ""
 	if project.RepoPath != "" && project.WorkflowPath == "" {
 		project.WorkflowPath = filepath.Join(project.RepoPath, "WORKFLOW.md")
 	}
 	if project.RepoPath == "" {
 		project.OrchestrationReady = false
+		project.DispatchReady = false
 		return
 	}
 	repoInfo, repoErr := os.Stat(project.RepoPath)
 	if repoErr != nil || !repoInfo.IsDir() {
 		project.OrchestrationReady = false
+		project.DispatchReady = false
 		return
 	}
 	workflowInfo, workflowErr := os.Stat(project.WorkflowPath)
 	project.OrchestrationReady = workflowErr == nil && !workflowInfo.IsDir()
+	project.DispatchReady = project.OrchestrationReady
 }
 
 // Project operations
@@ -1526,7 +1530,7 @@ func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEven
 		SELECT seq, kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json
 		FROM runtime_events
 		WHERE issue_id = ?
-			AND kind IN ('run_started', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'manual_retry_requested', 'run_completed')
+			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'manual_retry_requested', 'run_completed')
 		ORDER BY seq DESC
 		LIMIT ?`, issueID, limit)
 	if err != nil {

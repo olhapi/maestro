@@ -206,7 +206,7 @@ func waitForExecutionSnapshot(t *testing.T, store *kanban.Store, issueID string,
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		snapshot, err := store.GetIssueExecutionSession(issueID)
-		if err == nil {
+		if err == nil && snapshot.RunKind != "run_started" {
 			return snapshot
 		}
 		time.Sleep(10 * time.Millisecond)

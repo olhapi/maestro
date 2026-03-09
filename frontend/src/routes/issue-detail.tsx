@@ -32,7 +32,15 @@ export function IssueDetailPage() {
   const execution = useQuery({
     queryKey: ['issue-execution', identifier],
     queryFn: () => api.getIssueExecution(identifier),
-    refetchInterval: (query) => (query.state.data?.active ? 1500 : false),
+    refetchInterval: (query) => {
+      if (query.state.data?.active) {
+        return 1500
+      }
+      if (query.state.data?.retry_state === 'scheduled') {
+        return 5000
+      }
+      return false
+    },
     refetchIntervalInBackground: true,
   })
 
@@ -72,6 +80,23 @@ export function IssueDetailPage() {
   const session = execution.data.session
   const sessionHistory = session?.history?.slice(-8) ?? []
   const runtimeEvents = execution.data.runtime_events.slice(-8)
+  const sessionStatusLabel = execution.data.failure_class === 'run_interrupted'
+    ? 'Interrupted'
+    : execution.data.active
+      ? 'Active session'
+      : 'Idle'
+  const sessionHeadline = execution.data.failure_class === 'run_interrupted'
+    ? 'Last run interrupted'
+    : session?.last_event || 'No app-server session recorded'
+  const sessionMessage = (() => {
+    if (execution.data.session_source === 'persisted' && session?.last_timestamp) {
+      return `Last session update ${formatRelativeTime(session.last_timestamp)}`
+    }
+    if (execution.data.failure_class === 'run_interrupted') {
+      return 'The last known execution ended without a live completion signal.'
+    }
+    return session?.last_message || 'No message'
+  })()
 
   return (
     <div className="grid gap-5">
@@ -208,7 +233,7 @@ export function IssueDetailPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-2">
-                <Badge className="border-white/10 bg-white/5 text-white">{execution.data.active ? 'Active session' : 'Idle'}</Badge>
+                <Badge className="border-white/10 bg-white/5 text-white">{sessionStatusLabel}</Badge>
                 <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.data.retry_state)}</Badge>
                 <Badge className="border-white/10 bg-white/5 text-white">Attempt {execution.data.attempt_number || 0}</Badge>
                 <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.data.phase || 'implementation')}</Badge>
@@ -233,8 +258,8 @@ export function IssueDetailPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-sm text-[var(--muted-foreground)]">Session snapshot</p>
-                    <p className="mt-2 font-medium text-white">{session?.last_event || 'No app-server session recorded'}</p>
-                    <p className="mt-2 text-sm text-[var(--muted-foreground)]">{session?.last_message || 'No message'}</p>
+                    <p className="mt-2 font-medium text-white">{sessionHeadline}</p>
+                    <p className="mt-2 text-sm text-[var(--muted-foreground)]">{sessionMessage}</p>
                   </div>
                   <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.data.session_source)}</Badge>
                 </div>

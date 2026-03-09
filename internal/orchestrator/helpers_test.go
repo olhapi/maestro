@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/olhapi/maestro/internal/agent"
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -139,6 +140,230 @@ func TestProcessRetriesAndRunLoopHelpers(t *testing.T) {
 	}
 	if orch.lastTickAt.IsZero() {
 		t.Fatal("expected Run to execute at least one tick")
+	}
+}
+
+func TestStartRunPersistsExecutionSessionImmediately(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	runner := newRetryTestRunner()
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Immediate snapshot", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := waitForRunCall(t, runner.runCalls, time.Second); got != issue.Identifier {
+		t.Fatalf("expected run call for %s, got %s", issue.Identifier, got)
+	}
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "run_started" || snapshot.Phase != "implementation" || snapshot.Attempt != 0 {
+		t.Fatalf("unexpected snapshot metadata: %#v", snapshot)
+	}
+	if snapshot.AppSession.IssueID != issue.ID || snapshot.AppSession.IssueIdentifier != issue.Identifier {
+		t.Fatalf("expected issue metadata in snapshot: %#v", snapshot.AppSession)
+	}
+
+	close(runner.release)
+	waitForNoRunning(t, orch, time.Second)
+}
+
+func TestUpdateLiveSessionPersistsWhileRunIsActive(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	runner := newRetryTestRunner()
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Live snapshot", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	waitForRunCall(t, runner.runCalls, time.Second)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		SessionID:     "thread-live-turn-live",
+		ThreadID:      "thread-live",
+		TurnID:        "turn-live",
+		LastEvent:     "turn.started",
+		LastTimestamp: now,
+		LastMessage:   "Working",
+	})
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "run_started" || snapshot.AppSession.SessionID != "thread-live-turn-live" {
+		t.Fatalf("unexpected live snapshot payload: %#v", snapshot)
+	}
+	if snapshot.AppSession.LastEvent != "turn.started" || snapshot.AppSession.LastMessage != "Working" {
+		t.Fatalf("expected latest session fields to persist: %#v", snapshot.AppSession)
+	}
+
+	close(runner.release)
+	waitForNoRunning(t, orch, time.Second)
+}
+
+func TestReconcileRecoversOrphanedRunWithImmediateRetry(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+
+	issue, err := store.CreateIssue("", "", "Orphaned retry", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-stale-turn-stale",
+			LastEvent:       "turn.started",
+			LastTimestamp:   now,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    2,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected orphaned run retry to be scheduled")
+	}
+	if retry.Attempt != 3 || retry.Phase != "implementation" || retry.Error != "run_interrupted" || retry.DelayType != "failure" {
+		t.Fatalf("unexpected retry payload: %+v", retry)
+	}
+	if retry.DueAt.After(time.Now().UTC().Add(2 * time.Second)) {
+		t.Fatalf("expected immediate retry scheduling, got due_at=%v", retry.DueAt)
+	}
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" {
+		t.Fatalf("expected interrupted snapshot, got %#v", snapshot)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	foundInterrupted := false
+	for _, event := range events {
+		if event.Kind == "run_interrupted" {
+			foundInterrupted = true
+			break
+		}
+	}
+	if !foundInterrupted {
+		t.Fatalf("expected run_interrupted event in %#v", events)
+	}
+}
+
+func TestReconcileRecoversBlockedOrphanWithoutRetry(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+
+	blocker, err := store.CreateIssue("", "", "Blocking issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+
+	issue, err := store.CreateIssue("", "", "Blocked orphan", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState blocked: %v", err)
+	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"blocked_by": []string{blocker.Identifier}}); err != nil {
+		t.Fatalf("UpdateIssue blocked_by: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-blocked-turn-stale",
+			LastEvent:       "turn.started",
+			LastTimestamp:   now,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    1,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	_, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if ok {
+		t.Fatal("expected blocked orphan not to schedule retry")
+	}
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" {
+		t.Fatalf("expected interrupted snapshot without retry, got %#v", snapshot)
 	}
 }
 
