@@ -372,7 +372,7 @@ func (s *Store) UpdateProject(id, name, description, repoPath, workflowPath stri
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE projects SET name = ?, description = ?, repo_path = ?, workflow_path = ?, updated_at = ?
 		WHERE id = ?`,
 		name, description, repoPath, workflowPath, time.Now(), id,
@@ -380,13 +380,19 @@ func (s *Store) UpdateProject(id, name, description, repoPath, workflowPath stri
 	if err != nil {
 		return err
 	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("project", id)
+	}
 	return s.appendChange("project", id, "updated", map[string]interface{}{"name": name, "repo_path": repoPath})
 }
 
 func (s *Store) DeleteProject(id string) error {
-	_, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
+	res, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
 		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("project", id)
 	}
 	return s.appendChange("project", id, "deleted", nil)
 }
@@ -394,6 +400,15 @@ func (s *Store) DeleteProject(id string) error {
 // Epic operations
 
 func (s *Store) CreateEpic(projectID, name, description string) (*Epic, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID != "" {
+		if _, err := s.GetProject(projectID); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, notFoundError("project", projectID)
+			}
+			return nil, err
+		}
+	}
 	now := time.Now()
 	id := generateID("epic")
 
@@ -451,7 +466,16 @@ func (s *Store) GetEpic(id string) (*Epic, error) {
 }
 
 func (s *Store) UpdateEpic(id, projectID, name, description string) error {
-	_, err := s.db.Exec(`
+	projectID = strings.TrimSpace(projectID)
+	if projectID != "" {
+		if _, err := s.GetProject(projectID); err != nil {
+			if err == sql.ErrNoRows {
+				return notFoundError("project", projectID)
+			}
+			return err
+		}
+	}
+	res, err := s.db.Exec(`
 		UPDATE epics SET project_id = ?, name = ?, description = ?, updated_at = ?
 		WHERE id = ?`,
 		projectID, name, description, time.Now(), id,
@@ -459,13 +483,19 @@ func (s *Store) UpdateEpic(id, projectID, name, description string) error {
 	if err != nil {
 		return err
 	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("epic", id)
+	}
 	return s.appendChange("epic", id, "updated", map[string]interface{}{"project_id": projectID, "name": name})
 }
 
 func (s *Store) DeleteEpic(id string) error {
-	_, err := s.db.Exec(`DELETE FROM epics WHERE id = ?`, id)
+	res, err := s.db.Exec(`DELETE FROM epics WHERE id = ?`, id)
 	if err != nil {
 		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("epic", id)
 	}
 	return s.appendChange("epic", id, "deleted", nil)
 }
@@ -502,7 +532,84 @@ func (s *Store) generateIdentifier(projectID string) (string, error) {
 	return fmt.Sprintf("%s-%d", prefix, counter+1), nil
 }
 
+func (s *Store) resolveIssueAssociations(projectID, epicID string) (string, string, error) {
+	projectID = strings.TrimSpace(projectID)
+	epicID = strings.TrimSpace(epicID)
+
+	if epicID != "" {
+		epic, err := s.GetEpic(epicID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", "", notFoundError("epic", epicID)
+			}
+			return "", "", err
+		}
+		if projectID == "" {
+			projectID = epic.ProjectID
+		} else if projectID != epic.ProjectID {
+			return "", "", validationErrorf("epic %s belongs to project %s, not %s", epicID, epic.ProjectID, projectID)
+		}
+	}
+
+	if projectID != "" {
+		if _, err := s.GetProject(projectID); err != nil {
+			if err == sql.ErrNoRows {
+				return "", "", notFoundError("project", projectID)
+			}
+			return "", "", err
+		}
+	}
+
+	return projectID, epicID, nil
+}
+
+func (s *Store) resolveIssueUpdateAssociations(issue *Issue, updates map[string]interface{}) error {
+	if issue == nil {
+		return validationErrorf("issue is required")
+	}
+
+	projectID := issue.ProjectID
+	epicID := issue.EpicID
+	projectSpecified := false
+	epicSpecified := false
+
+	if raw, ok := updates["project_id"]; ok {
+		projectSpecified = true
+		projectID, _ = raw.(string)
+		projectID = strings.TrimSpace(projectID)
+	}
+	if raw, ok := updates["epic_id"]; ok {
+		epicSpecified = true
+		epicID, _ = raw.(string)
+		epicID = strings.TrimSpace(epicID)
+	}
+
+	if projectSpecified && projectID == "" && !epicSpecified {
+		epicID = ""
+		epicSpecified = true
+	}
+	if projectSpecified && projectID == "" && epicSpecified && epicID != "" {
+		return validationErrorf("cannot set epic without a project")
+	}
+
+	resolvedProjectID, resolvedEpicID, err := s.resolveIssueAssociations(projectID, epicID)
+	if err != nil {
+		return err
+	}
+	if projectSpecified || resolvedProjectID != issue.ProjectID || (projectSpecified && resolvedProjectID == "") {
+		updates["project_id"] = resolvedProjectID
+	}
+	if epicSpecified || resolvedEpicID != issue.EpicID || (projectSpecified && resolvedProjectID == "") {
+		updates["epic_id"] = resolvedEpicID
+	}
+	return nil
+}
+
 func (s *Store) CreateIssue(projectID, epicID, title, description string, priority int, labels []string) (*Issue, error) {
+	projectID, epicID, err := s.resolveIssueAssociations(projectID, epicID)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	id := generateID("iss")
 
@@ -660,6 +767,9 @@ func (s *Store) UpdateIssueState(id string, state State) error {
 }
 
 func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowPhase) error {
+	if !state.IsValid() {
+		return invalidStateError(state)
+	}
 	now := time.Now()
 	var startedAt, completedAt interface{}
 	if !phase.IsValid() {
@@ -673,7 +783,7 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 		completedAt = now
 	}
 
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE issues
 		SET state = ?, workflow_phase = ?, updated_at = ?, started_at = COALESCE(?, started_at), completed_at = COALESCE(?, completed_at)
 		WHERE id = ?`,
@@ -681,6 +791,9 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 	)
 	if err != nil {
 		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
 	}
 	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase})
 }
@@ -693,13 +806,27 @@ func (s *Store) UpdateIssueWorkflowPhase(id string, phase WorkflowPhase) error {
 		}
 		phase = DefaultWorkflowPhaseForState(current.State)
 	}
-	if _, err := s.db.Exec(`UPDATE issues SET workflow_phase = ?, updated_at = ? WHERE id = ?`, phase, time.Now(), id); err != nil {
+	res, err := s.db.Exec(`UPDATE issues SET workflow_phase = ?, updated_at = ? WHERE id = ?`, phase, time.Now(), id)
+	if err != nil {
 		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
 	}
 	return s.appendChange("issue", id, "phase_changed", map[string]interface{}{"workflow_phase": phase})
 }
 
 func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
+	current, err := s.GetIssue(id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return notFoundError("issue", id)
+		}
+		return err
+	}
+	if err := s.resolveIssueUpdateAssociations(current, updates); err != nil {
+		return err
+	}
 	now := time.Now()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -751,8 +878,12 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	query += " WHERE id = ?"
 	args = append(args, id)
 
-	if _, err := tx.Exec(query, args...); err != nil {
+	res, err := tx.Exec(query, args...)
+	if err != nil {
 		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
 	}
 
 	// Handle labels separately
@@ -814,9 +945,12 @@ func (s *Store) DeleteIssue(id string) error {
 	_, _ = s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id)
-	_, err := s.db.Exec(`DELETE FROM issues WHERE id = ?`, id)
+	res, err := s.db.Exec(`DELETE FROM issues WHERE id = ?`, id)
 	if err != nil {
 		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
 	}
 	return s.appendChange("issue", id, "deleted", nil)
 }
@@ -975,6 +1109,10 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		where = append(where, "i.project_id = ?")
 		args = append(args, query.ProjectID)
 	}
+	if query.ProjectName != "" {
+		where = append(where, "p.name = ? COLLATE NOCASE")
+		args = append(args, query.ProjectName)
+	}
 	if query.EpicID != "" {
 		where = append(where, "i.epic_id = ?")
 		args = append(args, query.EpicID)
@@ -988,10 +1126,17 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		needle := "%" + query.Search + "%"
 		args = append(args, needle, needle, needle)
 	}
+	if query.Blocked != nil {
+		if *query.Blocked {
+			where = append(where, "EXISTS (SELECT 1 FROM issue_blockers b WHERE b.issue_id = i.id)")
+		} else {
+			where = append(where, "NOT EXISTS (SELECT 1 FROM issue_blockers b WHERE b.issue_id = i.id)")
+		}
+	}
 
 	baseWhere := strings.Join(where, " AND ")
 	var total int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM issues i WHERE `+baseWhere, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM issues i LEFT JOIN projects p ON p.id = i.project_id WHERE `+baseWhere, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 

@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,23 +16,40 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
-func TestParseGlobalOptions(t *testing.T) {
-	opts, remaining, err := parseGlobalOptions([]string{"run", "--log-level", "debug", "--db", "./db.sqlite"})
-	if err != nil {
-		t.Fatalf("parseGlobalOptions failed: %v", err)
-	}
-	if opts.logLevel != slog.LevelDebug || opts.logLevelName != "debug" {
-		t.Fatalf("unexpected global options: %+v", opts)
-	}
-	if got := strings.Join(remaining, " "); got != "run --db ./db.sqlite" {
-		t.Fatalf("unexpected remaining args: %q", got)
-	}
+func runCLI(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := execute(args, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
 }
 
-func TestParseGlobalOptionsRejectsInvalidLevel(t *testing.T) {
-	if _, _, err := parseGlobalOptions([]string{"run", "--log-level", "verbose"}); err == nil {
-		t.Fatal("expected invalid log level error")
+func setupRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("---\ntracker:\n  kind: kanban\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	return repo
+}
+
+func setupProjectAndIssue(t *testing.T) (dbPath string, repoPath string, project *kanban.Project, issue *kanban.Issue) {
+	t.Helper()
+	dbPath = filepath.Join(t.TempDir(), "maestro.db")
+	repoPath = setupRepo(t)
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	project, err = store.CreateProject("Platform", "", repoPath, filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	issue, err = store.CreateIssue(project.ID, "", "Ship tests", "", 1, []string{"smoke"})
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	return dbPath, repoPath, project, issue
 }
 
 func TestParseLogLevelVariants(t *testing.T) {
@@ -51,32 +71,6 @@ func TestParseLogLevelVariants(t *testing.T) {
 		if level != tc.level || name != tc.name {
 			t.Fatalf("parseLogLevel(%q) = (%v, %q), want (%v, %q)", tc.raw, level, name, tc.level, tc.name)
 		}
-	}
-}
-
-func TestParseRunOptions(t *testing.T) {
-	opts := parseRunOptions([]string{
-		"--workflow", "./custom.md",
-		"--extensions", "./ext.json",
-		"--db", "./db.sqlite",
-		"--logs-root", "./logs",
-		"--port", "8787",
-		"--log-max-bytes", "1234",
-		"--log-max-files", "9",
-		guardrailsAcknowledgementFlag,
-		"/repo/path",
-	})
-	if opts.repoPath != "/repo/path" {
-		t.Fatalf("unexpected repo path: %+v", opts)
-	}
-	if opts.workflowPath != "./custom.md" || opts.extensionsFile != "./ext.json" {
-		t.Fatalf("unexpected workflow/extensions options: %+v", opts)
-	}
-	if !opts.acknowledgedUnsafe {
-		t.Fatal("expected ack flag to be parsed")
-	}
-	if opts.logMaxBytes != 1234 || opts.logMaxFiles != 9 {
-		t.Fatalf("unexpected log rotation settings: %+v", opts)
 	}
 }
 
@@ -151,220 +145,286 @@ func TestReleaseBuildReportsInjectedVersion(t *testing.T) {
 	}
 }
 
-func TestCommandHelpersSmoke(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "maestro.db")
-	repoPath := t.TempDir()
-
-	var workflowOut, workflowErr bytes.Buffer
-	if code := workflowCommand([]string{"init", repoPath}, bytes.NewBuffer(nil), &workflowOut, &workflowErr); code != 0 {
-		t.Fatalf("workflowCommand failed: code=%d stderr=%s", code, workflowErr.String())
+func TestScopedHelpCommands(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"issue", "--help"}, want: "Manage issues"},
+		{args: []string{"project", "--help"}, want: "Manage projects"},
+		{args: []string{"workflow", "--help"}, want: "Manage WORKFLOW.md files"},
 	}
-	if _, err := os.Stat(filepath.Join(repoPath, "WORKFLOW.md")); err != nil {
-		t.Fatalf("expected workflow file: %v", err)
-	}
-
-	var projectCreate bytes.Buffer
-	if code := projectCommand([]string{"create", "Platform", "--repo", repoPath, "--workflow", filepath.Join(repoPath, "WORKFLOW.md"), "--db", dbPath}, &projectCreate); code != 0 {
-		t.Fatalf("project create failed: %s", projectCreate.String())
-	}
-
-	store, err := kanban.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-	projects, err := store.ListProjects()
-	if err != nil || len(projects) != 1 {
-		t.Fatalf("expected project in db: err=%v projects=%v", err, projects)
-	}
-	projectID := projects[0].ID
-
-	var issueCreate bytes.Buffer
-	if code := issueCommand([]string{"create", "Ship coverage", "--project", projectID, "--priority", "2", "--labels", "test,smoke", "--db", dbPath}, &issueCreate); code != 0 {
-		t.Fatalf("issue create failed: %s", issueCreate.String())
-	}
-	identifier := strings.Fields(issueCreate.String())[2]
-	identifier = strings.TrimSuffix(identifier, ":")
-
-	var issueList bytes.Buffer
-	if code := issueCommand([]string{"list", "--project", projectID, "--db", dbPath}, &issueList); code != 0 {
-		t.Fatalf("issue list failed: %s", issueList.String())
-	}
-	if !strings.Contains(issueList.String(), identifier) {
-		t.Fatalf("expected identifier %s in list output %q", identifier, issueList.String())
-	}
-
-	var issueShow bytes.Buffer
-	if code := issueCommand([]string{"show", identifier, "--db", dbPath}, &issueShow); code != 0 {
-		t.Fatalf("issue show failed: %s", issueShow.String())
-	}
-	if !strings.Contains(issueShow.String(), "Identifier:  "+identifier) {
-		t.Fatalf("unexpected issue show output: %q", issueShow.String())
-	}
-
-	var issueMove bytes.Buffer
-	if code := issueCommand([]string{"move", identifier, "in_progress", "--db", dbPath}, &issueMove); code != 0 {
-		t.Fatalf("issue move failed: %s", issueMove.String())
-	}
-
-	var issueUpdate bytes.Buffer
-	if code := issueCommand([]string{"update", identifier, "--title", "Ship more coverage", "--desc", "Updated", "--pr", "17", "https://example.com/pr/17", "--db", dbPath}, &issueUpdate); code != 0 {
-		t.Fatalf("issue update failed: %s", issueUpdate.String())
-	}
-
-	blocker, err := store.CreateIssue(projectID, "", "Blocker", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue blocker: %v", err)
-	}
-	var issueBlock bytes.Buffer
-	if code := issueCommand([]string{"block", identifier, blocker.Identifier, "--db", dbPath}, &issueBlock); code != 0 {
-		t.Fatalf("issue block failed: %s", issueBlock.String())
-	}
-
-	var boardOut bytes.Buffer
-	if code := boardCommand([]string{"--db", dbPath}, &boardOut); code != 0 {
-		t.Fatalf("board command failed: %s", boardOut.String())
-	}
-	if !strings.Contains(boardOut.String(), "MAESTRO KANBAN") {
-		t.Fatalf("unexpected board output: %q", boardOut.String())
-	}
-
-	var statusJSON bytes.Buffer
-	if code := statusCommand([]string{"--db", dbPath, "--json"}, &statusJSON); code != 0 {
-		t.Fatalf("status json failed: %s", statusJSON.String())
-	}
-	if !strings.Contains(statusJSON.String(), "\"projects\":1") {
-		t.Fatalf("unexpected status json: %q", statusJSON.String())
-	}
-
-	var statusDashboard bytes.Buffer
-	if code := statusCommand([]string{"--dashboard", "--dashboard-url", "http://127.0.0.1:8787"}, &statusDashboard); code != 0 {
-		t.Fatalf("status dashboard failed: %s", statusDashboard.String())
-	}
-	if !strings.Contains(strings.ToLower(statusDashboard.String()), "dashboard") {
-		t.Fatalf("unexpected dashboard output: %q", statusDashboard.String())
-	}
-
-	var verifyOut bytes.Buffer
-	_ = verifyCommand([]string{"--db", dbPath, "--repo", repoPath, "--json"}, &verifyOut)
-	if !strings.Contains(verifyOut.String(), "\"checks\"") {
-		t.Fatalf("unexpected verify output: %q", verifyOut.String())
-	}
-
-	var specOut bytes.Buffer
-	_ = specCheckCommand([]string{"--repo", repoPath, "--json"}, &specOut)
-	if !strings.Contains(specOut.String(), "\"checks\"") {
-		t.Fatalf("unexpected spec-check output: %q", specOut.String())
-	}
-
-	var issueDelete bytes.Buffer
-	if code := issueCommand([]string{"delete", identifier, "--db", dbPath}, &issueDelete); code != 0 {
-		t.Fatalf("issue delete failed: %s", issueDelete.String())
-	}
-
-	var projectDelete bytes.Buffer
-	if code := projectCommand([]string{"delete", projectID, "--db", dbPath}, &projectDelete); code != 0 {
-		t.Fatalf("project delete failed: %s", projectDelete.String())
+	for _, tc := range tests {
+		code, stdout, stderr := runCLI(t, tc.args...)
+		if code != 0 {
+			t.Fatalf("%v returned code %d stderr=%s", tc.args, code, stderr)
+		}
+		if !strings.Contains(stdout, tc.want) {
+			t.Fatalf("%v missing %q in %q", tc.args, tc.want, stdout)
+		}
 	}
 }
 
-func TestCommandHelpersErrorPaths(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "maestro.db")
-	repoPath := t.TempDir()
-
-	store, err := kanban.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	project, err := store.CreateProject("Platform", "", repoPath, "")
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	issue, err := store.CreateIssue(project.ID, "", "Ship tests", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
-
+func TestFlagErrorsAndUnknownFlags(t *testing.T) {
 	tests := []struct {
-		name string
-		run  func(*bytes.Buffer) int
+		args []string
 		want string
 	}{
-		{
-			name: "workflow unknown",
-			run: func(buf *bytes.Buffer) int {
-				return workflowCommand([]string{"unknown"}, bytes.NewBuffer(nil), buf, buf)
-			},
-			want: "Unknown workflow command",
-		},
-		{
-			name: "issue unknown",
-			run: func(buf *bytes.Buffer) int {
-				return issueCommand([]string{"unknown", "--db", dbPath}, buf)
-			},
-			want: "Unknown command",
-		},
-		{
-			name: "issue show missing",
-			run: func(buf *bytes.Buffer) int {
-				return issueCommand([]string{"show", "ISS-404", "--db", dbPath}, buf)
-			},
-			want: "Issue not found",
-		},
-		{
-			name: "issue move usage",
-			run: func(buf *bytes.Buffer) int {
-				return issueCommand([]string{"move", issue.Identifier, "--db", dbPath}, buf)
-			},
-			want: "Usage: maestro issue move",
-		},
-		{
-			name: "project unknown",
-			run: func(buf *bytes.Buffer) int {
-				return projectCommand([]string{"unknown", "--db", dbPath}, buf)
-			},
-			want: "Unknown command",
-		},
-		{
-			name: "project delete usage",
-			run: func(buf *bytes.Buffer) int {
-				return projectCommand([]string{"delete", "--db", dbPath}, buf)
-			},
-			want: "Usage: maestro project delete",
-		},
-		{
-			name: "project create missing repo",
-			run: func(buf *bytes.Buffer) int {
-				return projectCommand([]string{"create", "No Repo", "--db", dbPath}, buf)
-			},
-			want: "--repo is required",
-		},
-		{
-			name: "verify text",
-			run: func(buf *bytes.Buffer) int {
-				return verifyCommand([]string{"--db", dbPath, "--repo", repoPath}, buf)
-			},
-			want: "Verification",
-		},
-		{
-			name: "spec text",
-			run: func(buf *bytes.Buffer) int {
-				return specCheckCommand([]string{"--repo", repoPath}, buf)
-			},
-			want: "Spec Check",
-		},
+		{args: []string{"issue", "create", "hello", "--project"}, want: "flag needs an argument"},
+		{args: []string{"issue", "update", "ISS-1", "--labels"}, want: "flag needs an argument"},
+		{args: []string{"project", "create", "demo", "--repo"}, want: "flag needs an argument"},
+		{args: []string{"issue", "update", "ISS-1", "--unsupported"}, want: "unknown flag"},
+	}
+	for _, tc := range tests {
+		code, _, stderr := runCLI(t, tc.args...)
+		if code != exitCodeUsage {
+			t.Fatalf("%v returned code %d, want %d", tc.args, code, exitCodeUsage)
+		}
+		if !strings.Contains(strings.ToLower(stderr), strings.ToLower(tc.want)) {
+			t.Fatalf("%v missing %q in %q", tc.args, tc.want, stderr)
+		}
+	}
+}
+
+func TestIssueStateValidationAndAliases(t *testing.T) {
+	dbPath, _, _, issue := setupProjectAndIssue(t)
+	code, _, stderr := runCLI(t, "--db", dbPath, "issue", "mv", issue.Identifier, "invalid")
+	if code != exitCodeUsage {
+		t.Fatalf("expected usage exit code, got %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "invalid state") {
+		t.Fatalf("expected invalid state error, got %q", stderr)
 	}
 
-	for _, tc := range tests {
-		var buf bytes.Buffer
-		code := tc.run(&buf)
-		if code == 0 && strings.Contains(tc.want, "Unknown") {
-			t.Fatalf("%s: expected non-zero exit", tc.name)
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "issue", "ls", "--quiet")
+	if code != 0 {
+		t.Fatalf("issue ls failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, issue.Identifier) {
+		t.Fatalf("issue ls output missing identifier: %q", stdout)
+	}
+}
+
+func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := setupRepo(t)
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "project", "create", "Platform", "--repo", repoPath, "--json")
+	if code != 0 {
+		t.Fatalf("project create failed: %d stderr=%s", code, stderr)
+	}
+	var project kanban.Project
+	if err := json.Unmarshal([]byte(stdout), &project); err != nil {
+		t.Fatalf("decode project: %v\n%s", err, stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "epic", "create", "CLI Overhaul", "--project", project.ID, "--json")
+	if code != 0 {
+		t.Fatalf("epic create failed: %d stderr=%s", code, stderr)
+	}
+	var epic kanban.Epic
+	if err := json.Unmarshal([]byte(stdout), &epic); err != nil {
+		t.Fatalf("decode epic: %v\n%s", err, stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "create", "Ship coverage", "--project", project.ID, "--epic", epic.ID, "--labels", "test,smoke", "--priority", "2", "--json")
+	if code != 0 {
+		t.Fatalf("issue create failed: %d stderr=%s", code, stderr)
+	}
+	var created kanban.IssueDetail
+	if err := json.Unmarshal([]byte(stdout), &created); err != nil {
+		t.Fatalf("decode issue create: %v\n%s", err, stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", created.Identifier, "--labels", "go,cli", "--priority", "5", "--branch", "feat/cli", "--pr", "17", "--pr-url", "https://example.com/pr/17", "--json")
+	if code != 0 {
+		t.Fatalf("issue update failed: %d stderr=%s", code, stderr)
+	}
+	var updated kanban.IssueDetail
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode issue update: %v\n%s", err, stdout)
+	}
+	if updated.Priority != 5 || updated.BranchName != "feat/cli" || updated.PRNumber != 17 {
+		t.Fatalf("unexpected issue update payload: %+v", updated)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "list", "--project", project.ID, "--json")
+	if code != 0 {
+		t.Fatalf("issue list failed: %d stderr=%s", code, stderr)
+	}
+	var issueList struct {
+		Items []kanban.IssueSummary `json:"items"`
+		Total int                   `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &issueList); err != nil {
+		t.Fatalf("decode issue list: %v\n%s", err, stdout)
+	}
+	if issueList.Total != 1 || len(issueList.Items) != 1 || issueList.Items[0].Identifier != created.Identifier {
+		t.Fatalf("unexpected issue list payload: %+v", issueList)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "show", project.ID, "--json")
+	if code != 0 {
+		t.Fatalf("project show failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\"project\"") || !strings.Contains(stdout, "\"issues\"") {
+		t.Fatalf("unexpected project show payload: %s", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "epic", "show", epic.ID, "--json")
+	if code != 0 {
+		t.Fatalf("epic show failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\"epic\"") || !strings.Contains(stdout, "\"issues\"") {
+		t.Fatalf("unexpected epic show payload: %s", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "board", "--json")
+	if code != 0 {
+		t.Fatalf("board json failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\"columns\"") || !strings.Contains(stdout, "\"counts\"") {
+		t.Fatalf("unexpected board payload: %s", stdout)
+	}
+}
+
+func TestBlockerLifecycleCommands(t *testing.T) {
+	dbPath, _, project, issue := setupProjectAndIssue(t)
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+	blockerA, _ := store.CreateIssue(project.ID, "", "Blocker A", "", 0, nil)
+	blockerB, _ := store.CreateIssue(project.ID, "", "Blocker B", "", 0, nil)
+
+	code, _, stderr := runCLI(t, "--db", dbPath, "issue", "blockers", "set", issue.Identifier, blockerA.Identifier, blockerB.Identifier)
+	if code != 0 {
+		t.Fatalf("blockers set failed: %d stderr=%s", code, stderr)
+	}
+	code, _, stderr = runCLI(t, "--db", dbPath, "issue", "unblock", issue.Identifier, blockerA.Identifier)
+	if code != 0 {
+		t.Fatalf("unblock failed: %d stderr=%s", code, stderr)
+	}
+	reloaded, err := store.GetIssueByIdentifier(issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier failed: %v", err)
+	}
+	if len(reloaded.BlockedBy) != 1 || reloaded.BlockedBy[0] != blockerB.Identifier {
+		t.Fatalf("unexpected blockers after unblock: %+v", reloaded.BlockedBy)
+	}
+	code, _, stderr = runCLI(t, "--db", dbPath, "issue", "blockers", "clear", issue.Identifier)
+	if code != 0 {
+		t.Fatalf("blockers clear failed: %d stderr=%s", code, stderr)
+	}
+	reloaded, err = store.GetIssueByIdentifier(issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier failed: %v", err)
+	}
+	if len(reloaded.BlockedBy) != 0 {
+		t.Fatalf("expected blockers to be cleared, got %+v", reloaded.BlockedBy)
+	}
+}
+
+func TestVerifyAndDoctorOutputs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := setupRepo(t)
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "verify", "--repo", repoPath, "--json")
+	if code != 0 {
+		t.Fatalf("verify json failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\"checks\"") || !strings.Contains(stdout, "\"remediation\"") {
+		t.Fatalf("unexpected verify json: %s", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "doctor", "--repo", repoPath)
+	if code != 0 {
+		t.Fatalf("doctor failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Doctor") {
+		t.Fatalf("unexpected doctor output: %s", stdout)
+	}
+}
+
+func TestCompletionCommand(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		code, stdout, stderr := runCLI(t, "completion", shell)
+		if code != 0 {
+			t.Fatalf("completion %s failed: %d stderr=%s", shell, code, stderr)
 		}
-		if !strings.Contains(buf.String(), tc.want) {
-			t.Fatalf("%s: expected %q in %q", tc.name, tc.want, buf.String())
+		if !strings.Contains(stdout, "maestro") {
+			t.Fatalf("completion output for %s missing command name", shell)
+		}
+	}
+}
+
+func TestLiveCommandsUseAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/state":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"generated_at": "2026-03-09T00:00:00Z",
+				"counts":       map[string]int{"running": 1, "retrying": 1},
+				"running": []map[string]interface{}{
+					{"issue_identifier": "ISS-1", "state": "in_progress", "session_id": "sess-1", "turn_count": 3, "started_at": "2026-03-09T00:00:00Z", "last_event": "turn.started"},
+				},
+				"retrying": []map[string]interface{}{
+					{"issue_identifier": "ISS-2", "attempt": 2, "due_at": "2026-03-09T00:10:00Z", "error": "boom"},
+				},
+				"codex_totals": map[string]int{"total_tokens": 42},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"sessions": map[string]interface{}{
+					"ISS-1": map[string]interface{}{"session_id": "sess-1", "last_event": "turn.started", "last_timestamp": "2026-03-09T00:00:00Z"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/events":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"events": []kanban.RuntimeEvent{{Seq: 1, Kind: "run_started", Identifier: "ISS-1"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/runtime/series":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"series": []kanban.RuntimeSeriesPoint{{Bucket: "12:00", RunsStarted: 1}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/issues/ISS-1/execution":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"identifier":     "ISS-1",
+				"active":         true,
+				"phase":          "implementation",
+				"attempt_number": 3,
+				"retry_state":    "scheduled",
+				"failure_class":  "approval_required",
+				"current_error":  "approval_required",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/issues/ISS-1/retry":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "queued_now"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"status", "--dashboard", "--api-url", server.URL}, want: "MAESTRO STATUS"},
+		{args: []string{"sessions", "--api-url", server.URL}, want: "ISS-1"},
+		{args: []string{"events", "--api-url", server.URL}, want: "run_started"},
+		{args: []string{"runtime-series", "--api-url", server.URL}, want: "12:00"},
+		{args: []string{"issue", "execution", "ISS-1", "--api-url", server.URL}, want: "approval_required"},
+		{args: []string{"issue", "retry", "ISS-1", "--api-url", server.URL}, want: "queued_now"},
+	}
+	for _, tc := range tests {
+		code, stdout, stderr := runCLI(t, tc.args...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d stderr=%s", tc.args, code, stderr)
+		}
+		if !strings.Contains(stdout, tc.want) {
+			t.Fatalf("%v missing %q in %q", tc.args, tc.want, stdout)
 		}
 	}
 }

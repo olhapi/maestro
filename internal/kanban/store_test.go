@@ -131,6 +131,18 @@ func TestDeleteProject(t *testing.T) {
 	}
 }
 
+func TestDeleteProjectReturnsNotFound(t *testing.T) {
+	store := setupTestStore(t)
+
+	err := store.DeleteProject("missing-project")
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	if !IsNotFound(err) {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+}
+
 // Epic tests
 
 func TestCreateEpic(t *testing.T) {
@@ -290,6 +302,19 @@ func TestUpdateIssueState(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueStateRejectsInvalidState(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
+	err := store.UpdateIssueState(issue.ID, State("invalid"))
+	if err == nil {
+		t.Fatal("expected invalid state error")
+	}
+	if !IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
 func TestUpdateIssue(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -318,6 +343,63 @@ func TestUpdateIssue(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueResolvesEpicProjectConsistency(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, _ := store.CreateProject("Project", "", "", "")
+	epic, _ := store.CreateEpic(project.ID, "Epic", "")
+	issue, _ := store.CreateIssue("", "", "Original Title", "", 0, nil)
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"epic_id": epic.ID}); err != nil {
+		t.Fatalf("UpdateIssue failed: %v", err)
+	}
+
+	updated, _ := store.GetIssue(issue.ID)
+	if updated.EpicID != epic.ID {
+		t.Fatalf("expected epic %s, got %s", epic.ID, updated.EpicID)
+	}
+	if updated.ProjectID != project.ID {
+		t.Fatalf("expected project %s, got %s", project.ID, updated.ProjectID)
+	}
+}
+
+func TestUpdateIssueRejectsMismatchedProjectAndEpic(t *testing.T) {
+	store := setupTestStore(t)
+
+	projectA, _ := store.CreateProject("Project A", "", "", "")
+	projectB, _ := store.CreateProject("Project B", "", "", "")
+	epic, _ := store.CreateEpic(projectA.ID, "Epic", "")
+	issue, _ := store.CreateIssue(projectB.ID, "", "Original Title", "", 0, nil)
+
+	err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"project_id": projectB.ID,
+		"epic_id":    epic.ID,
+	})
+	if err == nil {
+		t.Fatal("expected mismatched project/epic validation error")
+	}
+	if !IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestUpdateIssueClearingProjectAlsoClearsEpic(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, _ := store.CreateProject("Project", "", "", "")
+	epic, _ := store.CreateEpic(project.ID, "Epic", "")
+	issue, _ := store.CreateIssue(project.ID, epic.ID, "Original Title", "", 0, nil)
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"project_id": ""}); err != nil {
+		t.Fatalf("UpdateIssue failed: %v", err)
+	}
+
+	updated, _ := store.GetIssue(issue.ID)
+	if updated.ProjectID != "" || updated.EpicID != "" {
+		t.Fatalf("expected cleared project/epic, got project=%q epic=%q", updated.ProjectID, updated.EpicID)
+	}
+}
+
 func TestDeleteIssue(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -330,6 +412,18 @@ func TestDeleteIssue(t *testing.T) {
 	_, err := store.GetIssue(issue.ID)
 	if err == nil {
 		t.Error("Expected error getting deleted issue")
+	}
+}
+
+func TestDeleteIssueReturnsNotFound(t *testing.T) {
+	store := setupTestStore(t)
+
+	err := store.DeleteIssue("missing-issue")
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	if !IsNotFound(err) {
+		t.Fatalf("expected not found error, got %v", err)
 	}
 }
 
@@ -498,6 +592,35 @@ func TestIssuePrioritySorting(t *testing.T) {
 	// Should be sorted by priority
 	if issues[0].Priority > issues[1].Priority {
 		t.Error("Issues should be sorted by priority (ascending)")
+	}
+}
+
+func TestListIssueSummariesSupportsBlockedAndProjectNameFilters(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, _ := store.CreateProject("Platform", "", "", "")
+	other, _ := store.CreateProject("Other", "", "", "")
+	blocker, _ := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
+	blocked, _ := store.CreateIssue(project.ID, "", "Blocked", "", 0, nil)
+	_, _ = store.CreateIssue(other.ID, "", "Elsewhere", "", 0, nil)
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers failed: %v", err)
+	}
+
+	blockedOnly := true
+	items, total, err := store.ListIssueSummaries(IssueQuery{
+		ProjectName: "platform",
+		Blocked:     &blockedOnly,
+		Limit:       20,
+	})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries failed: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected one blocked platform issue, got total=%d items=%d", total, len(items))
+	}
+	if items[0].Identifier != blocked.Identifier {
+		t.Fatalf("expected blocked identifier %s, got %s", blocked.Identifier, items[0].Identifier)
 	}
 }
 

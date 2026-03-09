@@ -65,11 +65,11 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 		{kind: "manual_retry_requested"},
 	} {
 		payload := map[string]interface{}{
-			"issue_id":   readyIssue.ID,
-			"identifier": readyIssue.Identifier,
-			"title":      readyIssue.Title,
-			"phase":      "implementation",
-			"attempt":    2,
+			"issue_id":     readyIssue.ID,
+			"identifier":   readyIssue.Identifier,
+			"title":        readyIssue.Title,
+			"phase":        "implementation",
+			"attempt":      2,
 			"total_tokens": 11,
 		}
 		if event.error != "" {

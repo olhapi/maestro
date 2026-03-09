@@ -68,13 +68,15 @@ type IssueDetail struct {
 }
 
 type IssueQuery struct {
-	ProjectID string
-	EpicID    string
-	State     string
-	Search    string
-	Sort      string
-	Limit     int
-	Offset    int
+	ProjectID   string
+	ProjectName string
+	EpicID      string
+	State       string
+	Search      string
+	Sort        string
+	Blocked     *bool
+	Limit       int
+	Offset      int
 }
 
 type RuntimeEvent struct {
