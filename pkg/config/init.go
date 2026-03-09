@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/olhapi/maestro/internal/codexschema"
 )
 
 type InitOptions struct {
@@ -147,6 +149,7 @@ agent:
   mode: %s
 codex:
   command: %s
+  expected_version: %s
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -171,5 +174,5 @@ Description:
 {%% else %%}
 No description provided.
 {%% endif %%}
-`, TrackerKindKanban, opts.WorkspaceRoot, opts.AgentMode, opts.CodexCommand))
+`, TrackerKindKanban, opts.WorkspaceRoot, opts.AgentMode, opts.CodexCommand, codexschema.SupportedVersion))
 }

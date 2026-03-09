@@ -223,6 +223,8 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		WorkspaceRoot:     workflow.Config.Workspace.Root,
 		IssueID:           issue.ID,
 		IssueIdentifier:   issue.Identifier,
+		CodexCommand:      workflow.Config.Codex.Command,
+		ExpectedVersion:   workflow.Config.Codex.ExpectedVersion,
 		ApprovalPolicy:    workflow.Config.Codex.ApprovalPolicy,
 		ThreadSandbox:     workflow.Config.Codex.ThreadSandbox,
 		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,

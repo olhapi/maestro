@@ -34,6 +34,7 @@ agent:
   mode: app_server
 codex:
   command: codex app-server
+  expected_version: 0.111.0
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:

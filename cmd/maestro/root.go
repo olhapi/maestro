@@ -1242,6 +1242,7 @@ func (a *cliApp) newVerifyCmd(use string) *cobra.Command {
 			payload := map[string]interface{}{
 				"checks":      res.Checks,
 				"errors":      res.Errors,
+				"warnings":    res.Warnings,
 				"remediation": res.Remediation,
 			}
 			printVerification(a.stdout, title, payload)

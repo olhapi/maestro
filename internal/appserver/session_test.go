@@ -1,6 +1,10 @@
 package appserver
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/olhapi/maestro/internal/appserver/protocol"
+)
 
 func TestParseEventLine(t *testing.T) {
 	line := `{"type":"turn.completed","thread_id":"th1","turn_id":"tu1","input_tokens":10,"output_tokens":20,"total_tokens":30,"message":"ok"}`
@@ -55,5 +59,27 @@ func TestSessionHistoryRingBuffer(t *testing.T) {
 	}
 	if s.History[0].Type != "b" || s.History[1].Type != "c" {
 		t.Fatalf("unexpected history order: %#v", s.History)
+	}
+}
+
+func TestEventFromMessageAndMergeEvents(t *testing.T) {
+	msg, ok := protocol.DecodeMessage(`{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"tu"}}}`)
+	if !ok {
+		t.Fatal("expected message decode")
+	}
+	typed, ok := EventFromMessage(msg)
+	if !ok {
+		t.Fatal("expected typed event")
+	}
+	fallback, ok := ParseEventLine(`{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"tu"}},"input_tokens":3,"output_tokens":5,"total_tokens":8}`)
+	if !ok {
+		t.Fatal("expected fallback event")
+	}
+	merged := MergeEvents(typed, fallback)
+	if merged.Type != "turn.completed" || merged.ThreadID != "th" || merged.TurnID != "tu" {
+		t.Fatalf("unexpected merged event: %+v", merged)
+	}
+	if merged.TotalTokens != 8 {
+		t.Fatalf("expected fallback totals, got %+v", merged)
 	}
 }

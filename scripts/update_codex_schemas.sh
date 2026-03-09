@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION="${CODEX_SCHEMA_VERSION:-0.111.0}"
+QUICKTYPE_VERSION="${QUICKTYPE_VERSION:-23.2.6}"
+SCHEMA_DIR="$ROOT/schemas/codex/$VERSION/json"
+GEN_DIR="$ROOT/internal/appserver/protocol/gen"
+GEN_FILE="$GEN_DIR/models.go"
+
+if ! command -v codex >/dev/null 2>&1; then
+  echo "codex is required" >&2
+  exit 1
+fi
+
+actual_version="$(codex --version | awk '{print $2}')"
+if [[ "$actual_version" != "$VERSION" ]]; then
+  echo "warning: generating schemas for codex-cli $actual_version while CODEX_SCHEMA_VERSION=$VERSION" >&2
+fi
+
+rm -rf "$SCHEMA_DIR"
+mkdir -p "$SCHEMA_DIR" "$GEN_DIR"
+
+codex app-server generate-json-schema --out "$SCHEMA_DIR"
+
+schema_files=(
+  "$SCHEMA_DIR/v1/InitializeParams.json"
+  "$SCHEMA_DIR/v1/InitializeResponse.json"
+  "$SCHEMA_DIR/v2/ThreadStartParams.json"
+  "$SCHEMA_DIR/v2/ThreadStartResponse.json"
+  "$SCHEMA_DIR/v2/TurnStartParams.json"
+  "$SCHEMA_DIR/v2/TurnStartResponse.json"
+  "$SCHEMA_DIR/v2/ThreadStartedNotification.json"
+  "$SCHEMA_DIR/v2/TurnStartedNotification.json"
+  "$SCHEMA_DIR/v2/TurnCompletedNotification.json"
+  "$SCHEMA_DIR/ExecCommandApprovalParams.json"
+  "$SCHEMA_DIR/ExecCommandApprovalResponse.json"
+  "$SCHEMA_DIR/ApplyPatchApprovalParams.json"
+  "$SCHEMA_DIR/ApplyPatchApprovalResponse.json"
+  "$SCHEMA_DIR/CommandExecutionRequestApprovalParams.json"
+  "$SCHEMA_DIR/CommandExecutionRequestApprovalResponse.json"
+  "$SCHEMA_DIR/FileChangeRequestApprovalParams.json"
+  "$SCHEMA_DIR/FileChangeRequestApprovalResponse.json"
+  "$SCHEMA_DIR/ToolRequestUserInputParams.json"
+  "$SCHEMA_DIR/ToolRequestUserInputResponse.json"
+  "$SCHEMA_DIR/DynamicToolCallParams.json"
+  "$SCHEMA_DIR/DynamicToolCallResponse.json"
+)
+
+npx --yes "quicktype@$QUICKTYPE_VERSION" \
+  --lang go \
+  --src-lang schema \
+  --just-types-and-package \
+  --package gen \
+  --out "$GEN_FILE" \
+  "${schema_files[@]}"
+
+gofmt -w "$GEN_FILE"

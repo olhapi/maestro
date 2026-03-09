@@ -192,10 +192,22 @@ func TestRunAutoApprovesCommandExecutionWhenNever(t *testing.T) {
 
 	lines := readTraceLines(t, traceFile)
 	foundInit := false
+	foundThreadStart := false
+	foundTurnStart := false
 	foundApproval := false
 	for _, payload := range lines {
 		if id, ok := asInt(payload["id"]); ok && id == 1 {
 			foundInit = nestedBool(payload, "params", "capabilities", "experimentalApi")
+		}
+		if id, ok := asInt(payload["id"]); ok && id == 2 {
+			if nestedStringMap(payload, "method") == "thread/start" && nestedStringMap(payload, "params", "cwd") != "" {
+				foundThreadStart = true
+			}
+		}
+		if id, ok := asInt(payload["id"]); ok && id == 3 {
+			if nestedStringMap(payload, "method") == "turn/start" && nestedStringMap(payload, "params", "threadId") == "thread-2" {
+				foundTurnStart = true
+			}
 		}
 		if id, ok := asInt(payload["id"]); ok && id == 99 {
 			if result, ok := payload["result"].(map[string]interface{}); ok && result["decision"] == "acceptForSession" {
@@ -205,6 +217,12 @@ func TestRunAutoApprovesCommandExecutionWhenNever(t *testing.T) {
 	}
 	if !foundInit {
 		t.Fatal("expected initialize payload with experimentalApi capability")
+	}
+	if !foundThreadStart {
+		t.Fatal("expected thread/start payload in trace")
+	}
+	if !foundTurnStart {
+		t.Fatal("expected turn/start payload in trace")
 	}
 	if !foundApproval {
 		t.Fatal("expected auto approval response in trace")
@@ -382,6 +400,19 @@ func nestedBool(m map[string]interface{}, path ...string) bool {
 		cur = next[part]
 	}
 	v, _ := cur.(bool)
+	return v
+}
+
+func nestedStringMap(m map[string]interface{}, path ...string) string {
+	var cur interface{} = m
+	for _, part := range path {
+		next, ok := cur.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		cur = next[part]
+	}
+	v, _ := cur.(string)
 	return v
 }
 

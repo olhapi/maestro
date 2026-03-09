@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/olhapi/maestro/internal/appserver/protocol"
 )
 
 // Event is a minimal app-server event envelope.
@@ -129,6 +131,67 @@ func ParseEventLine(line string) (Event, bool) {
 		}
 	}
 	return Event{}, false
+}
+
+func EventFromMessage(msg protocol.Message) (Event, bool) {
+	switch msg.Method {
+	case protocol.MethodThreadStarted:
+		var payload struct {
+			Thread struct {
+				ID string `json:"id"`
+			} `json:"thread"`
+		}
+		if err := msg.UnmarshalParams(&payload); err != nil {
+			return Event{}, false
+		}
+		return Event{
+			Type:     normalizeEventType(msg.Method),
+			ThreadID: payload.Thread.ID,
+		}, payload.Thread.ID != ""
+	case protocol.MethodTurnStarted, protocol.MethodTurnCompleted:
+		var payload struct {
+			ThreadID string `json:"threadId"`
+			Turn     struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		if err := msg.UnmarshalParams(&payload); err != nil {
+			return Event{}, false
+		}
+		return Event{
+			Type:     normalizeEventType(msg.Method),
+			ThreadID: payload.ThreadID,
+			TurnID:   payload.Turn.ID,
+		}, payload.ThreadID != "" || payload.Turn.ID != ""
+	default:
+		return Event{}, false
+	}
+}
+
+func MergeEvents(primary, fallback Event) Event {
+	out := primary
+	if out.Type == "" {
+		out.Type = fallback.Type
+	}
+	if out.ThreadID == "" {
+		out.ThreadID = fallback.ThreadID
+	}
+	if out.TurnID == "" {
+		out.TurnID = fallback.TurnID
+	}
+	if out.InputTokens == 0 {
+		out.InputTokens = fallback.InputTokens
+	}
+	if out.OutputTokens == 0 {
+		out.OutputTokens = fallback.OutputTokens
+	}
+	if out.TotalTokens == 0 {
+		out.TotalTokens = fallback.TotalTokens
+	}
+	if out.Message == "" {
+		out.Message = fallback.Message
+	}
+	return out
 }
 
 func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {

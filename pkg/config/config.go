@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/olhapi/maestro/internal/codexschema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,6 +65,7 @@ type AgentConfig struct {
 
 type CodexConfig struct {
 	Command           string                 `yaml:"command"`
+	ExpectedVersion   string                 `yaml:"expected_version"`
 	ApprovalPolicy    interface{}            `yaml:"approval_policy"`
 	ThreadSandbox     string                 `yaml:"thread_sandbox"`
 	TurnSandboxPolicy map[string]interface{} `yaml:"turn_sandbox_policy"`
@@ -116,7 +118,8 @@ func DefaultConfig() Config {
 			Mode:                AgentModeAppServer,
 		},
 		Codex: CodexConfig{
-			Command: "codex app-server",
+			Command:         "codex app-server",
+			ExpectedVersion: codexschema.SupportedVersion,
 			ApprovalPolicy: map[string]interface{}{
 				"reject": map[string]interface{}{
 					"sandbox_approval": true,
@@ -328,6 +331,7 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveNumeric(out, agent, "max_retry_backoff_ms", "max_retry_backoff_ms")
 	moveString(out, agent, "agent_mode", "mode")
 	moveString(out, codex, "codex_command", "command")
+	moveString(out, codex, "codex_expected_version", "expected_version")
 	moveValue(out, codex, "codex_approval_policy", "approval_policy")
 	moveString(out, codex, "codex_thread_sandbox", "thread_sandbox")
 	moveMap(out, codex, "codex_turn_sandbox_policy", "turn_sandbox_policy")
@@ -479,6 +483,9 @@ func applyDefaults(c *Config) {
 	}
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		c.Codex.Command = defaults.Codex.Command
+	}
+	if strings.TrimSpace(c.Codex.ExpectedVersion) == "" {
+		c.Codex.ExpectedVersion = defaults.Codex.ExpectedVersion
 	}
 	if c.Codex.ApprovalPolicy == nil {
 		c.Codex.ApprovalPolicy = defaults.Codex.ApprovalPolicy

@@ -186,6 +186,17 @@ func printVerification(out io.Writer, title string, res map[string]interface{}) 
 			fmt.Fprintf(out, "- %v\n", item)
 		}
 	}
+	if warnings, ok := res["warnings"].([]string); ok && len(warnings) > 0 {
+		fmt.Fprintln(out, "Warnings:")
+		for _, item := range warnings {
+			fmt.Fprintf(out, "- %s\n", item)
+		}
+	} else if raw, ok := res["warnings"].([]interface{}); ok && len(raw) > 0 {
+		fmt.Fprintln(out, "Warnings:")
+		for _, item := range raw {
+			fmt.Fprintf(out, "- %v\n", item)
+		}
+	}
 	if raw, ok := res["remediation"].(map[string]string); ok && len(raw) > 0 {
 		fmt.Fprintln(out, "Remediation:")
 		keys = keys[:0]

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -14,6 +15,7 @@ type Result struct {
 	OK          bool              `json:"ok"`
 	Checks      map[string]string `json:"checks"`
 	Errors      []string          `json:"errors,omitempty"`
+	Warnings    []string          `json:"warnings,omitempty"`
 	Remediation map[string]string `json:"remediation"`
 }
 
@@ -47,7 +49,22 @@ func Run(repoPath, dbPath string) Result {
 		res.Remediation["workflow_load"] = "Fix the WORKFLOW.md format or regenerate it with `maestro workflow init`."
 	} else {
 		res.Checks["workflow_load"] = "ok"
-		_, _ = manager.Current()
+		workflow, _ := manager.Current()
+		if workflow != nil {
+			status, err := appserver.DetectCodexVersion(workflow.Config.Codex.Command)
+			switch {
+			case err != nil && status.Command != "":
+				res.Warnings = append(res.Warnings, fmt.Sprintf("codex_version: %v", err))
+				res.Checks["codex_version"] = "warn"
+			case status.ExecutablePath == "":
+				res.Checks["codex_version"] = "skipped"
+			case workflow.Config.Codex.ExpectedVersion != "" && status.Actual != workflow.Config.Codex.ExpectedVersion:
+				res.Warnings = append(res.Warnings, fmt.Sprintf("codex_version: expected %s, found %s (%s)", workflow.Config.Codex.ExpectedVersion, status.Actual, status.ExecutablePath))
+				res.Checks["codex_version"] = "warn"
+			default:
+				res.Checks["codex_version"] = "ok"
+			}
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {

@@ -22,6 +22,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.Mode != AgentModeAppServer {
 		t.Fatalf("expected app_server mode, got %q", cfg.Agent.Mode)
 	}
+	if cfg.Codex.ExpectedVersion != "0.111.0" {
+		t.Fatalf("expected codex expected version 0.111.0, got %q", cfg.Codex.ExpectedVersion)
+	}
 }
 
 func TestLoadWorkflowNestedSchema(t *testing.T) {
@@ -50,6 +53,7 @@ agent:
   mode: stdio
 codex:
   command: codex --model test app-server
+  expected_version: 0.111.0
   approval_policy: never
   thread_sandbox: workspace-write
   read_timeout_ms: 9999
@@ -79,6 +83,9 @@ Issue {{ issue.identifier }}
 	}
 	if workflow.Config.Hooks.BeforeRemove != "echo cleanup" {
 		t.Fatalf("unexpected before_remove hook: %q", workflow.Config.Hooks.BeforeRemove)
+	}
+	if workflow.Config.Codex.ExpectedVersion != "0.111.0" {
+		t.Fatalf("unexpected codex expected version: %q", workflow.Config.Codex.ExpectedVersion)
 	}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected default review prompt, got %+v", workflow.Config.Phases.Review)
@@ -341,7 +348,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "phases:", "enabled: false", "codex app-server --model test", "{{ issue.identifier }}"} {
+	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "phases:", "enabled: false", "expected_version: 0.111.0", "codex app-server --model test", "{{ issue.identifier }}"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}

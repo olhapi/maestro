@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/olhapi/maestro/internal/appserver/protocol"
+	"github.com/olhapi/maestro/internal/appserver/protocol/gen"
 )
 
 const nonInteractiveToolInputAnswer = "This is a non-interactive session. Operator input is unavailable."
@@ -31,6 +34,8 @@ type ClientConfig struct {
 	IssueIdentifier   string
 	Prompt            string
 	Title             string
+	CodexCommand      string
+	ExpectedVersion   string
 	ApprovalPolicy    interface{}
 	ThreadSandbox     string
 	TurnSandboxPolicy map[string]interface{}
@@ -113,6 +118,9 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if cfg.TurnSandboxPolicy == nil {
 		cfg.TurnSandboxPolicy = defaultTurnSandboxPolicy(cfg.Workspace)
 	}
+	if strings.TrimSpace(cfg.CodexCommand) == "" && looksLikeCodexCommand(cfg.Executable) {
+		cfg.CodexCommand = cfg.Executable
+	}
 	args := append([]string(nil), cfg.Args...)
 	if len(args) == 0 && looksLikeCodexCommand(cfg.Executable) {
 		args = append(args, "app-server")
@@ -155,6 +163,7 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	client.session.IssueID = cfg.IssueID
 	client.session.IssueIdentifier = cfg.IssueIdentifier
 	client.logger = client.newLogger()
+	client.warnOnCodexVersionMismatch()
 	client.session.AppServerPID = cmd.Process.Pid
 	client.logger.Info("Codex app-server process started", "pid", cmd.Process.Pid)
 
@@ -254,25 +263,22 @@ func (c *Client) Close() error {
 
 func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
 	requestID := c.nextRequestID()
-	if err := c.sendMessage(map[string]interface{}{
-		"id":     requestID,
-		"method": "turn/start",
-		"params": map[string]interface{}{
-			"threadId":       c.session.ThreadID,
-			"input":          []map[string]interface{}{{"type": "text", "text": prompt}},
-			"cwd":            filepath.Clean(c.cfg.Workspace),
-			"title":          title,
-			"approvalPolicy": c.cfg.ApprovalPolicy,
-			"sandboxPolicy":  c.cfg.TurnSandboxPolicy,
-		},
-	}); err != nil {
+	req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, prompt, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.TurnSandboxPolicy)
+	if err != nil {
+		return err
+	}
+	if err := c.sendMessage(req); err != nil {
 		return err
 	}
 	resp, err := c.awaitResponse(ctx, requestID)
 	if err != nil {
 		return err
 	}
-	turnID := nestedString(resp, "turn", "id")
+	var result gen.TurnStartResponse
+	if err := resp.UnmarshalResult(&result); err != nil {
+		return fmt.Errorf("decode turn/start response: %w", err)
+	}
+	turnID := strings.TrimSpace(result.Turn.ID)
 	if turnID == "" {
 		return fmt.Errorf("invalid turn/start response: missing turn.id")
 	}
@@ -292,49 +298,34 @@ func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
 }
 
 func (c *Client) initialize(ctx context.Context) error {
-	if err := c.sendMessage(map[string]interface{}{
-		"id":     c.nextRequestID(),
-		"method": "initialize",
-		"params": map[string]interface{}{
-			"capabilities": map[string]interface{}{"experimentalApi": true},
-			"clientInfo": map[string]interface{}{
-				"name":    "maestro",
-				"title":   "Maestro",
-				"version": "dev",
-			},
-		},
-	}); err != nil {
+	if err := c.sendMessage(protocol.InitializeRequest(c.nextRequestID(), "Maestro")); err != nil {
 		return err
 	}
 	if _, err := c.awaitResponse(ctx, 1); err != nil {
 		return err
 	}
 	c.logger.Info("Codex session initialized")
-	if err := c.sendMessage(map[string]interface{}{
-		"method": "initialized",
-		"params": map[string]interface{}{},
-	}); err != nil {
+	if err := c.sendMessage(protocol.InitializedNotification()); err != nil {
 		return err
 	}
 
 	threadRequestID := c.nextRequestID()
-	if err := c.sendMessage(map[string]interface{}{
-		"id":     threadRequestID,
-		"method": "thread/start",
-		"params": map[string]interface{}{
-			"approvalPolicy": c.cfg.ApprovalPolicy,
-			"sandbox":        c.cfg.ThreadSandbox,
-			"cwd":            filepath.Clean(c.cfg.Workspace),
-			"dynamicTools":   c.cfg.DynamicTools,
-		},
-	}); err != nil {
+	req, err := protocol.ThreadStartRequest(threadRequestID, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.ThreadSandbox, c.cfg.DynamicTools)
+	if err != nil {
+		return err
+	}
+	if err := c.sendMessage(req); err != nil {
 		return err
 	}
 	threadResp, err := c.awaitResponse(ctx, threadRequestID)
 	if err != nil {
 		return err
 	}
-	threadID := nestedString(threadResp, "thread", "id")
+	var result gen.ThreadStartResponse
+	if err := threadResp.UnmarshalResult(&result); err != nil {
+		return fmt.Errorf("decode thread/start response: %w", err)
+	}
+	threadID := strings.TrimSpace(result.Thread.ID)
 	if threadID == "" {
 		return fmt.Errorf("invalid thread/start response: missing thread.id")
 	}
@@ -351,26 +342,26 @@ func (c *Client) nextRequestID() int {
 	return id
 }
 
-func (c *Client) awaitResponse(ctx context.Context, requestID int) (map[string]interface{}, error) {
+func (c *Client) awaitResponse(ctx context.Context, requestID int) (protocol.Message, error) {
 	for {
 		line, err := c.nextLine(ctx, c.cfg.ReadTimeout)
 		if err != nil {
-			return nil, err
+			return protocol.Message{}, err
 		}
-		payload, ok := decodeJSONObject(line)
+		payload, ok := protocol.DecodeMessage(line)
 		if !ok {
 			c.logStreamOutput("response", line)
 			continue
 		}
-		c.captureEvent(payload)
-		if id, ok := asInt(payload["id"]); ok && id == requestID {
-			if errPayload, ok := asMap(payload["error"]); ok {
-				return nil, &RunError{Kind: "response_error", Payload: payload, Err: fmt.Errorf("%v", errPayload)}
+		c.captureEvent(line, payload)
+		if payload.IsResponseTo(requestID) {
+			if payload.Error != nil {
+				return protocol.Message{}, &RunError{Kind: "response_error", Payload: payload.Raw, Err: fmt.Errorf("%v", payload.Error)}
 			}
-			if result, ok := asMap(payload["result"]); ok {
-				return result, nil
+			if len(payload.Result) > 0 && string(payload.Result) != "null" {
+				return payload, nil
 			}
-			return nil, &RunError{Kind: "response_error", Payload: payload, Err: fmt.Errorf("missing result")}
+			return protocol.Message{}, &RunError{Kind: "response_error", Payload: payload.Raw, Err: fmt.Errorf("missing result")}
 		}
 	}
 }
@@ -412,36 +403,36 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 			return err
 		}
 		lastProgressAt = time.Now()
-		payload, ok := decodeJSONObject(line)
+		payload, ok := protocol.DecodeMessage(line)
 		if !ok {
 			c.logStreamOutput("turn", line)
 			continue
 		}
-		c.captureEvent(payload)
+		c.captureEvent(line, payload)
 
-		method := nestedString(payload, "method")
+		method := payload.Method
 		switch method {
-		case "turn/completed":
+		case protocol.MethodTurnCompleted:
 			c.logger.Info("Codex turn completed",
 				"session_id", c.session.SessionID,
 				"thread_id", c.session.ThreadID,
 				"turn_id", c.session.TurnID,
 			)
 			return nil
-		case "turn/failed":
+		case protocol.MethodTurnFailed:
 			c.logger.Warn("Codex turn failed",
 				"session_id", c.session.SessionID,
 				"thread_id", c.session.ThreadID,
 				"turn_id", c.session.TurnID,
 			)
-			return &RunError{Kind: "turn_failed", Payload: payload}
-		case "turn/cancelled":
+			return &RunError{Kind: "turn_failed", Payload: payload.Raw}
+		case protocol.MethodTurnCancelled:
 			c.logger.Warn("Codex turn cancelled",
 				"session_id", c.session.SessionID,
 				"thread_id", c.session.ThreadID,
 				"turn_id", c.session.TurnID,
 			)
-			return &RunError{Kind: "turn_cancelled", Payload: payload}
+			return &RunError{Kind: "turn_cancelled", Payload: payload.Raw}
 		}
 
 		handled, err := c.handleRequest(payload)
@@ -451,91 +442,111 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 		if handled {
 			continue
 		}
-		if needsInput(method, payload) {
-			return &RunError{Kind: "turn_input_required", Payload: payload}
+		if needsInput(method, payload.Raw) {
+			return &RunError{Kind: "turn_input_required", Payload: payload.Raw}
 		}
 	}
 }
 
-func (c *Client) handleRequest(payload map[string]interface{}) (bool, error) {
-	method := nestedString(payload, "method")
-	id, hasID := payload["id"]
-	if method == "" || !hasID {
+func (c *Client) handleRequest(payload protocol.Message) (bool, error) {
+	method := payload.Method
+	if method == "" || !payload.HasID() {
 		return false, nil
 	}
-	params, _ := asMap(payload["params"])
 
 	switch method {
-	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+	case protocol.MethodItemCommandExecutionApproval:
 		if c.autoApproveRequests() {
-			if err := c.sendMessage(map[string]interface{}{
-				"id":     id,
-				"result": map[string]interface{}{"decision": "acceptForSession"},
-			}); err != nil {
+			if err := c.sendMessage(protocol.CommandExecutionApprovalResult(payload.ID, gen.AcceptForSession)); err != nil {
 				return true, err
 			}
 			c.logger.Info("Codex approval auto-approved", "method", method)
-			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload})
+			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 			return true, nil
 		}
 		c.logger.Warn("Codex approval required", "method", method)
-		return true, &RunError{Kind: "approval_required", Payload: payload}
-	case "execCommandApproval", "applyPatchApproval":
+		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+	case protocol.MethodItemFileChangeApproval:
 		if c.autoApproveRequests() {
-			if err := c.sendMessage(map[string]interface{}{
-				"id":     id,
-				"result": map[string]interface{}{"decision": "approved_for_session"},
-			}); err != nil {
+			if err := c.sendMessage(protocol.FileChangeApprovalResult(payload.ID, gen.AcceptForSession)); err != nil {
 				return true, err
 			}
 			c.logger.Info("Codex approval auto-approved", "method", method)
-			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload})
+			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 			return true, nil
 		}
 		c.logger.Warn("Codex approval required", "method", method)
-		return true, &RunError{Kind: "approval_required", Payload: payload}
-	case "item/tool/requestUserInput":
-		answers, autoApproved := answersForToolInput(params, c.autoApproveRequests())
+		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+	case protocol.MethodExecCommandApproval:
+		if c.autoApproveRequests() {
+			if err := c.sendMessage(protocol.ExecCommandApprovalResult(payload.ID, gen.ApprovedForSession)); err != nil {
+				return true, err
+			}
+			c.logger.Info("Codex approval auto-approved", "method", method)
+			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
+			return true, nil
+		}
+		c.logger.Warn("Codex approval required", "method", method)
+		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+	case protocol.MethodApplyPatchApproval:
+		if c.autoApproveRequests() {
+			if err := c.sendMessage(protocol.ApplyPatchApprovalResult(payload.ID, gen.ApprovedForSession)); err != nil {
+				return true, err
+			}
+			c.logger.Info("Codex approval auto-approved", "method", method)
+			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
+			return true, nil
+		}
+		c.logger.Warn("Codex approval required", "method", method)
+		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+	case protocol.MethodToolRequestUserInput:
+		var params gen.ToolRequestUserInputParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return true, err
+		}
+		answers, autoApproved := answersForToolInputParams(params, c.autoApproveRequests())
 		if answers == nil {
 			c.logger.Warn("Codex turn input required", "method", method)
-			return true, &RunError{Kind: "turn_input_required", Payload: payload}
+			return true, &RunError{Kind: "turn_input_required", Payload: payload.Raw}
 		}
-		if err := c.sendMessage(map[string]interface{}{
-			"id":     id,
-			"result": map[string]interface{}{"answers": answers},
-		}); err != nil {
+		if err := c.sendMessage(protocol.ToolRequestUserInputResult(payload.ID, answers)); err != nil {
 			return true, err
 		}
 		if autoApproved {
 			c.logger.Info("Codex tool input auto-approved", "method", method)
-			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload})
+			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 		} else {
 			c.logger.Info("Codex tool input auto-answered", "method", method)
 			c.emitMessage("tool_input_auto_answered", map[string]interface{}{
-				"payload": payload,
+				"payload": payload.Raw,
 				"answer":  nonInteractiveToolInputAnswer,
 			})
 		}
 		return true, nil
-	case "item/tool/call":
-		result := unsupportedToolResult(toolCallName(params), supportedToolNames(c.cfg.DynamicTools))
-		if c.cfg.ToolExecutor != nil {
-			result = c.cfg.ToolExecutor(toolCallName(params), toolCallArguments(params))
+	case protocol.MethodToolCall:
+		var params gen.DynamicToolCallParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return true, err
 		}
-		if err := c.sendMessage(map[string]interface{}{
-			"id":     id,
-			"result": result,
-		}); err != nil {
+		result := unsupportedToolResult(params.Tool, supportedToolNames(c.cfg.DynamicTools))
+		if c.cfg.ToolExecutor != nil {
+			result = c.cfg.ToolExecutor(params.Tool, params.Arguments)
+		}
+		typedResult, err := protocol.DynamicToolCallResultFromMap(payload.ID, result)
+		if err != nil {
+			return true, err
+		}
+		if err := c.sendMessage(typedResult); err != nil {
 			return true, err
 		}
 		eventName := "tool_call_completed"
 		if success, _ := result["success"].(bool); !success {
-			c.logger.Warn("Codex tool call failed", "tool", toolCallName(params))
+			c.logger.Warn("Codex tool call failed", "tool", params.Tool)
 			eventName = "tool_call_failed"
 		} else {
-			c.logger.Info("Codex tool call completed", "tool", toolCallName(params))
+			c.logger.Info("Codex tool call completed", "tool", params.Tool)
 		}
-		c.emitMessage(eventName, map[string]interface{}{"payload": payload})
+		c.emitMessage(eventName, map[string]interface{}{"payload": payload.Raw})
 		return true, nil
 	default:
 		return false, nil
@@ -620,7 +631,7 @@ func (c *Client) readStderr(wg *sync.WaitGroup, r io.Reader) {
 	}
 }
 
-func (c *Client) sendMessage(payload map[string]interface{}) error {
+func (c *Client) sendMessage(payload interface{}) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -629,12 +640,20 @@ func (c *Client) sendMessage(payload map[string]interface{}) error {
 	return err
 }
 
-func (c *Client) captureEvent(payload map[string]interface{}) {
-	encoded, err := json.Marshal(payload)
-	if err == nil {
-		if evt, ok := ParseEventLine(string(encoded)); ok {
-			c.applyEvent(evt)
-		}
+func (c *Client) captureEvent(line string, payload protocol.Message) {
+	var primary Event
+	var primaryOK bool
+	if payload.Method != "" {
+		primary, primaryOK = EventFromMessage(payload)
+	}
+	fallback, fallbackOK := ParseEventLine(line)
+	switch {
+	case primaryOK && fallbackOK:
+		c.applyEvent(MergeEvents(primary, fallback))
+	case primaryOK:
+		c.applyEvent(primary)
+	case fallbackOK:
+		c.applyEvent(fallback)
 	}
 }
 
@@ -670,6 +689,30 @@ func (c *Client) writeOutput(line string, stderr bool) {
 	}
 	c.output.WriteString(line)
 	c.output.WriteByte('\n')
+}
+
+func (c *Client) warnOnCodexVersionMismatch() {
+	if strings.TrimSpace(c.cfg.ExpectedVersion) == "" {
+		return
+	}
+	status, err := DetectCodexVersion(c.cfg.CodexCommand)
+	if err != nil {
+		if strings.TrimSpace(c.cfg.CodexCommand) != "" {
+			c.logger.Warn("Unable to detect Codex CLI version", "command", c.cfg.CodexCommand, "error", err)
+		}
+		return
+	}
+	if status.ExecutablePath == "" || status.Actual == "" {
+		return
+	}
+	if status.Actual != c.cfg.ExpectedVersion {
+		c.logger.Warn("Codex CLI version mismatch",
+			"command", c.cfg.CodexCommand,
+			"executable", status.ExecutablePath,
+			"expected_version", c.cfg.ExpectedVersion,
+			"actual_version", status.Actual,
+		)
+	}
 }
 
 func validateWorkspaceCWD(workspace, workspaceRoot string) error {
@@ -727,33 +770,6 @@ func defaultTurnSandboxPolicy(workspace string) map[string]interface{} {
 func looksLikeCodexCommand(executable string) bool {
 	base := strings.ToLower(filepath.Base(strings.TrimSpace(executable)))
 	return base == "codex" || base == "codex.exe"
-}
-
-func decodeJSONObject(line string) (map[string]interface{}, bool) {
-	line = strings.TrimSpace(line)
-	if line == "" || !strings.HasPrefix(line, "{") {
-		return nil, false
-	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal([]byte(line), &payload); err != nil {
-		return nil, false
-	}
-	return payload, true
-}
-
-func nestedString(m map[string]interface{}, path ...string) string {
-	var cur interface{} = m
-	for _, part := range path {
-		next, ok := asMap(cur)
-		if !ok {
-			return ""
-		}
-		cur = next[part]
-	}
-	if s, ok := cur.(string); ok {
-		return s
-	}
-	return ""
 }
 
 func asInt(v interface{}) (int, bool) {
@@ -826,6 +842,11 @@ func encodeToolPayload(payload interface{}) string {
 	return string(data)
 }
 
+func decodeJSONObject(line string) (map[string]interface{}, bool) {
+	msg, ok := protocol.DecodeMessage(line)
+	return msg.Raw, ok
+}
+
 func answersForToolInput(params map[string]interface{}, autoApprove bool) (map[string]interface{}, bool) {
 	questions, ok := params["questions"].([]interface{})
 	if !ok || len(questions) == 0 {
@@ -852,18 +873,51 @@ func answersForToolInput(params map[string]interface{}, autoApprove bool) (map[s
 	return answers, autoApprove
 }
 
+func answersForToolInputParams(params gen.ToolRequestUserInputParams, autoApprove bool) (map[string]gen.ToolRequestUserInputAnswer, bool) {
+	if len(params.Questions) == 0 {
+		return nil, false
+	}
+	answers := make(map[string]gen.ToolRequestUserInputAnswer, len(params.Questions))
+	for _, question := range params.Questions {
+		if strings.TrimSpace(question.ID) == "" {
+			return nil, false
+		}
+		answer := nonInteractiveToolInputAnswer
+		if autoApprove {
+			if label := approvalOptionLabelFromQuestions(question.Options); label != "" {
+				answer = label
+			}
+		}
+		answers[question.ID] = gen.ToolRequestUserInputAnswer{Answers: []string{answer}}
+	}
+	return answers, autoApprove
+}
+
 func approvalOptionLabel(v interface{}) string {
 	options, ok := v.([]interface{})
 	if !ok {
 		return ""
 	}
-	var fallback string
+	typed := make([]gen.ToolRequestUserInputOption, 0, len(options))
 	for _, raw := range options {
 		opt, ok := raw.(map[string]interface{})
 		if !ok {
 			continue
 		}
 		label, _ := opt["label"].(string)
+		description, _ := opt["description"].(string)
+		typed = append(typed, gen.ToolRequestUserInputOption{
+			Label:       label,
+			Description: description,
+		})
+	}
+	return approvalOptionLabelFromQuestions(typed)
+}
+
+func approvalOptionLabelFromQuestions(options []gen.ToolRequestUserInputOption) string {
+	var fallback string
+	for _, opt := range options {
+		label := opt.Label
 		normalized := strings.ToLower(strings.TrimSpace(label))
 		switch normalized {
 		case "approve this session":

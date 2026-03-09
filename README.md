@@ -192,6 +192,22 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 - `{{ phase }}`
 - `{{ attempt }}`
 
+Codex app-server compatibility is versioned:
+
+- the supported Codex CLI version is `0.111.0`
+- `WORKFLOW.md` now records this as `codex.expected_version`
+- Maestro warns when the detected `codex --version` does not match, but it does not hard-fail
+
+The official Codex JSON Schemas are checked into [`schemas/codex/0.111.0/json`](schemas/codex/0.111.0/json), and the generated Go protocol models live under [`internal/appserver/protocol/gen`](internal/appserver/protocol/gen).
+
+Regenerate both after a deliberate Codex upgrade with:
+
+```bash
+./scripts/update_codex_schemas.sh
+```
+
+Normal builds and tests do not require Codex schema regeneration because the artifacts are committed.
+
 Bootstrap behavior matters:
 
 - `maestro workflow init` creates the file explicitly
