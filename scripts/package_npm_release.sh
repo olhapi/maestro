@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/package_npm_release.sh <version>
 
-Builds the macOS arm64 Symphony binary, stages the npm package in dist/npm-package,
+Builds the macOS arm64 Maestro binary, stages the npm package in dist/npm-package,
 and creates an npm tarball in dist/npm.
 
 Examples:
@@ -33,7 +33,7 @@ if [[ ! "$RAW_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; th
 fi
 
 VERSION="${RAW_VERSION#v}"
-BIN_PATH="$STAGE_DIR/bin/symphony"
+BIN_PATH="$STAGE_DIR/bin/maestro"
 
 if ! command -v go >/dev/null 2>&1; then
   echo "missing required command: go" >&2
@@ -53,11 +53,11 @@ fi
 rm -rf "$STAGE_DIR" "$PACK_DIR"
 mkdir -p "$STAGE_DIR/bin" "$PACK_DIR"
 
-echo "Building symphony $VERSION for darwin/arm64"
+echo "Building maestro $VERSION for darwin/arm64"
 (
   cd "$ROOT_DIR"
   CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-    go build -ldflags "-X main.version=$VERSION" -o "$BIN_PATH" ./cmd/symphony
+    go build -ldflags "-X main.version=$VERSION" -o "$BIN_PATH" ./cmd/maestro
 )
 chmod 755 "$BIN_PATH"
 

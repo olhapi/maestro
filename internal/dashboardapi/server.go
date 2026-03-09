@@ -11,8 +11,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/internal/observability"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/observability"
 )
 
 type Provider interface {

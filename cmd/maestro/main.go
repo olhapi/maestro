@@ -16,16 +16,16 @@ import (
 	"time"
 
 	"github.com/mattn/go-isatty"
-	"github.com/olhapi/symphony-go/internal/extensions"
-	"github.com/olhapi/symphony-go/internal/httpserver"
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/internal/logsink"
-	"github.com/olhapi/symphony-go/internal/mcp"
-	"github.com/olhapi/symphony-go/internal/observability"
-	"github.com/olhapi/symphony-go/internal/orchestrator"
-	"github.com/olhapi/symphony-go/internal/speccheck"
-	"github.com/olhapi/symphony-go/internal/verification"
-	"github.com/olhapi/symphony-go/pkg/config"
+	"github.com/olhapi/maestro/internal/extensions"
+	"github.com/olhapi/maestro/internal/httpserver"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/logsink"
+	"github.com/olhapi/maestro/internal/mcp"
+	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/orchestrator"
+	"github.com/olhapi/maestro/internal/speccheck"
+	"github.com/olhapi/maestro/internal/verification"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 var version = "dev"
@@ -82,7 +82,7 @@ func main() {
 	case "spec-check":
 		runSpecCheck()
 	case "version":
-		fmt.Printf("symphony %s\n", version)
+		fmt.Printf("maestro %s\n", version)
 	case "workflow":
 		runWorkflow()
 	default:
@@ -92,10 +92,10 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Printf(`symphony - Agent orchestration with local kanban
+	fmt.Printf(`maestro - Agent orchestration with local kanban
 
 Usage:
-  symphony <command> [options]
+  maestro <command> [options]
 
 Commands:
   run              Start the orchestrator (polls for work, dispatches to agents)
@@ -105,33 +105,33 @@ Commands:
   project          Manage projects
   status           Show orchestrator status
   verify           Run local readiness checks
-  spec-check       Run lightweight Symphony spec conformance checks
+  spec-check       Run lightweight Maestro spec conformance checks
   workflow         Initialize WORKFLOW.md
   version          Show version
 
 Examples:
-  symphony --log-level debug run /path/to/repo
-  symphony run                           # Start orchestrator in current directory
-  symphony run /path/to/repo             # Start orchestrator for a specific repo
-  symphony run --workflow ./custom.md    # Use a non-default workflow file
-  symphony run --extensions ./ext.json   # Enable extension-backed dynamic tools
-  symphony run --logs-root ./log         # Write structured JSON logs to file + stdout
-  symphony run --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
-  symphony run --port 8787               # Expose observability API on /api/v1/state
-  symphony mcp                           # Start MCP server over stdio
-  symphony mcp --extensions ./ext.json   # Load extension tools
-  symphony status --dashboard            # Render a dashboard-style snapshot
-  symphony board                         # Show kanban board
-  symphony issue create "Fix bug"        # Create an issue
-  symphony issue list --state ready      # List ready issues
-  symphony issue move ISS-1 in_progress  # Change issue state
-  symphony project create "My App"       # Create a project
-  symphony verify                         # Verify local setup
-  symphony spec-check --json              # Run spec conformance checks
-  symphony workflow init                  # Create a WORKFLOW.md
+  maestro --log-level debug run /path/to/repo
+  maestro run                           # Start orchestrator in current directory
+  maestro run /path/to/repo             # Start orchestrator for a specific repo
+  maestro run --workflow ./custom.md    # Use a non-default workflow file
+  maestro run --extensions ./ext.json   # Enable extension-backed dynamic tools
+  maestro run --logs-root ./log         # Write structured JSON logs to file + stdout
+  maestro run --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
+  maestro run --port 8787               # Expose observability API on /api/v1/state
+  maestro mcp                           # Start MCP server over stdio
+  maestro mcp --extensions ./ext.json   # Load extension tools
+  maestro status --dashboard            # Render a dashboard-style snapshot
+  maestro board                         # Show kanban board
+  maestro issue create "Fix bug"        # Create an issue
+  maestro issue list --state ready      # List ready issues
+  maestro issue move ISS-1 in_progress  # Change issue state
+  maestro project create "My App"       # Create a project
+  maestro verify                         # Verify local setup
+  maestro spec-check --json              # Run spec conformance checks
+  maestro workflow init                  # Create a WORKFLOW.md
 
 Database:
-  Symphony stores data in the current workspace's .symphony/symphony.db by default.
+  Maestro stores data in the current workspace's .maestro/maestro.db by default.
   Use --db flag to specify a different location.
 
 Global options:
@@ -143,7 +143,7 @@ Global options:
 func getStore(dbPath string) *kanban.Store {
 	if dbPath == "" {
 		cwd, _ := os.Getwd()
-		dbPath = filepath.Join(cwd, ".symphony", "symphony.db")
+		dbPath = filepath.Join(cwd, ".maestro", "maestro.db")
 	}
 
 	// Ensure directory exists
@@ -273,9 +273,9 @@ func parseRunOptions(args []string) runOptions {
 
 func guardrailsAcknowledgementBanner() string {
 	return strings.Join([]string{
-		"This Symphony implementation is a low key engineering preview.",
+		"This Maestro implementation is a low key engineering preview.",
 		"Codex will run without any guardrails.",
-		"Symphony-Go is not a supported product and is presented as-is.",
+		"Maestro is not a supported product and is presented as-is.",
 		"To silence this warning, pass " + guardrailsAcknowledgementFlag + ".",
 	}, "\n")
 }
@@ -290,7 +290,7 @@ func setupLoggerWithWriter(stdout io.Writer, logsRoot string, maxBytes int64, ma
 		if err := os.MkdirAll(logsRoot, 0o755); err != nil {
 			return "", err
 		}
-		logPath = filepath.Join(logsRoot, "symphony.log")
+		logPath = filepath.Join(logsRoot, "maestro.log")
 		f, err := logsink.New(logPath, maxBytes, maxFiles)
 		if err != nil {
 			return "", err
@@ -382,7 +382,7 @@ func runMCP() {
 func runWorkflow() {
 	if len(os.Args) < 3 {
 		fmt.Print(`Usage:
-  symphony workflow init [repo_path]
+  maestro workflow init [repo_path]
 `)
 		os.Exit(1)
 	}
@@ -442,7 +442,7 @@ func runBoard() {
 
 	// Print board
 	fmt.Println("\n╔══════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                        SYMPHONY KANBAN                            ║")
+	fmt.Println("║                        MAESTRO KANBAN                            ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════╝")
 
 	columns := []struct {
@@ -479,13 +479,13 @@ func runBoard() {
 func runIssue() {
 	if len(os.Args) < 3 {
 		fmt.Print(`Usage:
-  symphony issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
-  symphony issue list [--state <state>] [--project <id>]
-  symphony issue show <identifier>
-  symphony issue move <identifier> <state>
-  symphony issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
-  symphony issue delete <identifier>
-  symphony issue block <identifier> <blocker_identifier...>
+  maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
+  maestro issue list [--state <state>] [--project <id>]
+  maestro issue show <identifier>
+  maestro issue move <identifier> <state>
+  maestro issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
+  maestro issue delete <identifier>
+  maestro issue block <identifier> <blocker_identifier...>
 `)
 		os.Exit(1)
 	}
@@ -510,7 +510,7 @@ func runIssue() {
 	switch cmd {
 	case "create":
 		if len(args) < 1 {
-			fmt.Println("Usage: symphony issue create <title> [options]")
+			fmt.Println("Usage: maestro issue create <title> [options]")
 			os.Exit(1)
 		}
 		title := args[0]
@@ -568,7 +568,7 @@ func runIssue() {
 
 	case "show":
 		if len(args) < 1 {
-			fmt.Println("Usage: symphony issue show <identifier>")
+			fmt.Println("Usage: maestro issue show <identifier>")
 			os.Exit(1)
 		}
 		issue, err := store.GetIssueByIdentifier(args[0])
@@ -597,7 +597,7 @@ func runIssue() {
 
 	case "move":
 		if len(args) < 2 {
-			fmt.Println("Usage: symphony issue move <identifier> <state>")
+			fmt.Println("Usage: maestro issue move <identifier> <state>")
 			os.Exit(1)
 		}
 		issue, err := store.GetIssueByIdentifier(args[0])
@@ -613,7 +613,7 @@ func runIssue() {
 
 	case "update":
 		if len(args) < 1 {
-			fmt.Println("Usage: symphony issue update <identifier> [options]")
+			fmt.Println("Usage: maestro issue update <identifier> [options]")
 			os.Exit(1)
 		}
 		identifier := args[0]
@@ -649,7 +649,7 @@ func runIssue() {
 
 	case "delete":
 		if len(args) < 1 {
-			fmt.Println("Usage: symphony issue delete <identifier>")
+			fmt.Println("Usage: maestro issue delete <identifier>")
 			os.Exit(1)
 		}
 		issue, err := store.GetIssueByIdentifier(args[0])
@@ -665,7 +665,7 @@ func runIssue() {
 
 	case "block":
 		if len(args) < 2 {
-			fmt.Println("Usage: symphony issue block <identifier> <blocker_identifier...>")
+			fmt.Println("Usage: maestro issue block <identifier> <blocker_identifier...>")
 			os.Exit(1)
 		}
 		identifier := args[0]
@@ -693,9 +693,9 @@ func runIssue() {
 func runProject() {
 	if len(os.Args) < 3 {
 		fmt.Print(`Usage:
-  symphony project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
-  symphony project list
-  symphony project delete <id>
+  maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
+  maestro project list
+  maestro project delete <id>
 `)
 		os.Exit(1)
 	}
@@ -719,7 +719,7 @@ func runProject() {
 	switch cmd {
 	case "create":
 		if len(args) < 1 {
-			fmt.Println("Usage: symphony project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]")
+			fmt.Println("Usage: maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]")
 			os.Exit(1)
 		}
 		name := args[0]
@@ -769,7 +769,7 @@ func runProject() {
 
 	case "delete":
 		if len(args) < 1 {
-			fmt.Println("Usage: symphony project delete <id>")
+			fmt.Println("Usage: maestro project delete <id>")
 			os.Exit(1)
 		}
 		if err := store.DeleteProject(args[0]); err != nil {
@@ -922,7 +922,7 @@ func runStatus() {
 		return
 	}
 
-	fmt.Println("Symphony Status")
+	fmt.Println("Maestro Status")
 	fmt.Println(strings.Repeat("=", 40))
 	fmt.Printf("Projects: %d\n", len(projects))
 	fmt.Printf("Total Issues: %d\n", len(issues))

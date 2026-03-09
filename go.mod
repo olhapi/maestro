@@ -1,4 +1,4 @@
-module github.com/olhapi/symphony-go
+module github.com/olhapi/maestro
 
 go 1.23.2
 

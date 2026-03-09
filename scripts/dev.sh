@@ -38,7 +38,7 @@ if [[ -n "$REPO_PATH" ]]; then
   fi
   REPO_PATH="$(cd "$REPO_PATH" && pwd)"
 fi
-DB_PATH="${DB_PATH:-$ROOT_DIR/.symphony/symphony.db}"
+DB_PATH="${DB_PATH:-$ROOT_DIR/.maestro/maestro.db}"
 
 wait_for_backend() {
   local elapsed=0
@@ -79,7 +79,7 @@ wait_for_port_release "$BACKEND_PORT" "backend"
 wait_for_port_release "$FRONTEND_PORT" "frontend"
 
 cd "$ROOT_DIR"
-backend_cmd=(go run ./cmd/symphony run --db "$DB_PATH" --port "$BACKEND_PORT")
+backend_cmd=(go run ./cmd/maestro run --db "$DB_PATH" --port "$BACKEND_PORT")
 if [[ -n "$REPO_PATH" ]]; then
   backend_cmd+=( "$REPO_PATH" )
 fi

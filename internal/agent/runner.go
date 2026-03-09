@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/olhapi/symphony-go/internal/appserver"
-	"github.com/olhapi/symphony-go/internal/extensions"
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/pkg/config"
+	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/extensions"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 type WorkflowProvider interface {
@@ -250,7 +250,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		}
 		title := strings.TrimSpace(fmt.Sprintf("%s: %s", issue.Identifier, issue.Title))
 		if title == ":" {
-			title = "Symphony turn"
+			title = "Maestro turn"
 		}
 		if err := client.RunTurn(ctx, prompt, title); err != nil {
 			return &RunResult{

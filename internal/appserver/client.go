@@ -298,8 +298,8 @@ func (c *Client) initialize(ctx context.Context) error {
 		"params": map[string]interface{}{
 			"capabilities": map[string]interface{}{"experimentalApi": true},
 			"clientInfo": map[string]interface{}{
-				"name":    "symphony-go",
-				"title":   "Symphony Go",
+				"name":    "maestro",
+				"title":   "Maestro",
 				"version": "dev",
 			},
 		},

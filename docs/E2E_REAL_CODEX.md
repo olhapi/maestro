@@ -1,12 +1,12 @@
 # Real Codex E2E Harness
 
-This harness exercises the full Symphony-Go loop with the real Codex CLI:
+This harness exercises the full Maestro loop with the real Codex CLI:
 
-1. build `symphony`
+1. build `maestro`
 2. create a temporary repo root and SQLite database
 3. write a dedicated `WORKFLOW.md`
 4. create two simple issues and move them to `ready`
-5. start `symphony run`
+5. start `maestro run`
 6. wait for Codex to complete both issues
 7. verify the expected output artifacts
 
@@ -29,14 +29,14 @@ The generated workflow asks Codex to:
 
 The test issues are intentionally deterministic:
 
-- `artifact-one.txt` must contain `symphony e2e ok 1`
-- `artifact-two.txt` must contain `symphony e2e ok 2`
+- `artifact-one.txt` must contain `maestro e2e ok 1`
+- `artifact-two.txt` must contain `maestro e2e ok 2`
 
 ## Why It Uses `codex exec`
 
 The harness uses the real Codex CLI in `stdio` mode via `codex exec` so the run stays end-to-end while remaining easy to launch from a shell script:
 
-- Symphony still creates issues, manages workspaces, and drives scheduling
+- Maestro still creates issues, manages workspaces, and drives scheduling
 - Codex still performs the file and shell actions
 - the verification remains deterministic and local
 

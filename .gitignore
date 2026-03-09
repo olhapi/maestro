@@ -1,6 +1,6 @@
 dist/
 *.tgz
 .playwright-cli/
-.symphony/
-/symphony
+.maestro/
+/maestro
 /workspaces/

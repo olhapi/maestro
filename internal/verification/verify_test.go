@@ -7,7 +7,7 @@ import (
 
 func TestRunVerification(t *testing.T) {
 	tmp := t.TempDir()
-	db := filepath.Join(tmp, "db", "symphony.db")
+	db := filepath.Join(tmp, "db", "maestro.db")
 	res := Run(tmp, db)
 	if !res.OK {
 		t.Fatalf("expected ok result, got %+v", res)

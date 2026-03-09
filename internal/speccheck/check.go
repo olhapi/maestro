@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/olhapi/symphony-go/pkg/config"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 type Report struct {
@@ -12,7 +12,7 @@ type Report struct {
 	Checks map[string]string `json:"checks"`
 }
 
-// Run performs lightweight local conformance checks against the Symphony spec areas.
+// Run performs lightweight local conformance checks against the Maestro spec areas.
 func Run(repoRoot string) Report {
 	if repoRoot == "" {
 		repoRoot, _ = os.Getwd()

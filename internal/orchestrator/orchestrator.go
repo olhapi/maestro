@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/olhapi/symphony-go/internal/agent"
-	"github.com/olhapi/symphony-go/internal/appserver"
-	"github.com/olhapi/symphony-go/internal/extensions"
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/internal/observability"
-	"github.com/olhapi/symphony-go/pkg/config"
+	"github.com/olhapi/maestro/internal/agent"
+	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/extensions"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 const continuationRetryDelay = time.Second
@@ -33,6 +33,8 @@ type retryEntry struct {
 	Error     string    `json:"error,omitempty"`
 	DelayType string    `json:"delay_type,omitempty"`
 }
+
+const scopedRuntimeKey = "__scoped__"
 
 type projectRuntime struct {
 	projectID    string
@@ -202,6 +204,45 @@ func (o *Orchestrator) runtimeForProject(project *kanban.Project) (*projectRunti
 	return runtime, nil
 }
 
+func (o *Orchestrator) runtimeForScopedIssue() (*projectRuntime, error) {
+	if !o.isSharedMode() || strings.TrimSpace(o.scopedRepoPath) == "" {
+		return nil, fmt.Errorf("issue_missing_project")
+	}
+
+	o.runtimeMu.Lock()
+	defer o.runtimeMu.Unlock()
+
+	if cached, ok := o.projectRuntimes[scopedRuntimeKey]; ok {
+		if cached.repoPath == o.scopedRepoPath && cached.workflowPath == o.scopedWorkflowPath {
+			return cached, nil
+		}
+	}
+
+	workflowPath := o.scopedWorkflowPath
+	if strings.TrimSpace(workflowPath) == "" {
+		workflowPath = filepath.Join(o.scopedRepoPath, "WORKFLOW.md")
+	}
+	if _, created, err := config.EnsureWorkflowAtPath(workflowPath, config.InitOptions{}); err != nil {
+		return nil, err
+	} else if created {
+		slog.Info("Created WORKFLOW.md with bootstrap defaults", "path", workflowPath, "repo_path", o.scopedRepoPath)
+	}
+
+	manager, err := config.NewManagerForPath(workflowPath)
+	if err != nil {
+		return nil, err
+	}
+	runtime := &projectRuntime{
+		projectID:    "",
+		repoPath:     o.scopedRepoPath,
+		workflowPath: workflowPath,
+		workflow:     manager,
+		runner:       o.runnerFactory(manager),
+	}
+	o.projectRuntimes[scopedRuntimeKey] = runtime
+	return runtime, nil
+}
+
 func (o *Orchestrator) runtimeForIssue(issue *kanban.Issue) (*projectRuntime, *config.Workflow, error) {
 	if !o.isSharedMode() {
 		workflow, err := o.workflows.Current()
@@ -210,8 +251,19 @@ func (o *Orchestrator) runtimeForIssue(issue *kanban.Issue) (*projectRuntime, *c
 		}
 		return &projectRuntime{projectID: issue.ProjectID, workflow: o.workflows, runner: o.runner}, workflow, nil
 	}
-	if issue == nil || strings.TrimSpace(issue.ProjectID) == "" {
+	if issue == nil {
 		return nil, nil, fmt.Errorf("issue_missing_project")
+	}
+	if strings.TrimSpace(issue.ProjectID) == "" {
+		runtime, err := o.runtimeForScopedIssue()
+		if err != nil {
+			return nil, nil, err
+		}
+		workflow, err := runtime.workflow.Current()
+		if err != nil {
+			return nil, nil, err
+		}
+		return runtime, workflow, nil
 	}
 	project, err := o.store.GetProject(issue.ProjectID)
 	if err != nil {

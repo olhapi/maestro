@@ -18,7 +18,7 @@ const nav = [
   { label: 'Sessions', to: appRoutes.sessions, icon: MonitorPlay, match: (pathname: string) => pathname === appRoutes.sessions },
 ]
 
-const APP_TITLE = 'Symphony Control Center'
+const APP_TITLE = 'Maestro Control Center'
 
 function getPageTitle(pathname: string) {
   if (pathname === appRoutes.overview) return 'Overview'

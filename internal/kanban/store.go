@@ -22,7 +22,7 @@ type Store struct {
 // NewStore creates a new store with the given database path
 func NewStore(dbPath string) (*Store, error) {
 	if dbPath == "" {
-		dbPath = filepath.Join(".", ".symphony", "symphony.db")
+		dbPath = filepath.Join(".", ".maestro", "maestro.db")
 	}
 	absDBPath, err := filepath.Abs(dbPath)
 	if err != nil {

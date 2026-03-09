@@ -18,7 +18,7 @@ func FormatDashboard(snapshot Snapshot, opts DashboardOptions) string {
 	}
 
 	lines := []string{
-		"SYMPHONY STATUS",
+		"MAESTRO STATUS",
 		fmt.Sprintf("generated_at=%s", snapshot.GeneratedAt.UTC().Format(time.RFC3339)),
 		fmt.Sprintf("running=%d retrying=%d total_tokens=%d", len(snapshot.Running), len(snapshot.Retrying), snapshot.CodexTotals.TotalTokens),
 	}

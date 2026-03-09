@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/olhapi/symphony-go/internal/extensions"
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/pkg/config"
+	"github.com/olhapi/maestro/internal/extensions"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 func setupTestRunner(t *testing.T, command string, mode string) (*Runner, *kanban.Store, *config.Manager, string, string) {
@@ -272,7 +272,7 @@ done
 
 	runner, store, manager, _, _ := setupTestRunner(t, "sh "+scriptPath, config.AgentModeAppServer)
 	runner = NewRunnerWithExtensions(manager, store, extensions.NewRegistry([]extensions.Tool{
-		{Name: "ext_echo", Description: "echo tool", Command: "echo $SYMPHONY_ARGS_JSON"},
+		{Name: "ext_echo", Description: "echo tool", Command: "echo $MAESTRO_ARGS_JSON"},
 	}))
 	issue, _ := store.CreateIssue("", "", "Dynamic Tools", "", 0, nil)
 

@@ -11,7 +11,7 @@ import (
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
-	"github.com/olhapi/symphony-go/internal/kanban"
+	"github.com/olhapi/maestro/internal/kanban"
 )
 
 func testStore(t *testing.T) *kanban.Store {
@@ -29,7 +29,7 @@ func TestLoadExtensionsAndExecute(t *testing.T) {
 	store := testStore(t)
 	extPath := filepath.Join(t.TempDir(), "ext.json")
 	json := `[
-  {"name":"ext_echo","description":"echo args","command":"echo $SYMPHONY_TOOL_NAME:$SYMPHONY_ARGS_JSON","timeout_sec":2}
+  {"name":"ext_echo","description":"echo args","command":"echo $MAESTRO_TOOL_NAME:$MAESTRO_ARGS_JSON","timeout_sec":2}
 ]`
 	if err := os.WriteFile(extPath, []byte(json), 0o644); err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestHelperProcessMCPServer(t *testing.T) {
 }
 
 func TestStdioServerInfoAndToolEnvelope(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "symphony.db")
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	client := newTestMCPClient(t, dbPath)
 	defer client.Close()
 
@@ -166,7 +166,7 @@ func TestStdioServerInfoAndToolEnvelope(t *testing.T) {
 }
 
 func TestStdioMutationsExposeIdentityAndSurviveErrors(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "symphony.db")
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	client := newTestMCPClient(t, dbPath)
 	defer client.Close()

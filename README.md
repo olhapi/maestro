@@ -1,6 +1,6 @@
-# Symphony-Go
+# Maestro
 
-Symphony-Go is a Go implementation of the Symphony orchestration loop with a local SQLite-backed Kanban tracker instead of Linear.
+Maestro is a Go implementation of the Maestro orchestration loop with a local SQLite-backed Kanban tracker instead of Linear.
 
 It gives you three durable surfaces:
 
@@ -11,13 +11,13 @@ It gives you three durable surfaces:
 ## Build
 
 ```bash
-go build -o symphony ./cmd/symphony
+go build -o maestro ./cmd/maestro
 ```
 
 Optional Docker build:
 
 ```bash
-docker build -t symphony .
+docker build -t maestro .
 ```
 
 ## Install
@@ -25,21 +25,21 @@ docker build -t symphony .
 Preferred global install for macOS arm64:
 
 ```bash
-npm install -g @olhapi/symphony-go
+npm install -g @olhapi/maestro
 ```
 
 Update an existing global install:
 
 ```bash
-npm update -g @olhapi/symphony-go
+npm update -g @olhapi/maestro
 ```
 
-The npm package currently supports macOS arm64 only. The installed command name is still `symphony`.
+The npm package currently supports macOS arm64 only. The installed command name is still `maestro`.
 
 For local development or unsupported platforms, build from source with Go:
 
 ```bash
-go build -o symphony ./cmd/symphony
+go build -o maestro ./cmd/maestro
 ```
 
 ## Quick Start
@@ -47,7 +47,7 @@ go build -o symphony ./cmd/symphony
 ### 1. Initialize a workflow file
 
 ```bash
-symphony workflow init .
+maestro workflow init .
 ```
 
 This writes a repo-local `WORKFLOW.md` with the default Kanban workflow, Codex command, and prompt template.
@@ -55,17 +55,17 @@ This writes a repo-local `WORKFLOW.md` with the default Kanban workflow, Codex c
 ### 2. Create a project and some issues
 
 ```bash
-symphony project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
-symphony issue create "Add login page" --project <project_id> --labels feature,ui
-symphony issue create "Fix auth bug" --priority 1 --labels bug
-symphony issue list
-symphony board
+maestro project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
+maestro issue create "Add login page" --project <project_id> --labels feature,ui
+maestro issue create "Fix auth bug" --priority 1 --labels bug
+maestro issue list
+maestro board
 ```
 
 Move an issue into the ready queue when you want the orchestrator to pick it up:
 
 ```bash
-symphony issue move ISS-1 ready
+maestro issue move ISS-1 ready
 ```
 
 ### 3. Expose the tracker to MCP clients
@@ -75,8 +75,8 @@ Add the built binary to your MCP client config:
 ```json
 {
   "mcpServers": {
-    "symphony": {
-      "command": "/absolute/path/to/symphony",
+    "maestro": {
+      "command": "/absolute/path/to/maestro",
       "args": ["mcp"]
     }
   }
@@ -85,15 +85,15 @@ Add the built binary to your MCP client config:
 
 The MCP server exposes project, issue, board, and blocker-management tools backed by the local Kanban store.
 
-For a shared multi-project setup, point both `symphony mcp` and `symphony run` at the same central DB.
+For a shared multi-project setup, point both `maestro mcp` and `maestro run` at the same central DB.
 
 ### 4. Start the orchestrator
 
 ```bash
-symphony run /path/to/repo
+maestro run /path/to/repo
 ```
 
-When `--db` is omitted, Symphony uses the current Symphony workspace's `.symphony/symphony.db` by default.
+When `--db` is omitted, Maestro uses the current Maestro workspace's `.maestro/maestro.db` by default.
 
 The orchestrator:
 
@@ -115,27 +115,27 @@ REPO_PATH=/path/to/repo make dev
 
 ```bash
 # Projects
-symphony project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
-symphony project list
-symphony project delete <id>
+maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
+maestro project list
+maestro project delete <id>
 
 # Issues
-symphony issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
-symphony issue list [--state <state>] [--project <id>]
-symphony issue show <identifier>
-symphony issue move <identifier> <state>
-symphony issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
-symphony issue delete <identifier>
-symphony issue block <identifier> <blocker_identifier...>
+maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
+maestro issue list [--state <state>] [--project <id>]
+maestro issue show <identifier>
+maestro issue move <identifier> <state>
+maestro issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
+maestro issue delete <identifier>
+maestro issue block <identifier> <blocker_identifier...>
 
 # Orchestration
-symphony --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
-symphony --log-level <debug|info|warn|error> mcp [--db <path>] [--extensions <json-file>]
-symphony --log-level <debug|info|warn|error> status [--json]
-symphony --log-level <debug|info|warn|error> status --dashboard [--dashboard-url <url>]
-symphony --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
-symphony --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
-symphony --log-level <debug|info|warn|error> workflow init [repo_path]
+maestro --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
+maestro --log-level <debug|info|warn|error> mcp [--db <path>] [--extensions <json-file>]
+maestro --log-level <debug|info|warn|error> status [--json]
+maestro --log-level <debug|info|warn|error> status --dashboard [--dashboard-url <url>]
+maestro --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
+maestro --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
+maestro --log-level <debug|info|warn|error> workflow init [repo_path]
 ```
 
 `--log-level` defaults to `info`. Use `debug` to include raw app-server stream output and session churn in the structured logs.
@@ -172,10 +172,10 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 
 Bootstrap behavior matters:
 
-- `symphony workflow init` creates the file explicitly
-- `symphony run` bootstraps a missing file automatically
-- `symphony verify` also bootstraps a missing file
-- `symphony spec-check` does not mutate the repo and fails if the workflow file is missing or invalid
+- `maestro workflow init` creates the file explicitly
+- `maestro run` bootstraps a missing file automatically
+- `maestro verify` also bootstraps a missing file
+- `maestro spec-check` does not mutate the repo and fails if the workflow file is missing or invalid
 
 ## Operations and Advanced Usage
 
@@ -200,9 +200,9 @@ Orchestrator -> workspace lifecycle -> agent runner
 ## Docker
 
 ```bash
-docker build -t symphony .
-docker run --rm -i -v ./data:/data symphony mcp --db /data/symphony.db
-docker run --rm -v ./repo:/repo -v ./data:/data symphony run /repo --db /data/symphony.db
+docker build -t maestro .
+docker run --rm -i -v ./data:/data maestro mcp --db /data/maestro.db
+docker run --rm -v ./repo:/repo -v ./data:/data maestro run /repo --db /data/maestro.db
 ```
 
 ## License

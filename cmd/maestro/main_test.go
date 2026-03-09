@@ -110,10 +110,10 @@ func TestReleaseBuildReportsInjectedVersion(t *testing.T) {
 		t.Fatal("failed to resolve test file path")
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	binPath := filepath.Join(t.TempDir(), "symphony")
+	binPath := filepath.Join(t.TempDir(), "maestro")
 	const releaseVersion = "1.2.3-test"
 
-	buildCmd := exec.Command("go", "build", "-ldflags", "-X main.version="+releaseVersion, "-o", binPath, "./cmd/symphony")
+	buildCmd := exec.Command("go", "build", "-ldflags", "-X main.version="+releaseVersion, "-o", binPath, "./cmd/maestro")
 	buildCmd.Dir = repoRoot
 	if output, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build failed: %v\n%s", err, output)
@@ -122,7 +122,7 @@ func TestReleaseBuildReportsInjectedVersion(t *testing.T) {
 	versionCmd := exec.Command(binPath, "version")
 	if output, err := versionCmd.CombinedOutput(); err != nil {
 		t.Fatalf("version command failed: %v\n%s", err, output)
-	} else if got := strings.TrimSpace(string(output)); got != "symphony "+releaseVersion {
+	} else if got := strings.TrimSpace(string(output)); got != "maestro "+releaseVersion {
 		t.Fatalf("unexpected version output: %q", got)
 	}
 }

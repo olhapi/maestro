@@ -9,7 +9,7 @@ import (
 
 func TestRotatesBySize(t *testing.T) {
 	d := t.TempDir()
-	p := filepath.Join(d, "symphony.log")
+	p := filepath.Join(d, "maestro.log")
 	w, err := New(p, 32, 3)
 	if err != nil {
 		t.Fatalf("new writer: %v", err)

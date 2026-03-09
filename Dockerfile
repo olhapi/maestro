@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Build with CGO for SQLite
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o symphony ./cmd/symphony
+RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o maestro ./cmd/maestro
 
 # Runtime stage
 FROM alpine:3.19
@@ -24,10 +24,10 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 
 # Copy binary
-COPY --from=builder /app/symphony /usr/local/bin/symphony
+COPY --from=builder /app/maestro /usr/local/bin/maestro
 
 # Create data directory
 RUN mkdir -p /data
 
-ENTRYPOINT ["symphony"]
+ENTRYPOINT ["maestro"]
 CMD ["--help"]

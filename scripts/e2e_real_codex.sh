@@ -3,15 +3,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HARNESS_ROOT="${E2E_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/symphony-real-codex-e2e.XXXXXX")}"
+HARNESS_ROOT="${E2E_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/maestro-real-codex-e2e.XXXXXX")}"
 BIN_DIR="$HARNESS_ROOT/bin"
 ARTIFACTS_DIR="$HARNESS_ROOT/artifacts"
 WORKSPACES_DIR="$HARNESS_ROOT/workspaces"
 LOGS_DIR="$HARNESS_ROOT/logs"
-DB_PATH="$HARNESS_ROOT/.symphony/symphony.db"
+DB_PATH="$HARNESS_ROOT/.maestro/maestro.db"
 WORKFLOW_PATH="$HARNESS_ROOT/WORKFLOW.md"
 ORCH_LOG="$HARNESS_ROOT/orchestrator.log"
-SYMPHONY_BIN="$BIN_DIR/symphony"
+MAESTRO_BIN="$BIN_DIR/maestro"
 TIMEOUT_SEC="${E2E_TIMEOUT_SEC:-600}"
 POLL_SEC="${E2E_POLL_SEC:-2}"
 KEEP_HARNESS="${E2E_KEEP_HARNESS:-1}"
@@ -45,11 +45,11 @@ yaml_quote() {
 }
 
 issue_state() {
-  "$SYMPHONY_BIN" issue show "$1" --db "$DB_PATH" | awk -F': *' '/^State:/{print $2}' | tr -d '[:space:]'
+  "$MAESTRO_BIN" issue show "$1" --db "$DB_PATH" | awk -F': *' '/^State:/{print $2}' | tr -d '[:space:]'
 }
 
 issue_title() {
-  "$SYMPHONY_BIN" issue show "$1" --db "$DB_PATH" | awk -F': *' '/^Title:/{sub(/^ +/, "", $2); print $2}'
+  "$MAESTRO_BIN" issue show "$1" --db "$DB_PATH" | awk -F': *' '/^Title:/{sub(/^ +/, "", $2); print $2}'
 }
 
 wait_for_done() {
@@ -90,8 +90,8 @@ require_cmd git
 
 mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$DB_PATH")"
 
-echo "Building Symphony binary into $SYMPHONY_BIN"
-go build -o "$SYMPHONY_BIN" ./cmd/symphony
+echo "Building Maestro binary into $MAESTRO_BIN"
+go build -o "$MAESTRO_BIN" ./cmd/maestro
 
 CODEX_COMMAND="${E2E_CODEX_COMMAND:-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd . --add-dir $(printf '%q' "$HARNESS_ROOT") -}"
 CODEX_COMMAND_YAML="$(yaml_quote "$CODEX_COMMAND")"
@@ -113,9 +113,9 @@ workspace:
 hooks:
   after_create: |
     git init -q
-    git config user.name "Symphony E2E"
+    git config user.name "Maestro E2E"
     git config user.email "e2e@example.com"
-    printf '%s\n' '# Symphony E2E Workspace' > README.md
+    printf '%s\n' '# Maestro E2E Workspace' > README.md
   timeout_ms: 10000
 agent:
   max_concurrent_agents: 2
@@ -131,7 +131,7 @@ codex:
   read_timeout_ms: 5000
   turn_timeout_ms: 300000
 ---
-You are running the Symphony real-Codex end-to-end harness.
+You are running the Maestro real-Codex end-to-end harness.
 
 Complete exactly one issue and then stop.
 
@@ -143,29 +143,29 @@ Issue description:
 Environment:
 - Current directory is an isolated issue workspace.
 - Shared artifacts directory: $ARTIFACTS_DIR
-- Symphony binary: $SYMPHONY_BIN
-- Symphony database: $DB_PATH
+- Maestro binary: $MAESTRO_BIN
+- Maestro database: $DB_PATH
 
 Requirements:
 1. Create the requested artifact in the shared artifacts directory, not only in the current workspace.
 2. The file contents must match the requested text exactly, followed by one trailing newline.
 3. Verify the file with shell commands before finishing.
 4. Mark the issue done with this command after verification succeeds:
-   $SYMPHONY_BIN issue move {{ issue.identifier }} done --db $DB_PATH
+   $MAESTRO_BIN issue move {{ issue.identifier }} done --db $DB_PATH
 5. If the artifact is already correct, just verify it and mark the issue done.
 6. Do not open a pull request.
 7. Stop after the issue is marked done.
 EOF
 
 echo "Creating e2e issues in $DB_PATH"
-ISSUE_ONE="$("$SYMPHONY_BIN" issue create "Create first e2e artifact" --desc "Create file artifact-one.txt in the shared artifacts directory with exactly this single line of text: symphony e2e ok 1" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
-ISSUE_TWO="$("$SYMPHONY_BIN" issue create "Create second e2e artifact" --desc "Create file artifact-two.txt in the shared artifacts directory with exactly this single line of text: symphony e2e ok 2" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_ONE="$("$MAESTRO_BIN" issue create "Create first e2e artifact" --desc "Create file artifact-one.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 1" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_TWO="$("$MAESTRO_BIN" issue create "Create second e2e artifact" --desc "Create file artifact-two.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 2" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
 
-"$SYMPHONY_BIN" issue move "$ISSUE_ONE" ready --db "$DB_PATH" >/dev/null
-"$SYMPHONY_BIN" issue move "$ISSUE_TWO" ready --db "$DB_PATH" >/dev/null
+"$MAESTRO_BIN" issue move "$ISSUE_ONE" ready --db "$DB_PATH" >/dev/null
+"$MAESTRO_BIN" issue move "$ISSUE_TWO" ready --db "$DB_PATH" >/dev/null
 
 echo "Starting orchestrator"
-"$SYMPHONY_BIN" run "$HARNESS_ROOT" \
+"$MAESTRO_BIN" run "$HARNESS_ROOT" \
   --workflow "$WORKFLOW_PATH" \
   --db "$DB_PATH" \
   --logs-root "$LOGS_DIR" \
@@ -187,8 +187,8 @@ if ! wait_for_done "$ISSUE_TWO"; then
   exit 1
 fi
 
-assert_file_content "$ARTIFACTS_DIR/artifact-one.txt" "symphony e2e ok 1"
-assert_file_content "$ARTIFACTS_DIR/artifact-two.txt" "symphony e2e ok 2"
+assert_file_content "$ARTIFACTS_DIR/artifact-one.txt" "maestro e2e ok 1"
+assert_file_content "$ARTIFACTS_DIR/artifact-two.txt" "maestro e2e ok 2"
 
 echo "Real Codex e2e flow completed successfully."
 echo "Verified:"

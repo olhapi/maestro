@@ -89,7 +89,7 @@ func (r *Registry) Specs() []map[string]interface{} {
 				"properties": map[string]interface{}{
 					"args": map[string]interface{}{
 						"type":        "object",
-						"description": "Extension arguments object; passed to the tool command via SYMPHONY_ARGS_JSON.",
+						"description": "Extension arguments object; passed to the tool command via MAESTRO_ARGS_JSON.",
 					},
 				},
 			},
@@ -128,9 +128,9 @@ func (r *Registry) Execute(ctx context.Context, name string, args interface{}) (
 		}
 	}
 	if tool.DenyEnvPassthrough {
-		cmd.Env = []string{"SYMPHONY_ARGS_JSON=" + string(argsJSON), "SYMPHONY_TOOL_NAME=" + name}
+		cmd.Env = []string{"MAESTRO_ARGS_JSON=" + string(argsJSON), "MAESTRO_TOOL_NAME=" + name}
 	} else {
-		cmd.Env = append(os.Environ(), "SYMPHONY_ARGS_JSON="+string(argsJSON), "SYMPHONY_TOOL_NAME="+name)
+		cmd.Env = append(os.Environ(), "MAESTRO_ARGS_JSON="+string(argsJSON), "MAESTRO_TOOL_NAME="+name)
 	}
 
 	out, err := cmd.CombinedOutput()

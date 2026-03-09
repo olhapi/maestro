@@ -31,7 +31,7 @@ func TestLoadFileAndSpecs(t *testing.T) {
 }
 
 func TestExecuteSuccess(t *testing.T) {
-	reg := NewRegistry([]Tool{{Name: "echo_tool", Command: "echo $SYMPHONY_TOOL_NAME:$SYMPHONY_ARGS_JSON"}})
+	reg := NewRegistry([]Tool{{Name: "echo_tool", Command: "echo $MAESTRO_TOOL_NAME:$MAESTRO_ARGS_JSON"}})
 	out, err := reg.Execute(context.Background(), "echo_tool", map[string]interface{}{"args": map[string]interface{}{"x": 1}})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

@@ -1,7 +1,7 @@
 .PHONY: build test dev e2e-real-codex
 
 build:
-	go build -o ./symphony ./cmd/symphony
+	go build -o ./maestro ./cmd/maestro
 
 test:
 	go test ./...

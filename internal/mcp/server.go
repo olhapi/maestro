@@ -11,8 +11,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/olhapi/symphony-go/internal/extensions"
-	"github.com/olhapi/symphony-go/internal/kanban"
+	"github.com/olhapi/maestro/internal/extensions"
+	"github.com/olhapi/maestro/internal/kanban"
 )
 
 // Server implements the MCP server for the kanban board
@@ -42,7 +42,7 @@ func NewServerWithRegistry(store *kanban.Store, registry *extensions.Registry) *
 	}
 	s := &Server{
 		store:      store,
-		server:     server.NewDefaultServer("symphony", "1.0.0"),
+		server:     server.NewDefaultServer("maestro", "1.0.0"),
 		extensions: registry,
 		instanceID: generateServerInstanceID(),
 	}
@@ -56,7 +56,7 @@ func (s *Server) registerTools() {
 	s.tools = []mcp.Tool{
 		{
 			Name:        "server_info",
-			Description: "Get Symphony MCP server identity and store metadata",
+			Description: "Get Maestro MCP server identity and store metadata",
 			InputSchema: mcp.ToolInputSchema{Type: "object"},
 		},
 		{

@@ -47,7 +47,7 @@ export function ProjectDialog({
           <div>
             <DialogTitle className="text-xl font-semibold text-white">{initial ? 'Edit project' : 'Create project'}</DialogTitle>
             <DialogDescription className="mt-2 text-sm text-[var(--muted-foreground)]">
-              Manage the top-level portfolio containers for Symphony work.
+              Manage the top-level portfolio containers for Maestro work.
             </DialogDescription>
           </div>
           <div className="grid gap-4">

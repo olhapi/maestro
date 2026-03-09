@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/pkg/config"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 type Result struct {
@@ -23,7 +23,7 @@ func Run(repoPath, dbPath string) Result {
 		repoPath, _ = os.Getwd()
 	}
 	if dbPath == "" {
-		dbPath = filepath.Join(repoPath, ".symphony", "symphony.db")
+		dbPath = filepath.Join(repoPath, ".maestro", "maestro.db")
 	}
 
 	if _, created, err := config.EnsureWorkflow(repoPath, config.InitOptions{}); err != nil {

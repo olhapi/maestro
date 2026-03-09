@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/symphony-go/internal/agent"
-	"github.com/olhapi/symphony-go/internal/appserver"
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/pkg/config"
+	"github.com/olhapi/maestro/internal/agent"
+	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 func setupTestOrchestrator(t *testing.T, command string) (*Orchestrator, *kanban.Store, *config.Manager, string) {
@@ -372,6 +372,87 @@ func TestStatusLiveSessionsUseIssueIdentifiers(t *testing.T) {
 	if session.IssueID != issue.ID || session.IssueIdentifier != issue.Identifier {
 		t.Fatalf("unexpected session metadata: %+v", session)
 	}
+}
+
+func TestSharedDispatchUsesScopedRuntimeForProjectlessIssue(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	repoPath := filepath.Join(tmpDir, "repo")
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll repo: %v", err)
+	}
+
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+	workflowContent := `---
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 50
+workspace:
+  root: ` + workspaceRoot + `
+hooks:
+  timeout_ms: 1000
+agent:
+  max_concurrent_agents: 1
+  max_turns: 1
+  max_retry_backoff_ms: 100
+  mode: stdio
+codex:
+  command: cat
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 500
+  turn_timeout_ms: 1000
+---
+Test prompt for {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+
+	orch := NewSharedWithExtensions(store, nil, repoPath, workflowPath)
+	runner := newControlledRunner(store)
+	orch.runnerFactory = func(*config.Manager) runnerExecutor { return runner }
+	t.Cleanup(func() {
+		orch.stopAllRuns()
+		waitForNoRunning(t, orch, time.Second)
+	})
+
+	issue, err := store.CreateIssue("", "", "Scoped issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState failed: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	starts := runner.waitForStarts(t, 1, time.Second)
+	if starts[0] != issue.Identifier {
+		t.Fatalf("expected start for %s, got %v", issue.Identifier, starts)
+	}
+
+	runner.complete(issue.Identifier)
+	waitForNoRunning(t, orch, time.Second)
 }
 
 type runnerEvent struct {

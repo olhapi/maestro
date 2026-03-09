@@ -1,16 +1,16 @@
 # Operations and Reference
 
-This document collects the durable operational details for Symphony-Go: runtime endpoints, validation commands, extension tool files, logging, and deliberate non-goals.
+This document collects the durable operational details for Maestro: runtime endpoints, validation commands, extension tool files, logging, and deliberate non-goals.
 
 ## Observability
 
 Start the orchestrator with an HTTP port to expose runtime state:
 
 ```bash
-./symphony run /path/to/repo --port 8787
+./maestro run /path/to/repo --port 8787
 ```
 
-If `--db` is omitted, `run` uses the current Symphony workspace's `.symphony/symphony.db`.
+If `--db` is omitted, `run` uses the current Maestro workspace's `.maestro/maestro.db`.
 
 Available endpoints:
 
@@ -23,7 +23,7 @@ Available endpoints:
 - `POST /api/v1/refresh`: request a refresh event
 - `GET /api/v1/dashboard`: combined snapshot of state, sessions, and recent events
 
-`symphony status --dashboard` is a local CLI rendering helper. It is not the same thing as the live HTTP observability API and should not be treated as a remote status feed.
+`maestro status --dashboard` is a local CLI rendering helper. It is not the same thing as the live HTTP observability API and should not be treated as a remote status feed.
 
 Session payloads include both `issue_id` and `issue_identifier`, and the `sessions` map is keyed by issue identifier.
 
@@ -31,16 +31,16 @@ Session payloads include both `issue_id` and `issue_identifier`, and the `sessio
 
 `WORKFLOW.md` is required for orchestration. The commands treat it differently:
 
-- `symphony workflow init [repo_path]` creates the file explicitly.
-- `symphony run [repo_path]` bootstraps a missing file automatically before starting.
-- `symphony verify [--repo <path>] [--db <path>] [--json]` bootstraps a missing file, verifies it loads, and checks database initialization.
-- `symphony spec-check [--repo <path>] [--json]` is non-mutating and fails if the workflow file is missing or invalid.
+- `maestro workflow init [repo_path]` creates the file explicitly.
+- `maestro run [repo_path]` bootstraps a missing file automatically before starting.
+- `maestro verify [--repo <path>] [--db <path>] [--json]` bootstraps a missing file, verifies it loads, and checks database initialization.
+- `maestro spec-check [--repo <path>] [--json]` is non-mutating and fails if the workflow file is missing or invalid.
 
 `verify` is intended for local readiness checks. `spec-check` is intended for lightweight conformance checks against the repo layout and workflow surface.
 
 ## Extensions File
 
-Both `symphony run` and `symphony mcp` can load the same JSON file via `--extensions`.
+Both `maestro run` and `maestro mcp` can load the same JSON file via `--extensions`.
 
 Each extension entry supports:
 
@@ -51,7 +51,7 @@ Each extension entry supports:
 - `allowed`: optional boolean policy gate
 - `working_dir`: optional working directory for the command
 - `require_args`: optional boolean that rejects empty `args`
-- `deny_env_passthrough`: optional boolean that restricts the environment to `SYMPHONY_*`
+- `deny_env_passthrough`: optional boolean that restricts the environment to `MAESTRO_*`
 
 Example:
 
@@ -60,7 +60,7 @@ Example:
   {
     "name": "echo_issue",
     "description": "Print the args object for debugging",
-    "command": "jq -r . <<< \"$SYMPHONY_ARGS_JSON\"",
+    "command": "jq -r . <<< \"$MAESTRO_ARGS_JSON\"",
     "timeout_sec": 10,
     "require_args": true
   }
@@ -69,8 +69,8 @@ Example:
 
 At runtime:
 
-- the tool name is passed as `SYMPHONY_TOOL_NAME`
-- the JSON arguments object is passed as `SYMPHONY_ARGS_JSON`
+- the tool name is passed as `MAESTRO_TOOL_NAME`
+- the JSON arguments object is passed as `MAESTRO_ARGS_JSON`
 
 These commands execute on the local machine. Review them with the same care you would apply to any local shell automation.
 
@@ -79,13 +79,13 @@ These commands execute on the local machine. Review them with the same care you 
 Write structured JSON logs to both stdout and a rotating file sink:
 
 ```bash
-./symphony --log-level info run /path/to/repo --logs-root ./log
-./symphony --log-level debug run /path/to/repo --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
+./maestro --log-level info run /path/to/repo --logs-root ./log
+./maestro --log-level debug run /path/to/repo --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
 ```
 
 Behavior:
 
-- the main log file is `symphony.log`
+- the main log file is `maestro.log`
 - rotation is size-based
 - `--log-level` is global and applies to every CLI command
 - `debug` includes raw app-server stream output; `info` keeps logs focused on lifecycle and status transitions
@@ -94,7 +94,7 @@ Behavior:
 
 ## Deliberate Scope
 
-Current non-goals and differences from the original Symphony project:
+Current non-goals and differences from the original Maestro project:
 
 - the tracker is local Kanban backed by SQLite, not Linear
 - the observability surface is HTTP JSON, not a Phoenix dashboard or pubsub transport

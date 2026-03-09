@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/olhapi/symphony-go/internal/dashboardapi"
-	"github.com/olhapi/symphony-go/internal/dashboardui"
-	"github.com/olhapi/symphony-go/internal/kanban"
-	"github.com/olhapi/symphony-go/internal/observability"
+	"github.com/olhapi/maestro/internal/dashboardapi"
+	"github.com/olhapi/maestro/internal/dashboardui"
+	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/observability"
 )
 
 type Server struct {
