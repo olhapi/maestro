@@ -16,6 +16,7 @@ import (
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -54,6 +55,7 @@ type runnerExecutor interface {
 
 type Orchestrator struct {
 	store      *kanban.Store
+	service    *providers.Service
 	extensions *extensions.Registry
 
 	workflows *config.Manager
@@ -92,6 +94,7 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 	}
 	o := &Orchestrator{
 		store:           store,
+		service:         providers.NewService(store),
 		extensions:      registry,
 		projectRuntimes: make(map[string]*projectRuntime),
 		running:         make(map[string]runningEntry),
@@ -127,6 +130,7 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 	}
 	o := &Orchestrator{
 		store:              store,
+		service:            providers.NewService(store),
 		extensions:         registry,
 		scopedRepoPath:     scopedRepoPath,
 		scopedWorkflowPath: scopedWorkflowPath,
@@ -148,6 +152,24 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 
 func (o *Orchestrator) isSharedMode() bool {
 	return o.workflows == nil
+}
+
+func (o *Orchestrator) syncProviderIssues(ctx context.Context) {
+	repoPath := o.scopedRepoPath
+	if !o.isSharedMode() && o.workflows != nil {
+		repoPath = filepath.Dir(o.workflows.Path())
+	}
+	if err := o.service.SyncForRepoPath(ctx, repoPath); err != nil {
+		slog.Warn("Provider issue sync failed", "repo_path", repoPath, "error", err)
+	}
+}
+
+func (o *Orchestrator) refreshIssue(ctx context.Context, issueID string) (*kanban.Issue, error) {
+	issue, err := o.service.RefreshIssueByID(ctx, issueID)
+	if err == nil {
+		return issue, nil
+	}
+	return o.store.GetIssue(issueID)
 }
 
 func (o *Orchestrator) runtimeForProject(project *kanban.Project) (*projectRuntime, error) {
@@ -348,7 +370,7 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 		entry, hasEntry := o.running[issueID]
 		o.mu.RUnlock()
 
-		issue, err := o.store.GetIssue(issueID)
+		issue, err := o.refreshIssue(ctx, issueID)
 		if err != nil {
 			slog.Warn("Skipping reconciliation for missing issue", "issue_id", issueID, "error", err)
 			continue
@@ -394,6 +416,7 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 }
 
 func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
+	o.syncProviderIssues(ctx)
 	issues, err := o.store.ListIssues(map[string]interface{}{
 		"states": []string{"ready", "in_progress", "in_review", "done"},
 	})
@@ -539,6 +562,7 @@ func (o *Orchestrator) shouldAllowRunningTerminalTransition(workflow *config.Wor
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context) error {
+	o.syncProviderIssues(ctx)
 	states := []string{"ready", "in_progress", "in_review", "done"}
 	if !o.isSharedMode() {
 		workflow, err := o.workflows.Current()
@@ -627,7 +651,7 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			continue
 		}
 
-		issue, err := o.store.GetIssue(issueID)
+		issue, err := o.refreshIssue(ctx, issueID)
 		if err != nil {
 			slog.Warn("Dropping retry because issue lookup failed",
 				"issue_id", issueID,
@@ -1078,6 +1102,7 @@ func failureRetryDelay(attempt, maxBackoffMs int) time.Duration {
 }
 
 func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
+	o.syncProviderIssues(ctx)
 	states := []string{"done", "cancelled"}
 	if !o.isSharedMode() {
 		workflow, err := o.workflows.Current()
@@ -1363,7 +1388,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		identifier := issueID
 		if running, ok := o.running[issueID]; ok {
 			identifier = running.issue.Identifier
-		} else if issue, err := o.store.GetIssue(issueID); err == nil && issue != nil {
+		} else if issue, err := o.refreshIssue(context.Background(), issueID); err == nil && issue != nil {
 			identifier = issue.Identifier
 		}
 		retry := observability.RetryEntry{
@@ -1460,7 +1485,7 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	issue, err := o.store.GetIssueByIdentifier(identifier)
+	issue, err := o.service.GetIssueByIdentifier(context.Background(), identifier)
 	if err != nil {
 		return map[string]interface{}{
 			"status": "not_found",
@@ -1504,7 +1529,7 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 	}
 
 	if issue.State == kanban.StateDone || issue.State == kanban.StateCancelled {
-		if err := o.store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		if _, err := o.service.SetIssueState(context.Background(), issue.Identifier, string(kanban.StateReady)); err != nil {
 			return map[string]interface{}{
 				"status": "error",
 				"error":  err.Error(),

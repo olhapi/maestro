@@ -44,6 +44,9 @@ export interface ProjectInput {
   description?: string
   repo_path: string
   workflow_path?: string
+  provider_kind?: string
+  provider_project_ref?: string
+  provider_config?: Record<string, unknown>
 }
 
 export const api = {

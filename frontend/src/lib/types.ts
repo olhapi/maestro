@@ -1,10 +1,4 @@
-export type IssueState =
-  | 'backlog'
-  | 'ready'
-  | 'in_progress'
-  | 'in_review'
-  | 'done'
-  | 'cancelled'
+export type IssueState = string
 
 export type WorkflowPhase = 'implementation' | 'review' | 'done' | 'complete'
 
@@ -17,19 +11,44 @@ export interface IssueStateCounts {
   cancelled: number
 }
 
+export interface ProviderCapabilities {
+  projects: boolean
+  epics: boolean
+  issues: boolean
+  issue_state_update: boolean
+  issue_delete: boolean
+}
+
+export interface StateBucket {
+  state: string
+  count: number
+  is_active?: boolean
+  is_terminal?: boolean
+}
+
 export interface Project {
   id: string
   name: string
   description?: string
   repo_path?: string
   workflow_path?: string
+  provider_kind?: string
+  provider_project_ref?: string
+  provider_config?: Record<string, unknown>
+  capabilities: ProviderCapabilities
   orchestration_ready: boolean
+  dispatch_ready?: boolean
+  dispatch_error?: string
   created_at: string
   updated_at: string
 }
 
 export interface ProjectSummary extends Project {
   counts: IssueStateCounts
+  state_buckets?: StateBucket[]
+  total_count?: number
+  active_count?: number
+  terminal_count?: number
 }
 
 export interface ProjectDetailResponse {
@@ -55,6 +74,10 @@ export interface Epic {
 export interface EpicSummary extends Epic {
   project_name?: string
   counts: IssueStateCounts
+  state_buckets?: StateBucket[]
+  total_count?: number
+  active_count?: number
+  terminal_count?: number
 }
 
 export interface EpicDetailResponse {
@@ -74,6 +97,9 @@ export interface Issue {
   project_id?: string
   epic_id?: string
   identifier: string
+  provider_kind?: string
+  provider_issue_ref?: string
+  provider_shadow?: boolean
   title: string
   description?: string
   state: IssueState
@@ -88,6 +114,7 @@ export interface Issue {
   updated_at: string
   started_at?: string
   completed_at?: string
+  last_synced_at?: string
 }
 
 export interface IssueSummary extends Issue {

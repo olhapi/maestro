@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/internal/runtimeview"
 )
 
@@ -27,6 +30,7 @@ type Provider interface {
 
 type Server struct {
 	store    *kanban.Store
+	service  *providers.Service
 	provider Provider
 	upgrader websocket.Upgrader
 }
@@ -34,9 +38,63 @@ type Server struct {
 func NewServer(store *kanban.Store, provider Provider) *Server {
 	return &Server{
 		store:    store,
+		service:  providers.NewService(store),
 		provider: provider,
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
+}
+
+func scopedRepoPathFromStatus(status map[string]interface{}) string {
+	if status == nil {
+		return ""
+	}
+	value, _ := status["scoped_repo_path"].(string)
+	return strings.TrimSpace(value)
+}
+
+func projectScopeError(projectRepoPath, scopedRepoPath string) string {
+	projectRepoPath = strings.TrimSpace(projectRepoPath)
+	scopedRepoPath = strings.TrimSpace(scopedRepoPath)
+	if projectRepoPath == "" || scopedRepoPath == "" {
+		return ""
+	}
+	if filepath.Clean(projectRepoPath) == filepath.Clean(scopedRepoPath) {
+		return ""
+	}
+	return "Project repo is outside the current server scope (" + scopedRepoPath + ")"
+}
+
+func decorateProject(project *kanban.Project, scopedRepoPath string) {
+	if project == nil {
+		return
+	}
+	project.DispatchReady = project.OrchestrationReady
+	project.DispatchError = ""
+	if scopeError := projectScopeError(project.RepoPath, scopedRepoPath); scopeError != "" {
+		project.DispatchReady = false
+		project.DispatchError = scopeError
+	}
+}
+
+func decorateProjectSummaries(projects []kanban.ProjectSummary, scopedRepoPath string) []kanban.ProjectSummary {
+	for i := range projects {
+		decorateProject(&projects[i].Project, scopedRepoPath)
+	}
+	return projects
+}
+
+func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
+	if strings.TrimSpace(scopedRepoPath) == "" {
+		return nil
+	}
+	absRepoPath, err := filepath.Abs(strings.TrimSpace(repoPath))
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(absRepoPath) == filepath.Clean(scopedRepoPath) {
+		return nil
+	}
+	return fmt.Errorf("repo_path must match the current server scope (%s)", scopedRepoPath)
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -59,17 +117,20 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projects, err := s.store.ListProjectSummaries()
+	status := s.provider.Status()
+	scopedRepoPath := scopedRepoPathFromStatus(status)
+	projects, err := s.service.ListProjectSummaries()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	epics, err := s.store.ListEpicSummaries("")
+	projects = decorateProjectSummaries(projects, scopedRepoPath)
+	epics, err := s.service.ListEpicSummaries("")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	issues, total, err := s.store.ListIssueSummaries(kanban.IssueQuery{
+	issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
 		Limit:  100,
 		Offset: 0,
 		Sort:   "updated_desc",
@@ -98,7 +159,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"overview": map[string]interface{}{
-			"status":        s.provider.Status(),
+			"status":        status,
 			"snapshot":      snapshot,
 			"board":         board,
 			"project_count": len(projects),
@@ -122,18 +183,24 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		projects, err := s.store.ListProjectSummaries()
+		status := s.provider.Status()
+		scopedRepoPath := scopedRepoPathFromStatus(status)
+		projects, err := s.service.ListProjectSummaries()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		projects = decorateProjectSummaries(projects, scopedRepoPath)
 		writeJSON(w, map[string]interface{}{"items": projects})
 	case http.MethodPost:
 		var body struct {
-			Name         string `json:"name"`
-			Description  string `json:"description"`
-			RepoPath     string `json:"repo_path"`
-			WorkflowPath string `json:"workflow_path"`
+			Name               string                 `json:"name"`
+			Description        string                 `json:"description"`
+			RepoPath           string                 `json:"repo_path"`
+			WorkflowPath       string                 `json:"workflow_path"`
+			ProviderKind       string                 `json:"provider_kind"`
+			ProviderProjectRef string                 `json:"provider_project_ref"`
+			ProviderConfig     map[string]interface{} `json:"provider_config"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -142,16 +209,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeJSONStatus(w, http.StatusBadRequest, map[string]interface{}{"error": "repo_path is required"})
 			return
 		}
-		project, err := s.store.CreateProject(
+		if err := validateScopedRepoPath(body.RepoPath, scopedRepoPathFromStatus(s.provider.Status())); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		project, err := s.service.CreateProject(
+			r.Context(),
 			strings.TrimSpace(body.Name),
 			strings.TrimSpace(body.Description),
 			strings.TrimSpace(body.RepoPath),
 			strings.TrimSpace(body.WorkflowPath),
+			strings.TrimSpace(body.ProviderKind),
+			strings.TrimSpace(body.ProviderProjectRef),
+			body.ProviderConfig,
 		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		decorateProject(project, scopedRepoPathFromStatus(s.provider.Status()))
 		writeJSONStatus(w, http.StatusCreated, project)
 	default:
 		methodNotAllowed(w)
@@ -166,11 +242,14 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		projectSummaries, err := s.store.ListProjectSummaries()
+		status := s.provider.Status()
+		scopedRepoPath := scopedRepoPathFromStatus(status)
+		projectSummaries, err := s.service.ListProjectSummaries()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		projectSummaries = decorateProjectSummaries(projectSummaries, scopedRepoPath)
 		var projectSummary *kanban.ProjectSummary
 		for i := range projectSummaries {
 			if projectSummaries[i].ID == id {
@@ -182,12 +261,12 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			writeErrorStatus(w, http.StatusNotFound, sql.ErrNoRows)
 			return
 		}
-		epics, err := s.store.ListEpicSummaries(id)
+		epics, err := s.service.ListEpicSummaries(id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		issues, total, err := s.store.ListIssueSummaries(kanban.IssueQuery{
+		issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
 			ProjectID: id,
 			Sort:      "updated_desc",
 			Limit:     200,
@@ -209,10 +288,13 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPatch:
 		var body struct {
-			Name         string `json:"name"`
-			Description  string `json:"description"`
-			RepoPath     string `json:"repo_path"`
-			WorkflowPath string `json:"workflow_path"`
+			Name               string                 `json:"name"`
+			Description        string                 `json:"description"`
+			RepoPath           string                 `json:"repo_path"`
+			WorkflowPath       string                 `json:"workflow_path"`
+			ProviderKind       string                 `json:"provider_kind"`
+			ProviderProjectRef string                 `json:"provider_project_ref"`
+			ProviderConfig     map[string]interface{} `json:"provider_config"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -221,12 +303,20 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			writeJSONStatus(w, http.StatusBadRequest, map[string]interface{}{"error": "repo_path is required"})
 			return
 		}
-		if err := s.store.UpdateProject(
+		if err := validateScopedRepoPath(body.RepoPath, scopedRepoPathFromStatus(s.provider.Status())); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.service.UpdateProject(
+			r.Context(),
 			id,
 			strings.TrimSpace(body.Name),
 			strings.TrimSpace(body.Description),
 			strings.TrimSpace(body.RepoPath),
 			strings.TrimSpace(body.WorkflowPath),
+			strings.TrimSpace(body.ProviderKind),
+			strings.TrimSpace(body.ProviderProjectRef),
+			body.ProviderConfig,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -236,6 +326,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		decorateProject(project, scopedRepoPathFromStatus(s.provider.Status()))
 		writeJSON(w, project)
 	case http.MethodDelete:
 		if err := s.store.DeleteProject(id); err != nil {
@@ -252,7 +343,7 @@ func (s *Server) handleEpics(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		projectID := r.URL.Query().Get("project_id")
-		epics, err := s.store.ListEpicSummaries(projectID)
+		epics, err := s.service.ListEpicSummaries(projectID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -267,7 +358,7 @@ func (s *Server) handleEpics(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		epic, err := s.store.CreateEpic(strings.TrimSpace(body.ProjectID), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description))
+		epic, err := s.service.CreateEpic(strings.TrimSpace(body.ProjectID), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -286,7 +377,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		epicSummaries, err := s.store.ListEpicSummaries("")
+		epicSummaries, err := s.service.ListEpicSummaries("")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -310,12 +401,12 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		siblingEpics, err := s.store.ListEpicSummaries(epicSummary.ProjectID)
+		siblingEpics, err := s.service.ListEpicSummaries(epicSummary.ProjectID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		issues, total, err := s.store.ListIssueSummaries(kanban.IssueQuery{
+		issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
 			EpicID: id,
 			Sort:   "updated_desc",
 			Limit:  200,
@@ -345,7 +436,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		if err := s.store.UpdateEpic(id, strings.TrimSpace(body.ProjectID), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description)); err != nil {
+		if err := s.service.UpdateEpic(id, strings.TrimSpace(body.ProjectID), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description)); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -356,7 +447,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, epic)
 	case http.MethodDelete:
-		if err := s.store.DeleteEpic(id); err != nil {
+		if err := s.service.DeleteEpic(id); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -378,7 +469,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Limit:     queryInt(r, "limit", 200),
 			Offset:    queryInt(r, "offset", 0),
 		}
-		issues, total, err := s.store.ListIssueSummaries(query)
+		issues, total, err := s.service.ListIssueSummaries(r.Context(), query)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -406,30 +497,21 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		issue, err := s.store.CreateIssue(body.ProjectID, body.EpicID, strings.TrimSpace(body.Title), strings.TrimSpace(body.Description), body.Priority, body.Labels)
+		detail, err := s.service.CreateIssue(r.Context(), providers.IssueCreateInput{
+			ProjectID:   body.ProjectID,
+			EpicID:      body.EpicID,
+			Title:       strings.TrimSpace(body.Title),
+			Description: strings.TrimSpace(body.Description),
+			Priority:    body.Priority,
+			Labels:      body.Labels,
+			State:       body.State,
+			BlockedBy:   body.BlockedBy,
+			BranchName:  body.BranchName,
+			PRNumber:    body.PRNumber,
+			PRURL:       body.PRURL,
+		})
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		updates := map[string]interface{}{
-			"blocked_by":  body.BlockedBy,
-			"branch_name": body.BranchName,
-			"pr_number":   body.PRNumber,
-			"pr_url":      body.PRURL,
-		}
-		if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		if body.State != "" && body.State != string(kanban.StateBacklog) {
-			if err := s.store.UpdateIssueState(issue.ID, kanban.State(body.State)); err != nil {
-				writeError(w, issueTransitionStatus(err), err)
-				return
-			}
-		}
-		detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSONStatus(w, http.StatusCreated, detail)
@@ -454,22 +536,13 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
-			detail, err := s.store.GetIssueDetailByIdentifier(identifier)
+			detail, err := s.service.GetIssueDetailByIdentifier(r.Context(), identifier)
 			if err != nil {
-				status := http.StatusInternalServerError
-				if err == sql.ErrNoRows {
-					status = http.StatusNotFound
-				}
-				writeErrorStatus(w, status, err)
+				writeErrorStatus(w, appErrorStatus(err), err)
 				return
 			}
 			writeJSON(w, detail)
 		case http.MethodPatch:
-			issue, err := s.store.GetIssueByIdentifier(identifier)
-			if err != nil {
-				writeErrorStatus(w, http.StatusNotFound, err)
-				return
-			}
 			var body struct {
 				ProjectID   string   `json:"project_id"`
 				EpicID      string   `json:"epic_id"`
@@ -497,23 +570,19 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				"pr_number":   body.PRNumber,
 				"pr_url":      body.PRURL,
 			}
-			if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			detail, err := s.store.GetIssueDetailByIdentifier(identifier)
+			detail, err := s.service.UpdateIssue(r.Context(), identifier, updates)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
+				writeError(w, appErrorStatus(err), err)
 				return
 			}
 			writeJSON(w, detail)
 		case http.MethodDelete:
-			issue, err := s.store.GetIssueByIdentifier(identifier)
+			issue, err := s.service.GetIssueByIdentifier(r.Context(), identifier)
 			if err != nil {
 				writeErrorStatus(w, http.StatusNotFound, err)
 				return
 			}
-			if err := s.store.DeleteIssue(issue.ID); err != nil {
+			if err := s.service.DeleteIssue(r.Context(), issue.Identifier); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
@@ -525,13 +594,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 2 && r.Method == http.MethodGet && parts[1] == "execution" {
-		issue, err := s.store.GetIssueByIdentifier(identifier)
+		issue, err := s.service.GetIssueByIdentifier(r.Context(), identifier)
 		if err != nil {
-			status := http.StatusInternalServerError
-			if err == sql.ErrNoRows {
-				status = http.StatusNotFound
-			}
-			writeErrorStatus(w, status, err)
+			writeErrorStatus(w, appErrorStatus(err), err)
 			return
 		}
 		payload, err := s.issueExecutionPayload(issue)
@@ -556,16 +621,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		issue, err := s.store.GetIssueByIdentifier(identifier)
+		detail, err := s.service.SetIssueState(r.Context(), identifier, body.State)
 		if err != nil {
-			writeErrorStatus(w, http.StatusNotFound, err)
+			writeError(w, appErrorStatus(err), err)
 			return
 		}
-		if err := s.store.UpdateIssueState(issue.ID, kanban.State(body.State)); err != nil {
-			writeError(w, issueTransitionStatus(err), err)
-			return
-		}
-		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "state": body.State})
+		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "state": detail.State})
 	case "blockers":
 		var body struct {
 			BlockedBy []string `json:"blocked_by"`
@@ -579,7 +640,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.UpdateIssue(issue.ID, map[string]interface{}{"blocked_by": body.BlockedBy}); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "blocked_by": body.BlockedBy})
@@ -710,9 +771,15 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeErrorStatus(w, status, err)
 }
 
-func issueTransitionStatus(err error) int {
+func appErrorStatus(err error) int {
+	if kanban.IsNotFound(err) {
+		return http.StatusNotFound
+	}
 	if kanban.IsBlockedTransition(err) {
 		return http.StatusConflict
+	}
+	if kanban.IsValidation(err) || providers.IsUnsupported(err) {
+		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
 }

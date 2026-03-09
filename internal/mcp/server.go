@@ -15,6 +15,7 @@ import (
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/internal/runtimeview"
 )
 
@@ -29,6 +30,7 @@ type RuntimeProvider interface {
 // and optional extension tools.
 type Server struct {
 	store      *kanban.Store
+	service    *providers.Service
 	provider   RuntimeProvider
 	server     mcpserver.MCPServer
 	tools      []mcpapi.Tool
@@ -61,6 +63,7 @@ func NewServerWithRegistry(store *kanban.Store, provider RuntimeProvider, regist
 	}
 	s := &Server{
 		store:      store,
+		service:    providers.NewService(store),
 		provider:   provider,
 		server:     mcpserver.NewDefaultServer("maestro", "1.0.0"),
 		extensions: registry,
@@ -75,17 +78,23 @@ func (s *Server) registerTools() {
 	s.tools = []mcpapi.Tool{
 		objectTool("server_info", "Get Maestro MCP server identity and store metadata", nil),
 		objectTool("create_project", "Create a new project", map[string]interface{}{
-			"name":          stringProperty("Project name"),
-			"description":   stringProperty("Project description"),
-			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
-			"workflow_path": stringProperty("Optional workflow path override"),
+			"name":                 stringProperty("Project name"),
+			"description":          stringProperty("Project description"),
+			"repo_path":            stringProperty("Absolute path to the repo this project orchestrates"),
+			"workflow_path":        stringProperty("Optional workflow path override"),
+			"provider_kind":        stringProperty("Provider kind: kanban or linear"),
+			"provider_project_ref": stringProperty("Provider project reference (for linear: project slug)"),
+			"provider_config":      objectProperty("Non-secret provider configuration"),
 		}),
 		objectTool("update_project", "Update an existing project", map[string]interface{}{
-			"id":            stringProperty("Project ID"),
-			"name":          stringProperty("Project name"),
-			"description":   stringProperty("Project description"),
-			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
-			"workflow_path": stringProperty("Optional workflow path override"),
+			"id":                   stringProperty("Project ID"),
+			"name":                 stringProperty("Project name"),
+			"description":          stringProperty("Project description"),
+			"repo_path":            stringProperty("Absolute path to the repo this project orchestrates"),
+			"workflow_path":        stringProperty("Optional workflow path override"),
+			"provider_kind":        stringProperty("Provider kind: kanban or linear"),
+			"provider_project_ref": stringProperty("Provider project reference"),
+			"provider_config":      objectProperty("Non-secret provider configuration"),
 		}),
 		objectTool("list_projects", "List all projects", nil),
 		objectTool("delete_project", "Delete a project", map[string]interface{}{
@@ -303,11 +312,15 @@ func (s *Server) handleCreateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("create_project", err.Error()), nil
 	}
-	project, err := s.store.CreateProject(
+	project, err := s.service.CreateProject(
+		ctx,
 		asString(args["name"]),
 		asString(args["description"]),
 		repoPath,
 		asString(args["workflow_path"]),
+		asString(args["provider_kind"]),
+		asString(args["provider_project_ref"]),
+		objectArg(args, "provider_config"),
 	)
 	if err != nil {
 		return s.toolError("create_project", fmt.Sprintf("Failed to create project: %v", err)), nil
@@ -325,7 +338,7 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("update_project", err.Error()), nil
 	}
-	if err := s.store.UpdateProject(id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"])); err != nil {
+	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), asString(args["provider_kind"]), asString(args["provider_project_ref"]), objectArg(args, "provider_config")); err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
 	}
 	project, err := s.store.GetProject(id)
@@ -337,11 +350,11 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 }
 
 func (s *Server) handleListProjects(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	projects, err := s.store.ListProjects()
+	projects, err := s.service.ListProjectSummaries()
 	if err != nil {
 		return s.toolError("list_projects", fmt.Sprintf("Failed to list projects: %v", err)), nil
 	}
-	s.decorateProjects(projects)
+	s.decorateProjectSummaries(projects)
 	return s.toolResult("list_projects", map[string]interface{}{"items": projects}), nil
 }
 
@@ -354,7 +367,7 @@ func (s *Server) handleDeleteProject(ctx context.Context, args map[string]interf
 }
 
 func (s *Server) handleCreateEpic(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	epic, err := s.store.CreateEpic(asString(args["project_id"]), asString(args["name"]), asString(args["description"]))
+	epic, err := s.service.CreateEpic(asString(args["project_id"]), asString(args["name"]), asString(args["description"]))
 	if err != nil {
 		return s.toolError("create_epic", fmt.Sprintf("Failed to create epic: %v", err)), nil
 	}
@@ -363,7 +376,7 @@ func (s *Server) handleCreateEpic(ctx context.Context, args map[string]interface
 
 func (s *Server) handleUpdateEpic(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	id := asString(args["id"])
-	if err := s.store.UpdateEpic(id, asString(args["project_id"]), asString(args["name"]), asString(args["description"])); err != nil {
+	if err := s.service.UpdateEpic(id, asString(args["project_id"]), asString(args["name"]), asString(args["description"])); err != nil {
 		return s.toolError("update_epic", fmt.Sprintf("Failed to update epic: %v", err)), nil
 	}
 	epic, err := s.store.GetEpic(id)
@@ -374,7 +387,7 @@ func (s *Server) handleUpdateEpic(ctx context.Context, args map[string]interface
 }
 
 func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	epics, err := s.store.ListEpics(asString(args["project_id"]))
+	epics, err := s.service.ListEpicSummaries(asString(args["project_id"]))
 	if err != nil {
 		return s.toolError("list_epics", fmt.Sprintf("Failed to list epics: %v", err)), nil
 	}
@@ -383,44 +396,28 @@ func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{
 
 func (s *Server) handleDeleteEpic(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	id := asString(args["id"])
-	if err := s.store.DeleteEpic(id); err != nil {
+	if err := s.service.DeleteEpic(id); err != nil {
 		return s.toolError("delete_epic", fmt.Sprintf("Failed to delete epic: %v", err)), nil
 	}
 	return s.toolResult("delete_epic", map[string]interface{}{"id": id}), nil
 }
 
 func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	state := strings.TrimSpace(asString(args["state"]))
-	if state != "" && !kanban.State(state).IsValid() {
-		return s.toolError("create_issue", fmt.Sprintf("Invalid state: %s. Valid states: backlog, ready, in_progress, in_review, done, cancelled", state)), nil
-	}
-
-	issue, err := s.store.CreateIssue(
-		asString(args["project_id"]),
-		asString(args["epic_id"]),
-		asString(args["title"]),
-		asString(args["description"]),
-		intArg(args, "priority", 0),
-		stringListArg(args, "labels"),
-	)
+	detail, err := s.service.CreateIssue(ctx, providers.IssueCreateInput{
+		ProjectID:   asString(args["project_id"]),
+		EpicID:      asString(args["epic_id"]),
+		Title:       asString(args["title"]),
+		Description: asString(args["description"]),
+		Priority:    intArg(args, "priority", 0),
+		Labels:      stringListArg(args, "labels"),
+		State:       asString(args["state"]),
+		BlockedBy:   stringListArg(args, "blocked_by"),
+		BranchName:  asString(args["branch_name"]),
+		PRNumber:    intArg(args, "pr_number", 0),
+		PRURL:       asString(args["pr_url"]),
+	})
 	if err != nil {
 		return s.toolError("create_issue", fmt.Sprintf("Failed to create issue: %v", err)), nil
-	}
-
-	updates := issueMutationArgs(args, false)
-	if len(updates) > 0 {
-		if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
-			return s.toolError("create_issue", fmt.Sprintf("Failed to update created issue: %v", err)), nil
-		}
-	}
-	if state != "" && state != string(kanban.StateBacklog) {
-		if err := s.store.UpdateIssueState(issue.ID, kanban.State(state)); err != nil {
-			return s.issueTransitionToolError("create_issue", "Failed to set issue state", err), nil
-		}
-	}
-	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
-	if err != nil {
-		return s.toolError("create_issue", fmt.Sprintf("Failed to reload issue: %v", err)), nil
 	}
 	return s.toolResult("create_issue", detail), nil
 }
@@ -430,7 +427,7 @@ func (s *Server) handleGetIssue(ctx context.Context, args map[string]interface{}
 	if err != nil {
 		return s.toolError("get_issue", err.Error()), nil
 	}
-	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
+	detail, err := s.service.GetIssueDetailByIdentifier(ctx, issue.Identifier)
 	if err != nil {
 		return s.toolError("get_issue", fmt.Sprintf("Failed to load issue detail: %v", err)), nil
 	}
@@ -451,7 +448,7 @@ func (s *Server) handleListIssues(ctx context.Context, args map[string]interface
 		query.Sort = "updated_desc"
 	}
 
-	items, total, err := s.store.ListIssueSummaries(query)
+	items, total, err := s.service.ListIssueSummaries(ctx, query)
 	if err != nil {
 		return s.toolError("list_issues", fmt.Sprintf("Failed to list issues: %v", err)), nil
 	}
@@ -479,12 +476,9 @@ func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interfac
 	if len(updates) == 0 {
 		return s.toolResult("update_issue", map[string]interface{}{"identifier": issue.Identifier, "updated": false}), nil
 	}
-	if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
-		return s.toolError("update_issue", fmt.Sprintf("Failed to update issue: %v", err)), nil
-	}
-	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
+	detail, err := s.service.UpdateIssue(ctx, issue.Identifier, updates)
 	if err != nil {
-		return s.toolError("update_issue", fmt.Sprintf("Failed to reload issue: %v", err)), nil
+		return s.toolError("update_issue", fmt.Sprintf("Failed to update issue: %v", err)), nil
 	}
 	return s.toolResult("update_issue", detail), nil
 }
@@ -494,16 +488,9 @@ func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interf
 	if err != nil {
 		return s.toolError("set_issue_state", err.Error()), nil
 	}
-	state := kanban.State(asString(args["state"]))
-	if !state.IsValid() {
-		return s.toolError("set_issue_state", fmt.Sprintf("Invalid state: %s. Valid states: backlog, ready, in_progress, in_review, done, cancelled", state)), nil
-	}
-	if err := s.store.UpdateIssueState(issue.ID, state); err != nil {
-		return s.issueTransitionToolError("set_issue_state", "Failed to update issue state", err), nil
-	}
-	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
+	detail, err := s.service.SetIssueState(ctx, issue.Identifier, asString(args["state"]))
 	if err != nil {
-		return s.toolError("set_issue_state", fmt.Sprintf("Failed to reload issue: %v", err)), nil
+		return s.issueTransitionToolError("set_issue_state", "Failed to update issue state", err), nil
 	}
 	return s.toolResult("set_issue_state", detail), nil
 }
@@ -532,7 +519,7 @@ func (s *Server) handleDeleteIssue(ctx context.Context, args map[string]interfac
 	if err != nil {
 		return s.toolError("delete_issue", err.Error()), nil
 	}
-	if err := s.store.DeleteIssue(issue.ID); err != nil {
+	if err := s.service.DeleteIssue(ctx, issue.Identifier); err != nil {
 		return s.toolError("delete_issue", fmt.Sprintf("Failed to delete issue: %v", err)), nil
 	}
 	return s.toolResult("delete_issue", map[string]interface{}{"identifier": issue.Identifier, "id": issue.ID}), nil
@@ -742,6 +729,12 @@ func (s *Server) decorateProjects(projects []kanban.Project) {
 	}
 }
 
+func (s *Server) decorateProjectSummaries(projects []kanban.ProjectSummary) {
+	for i := range projects {
+		s.decorateProject(&projects[i].Project)
+	}
+}
+
 func (s *Server) issueTransitionToolError(name, prefix string, err error) *mcpapi.CallToolResult {
 	if kanban.IsBlockedTransition(err) {
 		return s.toolError(name, err.Error())
@@ -782,7 +775,7 @@ func (s *Server) lookupIssue(identifier string) (*kanban.Issue, error) {
 	if err == nil {
 		return issue, nil
 	}
-	issue, err = s.store.GetIssueByIdentifier(identifier)
+	issue, err = s.service.GetIssueByIdentifier(context.Background(), identifier)
 	if err != nil {
 		return nil, fmt.Errorf("Issue not found: %s", identifier)
 	}
@@ -858,6 +851,10 @@ func numberProperty(description string) map[string]interface{} {
 	return map[string]interface{}{"type": "number", "description": description}
 }
 
+func objectProperty(description string) map[string]interface{} {
+	return map[string]interface{}{"type": "object", "description": description}
+}
+
 func stringArrayProperty(description string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":        "array",
@@ -904,6 +901,15 @@ func stringListArg(args map[string]interface{}, key string) []string {
 	default:
 		return nil
 	}
+}
+
+func objectArg(args map[string]interface{}, key string) map[string]interface{} {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	value, _ := raw.(map[string]interface{})
+	return value
 }
 
 func asString(v interface{}) string {

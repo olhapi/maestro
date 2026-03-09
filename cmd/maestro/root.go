@@ -18,6 +18,7 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/mcp"
 	"github.com/olhapi/maestro/internal/orchestrator"
+	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/internal/speccheck"
 	"github.com/olhapi/maestro/internal/verification"
 	"github.com/olhapi/maestro/pkg/config"
@@ -238,12 +239,12 @@ func (a *cliApp) newBoardCmd() *cobra.Command {
 		Use:   "board",
 		Short: "Show the kanban board",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			payload, columns, counts, err := buildBoardPayload(store, projectID)
+			payload, columns, counts, err := buildBoardPayload(context.Background(), svc, store, projectID)
 			if err != nil {
 				return wrapRuntime(err, "failed to build board")
 			}
@@ -294,18 +295,21 @@ func (a *cliApp) newIssueCreateCmd() *cobra.Command {
 		Short: "Create an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			issue, err := store.CreateIssue(projectID, epicID, args[0], description, priority, parseCSV(labels))
+			detail, err := svc.CreateIssue(context.Background(), providers.IssueCreateInput{
+				ProjectID:   projectID,
+				EpicID:      epicID,
+				Title:       args[0],
+				Description: description,
+				Priority:    priority,
+				Labels:      parseCSV(labels),
+			})
 			if err != nil {
 				return err
-			}
-			detail, err := store.GetIssueDetailByIdentifier(issue.Identifier)
-			if err != nil {
-				return wrapRuntime(err, "failed to load created issue")
 			}
 			if a.opts.mode.json {
 				return writeJSON(a.stdout, detail)
@@ -341,7 +345,7 @@ func (a *cliApp) newIssueListCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List issues",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -359,7 +363,7 @@ func (a *cliApp) newIssueListCmd() *cobra.Command {
 			if blocked {
 				query.Blocked = &blocked
 			}
-			issues, total, err := store.ListIssueSummaries(query)
+			issues, total, err := svc.ListIssueSummaries(context.Background(), query)
 			if err != nil {
 				return wrapRuntime(err, "failed to list issues")
 			}
@@ -394,12 +398,12 @@ func (a *cliApp) newIssueShowCmd() *cobra.Command {
 		Short: "Show a single issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			detail, err := store.GetIssueDetailByIdentifier(args[0])
+			detail, err := svc.GetIssueDetailByIdentifier(context.Background(), args[0])
 			if err != nil {
 				if kanban.IsNotFound(err) || err == os.ErrNotExist {
 					return notFoundErrorf("issue not found: %s", args[0])
@@ -426,21 +430,14 @@ func (a *cliApp) newIssueMoveCmd() *cobra.Command {
 		Short:   "Change an issue state",
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			issue, err := store.GetIssueByIdentifier(args[0])
+			detail, err := svc.SetIssueState(context.Background(), args[0], args[1])
 			if err != nil {
-				return notFoundErrorf("issue not found: %s", args[0])
-			}
-			if err := store.UpdateIssueState(issue.ID, kanban.State(args[1])); err != nil {
 				return err
-			}
-			detail, err := store.GetIssueDetailByIdentifier(issue.Identifier)
-			if err != nil {
-				return wrapRuntime(err, "failed to reload issue")
 			}
 			if a.opts.mode.json {
 				return writeJSON(a.stdout, detail)
@@ -478,15 +475,11 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 		Short: "Update an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			issue, err := store.GetIssueByIdentifier(args[0])
-			if err != nil {
-				return notFoundErrorf("issue not found: %s", args[0])
-			}
 
 			updates := map[string]interface{}{}
 			if cmd.Flags().Changed("title") {
@@ -538,12 +531,9 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 			if len(updates) == 0 {
 				return usageErrorf("no updates specified")
 			}
-			if err := store.UpdateIssue(issue.ID, updates); err != nil {
-				return err
-			}
-			detail, err := store.GetIssueDetailByIdentifier(issue.Identifier)
+			detail, err := svc.UpdateIssue(context.Background(), args[0], updates)
 			if err != nil {
-				return wrapRuntime(err, "failed to reload issue")
+				return err
 			}
 			if a.opts.mode.json {
 				return writeJSON(a.stdout, detail)
@@ -580,16 +570,16 @@ func (a *cliApp) newIssueDeleteCmd() *cobra.Command {
 		Short: "Delete an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			issue, err := store.GetIssueByIdentifier(args[0])
+			issue, err := svc.GetIssueByIdentifier(context.Background(), args[0])
 			if err != nil {
 				return notFoundErrorf("issue not found: %s", args[0])
 			}
-			if err := store.DeleteIssue(issue.ID); err != nil {
+			if err := svc.DeleteIssue(context.Background(), issue.Identifier); err != nil {
 				return err
 			}
 			payload := map[string]interface{}{"deleted": true, "identifier": issue.Identifier}
@@ -796,6 +786,10 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 	var description string
 	var repoPath string
 	var workflowPath string
+	var providerKind string
+	var providerProjectRef string
+	var providerEndpoint string
+	var providerAssignee string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a project",
@@ -804,12 +798,19 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 			if strings.TrimSpace(repoPath) == "" {
 				return usageErrorf("--repo is required")
 			}
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			project, err := store.CreateProject(args[0], description, repoPath, workflowPath)
+			providerConfig := map[string]interface{}{}
+			if strings.TrimSpace(providerEndpoint) != "" {
+				providerConfig["endpoint"] = strings.TrimSpace(providerEndpoint)
+			}
+			if strings.TrimSpace(providerAssignee) != "" {
+				providerConfig["assignee"] = strings.TrimSpace(providerAssignee)
+			}
+			project, err := svc.CreateProject(context.Background(), args[0], description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
 			if err != nil {
 				return err
 			}
@@ -827,6 +828,10 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "Project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute path to the repo")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Optional workflow path override")
+	cmd.Flags().StringVar(&providerKind, "provider", kanban.ProviderKindKanban, "Provider kind: kanban or linear")
+	cmd.Flags().StringVar(&providerProjectRef, "provider-project-ref", "", "Provider project reference (for linear: project slug)")
+	cmd.Flags().StringVar(&providerEndpoint, "provider-endpoint", "", "Optional provider endpoint override")
+	cmd.Flags().StringVar(&providerAssignee, "provider-assignee", "", "Optional provider assignee filter (Linear supports assignee IDs and 'me')")
 	return cmd
 }
 
@@ -836,12 +841,12 @@ func (a *cliApp) newProjectListCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List projects",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			projects, err := store.ListProjectSummaries()
+			projects, err := svc.ListProjectSummaries()
 			if err != nil {
 				return wrapRuntime(err, "failed to list projects")
 			}
@@ -861,12 +866,12 @@ func (a *cliApp) newProjectShowCmd() *cobra.Command {
 		Short: "Show a project and its related data",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			payload, project, issues, err := buildProjectPayload(store, args[0])
+			payload, project, issues, err := buildProjectPayload(context.Background(), svc, store, args[0])
 			if err != nil {
 				return err
 			}
@@ -874,6 +879,10 @@ func (a *cliApp) newProjectShowCmd() *cobra.Command {
 				return writeJSON(a.stdout, payload)
 			}
 			_, _ = fmt.Fprintf(a.stdout, "Project:\t%s (%s)\n", project.Name, project.ID)
+			_, _ = fmt.Fprintf(a.stdout, "Provider:\t%s\n", project.ProviderKind)
+			if project.ProviderProjectRef != "" {
+				_, _ = fmt.Fprintf(a.stdout, "Provider Ref:\t%s\n", project.ProviderProjectRef)
+			}
 			_, _ = fmt.Fprintf(a.stdout, "Repo:\t%s\n", project.RepoPath)
 			_, _ = fmt.Fprintf(a.stdout, "Workflow:\t%s\n", project.WorkflowPath)
 			_, _ = fmt.Fprintf(a.stdout, "Ready:\t%t\n", project.OrchestrationReady)
@@ -893,12 +902,16 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 	var description string
 	var repoPath string
 	var workflowPath string
+	var providerKind string
+	var providerProjectRef string
+	var providerEndpoint string
+	var providerAssignee string
 	cmd := &cobra.Command{
 		Use:   "update <id>",
 		Short: "Update a project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -919,7 +932,33 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("workflow") {
 				project.WorkflowPath = workflowPath
 			}
-			if err := store.UpdateProject(project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath); err != nil {
+			if cmd.Flags().Changed("provider") {
+				project.ProviderKind = providerKind
+			}
+			if cmd.Flags().Changed("provider-project-ref") {
+				project.ProviderProjectRef = providerProjectRef
+			}
+			if cmd.Flags().Changed("provider-endpoint") {
+				if project.ProviderConfig == nil {
+					project.ProviderConfig = map[string]interface{}{}
+				}
+				if strings.TrimSpace(providerEndpoint) == "" {
+					delete(project.ProviderConfig, "endpoint")
+				} else {
+					project.ProviderConfig["endpoint"] = strings.TrimSpace(providerEndpoint)
+				}
+			}
+			if cmd.Flags().Changed("provider-assignee") {
+				if project.ProviderConfig == nil {
+					project.ProviderConfig = map[string]interface{}{}
+				}
+				if strings.TrimSpace(providerAssignee) == "" {
+					delete(project.ProviderConfig, "assignee")
+				} else {
+					project.ProviderConfig["assignee"] = strings.TrimSpace(providerAssignee)
+				}
+			}
+			if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, project.ProviderKind, project.ProviderProjectRef, project.ProviderConfig); err != nil {
 				return err
 			}
 			updated, err := store.GetProject(project.ID)
@@ -941,6 +980,10 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "New project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute repo path")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Workflow path override")
+	cmd.Flags().StringVar(&providerKind, "provider", "", "Provider kind: kanban or linear")
+	cmd.Flags().StringVar(&providerProjectRef, "provider-project-ref", "", "Provider project reference")
+	cmd.Flags().StringVar(&providerEndpoint, "provider-endpoint", "", "Optional provider endpoint override")
+	cmd.Flags().StringVar(&providerAssignee, "provider-assignee", "", "Optional provider assignee filter")
 	return cmd
 }
 
@@ -1003,12 +1046,12 @@ func (a *cliApp) newEpicCreateCmd() *cobra.Command {
 			if strings.TrimSpace(projectID) == "" {
 				return usageErrorf("--project is required")
 			}
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			epic, err := store.CreateEpic(projectID, args[0], description)
+			epic, err := svc.CreateEpic(projectID, args[0], description)
 			if err != nil {
 				return err
 			}
@@ -1034,12 +1077,12 @@ func (a *cliApp) newEpicListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List epics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			epics, err := store.ListEpicSummaries(projectID)
+			epics, err := svc.ListEpicSummaries(projectID)
 			if err != nil {
 				return wrapRuntime(err, "failed to list epics")
 			}
@@ -1060,12 +1103,12 @@ func (a *cliApp) newEpicShowCmd() *cobra.Command {
 		Short: "Show an epic and its related data",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			payload, epic, issues, err := buildEpicPayload(store, args[0])
+			payload, epic, issues, err := buildEpicPayload(context.Background(), svc, store, args[0])
 			if err != nil {
 				return err
 			}
@@ -1094,7 +1137,7 @@ func (a *cliApp) newEpicUpdateCmd() *cobra.Command {
 		Short: "Update an epic",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -1112,7 +1155,7 @@ func (a *cliApp) newEpicUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("project") {
 				epic.ProjectID = projectID
 			}
-			if err := store.UpdateEpic(epic.ID, epic.ProjectID, epic.Name, epic.Description); err != nil {
+			if err := svc.UpdateEpic(epic.ID, epic.ProjectID, epic.Name, epic.Description); err != nil {
 				return err
 			}
 			updated, err := store.GetEpic(epic.ID)
@@ -1142,12 +1185,12 @@ func (a *cliApp) newEpicDeleteCmd() *cobra.Command {
 		Short: "Delete an epic",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(a.opts.dbPath)
+			store, svc, err := openProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			if err := store.DeleteEpic(args[0]); err != nil {
+			if err := svc.DeleteEpic(args[0]); err != nil {
 				return err
 			}
 			payload := map[string]interface{}{"deleted": true, "id": args[0]}
@@ -1389,8 +1432,8 @@ func newCompletionCmd(root *cobra.Command) *cobra.Command {
 	}
 }
 
-func buildBoardPayload(store *kanban.Store, projectID string) (map[string]interface{}, map[string][]kanban.IssueSummary, kanban.IssueStateCounts, error) {
-	issues, total, err := store.ListIssueSummaries(kanban.IssueQuery{
+func buildBoardPayload(ctx context.Context, svc *providers.Service, store *kanban.Store, projectID string) (map[string]interface{}, map[string][]kanban.IssueSummary, kanban.IssueStateCounts, error) {
+	issues, total, err := svc.ListIssueSummaries(ctx, kanban.IssueQuery{
 		ProjectID: projectID,
 		Sort:      "updated_desc",
 		Limit:     500,
@@ -1415,13 +1458,21 @@ func buildBoardPayload(store *kanban.Store, projectID string) (map[string]interf
 		"project_id": projectID,
 		"total":      total,
 		"counts":     counts,
-		"columns":    columns,
+		"state_buckets": kanban.BuildStateBuckets(map[string]int{
+			"backlog":     counts.Backlog,
+			"ready":       counts.Ready,
+			"in_progress": counts.InProgress,
+			"in_review":   counts.InReview,
+			"done":        counts.Done,
+			"cancelled":   counts.Cancelled,
+		}, []string{"ready", "in_progress", "in_review"}, []string{"done", "cancelled"}),
+		"columns": columns,
 	}
 	return payload, columns, counts, nil
 }
 
-func buildProjectPayload(store *kanban.Store, id string) (map[string]interface{}, *kanban.ProjectSummary, []kanban.IssueSummary, error) {
-	projectSummaries, err := store.ListProjectSummaries()
+func buildProjectPayload(ctx context.Context, svc *providers.Service, store *kanban.Store, id string) (map[string]interface{}, *kanban.ProjectSummary, []kanban.IssueSummary, error) {
+	projectSummaries, err := svc.ListProjectSummaries()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1435,11 +1486,11 @@ func buildProjectPayload(store *kanban.Store, id string) (map[string]interface{}
 	if project == nil {
 		return nil, nil, nil, notFoundErrorf("project not found: %s", id)
 	}
-	epics, err := store.ListEpicSummaries(id)
+	epics, err := svc.ListEpicSummaries(id)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	issues, total, err := store.ListIssueSummaries(kanban.IssueQuery{ProjectID: id, Sort: "updated_desc", Limit: 200})
+	issues, total, err := svc.ListIssueSummaries(ctx, kanban.IssueQuery{ProjectID: id, Sort: "updated_desc", Limit: 200})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1456,8 +1507,8 @@ func buildProjectPayload(store *kanban.Store, id string) (map[string]interface{}
 	return payload, project, issues, nil
 }
 
-func buildEpicPayload(store *kanban.Store, id string) (map[string]interface{}, *kanban.EpicSummary, []kanban.IssueSummary, error) {
-	epicSummaries, err := store.ListEpicSummaries("")
+func buildEpicPayload(ctx context.Context, svc *providers.Service, store *kanban.Store, id string) (map[string]interface{}, *kanban.EpicSummary, []kanban.IssueSummary, error) {
+	epicSummaries, err := svc.ListEpicSummaries("")
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1478,11 +1529,11 @@ func buildEpicPayload(store *kanban.Store, id string) (map[string]interface{}, *
 			return nil, nil, nil, err
 		}
 	}
-	siblingEpics, err := store.ListEpicSummaries(epic.ProjectID)
+	siblingEpics, err := svc.ListEpicSummaries(epic.ProjectID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	issues, total, err := store.ListIssueSummaries(kanban.IssueQuery{EpicID: id, Sort: "updated_desc", Limit: 200})
+	issues, total, err := svc.ListIssueSummaries(ctx, kanban.IssueQuery{EpicID: id, Sort: "updated_desc", Limit: 200})
 	if err != nil {
 		return nil, nil, nil, err
 	}

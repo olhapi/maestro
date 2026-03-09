@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { getStateMeta, issueStates } from '@/lib/dashboard'
 import type { EpicSummary, IssueDetail, ProjectSummary } from '@/lib/types'
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -25,12 +26,24 @@ export function ProjectDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   initial?: Partial<ProjectSummary>
-  onSubmit: (body: { name: string; description?: string; repo_path: string; workflow_path?: string }) => Promise<void>
+  onSubmit: (body: {
+    name: string
+    description?: string
+    repo_path: string
+    workflow_path?: string
+    provider_kind?: string
+    provider_project_ref?: string
+    provider_config?: Record<string, unknown>
+  }) => Promise<void>
 }) {
   const [name, setName] = useState(initial?.name ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [repoPath, setRepoPath] = useState(initial?.repo_path ?? '')
   const [workflowPath, setWorkflowPath] = useState(initial?.workflow_path ?? '')
+  const [providerKind, setProviderKind] = useState(initial?.provider_kind ?? 'kanban')
+  const [providerProjectRef, setProviderProjectRef] = useState(initial?.provider_project_ref ?? '')
+  const [providerEndpoint, setProviderEndpoint] = useState(String(initial?.provider_config?.endpoint ?? ''))
+  const [providerAssignee, setProviderAssignee] = useState(String(initial?.provider_config?.assignee ?? ''))
   const [pending, setPending] = useState(false)
 
   useEffect(() => {
@@ -38,6 +51,10 @@ export function ProjectDialog({
     setDescription(initial?.description ?? '')
     setRepoPath(initial?.repo_path ?? '')
     setWorkflowPath(initial?.workflow_path ?? '')
+    setProviderKind(initial?.provider_kind ?? 'kanban')
+    setProviderProjectRef(initial?.provider_project_ref ?? '')
+    setProviderEndpoint(String(initial?.provider_config?.endpoint ?? ''))
+    setProviderAssignee(String(initial?.provider_config?.assignee ?? ''))
   }, [initial, open])
 
   return (
@@ -63,6 +80,29 @@ export function ProjectDialog({
             <Field label="Workflow path override">
               <Input value={workflowPath} onChange={(event) => setWorkflowPath(event.target.value)} placeholder="Optional; defaults to <repo>/WORKFLOW.md" />
             </Field>
+            <Field label="Provider">
+              <Select value={providerKind} onChange={(event) => setProviderKind(event.target.value)}>
+                <option value="kanban">kanban</option>
+                <option value="linear">linear</option>
+              </Select>
+            </Field>
+            <Field label="Provider project ref">
+              <Input
+                value={providerProjectRef}
+                onChange={(event) => setProviderProjectRef(event.target.value)}
+                placeholder={providerKind === 'linear' ? 'Linear project slug' : 'Optional provider project ref'}
+              />
+            </Field>
+            <Field label="Provider endpoint">
+              <Input value={providerEndpoint} onChange={(event) => setProviderEndpoint(event.target.value)} placeholder="Optional API endpoint override" />
+            </Field>
+            <Field label="Provider assignee">
+              <Input
+                value={providerAssignee}
+                onChange={(event) => setProviderAssignee(event.target.value)}
+                placeholder={providerKind === 'linear' ? "Optional assignee ID or 'me'" : 'Optional provider assignee filter'}
+              />
+            </Field>
           </div>
           <div className="flex justify-end gap-3">
             <Button variant="secondary" onClick={() => onOpenChange(false)}>
@@ -73,7 +113,26 @@ export function ProjectDialog({
               onClick={async () => {
                 setPending(true)
                 try {
-                  await onSubmit({ name, description, repo_path: repoPath, workflow_path: workflowPath || undefined })
+                  const providerConfig: Record<string, unknown> = { ...(initial?.provider_config ?? {}) }
+                  if (providerEndpoint) {
+                    providerConfig.endpoint = providerEndpoint
+                  } else {
+                    delete providerConfig.endpoint
+                  }
+                  if (providerAssignee) {
+                    providerConfig.assignee = providerAssignee
+                  } else {
+                    delete providerConfig.assignee
+                  }
+                  await onSubmit({
+                    name,
+                    description,
+                    repo_path: repoPath,
+                    workflow_path: workflowPath || undefined,
+                    provider_kind: providerKind,
+                    provider_project_ref: providerProjectRef || undefined,
+                    provider_config: Object.keys(providerConfig).length > 0 ? providerConfig : undefined,
+                  })
                   onOpenChange(false)
                 } finally {
                   setPending(false)
@@ -195,6 +254,8 @@ export function IssueDialog({
   const [prNumber, setPrNumber] = useState(String(initial?.pr_number ?? 0))
   const [prURL, setPrURL] = useState(initial?.pr_url ?? '')
   const [pending, setPending] = useState(false)
+  const selectedProject = projects.find((project) => project.id === projectID)
+  const supportsEpics = selectedProject?.capabilities?.epics ?? true
 
   useEffect(() => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? '')
@@ -241,7 +302,7 @@ export function IssueDialog({
               </Select>
             </Field>
             <Field label="Epic">
-              <Select value={epicID} onChange={(event) => setEpicID(event.target.value)}>
+              <Select disabled={!supportsEpics} value={epicID} onChange={(event) => setEpicID(event.target.value)}>
                 <option value="">No epic</option>
                 {filteredEpics.map((epic) => (
                   <option key={epic.id} value={epic.id}>
@@ -255,9 +316,9 @@ export function IssueDialog({
             </Field>
             <Field label="State">
               <Select value={state} onChange={(event) => setState(event.target.value)}>
-                {['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled'].map((value) => (
+                {[...new Set([state, ...issueStates])].map((value) => (
                   <option key={value} value={value}>
-                    {value.replaceAll('_', ' ')}
+                    {getStateMeta(value).label}
                   </option>
                 ))}
               </Select>

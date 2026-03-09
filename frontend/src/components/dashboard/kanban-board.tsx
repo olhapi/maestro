@@ -5,7 +5,7 @@ import { IssueCard } from '@/components/dashboard/issue-card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { BootstrapResponse, IssueState, IssueSummary } from '@/lib/types'
-import { issueStates, stateMeta } from '@/lib/dashboard'
+import { getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { cn } from '@/lib/utils'
 
 export function KanbanBoard({
@@ -24,7 +24,7 @@ export function KanbanBoard({
   const [dragged, setDragged] = useState<IssueSummary | null>(null)
   const [dropState, setDropState] = useState<IssueState | null>(null)
 
-  const lanes = issueStates.map((state) => {
+  const lanes = issueStatesFor(items).map((state) => {
     const laneItems = items.filter((item) => item.state === state)
     return {
       state,
@@ -60,7 +60,7 @@ export function KanbanBoard({
       <ScrollArea className="rounded-[1.75rem] border border-white/10 bg-white/[0.03]">
         <div className="flex min-w-max gap-4 p-4">
           {lanes.map((lane) => {
-            const meta = stateMeta[lane.state]
+            const meta = getStateMeta(lane.state)
             const activeDrop = dropState === lane.state
             return (
               <div

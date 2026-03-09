@@ -10,12 +10,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { api } from '@/lib/api'
+import {
+  projectDispatchBadgeClass,
+  projectDispatchLabel,
+  summaryActiveCount,
+  summaryDoneCount,
+  summaryTotalCount,
+} from '@/lib/projects'
 import { appRoutes } from '@/lib/routes'
 import type { EpicSummary, ProjectSummary } from '@/lib/types'
-
-function activeCount(counts: ProjectSummary['counts']) {
-  return counts.ready + counts.in_progress + counts.in_review
-}
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
@@ -66,6 +69,8 @@ export function ProjectsPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />
   }
 
+  const epicCapableProjects = projects.data.items.filter((project) => project.capabilities?.epics)
+
   return (
     <div className="grid gap-5">
       <PageHeader
@@ -86,6 +91,7 @@ export function ProjectsPage() {
             </Button>
             <Button
               variant="secondary"
+              disabled={epicCapableProjects.length === 0}
               onClick={() => {
                 setEditingEpic(undefined)
                 setEpicDialogOpen(true)
@@ -109,7 +115,7 @@ export function ProjectsPage() {
             <Card key={project.id} className="overflow-hidden">
               <CardHeader className="items-start">
                 <div className="space-y-3">
-                  <Badge>{activeCount(project.counts)} active</Badge>
+                  <Badge>{summaryActiveCount(project)} active</Badge>
                   <div>
                     <CardTitle className="text-2xl">
                       <Link params={{ projectId: project.id }} to={appRoutes.projectDetail}>
@@ -118,12 +124,15 @@ export function ProjectsPage() {
                     </CardTitle>
                     <p className="mt-3 max-w-xl text-sm leading-7 text-[var(--muted-foreground)]">{project.description || 'No description yet.'}</p>
                     <p className="mt-2 text-xs text-[var(--muted-foreground)]">{project.repo_path || 'No repo path configured yet.'}</p>
+                    <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                      {project.provider_kind || 'kanban'}
+                      {project.provider_project_ref ? ` · ${project.provider_project_ref}` : ''}
+                    </p>
+                    {project.dispatch_error ? <p className="mt-2 text-xs text-rose-200">{project.dispatch_error}</p> : null}
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <Badge className={project.orchestration_ready ? 'border-lime-400/30 bg-lime-400/10 text-lime-200' : 'border-amber-400/30 bg-amber-400/10 text-amber-200'}>
-                    {project.orchestration_ready ? 'Runnable' : 'Needs repo setup'}
-                  </Badge>
+                  <Badge className={projectDispatchBadgeClass(project)}>{projectDispatchLabel(project)}</Badge>
                   <Button
                     variant="ghost"
                     onClick={() => {
@@ -141,9 +150,9 @@ export function ProjectsPage() {
 
               <CardContent className="grid gap-4">
                 <div className="grid grid-cols-3 gap-3">
-                  <StatCard label="Total" value={String(project.counts.backlog + project.counts.ready + project.counts.in_progress + project.counts.in_review + project.counts.done + project.counts.cancelled)} />
-                  <StatCard label="Done" value={String(project.counts.done)} />
-                  <StatCard label="Blocked/active" value={String(activeCount(project.counts))} />
+                  <StatCard label="Total" value={String(summaryTotalCount(project))} />
+                  <StatCard label="Done" value={String(summaryDoneCount(project))} />
+                  <StatCard label="Blocked/active" value={String(summaryActiveCount(project))} />
                 </div>
 
                 <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
@@ -168,7 +177,7 @@ export function ProjectsPage() {
                             <p className="mt-1 text-sm text-[var(--muted-foreground)]">{epic.description || 'No epic description.'}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
-                            <Badge>{activeCount(epic.counts)} active</Badge>
+                            <Badge>{summaryActiveCount(epic)} active</Badge>
                             <Button
                               variant="ghost"
                               onClick={() => {
@@ -224,7 +233,7 @@ export function ProjectsPage() {
         open={epicDialogOpen}
         onOpenChange={setEpicDialogOpen}
         initial={editingEpic}
-        projects={projects.data.items}
+        projects={epicCapableProjects}
         onSubmit={async (body) => {
           if (editingEpic) {
             await api.updateEpic(editingEpic.id, body)

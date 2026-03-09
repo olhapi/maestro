@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api'
-import { getRetryForIssue, getSessionForIssue, stateMeta } from '@/lib/dashboard'
+import { getRetryForIssue, getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { appRoutes } from '@/lib/routes'
 import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from '@/lib/types'
 import { formatDateTime, formatNumber, formatRelativeTime } from '@/lib/utils'
@@ -57,6 +57,7 @@ export function IssuePreviewSheet({
   const activeIssue = detail ?? issue
   const session = activeIssue ? getSessionForIssue(bootstrap, activeIssue.id) : undefined
   const retry = activeIssue ? getRetryForIssue(bootstrap, activeIssue.id) : undefined
+  const availableStates = activeIssue ? issueStatesFor(bootstrap?.issues.items ?? [activeIssue], [activeIssue.state]) : []
 
   if (!activeIssue) return null
 
@@ -69,7 +70,7 @@ export function IssuePreviewSheet({
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge>{activeIssue.identifier}</Badge>
-                  <Badge className="border-white/12 bg-white/5 text-white">{stateMeta[activeIssue.state].label}</Badge>
+                  <Badge className="border-white/12 bg-white/5 text-white">{getStateMeta(activeIssue.state).label}</Badge>
                   {activeIssue.project_name ? <Badge className="border-white/12 bg-white/5 text-white">{activeIssue.project_name}</Badge> : null}
                   {activeIssue.epic_name ? <Badge className="border-white/12 bg-white/5 text-white">{activeIssue.epic_name}</Badge> : null}
                 </div>
@@ -119,9 +120,9 @@ export function IssuePreviewSheet({
                     setDetail(next)
                   }}
                 >
-                  {(['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled'] as IssueState[]).map((state) => (
+                  {availableStates.map((state) => (
                     <option key={state} value={state}>
-                      {stateMeta[state].label}
+                      {getStateMeta(state).label}
                     </option>
                   ))}
                 </Select>

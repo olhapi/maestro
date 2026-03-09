@@ -82,10 +82,10 @@ func TestBootstrapContractsExposePortfolioAndRuntimeOverview(t *testing.T) {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
 	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
-		"issue_id":   issue.ID,
-		"identifier": issue.Identifier,
-		"title":      issue.Title,
-		"phase":      "implementation",
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"title":        issue.Title,
+		"phase":        "implementation",
 		"total_tokens": 17,
 	}); err != nil {
 		t.Fatalf("AppendRuntimeEvent run_started: %v", err)
@@ -166,6 +166,47 @@ func TestBootstrapContractsExposePortfolioAndRuntimeOverview(t *testing.T) {
 	}
 	if _, ok := payload["sessions"].(map[string]interface{}); !ok {
 		t.Fatalf("expected sessions payload: %#v", payload["sessions"])
+	}
+}
+
+func TestBootstrapContractsMarkProjectsOutOfScopeForScopedServer(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.CreateProject("PhotoPal", "UX work", "/repo/photopal", "/repo/photopal/WORKFLOW.md"); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	provider := testProvider{
+		status: map[string]interface{}{
+			"active_runs":      0,
+			"scoped_repo_path": "/repo/maestro",
+		},
+	}
+	mux := http.NewServeMux()
+	NewServer(store, provider).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/bootstrap", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	payload := decodeResponse(t, resp)
+
+	projects := payload["projects"].([]interface{})
+	if len(projects) != 1 {
+		t.Fatalf("expected one project, got %#v", projects)
+	}
+	project := projects[0].(map[string]interface{})
+	if project["dispatch_ready"] != false {
+		t.Fatalf("expected dispatch_ready false, got %#v", project["dispatch_ready"])
+	}
+	if project["dispatch_error"] != "Project repo is outside the current server scope (/repo/maestro)" {
+		t.Fatalf("unexpected dispatch_error: %#v", project["dispatch_error"])
 	}
 }
 
@@ -268,6 +309,47 @@ func TestProjectAndEpicEndpointsSupportCRUDContracts(t *testing.T) {
 
 	if _, err := store.GetProject(projectID); err == nil {
 		t.Fatal("expected deleted project to be missing")
+	}
+}
+
+func TestProjectEndpointsRejectOutOfScopeRepoPaths(t *testing.T) {
+	provider := testProvider{
+		status: map[string]interface{}{
+			"active_runs":      0,
+			"scoped_repo_path": "/repo/maestro",
+		},
+	}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	createProject := requestJSON(t, srv, http.MethodPost, "/api/v1/app/projects", map[string]interface{}{
+		"name":          "PhotoPal",
+		"description":   "desc",
+		"repo_path":     "/repo/photopal",
+		"workflow_path": "/repo/photopal/WORKFLOW.md",
+	})
+	if createProject.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", createProject.StatusCode)
+	}
+	if !strings.Contains(decodeResponse(t, createProject)["error"].(string), "repo_path must match the current server scope") {
+		t.Fatalf("unexpected create error payload")
+	}
+
+	project, err := store.CreateProject("CLI", "desc", "/repo/maestro", "/repo/maestro/WORKFLOW.md")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	updateProject := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/projects/"+project.ID, map[string]interface{}{
+		"name":          "CLI Updated",
+		"description":   "updated",
+		"repo_path":     "/repo/photopal",
+		"workflow_path": "/repo/photopal/WORKFLOW.md",
+	})
+	if updateProject.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", updateProject.StatusCode)
+	}
+	if !strings.Contains(decodeResponse(t, updateProject)["error"].(string), "repo_path must match the current server scope") {
+		t.Fatalf("unexpected update error payload")
 	}
 }
 
@@ -375,9 +457,9 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	}
 	for _, kind := range []string{"run_started", "run_completed", "retry_scheduled"} {
 		if err := store.AppendRuntimeEvent(kind, map[string]interface{}{
-			"issue_id":   issueID,
-			"identifier": identifier,
-			"phase":      "implementation",
+			"issue_id":     issueID,
+			"identifier":   identifier,
+			"phase":        "implementation",
 			"total_tokens": 9,
 		}); err != nil {
 			t.Fatalf("AppendRuntimeEvent %s: %v", kind, err)

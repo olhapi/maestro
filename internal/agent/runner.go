@@ -16,6 +16,7 @@ import (
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -26,6 +27,7 @@ type WorkflowProvider interface {
 type Runner struct {
 	workflowProvider WorkflowProvider
 	store            *kanban.Store
+	service          *providers.Service
 	extensions       *extensions.Registry
 	sessionObserver  func(issueID string, session *appserver.Session)
 }
@@ -55,7 +57,7 @@ func NewRunnerWithExtensions(provider WorkflowProvider, store *kanban.Store, reg
 	if registry == nil {
 		registry = extensions.EmptyRegistry()
 	}
-	return &Runner{workflowProvider: provider, store: store, extensions: registry}
+	return &Runner{workflowProvider: provider, store: store, service: providers.NewService(store), extensions: registry}
 }
 
 func (r *Runner) SetSessionObserver(observer func(issueID string, session *appserver.Session)) {
@@ -81,7 +83,7 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	}
 
 	if issue.State == kanban.StateReady {
-		if err := r.store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		if _, err := r.service.SetIssueState(ctx, issue.Identifier, string(kanban.StateInProgress)); err != nil {
 			return nil, err
 		}
 	}
@@ -279,7 +281,10 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 }
 
 func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID string) (*kanban.Issue, bool) {
-	refreshed, err := r.store.GetIssue(issueID)
+	refreshed, err := r.service.RefreshIssueByID(context.Background(), issueID)
+	if err != nil {
+		refreshed, err = r.store.GetIssue(issueID)
+	}
 	if err != nil {
 		return nil, false
 	}

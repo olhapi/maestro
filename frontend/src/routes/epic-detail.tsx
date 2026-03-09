@@ -12,7 +12,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { api } from '@/lib/api'
-import { groupIssuesByState, issueStates, stateMeta } from '@/lib/dashboard'
+import { getStateMeta, groupIssuesByState, issueStatesFor } from '@/lib/dashboard'
+import { summaryActiveCount, summaryDoneCount } from '@/lib/projects'
 import { appRoutes } from '@/lib/routes'
 import type { IssueDetail, IssueState, IssueSummary } from '@/lib/types'
 import { formatRelativeTime } from '@/lib/utils'
@@ -57,7 +58,8 @@ export function EpicDetailPage() {
     },
   })
 
-  const groupedIssues = useMemo(() => groupIssuesByState(epic.data?.issues.items ?? []), [epic.data?.issues.items])
+  const laneStates = useMemo(() => issueStatesFor(epic.data?.issues.items ?? []), [epic.data?.issues.items])
+  const groupedIssues = useMemo(() => groupIssuesByState(epic.data?.issues.items ?? [], laneStates), [epic.data?.issues.items, laneStates])
 
   if (!bootstrap.data || !epic.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />
@@ -90,8 +92,8 @@ export function EpicDetailPage() {
         stats={
           <>
             <StatCard label="Issues" value={String(epic.data.issues.items.length)} detail="All work attached to this epic." />
-            <StatCard label="Active" value={String(epic.data.epic.counts.ready + epic.data.epic.counts.in_progress + epic.data.epic.counts.in_review)} detail="Issues currently in execution states." />
-            <StatCard label="Done" value={String(epic.data.epic.counts.done)} detail="Completed work inside this epic." />
+            <StatCard label="Active" value={String(summaryActiveCount(epic.data.epic))} detail="Issues currently in execution states." />
+            <StatCard label="Done" value={String(summaryDoneCount(epic.data.epic))} detail="Completed work inside this epic." />
             <StatCard label="Siblings" value={String(epic.data.sibling_epics.length - 1)} detail="Other epics inside the same project." />
           </>
         }
@@ -110,7 +112,7 @@ export function EpicDetailPage() {
                       <p className="font-medium text-white">{issue.identifier}</p>
                       <p className="mt-1 text-sm text-[var(--muted-foreground)]">{issue.title}</p>
                     </div>
-                    <Badge className="border-white/10 bg-white/5 text-white">{stateMeta[issue.state].label}</Badge>
+                    <Badge className="border-white/10 bg-white/5 text-white">{getStateMeta(issue.state).label}</Badge>
                   </div>
                   <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{formatRelativeTime(issue.updated_at)}</p>
                 </button>
@@ -133,7 +135,7 @@ export function EpicDetailPage() {
                         <p className="font-medium text-white">{sibling.name}</p>
                         <p className="mt-1 text-sm text-[var(--muted-foreground)]">{sibling.description || 'No description yet.'}</p>
                       </div>
-                      <Badge>{sibling.counts.ready + sibling.counts.in_progress + sibling.counts.in_review} active</Badge>
+                      <Badge>{summaryActiveCount(sibling)} active</Badge>
                     </div>
                   </Link>
                 ))}
@@ -160,10 +162,10 @@ export function EpicDetailPage() {
             </Link>
           </div>
           <div className="mt-5 grid gap-4 xl:grid-cols-3">
-            {issueStates.map((state) => (
+            {laneStates.map((state) => (
               <div key={state} className="rounded-[1.5rem] border border-white/8 bg-white/[0.03] p-4">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{stateMeta[state].label}</p>
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{getStateMeta(state).label}</p>
                   <p className="mt-2 text-2xl font-semibold text-white">{groupedIssues[state].length}</p>
                 </div>
                 <div className="mt-4 grid gap-3">
@@ -172,7 +174,7 @@ export function EpicDetailPage() {
                   ) : (
                     <div className="flex min-h-[180px] flex-col items-center justify-center rounded-[1.25rem] border border-dashed border-white/10 text-center text-sm text-[var(--muted-foreground)]">
                       <Layers3 className="size-5 text-[var(--accent)]" />
-                      <p className="mt-3">No issues in {stateMeta[state].label.toLowerCase()}.</p>
+                      <p className="mt-3">No issues in {getStateMeta(state).label.toLowerCase()}.</p>
                     </div>
                   )}
                 </div>

@@ -1,6 +1,7 @@
 package kanban
 
 import (
+	"sort"
 	"time"
 
 	"github.com/olhapi/maestro/internal/appserver"
@@ -13,6 +14,13 @@ type IssueStateCounts struct {
 	InReview   int `json:"in_review"`
 	Done       int `json:"done"`
 	Cancelled  int `json:"cancelled"`
+}
+
+type StateBucket struct {
+	State      string `json:"state"`
+	Count      int    `json:"count"`
+	IsActive   bool   `json:"is_active,omitempty"`
+	IsTerminal bool   `json:"is_terminal,omitempty"`
 }
 
 func (c *IssueStateCounts) Add(state State) {
@@ -42,13 +50,21 @@ func (c IssueStateCounts) Active() int {
 
 type ProjectSummary struct {
 	Project
-	Counts IssueStateCounts `json:"counts"`
+	Counts        IssueStateCounts `json:"counts"`
+	StateBuckets  []StateBucket    `json:"state_buckets,omitempty"`
+	TotalCount    int              `json:"total_count"`
+	ActiveCount   int              `json:"active_count"`
+	TerminalCount int              `json:"terminal_count"`
 }
 
 type EpicSummary struct {
 	Epic
-	ProjectName string           `json:"project_name,omitempty"`
-	Counts      IssueStateCounts `json:"counts"`
+	ProjectName   string           `json:"project_name,omitempty"`
+	Counts        IssueStateCounts `json:"counts"`
+	StateBuckets  []StateBucket    `json:"state_buckets,omitempty"`
+	TotalCount    int              `json:"total_count"`
+	ActiveCount   int              `json:"active_count"`
+	TerminalCount int              `json:"terminal_count"`
 }
 
 type IssueSummary struct {
@@ -72,11 +88,56 @@ type IssueQuery struct {
 	ProjectName string
 	EpicID      string
 	State       string
+	Assignee    string
 	Search      string
 	Sort        string
 	Blocked     *bool
 	Limit       int
 	Offset      int
+}
+
+func BuildStateBuckets(counts map[string]int, activeStates, terminalStates []string) []StateBucket {
+	if len(counts) == 0 {
+		return nil
+	}
+	active := make(map[string]struct{}, len(activeStates))
+	for _, state := range activeStates {
+		active[state] = struct{}{}
+	}
+	terminal := make(map[string]struct{}, len(terminalStates))
+	for _, state := range terminalStates {
+		terminal[state] = struct{}{}
+	}
+	states := make([]string, 0, len(counts))
+	for state := range counts {
+		states = append(states, state)
+	}
+	sort.Strings(states)
+	buckets := make([]StateBucket, 0, len(states))
+	for _, state := range states {
+		_, isActive := active[state]
+		_, isTerminal := terminal[state]
+		buckets = append(buckets, StateBucket{
+			State:      state,
+			Count:      counts[state],
+			IsActive:   isActive,
+			IsTerminal: isTerminal,
+		})
+	}
+	return buckets
+}
+
+func AggregateStateBuckets(buckets []StateBucket) (total, active, terminal int) {
+	for _, bucket := range buckets {
+		total += bucket.Count
+		if bucket.IsActive {
+			active += bucket.Count
+		}
+		if bucket.IsTerminal {
+			terminal += bucket.Count
+		}
+	}
+	return total, active, terminal
 }
 
 type RuntimeEvent struct {

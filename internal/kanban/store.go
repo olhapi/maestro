@@ -72,6 +72,9 @@ func (s *Store) migrate() error {
 			description TEXT,
 			repo_path TEXT NOT NULL DEFAULT '',
 			workflow_path TEXT NOT NULL DEFAULT '',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_project_ref TEXT NOT NULL DEFAULT '',
+			provider_config_json TEXT NOT NULL DEFAULT '{}',
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL
 		)`,
@@ -89,6 +92,9 @@ func (s *Store) migrate() error {
 			project_id TEXT,
 			epic_id TEXT,
 			identifier TEXT UNIQUE NOT NULL,
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_issue_ref TEXT NOT NULL DEFAULT '',
+			provider_shadow INTEGER NOT NULL DEFAULT 0,
 			title TEXT NOT NULL,
 			description TEXT,
 			state TEXT NOT NULL DEFAULT 'backlog',
@@ -101,6 +107,7 @@ func (s *Store) migrate() error {
 			updated_at DATETIME NOT NULL,
 			started_at DATETIME,
 			completed_at DATETIME,
+			last_synced_at DATETIME,
 			FOREIGN KEY (project_id) REFERENCES projects(id),
 			FOREIGN KEY (epic_id) REFERENCES epics(id)
 		)`,
@@ -195,6 +202,9 @@ func (s *Store) ensureProjectColumns() error {
 	for _, stmt := range []string{
 		`ALTER TABLE projects ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN workflow_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'kanban'`,
+		`ALTER TABLE projects ADD COLUMN provider_project_ref TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN provider_config_json TEXT NOT NULL DEFAULT '{}'`,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
@@ -206,10 +216,17 @@ func (s *Store) ensureProjectColumns() error {
 func (s *Store) ensureIssueColumns() error {
 	for _, stmt := range []string{
 		`ALTER TABLE issues ADD COLUMN workflow_phase TEXT NOT NULL DEFAULT 'implementation'`,
+		`ALTER TABLE issues ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'kanban'`,
+		`ALTER TABLE issues ADD COLUMN provider_issue_ref TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE issues ADD COLUMN provider_shadow INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE issues ADD COLUMN last_synced_at DATETIME`,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
 		}
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_provider_ref_unique ON issues(provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`); err != nil {
+		return err
 	}
 	return s.backfillWorkflowPhases()
 }
@@ -293,12 +310,106 @@ func normalizeProjectPaths(repoPath, workflowPath string) (string, string, error
 	return absRepoPath, absWorkflowPath, nil
 }
 
+func normalizeProviderKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", ProviderKindKanban:
+		return ProviderKindKanban
+	case ProviderKindLinear:
+		return ProviderKindLinear
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+func cloneProviderConfig(config map[string]interface{}) map[string]interface{} {
+	if len(config) == 0 {
+		return map[string]interface{}{}
+	}
+	out := make(map[string]interface{}, len(config))
+	for key, value := range config {
+		out[key] = value
+	}
+	return out
+}
+
+func decodeProviderConfig(raw string) map[string]interface{} {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]interface{}{}
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || out == nil {
+		return map[string]interface{}{}
+	}
+	return out
+}
+
+func encodeProviderConfig(config map[string]interface{}) string {
+	if len(config) == 0 {
+		return "{}"
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+func projectDefaultActiveStates(project Project) []string {
+	config := cloneProviderConfig(project.ProviderConfig)
+	if values, ok := config["active_states"]; ok {
+		if states := interfaceSliceToStrings(values); len(states) > 0 {
+			return states
+		}
+	}
+	return []string{string(StateReady), string(StateInProgress), string(StateInReview)}
+}
+
+func projectDefaultTerminalStates(project Project) []string {
+	config := cloneProviderConfig(project.ProviderConfig)
+	if values, ok := config["terminal_states"]; ok {
+		if states := interfaceSliceToStrings(values); len(states) > 0 {
+			return states
+		}
+	}
+	return []string{string(StateDone), string(StateCancelled)}
+}
+
+func interfaceSliceToStrings(value interface{}) []string {
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, raw := range typed {
+			item := strings.TrimSpace(fmt.Sprint(raw))
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func hydrateProject(project *Project) {
 	if project == nil {
 		return
 	}
 	project.RepoPath = strings.TrimSpace(project.RepoPath)
 	project.WorkflowPath = strings.TrimSpace(project.WorkflowPath)
+	project.ProviderKind = normalizeProviderKind(project.ProviderKind)
+	project.ProviderProjectRef = strings.TrimSpace(project.ProviderProjectRef)
+	project.ProviderConfig = cloneProviderConfig(project.ProviderConfig)
+	project.Capabilities = DefaultCapabilities(project.ProviderKind)
 	project.DispatchError = ""
 	if project.RepoPath != "" && project.WorkflowPath == "" {
 		project.WorkflowPath = filepath.Join(project.RepoPath, "WORKFLOW.md")
@@ -322,32 +433,42 @@ func hydrateProject(project *Project) {
 // Project operations
 
 func (s *Store) CreateProject(name, description, repoPath, workflowPath string) (*Project, error) {
+	return s.CreateProjectWithProvider(name, description, repoPath, workflowPath, ProviderKindKanban, "", nil)
+}
+
+func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*Project, error) {
 	now := time.Now()
 	id := generateID("proj")
 	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
 	if err != nil {
 		return nil, err
 	}
+	providerKind = normalizeProviderKind(providerKind)
+	providerProjectRef = strings.TrimSpace(providerProjectRef)
+	providerConfigJSON := encodeProviderConfig(providerConfig)
 
 	_, err = s.db.Exec(`
-		INSERT INTO projects (id, name, description, repo_path, workflow_path, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, name, description, repoPath, workflowPath, now, now,
+		INSERT INTO projects (id, name, description, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 	project := &Project{
-		ID:           id,
-		Name:         name,
-		Description:  description,
-		RepoPath:     repoPath,
-		WorkflowPath: workflowPath,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                 id,
+		Name:               name,
+		Description:        description,
+		RepoPath:           repoPath,
+		WorkflowPath:       workflowPath,
+		ProviderKind:       providerKind,
+		ProviderProjectRef: providerProjectRef,
+		ProviderConfig:     cloneProviderConfig(providerConfig),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	hydrateProject(project)
-	if err := s.appendChange("project", id, "created", map[string]interface{}{"name": name, "repo_path": repoPath}); err != nil {
+	if err := s.appendChange("project", id, "created", map[string]interface{}{"name": name, "repo_path": repoPath, "provider_kind": providerKind, "provider_project_ref": providerProjectRef}); err != nil {
 		return nil, err
 	}
 	return project, nil
@@ -355,19 +476,21 @@ func (s *Store) CreateProject(name, description, repoPath, workflowPath string) 
 
 func (s *Store) GetProject(id string) (*Project, error) {
 	p := &Project{}
+	var providerConfigJSON string
 	err := s.db.QueryRow(`
-		SELECT id, name, description, repo_path, workflow_path, created_at, updated_at
+		SELECT id, name, description, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at
 		FROM projects WHERE id = ?`, id,
-	).Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 	hydrateProject(p)
 	return p, nil
 }
 
 func (s *Store) ListProjects() ([]Project, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, repo_path, workflow_path, created_at, updated_at FROM projects ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, description, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -376,9 +499,11 @@ func (s *Store) ListProjects() ([]Project, error) {
 	var projects []Project
 	for rows.Next() {
 		p := Project{}
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var providerConfigJSON string
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 		hydrateProject(&p)
 		projects = append(projects, p)
 	}
@@ -386,14 +511,20 @@ func (s *Store) ListProjects() ([]Project, error) {
 }
 
 func (s *Store) UpdateProject(id, name, description, repoPath, workflowPath string) error {
+	return s.UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, ProviderKindKanban, "", nil)
+}
+
+func (s *Store) UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) error {
 	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
 	if err != nil {
 		return err
 	}
+	providerKind = normalizeProviderKind(providerKind)
+	providerProjectRef = strings.TrimSpace(providerProjectRef)
 	res, err := s.db.Exec(`
-		UPDATE projects SET name = ?, description = ?, repo_path = ?, workflow_path = ?, updated_at = ?
+		UPDATE projects SET name = ?, description = ?, repo_path = ?, workflow_path = ?, provider_kind = ?, provider_project_ref = ?, provider_config_json = ?, updated_at = ?
 		WHERE id = ?`,
-		name, description, repoPath, workflowPath, time.Now(), id,
+		name, description, repoPath, workflowPath, providerKind, providerProjectRef, encodeProviderConfig(providerConfig), time.Now(), id,
 	)
 	if err != nil {
 		return err
@@ -401,7 +532,7 @@ func (s *Store) UpdateProject(id, name, description, repoPath, workflowPath stri
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("project", id)
 	}
-	return s.appendChange("project", id, "updated", map[string]interface{}{"name": name, "repo_path": repoPath})
+	return s.appendChange("project", id, "updated", map[string]interface{}{"name": name, "repo_path": repoPath, "provider_kind": providerKind, "provider_project_ref": providerProjectRef})
 }
 
 func (s *Store) DeleteProject(id string) error {
@@ -637,9 +768,9 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO issues (id, project_id, epic_id, identifier, title, description, state, workflow_phase, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, projectID, epicID, identifier, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
+		INSERT INTO issues (id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, projectID, epicID, identifier, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -659,21 +790,23 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 func (s *Store) GetIssue(id string) (*Issue, error) {
 	i := &Issue{}
 	var prNumber sql.NullInt32
-	var startedAt, completedAt sql.NullTime
-	var projectID, epicID, branchName, prURL sql.NullString
+	var startedAt, completedAt, lastSyncedAt sql.NullTime
+	var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
+	var providerShadow int
 
 	err := s.db.QueryRow(`
-		SELECT id, project_id, epic_id, identifier, title, description, state, workflow_phase, priority,
-		       branch_name, pr_number, pr_url, created_at, updated_at, started_at, completed_at
+		SELECT id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
+		       branch_name, pr_number, pr_url, created_at, updated_at, started_at, completed_at, last_synced_at
 		FROM issues WHERE id = ?`, id,
-	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
-		&branchName, &prNumber, &prURL, &i.CreatedAt, &i.UpdatedAt, &startedAt, &completedAt)
+	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.ProviderKind, &providerIssueRef, &providerShadow, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
+		&branchName, &prNumber, &prURL, &i.CreatedAt, &i.UpdatedAt, &startedAt, &completedAt, &lastSyncedAt)
 	if err != nil {
 		return nil, err
 	}
 	if !i.WorkflowPhase.IsValid() {
 		i.WorkflowPhase = DefaultWorkflowPhaseForState(i.State)
 	}
+	i.ProviderKind = normalizeProviderKind(i.ProviderKind)
 
 	if projectID.Valid {
 		i.ProjectID = projectID.String
@@ -681,6 +814,10 @@ func (s *Store) GetIssue(id string) (*Issue, error) {
 	if epicID.Valid {
 		i.EpicID = epicID.String
 	}
+	if providerIssueRef.Valid {
+		i.ProviderIssueRef = providerIssueRef.String
+	}
+	i.ProviderShadow = providerShadow != 0
 	if branchName.Valid {
 		i.BranchName = branchName.String
 	}
@@ -695,6 +832,9 @@ func (s *Store) GetIssue(id string) (*Issue, error) {
 	}
 	if completedAt.Valid {
 		i.CompletedAt = &completedAt.Time
+	}
+	if lastSyncedAt.Valid {
+		i.LastSyncedAt = &lastSyncedAt.Time
 	}
 
 	// Load labels
@@ -733,6 +873,157 @@ func (s *Store) GetIssueByIdentifier(identifier string) (*Issue, error) {
 	return s.GetIssue(id)
 }
 
+func (s *Store) GetIssueByProviderRef(providerKind, providerIssueRef string) (*Issue, error) {
+	var id string
+	err := s.db.QueryRow(`SELECT id FROM issues WHERE provider_kind = ? AND provider_issue_ref = ?`, normalizeProviderKind(providerKind), strings.TrimSpace(providerIssueRef)).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetIssue(id)
+}
+
+func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, error) {
+	if incoming == nil {
+		return nil, validationErrorf("issue is required")
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, validationErrorf("project_id is required")
+	}
+	providerKind := normalizeProviderKind(incoming.ProviderKind)
+	providerIssueRef := strings.TrimSpace(incoming.ProviderIssueRef)
+	if providerKind == ProviderKindKanban || providerIssueRef == "" {
+		return nil, validationErrorf("provider issue reference is required for provider-backed issues")
+	}
+	now := time.Now().UTC()
+	current, err := s.GetIssueByProviderRef(providerKind, providerIssueRef)
+	switch {
+	case err == sql.ErrNoRows:
+		id := generateID("iss")
+		createdAt := incoming.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = now
+		}
+		updatedAt := incoming.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = now
+		}
+		lastSyncedAt := now
+		if incoming.LastSyncedAt != nil {
+			lastSyncedAt = incoming.LastSyncedAt.UTC()
+		}
+		_, err = s.db.Exec(`
+			INSERT INTO issues (id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at, last_synced_at)
+			VALUES (?, ?, '', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, projectID, incoming.Identifier, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, createdAt, updatedAt, lastSyncedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
+			return nil, err
+		}
+		for _, label := range incoming.Labels {
+			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
+		}
+		if _, err := s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
+			return nil, err
+		}
+		for _, blocker := range incoming.BlockedBy {
+			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_blockers (issue_id, blocked_by) VALUES (?, ?)`, id, blocker)
+		}
+		if err := s.appendChange("issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
+			return nil, err
+		}
+		return s.GetIssue(id)
+	case err != nil:
+		return nil, err
+	default:
+		lastSyncedAt := now
+		if incoming.LastSyncedAt != nil {
+			lastSyncedAt = incoming.LastSyncedAt.UTC()
+		}
+		res, err := s.db.Exec(`
+			UPDATE issues
+			SET project_id = ?, identifier = ?, title = ?, description = ?, state = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
+			WHERE id = ?`,
+			projectID, incoming.Identifier, incoming.Title, incoming.Description, incoming.State, incoming.Priority, providerKind, providerIssueRef, incoming.UpdatedAt, lastSyncedAt, current.ID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+			return nil, notFoundError("issue", current.ID)
+		}
+		if _, err := s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, current.ID); err != nil {
+			return nil, err
+		}
+		for _, label := range incoming.Labels {
+			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, current.ID, label)
+		}
+		if _, err := s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, current.ID); err != nil {
+			return nil, err
+		}
+		for _, blocker := range incoming.BlockedBy {
+			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_blockers (issue_id, blocked_by) VALUES (?, ?)`, current.ID, blocker)
+		}
+		if err := s.appendChange("issue", current.ID, "updated", map[string]interface{}{"identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
+			return nil, err
+		}
+		return s.GetIssue(current.ID)
+	}
+}
+
+func (s *Store) DeleteProviderIssuesExcept(projectID, providerKind string, keepRefs []string) error {
+	projectID = strings.TrimSpace(projectID)
+	providerKind = normalizeProviderKind(providerKind)
+	if projectID == "" || providerKind == "" || providerKind == ProviderKindKanban {
+		return nil
+	}
+
+	query := `SELECT id FROM issues WHERE project_id = ? AND provider_kind = ? AND provider_shadow = 1`
+	args := []interface{}{projectID, providerKind}
+	if len(keepRefs) > 0 {
+		placeholders := make([]string, 0, len(keepRefs))
+		for _, ref := range keepRefs {
+			trimmed := strings.TrimSpace(ref)
+			if trimmed == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, trimmed)
+		}
+		if len(placeholders) > 0 {
+			query += ` AND provider_issue_ref NOT IN (` + strings.Join(placeholders, ",") + `)`
+		}
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var staleIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		staleIDs = append(staleIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, id := range staleIDs {
+		if err := s.DeleteIssue(id); err != nil && !IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 	query := `SELECT id FROM issues WHERE 1=1`
 	args := []interface{}{}
@@ -740,6 +1031,10 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 	if projectID, ok := filter["project_id"].(string); ok && projectID != "" {
 		query += " AND project_id = ?"
 		args = append(args, projectID)
+	}
+	if providerKind, ok := filter["provider_kind"].(string); ok && providerKind != "" {
+		query += " AND provider_kind = ?"
+		args = append(args, normalizeProviderKind(providerKind))
 	}
 	if epicID, ok := filter["epic_id"].(string); ok && epicID != "" {
 		query += " AND epic_id = ?"
@@ -782,6 +1077,42 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 
 func (s *Store) UpdateIssueState(id string, state State) error {
 	return s.UpdateIssueStateAndPhase(id, state, DefaultWorkflowPhaseForState(state))
+}
+
+func (s *Store) UpdateProviderIssueState(id string, state State, phase WorkflowPhase, syncedAt *time.Time) error {
+	if strings.TrimSpace(string(state)) == "" {
+		return invalidStateError(state)
+	}
+	now := time.Now()
+	if !phase.IsValid() {
+		current, err := s.GetIssue(id)
+		if err != nil {
+			return err
+		}
+		phase = current.WorkflowPhase
+		if !phase.IsValid() {
+			phase = WorkflowPhaseImplementation
+		}
+	}
+	var lastSynced interface{}
+	if syncedAt != nil {
+		lastSynced = syncedAt.UTC()
+	} else {
+		lastSynced = now.UTC()
+	}
+	res, err := s.db.Exec(`
+		UPDATE issues
+		SET state = ?, workflow_phase = ?, updated_at = ?, last_synced_at = ?
+		WHERE id = ?`,
+		state, phase, now, lastSynced, id,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
+	}
+	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase})
 }
 
 func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowPhase) error {
@@ -1079,6 +1410,7 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 	defer rows.Close()
 
 	countsByProject := map[string]IssueStateCounts{}
+	stateCountsByProject := map[string]map[string]int{}
 	for rows.Next() {
 		var projectID string
 		var state State
@@ -1091,13 +1423,23 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 			counts.Add(state)
 		}
 		countsByProject[projectID] = counts
+		if stateCountsByProject[projectID] == nil {
+			stateCountsByProject[projectID] = map[string]int{}
+		}
+		stateCountsByProject[projectID][string(state)] += count
 	}
 
 	out := make([]ProjectSummary, 0, len(projects))
 	for _, project := range projects {
+		buckets := BuildStateBuckets(stateCountsByProject[project.ID], projectDefaultActiveStates(project), projectDefaultTerminalStates(project))
+		total, active, terminal := AggregateStateBuckets(buckets)
 		out = append(out, ProjectSummary{
-			Project: project,
-			Counts:  countsByProject[project.ID],
+			Project:       project,
+			Counts:        countsByProject[project.ID],
+			StateBuckets:  buckets,
+			TotalCount:    total,
+			ActiveCount:   active,
+			TerminalCount: terminal,
 		})
 	}
 	return out, nil
@@ -1123,6 +1465,7 @@ func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 
 	countsByEpic := map[string]IssueStateCounts{}
 	projectNames := map[string]string{}
+	stateCountsByEpic := map[string]map[string]int{}
 	for rows.Next() {
 		var epicID, projectName string
 		var state sql.NullString
@@ -1139,14 +1482,24 @@ func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 			counts.Add(State(state.String))
 		}
 		countsByEpic[epicID] = counts
+		if stateCountsByEpic[epicID] == nil {
+			stateCountsByEpic[epicID] = map[string]int{}
+		}
+		stateCountsByEpic[epicID][state.String] += count
 	}
 
 	out := make([]EpicSummary, 0, len(epics))
 	for _, epic := range epics {
+		buckets := BuildStateBuckets(stateCountsByEpic[epic.ID], []string{string(StateReady), string(StateInProgress), string(StateInReview)}, []string{string(StateDone), string(StateCancelled)})
+		total, active, terminal := AggregateStateBuckets(buckets)
 		out = append(out, EpicSummary{
-			Epic:        epic,
-			ProjectName: projectNames[epic.ID],
-			Counts:      countsByEpic[epic.ID],
+			Epic:          epic,
+			ProjectName:   projectNames[epic.ID],
+			Counts:        countsByEpic[epic.ID],
+			StateBuckets:  buckets,
+			TotalCount:    total,
+			ActiveCount:   active,
+			TerminalCount: terminal,
 		})
 	}
 	return out, nil
@@ -1210,8 +1563,8 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	}
 
 	rows, err := s.db.Query(`
-		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.title, i.description, i.state, i.workflow_phase, i.priority,
-		       i.branch_name, i.pr_number, i.pr_url, i.created_at, i.updated_at, i.started_at, i.completed_at,
+		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.priority,
+		       i.branch_name, i.pr_number, i.pr_url, i.created_at, i.updated_at, i.started_at, i.completed_at, i.last_synced_at,
 		       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
 		FROM issues i
@@ -1231,12 +1584,13 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	for rows.Next() {
 		var item IssueSummary
 		var prNumber sql.NullInt32
-		var projectID, epicID, branchName, prURL sql.NullString
-		var startedAt, completedAt, lastRun sql.NullTime
+		var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
+		var startedAt, completedAt, lastRun, lastSyncedAt sql.NullTime
+		var providerShadow int
 		var projectDesc, epicDesc string
 		if err := rows.Scan(
-			&item.ID, &projectID, &epicID, &item.Identifier, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
-			&branchName, &prNumber, &prURL, &item.CreatedAt, &item.UpdatedAt, &startedAt, &completedAt,
+			&item.ID, &projectID, &epicID, &item.Identifier, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
+			&branchName, &prNumber, &prURL, &item.CreatedAt, &item.UpdatedAt, &startedAt, &completedAt, &lastSyncedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
 			return nil, 0, err
@@ -1244,12 +1598,17 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		if !item.WorkflowPhase.IsValid() {
 			item.WorkflowPhase = DefaultWorkflowPhaseForState(item.State)
 		}
+		item.ProviderKind = normalizeProviderKind(item.ProviderKind)
 		if projectID.Valid {
 			item.ProjectID = projectID.String
 		}
 		if epicID.Valid {
 			item.EpicID = epicID.String
 		}
+		if providerIssueRef.Valid {
+			item.ProviderIssueRef = providerIssueRef.String
+		}
+		item.ProviderShadow = providerShadow != 0
 		if branchName.Valid {
 			item.BranchName = branchName.String
 		}
@@ -1264,6 +1623,9 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		}
 		if completedAt.Valid {
 			item.CompletedAt = &completedAt.Time
+		}
+		if lastSyncedAt.Valid {
+			item.LastSyncedAt = &lastSyncedAt.Time
 		}
 		if lastRun.Valid {
 			item.WorkspaceLastRun = &lastRun.Time

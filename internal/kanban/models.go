@@ -1,6 +1,9 @@
 package kanban
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // State represents the workflow state of an issue
 type State string
@@ -17,6 +20,9 @@ const (
 type WorkflowPhase string
 
 const (
+	ProviderKindKanban = "kanban"
+	ProviderKindLinear = "linear"
+
 	WorkflowPhaseImplementation WorkflowPhase = "implementation"
 	WorkflowPhaseReview         WorkflowPhase = "review"
 	WorkflowPhaseDone           WorkflowPhase = "done"
@@ -68,7 +74,13 @@ type Project struct {
 	Description        string    `json:"description,omitempty"`
 	RepoPath           string    `json:"repo_path,omitempty"`
 	WorkflowPath       string    `json:"workflow_path,omitempty"`
+	ProviderKind       string    `json:"provider_kind,omitempty"`
+	ProviderProjectRef string    `json:"provider_project_ref,omitempty"`
+	ProviderConfig     map[string]interface{} `json:"provider_config,omitempty"`
+	Capabilities       ProviderCapabilities   `json:"capabilities"`
 	OrchestrationReady bool      `json:"orchestration_ready"`
+	DispatchReady      bool      `json:"dispatch_ready"`
+	DispatchError      string    `json:"dispatch_error,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -89,6 +101,9 @@ type Issue struct {
 	ProjectID     string        `json:"project_id,omitempty"`
 	EpicID        string        `json:"epic_id,omitempty"`
 	Identifier    string        `json:"identifier"` // Human-readable: PROJ-123
+	ProviderKind  string        `json:"provider_kind,omitempty"`
+	ProviderIssueRef string     `json:"provider_issue_ref,omitempty"`
+	ProviderShadow   bool       `json:"provider_shadow,omitempty"`
 	Title         string        `json:"title"`
 	Description   string        `json:"description,omitempty"`
 	State         State         `json:"state"`
@@ -103,6 +118,7 @@ type Issue struct {
 	UpdatedAt     time.Time     `json:"updated_at"`
 	StartedAt     *time.Time    `json:"started_at,omitempty"`
 	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
+	LastSyncedAt  *time.Time    `json:"last_synced_at,omitempty"`
 }
 
 // Workspace represents an isolated working directory for an issue
@@ -117,4 +133,33 @@ type Workspace struct {
 type StoreIdentity struct {
 	DBPath  string `json:"db_path"`
 	StoreID string `json:"store_id"`
+}
+
+type ProviderCapabilities struct {
+	Projects         bool `json:"projects"`
+	Epics            bool `json:"epics"`
+	Issues           bool `json:"issues"`
+	IssueStateUpdate bool `json:"issue_state_update"`
+	IssueDelete      bool `json:"issue_delete"`
+}
+
+func DefaultCapabilities(kind string) ProviderCapabilities {
+	switch strings.TrimSpace(kind) {
+	case ProviderKindLinear:
+		return ProviderCapabilities{
+			Projects:         true,
+			Epics:            false,
+			Issues:           true,
+			IssueStateUpdate: true,
+			IssueDelete:      true,
+		}
+	default:
+		return ProviderCapabilities{
+			Projects:         true,
+			Epics:            true,
+			Issues:           true,
+			IssueStateUpdate: true,
+			IssueDelete:      true,
+		}
+	}
 }

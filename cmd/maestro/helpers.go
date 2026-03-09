@@ -12,6 +12,7 @@ import (
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/logsink"
+	"github.com/olhapi/maestro/internal/providers"
 )
 
 const guardrailsAcknowledgementFlag = "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
@@ -76,6 +77,14 @@ func openStore(dbPath string) (*kanban.Store, error) {
 		return nil, err
 	}
 	return kanban.NewStore(dbPath)
+}
+
+func openProviderService(dbPath string) (*kanban.Store, *providers.Service, error) {
+	store, err := openStore(dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, providers.NewService(store), nil
 }
 
 func ensureDir(path string) error {

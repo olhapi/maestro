@@ -13,7 +13,7 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
-import { stateMeta } from '@/lib/dashboard'
+import { getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import type { IssueState } from '@/lib/types'
 import { formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
@@ -80,6 +80,7 @@ export function IssueDetailPage() {
   const session = execution.data.session
   const sessionHistory = session?.history?.slice(-8) ?? []
   const runtimeEvents = execution.data.runtime_events.slice(-8)
+  const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state])
   const sessionStatusLabel = execution.data.failure_class === 'run_interrupted'
     ? 'Interrupted'
     : execution.data.active
@@ -129,7 +130,7 @@ export function IssueDetailPage() {
 
       <div className="flex flex-wrap gap-2">
         <Badge>{issue.data.identifier}</Badge>
-        <Badge className="border-white/10 bg-white/5 text-white">{stateMeta[issue.data.state].label}</Badge>
+        <Badge className="border-white/10 bg-white/5 text-white">{getStateMeta(issue.data.state).label}</Badge>
         {issue.data.project_name ? (
           <Badge className="border-white/10 bg-white/5 text-white">
             <Link params={{ projectId: issue.data.project_id! }} to={appRoutes.projectDetail}>
@@ -194,9 +195,9 @@ export function IssueDetailPage() {
                     await invalidate()
                   }}
                 >
-                  {(['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled'] as IssueState[]).map((value) => (
+                  {availableStates.map((value) => (
                     <option key={value} value={value}>
-                      {stateMeta[value].label}
+                      {getStateMeta(value).label}
                     </option>
                   ))}
                 </Select>

@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api } from '@/lib/api'
-import { issueStates, stateMeta } from '@/lib/dashboard'
+import { getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { appRoutes } from '@/lib/routes'
 import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from '@/lib/types'
 import { formatRelativeTime } from '@/lib/utils'
@@ -120,6 +120,8 @@ export function WorkPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />
   }
 
+  const availableStates = issueStatesFor(issues.data.items)
+
   return (
     <div className="grid gap-5">
       <PageHeader
@@ -163,9 +165,9 @@ export function WorkPage() {
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by identifier, title, or description" />
             <Select value={state} onChange={(event) => setState(event.target.value)}>
               <option value="">All states</option>
-              {issueStates.map((value) => (
+              {availableStates.map((value) => (
                 <option key={value} value={value}>
-                  {stateMeta[value].label}
+                  {getStateMeta(value).label}
                 </option>
               ))}
             </Select>
@@ -226,7 +228,7 @@ export function WorkPage() {
                         </button>
                       </td>
                       <td className="py-4">
-                        <Badge className="border-white/10 bg-white/5 text-white">{stateMeta[issue.state].label}</Badge>
+                        <Badge className="border-white/10 bg-white/5 text-white">{getStateMeta(issue.state).label}</Badge>
                       </td>
                       <td className="py-4 text-[var(--muted-foreground)]">
                         {issue.project_id ? (

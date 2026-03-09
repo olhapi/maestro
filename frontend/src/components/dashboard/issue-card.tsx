@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/context-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { BootstrapResponse, IssueState, IssueSummary } from '@/lib/types'
-import { getRetryForIssue, getSessionForIssue, stateMeta } from '@/lib/dashboard'
+import { getRetryForIssue, getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { cn, formatRelativeTime } from '@/lib/utils'
 
 export function IssueCard({
@@ -32,7 +32,8 @@ export function IssueCard({
 }) {
   const session = getSessionForIssue(bootstrap, issue.id)
   const retry = getRetryForIssue(bootstrap, issue.id)
-  const meta = stateMeta[issue.state]
+  const meta = getStateMeta(issue.state)
+  const availableStates = issueStatesFor([issue])
 
   const content = (
     <button
@@ -99,7 +100,7 @@ export function IssueCard({
             <TooltipContent align="start" className="space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="font-medium text-white">{issue.identifier}</p>
-                <Badge className="border-white/12 bg-white/5 text-white">{stateMeta[issue.state].label}</Badge>
+                <Badge className="border-white/12 bg-white/5 text-white">{meta.label}</Badge>
               </div>
               <p className="line-clamp-3 text-sm leading-6 text-[var(--muted-foreground)]">{issue.description || 'No description available.'}</p>
               <div className="grid gap-2 text-xs text-[var(--muted-foreground)]">
@@ -133,9 +134,9 @@ export function IssueCard({
           <>
             <ContextMenuSeparator />
             <ContextMenuLabel>Move to</ContextMenuLabel>
-            {(['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled'] as IssueState[]).map((state) => (
+            {availableStates.map((state) => (
               <ContextMenuItem key={state} onSelect={() => onStateChange(issue, state)}>
-                {stateMeta[state].label}
+                {getStateMeta(state).label}
               </ContextMenuItem>
             ))}
           </>

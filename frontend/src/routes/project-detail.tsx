@@ -12,7 +12,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { api } from '@/lib/api'
-import { stateMeta } from '@/lib/dashboard'
+import { getStateMeta } from '@/lib/dashboard'
+import { projectDispatchBadgeClass, projectDispatchLabel, summaryActiveCount, summaryDoneCount } from '@/lib/projects'
 import { appRoutes } from '@/lib/routes'
 import type { IssueDetail, IssueState, IssueSummary } from '@/lib/types'
 import { formatRelativeTime } from '@/lib/utils'
@@ -101,9 +102,9 @@ export function ProjectDetailPage() {
         stats={
           <>
             <ProjectStat label="Issues" value={String(totalIssues)} detail="All work currently attached to this project." />
-            <ProjectStat label="Active" value={String(project.data.project.counts.ready + project.data.project.counts.in_progress + project.data.project.counts.in_review)} detail="Issues currently in an execution state." />
+            <ProjectStat label="Active" value={String(summaryActiveCount(project.data.project))} detail="Issues currently in an execution state." />
             <ProjectStat label="Epics" value={String(project.data.epics.length)} detail="Delivery arcs scoped to this project." />
-            <ProjectStat label="Completed" value={String(project.data.project.counts.done)} detail="Closed out work items." />
+            <ProjectStat label="Completed" value={String(summaryDoneCount(project.data.project))} detail="Closed out work items." />
           </>
         }
         statsClassName="overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.04] md:grid-cols-4 md:gap-0"
@@ -115,10 +116,13 @@ export function ProjectDetailPage() {
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Repo binding</p>
             <p className="mt-2 truncate text-sm text-white">{project.data.project.repo_path || 'No repo path configured yet.'}</p>
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">{project.data.project.workflow_path || 'Workflow defaults to <repo>/WORKFLOW.md.'}</p>
+            <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+              Provider {project.data.project.provider_kind || 'kanban'}
+              {project.data.project.provider_project_ref ? ` · ${project.data.project.provider_project_ref}` : ''}
+            </p>
+            {project.data.project.dispatch_error ? <p className="mt-2 text-xs text-rose-200">{project.data.project.dispatch_error}</p> : null}
           </div>
-          <Badge className={project.data.project.orchestration_ready ? 'border-lime-400/30 bg-lime-400/10 text-lime-200' : 'border-amber-400/30 bg-amber-400/10 text-amber-200'}>
-            {project.data.project.orchestration_ready ? 'Orchestration ready' : 'Needs repo or workflow setup'}
-          </Badge>
+          <Badge className={projectDispatchBadgeClass(project.data.project)}>{projectDispatchLabel(project.data.project)}</Badge>
         </CardContent>
       </Card>
 
@@ -135,6 +139,7 @@ export function ProjectDetailPage() {
                 className="border-white/12 bg-white/6 text-white hover:bg-white/10"
                 aria-label="Create epic"
                 title="Create epic"
+                disabled={!project.data.project.capabilities?.epics}
                 onClick={() => setEpicDialogOpen(true)}
               >
                 <Plus className="size-4 shrink-0 text-[var(--accent)]" />
@@ -153,7 +158,7 @@ export function ProjectDetailPage() {
                       <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">{epic.description || 'No epic description yet.'}</p>
                     </div>
                     <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-[var(--muted-foreground)]">
-                      {epic.counts.ready + epic.counts.in_progress + epic.counts.in_review} active
+                      {summaryActiveCount(epic)} active
                     </span>
                   </div>
                   <div className="mt-4 grid grid-cols-4 gap-2 text-xs text-[var(--muted-foreground)]">
@@ -179,7 +184,7 @@ export function ProjectDetailPage() {
                       <p className="font-medium text-white">{issue.identifier}</p>
                       <p className="mt-1 text-sm text-[var(--muted-foreground)]">{issue.title}</p>
                     </div>
-                    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-[var(--muted-foreground)]">{stateMeta[issue.state].label}</span>
+                    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-[var(--muted-foreground)]">{getStateMeta(issue.state).label}</span>
                   </div>
                   <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{formatRelativeTime(issue.updated_at)}</p>
                 </button>

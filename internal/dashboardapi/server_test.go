@@ -16,9 +16,13 @@ import (
 type testProvider struct {
 	snapshot observability.Snapshot
 	sessions map[string]interface{}
+	status   map[string]interface{}
 }
 
 func (p testProvider) Status() map[string]interface{} {
+	if p.status != nil {
+		return p.status
+	}
 	return map[string]interface{}{"active_runs": len(p.snapshot.Running)}
 }
 
