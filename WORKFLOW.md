@@ -66,3 +66,4 @@ Requirements:
 2. Run the relevant tests or checks.
 3. Update issue metadata with PR details when applicable.
 4. Leave the workspace in a reviewable state.
+5. Open a PR.

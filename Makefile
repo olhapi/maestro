@@ -3,7 +3,7 @@
 GO_TEST_PACKAGES := ./cmd/... ./internal/... ./pkg/...
 START_DB_PATH ?= $(HOME)/.maestro/maestro.db
 START_PORT ?= 8787
-START_REPO_PATH ?= $(CURDIR)
+START_REPO_PATH ?=
 MAESTRO_BIN ?= ./maestro
 
 frontend-build:
@@ -23,8 +23,22 @@ test-race:
 
 start: build
 	@if [ -n "$(START_REPO_PATH)" ]; then \
+		printf '\nMaestro production start\n'; \
+		printf '  Repo:      %s\n' "$(START_REPO_PATH)"; \
+		printf '  DB:        %s\n' "$(START_DB_PATH)"; \
+		printf '  Dashboard: http://127.0.0.1:%s/\n' "$(START_PORT)"; \
+		printf '  API:       http://127.0.0.1:%s/api/v1/\n' "$(START_PORT)"; \
+		printf '  Mode:      embedded frontend via Go server\n'; \
+		printf '  Stop:      Ctrl+C\n\n'; \
 		$(MAESTRO_BIN) run --db "$(START_DB_PATH)" --port "$(START_PORT)" "$(START_REPO_PATH)"; \
 	else \
+		printf '\nMaestro production start\n'; \
+		printf '  Repo:      all shared projects\n'; \
+		printf '  DB:        %s\n' "$(START_DB_PATH)"; \
+		printf '  Dashboard: http://127.0.0.1:%s/\n' "$(START_PORT)"; \
+		printf '  API:       http://127.0.0.1:%s/api/v1/\n' "$(START_PORT)"; \
+		printf '  Mode:      embedded frontend via Go server\n'; \
+		printf '  Stop:      Ctrl+C\n\n'; \
 		$(MAESTRO_BIN) run --db "$(START_DB_PATH)" --port "$(START_PORT)"; \
 	fi
 
