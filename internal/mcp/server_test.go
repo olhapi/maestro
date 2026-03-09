@@ -6,18 +6,104 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/observability"
 )
 
-func testStore(t *testing.T) *kanban.Store {
+type testClientOptions struct {
+	provider       bool
+	extensionsFile string
+}
+
+type testRuntimeProvider struct {
+	store *kanban.Store
+}
+
+func (p testRuntimeProvider) Status() map[string]interface{} {
+	return map[string]interface{}{"active_runs": len(p.snapshot().Running)}
+}
+
+func (p testRuntimeProvider) Snapshot() observability.Snapshot {
+	return p.snapshot()
+}
+
+func (p testRuntimeProvider) LiveSessions() map[string]interface{} {
+	issue := p.firstIssue()
+	if issue == nil {
+		return map[string]interface{}{"sessions": map[string]interface{}{}}
+	}
+	return map[string]interface{}{
+		"sessions": map[string]interface{}{
+			issue.Identifier: appserver.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				SessionID:       "thread-live-turn-live",
+				ThreadID:        "thread-live",
+				TurnID:          "turn-live",
+				LastEvent:       "turn.started",
+				LastTimestamp:   time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC),
+				LastMessage:     "Working",
+				TotalTokens:     30,
+				TurnsStarted:    3,
+			},
+		},
+	}
+}
+
+func (p testRuntimeProvider) RetryIssueNow(identifier string) map[string]interface{} {
+	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+}
+
+func (p testRuntimeProvider) firstIssue() *kanban.Issue {
+	issues, err := p.store.ListIssues(nil)
+	if err != nil || len(issues) == 0 {
+		return nil
+	}
+	issue := issues[0]
+	return &issue
+}
+
+func (p testRuntimeProvider) snapshot() observability.Snapshot {
+	issue := p.firstIssue()
+	out := observability.Snapshot{
+		GeneratedAt: time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC),
+	}
+	if issue == nil {
+		return out
+	}
+	out.Running = []observability.RunningEntry{{
+		IssueID:     issue.ID,
+		Identifier:  issue.Identifier,
+		State:       string(issue.State),
+		Phase:       string(issue.WorkflowPhase),
+		Attempt:     3,
+		SessionID:   "thread-live-turn-live",
+		TurnCount:   3,
+		LastEvent:   "turn.started",
+		LastMessage: "Working",
+		StartedAt:   time.Date(2026, 3, 9, 11, 59, 0, 0, time.UTC),
+		Tokens:      observability.TokenTotals{InputTokens: 10, OutputTokens: 20, TotalTokens: 30, SecondsRunning: 60},
+	}}
+	return out
+}
+
+func testStore(t *testing.T, dbPath string) *kanban.Store {
 	t.Helper()
-	db := filepath.Join(t.TempDir(), "test.db")
-	s, err := kanban.NewStore(db)
+	if dbPath == "" {
+		dbPath = filepath.Join(t.TempDir(), "test.db")
+	}
+	s, err := kanban.NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -25,17 +111,44 @@ func testStore(t *testing.T) *kanban.Store {
 	return s
 }
 
+func TestNewServerWithExtensionsFailsOnBadExtensionFiles(t *testing.T) {
+	store := testStore(t, "")
+
+	if _, err := NewServerWithExtensions(store, nil, filepath.Join(t.TempDir(), "missing.json")); err == nil {
+		t.Fatal("expected missing extension file to fail")
+	}
+
+	malformedPath := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(malformedPath, []byte(`{`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewServerWithExtensions(store, nil, malformedPath); err == nil {
+		t.Fatal("expected malformed extension json to fail")
+	}
+
+	invalidSchemaPath := filepath.Join(t.TempDir(), "bad-schema.json")
+	if err := os.WriteFile(invalidSchemaPath, []byte(`[{"name":"bad","description":"bad","command":"echo ok","input_schema":{"type":"string"}}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewServerWithExtensions(store, nil, invalidSchemaPath); err == nil {
+		t.Fatal("expected invalid extension input_schema to fail")
+	}
+}
+
 func TestLoadExtensionsAndExecute(t *testing.T) {
-	store := testStore(t)
+	store := testStore(t, "")
 	extPath := filepath.Join(t.TempDir(), "ext.json")
-	json := `[
+	body := `[
   {"name":"ext_echo","description":"echo args","command":"echo $MAESTRO_TOOL_NAME:$MAESTRO_ARGS_JSON","timeout_sec":2}
 ]`
-	if err := os.WriteFile(extPath, []byte(json), 0o644); err != nil {
+	if err := os.WriteFile(extPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	s := NewServerWithExtensions(store, extPath)
+	s, err := NewServerWithExtensions(store, nil, extPath)
+	if err != nil {
+		t.Fatalf("NewServerWithExtensions: %v", err)
+	}
 	if s.extensions == nil || !s.extensions.HasTools() {
 		t.Fatalf("extension not loaded")
 	}
@@ -50,13 +163,16 @@ func TestLoadExtensionsAndExecute(t *testing.T) {
 }
 
 func TestExtensionDisabledByPolicy(t *testing.T) {
-	store := testStore(t)
+	store := testStore(t, "")
 	extPath := filepath.Join(t.TempDir(), "ext.json")
-	json := `[{"name":"ext_off","description":"off","command":"echo hi","allowed":false}]`
-	if err := os.WriteFile(extPath, []byte(json), 0o644); err != nil {
+	body := `[{"name":"ext_off","description":"off","command":"echo hi","allowed":false}]`
+	if err := os.WriteFile(extPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServerWithExtensions(store, extPath)
+	s, err := NewServerWithExtensions(store, nil, extPath)
+	if err != nil {
+		t.Fatalf("NewServerWithExtensions: %v", err)
+	}
 	res, _ := s.handleCallTool(context.Background(), "ext_off", map[string]interface{}{})
 	if !res.IsError {
 		t.Fatalf("expected policy error")
@@ -64,13 +180,16 @@ func TestExtensionDisabledByPolicy(t *testing.T) {
 }
 
 func TestExtensionTimeout(t *testing.T) {
-	store := testStore(t)
+	store := testStore(t, "")
 	extPath := filepath.Join(t.TempDir(), "ext.json")
-	json := `[{"name":"ext_slow","description":"slow","command":"sleep 2","timeout_sec":1}]`
-	if err := os.WriteFile(extPath, []byte(json), 0o644); err != nil {
+	body := `[{"name":"ext_slow","description":"slow","command":"sleep 2","timeout_sec":1}]`
+	if err := os.WriteFile(extPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServerWithExtensions(store, extPath)
+	s, err := NewServerWithExtensions(store, nil, extPath)
+	if err != nil {
+		t.Fatalf("NewServerWithExtensions: %v", err)
+	}
 	res, _ := s.handleCallTool(context.Background(), "ext_slow", map[string]interface{}{})
 	if !res.IsError {
 		t.Fatalf("expected timeout error")
@@ -78,7 +197,7 @@ func TestExtensionTimeout(t *testing.T) {
 }
 
 func TestHandleCallToolRecoversPanics(t *testing.T) {
-	s := NewServerWithRegistry(nil, nil)
+	s := NewServerWithRegistry(nil, nil, nil)
 	res, err := s.handleCallTool(context.Background(), "server_info", nil)
 	if err != nil {
 		t.Fatalf("handleCallTool returned error: %v", err)
@@ -116,60 +235,128 @@ func TestHelperProcessMCPServer(t *testing.T) {
 	}
 	defer store.Close()
 
-	server := NewServer(store)
+	var registry *extensions.Registry
+	if extPath := os.Getenv("GO_WANT_MCP_EXTENSIONS"); extPath != "" {
+		registry, err = extensions.LoadFile(extPath)
+		if err != nil {
+			os.Exit(4)
+		}
+	}
+
+	var provider RuntimeProvider
+	if os.Getenv("GO_WANT_MCP_PROVIDER") == "1" {
+		provider = testRuntimeProvider{store: store}
+	}
+
+	server := NewServerWithRegistry(store, provider, registry)
 	if err := server.ServeStdio(); err != nil {
-		os.Exit(4)
+		os.Exit(5)
 	}
 	os.Exit(0)
 }
 
-func TestStdioServerInfoAndToolEnvelope(t *testing.T) {
+func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
-	client := newTestMCPClient(t, dbPath)
+	extPath := filepath.Join(t.TempDir(), "ext.json")
+	body := `[
+  {
+    "name":"ext_schema",
+    "description":"schema-aware extension",
+    "command":"echo ok",
+    "input_schema":{
+      "type":"object",
+      "properties":{
+        "path":{"type":"string","description":"Absolute path"},
+        "mode":{"type":"string","description":"Execution mode","examples":["dry-run"]}
+      }
+    }
+  },
+  {
+    "name":"ext_fallback",
+    "description":"fallback extension",
+    "command":"echo ok"
+  }
+]`
+	if err := os.WriteFile(extPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := newTestMCPClient(t, dbPath, testClientOptions{extensionsFile: extPath})
 	defer client.Close()
 
 	tools, err := client.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
 	}
-	foundServerInfo := false
+
+	var names []string
 	for _, tool := range tools.Tools {
-		if tool.Name == "server_info" {
-			foundServerInfo = true
-			break
-		}
+		names = append(names, tool.Name)
 	}
-	if !foundServerInfo {
-		t.Fatal("expected server_info tool to be registered")
+	wantNames := []string{
+		"server_info",
+		"create_project",
+		"update_project",
+		"list_projects",
+		"delete_project",
+		"create_epic",
+		"update_epic",
+		"list_epics",
+		"delete_epic",
+		"create_issue",
+		"get_issue",
+		"list_issues",
+		"update_issue",
+		"set_issue_state",
+		"set_issue_workflow_phase",
+		"delete_issue",
+		"get_issue_execution",
+		"retry_issue",
+		"board_overview",
+		"set_blockers",
+		"list_runtime_events",
+		"get_runtime_snapshot",
+		"list_sessions",
+		"ext_schema",
+		"ext_fallback",
+	}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("unexpected tool list:\n got %v\nwant %v", names, wantNames)
 	}
 
-	serverInfo, err := client.CallTool(context.Background(), "server_info", map[string]interface{}{})
+	serverInfo := findTool(t, tools.Tools, "server_info")
+	if !strings.Contains(serverInfo.Description, "Maestro") || strings.Contains(strings.ToLower(serverInfo.Description), "symphony") {
+		t.Fatalf("unexpected server_info description: %q", serverInfo.Description)
+	}
+	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "limit", "offset", "project_id", "search", "sort", "state")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_epic"), "description", "id", "name", "project_id")
+	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
+	assertToolProperties(t, findTool(t, tools.Tools, "get_issue_execution"), "identifier")
+	assertToolProperties(t, findTool(t, tools.Tools, "get_runtime_snapshot"))
+	assertToolProperties(t, findTool(t, tools.Tools, "list_sessions"), "identifier")
+	assertToolProperties(t, findTool(t, tools.Tools, "retry_issue"), "identifier")
+	assertToolProperties(t, findTool(t, tools.Tools, "ext_schema"), "mode", "path")
+	assertToolProperties(t, findTool(t, tools.Tools, "ext_fallback"), "args")
+}
+
+func TestStdioBuiltInToolCoverage(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := t.TempDir()
+	tempRepoPath := t.TempDir()
+	secondRepoPath := t.TempDir()
+	store := testStore(t, dbPath)
+
+	client := newTestMCPClient(t, dbPath, testClientOptions{})
+	defer client.Close()
+
+	serverInfoRes, err := client.CallTool(context.Background(), "server_info", map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("server_info failed: %v", err)
 	}
-	env := decodeEnvelope(t, serverInfo)
-	meta := env["meta"].(map[string]interface{})
-	absDB, _ := filepath.Abs(dbPath)
-	if meta["db_path"] != absDB {
-		t.Fatalf("expected db_path %q, got %#v", absDB, meta["db_path"])
+	serverInfo := decodeEnvelope(t, serverInfoRes)
+	if serverInfo["data"].(map[string]interface{})["runtime_available"] != false {
+		t.Fatalf("expected runtime_available=false, got %#v", serverInfo)
 	}
-	if asString(meta["store_id"]) == "" {
-		t.Fatal("expected non-empty store_id")
-	}
-	if asString(meta["server_instance_id"]) == "" {
-		t.Fatal("expected non-empty server_instance_id")
-	}
-	data := env["data"].(map[string]interface{})
-	if data["project_count"].(float64) != 0 {
-		t.Fatalf("expected zero projects, got %#v", data["project_count"])
-	}
-}
-
-func TestStdioMutationsExposeIdentityAndSurviveErrors(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "maestro.db")
-	repoPath := t.TempDir()
-	client := newTestMCPClient(t, dbPath)
-	defer client.Close()
 
 	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
 		"name":      "Demo",
@@ -178,13 +365,79 @@ func TestStdioMutationsExposeIdentityAndSurviveErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create_project failed: %v", err)
 	}
-	projectEnv := decodeEnvelope(t, projectRes)
-	project := projectEnv["data"].(map[string]interface{})
+	project := decodeEnvelope(t, projectRes)["data"].(map[string]interface{})
 	projectID := asString(project["id"])
-	if projectID == "" {
-		t.Fatal("expected project id")
+
+	updateProjectRes, err := client.CallTool(context.Background(), "update_project", map[string]interface{}{
+		"id":            projectID,
+		"name":          "Demo Updated",
+		"description":   "Updated project",
+		"repo_path":     repoPath,
+		"workflow_path": filepath.Join(repoPath, "WORKFLOW.md"),
+	})
+	if err != nil {
+		t.Fatalf("update_project failed: %v", err)
 	}
-	storeID := asString(projectEnv["meta"].(map[string]interface{})["store_id"])
+	if got := decodeEnvelope(t, updateProjectRes)["data"].(map[string]interface{})["name"]; got != "Demo Updated" {
+		t.Fatalf("unexpected update_project payload: %#v", got)
+	}
+
+	listProjectsRes, err := client.CallTool(context.Background(), "list_projects", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("list_projects failed: %v", err)
+	}
+	if items := decodeEnvelope(t, listProjectsRes)["data"].(map[string]interface{})["items"].([]interface{}); len(items) == 0 {
+		t.Fatal("expected list_projects items")
+	}
+
+	tempProjectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Temp",
+		"repo_path": tempRepoPath,
+	})
+	if err != nil {
+		t.Fatalf("create temp project failed: %v", err)
+	}
+	tempProjectID := asString(decodeEnvelope(t, tempProjectRes)["data"].(map[string]interface{})["id"])
+
+	epicRes, err := client.CallTool(context.Background(), "create_epic", map[string]interface{}{
+		"project_id":  projectID,
+		"name":        "Epic A",
+		"description": "Main epic",
+	})
+	if err != nil {
+		t.Fatalf("create_epic failed: %v", err)
+	}
+	epicID := asString(decodeEnvelope(t, epicRes)["data"].(map[string]interface{})["id"])
+
+	updateEpicRes, err := client.CallTool(context.Background(), "update_epic", map[string]interface{}{
+		"id":          epicID,
+		"project_id":  projectID,
+		"name":        "Epic A Updated",
+		"description": "Updated epic",
+	})
+	if err != nil {
+		t.Fatalf("update_epic failed: %v", err)
+	}
+	if got := decodeEnvelope(t, updateEpicRes)["data"].(map[string]interface{})["name"]; got != "Epic A Updated" {
+		t.Fatalf("unexpected update_epic payload: %#v", got)
+	}
+
+	listEpicsRes, err := client.CallTool(context.Background(), "list_epics", map[string]interface{}{"project_id": projectID})
+	if err != nil {
+		t.Fatalf("list_epics failed: %v", err)
+	}
+	if items := decodeEnvelope(t, listEpicsRes)["data"].(map[string]interface{})["items"].([]interface{}); len(items) == 0 {
+		t.Fatal("expected list_epics items")
+	}
+
+	tempEpicRes, err := client.CallTool(context.Background(), "create_epic", map[string]interface{}{
+		"project_id": projectID,
+		"name":       "Temp Epic",
+	})
+	if err != nil {
+		t.Fatalf("create temp epic failed: %v", err)
+	}
+	tempEpicID := asString(decodeEnvelope(t, tempEpicRes)["data"].(map[string]interface{})["id"])
 
 	issueARes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
 		"title":      "Issue A",
@@ -197,119 +450,392 @@ func TestStdioMutationsExposeIdentityAndSurviveErrors(t *testing.T) {
 	issueA := decodeEnvelope(t, issueARes)["data"].(map[string]interface{})
 
 	issueBRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
-		"title":      "Issue B",
-		"project_id": projectID,
-		"priority":   2,
+		"title":       "Issue B",
+		"description": "Second issue",
+		"project_id":  projectID,
+		"epic_id":     epicID,
+		"priority":    2,
+		"labels":      []interface{}{"mcp", "coverage"},
+		"state":       "ready",
+		"blocked_by":  []interface{}{issueA["identifier"]},
+		"branch_name": "feat/mcp",
+		"pr_number":   17,
+		"pr_url":      "https://example.com/pr/17",
 	})
 	if err != nil {
 		t.Fatalf("create_issue B failed: %v", err)
 	}
 	issueB := decodeEnvelope(t, issueBRes)["data"].(map[string]interface{})
-
-	blockerRes, err := client.CallTool(context.Background(), "set_blockers", map[string]interface{}{
-		"identifier": asString(issueB["identifier"]),
-		"blocked_by": []interface{}{issueA["identifier"]},
-	})
-	if err != nil {
-		t.Fatalf("set_blockers failed: %v", err)
-	}
-	blockerEnv := decodeEnvelope(t, blockerRes)
-	if asString(blockerEnv["meta"].(map[string]interface{})["store_id"]) != storeID {
-		t.Fatal("expected stable store id across tool calls")
-	}
-	blockerData := blockerEnv["data"].(map[string]interface{})
-	blockedBy := blockerData["blocked_by"].([]interface{})
-	if len(blockedBy) != 1 || asString(blockedBy[0]) != asString(issueA["identifier"]) {
-		t.Fatalf("expected persisted blocker, got %#v", blockerData["blocked_by"])
+	issueBIdentifier := asString(issueB["identifier"])
+	if issueB["state"] != "ready" {
+		t.Fatalf("expected create_issue state ready, got %#v", issueB["state"])
 	}
 
 	getIssueRes, err := client.CallTool(context.Background(), "get_issue", map[string]interface{}{
-		"identifier": asString(issueB["identifier"]),
+		"identifier": issueBIdentifier,
 	})
 	if err != nil {
 		t.Fatalf("get_issue failed: %v", err)
 	}
 	getIssue := decodeEnvelope(t, getIssueRes)["data"].(map[string]interface{})
-	getBlockedBy := getIssue["blocked_by"].([]interface{})
-	if len(getBlockedBy) != 1 || asString(getBlockedBy[0]) != asString(issueA["identifier"]) {
-		t.Fatalf("expected get_issue blocked_by to be persisted, got %#v", getIssue["blocked_by"])
+	if getIssue["identifier"] != issueBIdentifier {
+		t.Fatalf("unexpected get_issue payload: %#v", getIssue)
 	}
 
 	listIssuesRes, err := client.CallTool(context.Background(), "list_issues", map[string]interface{}{
 		"project_id": projectID,
+		"search":     "Issue",
+		"sort":       "priority_asc",
+		"limit":      10,
+		"offset":     0,
 	})
 	if err != nil {
 		t.Fatalf("list_issues failed: %v", err)
 	}
-	items := decodeEnvelope(t, listIssuesRes)["data"].(map[string]interface{})["items"].([]interface{})
-	if len(items) != 2 {
-		t.Fatalf("expected 2 issues, got %d", len(items))
+	listIssues := decodeEnvelope(t, listIssuesRes)["data"].(map[string]interface{})
+	if got := int(listIssues["total"].(float64)); got < 2 {
+		t.Fatalf("expected at least 2 issues, got %d", got)
 	}
 
-	invalidRes, err := client.CallTool(context.Background(), "set_blockers", map[string]interface{}{
-		"identifier": asString(issueB["identifier"]),
-		"blocked_by": []interface{}{"MISSING-1"},
+	secondProjectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Second",
+		"repo_path": secondRepoPath,
 	})
 	if err != nil {
-		t.Fatalf("invalid set_blockers failed at transport level: %v", err)
+		t.Fatalf("create second project failed: %v", err)
 	}
-	if !invalidRes.IsError {
-		t.Fatal("expected invalid blocker call to return tool error")
+	secondProjectID := asString(decodeEnvelope(t, secondProjectRes)["data"].(map[string]interface{})["id"])
+
+	secondEpicRes, err := client.CallTool(context.Background(), "create_epic", map[string]interface{}{
+		"project_id": secondProjectID,
+		"name":       "Epic B",
+	})
+	if err != nil {
+		t.Fatalf("create second epic failed: %v", err)
 	}
-	invalidEnv := decodeEnvelope(t, invalidRes)
-	if invalidEnv["ok"] != false {
-		t.Fatalf("expected ok=false for invalid blocker, got %#v", invalidEnv["ok"])
+	secondEpicID := asString(decodeEnvelope(t, secondEpicRes)["data"].(map[string]interface{})["id"])
+
+	updateIssueRes, err := client.CallTool(context.Background(), "update_issue", map[string]interface{}{
+		"identifier":  issueBIdentifier,
+		"project_id":  secondProjectID,
+		"epic_id":     secondEpicID,
+		"title":       "Issue B Updated",
+		"description": "Moved issue",
+		"priority":    5,
+		"labels":      []interface{}{"go", "mcp"},
+		"blocked_by":  []interface{}{},
+		"branch_name": "feat/mcp-v2",
+		"pr_number":   23,
+		"pr_url":      "https://example.com/pr/23",
+	})
+	if err != nil {
+		t.Fatalf("update_issue failed: %v", err)
 	}
+	updateIssue := decodeEnvelope(t, updateIssueRes)["data"].(map[string]interface{})
+	if updateIssue["project_id"] != secondProjectID || updateIssue["epic_id"] != secondEpicID {
+		t.Fatalf("unexpected update_issue payload: %#v", updateIssue)
+	}
+
+	issueCRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
+		"title":      "Issue C",
+		"project_id": secondProjectID,
+	})
+	if err != nil {
+		t.Fatalf("create_issue C failed: %v", err)
+	}
+	issueCIdentifier := asString(decodeEnvelope(t, issueCRes)["data"].(map[string]interface{})["identifier"])
+
+	setStateRes, err := client.CallTool(context.Background(), "set_issue_state", map[string]interface{}{
+		"identifier": issueBIdentifier,
+		"state":      "in_progress",
+	})
+	if err != nil {
+		t.Fatalf("set_issue_state failed: %v", err)
+	}
+	if got := decodeEnvelope(t, setStateRes)["data"].(map[string]interface{})["state"]; got != "in_progress" {
+		t.Fatalf("unexpected set_issue_state payload: %#v", got)
+	}
+
+	setPhaseRes, err := client.CallTool(context.Background(), "set_issue_workflow_phase", map[string]interface{}{
+		"identifier":     issueBIdentifier,
+		"workflow_phase": "review",
+	})
+	if err != nil {
+		t.Fatalf("set_issue_workflow_phase failed: %v", err)
+	}
+	if got := decodeEnvelope(t, setPhaseRes)["data"].(map[string]interface{})["workflow_phase"]; got != "review" {
+		t.Fatalf("unexpected set_issue_workflow_phase payload: %#v", got)
+	}
+
+	boardRes, err := client.CallTool(context.Background(), "board_overview", map[string]interface{}{"project_id": secondProjectID})
+	if err != nil {
+		t.Fatalf("board_overview failed: %v", err)
+	}
+	board := decodeEnvelope(t, boardRes)["data"].(map[string]interface{})
+	if board["in_progress"] == nil {
+		t.Fatalf("unexpected board_overview payload: %#v", board)
+	}
+
+	setBlockersRes, err := client.CallTool(context.Background(), "set_blockers", map[string]interface{}{
+		"identifier": issueBIdentifier,
+		"blocked_by": []interface{}{issueCIdentifier},
+	})
+	if err != nil {
+		t.Fatalf("set_blockers failed: %v", err)
+	}
+	blockedBy := decodeEnvelope(t, setBlockersRes)["data"].(map[string]interface{})["blocked_by"].([]interface{})
+	if len(blockedBy) != 1 || asString(blockedBy[0]) != issueCIdentifier {
+		t.Fatalf("unexpected set_blockers payload: %#v", blockedBy)
+	}
+
+	issueBStore, err := store.GetIssueByIdentifier(issueBIdentifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issueBStore.ID,
+		Identifier: issueBIdentifier,
+		Phase:      "review",
+		Attempt:    2,
+		RunKind:    "run_failed",
+		Error:      "approval_required",
+		UpdatedAt:  time.Date(2026, 3, 9, 12, 5, 0, 0, time.UTC),
+		AppSession: appserver.Session{
+			IssueID:         issueBStore.ID,
+			IssueIdentifier: issueBIdentifier,
+			SessionID:       "thread-persisted-turn-persisted",
+			LastEvent:       "turn.approval_required",
+			LastTimestamp:   time.Date(2026, 3, 9, 12, 5, 0, 0, time.UTC),
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_failed", map[string]interface{}{
+		"issue_id":   issueBStore.ID,
+		"identifier": issueBIdentifier,
+		"phase":      "review",
+		"attempt":    2,
+		"error":      "approval_required",
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	getExecutionRes, err := client.CallTool(context.Background(), "get_issue_execution", map[string]interface{}{
+		"identifier": issueBIdentifier,
+	})
+	if err != nil {
+		t.Fatalf("get_issue_execution failed: %v", err)
+	}
+	getExecution := decodeEnvelope(t, getExecutionRes)["data"].(map[string]interface{})
+	if getExecution["runtime_available"] != false || getExecution["session_source"] != "persisted" {
+		t.Fatalf("unexpected get_issue_execution payload: %#v", getExecution)
+	}
+
+	listRuntimeEventsRes, err := client.CallTool(context.Background(), "list_runtime_events", map[string]interface{}{
+		"since": 0,
+		"limit": 10,
+	})
+	if err != nil {
+		t.Fatalf("list_runtime_events failed: %v", err)
+	}
+	events := decodeEnvelope(t, listRuntimeEventsRes)["data"].(map[string]interface{})["events"].([]interface{})
+	if len(events) == 0 {
+		t.Fatal("expected runtime events")
+	}
+
+	deleteIssueRes, err := client.CallTool(context.Background(), "delete_issue", map[string]interface{}{
+		"identifier": issueCIdentifier,
+	})
+	if err != nil {
+		t.Fatalf("delete_issue failed: %v", err)
+	}
+	if got := decodeEnvelope(t, deleteIssueRes)["data"].(map[string]interface{})["identifier"]; got != issueCIdentifier {
+		t.Fatalf("unexpected delete_issue payload: %#v", got)
+	}
+
+	deleteEpicRes, err := client.CallTool(context.Background(), "delete_epic", map[string]interface{}{
+		"id": tempEpicID,
+	})
+	if err != nil {
+		t.Fatalf("delete_epic failed: %v", err)
+	}
+	if got := decodeEnvelope(t, deleteEpicRes)["data"].(map[string]interface{})["id"]; got != tempEpicID {
+		t.Fatalf("unexpected delete_epic payload: %#v", got)
+	}
+
+	deleteProjectRes, err := client.CallTool(context.Background(), "delete_project", map[string]interface{}{
+		"id": tempProjectID,
+	})
+	if err != nil {
+		t.Fatalf("delete_project failed: %v", err)
+	}
+	if got := decodeEnvelope(t, deleteProjectRes)["data"].(map[string]interface{})["id"]; got != tempProjectID {
+		t.Fatalf("unexpected delete_project payload: %#v", got)
+	}
+}
+
+func TestStdioRuntimeToolsWithProvider(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	store := testStore(t, dbPath)
+	issue, err := store.CreateIssue("", "", "Runtime issue", "", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "run_failed",
+		Error:      "approval_required",
+		UpdatedAt:  time.Date(2026, 3, 9, 12, 10, 0, 0, time.UTC),
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-persisted-turn-persisted",
+			LastEvent:       "turn.approval_required",
+			LastTimestamp:   time.Date(2026, 3, 9, 12, 10, 0, 0, time.UTC),
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    2,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	client := newTestMCPClient(t, dbPath, testClientOptions{provider: true})
+	defer client.Close()
 
 	serverInfoRes, err := client.CallTool(context.Background(), "server_info", map[string]interface{}{})
 	if err != nil {
-		t.Fatalf("server_info after tool error failed: %v", err)
+		t.Fatalf("server_info failed: %v", err)
 	}
-	serverInfo := decodeEnvelope(t, serverInfoRes)
-	if asString(serverInfo["meta"].(map[string]interface{})["store_id"]) != storeID {
-		t.Fatal("expected transport to remain attached to same store after tool error")
+	if got := decodeEnvelope(t, serverInfoRes)["data"].(map[string]interface{})["runtime_available"]; got != true {
+		t.Fatalf("expected runtime_available=true, got %#v", got)
+	}
+
+	getExecutionRes, err := client.CallTool(context.Background(), "get_issue_execution", map[string]interface{}{
+		"identifier": issue.Identifier,
+	})
+	if err != nil {
+		t.Fatalf("get_issue_execution failed: %v", err)
+	}
+	getExecution := decodeEnvelope(t, getExecutionRes)["data"].(map[string]interface{})
+	if getExecution["runtime_available"] != true || getExecution["session_source"] != "live" || getExecution["active"] != true {
+		t.Fatalf("unexpected runtime execution payload: %#v", getExecution)
+	}
+
+	getSnapshotRes, err := client.CallTool(context.Background(), "get_runtime_snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("get_runtime_snapshot failed: %v", err)
+	}
+	snapshot := decodeEnvelope(t, getSnapshotRes)["data"].(map[string]interface{})
+	if counts := snapshot["counts"].(map[string]interface{}); counts["running"].(float64) < 1 {
+		t.Fatalf("unexpected runtime snapshot payload: %#v", snapshot)
+	}
+
+	listSessionsRes, err := client.CallTool(context.Background(), "list_sessions", map[string]interface{}{
+		"identifier": issue.Identifier,
+	})
+	if err != nil {
+		t.Fatalf("list_sessions failed: %v", err)
+	}
+	listSessions := decodeEnvelope(t, listSessionsRes)["data"].(map[string]interface{})
+	if listSessions["issue"] != issue.Identifier {
+		t.Fatalf("unexpected list_sessions payload: %#v", listSessions)
+	}
+
+	retryIssueRes, err := client.CallTool(context.Background(), "retry_issue", map[string]interface{}{
+		"identifier": issue.Identifier,
+	})
+	if err != nil {
+		t.Fatalf("retry_issue failed: %v", err)
+	}
+	if got := decodeEnvelope(t, retryIssueRes)["data"].(map[string]interface{})["status"]; got != "queued_now" {
+		t.Fatalf("unexpected retry_issue payload: %#v", got)
 	}
 }
 
-func TestStdioServerInfoDistinguishesDifferentDatabases(t *testing.T) {
-	dbA := filepath.Join(t.TempDir(), "a.db")
-	dbB := filepath.Join(t.TempDir(), "b.db")
+func TestStdioRuntimeToolsWithoutProviderReturnExplicitErrors(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	client := newTestMCPClient(t, dbPath, testClientOptions{})
+	defer client.Close()
 
-	clientA := newTestMCPClient(t, dbA)
-	defer clientA.Close()
-	clientB := newTestMCPClient(t, dbB)
-	defer clientB.Close()
-
-	infoA, err := clientA.CallTool(context.Background(), "server_info", map[string]interface{}{})
+	tools, err := client.ListTools(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("server_info A failed: %v", err)
+		t.Fatalf("ListTools failed: %v", err)
 	}
-	infoB, err := clientB.CallTool(context.Background(), "server_info", map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("server_info B failed: %v", err)
+	for _, name := range []string{"get_runtime_snapshot", "list_sessions", "retry_issue"} {
+		findTool(t, tools.Tools, name)
 	}
 
-	metaA := decodeEnvelope(t, infoA)["meta"].(map[string]interface{})
-	metaB := decodeEnvelope(t, infoB)["meta"].(map[string]interface{})
-	if asString(metaA["store_id"]) == asString(metaB["store_id"]) {
-		t.Fatalf("expected different store ids for different databases, got %q", metaA["store_id"])
+	for _, tc := range []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{name: "get_runtime_snapshot", args: map[string]interface{}{}},
+		{name: "list_sessions", args: map[string]interface{}{}},
+		{name: "retry_issue", args: map[string]interface{}{"identifier": "ISS-1"}},
+	} {
+		res, err := client.CallTool(context.Background(), tc.name, tc.args)
+		if err != nil {
+			t.Fatalf("%s transport failed: %v", tc.name, err)
+		}
+		if !res.IsError {
+			t.Fatalf("%s expected tool error", tc.name)
+		}
+		env := decodeEnvelope(t, res)
+		msg := asString(env["error"].(map[string]interface{})["message"])
+		if !strings.Contains(msg, "runtime_unavailable") {
+			t.Fatalf("%s expected runtime_unavailable, got %q", tc.name, msg)
+		}
 	}
 }
 
-func newTestMCPClient(t *testing.T, dbPath string) *mcpclient.StdioMCPClient {
+func TestStdioUnknownToolReturnsToolError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	client := newTestMCPClient(t, dbPath, testClientOptions{})
+	defer client.Close()
+
+	res, err := client.CallTool(context.Background(), "unknown_tool", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("unknown tool transport failed: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected unknown tool to return tool error")
+	}
+	env := decodeEnvelope(t, res)
+	msg := asString(env["error"].(map[string]interface{})["message"])
+	if !strings.Contains(strings.ToLower(msg), "unknown tool") {
+		t.Fatalf("unexpected unknown tool payload: %#v", env)
+	}
+}
+
+func newTestMCPClient(t *testing.T, dbPath string, opts testClientOptions) *mcpclient.StdioMCPClient {
 	t.Helper()
 	envPath, err := exec.LookPath("env")
 	if err != nil {
 		t.Fatalf("env lookup failed: %v", err)
 	}
-	client, err := mcpclient.NewStdioMCPClient(
-		envPath,
-		"GO_WANT_MCP_SERVER=1",
+	args := []string{"GO_WANT_MCP_SERVER=1"}
+	if opts.provider {
+		args = append(args, "GO_WANT_MCP_PROVIDER=1")
+	}
+	if opts.extensionsFile != "" {
+		args = append(args, "GO_WANT_MCP_EXTENSIONS="+opts.extensionsFile)
+	}
+	args = append(args,
 		os.Args[0],
 		"-test.run=TestHelperProcessMCPServer",
 		"--",
 		dbPath,
 	)
+	client, err := mcpclient.NewStdioMCPClient(envPath, args...)
 	if err != nil {
 		t.Fatalf("NewStdioMCPClient failed: %v", err)
 	}
@@ -340,9 +866,26 @@ func decodeEnvelope(t *testing.T, result *mcpapi.CallToolResult) map[string]inte
 	return env
 }
 
-func asString(v interface{}) string {
-	if s, ok := v.(string); ok {
-		return s
+func findTool(t *testing.T, tools []mcpapi.Tool, name string) mcpapi.Tool {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Name == name {
+			return tool
+		}
 	}
-	return ""
+	t.Fatalf("tool %q not found", name)
+	return mcpapi.Tool{}
+}
+
+func assertToolProperties(t *testing.T, tool mcpapi.Tool, want ...string) {
+	t.Helper()
+	var got []string
+	for name := range tool.InputSchema.Properties {
+		got = append(got, name)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s properties mismatch:\n got %v\nwant %v", tool.Name, got, want)
+	}
 }

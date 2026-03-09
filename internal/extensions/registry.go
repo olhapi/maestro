@@ -12,14 +12,15 @@ import (
 )
 
 type Tool struct {
-	Name               string `json:"name"`
-	Description        string `json:"description"`
-	Command            string `json:"command"`
-	TimeoutSec         int    `json:"timeout_sec,omitempty"`
-	Allowed            *bool  `json:"allowed,omitempty"`
-	WorkingDir         string `json:"working_dir,omitempty"`
-	RequireArgs        bool   `json:"require_args,omitempty"`
-	DenyEnvPassthrough bool   `json:"deny_env_passthrough,omitempty"`
+	Name               string                 `json:"name"`
+	Description        string                 `json:"description"`
+	Command            string                 `json:"command"`
+	InputSchema        map[string]interface{} `json:"input_schema,omitempty"`
+	TimeoutSec         int                    `json:"timeout_sec,omitempty"`
+	Allowed            *bool                  `json:"allowed,omitempty"`
+	WorkingDir         string                 `json:"working_dir,omitempty"`
+	RequireArgs        bool                   `json:"require_args,omitempty"`
+	DenyEnvPassthrough bool                   `json:"deny_env_passthrough,omitempty"`
 }
 
 type Registry struct {
@@ -42,6 +43,11 @@ func LoadFile(path string) (*Registry, error) {
 	var defs []Tool
 	if err := json.Unmarshal(data, &defs); err != nil {
 		return nil, err
+	}
+	for _, def := range defs {
+		if err := validateInputSchema(def); err != nil {
+			return nil, err
+		}
 	}
 	return NewRegistry(defs), nil
 }
@@ -84,15 +90,7 @@ func (r *Registry) Specs() []map[string]interface{} {
 		specs = append(specs, map[string]interface{}{
 			"name":        tool.Name,
 			"description": tool.Description,
-			"inputSchema": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"args": map[string]interface{}{
-						"type":        "object",
-						"description": "Extension arguments object; passed to the tool command via MAESTRO_ARGS_JSON.",
-					},
-				},
-			},
+			"inputSchema": inputSchemaForTool(tool),
 		})
 	}
 	return specs
@@ -157,4 +155,53 @@ func isEmptyArgs(args interface{}) bool {
 		return len(m) == 0
 	}
 	return false
+}
+
+func validateInputSchema(tool Tool) error {
+	if len(tool.InputSchema) == 0 {
+		return nil
+	}
+	typ, ok := tool.InputSchema["type"].(string)
+	if !ok || strings.TrimSpace(typ) == "" {
+		return fmt.Errorf("extension tool %q has invalid input_schema: type must be set to object", tool.Name)
+	}
+	if typ != "object" {
+		return fmt.Errorf("extension tool %q has invalid input_schema: type must be object", tool.Name)
+	}
+	if raw, ok := tool.InputSchema["properties"]; ok && raw != nil {
+		if _, ok := raw.(map[string]interface{}); !ok {
+			return fmt.Errorf("extension tool %q has invalid input_schema: properties must be an object", tool.Name)
+		}
+	}
+	return nil
+}
+
+func inputSchemaForTool(tool Tool) map[string]interface{} {
+	if len(tool.InputSchema) != 0 {
+		return cloneMap(tool.InputSchema)
+	}
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"args": map[string]interface{}{
+				"type":        "object",
+				"description": "Extension arguments object; passed to the tool command via MAESTRO_ARGS_JSON.",
+			},
+		},
+	}
+}
+
+func cloneMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for key, value := range src {
+		if nested, ok := value.(map[string]interface{}); ok {
+			dst[key] = cloneMap(nested)
+			continue
+		}
+		dst[key] = value
+	}
+	return dst
 }

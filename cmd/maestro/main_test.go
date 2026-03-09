@@ -186,6 +186,57 @@ func TestFlagErrorsAndUnknownFlags(t *testing.T) {
 	}
 }
 
+func TestMCPCommandFailsFastOnBadExtensions(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) string
+		wantErr string
+	}{
+		{
+			name: "missing file",
+			setup: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing.json")
+			},
+			wantErr: "failed to load extensions",
+		},
+		{
+			name: "malformed json",
+			setup: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "bad.json")
+				if err := os.WriteFile(path, []byte(`{`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			wantErr: "failed to load extensions",
+		},
+		{
+			name: "invalid input schema",
+			setup: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "bad-schema.json")
+				body := `[{"name":"bad","description":"bad","command":"echo ok","input_schema":{"type":"string"}}]`
+				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			wantErr: "failed to load extensions",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _, stderr := runCLI(t, "mcp", "--extensions", tc.setup(t))
+			if code == 0 {
+				t.Fatalf("expected mcp to fail for %s", tc.name)
+			}
+			if !strings.Contains(strings.ToLower(stderr), strings.ToLower(tc.wantErr)) {
+				t.Fatalf("expected %q in stderr %q", tc.wantErr, stderr)
+			}
+		})
+	}
+}
+
 func TestIssueStateValidationAndAliases(t *testing.T) {
 	dbPath, _, _, issue := setupProjectAndIssue(t)
 	code, _, stderr := runCLI(t, "--db", dbPath, "issue", "mv", issue.Identifier, "invalid")

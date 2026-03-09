@@ -184,7 +184,11 @@ func (a *cliApp) newMCPCmd() *cobra.Command {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			server := mcp.NewServerWithExtensions(store, extensionsFile)
+			registry, err := loadExtensions(extensionsFile)
+			if err != nil {
+				return wrapRuntime(err, "failed to load extensions")
+			}
+			server := mcp.NewServerWithRegistry(store, nil, registry)
 			if err := server.ServeStdio(); err != nil {
 				return wrapRuntime(err, "mcp server error")
 			}

@@ -31,62 +31,6 @@ func TestDashboardAPIHelpers(t *testing.T) {
 		t.Fatal("expected websocket upgrader to allow origins")
 	}
 
-	retry := &observability.RetryEntry{Error: "approval_required"}
-	if got := deriveFailureClass(retry, nil, nil); got != "approval_required" {
-		t.Fatalf("unexpected retry failure class: %q", got)
-	}
-	persisted := &kanban.ExecutionSessionSnapshot{RunKind: "run_unsuccessful"}
-	if got := deriveFailureClass(nil, persisted, nil); got != "run_unsuccessful" {
-		t.Fatalf("unexpected persisted failure class: %q", got)
-	}
-	events := []kanban.RuntimeEvent{{Kind: "run_failed", Error: "stall_timeout"}}
-	if got := deriveFailureClass(nil, nil, events); got != "stall_timeout" {
-		t.Fatalf("unexpected event failure class: %q", got)
-	}
-
-	for input, want := range map[string]string{
-		"":                       "",
-		" approval_required ":    "approval_required",
-		"turn_input_required":    "turn_input_required",
-		"stall_timeout happened": "stall_timeout",
-		"run_unsuccessful":       "run_unsuccessful",
-		"run_failed":             "run_failed",
-		"custom_error":           "custom_error",
-	} {
-		if got := normalizeFailureClass(input); got != want {
-			t.Fatalf("normalizeFailureClass(%q) = %q, want %q", input, got, want)
-		}
-	}
-
-	session := appserver.Session{SessionID: "thread-1-turn-1", ThreadID: "thread-1", TurnID: "turn-1"}
-	all := map[string]interface{}{
-		"sessions": map[string]interface{}{
-			"ISS-1": session,
-			"ISS-2": &session,
-			"ISS-3": map[string]interface{}{
-				"session_id": "thread-3-turn-3",
-				"thread_id":  "thread-3",
-				"turn_id":    "turn-3",
-			},
-			"ISS-4": "bad",
-		},
-	}
-	if got, ok := findLiveSession(all, "ISS-1"); !ok || got.SessionID != session.SessionID {
-		t.Fatalf("expected direct session decode, got %+v %v", got, ok)
-	}
-	if got, ok := findLiveSession(all, "ISS-2"); !ok || got.ThreadID != session.ThreadID {
-		t.Fatalf("expected pointer session decode, got %+v %v", got, ok)
-	}
-	if got, ok := findLiveSession(all, "ISS-3"); !ok || got.ThreadID != "thread-3" {
-		t.Fatalf("expected map session decode, got %+v %v", got, ok)
-	}
-	if _, ok := findLiveSession(all, "ISS-4"); ok {
-		t.Fatal("expected invalid live session to be rejected")
-	}
-	if _, ok := findLiveSession(map[string]interface{}{}, "ISS-1"); ok {
-		t.Fatal("expected missing sessions map to be rejected")
-	}
-
 	req = httptest.NewRequest(http.MethodGet, "/?hours=12&bad=nope", nil)
 	if got := queryInt(req, "hours", 24); got != 12 {
 		t.Fatalf("unexpected query int value: %d", got)

@@ -8,41 +8,60 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	mcpapi "github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/runtimeview"
 )
+
+type RuntimeProvider interface {
+	observability.StatusProvider
+	observability.SnapshotProvider
+	observability.SessionProvider
+	RetryIssueNow(identifier string) map[string]interface{}
+}
 
 // Server implements the MCP server for the kanban board
 // and optional extension tools.
 type Server struct {
 	store      *kanban.Store
-	server     server.MCPServer
-	tools      []mcp.Tool
+	provider   RuntimeProvider
+	server     mcpserver.MCPServer
+	tools      []mcpapi.Tool
 	extensions *extensions.Registry
 	instanceID string
 }
 
 // NewServer creates a new MCP server.
 func NewServer(store *kanban.Store) *Server {
-	return NewServerWithExtensions(store, "")
+	return NewServerWithProvider(store, nil)
+}
+
+// NewServerWithProvider creates a new MCP server with an optional runtime provider.
+func NewServerWithProvider(store *kanban.Store, provider RuntimeProvider) *Server {
+	return NewServerWithRegistry(store, provider, nil)
 }
 
 // NewServerWithExtensions creates a new MCP server and optionally loads extension tools from JSON file.
-func NewServerWithExtensions(store *kanban.Store, extensionsFile string) *Server {
-	registry, _ := extensions.LoadFile(extensionsFile)
-	return NewServerWithRegistry(store, registry)
+func NewServerWithExtensions(store *kanban.Store, provider RuntimeProvider, extensionsFile string) (*Server, error) {
+	registry, err := extensions.LoadFile(extensionsFile)
+	if err != nil {
+		return nil, err
+	}
+	return NewServerWithRegistry(store, provider, registry), nil
 }
 
-func NewServerWithRegistry(store *kanban.Store, registry *extensions.Registry) *Server {
+func NewServerWithRegistry(store *kanban.Store, provider RuntimeProvider, registry *extensions.Registry) *Server {
 	if registry == nil {
 		registry = extensions.EmptyRegistry()
 	}
 	s := &Server{
 		store:      store,
-		server:     server.NewDefaultServer("maestro", "1.0.0"),
+		provider:   provider,
+		server:     mcpserver.NewDefaultServer("maestro", "1.0.0"),
 		extensions: registry,
 		instanceID: generateServerInstanceID(),
 	}
@@ -52,217 +71,137 @@ func NewServerWithRegistry(store *kanban.Store, registry *extensions.Registry) *
 }
 
 func (s *Server) registerTools() {
-	// Define tools
-	s.tools = []mcp.Tool{
-		{
-			Name:        "server_info",
-			Description: "Get Maestro MCP server identity and store metadata",
-			InputSchema: mcp.ToolInputSchema{Type: "object"},
-		},
-		{
-			Name:        "create_project",
-			Description: "Create a new project",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"name":          map[string]interface{}{"type": "string", "description": "Project name"},
-					"description":   map[string]interface{}{"type": "string", "description": "Project description"},
-					"repo_path":     map[string]interface{}{"type": "string", "description": "Absolute path to the repo this project orchestrates"},
-					"workflow_path": map[string]interface{}{"type": "string", "description": "Optional workflow path override"},
-				},
-			},
-		},
-		{
-			Name:        "update_project",
-			Description: "Update an existing project",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"id":            map[string]interface{}{"type": "string", "description": "Project ID"},
-					"name":          map[string]interface{}{"type": "string", "description": "Project name"},
-					"description":   map[string]interface{}{"type": "string", "description": "Project description"},
-					"repo_path":     map[string]interface{}{"type": "string", "description": "Absolute path to the repo this project orchestrates"},
-					"workflow_path": map[string]interface{}{"type": "string", "description": "Optional workflow path override"},
-				},
-			},
-		},
-		{
-			Name:        "list_projects",
-			Description: "List all projects",
-			InputSchema: mcp.ToolInputSchema{Type: "object"},
-		},
-		{
-			Name:        "delete_project",
-			Description: "Delete a project",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"id": map[string]interface{}{"type": "string", "description": "Project ID"},
-				},
-			},
-		},
-		{
-			Name:        "create_epic",
-			Description: "Create a new epic within a project",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"project_id":  map[string]interface{}{"type": "string", "description": "Project ID"},
-					"name":        map[string]interface{}{"type": "string", "description": "Epic name"},
-					"description": map[string]interface{}{"type": "string", "description": "Epic description"},
-				},
-			},
-		},
-		{
-			Name:        "list_epics",
-			Description: "List epics, optionally filtered by project",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"project_id": map[string]interface{}{"type": "string", "description": "Filter by project ID"},
-				},
-			},
-		},
-		{
-			Name:        "delete_epic",
-			Description: "Delete an epic",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"id": map[string]interface{}{"type": "string", "description": "Epic ID"},
-				},
-			},
-		},
-		{
-			Name:        "create_issue",
-			Description: "Create a new issue",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"title":       map[string]interface{}{"type": "string", "description": "Issue title"},
-					"description": map[string]interface{}{"type": "string", "description": "Issue description"},
-					"project_id":  map[string]interface{}{"type": "string", "description": "Project ID"},
-					"epic_id":     map[string]interface{}{"type": "string", "description": "Epic ID"},
-					"priority":    map[string]interface{}{"type": "number", "description": "Priority (lower = higher)"},
-					"labels":      map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}},
-				},
-			},
-		},
-		{
-			Name:        "get_issue",
-			Description: "Get an issue by ID or identifier (e.g., PROJ-123)",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"identifier": map[string]interface{}{"type": "string", "description": "Issue ID or identifier"},
-				},
-			},
-		},
-		{
-			Name:        "list_issues",
-			Description: "List issues with optional filters",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"project_id": map[string]interface{}{"type": "string", "description": "Filter by project ID"},
-					"epic_id":    map[string]interface{}{"type": "string", "description": "Filter by epic ID"},
-					"state":      map[string]interface{}{"type": "string", "description": "Filter by state: backlog, ready, in_progress, in_review, done, cancelled"},
-				},
-			},
-		},
-		{
-			Name:        "update_issue",
-			Description: "Update an issue",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"identifier":  map[string]interface{}{"type": "string", "description": "Issue ID or identifier"},
-					"title":       map[string]interface{}{"type": "string", "description": "New title"},
-					"description": map[string]interface{}{"type": "string", "description": "New description"},
-					"priority":    map[string]interface{}{"type": "number", "description": "New priority"},
-					"labels":      map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}},
-					"branch_name": map[string]interface{}{"type": "string", "description": "Branch name"},
-					"pr_number":   map[string]interface{}{"type": "number", "description": "PR number"},
-					"pr_url":      map[string]interface{}{"type": "string", "description": "PR URL"},
-				},
-			},
-		},
-		{
-			Name:        "set_issue_state",
-			Description: "Change an issue's state",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"identifier": map[string]interface{}{"type": "string", "description": "Issue ID or identifier"},
-					"state":      map[string]interface{}{"type": "string", "description": "New state: backlog, ready, in_progress, in_review, done, cancelled"},
-				},
-			},
-		},
-		{
-			Name:        "delete_issue",
-			Description: "Delete an issue",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"identifier": map[string]interface{}{"type": "string", "description": "Issue ID or identifier"},
-				},
-			},
-		},
-		{
-			Name:        "board_overview",
-			Description: "Get a kanban board overview showing issue counts by state",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"project_id": map[string]interface{}{"type": "string", "description": "Filter by project ID"},
-				},
-			},
-		},
-		{
-			Name:        "set_blockers",
-			Description: "Set blockers for an issue",
-			InputSchema: mcp.ToolInputSchema{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"identifier": map[string]interface{}{"type": "string", "description": "Issue ID or identifier"},
-					"blocked_by": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "List of issue identifiers that block this issue"},
-				},
-			},
-		},
+	s.tools = []mcpapi.Tool{
+		objectTool("server_info", "Get Maestro MCP server identity and store metadata", nil),
+		objectTool("create_project", "Create a new project", map[string]interface{}{
+			"name":          stringProperty("Project name"),
+			"description":   stringProperty("Project description"),
+			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
+			"workflow_path": stringProperty("Optional workflow path override"),
+		}),
+		objectTool("update_project", "Update an existing project", map[string]interface{}{
+			"id":            stringProperty("Project ID"),
+			"name":          stringProperty("Project name"),
+			"description":   stringProperty("Project description"),
+			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
+			"workflow_path": stringProperty("Optional workflow path override"),
+		}),
+		objectTool("list_projects", "List all projects", nil),
+		objectTool("delete_project", "Delete a project", map[string]interface{}{
+			"id": stringProperty("Project ID"),
+		}),
+		objectTool("create_epic", "Create a new epic within a project", map[string]interface{}{
+			"project_id":  stringProperty("Project ID"),
+			"name":        stringProperty("Epic name"),
+			"description": stringProperty("Epic description"),
+		}),
+		objectTool("update_epic", "Update an existing epic", map[string]interface{}{
+			"id":          stringProperty("Epic ID"),
+			"project_id":  stringProperty("Project ID"),
+			"name":        stringProperty("Epic name"),
+			"description": stringProperty("Epic description"),
+		}),
+		objectTool("list_epics", "List epics, optionally filtered by project", map[string]interface{}{
+			"project_id": stringProperty("Filter by project ID"),
+		}),
+		objectTool("delete_epic", "Delete an epic", map[string]interface{}{
+			"id": stringProperty("Epic ID"),
+		}),
+		objectTool("create_issue", "Create a new issue", map[string]interface{}{
+			"title":       stringProperty("Issue title"),
+			"description": stringProperty("Issue description"),
+			"project_id":  stringProperty("Project ID"),
+			"epic_id":     stringProperty("Epic ID"),
+			"priority":    numberProperty("Priority (lower = higher)"),
+			"labels":      stringArrayProperty("Issue labels"),
+			"state":       stringProperty("Initial state: backlog, ready, in_progress, in_review, done, cancelled"),
+			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
+			"branch_name": stringProperty("Branch name"),
+			"pr_number":   numberProperty("Pull request number"),
+			"pr_url":      stringProperty("Pull request URL"),
+		}),
+		objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+		}),
+		objectTool("list_issues", "List issues with filters, search, sort, and pagination", map[string]interface{}{
+			"project_id": stringProperty("Filter by project ID"),
+			"epic_id":    stringProperty("Filter by epic ID"),
+			"state":      stringProperty("Filter by state: backlog, ready, in_progress, in_review, done, cancelled"),
+			"search":     stringProperty("Search identifier, title, or description"),
+			"sort":       stringProperty("Sort order: updated_desc, created_asc, priority_asc, identifier_asc, state_asc"),
+			"limit":      numberProperty("Maximum issues to return"),
+			"offset":     numberProperty("Number of issues to skip"),
+		}),
+		objectTool("update_issue", "Update an issue", map[string]interface{}{
+			"identifier":  stringProperty("Issue ID or identifier"),
+			"project_id":  stringProperty("Project ID"),
+			"epic_id":     stringProperty("Epic ID"),
+			"title":       stringProperty("New title"),
+			"description": stringProperty("New description"),
+			"priority":    numberProperty("New priority"),
+			"labels":      stringArrayProperty("New labels"),
+			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
+			"branch_name": stringProperty("Branch name"),
+			"pr_number":   numberProperty("Pull request number"),
+			"pr_url":      stringProperty("Pull request URL"),
+		}),
+		objectTool("set_issue_state", "Change an issue state", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+			"state":      stringProperty("New state: backlog, ready, in_progress, in_review, done, cancelled"),
+		}),
+		objectTool("set_issue_workflow_phase", "Change an issue workflow phase", map[string]interface{}{
+			"identifier":     stringProperty("Issue ID or identifier"),
+			"workflow_phase": stringProperty("New workflow phase: implementation, review, done, complete"),
+		}),
+		objectTool("delete_issue", "Delete an issue", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+		}),
+		objectTool("get_issue_execution", "Get execution details for a single issue", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+		}),
+		objectTool("retry_issue", "Request an immediate retry for an issue", map[string]interface{}{
+			"identifier": stringProperty("Issue identifier"),
+		}),
+		objectTool("board_overview", "Get a kanban board overview showing issue counts by state", map[string]interface{}{
+			"project_id": stringProperty("Filter by project ID"),
+		}),
+		objectTool("set_blockers", "Set blockers for an issue", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+			"blocked_by": stringArrayProperty("List of issue identifiers that block this issue"),
+		}),
+		objectTool("list_runtime_events", "List persisted runtime events", map[string]interface{}{
+			"since": numberProperty("Only return events with seq greater than this value"),
+			"limit": numberProperty("Maximum events to return"),
+		}),
+		objectTool("get_runtime_snapshot", "Get the live Maestro runtime snapshot", nil),
+		objectTool("list_sessions", "List live Maestro sessions or fetch one issue session", map[string]interface{}{
+			"identifier": stringProperty("Issue identifier to fetch a single live session"),
+		}),
 	}
 
 	for _, spec := range s.extensions.Specs() {
-		name, _ := spec["name"].(string)
-		description, _ := spec["description"].(string)
-		inputSchema, _ := spec["inputSchema"].(map[string]interface{})
-		properties, _ := inputSchema["properties"].(map[string]interface{})
-		s.tools = append(s.tools, mcp.Tool{
-			Name:        name,
-			Description: description,
-			InputSchema: mcp.ToolInputSchema{
-				Type:       "object",
-				Properties: properties,
-			},
+		s.tools = append(s.tools, mcpapi.Tool{
+			Name:        asString(spec["name"]),
+			Description: asString(spec["description"]),
+			InputSchema: extensionToolInputSchema(spec),
 		})
 	}
 
-	// Register tool list handler
-	s.server.HandleListTools(func(ctx context.Context, cursor *string) (*mcp.ListToolsResult, error) {
-		return &mcp.ListToolsResult{Tools: s.tools}, nil
+	s.server.HandleListTools(func(ctx context.Context, cursor *string) (*mcpapi.ListToolsResult, error) {
+		return &mcpapi.ListToolsResult{Tools: s.tools}, nil
 	})
-
-	// Register tool call handler
 	s.server.HandleCallTool(s.handleCallTool)
 }
 
-// handleCallTool routes tool calls to appropriate handlers
-func (s *Server) handleCallTool(ctx context.Context, name string, args map[string]interface{}) (result *mcp.CallToolResult, err error) {
+// handleCallTool routes tool calls to appropriate handlers.
+func (s *Server) handleCallTool(ctx context.Context, name string, args map[string]interface{}) (result *mcpapi.CallToolResult, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result = s.toolError(name, fmt.Sprintf("panic recovered: %v", recovered))
 			err = nil
 		}
 	}()
+
 	switch name {
 	case "server_info":
 		return s.handleServerInfo(ctx, args)
@@ -276,6 +215,8 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 		return s.handleDeleteProject(ctx, args)
 	case "create_epic":
 		return s.handleCreateEpic(ctx, args)
+	case "update_epic":
+		return s.handleUpdateEpic(ctx, args)
 	case "list_epics":
 		return s.handleListEpics(ctx, args)
 	case "delete_epic":
@@ -290,19 +231,31 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 		return s.handleUpdateIssue(ctx, args)
 	case "set_issue_state":
 		return s.handleSetIssueState(ctx, args)
+	case "set_issue_workflow_phase":
+		return s.handleSetIssueWorkflowPhase(ctx, args)
 	case "delete_issue":
 		return s.handleDeleteIssue(ctx, args)
+	case "get_issue_execution":
+		return s.handleGetIssueExecution(ctx, args)
+	case "retry_issue":
+		return s.handleRetryIssue(ctx, args)
 	case "board_overview":
 		return s.handleBoardOverview(ctx, args)
 	case "set_blockers":
 		return s.handleSetBlockers(ctx, args)
+	case "list_runtime_events":
+		return s.handleListRuntimeEvents(ctx, args)
+	case "get_runtime_snapshot":
+		return s.handleGetRuntimeSnapshot(ctx, args)
+	case "list_sessions":
+		return s.handleListSessions(ctx, args)
 	default:
 		for _, toolName := range s.extensions.Names() {
 			if toolName == name {
 				return s.handleExtensionTool(ctx, name, args)
 			}
 		}
-		return s.toolError(name, fmt.Sprintf("Unknown tool: %s", name)), nil
+		return s.toolError(name, fmt.Sprintf("unknown tool: %s", name)), nil
 	}
 }
 
@@ -312,9 +265,9 @@ func generateServerInstanceID() string {
 	return "mcp_" + hex.EncodeToString(b)
 }
 
-func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	if s.extensions == nil {
-		return s.toolError(name, fmt.Sprintf("Unknown extension tool: %s", name)), nil
+		return s.toolError(name, fmt.Sprintf("unknown extension tool: %s", name)), nil
 	}
 	out, err := s.extensions.Execute(ctx, name, args)
 	if err != nil {
@@ -323,14 +276,12 @@ func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[
 	return s.toolResult(name, map[string]interface{}{"output": out}), nil
 }
 
-// ServeStdio runs the MCP server over stdin/stdout
+// ServeStdio runs the MCP server over stdin/stdout.
 func (s *Server) ServeStdio() error {
-	return server.ServeStdio(s.server)
+	return mcpserver.ServeStdio(s.server)
 }
 
-// Handlers
-
-func (s *Server) handleServerInfo(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *Server) handleServerInfo(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	projects, err := s.store.ListProjects()
 	if err != nil {
 		return s.toolError("server_info", fmt.Sprintf("Failed to list projects: %v", err)), nil
@@ -340,39 +291,32 @@ func (s *Server) handleServerInfo(ctx context.Context, args map[string]interface
 		return s.toolError("server_info", fmt.Sprintf("Failed to list issues: %v", err)), nil
 	}
 	return s.toolResult("server_info", map[string]interface{}{
-		"project_count": len(projects),
-		"issue_count":   len(issues),
+		"project_count":     len(projects),
+		"issue_count":       len(issues),
+		"runtime_available": s.provider != nil,
 	}), nil
 }
 
-func (s *Server) handleCreateProject(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	name, _ := args["name"].(string)
-	description, _ := args["description"].(string)
-	repoPath, _ := args["repo_path"].(string)
-	workflowPath, _ := args["workflow_path"].(string)
-	if strings.TrimSpace(repoPath) == "" {
-		return s.toolError("create_project", "repo_path is required"), nil
-	}
-
-	project, err := s.store.CreateProject(name, description, repoPath, workflowPath)
+func (s *Server) handleCreateProject(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	project, err := s.store.CreateProject(
+		asString(args["name"]),
+		asString(args["description"]),
+		asString(args["repo_path"]),
+		asString(args["workflow_path"]),
+	)
 	if err != nil {
 		return s.toolError("create_project", fmt.Sprintf("Failed to create project: %v", err)), nil
 	}
-
 	return s.toolResult("create_project", project), nil
 }
 
-func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	id, _ := args["id"].(string)
-	name, _ := args["name"].(string)
-	description, _ := args["description"].(string)
-	repoPath, _ := args["repo_path"].(string)
-	workflowPath, _ := args["workflow_path"].(string)
+func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	id := asString(args["id"])
+	repoPath := asString(args["repo_path"])
 	if strings.TrimSpace(repoPath) == "" {
 		return s.toolError("update_project", "repo_path is required"), nil
 	}
-
-	if err := s.store.UpdateProject(id, name, description, repoPath, workflowPath); err != nil {
+	if err := s.store.UpdateProject(id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"])); err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
 	}
 	project, err := s.store.GetProject(id)
@@ -382,7 +326,7 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	return s.toolResult("update_project", project), nil
 }
 
-func (s *Server) handleListProjects(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *Server) handleListProjects(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	projects, err := s.store.ListProjects()
 	if err != nil {
 		return s.toolError("list_projects", fmt.Sprintf("Failed to list projects: %v", err)), nil
@@ -390,215 +334,232 @@ func (s *Server) handleListProjects(ctx context.Context, args map[string]interfa
 	return s.toolResult("list_projects", map[string]interface{}{"items": projects}), nil
 }
 
-func (s *Server) handleDeleteProject(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	id, _ := args["id"].(string)
+func (s *Server) handleDeleteProject(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	id := asString(args["id"])
 	if err := s.store.DeleteProject(id); err != nil {
 		return s.toolError("delete_project", fmt.Sprintf("Failed to delete project: %v", err)), nil
 	}
 	return s.toolResult("delete_project", map[string]interface{}{"id": id}), nil
 }
 
-func (s *Server) handleCreateEpic(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	projectID, _ := args["project_id"].(string)
-	name, _ := args["name"].(string)
-	description, _ := args["description"].(string)
-
-	epic, err := s.store.CreateEpic(projectID, name, description)
+func (s *Server) handleCreateEpic(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	epic, err := s.store.CreateEpic(asString(args["project_id"]), asString(args["name"]), asString(args["description"]))
 	if err != nil {
 		return s.toolError("create_epic", fmt.Sprintf("Failed to create epic: %v", err)), nil
 	}
-
 	return s.toolResult("create_epic", epic), nil
 }
 
-func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	projectID, _ := args["project_id"].(string)
+func (s *Server) handleUpdateEpic(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	id := asString(args["id"])
+	if err := s.store.UpdateEpic(id, asString(args["project_id"]), asString(args["name"]), asString(args["description"])); err != nil {
+		return s.toolError("update_epic", fmt.Sprintf("Failed to update epic: %v", err)), nil
+	}
+	epic, err := s.store.GetEpic(id)
+	if err != nil {
+		return s.toolError("update_epic", fmt.Sprintf("Failed to reload epic: %v", err)), nil
+	}
+	return s.toolResult("update_epic", epic), nil
+}
 
-	epics, err := s.store.ListEpics(projectID)
+func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	epics, err := s.store.ListEpics(asString(args["project_id"]))
 	if err != nil {
 		return s.toolError("list_epics", fmt.Sprintf("Failed to list epics: %v", err)), nil
 	}
 	return s.toolResult("list_epics", map[string]interface{}{"items": epics}), nil
 }
 
-func (s *Server) handleDeleteEpic(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	id, _ := args["id"].(string)
+func (s *Server) handleDeleteEpic(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	id := asString(args["id"])
 	if err := s.store.DeleteEpic(id); err != nil {
 		return s.toolError("delete_epic", fmt.Sprintf("Failed to delete epic: %v", err)), nil
 	}
 	return s.toolResult("delete_epic", map[string]interface{}{"id": id}), nil
 }
 
-func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	title, _ := args["title"].(string)
-	description, _ := args["description"].(string)
-	projectID, _ := args["project_id"].(string)
-	epicID, _ := args["epic_id"].(string)
-	priority, _ := args["priority"].(float64)
-
-	var labels []string
-	if l, ok := args["labels"].([]interface{}); ok {
-		for _, label := range l {
-			if str, ok := label.(string); ok {
-				labels = append(labels, str)
-			}
-		}
+func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	state := strings.TrimSpace(asString(args["state"]))
+	if state != "" && !kanban.State(state).IsValid() {
+		return s.toolError("create_issue", fmt.Sprintf("Invalid state: %s. Valid states: backlog, ready, in_progress, in_review, done, cancelled", state)), nil
 	}
 
-	issue, err := s.store.CreateIssue(projectID, epicID, title, description, int(priority), labels)
+	issue, err := s.store.CreateIssue(
+		asString(args["project_id"]),
+		asString(args["epic_id"]),
+		asString(args["title"]),
+		asString(args["description"]),
+		intArg(args, "priority", 0),
+		stringListArg(args, "labels"),
+	)
 	if err != nil {
 		return s.toolError("create_issue", fmt.Sprintf("Failed to create issue: %v", err)), nil
 	}
 
-	return s.toolResult("create_issue", issue), nil
-}
-
-func (s *Server) handleGetIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	identifier, _ := args["identifier"].(string)
-
-	issue, err := s.store.GetIssue(identifier)
-	if err != nil {
-		// Try by identifier
-		issue, err = s.store.GetIssueByIdentifier(identifier)
-		if err != nil {
-			return s.toolError("get_issue", fmt.Sprintf("Issue not found: %s", identifier)), nil
+	updates := issueMutationArgs(args, false)
+	if len(updates) > 0 {
+		if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
+			return s.toolError("create_issue", fmt.Sprintf("Failed to update created issue: %v", err)), nil
 		}
 	}
-	return s.toolResult("get_issue", issue), nil
+	if state != "" && state != string(kanban.StateBacklog) {
+		if err := s.store.UpdateIssueState(issue.ID, kanban.State(state)); err != nil {
+			return s.toolError("create_issue", fmt.Sprintf("Failed to set issue state: %v", err)), nil
+		}
+	}
+	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
+	if err != nil {
+		return s.toolError("create_issue", fmt.Sprintf("Failed to reload issue: %v", err)), nil
+	}
+	return s.toolResult("create_issue", detail), nil
 }
 
-func (s *Server) handleListIssues(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	filter := make(map[string]interface{})
-	if projectID, ok := args["project_id"].(string); ok {
-		filter["project_id"] = projectID
+func (s *Server) handleGetIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("get_issue", err.Error()), nil
 	}
-	if epicID, ok := args["epic_id"].(string); ok {
-		filter["epic_id"] = epicID
+	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
+	if err != nil {
+		return s.toolError("get_issue", fmt.Sprintf("Failed to load issue detail: %v", err)), nil
 	}
-	if state, ok := args["state"].(string); ok {
-		filter["state"] = state
+	return s.toolResult("get_issue", detail), nil
+}
+
+func (s *Server) handleListIssues(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	query := kanban.IssueQuery{
+		ProjectID: asString(args["project_id"]),
+		EpicID:    asString(args["epic_id"]),
+		State:     asString(args["state"]),
+		Search:    asString(args["search"]),
+		Sort:      asString(args["sort"]),
+		Limit:     intArg(args, "limit", 200),
+		Offset:    intArg(args, "offset", 0),
+	}
+	if query.Sort == "" {
+		query.Sort = "updated_desc"
 	}
 
-	issues, err := s.store.ListIssues(filter)
+	items, total, err := s.store.ListIssueSummaries(query)
 	if err != nil {
 		return s.toolError("list_issues", fmt.Sprintf("Failed to list issues: %v", err)), nil
 	}
-	return s.toolResult("list_issues", map[string]interface{}{"items": issues}), nil
+	if query.Limit <= 0 || query.Limit > 500 {
+		query.Limit = 200
+	}
+	if query.Offset < 0 {
+		query.Offset = 0
+	}
+	return s.toolResult("list_issues", map[string]interface{}{
+		"items":  items,
+		"total":  total,
+		"limit":  query.Limit,
+		"offset": query.Offset,
+	}), nil
 }
 
-func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	identifier, _ := args["identifier"].(string)
-
-	issue, err := s.store.GetIssue(identifier)
+func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
 	if err != nil {
-		issue, err = s.store.GetIssueByIdentifier(identifier)
-		if err != nil {
-			return s.toolError("update_issue", fmt.Sprintf("Issue not found: %s", identifier)), nil
-		}
+		return s.toolError("update_issue", err.Error()), nil
 	}
 
-	updates := make(map[string]interface{})
-	if title, ok := args["title"].(string); ok {
-		updates["title"] = title
-	}
-	if desc, ok := args["description"].(string); ok {
-		updates["description"] = desc
-	}
-	if priority, ok := args["priority"].(float64); ok {
-		updates["priority"] = int(priority)
-	}
-	if branch, ok := args["branch_name"].(string); ok {
-		updates["branch_name"] = branch
-	}
-	if prNum, ok := args["pr_number"].(float64); ok {
-		updates["pr_number"] = int(prNum)
-	}
-	if prURL, ok := args["pr_url"].(string); ok {
-		updates["pr_url"] = prURL
-	}
-	if labels, ok := args["labels"].([]interface{}); ok {
-		var labelStrs []string
-		for _, l := range labels {
-			if str, ok := l.(string); ok {
-				labelStrs = append(labelStrs, str)
-			}
-		}
-		updates["labels"] = labelStrs
-	}
-
+	updates := issueMutationArgs(args, true)
 	if len(updates) == 0 {
 		return s.toolResult("update_issue", map[string]interface{}{"identifier": issue.Identifier, "updated": false}), nil
 	}
-
 	if err := s.store.UpdateIssue(issue.ID, updates); err != nil {
 		return s.toolError("update_issue", fmt.Sprintf("Failed to update issue: %v", err)), nil
 	}
-	updated, err := s.store.GetIssue(issue.ID)
+	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
 	if err != nil {
 		return s.toolError("update_issue", fmt.Sprintf("Failed to reload issue: %v", err)), nil
 	}
-	return s.toolResult("update_issue", updated), nil
+	return s.toolResult("update_issue", detail), nil
 }
 
-func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	identifier, _ := args["identifier"].(string)
-	state, _ := args["state"].(string)
-
-	issue, err := s.store.GetIssue(identifier)
+func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
 	if err != nil {
-		issue, err = s.store.GetIssueByIdentifier(identifier)
-		if err != nil {
-			return s.toolError("set_issue_state", fmt.Sprintf("Issue not found: %s", identifier)), nil
-		}
+		return s.toolError("set_issue_state", err.Error()), nil
 	}
-
-	if !kanban.State(state).IsValid() {
+	state := kanban.State(asString(args["state"]))
+	if !state.IsValid() {
 		return s.toolError("set_issue_state", fmt.Sprintf("Invalid state: %s. Valid states: backlog, ready, in_progress, in_review, done, cancelled", state)), nil
 	}
-
-	if err := s.store.UpdateIssueState(issue.ID, kanban.State(state)); err != nil {
+	if err := s.store.UpdateIssueState(issue.ID, state); err != nil {
 		return s.toolError("set_issue_state", fmt.Sprintf("Failed to update issue state: %v", err)), nil
 	}
-	updated, err := s.store.GetIssue(issue.ID)
+	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
 	if err != nil {
 		return s.toolError("set_issue_state", fmt.Sprintf("Failed to reload issue: %v", err)), nil
 	}
-	return s.toolResult("set_issue_state", updated), nil
+	return s.toolResult("set_issue_state", detail), nil
 }
 
-func (s *Server) handleDeleteIssue(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	identifier, _ := args["identifier"].(string)
-
-	issue, err := s.store.GetIssue(identifier)
+func (s *Server) handleSetIssueWorkflowPhase(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
 	if err != nil {
-		issue, err = s.store.GetIssueByIdentifier(identifier)
-		if err != nil {
-			return s.toolError("delete_issue", fmt.Sprintf("Issue not found: %s", identifier)), nil
-		}
+		return s.toolError("set_issue_workflow_phase", err.Error()), nil
 	}
+	phase := kanban.WorkflowPhase(asString(args["workflow_phase"]))
+	if !phase.IsValid() {
+		return s.toolError("set_issue_workflow_phase", fmt.Sprintf("Invalid workflow phase: %s. Valid phases: implementation, review, done, complete", phase)), nil
+	}
+	if err := s.store.UpdateIssueWorkflowPhase(issue.ID, phase); err != nil {
+		return s.toolError("set_issue_workflow_phase", fmt.Sprintf("Failed to update issue workflow phase: %v", err)), nil
+	}
+	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
+	if err != nil {
+		return s.toolError("set_issue_workflow_phase", fmt.Sprintf("Failed to reload issue: %v", err)), nil
+	}
+	return s.toolResult("set_issue_workflow_phase", detail), nil
+}
 
+func (s *Server) handleDeleteIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("delete_issue", err.Error()), nil
+	}
 	if err := s.store.DeleteIssue(issue.ID); err != nil {
 		return s.toolError("delete_issue", fmt.Sprintf("Failed to delete issue: %v", err)), nil
 	}
 	return s.toolResult("delete_issue", map[string]interface{}{"identifier": issue.Identifier, "id": issue.ID}), nil
 }
 
-func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	filter := make(map[string]interface{})
-	if projectID, ok := args["project_id"].(string); ok {
+func (s *Server) handleGetIssueExecution(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("get_issue_execution", err.Error()), nil
+	}
+	payload, err := runtimeview.IssueExecutionPayload(s.store, s.provider, issue)
+	if err != nil {
+		return s.toolError("get_issue_execution", fmt.Sprintf("Failed to build execution payload: %v", err)), nil
+	}
+	return s.toolResult("get_issue_execution", payload), nil
+}
+
+func (s *Server) handleRetryIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	if s.provider == nil {
+		return s.runtimeUnavailable("retry_issue"), nil
+	}
+	return s.toolResult("retry_issue", s.provider.RetryIssueNow(asString(args["identifier"]))), nil
+}
+
+func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	filter := map[string]interface{}{}
+	if projectID := asString(args["project_id"]); projectID != "" {
 		filter["project_id"] = projectID
 	}
-
 	issues, err := s.store.ListIssues(filter)
 	if err != nil {
 		return s.toolError("board_overview", fmt.Sprintf("Failed to get board overview: %v", err)), nil
 	}
 
 	counts := make(map[kanban.State]int)
-	for _, i := range issues {
-		counts[i.State]++
+	for _, issue := range issues {
+		counts[issue.State]++
 	}
-
 	return s.toolResult("board_overview", map[string]int{
 		string(kanban.StateBacklog):    counts[kanban.StateBacklog],
 		string(kanban.StateReady):      counts[kanban.StateReady],
@@ -609,38 +570,71 @@ func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interf
 	}), nil
 }
 
-func (s *Server) handleSetBlockers(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	identifier, _ := args["identifier"].(string)
-
-	issue, err := s.store.GetIssue(identifier)
+func (s *Server) handleSetBlockers(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
 	if err != nil {
-		issue, err = s.store.GetIssueByIdentifier(identifier)
-		if err != nil {
-			return s.toolError("set_blockers", fmt.Sprintf("Issue not found: %s", identifier)), nil
-		}
+		return s.toolError("set_blockers", err.Error()), nil
 	}
-
-	var blockers []string
-	if b, ok := args["blocked_by"].([]interface{}); ok {
-		for _, block := range b {
-			if str, ok := block.(string); ok {
-				blockers = append(blockers, str)
-			}
-		}
-	}
-
-	persisted, err := s.store.SetIssueBlockers(issue.ID, blockers)
+	persisted, err := s.store.SetIssueBlockers(issue.ID, stringListArg(args, "blocked_by"))
 	if err != nil {
 		return s.toolError("set_blockers", fmt.Sprintf("Failed to set blockers: %v", err)), nil
 	}
-	updated, err := s.store.GetIssue(issue.ID)
+	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
 	if err != nil {
 		return s.toolError("set_blockers", fmt.Sprintf("Failed to reload issue: %v", err)), nil
 	}
 	return s.toolResult("set_blockers", map[string]interface{}{
 		"identifier": issue.Identifier,
 		"blocked_by": persisted,
-		"issue":      updated,
+		"issue":      detail,
+	}), nil
+}
+
+func (s *Server) handleListRuntimeEvents(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	since := int64(intArg(args, "since", 0))
+	limit := intArg(args, "limit", 100)
+	events, err := s.store.ListRuntimeEvents(since, limit)
+	if err != nil {
+		return s.toolError("list_runtime_events", fmt.Sprintf("Failed to list runtime events: %v", err)), nil
+	}
+	var lastSeq int64
+	if len(events) > 0 {
+		lastSeq = events[len(events)-1].Seq
+	}
+	return s.toolResult("list_runtime_events", map[string]interface{}{
+		"since":    since,
+		"last_seq": lastSeq,
+		"events":   events,
+	}), nil
+}
+
+func (s *Server) handleGetRuntimeSnapshot(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	if s.provider == nil {
+		return s.runtimeUnavailable("get_runtime_snapshot"), nil
+	}
+	return s.toolResult("get_runtime_snapshot", observability.StatePayload(s.provider)), nil
+}
+
+func (s *Server) handleListSessions(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	if s.provider == nil {
+		return s.runtimeUnavailable("list_sessions"), nil
+	}
+	all := s.provider.LiveSessions()
+	identifier := asString(args["identifier"])
+	if strings.TrimSpace(identifier) == "" {
+		return s.toolResult("list_sessions", all), nil
+	}
+	sessions, ok := all["sessions"].(map[string]interface{})
+	if !ok {
+		return s.toolError("list_sessions", fmt.Sprintf("Live sessions are unavailable for issue: %s", identifier)), nil
+	}
+	session, ok := sessions[identifier]
+	if !ok {
+		return s.toolError("list_sessions", fmt.Sprintf("Session not found: %s", identifier)), nil
+	}
+	return s.toolResult("list_sessions", map[string]interface{}{
+		"issue":   identifier,
+		"session": session,
 	}), nil
 }
 
@@ -678,15 +672,19 @@ func (s *Server) responseMeta() responseEnvelopeMeta {
 	return meta
 }
 
-func (s *Server) toolResult(name string, data interface{}) *mcp.CallToolResult {
+func (s *Server) toolResult(name string, data interface{}) *mcpapi.CallToolResult {
 	return s.envelopeResult(name, data, "", false)
 }
 
-func (s *Server) toolError(name, message string) *mcp.CallToolResult {
+func (s *Server) toolError(name, message string) *mcpapi.CallToolResult {
 	return s.envelopeResult(name, nil, message, true)
 }
 
-func (s *Server) envelopeResult(name string, data interface{}, message string, isError bool) *mcp.CallToolResult {
+func (s *Server) runtimeUnavailable(name string) *mcpapi.CallToolResult {
+	return s.toolError(name, "runtime_unavailable: this Maestro MCP server was started without a live runtime provider")
+}
+
+func (s *Server) envelopeResult(name string, data interface{}, message string, isError bool) *mcpapi.CallToolResult {
 	envelope := responseEnvelope{
 		OK:   !isError,
 		Tool: name,
@@ -701,11 +699,147 @@ func (s *Server) envelopeResult(name string, data interface{}, message string, i
 		body = []byte(fmt.Sprintf(`{"ok":false,"tool":%q,"error":{"message":"failed to encode response: %s"}}`, name, strings.ReplaceAll(err.Error(), `"`, `'`)))
 		isError = true
 	}
-	return &mcp.CallToolResult{
+	return &mcpapi.CallToolResult{
 		IsError: isError,
-		Content: []mcp.Content{mcp.TextContent{
+		Content: []mcpapi.Content{mcpapi.TextContent{
 			Type: "text",
 			Text: string(body),
 		}},
 	}
+}
+
+func (s *Server) lookupIssue(identifier string) (*kanban.Issue, error) {
+	issue, err := s.store.GetIssue(identifier)
+	if err == nil {
+		return issue, nil
+	}
+	issue, err = s.store.GetIssueByIdentifier(identifier)
+	if err != nil {
+		return nil, fmt.Errorf("Issue not found: %s", identifier)
+	}
+	return issue, nil
+}
+
+func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) map[string]interface{} {
+	updates := make(map[string]interface{})
+	if includeProjectFields {
+		if value, ok := args["project_id"]; ok {
+			updates["project_id"] = asString(value)
+		}
+		if value, ok := args["epic_id"]; ok {
+			updates["epic_id"] = asString(value)
+		}
+	}
+	if value, ok := args["title"]; ok {
+		updates["title"] = asString(value)
+	}
+	if value, ok := args["description"]; ok {
+		updates["description"] = asString(value)
+	}
+	if _, ok := args["priority"]; ok {
+		updates["priority"] = intArg(args, "priority", 0)
+	}
+	if _, ok := args["labels"]; ok {
+		updates["labels"] = stringListArg(args, "labels")
+	}
+	if _, ok := args["blocked_by"]; ok {
+		updates["blocked_by"] = stringListArg(args, "blocked_by")
+	}
+	if value, ok := args["branch_name"]; ok {
+		updates["branch_name"] = asString(value)
+	}
+	if _, ok := args["pr_number"]; ok {
+		updates["pr_number"] = intArg(args, "pr_number", 0)
+	}
+	if value, ok := args["pr_url"]; ok {
+		updates["pr_url"] = asString(value)
+	}
+	return updates
+}
+
+func extensionToolInputSchema(spec map[string]interface{}) mcpapi.ToolInputSchema {
+	inputSchema, _ := spec["inputSchema"].(map[string]interface{})
+	properties, _ := inputSchema["properties"].(map[string]interface{})
+	typ := asString(inputSchema["type"])
+	if typ == "" {
+		typ = "object"
+	}
+	return mcpapi.ToolInputSchema{
+		Type:       typ,
+		Properties: properties,
+	}
+}
+
+func objectTool(name, description string, properties map[string]interface{}) mcpapi.Tool {
+	return mcpapi.Tool{
+		Name:        name,
+		Description: description,
+		InputSchema: mcpapi.ToolInputSchema{
+			Type:       "object",
+			Properties: properties,
+		},
+	}
+}
+
+func stringProperty(description string) map[string]interface{} {
+	return map[string]interface{}{"type": "string", "description": description}
+}
+
+func numberProperty(description string) map[string]interface{} {
+	return map[string]interface{}{"type": "number", "description": description}
+}
+
+func stringArrayProperty(description string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "array",
+		"description": description,
+		"items":       map[string]interface{}{"type": "string"},
+	}
+}
+
+func intArg(args map[string]interface{}, key string, fallback int) int {
+	raw, ok := args[key]
+	if !ok {
+		return fallback
+	}
+	switch value := raw.(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case int64:
+		return int(value)
+	default:
+		return fallback
+	}
+}
+
+func stringListArg(args map[string]interface{}, key string) []string {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch items := raw.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(items))
+		out = append(out, items...)
+		return out
+	default:
+		return nil
+	}
+}
+
+func asString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
