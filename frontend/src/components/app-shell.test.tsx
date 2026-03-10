@@ -7,11 +7,12 @@ import { makeBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 const invalidateSocket = vi.fn()
+let pathname = '/work'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
   Outlet: () => <div data-testid="outlet">Outlet</div>,
-  useRouterState: () => ({ location: { pathname: '/work' } }),
+  useRouterState: () => ({ location: { pathname } }),
 }))
 
 vi.mock('@/components/command-palette', () => ({
@@ -34,6 +35,10 @@ vi.mock('@/lib/api', () => ({
 const { api } = await import('@/lib/api')
 
 describe('AppShell', () => {
+  beforeEach(() => {
+    pathname = '/work'
+  })
+
   it('renders navigation and reacts to refresh controls', async () => {
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
 
@@ -56,5 +61,18 @@ describe('AppShell', () => {
     await waitFor(() => {
       expect(screen.getByText('1 running')).toBeInTheDocument()
     })
+  })
+
+  it('keeps the sessions nav state and title on nested session routes', async () => {
+    pathname = '/sessions/ISS-1'
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Sessions')).toBeInTheDocument()
+    })
+
+    expect(document.title).toContain('Sessions')
   })
 })

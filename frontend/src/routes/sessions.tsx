@@ -1,14 +1,14 @@
-import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { api } from '@/lib/api'
+import { appRoutes } from '@/lib/routes'
 import type { SessionFeedEntry } from '@/lib/types'
 import { formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
 const quietThresholdMs = 10_000
-const historyLimit = 8
 
 function isQuiet(entry: SessionFeedEntry) {
   if (!entry.active || entry.source !== 'live') {
@@ -41,58 +41,7 @@ function badgeClassForStatus(status: SessionFeedEntry['status']) {
   }
 }
 
-function EntryDetails({ entry }: { entry: SessionFeedEntry }) {
-  const history = entry.history?.slice(-historyLimit) ?? []
-  const context = [
-    entry.phase ? toTitleCase(entry.phase) : '',
-    entry.attempt ? `Attempt ${entry.attempt}` : '',
-    entry.run_kind ? toTitleCase(entry.run_kind.replaceAll('_', ' ')) : '',
-    entry.terminal_reason ? toTitleCase(entry.terminal_reason.replaceAll(/[._]/g, ' ')) : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
-
-  return (
-    <div className="mt-4 grid gap-4 border-t border-white/8 pt-4">
-      <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-        <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Run context</p>
-        <p className="mt-2 text-sm text-white">{context || 'No additional run context recorded.'}</p>
-        {entry.failure_class || entry.error ? (
-          <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-            {[entry.failure_class ? toTitleCase(entry.failure_class.replaceAll('_', ' ')) : '', entry.error ?? '']
-              .filter(Boolean)
-              .join(' · ')}
-          </p>
-        ) : null}
-      </div>
-
-      <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium text-white">Recent session history</p>
-          <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{history.length} events</span>
-        </div>
-        <div className="mt-4 space-y-3">
-          {history.length === 0 ? (
-            <p className="text-sm text-[var(--muted-foreground)]">No session history captured for this run.</p>
-          ) : (
-            history.map((event, index) => (
-              <div key={`${event.type}-${event.turn_id || index}`} className="rounded-2xl border border-white/8 bg-black/20 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium text-white">{event.type}</p>
-                  <span className="text-xs text-[var(--muted-foreground)]">{formatNumber(event.total_tokens)} tokens</span>
-                </div>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.message || 'No message'}</p>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export function SessionsPage() {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const sessions = useQuery({
     queryKey: ['sessions'],
     queryFn: api.listSessions,
@@ -123,7 +72,7 @@ export function SessionsPage() {
           <CardHeader>
             <div>
               <CardTitle>Run transparency</CardTitle>
-              <CardDescription>Live sessions first, followed by recent persisted runs so operators can see movement instead of guessing.</CardDescription>
+              <CardDescription>Live sessions first, followed by recent persisted runs sorted by issue title for faster triage.</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="grid gap-3">
@@ -131,38 +80,41 @@ export function SessionsPage() {
               <p className="text-sm text-[var(--muted-foreground)]">No live or recent runs are available.</p>
             ) : (
               entries.map((entry) => {
-                const expandedKey = entry.issue_identifier
-                const detailsOpen = expanded[expandedKey] ?? false
                 const quiet = isQuiet(entry)
+                const title = entry.issue_title || entry.issue_identifier
+                const context = [
+                  entry.issue_identifier,
+                  entry.phase ? toTitleCase(entry.phase) : '',
+                  entry.attempt ? `Attempt ${entry.attempt}` : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
 
                 return (
                   <div key={`${entry.source}-${entry.issue_identifier}`} className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-medium text-white">{entry.issue_identifier}</p>
+                          <p className="font-medium text-white">{title}</p>
                           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(entry.source)}</Badge>
                           <Badge className={badgeClassForStatus(entry.status)}>{toTitleCase(entry.status)}</Badge>
                           {quiet ? <Badge className="border-orange-400/20 bg-orange-400/10 text-orange-100">Quiet</Badge> : null}
                         </div>
-                        <p className="mt-2 text-sm text-[var(--muted-foreground)]">{summaryText(entry)}</p>
+                        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{context}</p>
+                        <p data-testid={`session-summary-${entry.issue_identifier}`} className="mt-2 line-clamp-2 text-sm text-[var(--muted-foreground)]">
+                          {summaryText(entry)}
+                        </p>
                         <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                           Updated {formatRelativeTime(entry.updated_at)} · {formatDateTime(entry.updated_at)}
                         </p>
                       </div>
-                      <button
-                        type="button"
+                      <Link
                         className="rounded-full border border-white/10 px-3 py-1.5 text-sm text-white transition hover:border-white/20 hover:bg-white/5"
-                        aria-expanded={detailsOpen}
-                        onClick={() =>
-                          setExpanded((current) => ({
-                            ...current,
-                            [expandedKey]: !detailsOpen,
-                          }))
-                        }
+                        params={{ identifier: entry.issue_identifier }}
+                        to={appRoutes.sessionDetail}
                       >
-                        {detailsOpen ? 'Hide details' : 'Show details'}
-                      </button>
+                        Open session
+                      </Link>
                     </div>
 
                     <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
@@ -180,8 +132,6 @@ export function SessionsPage() {
                         <p className="mt-2 text-xl text-white">{formatNumber(entry.events_processed)}</p>
                       </div>
                     </div>
-
-                    {detailsOpen ? <EntryDetails entry={entry} /> : null}
                   </div>
                 )
               })

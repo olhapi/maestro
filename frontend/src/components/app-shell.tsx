@@ -15,7 +15,7 @@ const nav = [
   { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard, match: (pathname: string) => pathname === appRoutes.overview },
   { label: 'Work', to: appRoutes.work, icon: ListTodo, match: (pathname: string) => pathname === appRoutes.work || pathname.startsWith('/issues/') },
   { label: 'Projects', to: appRoutes.projects, icon: FolderKanban, match: isProjectsPath },
-  { label: 'Sessions', to: appRoutes.sessions, icon: MonitorPlay, match: (pathname: string) => pathname === appRoutes.sessions },
+  { label: 'Sessions', to: appRoutes.sessions, icon: MonitorPlay, match: (pathname: string) => pathname === appRoutes.sessions || pathname.startsWith('/sessions/') },
 ]
 
 const APP_TITLE = 'Maestro Control Center'
@@ -27,7 +27,7 @@ function getPageTitle(pathname: string) {
   if (pathname.startsWith('/projects/')) return 'Project'
   if (pathname.startsWith('/epics/')) return 'Epic'
   if (pathname.startsWith('/issues/')) return 'Issue'
-  if (pathname === appRoutes.sessions) return 'Sessions'
+  if (pathname === appRoutes.sessions || pathname.startsWith('/sessions/')) return 'Sessions'
   return ''
 }
 

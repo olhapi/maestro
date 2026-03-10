@@ -245,6 +245,7 @@ export interface Session {
 export interface SessionFeedEntry {
   issue_id: string;
   issue_identifier: string;
+  issue_title?: string;
   source: "live" | "persisted";
   active: boolean;
   status: "active" | "paused" | "completed" | "failed" | "interrupted";

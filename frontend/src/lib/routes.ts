@@ -6,6 +6,7 @@ export const appRoutes = {
   epicDetail: '/epics/$epicId',
   issueDetail: '/issues/$identifier',
   sessions: '/sessions',
+  sessionDetail: '/sessions/$identifier',
 } as const
 
 export function isProjectsPath(pathname: string) {

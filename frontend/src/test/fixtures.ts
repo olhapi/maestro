@@ -201,6 +201,7 @@ export function makeBootstrapResponse(
         {
           issue_id: issue.id,
           issue_identifier: issue.identifier,
+          issue_title: issue.title,
           source: "live",
           active: true,
           status: "active",

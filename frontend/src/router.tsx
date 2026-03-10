@@ -26,6 +26,7 @@ const ProjectDetailPage = lazyPage(() => import('@/routes/project-detail'), 'Pro
 const EpicDetailPage = lazyPage(() => import('@/routes/epic-detail'), 'EpicDetailPage')
 const IssueDetailPage = lazyPage(() => import('@/routes/issue-detail'), 'IssueDetailPage')
 const SessionsPage = lazyPage(() => import('@/routes/sessions'), 'SessionsPage')
+const SessionDetailPage = lazyPage(() => import('@/routes/session-detail'), 'SessionDetailPage')
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -73,6 +74,12 @@ const sessionsRoute = createRoute({
   component: SessionsPage,
 })
 
+const sessionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sessions/$identifier',
+  component: SessionDetailPage,
+})
+
 const routeTree = rootRoute.addChildren([
   overviewRoute,
   workRoute,
@@ -81,6 +88,7 @@ const routeTree = rootRoute.addChildren([
   epicDetailRoute,
   issueDetailRoute,
   sessionsRoute,
+  sessionDetailRoute,
 ])
 
 export const router = createRouter({

@@ -181,6 +181,7 @@ type ExecutionSessionSnapshot struct {
 type SessionFeedEntry struct {
 	IssueID         string            `json:"issue_id"`
 	IssueIdentifier string            `json:"issue_identifier"`
+	IssueTitle      string            `json:"issue_title,omitempty"`
 	Source          string            `json:"source"`
 	Active          bool              `json:"active"`
 	Status          string            `json:"status"`

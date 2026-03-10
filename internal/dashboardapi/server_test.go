@@ -258,23 +258,27 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	liveIssue, err := store.CreateIssue("", "", "Live issue", "", 0, nil)
+	liveIssue, err := store.CreateIssue("", "", "Zulu live issue", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue live failed: %v", err)
 	}
-	pausedIssue, err := store.CreateIssue("", "", "Paused issue", "", 0, nil)
+	liveAlphaIssue, err := store.CreateIssue("", "", "Alpha live issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue second live failed: %v", err)
+	}
+	pausedIssue, err := store.CreateIssue("", "", "Charlie paused issue", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue paused failed: %v", err)
 	}
-	completedIssue, err := store.CreateIssue("", "", "Completed issue", "", 0, nil)
+	completedIssue, err := store.CreateIssue("", "", "Bravo completed issue", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue completed failed: %v", err)
 	}
-	interruptedIssue, err := store.CreateIssue("", "", "Interrupted issue", "", 0, nil)
+	interruptedIssue, err := store.CreateIssue("", "", "Delta interrupted issue", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue interrupted failed: %v", err)
 	}
-	failedIssue, err := store.CreateIssue("", "", "Failed issue", "", 0, nil)
+	failedIssue, err := store.CreateIssue("", "", "Echo failed issue", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue failed failed: %v", err)
 	}
@@ -295,6 +299,23 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 				LastEvent:       "turn.approval_required",
 				LastTimestamp:   now.Add(-1 * time.Minute),
 				LastMessage:     "Old persisted state",
+			},
+		},
+		{
+			IssueID:    liveAlphaIssue.ID,
+			Identifier: liveAlphaIssue.Identifier,
+			Phase:      "implementation",
+			Attempt:    1,
+			RunKind:    "run_failed",
+			Error:      "approval_required",
+			UpdatedAt:  now.Add(-90 * time.Second),
+			AppSession: appserver.Session{
+				IssueID:         liveAlphaIssue.ID,
+				IssueIdentifier: liveAlphaIssue.Identifier,
+				SessionID:       "thread-live-alpha-old-turn-live-alpha-old",
+				LastEvent:       "turn.approval_required",
+				LastTimestamp:   now.Add(-90 * time.Second),
+				LastMessage:     "Old alpha persisted state",
 			},
 		},
 		{
@@ -373,19 +394,34 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 
 	provider := testProvider{
 		snapshot: observability.Snapshot{
-			Running: []observability.RunningEntry{{
-				IssueID:     liveIssue.ID,
-				Identifier:  liveIssue.Identifier,
-				State:       "in_progress",
-				Phase:       "implementation",
-				Attempt:     7,
-				SessionID:   "thread-live-turn-live",
-				TurnCount:   5,
-				LastEvent:   "turn.started",
-				LastMessage: "Applying changes",
-				StartedAt:   now.Add(-30 * time.Second),
-				Tokens:      observability.TokenTotals{TotalTokens: 33},
-			}},
+			Running: []observability.RunningEntry{
+				{
+					IssueID:     liveIssue.ID,
+					Identifier:  liveIssue.Identifier,
+					State:       "in_progress",
+					Phase:       "implementation",
+					Attempt:     7,
+					SessionID:   "thread-live-turn-live",
+					TurnCount:   5,
+					LastEvent:   "turn.started",
+					LastMessage: "Applying changes",
+					StartedAt:   now.Add(-30 * time.Second),
+					Tokens:      observability.TokenTotals{TotalTokens: 33},
+				},
+				{
+					IssueID:     liveAlphaIssue.ID,
+					Identifier:  liveAlphaIssue.Identifier,
+					State:       "in_progress",
+					Phase:       "implementation",
+					Attempt:     2,
+					SessionID:   "thread-live-alpha-turn-live-alpha",
+					TurnCount:   2,
+					LastEvent:   "turn.started",
+					LastMessage: "Reviewing alpha changes",
+					StartedAt:   now.Add(-45 * time.Second),
+					Tokens:      observability.TokenTotals{TotalTokens: 12},
+				},
+			},
 			Paused: []observability.PausedEntry{{
 				IssueID:             pausedIssue.ID,
 				Identifier:          pausedIssue.Identifier,
@@ -415,6 +451,23 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 					{Type: "turn.started", Message: "Applying changes"},
 				},
 			},
+			liveAlphaIssue.Identifier: appserver.Session{
+				IssueID:         liveAlphaIssue.ID,
+				IssueIdentifier: liveAlphaIssue.Identifier,
+				SessionID:       "thread-live-alpha-turn-live-alpha",
+				ThreadID:        "thread-live-alpha",
+				TurnID:          "turn-live-alpha",
+				LastEvent:       "turn.started",
+				LastTimestamp:   now.Add(-10 * time.Second),
+				LastMessage:     "Reviewing alpha changes",
+				TotalTokens:     12,
+				EventsProcessed: 4,
+				TurnsStarted:    2,
+				TurnsCompleted:  1,
+				History: []appserver.Event{
+					{Type: "turn.started", Message: "Reviewing alpha changes"},
+				},
+			},
 		},
 	}
 
@@ -431,14 +484,23 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 	}
 
 	entries, ok := payload["entries"].([]interface{})
-	if !ok || len(entries) != 5 {
-		t.Fatalf("expected 5 merged entries, got %#v", payload["entries"])
+	if !ok || len(entries) != 6 {
+		t.Fatalf("expected 6 merged entries, got %#v", payload["entries"])
 	}
-	if entries[0].(map[string]interface{})["issue_identifier"] != liveIssue.Identifier {
-		t.Fatalf("expected live entry first, got %#v", entries[0])
+	if entries[0].(map[string]interface{})["issue_identifier"] != liveAlphaIssue.Identifier {
+		t.Fatalf("expected alpha live entry first, got %#v", entries[0])
+	}
+	if entries[1].(map[string]interface{})["issue_identifier"] != liveIssue.Identifier {
+		t.Fatalf("expected zulu live entry second, got %#v", entries[1])
+	}
+	if entries[2].(map[string]interface{})["issue_identifier"] != completedIssue.Identifier {
+		t.Fatalf("expected bravo completed entry first in persisted group, got %#v", entries[2])
 	}
 	if got := findSessionFeedEntry(t, entries, liveIssue.Identifier)["source"]; got != "live" {
 		t.Fatalf("expected live source for duplicate issue, got %#v", got)
+	}
+	if got := findSessionFeedEntry(t, entries, liveAlphaIssue.Identifier)["issue_title"]; got != liveAlphaIssue.Title {
+		t.Fatalf("expected issue title for live alpha entry, got %#v", got)
 	}
 	if got := findSessionFeedEntry(t, entries, pausedIssue.Identifier)["status"]; got != "paused" {
 		t.Fatalf("expected paused status, got %#v", got)

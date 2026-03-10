@@ -58,19 +58,20 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 		}
 	}
 
+	recent, err := store.ListRecentExecutionSessions(time.Now().UTC().Add(-recentSessionFeedWindow), recentSessionFeedLimit)
+	if err != nil {
+		return nil, err
+	}
+	titleByIdentifier := loadIssueTitlesByIdentifier(store, live, recent)
+
 	out := make([]kanban.SessionFeedEntry, 0, len(live)+recentSessionFeedLimit)
 	seen := make(map[string]struct{}, len(live))
 	for identifier, session := range live {
-		entry := buildLiveSessionFeedEntry(identifier, session, runningByIdentifier[identifier])
+		entry := buildLiveSessionFeedEntry(identifier, session, runningByIdentifier[identifier], titleByIdentifier[identifier])
 		out = append(out, entry)
 		if entry.IssueIdentifier != "" {
 			seen[entry.IssueIdentifier] = struct{}{}
 		}
-	}
-
-	recent, err := store.ListRecentExecutionSessions(time.Now().UTC().Add(-recentSessionFeedWindow), recentSessionFeedLimit)
-	if err != nil {
-		return nil, err
 	}
 	for _, snapshot := range recent {
 		identifier := strings.TrimSpace(snapshot.Identifier)
@@ -83,7 +84,7 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 		if _, ok := seen[identifier]; ok {
 			continue
 		}
-		out = append(out, buildPersistedSessionFeedEntry(snapshot, retryByIdentifier[identifier], pausedByIdentifier[identifier]))
+		out = append(out, buildPersistedSessionFeedEntry(snapshot, retryByIdentifier[identifier], pausedByIdentifier[identifier], titleByIdentifier[identifier]))
 		seen[identifier] = struct{}{}
 	}
 
@@ -91,13 +92,75 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 		if out[i].Source != out[j].Source {
 			return out[i].Source == "live"
 		}
-		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
-			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		leftTitle := sessionFeedSortKey(out[i].IssueTitle, out[i].IssueIdentifier)
+		rightTitle := sessionFeedSortKey(out[j].IssueTitle, out[j].IssueIdentifier)
+		if leftTitle != rightTitle {
+			return leftTitle < rightTitle
 		}
 		return out[i].IssueIdentifier < out[j].IssueIdentifier
 	})
 
 	return out, nil
+}
+
+func loadIssueTitlesByIdentifier(store *kanban.Store, live map[string]appserver.Session, recent []kanban.ExecutionSessionSnapshot) map[string]string {
+	type issueRef struct {
+		issueID    string
+		identifier string
+	}
+
+	refs := make(map[string]issueRef, len(live)+len(recent))
+	for identifier, session := range live {
+		resolvedIdentifier := strings.TrimSpace(firstNonEmpty(session.IssueIdentifier, identifier))
+		if resolvedIdentifier == "" {
+			continue
+		}
+		refs[resolvedIdentifier] = issueRef{
+			issueID:    strings.TrimSpace(session.IssueID),
+			identifier: resolvedIdentifier,
+		}
+	}
+	for _, snapshot := range recent {
+		identifier := strings.TrimSpace(firstNonEmpty(snapshot.Identifier, snapshot.AppSession.IssueIdentifier))
+		if identifier == "" {
+			continue
+		}
+		if _, ok := refs[identifier]; ok {
+			continue
+		}
+		refs[identifier] = issueRef{
+			issueID:    strings.TrimSpace(snapshot.IssueID),
+			identifier: identifier,
+		}
+	}
+
+	out := make(map[string]string, len(refs))
+	for identifier, ref := range refs {
+		var issue *kanban.Issue
+		var err error
+		switch {
+		case ref.issueID != "":
+			issue, err = store.GetIssue(ref.issueID)
+		case ref.identifier != "":
+			issue, err = store.GetIssueByIdentifier(ref.identifier)
+		}
+		if err != nil || issue == nil {
+			continue
+		}
+		title := strings.TrimSpace(issue.Title)
+		if title != "" {
+			out[identifier] = title
+		}
+	}
+	return out
+}
+
+func sessionFeedSortKey(title, identifier string) string {
+	key := strings.TrimSpace(title)
+	if key == "" {
+		key = strings.TrimSpace(identifier)
+	}
+	return strings.ToLower(key)
 }
 
 func decodeLiveSessions(raw map[string]interface{}) map[string]appserver.Session {
@@ -124,7 +187,7 @@ func decodeLiveSessions(raw map[string]interface{}) map[string]appserver.Session
 	return out
 }
 
-func buildLiveSessionFeedEntry(identifier string, session appserver.Session, running observability.RunningEntry) kanban.SessionFeedEntry {
+func buildLiveSessionFeedEntry(identifier string, session appserver.Session, running observability.RunningEntry, issueTitle string) kanban.SessionFeedEntry {
 	updatedAt := session.LastTimestamp
 	if updatedAt.IsZero() {
 		if running.LastEventAt != nil && !running.LastEventAt.IsZero() {
@@ -146,6 +209,7 @@ func buildLiveSessionFeedEntry(identifier string, session appserver.Session, run
 	return kanban.SessionFeedEntry{
 		IssueID:         firstNonEmpty(session.IssueID, running.IssueID),
 		IssueIdentifier: firstNonEmpty(session.IssueIdentifier, identifier, running.Identifier),
+		IssueTitle:      issueTitle,
 		Source:          "live",
 		Active:          true,
 		Status:          "active",
@@ -165,7 +229,7 @@ func buildLiveSessionFeedEntry(identifier string, session appserver.Session, run
 	}
 }
 
-func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, retry observability.RetryEntry, paused observability.PausedEntry) kanban.SessionFeedEntry {
+func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, retry observability.RetryEntry, paused observability.PausedEntry, issueTitle string) kanban.SessionFeedEntry {
 	session := snapshot.AppSession
 	updatedAt := session.LastTimestamp
 	if updatedAt.IsZero() {
@@ -213,6 +277,7 @@ func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, re
 	return kanban.SessionFeedEntry{
 		IssueID:         snapshot.IssueID,
 		IssueIdentifier: firstNonEmpty(snapshot.Identifier, session.IssueIdentifier),
+		IssueTitle:      issueTitle,
 		Source:          "persisted",
 		Active:          false,
 		Status:          status,
