@@ -15,9 +15,11 @@ import (
 )
 
 type testProvider struct {
-	snapshot observability.Snapshot
-	sessions map[string]interface{}
-	status   map[string]interface{}
+	snapshot         observability.Snapshot
+	sessions         map[string]interface{}
+	status           map[string]interface{}
+	projectRefreshes []string
+	projectStops     []string
 }
 
 func (p testProvider) Status() map[string]interface{} {
@@ -44,6 +46,14 @@ func (p testProvider) Events(since int64, limit int) map[string]interface{} {
 
 func (p testProvider) RequestRefresh() map[string]interface{} {
 	return map[string]interface{}{"status": "accepted"}
+}
+
+func (p testProvider) RequestProjectRefresh(projectID string) map[string]interface{} {
+	return map[string]interface{}{"status": "accepted", "project_id": projectID}
+}
+
+func (p testProvider) StopProjectRuns(projectID string) map[string]interface{} {
+	return map[string]interface{}{"status": "stopped", "project_id": projectID, "stopped_runs": 0}
 }
 
 func (p testProvider) RetryIssueNow(identifier string) map[string]interface{} {

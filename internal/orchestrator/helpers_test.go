@@ -739,3 +739,162 @@ func TestRuntimeResolutionAndUtilityHelpers(t *testing.T) {
 		t.Fatalf("unexpected empty events payload: %#v", events)
 	}
 }
+
+func TestUpdateLiveSessionAccumulatesTokenSpendByDelta(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	runner := newRetryTestRunner()
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Token delta", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	waitForRunCall(t, runner.runCalls, time.Second)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-token",
+		SessionID:     "thread-token-turn-1",
+		TurnID:        "turn-1",
+		LastEvent:     "thread.tokenUsage.updated",
+		LastTimestamp: now,
+		TotalTokens:   10,
+	})
+	current, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after first token update: %v", err)
+	}
+	if current.TotalTokensSpent != 10 {
+		t.Fatalf("TotalTokensSpent after first update = %d, want 10", current.TotalTokensSpent)
+	}
+
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-token",
+		SessionID:     "thread-token-turn-1",
+		TurnID:        "turn-1",
+		LastEvent:     "thread.tokenUsage.updated",
+		LastTimestamp: now.Add(time.Second),
+		TotalTokens:   10,
+	})
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after repeated token update: %v", err)
+	}
+	if current.TotalTokensSpent != 10 {
+		t.Fatalf("TotalTokensSpent after repeated update = %d, want 10", current.TotalTokensSpent)
+	}
+
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-token",
+		SessionID:     "thread-token-turn-2",
+		TurnID:        "turn-2",
+		LastEvent:     "thread.tokenUsage.updated",
+		LastTimestamp: now.Add(2 * time.Second),
+		TotalTokens:   18,
+	})
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after batched token update: %v", err)
+	}
+	if current.TotalTokensSpent != 10 {
+		t.Fatalf("TotalTokensSpent before debounce flush = %d, want 10", current.TotalTokensSpent)
+	}
+
+	orch.tokenSpendMu.Lock()
+	state := orch.tokenSpends[issue.ID]
+	state.LastFlushedAt = time.Now().UTC().Add(-3 * time.Second)
+	orch.tokenSpends[issue.ID] = state
+	orch.tokenSpendMu.Unlock()
+
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-token",
+		SessionID:     "thread-token-turn-2",
+		TurnID:        "turn-2",
+		LastEvent:     "thread.tokenUsage.updated",
+		LastTimestamp: now.Add(3 * time.Second),
+		TotalTokens:   25,
+	})
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after debounce flush: %v", err)
+	}
+	if current.TotalTokensSpent != 25 {
+		t.Fatalf("TotalTokensSpent after debounce flush = %d, want 25", current.TotalTokensSpent)
+	}
+
+	close(runner.release)
+	waitForNoRunning(t, orch, time.Second)
+}
+
+func TestUpdateLiveSessionFlushesPendingTokenSpendOnTerminalAndAcrossRuns(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	runner := newRetryTestRunner()
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Token terminal", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	waitForRunCall(t, runner.runCalls, time.Second)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-a",
+		SessionID:     "thread-a-turn-1",
+		TurnID:        "turn-1",
+		LastTimestamp: now,
+		TotalTokens:   10,
+	})
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:       "thread-a",
+		SessionID:      "thread-a-turn-2",
+		TurnID:         "turn-2",
+		LastTimestamp:  now.Add(time.Second),
+		TotalTokens:    18,
+		Terminal:       true,
+		TerminalReason: "turn.completed",
+	})
+
+	current, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after terminal flush: %v", err)
+	}
+	if current.TotalTokensSpent != 18 {
+		t.Fatalf("TotalTokensSpent after terminal flush = %d, want 18", current.TotalTokensSpent)
+	}
+
+	orch.clearIssueTokenSpendState(issue.ID)
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-b",
+		SessionID:     "thread-b-turn-1",
+		TurnID:        "turn-1",
+		LastTimestamp: now.Add(2 * time.Second),
+		TotalTokens:   6,
+	})
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after next run token update: %v", err)
+	}
+	if current.TotalTokensSpent != 24 {
+		t.Fatalf("TotalTokensSpent after next run token update = %d, want 24", current.TotalTokensSpent)
+	}
+
+	close(runner.release)
+	waitForNoRunning(t, orch, time.Second)
+}

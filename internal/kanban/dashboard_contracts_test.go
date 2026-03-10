@@ -33,6 +33,12 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	if err := store.UpdateIssueState(doneIssue.ID, StateDone); err != nil {
 		t.Fatalf("UpdateIssueState done: %v", err)
 	}
+	if err := store.AddIssueTokenSpend(readyIssue.ID, 11); err != nil {
+		t.Fatalf("AddIssueTokenSpend ready: %v", err)
+	}
+	if err := store.AddIssueTokenSpend(doneIssue.ID, 7); err != nil {
+		t.Fatalf("AddIssueTokenSpend done: %v", err)
+	}
 
 	workspace, err := store.CreateWorkspace(readyIssue.ID, "/tmp/workspaces/"+readyIssue.Identifier)
 	if err != nil {
@@ -116,6 +122,9 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	}
 	if len(projectSummaries) != 1 || projectSummaries[0].Counts.Ready != 1 || projectSummaries[0].Counts.Done != 1 {
 		t.Fatalf("unexpected project summaries: %#v", projectSummaries)
+	}
+	if projectSummaries[0].TotalTokensSpent != 18 {
+		t.Fatalf("expected project token spend 18, got %#v", projectSummaries[0])
 	}
 
 	epicSummaries, err := store.ListEpicSummaries(project.ID)

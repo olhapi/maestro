@@ -186,14 +186,38 @@ func TestDeleteProject(t *testing.T) {
 	store := setupTestStore(t)
 
 	project, _ := store.CreateProject("To Delete", "", "", "")
+	epic, err := store.CreateEpic(project.ID, "Epic", "")
+	if err != nil {
+		t.Fatalf("CreateEpic: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, epic.ID, "Issue in project", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workspacePath := filepath.Join(t.TempDir(), issue.Identifier)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
 
 	if err := store.DeleteProject(project.ID); err != nil {
 		t.Fatalf("Failed to delete project: %v", err)
 	}
 
-	_, err := store.GetProject(project.ID)
+	_, err = store.GetProject(project.ID)
 	if err == nil {
 		t.Error("Expected error getting deleted project")
+	}
+	if _, err := store.GetIssue(issue.ID); err == nil {
+		t.Error("Expected project issue to be deleted")
+	}
+	if _, err := store.GetEpic(epic.ID); err == nil {
+		t.Error("Expected project epic to be deleted")
+	}
+	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("expected workspace path to be removed, got err=%v", err)
 	}
 }
 
@@ -285,6 +309,37 @@ func TestGetIssueByIdentifier(t *testing.T) {
 
 	if issue.ID != created.ID {
 		t.Error("Issue ID mismatch")
+	}
+}
+
+func TestAddIssueTokenSpendIncrementsWithoutTouchingUpdatedAt(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Token spend", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	before, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue before increment: %v", err)
+	}
+
+	if err := store.AddIssueTokenSpend(issue.ID, 12); err != nil {
+		t.Fatalf("AddIssueTokenSpend first increment: %v", err)
+	}
+	if err := store.AddIssueTokenSpend(issue.ID, 5); err != nil {
+		t.Fatalf("AddIssueTokenSpend second increment: %v", err)
+	}
+
+	after, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after increment: %v", err)
+	}
+	if after.TotalTokensSpent != 17 {
+		t.Fatalf("TotalTokensSpent = %d, want 17", after.TotalTokensSpent)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("UpdatedAt changed from %s to %s", before.UpdatedAt, after.UpdatedAt)
 	}
 }
 
@@ -542,6 +597,13 @@ func TestDeleteIssue(t *testing.T) {
 	store := setupTestStore(t)
 
 	issue, _ := store.CreateIssue("", "", "To Delete", "", 0, nil)
+	workspacePath := filepath.Join(t.TempDir(), issue.Identifier)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
 
 	if err := store.DeleteIssue(issue.ID); err != nil {
 		t.Fatalf("Failed to delete issue: %v", err)
@@ -550,6 +612,12 @@ func TestDeleteIssue(t *testing.T) {
 	_, err := store.GetIssue(issue.ID)
 	if err == nil {
 		t.Error("Expected error getting deleted issue")
+	}
+	if _, err := store.GetWorkspace(issue.ID); err == nil {
+		t.Error("Expected workspace record to be deleted")
+	}
+	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("expected workspace path to be removed, got err=%v", err)
 	}
 }
 
@@ -686,7 +754,11 @@ func TestDeleteWorkspace(t *testing.T) {
 	store := setupTestStore(t)
 
 	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
-	_, _ = store.CreateWorkspace(issue.ID, "/tmp/workspace")
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	_, _ = store.CreateWorkspace(issue.ID, workspacePath)
 
 	if err := store.DeleteWorkspace(issue.ID); err != nil {
 		t.Fatalf("Failed to delete workspace: %v", err)
@@ -695,6 +767,9 @@ func TestDeleteWorkspace(t *testing.T) {
 	_, err := store.GetWorkspace(issue.ID)
 	if err == nil {
 		t.Error("Expected error getting deleted workspace")
+	}
+	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("expected workspace path to be removed, got err=%v", err)
 	}
 }
 

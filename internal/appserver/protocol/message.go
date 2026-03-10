@@ -13,6 +13,7 @@ const (
 	MethodTurnStart                    = "turn/start"
 	MethodTurnStarted                  = "turn/started"
 	MethodTurnCompleted                = "turn/completed"
+	MethodThreadTokenUsageUpdated      = "thread/tokenUsage/updated"
 	MethodTurnFailed                   = "turn/failed"
 	MethodTurnCancelled                = "turn/cancelled"
 	MethodItemCommandExecutionApproval = "item/commandExecution/requestApproval"

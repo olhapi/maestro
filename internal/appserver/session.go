@@ -163,6 +163,38 @@ func EventFromMessage(msg protocol.Message) (Event, bool) {
 			ThreadID: payload.ThreadID,
 			TurnID:   payload.Turn.ID,
 		}, payload.ThreadID != "" || payload.Turn.ID != ""
+	case protocol.MethodThreadTokenUsageUpdated:
+		var payload struct {
+			ThreadID   string `json:"threadId"`
+			TurnID     string `json:"turnId"`
+			TokenUsage struct {
+				Total struct {
+					InputTokens  int `json:"inputTokens"`
+					OutputTokens int `json:"outputTokens"`
+					TotalTokens  int `json:"totalTokens"`
+				} `json:"total"`
+				Last struct {
+					InputTokens  int `json:"inputTokens"`
+					OutputTokens int `json:"outputTokens"`
+					TotalTokens  int `json:"totalTokens"`
+				} `json:"last"`
+			} `json:"tokenUsage"`
+		}
+		if err := msg.UnmarshalParams(&payload); err != nil {
+			return Event{}, false
+		}
+		input, output, total := tokenUsageTotals(payload.TokenUsage.Total.InputTokens, payload.TokenUsage.Total.OutputTokens, payload.TokenUsage.Total.TotalTokens)
+		if total == 0 {
+			input, output, total = tokenUsageTotals(payload.TokenUsage.Last.InputTokens, payload.TokenUsage.Last.OutputTokens, payload.TokenUsage.Last.TotalTokens)
+		}
+		return Event{
+			Type:         normalizeEventType(msg.Method),
+			ThreadID:     payload.ThreadID,
+			TurnID:       payload.TurnID,
+			InputTokens:  input,
+			OutputTokens: output,
+			TotalTokens:  total,
+		}, payload.ThreadID != "" || payload.TurnID != "" || total > 0
 	default:
 		return Event{}, false
 	}
@@ -215,11 +247,34 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 	if e.TurnID == "" {
 		e.TurnID = firstStr(root, "turn_id", "turnId")
 	}
+	if params, ok := asMap(root["params"]); ok {
+		if e.ThreadID == "" {
+			e.ThreadID = firstStr(params, "thread_id", "threadId")
+		}
+		if e.TurnID == "" {
+			e.TurnID = firstStr(params, "turn_id", "turnId")
+		}
+		if e.Message == "" {
+			e.Message = extractMessage(params)
+		}
+		if e.TotalTokens == 0 {
+			e.InputTokens, e.OutputTokens, e.TotalTokens = tokenUsageFromMap(params)
+		}
+	}
+	if e.Message == "" {
+		e.Message = extractMessage(m)
+	}
+	if e.Message == "" {
+		e.Message = extractMessage(root)
+	}
 
 	if usage, ok := asMap(m["usage"]); ok {
 		e.InputTokens = firstInt(usage, "input_tokens", "prompt_tokens")
 		e.OutputTokens = firstInt(usage, "output_tokens", "completion_tokens")
 		e.TotalTokens = firstInt(usage, "total_tokens")
+	}
+	if e.TotalTokens == 0 {
+		e.InputTokens, e.OutputTokens, e.TotalTokens = tokenUsageFromMap(m)
 	}
 	if e.InputTokens == 0 {
 		e.InputTokens = firstInt(m, "input_tokens")
@@ -234,6 +289,45 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 		e.TotalTokens = e.InputTokens + e.OutputTokens
 	}
 	return e
+}
+
+func tokenUsageFromMap(m map[string]interface{}) (int, int, int) {
+	if m == nil {
+		return 0, 0, 0
+	}
+	raw, ok := m["tokenUsage"]
+	if !ok {
+		raw, ok = m["token_usage"]
+	}
+	if !ok {
+		return 0, 0, 0
+	}
+	usage, ok := asMap(raw)
+	if !ok {
+		return 0, 0, 0
+	}
+	for _, key := range []string{"total", "last"} {
+		part, ok := asMap(usage[key])
+		if !ok {
+			continue
+		}
+		input, output, total := tokenUsageTotals(
+			firstInt(part, "inputTokens", "input_tokens", "prompt_tokens"),
+			firstInt(part, "outputTokens", "output_tokens", "completion_tokens"),
+			firstInt(part, "totalTokens", "total_tokens"),
+		)
+		if total > 0 {
+			return input, output, total
+		}
+	}
+	return 0, 0, 0
+}
+
+func tokenUsageTotals(input, output, total int) (int, int, int) {
+	if total == 0 && input > 0 && output > 0 {
+		total = input + output
+	}
+	return input, output, total
 }
 
 func normalizeEventType(s string) string {
@@ -287,4 +381,39 @@ func firstInt(m map[string]interface{}, keys ...string) int {
 		}
 	}
 	return 0
+}
+
+func extractMessage(m map[string]interface{}) string {
+	if m == nil {
+		return ""
+	}
+	if s := firstStr(m, "message", "content", "reason", "command", "delta", "text"); s != "" {
+		return s
+	}
+	for _, key := range []string{"message", "content", "delta", "text"} {
+		if s := extractMessageValue(m[key]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func extractMessageValue(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	case map[string]interface{}:
+		if s := extractMessage(x); s != "" {
+			return s
+		}
+	case []interface{}:
+		parts := make([]string, 0, len(x))
+		for _, item := range x {
+			if s := extractMessageValue(item); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, " "))
+	}
+	return ""
 }

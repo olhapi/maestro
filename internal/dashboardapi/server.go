@@ -26,6 +26,8 @@ type Provider interface {
 	observability.EventProvider
 	observability.RefreshProvider
 	RetryIssueNow(identifier string) map[string]interface{}
+	RequestProjectRefresh(projectID string) map[string]interface{}
+	StopProjectRuns(projectID string) map[string]interface{}
 }
 
 type Server struct {
@@ -235,10 +237,42 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/app/projects/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/app/projects/")
+	if rest == "" {
 		http.NotFound(w, r)
 		return
+	}
+	id, action, hasAction := strings.Cut(rest, "/")
+	if id == "" || strings.Contains(id, "/") || (hasAction && strings.Contains(action, "/")) {
+		http.NotFound(w, r)
+		return
+	}
+	if hasAction {
+		project, err := s.store.GetProject(id)
+		if err != nil {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
+		decorateProject(project, scopedRepoPathFromStatus(s.provider.Status()))
+		switch {
+		case r.Method == http.MethodPost && action == "run":
+			if !project.DispatchReady {
+				errText := project.DispatchError
+				if strings.TrimSpace(errText) == "" {
+					errText = "project is not dispatchable"
+				}
+				writeJSONStatus(w, http.StatusBadRequest, map[string]interface{}{"error": errText})
+				return
+			}
+			writeJSON(w, s.provider.RequestProjectRefresh(id))
+			return
+		case r.Method == http.MethodPost && action == "stop":
+			writeJSON(w, s.provider.StopProjectRuns(id))
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
 	}
 	switch r.Method {
 	case http.MethodGet:

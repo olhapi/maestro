@@ -50,11 +50,12 @@ func (c IssueStateCounts) Active() int {
 
 type ProjectSummary struct {
 	Project
-	Counts        IssueStateCounts `json:"counts"`
-	StateBuckets  []StateBucket    `json:"state_buckets,omitempty"`
-	TotalCount    int              `json:"total_count"`
-	ActiveCount   int              `json:"active_count"`
-	TerminalCount int              `json:"terminal_count"`
+	TotalTokensSpent int              `json:"total_tokens_spent"`
+	Counts           IssueStateCounts `json:"counts"`
+	StateBuckets     []StateBucket    `json:"state_buckets,omitempty"`
+	TotalCount       int              `json:"total_count"`
+	ActiveCount      int              `json:"active_count"`
+	TerminalCount    int              `json:"terminal_count"`
 }
 
 type EpicSummary struct {

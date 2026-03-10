@@ -34,6 +34,48 @@ func TestParseEventNestedEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseEventLineAgentMessageDeltaNotification(t *testing.T) {
+	line := `{"method":"item/agentMessage/delta","params":{"itemId":"item-1","threadId":"th1","turnId":"tu1","delta":"Planning the next step"}}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "item.agentMessage.delta" || e.ThreadID != "th1" || e.TurnID != "tu1" {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+	if e.Message != "Planning the next step" {
+		t.Fatalf("expected delta text as message, got %#v", e)
+	}
+}
+
+func TestParseEventLineAgentMessageContentDelta(t *testing.T) {
+	line := `{"event":{"type":"agent_message_content_delta","thread_id":"th2","turn_id":"tu2","delta":"Writing the patch now"}}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "agent_message_content_delta" || e.ThreadID != "th2" || e.TurnID != "tu2" {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+	if e.Message != "Writing the patch now" {
+		t.Fatalf("expected content delta text as message, got %#v", e)
+	}
+}
+
+func TestParseEventLineThreadTokenUsageUpdated(t *testing.T) {
+	line := `{"method":"thread/tokenUsage/updated","params":{"threadId":"th3","turnId":"tu3","tokenUsage":{"last":{"inputTokens":4,"outputTokens":5,"totalTokens":9,"cachedInputTokens":0,"reasoningOutputTokens":0},"total":{"inputTokens":10,"outputTokens":20,"totalTokens":30,"cachedInputTokens":0,"reasoningOutputTokens":0}}}}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "thread.tokenUsage.updated" || e.ThreadID != "th3" || e.TurnID != "tu3" {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+	if e.InputTokens != 10 || e.OutputTokens != 20 || e.TotalTokens != 30 {
+		t.Fatalf("expected total token usage, got %#v", e)
+	}
+}
+
 func TestSessionApplyEvent(t *testing.T) {
 	s := &Session{}
 	s.ApplyEvent(Event{Type: "turn.started", ThreadID: "th", TurnID: "tu", InputTokens: 1})
@@ -81,5 +123,22 @@ func TestEventFromMessageAndMergeEvents(t *testing.T) {
 	}
 	if merged.TotalTokens != 8 {
 		t.Fatalf("expected fallback totals, got %+v", merged)
+	}
+}
+
+func TestEventFromMessageThreadTokenUsageUpdated(t *testing.T) {
+	msg, ok := protocol.DecodeMessage(`{"method":"thread/tokenUsage/updated","params":{"threadId":"th4","turnId":"tu4","tokenUsage":{"last":{"inputTokens":1,"outputTokens":2,"totalTokens":3,"cachedInputTokens":0,"reasoningOutputTokens":0},"total":{"inputTokens":11,"outputTokens":7,"totalTokens":18,"cachedInputTokens":0,"reasoningOutputTokens":0}}}}`)
+	if !ok {
+		t.Fatal("expected message decode")
+	}
+	evt, ok := EventFromMessage(msg)
+	if !ok {
+		t.Fatal("expected token usage event")
+	}
+	if evt.Type != "thread.tokenUsage.updated" || evt.ThreadID != "th4" || evt.TurnID != "tu4" {
+		t.Fatalf("unexpected event metadata: %+v", evt)
+	}
+	if evt.InputTokens != 11 || evt.OutputTokens != 7 || evt.TotalTokens != 18 {
+		t.Fatalf("unexpected token usage totals: %+v", evt)
 	}
 }

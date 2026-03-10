@@ -111,9 +111,6 @@ func (r *Runner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) erro
 	if err := r.runHook(ctx, workspace.Path, workflow.Config.Hooks.BeforeRemove, "before_remove"); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(workspace.Path); err != nil {
-		return err
-	}
 	return r.store.DeleteWorkspace(issue.ID)
 }
 

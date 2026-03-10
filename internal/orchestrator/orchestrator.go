@@ -62,6 +62,13 @@ type sessionPersistenceState struct {
 	Terminal        bool
 }
 
+type issueTokenSpendState struct {
+	SessionID     string
+	LastSeenTotal int
+	PendingDelta  int
+	LastFlushedAt time.Time
+}
+
 const scopedRuntimeKey = "__scoped__"
 
 type projectRuntime struct {
@@ -106,6 +113,8 @@ type Orchestrator struct {
 	liveSessions   map[string]*appserver.Session
 	sessionWriteMu sync.Mutex
 	sessionWrites  map[string]sessionPersistenceState
+	tokenSpendMu   sync.Mutex
+	tokenSpends    map[string]issueTokenSpendState
 	eventSeq       int64
 	events         []map[string]interface{}
 	maxEvents      int
@@ -131,6 +140,7 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 		startedAt:       time.Now().UTC(),
 		liveSessions:    make(map[string]*appserver.Session),
 		sessionWrites:   make(map[string]sessionPersistenceState),
+		tokenSpends:     make(map[string]issueTokenSpendState),
 		maxEvents:       500,
 	}
 	o.workflows = workflows
@@ -171,6 +181,7 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 		startedAt:          time.Now().UTC(),
 		liveSessions:       make(map[string]*appserver.Session),
 		sessionWrites:      make(map[string]sessionPersistenceState),
+		tokenSpends:        make(map[string]issueTokenSpendState),
 		maxEvents:          500,
 	}
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
@@ -857,6 +868,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 	})
 	o.mu.Unlock()
 	o.clearSessionWriteState(runIssue.ID)
+	o.clearIssueTokenSpendState(runIssue.ID)
 	slog.Info("Agent run started", issueLogAttrs(&runIssue, attempt, "phase", phase)...)
 	o.persistExecutionSession(&runIssue, phase, attempt, "run_started", "", &appserver.Session{
 		IssueID:         runIssue.ID,
@@ -883,6 +895,9 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		current = &cloned
 	}
 	current.WorkflowPhase = phase
+	if result != nil && result.AppSession != nil {
+		o.observeIssueTokenSpend(issue.ID, result.AppSession)
+	}
 
 	switch {
 	case err != nil:
@@ -912,11 +927,13 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 			issueLogAttrs(current, attempt, extra...)...,
 		)
 	}
+	o.flushIssueTokenSpend(issue.ID)
 
 	o.mu.Lock()
 	delete(o.liveSessions, issue.ID)
 	o.mu.Unlock()
 	o.clearSessionWriteState(issue.ID)
+	o.clearIssueTokenSpendState(issue.ID)
 }
 
 func nextAttempt(attempt int) int {
@@ -1938,6 +1955,7 @@ func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Sess
 		issue := entry.issue
 		o.persistExecutionSession(&issue, entry.phase, entry.attempt, "run_started", "", &cp)
 	}
+	o.observeIssueTokenSpend(issueID, &cp)
 }
 
 func (o *Orchestrator) shouldPersistLiveSessionLocked(issueID string, session *appserver.Session) bool {
@@ -1972,6 +1990,83 @@ func (o *Orchestrator) clearSessionWriteState(issueID string) {
 	delete(o.sessionWrites, issueID)
 }
 
+func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *appserver.Session) {
+	if session == nil {
+		return
+	}
+	runKey := strings.TrimSpace(session.ThreadID)
+	if runKey == "" {
+		runKey = strings.TrimSpace(session.SessionID)
+	}
+	now := time.Now().UTC()
+
+	o.tokenSpendMu.Lock()
+	state := o.tokenSpends[issueID]
+	if state.SessionID != "" && runKey != "" && state.SessionID != runKey {
+		state.LastSeenTotal = 0
+		state.PendingDelta = 0
+	}
+	if runKey != "" {
+		state.SessionID = runKey
+	}
+	if session.TotalTokens > state.LastSeenTotal {
+		state.PendingDelta += session.TotalTokens - state.LastSeenTotal
+		state.LastSeenTotal = session.TotalTokens
+	}
+	shouldFlush := state.PendingDelta > 0 && (session.Terminal || state.LastFlushedAt.IsZero() || now.Sub(state.LastFlushedAt) >= liveSessionPersistInterval)
+	if shouldFlush {
+		pending := state.PendingDelta
+		state.PendingDelta = 0
+		state.LastFlushedAt = now
+		o.tokenSpends[issueID] = state
+		o.tokenSpendMu.Unlock()
+		if err := o.store.AddIssueTokenSpend(issueID, pending); err != nil && err != sql.ErrNoRows {
+			slog.Warn("Failed to persist issue token spend", "issue_id", issueID, "delta", pending, "error", err)
+			o.restoreIssueTokenSpend(issueID, pending)
+		}
+		return
+	}
+	o.tokenSpends[issueID] = state
+	o.tokenSpendMu.Unlock()
+}
+
+func (o *Orchestrator) restoreIssueTokenSpend(issueID string, delta int) {
+	if delta <= 0 {
+		return
+	}
+	o.tokenSpendMu.Lock()
+	defer o.tokenSpendMu.Unlock()
+	state := o.tokenSpends[issueID]
+	state.PendingDelta += delta
+	state.LastFlushedAt = time.Time{}
+	o.tokenSpends[issueID] = state
+}
+
+func (o *Orchestrator) flushIssueTokenSpend(issueID string) {
+	o.tokenSpendMu.Lock()
+	state, ok := o.tokenSpends[issueID]
+	if !ok || state.PendingDelta <= 0 {
+		o.tokenSpendMu.Unlock()
+		return
+	}
+	pending := state.PendingDelta
+	state.PendingDelta = 0
+	state.LastFlushedAt = time.Now().UTC()
+	o.tokenSpends[issueID] = state
+	o.tokenSpendMu.Unlock()
+
+	if err := o.store.AddIssueTokenSpend(issueID, pending); err != nil && err != sql.ErrNoRows {
+		slog.Warn("Failed to flush issue token spend", "issue_id", issueID, "delta", pending, "error", err)
+		o.restoreIssueTokenSpend(issueID, pending)
+	}
+}
+
+func (o *Orchestrator) clearIssueTokenSpendState(issueID string) {
+	o.tokenSpendMu.Lock()
+	defer o.tokenSpendMu.Unlock()
+	delete(o.tokenSpends, issueID)
+}
+
 func (o *Orchestrator) copyLiveSessionsLocked() map[string]*appserver.Session {
 	out := make(map[string]*appserver.Session, len(o.running))
 	for issueID := range o.running {
@@ -1996,6 +2091,72 @@ func (o *Orchestrator) RequestRefresh() map[string]interface{} {
 	return map[string]interface{}{
 		"requested_at": time.Now().UTC().Format(time.RFC3339),
 		"status":       "accepted",
+	}
+}
+
+func (o *Orchestrator) RequestProjectRefresh(projectID string) map[string]interface{} {
+	project, err := o.store.GetProject(projectID)
+	if err != nil {
+		return map[string]interface{}{
+			"status":     "not_found",
+			"project_id": projectID,
+		}
+	}
+	o.mu.Lock()
+	o.appendEventLocked("project_refresh_requested", map[string]interface{}{
+		"project_id":   project.ID,
+		"project_name": project.Name,
+	})
+	o.mu.Unlock()
+	return map[string]interface{}{
+		"status":       "accepted",
+		"project_id":   project.ID,
+		"project_name": project.Name,
+		"requested_at": time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func (o *Orchestrator) StopProjectRuns(projectID string) map[string]interface{} {
+	project, err := o.store.GetProject(projectID)
+	if err != nil {
+		return map[string]interface{}{
+			"status":     "not_found",
+			"project_id": projectID,
+		}
+	}
+
+	stopped := 0
+	identifiers := make([]string, 0)
+	o.mu.Lock()
+	for issueID, entry := range o.running {
+		if entry.issue.ProjectID != projectID {
+			continue
+		}
+		entry.cancel()
+		delete(o.running, issueID)
+		stopped++
+		identifiers = append(identifiers, entry.issue.Identifier)
+		o.appendEventLocked("run_stopped", map[string]interface{}{
+			"issue_id":   issueID,
+			"identifier": entry.issue.Identifier,
+			"project_id": projectID,
+		})
+	}
+	o.appendEventLocked("project_stop_requested", map[string]interface{}{
+		"project_id":   projectID,
+		"project_name": project.Name,
+		"stopped_runs": stopped,
+		"identifiers":  identifiers,
+	})
+	o.mu.Unlock()
+
+	return map[string]interface{}{
+		"status":       "stopped",
+		"project_id":   projectID,
+		"project_name": project.Name,
+		"stopped_runs": stopped,
+		"identifiers":  identifiers,
+		"requested_at": time.Now().UTC().Format(time.RFC3339),
 	}
 }
 

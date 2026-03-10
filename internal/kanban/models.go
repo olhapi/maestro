@@ -69,20 +69,20 @@ func TerminalStates() []State {
 
 // Project represents a top-level project/container
 type Project struct {
-	ID                 string    `json:"id"`
-	Name               string    `json:"name"`
-	Description        string    `json:"description,omitempty"`
-	RepoPath           string    `json:"repo_path,omitempty"`
-	WorkflowPath       string    `json:"workflow_path,omitempty"`
-	ProviderKind       string    `json:"provider_kind,omitempty"`
-	ProviderProjectRef string    `json:"provider_project_ref,omitempty"`
+	ID                 string                 `json:"id"`
+	Name               string                 `json:"name"`
+	Description        string                 `json:"description,omitempty"`
+	RepoPath           string                 `json:"repo_path,omitempty"`
+	WorkflowPath       string                 `json:"workflow_path,omitempty"`
+	ProviderKind       string                 `json:"provider_kind,omitempty"`
+	ProviderProjectRef string                 `json:"provider_project_ref,omitempty"`
 	ProviderConfig     map[string]interface{} `json:"provider_config,omitempty"`
 	Capabilities       ProviderCapabilities   `json:"capabilities"`
-	OrchestrationReady bool      `json:"orchestration_ready"`
-	DispatchReady      bool      `json:"dispatch_ready"`
-	DispatchError      string    `json:"dispatch_error,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	OrchestrationReady bool                   `json:"orchestration_ready"`
+	DispatchReady      bool                   `json:"dispatch_ready"`
+	DispatchError      string                 `json:"dispatch_error,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 // Epic represents a collection of related issues
@@ -97,28 +97,29 @@ type Epic struct {
 
 // Issue represents a single work item
 type Issue struct {
-	ID            string        `json:"id"`
-	ProjectID     string        `json:"project_id,omitempty"`
-	EpicID        string        `json:"epic_id,omitempty"`
-	Identifier    string        `json:"identifier"` // Human-readable: PROJ-123
-	ProviderKind  string        `json:"provider_kind,omitempty"`
-	ProviderIssueRef string     `json:"provider_issue_ref,omitempty"`
-	ProviderShadow   bool       `json:"provider_shadow,omitempty"`
-	Title         string        `json:"title"`
-	Description   string        `json:"description,omitempty"`
-	State         State         `json:"state"`
-	WorkflowPhase WorkflowPhase `json:"workflow_phase"`
-	Priority      int           `json:"priority,omitempty"` // Lower = higher priority
-	Labels        []string      `json:"labels,omitempty"`
-	BranchName    string        `json:"branch_name,omitempty"`
-	PRNumber      int           `json:"pr_number,omitempty"`
-	PRURL         string        `json:"pr_url,omitempty"`
-	BlockedBy     []string      `json:"blocked_by,omitempty"` // Issue identifiers
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
-	StartedAt     *time.Time    `json:"started_at,omitempty"`
-	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
-	LastSyncedAt  *time.Time    `json:"last_synced_at,omitempty"`
+	ID               string        `json:"id"`
+	ProjectID        string        `json:"project_id,omitempty"`
+	EpicID           string        `json:"epic_id,omitempty"`
+	Identifier       string        `json:"identifier"` // Human-readable: PROJ-123
+	ProviderKind     string        `json:"provider_kind,omitempty"`
+	ProviderIssueRef string        `json:"provider_issue_ref,omitempty"`
+	ProviderShadow   bool          `json:"provider_shadow,omitempty"`
+	Title            string        `json:"title"`
+	Description      string        `json:"description,omitempty"`
+	State            State         `json:"state"`
+	WorkflowPhase    WorkflowPhase `json:"workflow_phase"`
+	Priority         int           `json:"priority,omitempty"` // Lower = higher priority
+	Labels           []string      `json:"labels,omitempty"`
+	BranchName       string        `json:"branch_name,omitempty"`
+	PRNumber         int           `json:"pr_number,omitempty"`
+	PRURL            string        `json:"pr_url,omitempty"`
+	BlockedBy        []string      `json:"blocked_by,omitempty"` // Issue identifiers
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	TotalTokensSpent int           `json:"total_tokens_spent"`
+	StartedAt        *time.Time    `json:"started_at,omitempty"`
+	CompletedAt      *time.Time    `json:"completed_at,omitempty"`
+	LastSyncedAt     *time.Time    `json:"last_synced_at,omitempty"`
 }
 
 // Workspace represents an isolated working directory for an issue

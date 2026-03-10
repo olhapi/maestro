@@ -140,6 +140,7 @@ func (s *Store) migrate() error {
 			pr_url TEXT,
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL,
+			total_tokens_spent INTEGER NOT NULL DEFAULT 0,
 			started_at DATETIME,
 			completed_at DATETIME,
 			last_synced_at DATETIME,
@@ -254,6 +255,7 @@ func (s *Store) ensureIssueColumns() error {
 		`ALTER TABLE issues ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'kanban'`,
 		`ALTER TABLE issues ADD COLUMN provider_issue_ref TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE issues ADD COLUMN provider_shadow INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE issues ADD COLUMN total_tokens_spent INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE issues ADD COLUMN last_synced_at DATETIME`,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
@@ -571,6 +573,24 @@ func (s *Store) UpdateProjectWithProvider(id, name, description, repoPath, workf
 }
 
 func (s *Store) DeleteProject(id string) error {
+	issues, err := s.ListIssues(map[string]interface{}{"project_id": id})
+	if err != nil {
+		return err
+	}
+	for i := range issues {
+		if err := s.DeleteIssue(issues[i].ID); err != nil && !IsNotFound(err) {
+			return err
+		}
+	}
+	epics, err := s.ListEpics(id)
+	if err != nil {
+		return err
+	}
+	for i := range epics {
+		if err := s.DeleteEpic(epics[i].ID); err != nil && !IsNotFound(err) {
+			return err
+		}
+	}
 	res, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -883,10 +903,10 @@ func (s *Store) GetIssue(id string) (*Issue, error) {
 
 	err := s.db.QueryRow(`
 		SELECT id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
-		       branch_name, pr_number, pr_url, created_at, updated_at, started_at, completed_at, last_synced_at
+		       branch_name, pr_number, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 		FROM issues WHERE id = ?`, id,
 	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.ProviderKind, &providerIssueRef, &providerShadow, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
-		&branchName, &prNumber, &prURL, &i.CreatedAt, &i.UpdatedAt, &startedAt, &completedAt, &lastSyncedAt)
+		&branchName, &prNumber, &prURL, &i.CreatedAt, &i.UpdatedAt, &i.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1427,9 +1447,11 @@ func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, e
 }
 
 func (s *Store) DeleteIssue(id string) error {
+	if err := s.DeleteWorkspace(id); err != nil {
+		return err
+	}
 	_, _ = s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id)
-	_, _ = s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id)
 	res, err := s.db.Exec(`DELETE FROM issues WHERE id = ?`, id)
 	if err != nil {
@@ -1489,11 +1511,21 @@ func (s *Store) UpdateWorkspaceRun(issueID string) error {
 }
 
 func (s *Store) DeleteWorkspace(issueID string) error {
-	_, err := s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, issueID)
+	workspace, err := s.GetWorkspace(issueID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if err := os.RemoveAll(workspace.Path); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, issueID)
 	if err != nil {
 		return err
 	}
-	return s.appendChange("workspace", issueID, "deleted", nil)
+	return s.appendChange("workspace", issueID, "deleted", map[string]interface{}{"path": workspace.Path})
 }
 
 func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
@@ -1527,18 +1559,34 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 		}
 		stateCountsByProject[projectKey][string(state)] += count
 	}
+	tokenRows, err := s.db.Query(`SELECT project_id, COALESCE(SUM(total_tokens_spent), 0) FROM issues GROUP BY project_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer tokenRows.Close()
+
+	tokensByProject := map[string]int{}
+	for tokenRows.Next() {
+		var projectID sql.NullString
+		var totalTokens int
+		if err := tokenRows.Scan(&projectID, &totalTokens); err != nil {
+			return nil, err
+		}
+		tokensByProject[stringFromNull(projectID)] = totalTokens
+	}
 
 	out := make([]ProjectSummary, 0, len(projects))
 	for _, project := range projects {
 		buckets := BuildStateBuckets(stateCountsByProject[project.ID], projectDefaultActiveStates(project), projectDefaultTerminalStates(project))
 		total, active, terminal := AggregateStateBuckets(buckets)
 		out = append(out, ProjectSummary{
-			Project:       project,
-			Counts:        countsByProject[project.ID],
-			StateBuckets:  buckets,
-			TotalCount:    total,
-			ActiveCount:   active,
-			TerminalCount: terminal,
+			Project:          project,
+			TotalTokensSpent: tokensByProject[project.ID],
+			Counts:           countsByProject[project.ID],
+			StateBuckets:     buckets,
+			TotalCount:       total,
+			ActiveCount:      active,
+			TerminalCount:    terminal,
 		})
 	}
 	return out, nil
@@ -1663,7 +1711,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 
 	rows, err := s.db.Query(`
 		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.priority,
-		       i.branch_name, i.pr_number, i.pr_url, i.created_at, i.updated_at, i.started_at, i.completed_at, i.last_synced_at,
+		       i.branch_name, i.pr_number, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
 		       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
 		FROM issues i
@@ -1689,7 +1737,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		var projectDesc, epicDesc string
 		if err := rows.Scan(
 			&item.ID, &projectID, &epicID, &item.Identifier, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
-			&branchName, &prNumber, &prURL, &item.CreatedAt, &item.UpdatedAt, &startedAt, &completedAt, &lastSyncedAt,
+			&branchName, &prNumber, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
 			return nil, 0, err
@@ -1767,6 +1815,24 @@ func (s *Store) GetIssueDetailByIdentifier(identifier string) (*IssueDetail, err
 		}
 	}
 	return nil, sql.ErrNoRows
+}
+
+func (s *Store) AddIssueTokenSpend(issueID string, delta int) error {
+	if delta <= 0 {
+		return nil
+	}
+	res, err := s.db.Exec(`UPDATE issues SET total_tokens_spent = total_tokens_spent + ? WHERE id = ?`, delta, issueID)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[string][]string, error) {
