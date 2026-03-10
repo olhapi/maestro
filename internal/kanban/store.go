@@ -2130,6 +2130,53 @@ func (s *Store) GetIssueExecutionSession(issueID string) (*ExecutionSessionSnaps
 	return &snapshot, nil
 }
 
+func (s *Store) ListRecentExecutionSessions(since time.Time, limit int) ([]ExecutionSessionSnapshot, error) {
+	if limit <= 0 {
+		limit = 12
+	}
+	query := `
+		SELECT issue_id, identifier, phase, attempt, run_kind, error, updated_at, session_json
+		FROM issue_execution_sessions`
+	args := make([]interface{}, 0, 2)
+	if !since.IsZero() {
+		query += ` WHERE updated_at >= ?`
+		args = append(args, since.UTC())
+	}
+	query += ` ORDER BY updated_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]ExecutionSessionSnapshot, 0, limit)
+	for rows.Next() {
+		var snapshot ExecutionSessionSnapshot
+		var rawSession string
+		if err := rows.Scan(
+			&snapshot.IssueID,
+			&snapshot.Identifier,
+			&snapshot.Phase,
+			&snapshot.Attempt,
+			&snapshot.RunKind,
+			&snapshot.Error,
+			&snapshot.UpdatedAt,
+			&rawSession,
+		); err != nil {
+			return nil, err
+		}
+		if rawSession != "" {
+			if err := json.Unmarshal([]byte(rawSession), &snapshot.AppSession); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, snapshot)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 	if hours <= 0 {
 		hours = 24

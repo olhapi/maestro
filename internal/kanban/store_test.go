@@ -1008,6 +1008,82 @@ func TestIssueExecutionSessionUpsertDoesNotEmitChangeEvents(t *testing.T) {
 	}
 }
 
+func TestListRecentExecutionSessionsOrdersAndDecodesPayloads(t *testing.T) {
+	store := setupTestStore(t)
+	oldIssue, err := store.CreateIssue("", "", "Older session", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue old failed: %v", err)
+	}
+	newIssue, err := store.CreateIssue("", "", "Newer session", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue new failed: %v", err)
+	}
+	base := time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC)
+	for _, snapshot := range []ExecutionSessionSnapshot{
+		{
+			IssueID:    oldIssue.ID,
+			Identifier: oldIssue.Identifier,
+			Phase:      "implementation",
+			Attempt:    1,
+			RunKind:    "run_failed",
+			Error:      "approval_required",
+			UpdatedAt:  base.Add(-2 * time.Hour),
+			AppSession: appserver.Session{
+				IssueID:         oldIssue.ID,
+				IssueIdentifier: oldIssue.Identifier,
+				SessionID:       "thread-old-turn-old",
+				LastEvent:       "turn.approval_required",
+				LastTimestamp:   base.Add(-2 * time.Hour),
+				LastMessage:     "Waiting for approval",
+				History:         []appserver.Event{{Type: "turn.approval_required", Message: "Waiting for approval"}},
+			},
+		},
+		{
+			IssueID:    newIssue.ID,
+			Identifier: newIssue.Identifier,
+			Phase:      "review",
+			Attempt:    2,
+			RunKind:    "run_completed",
+			UpdatedAt:  base,
+			AppSession: appserver.Session{
+				IssueID:         newIssue.ID,
+				IssueIdentifier: newIssue.Identifier,
+				SessionID:       "thread-new-turn-new",
+				LastEvent:       "turn.completed",
+				LastTimestamp:   base,
+				LastMessage:     "Finished review",
+				History:         []appserver.Event{{Type: "turn.completed", Message: "Finished review"}},
+			},
+		},
+	} {
+		if err := store.UpsertIssueExecutionSession(snapshot); err != nil {
+			t.Fatalf("UpsertIssueExecutionSession(%s) failed: %v", snapshot.Identifier, err)
+		}
+	}
+
+	snapshots, err := store.ListRecentExecutionSessions(base.Add(-24*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ListRecentExecutionSessions failed: %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(snapshots))
+	}
+	if snapshots[0].IssueID != newIssue.ID || snapshots[1].IssueID != oldIssue.ID {
+		t.Fatalf("expected newest-first ordering, got %#v", snapshots)
+	}
+	if snapshots[0].AppSession.LastMessage != "Finished review" || len(snapshots[0].AppSession.History) != 1 {
+		t.Fatalf("expected decoded app session payload, got %+v", snapshots[0].AppSession)
+	}
+
+	filtered, err := store.ListRecentExecutionSessions(base.Add(-90*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("ListRecentExecutionSessions filtered failed: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].IssueID != newIssue.ID {
+		t.Fatalf("expected recent filter to keep only newest snapshot, got %#v", filtered)
+	}
+}
+
 func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "extra.db")

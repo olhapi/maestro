@@ -682,7 +682,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, s.provider.LiveSessions())
+	writeJSON(w, s.sessionsPayload())
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {

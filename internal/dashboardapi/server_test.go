@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,6 +238,231 @@ func TestIssueExecutionEndpointReturnsPersistedSessionAndRetryMetadata(t *testin
 	if first["kind"] != "run_started" || last["kind"] != "retry_scheduled" {
 		t.Fatalf("expected oldest-to-newest execution events, got %#v", events)
 	}
+}
+
+func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	liveIssue, err := store.CreateIssue("", "", "Live issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue live failed: %v", err)
+	}
+	pausedIssue, err := store.CreateIssue("", "", "Paused issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue paused failed: %v", err)
+	}
+	completedIssue, err := store.CreateIssue("", "", "Completed issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue completed failed: %v", err)
+	}
+	interruptedIssue, err := store.CreateIssue("", "", "Interrupted issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue interrupted failed: %v", err)
+	}
+	failedIssue, err := store.CreateIssue("", "", "Failed issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed failed: %v", err)
+	}
+
+	for _, snapshot := range []kanban.ExecutionSessionSnapshot{
+		{
+			IssueID:    liveIssue.ID,
+			Identifier: liveIssue.Identifier,
+			Phase:      "implementation",
+			Attempt:    2,
+			RunKind:    "run_failed",
+			Error:      "approval_required",
+			UpdatedAt:  now.Add(-1 * time.Minute),
+			AppSession: appserver.Session{
+				IssueID:         liveIssue.ID,
+				IssueIdentifier: liveIssue.Identifier,
+				SessionID:       "thread-live-old-turn-live-old",
+				LastEvent:       "turn.approval_required",
+				LastTimestamp:   now.Add(-1 * time.Minute),
+				LastMessage:     "Old persisted state",
+			},
+		},
+		{
+			IssueID:    pausedIssue.ID,
+			Identifier: pausedIssue.Identifier,
+			Phase:      "review",
+			Attempt:    3,
+			RunKind:    "retry_paused",
+			Error:      "stall_timeout",
+			UpdatedAt:  now.Add(-2 * time.Minute),
+			AppSession: appserver.Session{
+				IssueID:         pausedIssue.ID,
+				IssueIdentifier: pausedIssue.Identifier,
+				SessionID:       "thread-paused-turn-paused",
+				LastEvent:       "run.failed",
+				LastTimestamp:   now.Add(-2 * time.Minute),
+				LastMessage:     "Paused after repeated failures",
+			},
+		},
+		{
+			IssueID:    completedIssue.ID,
+			Identifier: completedIssue.Identifier,
+			Phase:      "review",
+			Attempt:    1,
+			RunKind:    "run_completed",
+			UpdatedAt:  now.Add(-3 * time.Minute),
+			AppSession: appserver.Session{
+				IssueID:         completedIssue.ID,
+				IssueIdentifier: completedIssue.Identifier,
+				SessionID:       "thread-complete-turn-complete",
+				LastEvent:       "turn.completed",
+				LastTimestamp:   now.Add(-3 * time.Minute),
+				LastMessage:     "Completed cleanly",
+				Terminal:        true,
+				TerminalReason:  "turn.completed",
+			},
+		},
+		{
+			IssueID:    interruptedIssue.ID,
+			Identifier: interruptedIssue.Identifier,
+			Phase:      "implementation",
+			Attempt:    4,
+			RunKind:    "run_started",
+			UpdatedAt:  now.Add(-4 * time.Minute),
+			AppSession: appserver.Session{
+				IssueID:         interruptedIssue.ID,
+				IssueIdentifier: interruptedIssue.Identifier,
+				SessionID:       "thread-interrupted-turn-interrupted",
+				LastEvent:       "turn.started",
+				LastTimestamp:   now.Add(-4 * time.Minute),
+				LastMessage:     "Lost live heartbeat",
+			},
+		},
+		{
+			IssueID:    failedIssue.ID,
+			Identifier: failedIssue.Identifier,
+			Phase:      "implementation",
+			Attempt:    1,
+			RunKind:    "run_failed",
+			Error:      "approval_required",
+			UpdatedAt:  now.Add(-5 * time.Minute),
+			AppSession: appserver.Session{
+				IssueID:         failedIssue.ID,
+				IssueIdentifier: failedIssue.Identifier,
+				SessionID:       "thread-failed-turn-failed",
+				LastEvent:       "turn.approval_required",
+				LastTimestamp:   now.Add(-5 * time.Minute),
+				LastMessage:     "Waiting on approval",
+			},
+		},
+	} {
+		if err := store.UpsertIssueExecutionSession(snapshot); err != nil {
+			t.Fatalf("UpsertIssueExecutionSession(%s) failed: %v", snapshot.Identifier, err)
+		}
+	}
+
+	provider := testProvider{
+		snapshot: observability.Snapshot{
+			Running: []observability.RunningEntry{{
+				IssueID:     liveIssue.ID,
+				Identifier:  liveIssue.Identifier,
+				State:       "in_progress",
+				Phase:       "implementation",
+				Attempt:     7,
+				SessionID:   "thread-live-turn-live",
+				TurnCount:   5,
+				LastEvent:   "turn.started",
+				LastMessage: "Applying changes",
+				StartedAt:   now.Add(-30 * time.Second),
+				Tokens:      observability.TokenTotals{TotalTokens: 33},
+			}},
+			Paused: []observability.PausedEntry{{
+				IssueID:             pausedIssue.ID,
+				Identifier:          pausedIssue.Identifier,
+				Phase:               "review",
+				Attempt:             3,
+				PausedAt:            now.Add(-2 * time.Minute),
+				Error:               "stall_timeout",
+				ConsecutiveFailures: 3,
+				PauseThreshold:      3,
+			}},
+		},
+		sessions: map[string]interface{}{
+			liveIssue.Identifier: appserver.Session{
+				IssueID:         liveIssue.ID,
+				IssueIdentifier: liveIssue.Identifier,
+				SessionID:       "thread-live-turn-live",
+				ThreadID:        "thread-live",
+				TurnID:          "turn-live",
+				LastEvent:       "turn.started",
+				LastTimestamp:   now,
+				LastMessage:     "Applying changes",
+				TotalTokens:     33,
+				EventsProcessed: 6,
+				TurnsStarted:    5,
+				TurnsCompleted:  4,
+				History: []appserver.Event{
+					{Type: "turn.started", Message: "Applying changes"},
+				},
+			},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/app/sessions", nil)
+	NewServer(store, provider).handleSessions(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode sessions payload: %v", err)
+	}
+
+	entries, ok := payload["entries"].([]interface{})
+	if !ok || len(entries) != 5 {
+		t.Fatalf("expected 5 merged entries, got %#v", payload["entries"])
+	}
+	if entries[0].(map[string]interface{})["issue_identifier"] != liveIssue.Identifier {
+		t.Fatalf("expected live entry first, got %#v", entries[0])
+	}
+	if got := findSessionFeedEntry(t, entries, liveIssue.Identifier)["source"]; got != "live" {
+		t.Fatalf("expected live source for duplicate issue, got %#v", got)
+	}
+	if got := findSessionFeedEntry(t, entries, pausedIssue.Identifier)["status"]; got != "paused" {
+		t.Fatalf("expected paused status, got %#v", got)
+	}
+	if got := findSessionFeedEntry(t, entries, completedIssue.Identifier)["status"]; got != "completed" {
+		t.Fatalf("expected completed status, got %#v", got)
+	}
+	if got := findSessionFeedEntry(t, entries, interruptedIssue.Identifier)["status"]; got != "interrupted" {
+		t.Fatalf("expected interrupted status, got %#v", got)
+	}
+	failed := findSessionFeedEntry(t, entries, failedIssue.Identifier)
+	if failed["status"] != "failed" || failed["failure_class"] != "approval_required" {
+		t.Fatalf("expected failed approval_required entry, got %#v", failed)
+	}
+}
+
+func findSessionFeedEntry(t *testing.T, entries []interface{}, identifier string) map[string]interface{} {
+	t.Helper()
+	for _, raw := range entries {
+		entry, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(asString(entry["issue_identifier"])) == identifier {
+			return entry
+		}
+	}
+	t.Fatalf("missing session feed entry for %s", identifier)
+	return nil
+}
+
+func asString(value interface{}) string {
+	text, _ := value.(string)
+	return text
 }
 
 func TestIssueExecutionEndpointReturnsPausedRetryMetadata(t *testing.T) {

@@ -240,6 +240,34 @@ export interface Session {
   history?: SessionEvent[]
 }
 
+export interface SessionFeedEntry {
+  issue_id: string
+  issue_identifier: string
+  source: 'live' | 'persisted'
+  active: boolean
+  status: 'active' | 'paused' | 'completed' | 'failed' | 'interrupted'
+  phase?: string
+  attempt?: number
+  run_kind?: string
+  failure_class?: string
+  updated_at: string
+  last_event?: string
+  last_message?: string
+  total_tokens: number
+  events_processed: number
+  turns_started: number
+  turns_completed: number
+  terminal: boolean
+  terminal_reason?: string
+  history?: SessionEvent[]
+  error?: string
+}
+
+export interface SessionsResponse {
+  sessions: Record<string, Session>
+  entries: SessionFeedEntry[]
+}
+
 export interface IssueExecutionDetail {
   issue_id: string
   identifier: string
@@ -279,7 +307,5 @@ export interface BootstrapResponse {
     limit: number
     offset: number
   }
-  sessions: {
-    sessions: Record<string, Session>
-  }
+  sessions: SessionsResponse
 }

@@ -11,7 +11,7 @@ import type {
   ProjectSummary,
   RuntimeEvent,
   RuntimeSeriesPoint,
-  Session,
+  SessionsResponse,
 } from '@/lib/types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -101,6 +101,6 @@ export const api = {
     request<Record<string, unknown>>(`/api/v1/app/issues/${identifier}/retry`, { method: 'POST' }),
   listRuntimeEvents: () => request<{ events: RuntimeEvent[] }>('/api/v1/app/runtime/events?limit=50'),
   listRuntimeSeries: () => request<{ series: RuntimeSeriesPoint[] }>('/api/v1/app/runtime/series?hours=24'),
-  listSessions: () => request<{ sessions: Record<string, Session> }>('/api/v1/app/sessions'),
+  listSessions: () => request<SessionsResponse>('/api/v1/app/sessions'),
   requestRefresh: () => request<Record<string, unknown>>('/api/v1/refresh', { method: 'POST' }),
 }

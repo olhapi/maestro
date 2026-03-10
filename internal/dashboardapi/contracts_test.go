@@ -511,8 +511,12 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	if getSessions.StatusCode != http.StatusOK {
 		t.Fatalf("sessions expected 200, got %d", getSessions.StatusCode)
 	}
-	if _, ok := decodeResponse(t, getSessions)["sessions"]; !ok {
+	sessionsPayload := decodeResponse(t, getSessions)
+	if _, ok := sessionsPayload["sessions"]; !ok {
 		t.Fatal("expected sessions payload")
+	}
+	if _, ok := sessionsPayload["entries"]; !ok {
+		t.Fatal("expected session feed entries payload")
 	}
 
 	retryIssue := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/retry", nil)
