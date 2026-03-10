@@ -38,6 +38,14 @@ func (testProvider) RequestRefresh() map[string]interface{} {
 	return map[string]interface{}{"status": "accepted"}
 }
 
+func (testProvider) RequestProjectRefresh(projectID string) map[string]interface{} {
+	return map[string]interface{}{"status": "accepted", "project_id": projectID}
+}
+
+func (testProvider) StopProjectRuns(projectID string) map[string]interface{} {
+	return map[string]interface{}{"status": "stopped", "project_id": projectID, "stopped_runs": 0}
+}
+
 func (testProvider) RetryIssueNow(identifier string) map[string]interface{} {
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
