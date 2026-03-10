@@ -28,6 +28,13 @@ export default defineConfig({
   build: {
     emptyOutDir: true,
     outDir: '../internal/dashboardui/dist',
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name][extname]',
+      },
+    },
   },
   test: {
     environment: 'jsdom',
