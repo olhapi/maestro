@@ -1,4 +1,5 @@
-import { AlertTriangle } from 'lucide-react'
+import { useState } from 'react'
+import { AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,8 +18,9 @@ export function SessionExecutionCard({
   pausedActionHint?: string
 }) {
   const session = execution.session
-  const sessionHistory = session?.history?.slice(-8) ?? []
+  const sessionHistory = execution.session_display_history?.slice(-8) ?? []
   const runtimeEvents = execution.runtime_events.slice(-8)
+  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
   const sessionStatusLabel = execution.retry_state === 'paused'
     ? 'Paused'
     : execution.failure_class === 'run_interrupted'
@@ -43,6 +45,9 @@ export function SessionExecutionCard({
     }
     return session?.last_message || 'No message'
   })()
+  const toggleHistoryRow = (id: string) => {
+    setExpandedRows((current) => ({ ...current, [id]: !current[id] }))
+  }
 
   return (
     <Card>
@@ -126,13 +131,43 @@ export function SessionExecutionCard({
             {sessionHistory.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No session history captured for this issue yet.</p>
             ) : (
-              sessionHistory.map((event, index) => (
-                <div key={`${event.type}-${event.turn_id || index}`} className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-white/[0.03] p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-medium text-white">{event.type}</p>
-                    <span className="text-xs text-[var(--muted-foreground)]">{formatCompactNumber(event.total_tokens)} tokens</span>
+              sessionHistory.map((event) => (
+                <div
+                  key={event.id}
+                  className={`rounded-[calc(var(--panel-radius)-0.25rem)] border p-3 ${
+                    event.tone === 'error'
+                      ? 'border-rose-400/20 bg-rose-400/10'
+                      : event.tone === 'success'
+                        ? 'border-emerald-400/20 bg-emerald-400/10'
+                        : 'border-white/8 bg-white/[0.03]'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-white">{event.title}</p>
+                      <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.summary || 'Execution signal'}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {event.token_count && event.token_count > 0 ? (
+                        <span className="text-xs text-[var(--muted-foreground)]">{formatCompactNumber(event.token_count)} tokens</span>
+                      ) : null}
+                      {event.expandable ? (
+                        <button
+                          className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
+                          onClick={() => toggleHistoryRow(event.id)}
+                          type="button"
+                        >
+                          {expandedRows[event.id] ? 'Collapse' : 'Expand'}
+                          {expandedRows[event.id] ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
-                  <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.message || 'No message'}</p>
+                  {event.detail && expandedRows[event.id] ? (
+                    <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-white/10 bg-black/30 p-2.5 text-xs text-white/90">
+                      {event.detail}
+                    </pre>
+                  ) : null}
                 </div>
               ))
             )}

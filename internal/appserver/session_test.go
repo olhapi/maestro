@@ -76,6 +76,40 @@ func TestParseEventLineThreadTokenUsageUpdated(t *testing.T) {
 	}
 }
 
+func TestParseEventLineExecCommandOutputDeltaMetadata(t *testing.T) {
+	line := `{"type":"exec_command_output_delta","thread_id":"thx","turn_id":"tux","call_id":"call-1","stream":"stderr","chunk":"\u001b[31mboom\u001b[39m"}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "exec_command_output_delta" || e.ThreadID != "thx" || e.TurnID != "tux" {
+		t.Fatalf("unexpected event metadata: %#v", e)
+	}
+	if e.CallID != "call-1" || e.Stream != "stderr" || e.Chunk == "" {
+		t.Fatalf("expected command output metadata to be parsed, got %#v", e)
+	}
+	if e.Message == "" {
+		t.Fatalf("expected chunk-derived message, got %#v", e)
+	}
+}
+
+func TestParseEventLineCommandExecutionOutputDeltaNotification(t *testing.T) {
+	line := `{"method":"item/commandExecution/outputDelta","params":{"threadId":"thc","turnId":"tuc","callId":"call-2","stream":"stdout","chunk":"ready","command":"npm run dev","cwd":"/repo/apps/frontend"}}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "item.commandExecution.outputDelta" || e.ThreadID != "thc" || e.TurnID != "tuc" {
+		t.Fatalf("unexpected event metadata: %#v", e)
+	}
+	if e.CallID != "call-2" || e.Stream != "stdout" || e.Command != "npm run dev" || e.CWD != "/repo/apps/frontend" {
+		t.Fatalf("expected command execution metadata to be preserved, got %#v", e)
+	}
+	if e.Message != "ready" {
+		t.Fatalf("expected chunk-based message, got %#v", e.Message)
+	}
+}
+
 func TestSessionApplyEvent(t *testing.T) {
 	s := &Session{}
 	s.ApplyEvent(Event{Type: "turn.started", ThreadID: "th", TurnID: "tu", InputTokens: 1})
@@ -123,6 +157,29 @@ func TestEventFromMessageAndMergeEvents(t *testing.T) {
 	}
 	if merged.TotalTokens != 8 {
 		t.Fatalf("expected fallback totals, got %+v", merged)
+	}
+}
+
+func TestMergeEventsIncludesCommandMetadata(t *testing.T) {
+	primary := Event{
+		Type:   "exec_command_output_delta",
+		CallID: "call-3",
+	}
+	exitCode := 1
+	fallback := Event{
+		Stream:   "stderr",
+		Command:  "npm test",
+		CWD:      "/repo",
+		Chunk:    "command failed",
+		Message:  "command failed",
+		ExitCode: &exitCode,
+	}
+	merged := MergeEvents(primary, fallback)
+	if merged.CallID != "call-3" || merged.Stream != "stderr" || merged.Command != "npm test" || merged.CWD != "/repo" {
+		t.Fatalf("expected merged command metadata, got %#v", merged)
+	}
+	if merged.Chunk != "command failed" || merged.ExitCode == nil || *merged.ExitCode != 1 {
+		t.Fatalf("expected merged output payload, got %#v", merged)
 	}
 }
 

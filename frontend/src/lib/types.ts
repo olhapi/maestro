@@ -271,6 +271,18 @@ export interface SessionsResponse {
   entries: SessionFeedEntry[];
 }
 
+export interface SessionDisplayHistoryEntry {
+  id: string;
+  kind: "command" | "event";
+  title: string;
+  summary: string;
+  detail?: string;
+  expandable: boolean;
+  token_count?: number;
+  tone?: "default" | "success" | "error";
+  event_type?: string;
+}
+
 export interface IssueExecutionDetail {
   issue_id: string;
   identifier: string;
@@ -288,6 +300,7 @@ export interface IssueExecutionDetail {
   session_source: "none" | "live" | "persisted";
   session?: Session;
   runtime_events: RuntimeEvent[];
+  session_display_history?: SessionDisplayHistoryEntry[];
 }
 
 export interface BootstrapResponse {

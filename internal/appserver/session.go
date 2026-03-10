@@ -14,6 +14,12 @@ type Event struct {
 	Type         string `json:"type"`
 	ThreadID     string `json:"thread_id"`
 	TurnID       string `json:"turn_id"`
+	CallID       string `json:"call_id,omitempty"`
+	Stream       string `json:"stream,omitempty"`
+	Command      string `json:"command,omitempty"`
+	CWD          string `json:"cwd,omitempty"`
+	Chunk        string `json:"chunk,omitempty"`
+	ExitCode     *int   `json:"exit_code,omitempty"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	TotalTokens  int    `json:"total_tokens"`
@@ -223,6 +229,24 @@ func MergeEvents(primary, fallback Event) Event {
 	if out.Message == "" {
 		out.Message = fallback.Message
 	}
+	if out.CallID == "" {
+		out.CallID = fallback.CallID
+	}
+	if out.Stream == "" {
+		out.Stream = fallback.Stream
+	}
+	if out.Command == "" {
+		out.Command = fallback.Command
+	}
+	if out.CWD == "" {
+		out.CWD = fallback.CWD
+	}
+	if out.Chunk == "" {
+		out.Chunk = fallback.Chunk
+	}
+	if out.ExitCode == nil {
+		out.ExitCode = fallback.ExitCode
+	}
 	return out
 }
 
@@ -240,7 +264,13 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 	}
 	e.ThreadID = firstStr(m, "thread_id", "threadId")
 	e.TurnID = firstStr(m, "turn_id", "turnId")
-	e.Message = firstStr(m, "message", "content", "reason", "command")
+	e.CallID = strings.TrimSpace(firstStr(m, "call_id", "callId", "item_id", "itemId"))
+	e.Stream = strings.TrimSpace(firstStr(m, "stream"))
+	e.Command = strings.TrimSpace(firstStr(m, "command"))
+	e.CWD = strings.TrimSpace(firstStr(m, "cwd"))
+	e.Chunk = firstStr(m, "chunk")
+	e.ExitCode = firstIntPtr(m, "exit_code", "exitCode")
+	e.Message = firstStr(m, "message", "content", "reason")
 	if e.ThreadID == "" {
 		e.ThreadID = firstStr(root, "thread_id", "threadId")
 	}
@@ -254,6 +284,24 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 		if e.TurnID == "" {
 			e.TurnID = firstStr(params, "turn_id", "turnId")
 		}
+		if e.CallID == "" {
+			e.CallID = strings.TrimSpace(firstStr(params, "call_id", "callId", "item_id", "itemId"))
+		}
+		if e.Stream == "" {
+			e.Stream = strings.TrimSpace(firstStr(params, "stream"))
+		}
+		if e.Command == "" {
+			e.Command = strings.TrimSpace(firstStr(params, "command"))
+		}
+		if e.CWD == "" {
+			e.CWD = strings.TrimSpace(firstStr(params, "cwd"))
+		}
+		if e.Chunk == "" {
+			e.Chunk = firstStr(params, "chunk")
+		}
+		if e.ExitCode == nil {
+			e.ExitCode = firstIntPtr(params, "exit_code", "exitCode")
+		}
 		if e.Message == "" {
 			e.Message = extractMessage(params)
 		}
@@ -261,11 +309,37 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 			e.InputTokens, e.OutputTokens, e.TotalTokens = tokenUsageFromMap(params)
 		}
 	}
+	if e.CallID == "" {
+		e.CallID = strings.TrimSpace(firstStr(root, "call_id", "callId", "item_id", "itemId"))
+	}
+	if e.Stream == "" {
+		e.Stream = strings.TrimSpace(firstStr(root, "stream"))
+	}
+	if e.Command == "" {
+		e.Command = strings.TrimSpace(firstStr(root, "command"))
+	}
+	if e.CWD == "" {
+		e.CWD = strings.TrimSpace(firstStr(root, "cwd"))
+	}
+	if e.Chunk == "" {
+		e.Chunk = firstStr(root, "chunk")
+	}
+	if e.ExitCode == nil {
+		e.ExitCode = firstIntPtr(root, "exit_code", "exitCode")
+	}
 	if e.Message == "" {
 		e.Message = extractMessage(m)
 	}
 	if e.Message == "" {
 		e.Message = extractMessage(root)
+	}
+	if e.Message == "" {
+		switch {
+		case strings.TrimSpace(e.Chunk) != "":
+			e.Message = strings.TrimSpace(e.Chunk)
+		case e.Command != "":
+			e.Message = e.Command
+		}
 	}
 
 	if usage, ok := asMap(m["usage"]); ok {
@@ -387,15 +461,41 @@ func extractMessage(m map[string]interface{}) string {
 	if m == nil {
 		return ""
 	}
-	if s := firstStr(m, "message", "content", "reason", "command", "delta", "text"); s != "" {
+	if s := firstStr(m, "message", "content", "reason", "delta", "text", "chunk", "command"); s != "" {
 		return s
 	}
-	for _, key := range []string{"message", "content", "delta", "text"} {
+	for _, key := range []string{"message", "content", "delta", "text", "chunk"} {
 		if s := extractMessageValue(m[key]); s != "" {
 			return s
 		}
 	}
 	return ""
+}
+
+func firstIntPtr(m map[string]interface{}, keys ...string) *int {
+	for _, k := range keys {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		switch x := v.(type) {
+		case float64:
+			out := int(x)
+			return &out
+		case int:
+			out := x
+			return &out
+		case int64:
+			out := int(x)
+			return &out
+		case string:
+			var out int
+			if _, err := fmt.Sscanf(strings.TrimSpace(x), "%d", &out); err == nil {
+				return &out
+			}
+		}
+	}
+	return nil
 }
 
 func extractMessageValue(v interface{}) string {

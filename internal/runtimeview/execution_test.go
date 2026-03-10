@@ -2,6 +2,7 @@ package runtimeview
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -387,4 +388,80 @@ func TestIssueExecutionPayloadReturnsRetryLimitPauseReason(t *testing.T) {
 	if payload["failure_class"] != "retry_limit_reached" {
 		t.Fatalf("unexpected failure class: %#v", payload["failure_class"])
 	}
+}
+
+func TestIssueExecutionPayloadBuildsDisplayHistoryFromCommandDeltas(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Display history issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 12, 30, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_failed",
+		Error:      "run_failed",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-display-turn-display",
+			ThreadID:        "thread-display",
+			TurnID:          "turn-display",
+			LastEvent:       "exec_command_end",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "exec_command_begin", CallID: "cmd-1", Command: "npm run dev", CWD: "/repo/apps/frontend", Message: "npm run dev"},
+				{Type: "exec_command_output_delta", CallID: "cmd-1", Stream: "stdout", Chunk: "\x1b[32mready\x1b[39m on http://127.0.0.1:3000"},
+				{Type: "exec_command_output_delta", CallID: "cmd-1", Stream: "stderr", Chunk: "error when starting dev server"},
+				{Type: "exec_command_end", CallID: "cmd-1", ExitCode: intPtr(1)},
+				{Type: "item.completed", Message: "Execution item completed"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 2 {
+		t.Fatalf("expected grouped command + item event, got %#v", displayHistory)
+	}
+	commandRow := displayHistory[0]
+	if commandRow.Kind != "command" || commandRow.Title != "Command failed (exit 1)" || commandRow.Tone != "error" {
+		t.Fatalf("unexpected command row: %#v", commandRow)
+	}
+	if !commandRow.Expandable || !strings.Contains(commandRow.Detail, "$ npm run dev") {
+		t.Fatalf("expected expandable command detail, got %#v", commandRow)
+	}
+	if strings.Contains(commandRow.Detail, "[32m") {
+		t.Fatalf("expected ANSI sequences removed from detail, got %#v", commandRow.Detail)
+	}
+	if commandRow.TokenCount != 0 {
+		t.Fatalf("expected zero token count omitted in display row struct value, got %#v", commandRow.TokenCount)
+	}
+
+	itemRow := displayHistory[1]
+	if itemRow.Title != "Item completed" || itemRow.Summary == "" {
+		t.Fatalf("unexpected item row: %#v", itemRow)
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }

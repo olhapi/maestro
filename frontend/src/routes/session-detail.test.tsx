@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { SessionDetailPage } from '@/routes/session-detail'
@@ -36,6 +36,27 @@ describe('SessionDetailPage', () => {
       attempt_number: 2,
       retry_state: 'active',
       session_source: 'live',
+      session_display_history: [
+        {
+          id: 'session-command-call-1',
+          kind: 'command',
+          title: 'Command output',
+          summary: 'Starting vite dev server',
+          detail: '$ npm run dev\ncwd: /repo/apps/frontend\n\nStarting vite dev server',
+          expandable: true,
+          tone: 'default',
+          event_type: 'exec_command_output_delta',
+        },
+        {
+          id: 'session-event-1',
+          kind: 'event',
+          title: 'Turn started',
+          summary: 'Applying changes',
+          expandable: false,
+          tone: 'default',
+          event_type: 'turn.started',
+        },
+      ],
       session: {
         issue_id: issue.id,
         issue_identifier: issue.identifier,
@@ -66,6 +87,10 @@ describe('SessionDetailPage', () => {
     expect(screen.getByText(issue.title)).toBeInTheDocument()
     expect(screen.getByText('Open issue')).toBeInTheDocument()
     expect(screen.getByText('Live session')).toBeInTheDocument()
+    expect(screen.getByText('Command output')).toBeInTheDocument()
+    expect(screen.queryByText('0 tokens')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /expand/i }))
+    expect(screen.getByText(/\$ npm run dev/i)).toBeInTheDocument()
     expect(screen.getAllByText('Applying changes').length).toBeGreaterThan(0)
   })
 
