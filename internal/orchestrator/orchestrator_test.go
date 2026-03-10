@@ -19,6 +19,23 @@ import (
 	"github.com/olhapi/maestro/pkg/config"
 )
 
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func setupTestOrchestrator(t *testing.T, command string) (*Orchestrator, *kanban.Store, *config.Manager, string) {
 	return setupTestOrchestratorWithConcurrency(t, command, 2)
 }
@@ -1376,7 +1393,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "stress.db")
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")
 
-	logBuffer := &bytes.Buffer{}
+	logBuffer := &syncBuffer{}
 	prevLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
