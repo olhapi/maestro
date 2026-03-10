@@ -20,7 +20,11 @@ import (
 	"github.com/olhapi/maestro/pkg/config"
 )
 
-const continuationRetryDelay = time.Second
+const (
+	continuationRetryDelay       = time.Second
+	interruptedRunPauseThreshold = 3
+	liveSessionPersistInterval   = 2 * time.Second
+)
 
 type runningEntry struct {
 	cancel    context.CancelFunc
@@ -36,6 +40,20 @@ type retryEntry struct {
 	DueAt     time.Time `json:"due_at"`
 	Error     string    `json:"error,omitempty"`
 	DelayType string    `json:"delay_type,omitempty"`
+}
+
+type pausedEntry struct {
+	Attempt             int       `json:"attempt"`
+	Phase               string    `json:"phase,omitempty"`
+	PausedAt            time.Time `json:"paused_at"`
+	Error               string    `json:"error,omitempty"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	PauseThreshold      int       `json:"pause_threshold"`
+}
+
+type sessionPersistenceState struct {
+	LastPersistedAt time.Time
+	SessionID       string
 }
 
 const scopedRuntimeKey = "__scoped__"
@@ -73,12 +91,15 @@ type Orchestrator struct {
 	running        map[string]runningEntry
 	claimed        map[string]struct{}
 	retries        map[string]retryEntry
+	paused         map[string]pausedEntry
 	startedAt      time.Time
 	lastTickAt     time.Time
 	totalRuns      int
 	successfulRuns int
 	failedRuns     int
 	liveSessions   map[string]*appserver.Session
+	sessionWriteMu sync.Mutex
+	sessionWrites  map[string]sessionPersistenceState
 	eventSeq       int64
 	events         []map[string]interface{}
 	maxEvents      int
@@ -100,8 +121,10 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 		running:         make(map[string]runningEntry),
 		claimed:         make(map[string]struct{}),
 		retries:         make(map[string]retryEntry),
+		paused:          make(map[string]pausedEntry),
 		startedAt:       time.Now().UTC(),
 		liveSessions:    make(map[string]*appserver.Session),
+		sessionWrites:   make(map[string]sessionPersistenceState),
 		maxEvents:       500,
 	}
 	o.workflows = workflows
@@ -138,8 +161,10 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 		running:            make(map[string]runningEntry),
 		claimed:            make(map[string]struct{}),
 		retries:            make(map[string]retryEntry),
+		paused:             make(map[string]pausedEntry),
 		startedAt:          time.Now().UTC(),
 		liveSessions:       make(map[string]*appserver.Session),
+		sessionWrites:      make(map[string]sessionPersistenceState),
 		maxEvents:          500,
 	}
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
@@ -358,6 +383,8 @@ func (o *Orchestrator) tick(ctx context.Context) error {
 }
 
 func (o *Orchestrator) reconcile(ctx context.Context) {
+	o.reconcilePausedRuns(ctx)
+
 	o.mu.RLock()
 	ids := make([]string, 0, len(o.running))
 	for issueID := range o.running {
@@ -415,6 +442,52 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 	o.reconcileOrphanedRuns(ctx)
 }
 
+func (o *Orchestrator) reconcilePausedRuns(ctx context.Context) {
+	issues, err := o.store.ListIssues(map[string]interface{}{
+		"states": []string{"ready", "in_progress", "in_review", "done", "cancelled"},
+	})
+	if err != nil {
+		slog.Warn("Skipping paused run reconciliation because issue listing failed", "error", err)
+		return
+	}
+
+	for i := range issues {
+		issue := &issues[i]
+		if issue.State == kanban.StateCancelled {
+			o.clearPausedState(issue.ID)
+			continue
+		}
+
+		o.mu.RLock()
+		_, running := o.running[issue.ID]
+		_, retrying := o.retries[issue.ID]
+		o.mu.RUnlock()
+		if running || retrying {
+			o.clearPausedState(issue.ID)
+			continue
+		}
+
+		paused, ok, err := o.findPausedRun(issue)
+		if err != nil {
+			slog.Warn("Skipping paused run reconciliation because execution state lookup failed",
+				issueLogAttrs(issue, -1, "error", err)...,
+			)
+			continue
+		}
+		if !ok {
+			o.clearPausedState(issue.ID)
+			continue
+		}
+
+		o.mu.Lock()
+		current, exists := o.paused[issue.ID]
+		if !exists || current != paused {
+			o.paused[issue.ID] = paused
+		}
+		o.mu.Unlock()
+	}
+}
+
 func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 	o.syncProviderIssues(ctx)
 	issues, err := o.store.ListIssues(map[string]interface{}{
@@ -431,8 +504,9 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 		o.mu.RLock()
 		_, running := o.running[issue.ID]
 		_, retrying := o.retries[issue.ID]
+		_, paused := o.paused[issue.ID]
 		o.mu.RUnlock()
-		if running || retrying {
+		if running || retrying || paused {
 			continue
 		}
 
@@ -467,6 +541,10 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 			o.mu.Unlock()
 			continue
 		}
+		if _, ok := o.paused[issue.ID]; ok {
+			o.mu.Unlock()
+			continue
+		}
 		o.appendEventLocked("run_interrupted", map[string]interface{}{
 			"issue_id":   issue.ID,
 			"identifier": issue.Identifier,
@@ -474,15 +552,22 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 			"attempt":    attempt,
 			"error":      errText,
 		})
+		nextAttemptNumber := 0
+		pausedRun := false
 		if dispatchable {
-			next := nextAttempt(attempt)
-			o.scheduleRetryLockedAt(issue, next, phase, "failure", errText, time.Now().UTC())
+			nextAttemptNumber, pausedRun = o.handleInterruptedRunLocked(issue, phase, attempt, session, errText)
 		}
 		o.mu.Unlock()
 
-		if dispatchable {
-			slog.Warn("Recovered orphaned run and scheduled immediate retry",
-				issueLogAttrs(issue, attempt, "phase", phase, "next_attempt", nextAttempt(attempt))...,
+		if dispatchable && !pausedRun {
+			slog.Warn("Recovered orphaned run and scheduled retry",
+				issueLogAttrs(issue, attempt, "phase", phase, "next_attempt", nextAttemptNumber)...,
+			)
+			continue
+		}
+		if dispatchable && pausedRun {
+			slog.Warn("Recovered orphaned run and paused automatic retries",
+				issueLogAttrs(issue, attempt, "phase", phase, "next_attempt", nextAttemptNumber, "pause_threshold", interruptedRunPauseThreshold)...,
 			)
 			continue
 		}
@@ -495,6 +580,25 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 			issueLogAttrs(issue, attempt, "phase", phase, "reason", reason)...,
 		)
 	}
+}
+
+func (o *Orchestrator) findPausedRun(issue *kanban.Issue) (pausedEntry, bool, error) {
+	if issue == nil {
+		return pausedEntry{}, false, nil
+	}
+
+	events, err := o.store.ListIssueRuntimeEvents(issue.ID, 20)
+	if err != nil {
+		return pausedEntry{}, false, err
+	}
+	if len(events) == 0 {
+		return pausedEntry{}, false, nil
+	}
+	latest := events[len(events)-1]
+	if latest.Kind != "retry_paused" {
+		return pausedEntry{}, false, nil
+	}
+	return pausedEntryFromRuntimeEvent(latest), true, nil
 }
 
 func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhase, int, *appserver.Session, bool, error) {
@@ -536,7 +640,7 @@ func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhas
 		switch latest.Kind {
 		case "run_started":
 			return phase, attempt, session, true, nil
-		case "run_failed", "run_unsuccessful", "run_completed", "retry_scheduled", "manual_retry_requested", "run_interrupted":
+		case "run_failed", "run_unsuccessful", "run_completed", "retry_scheduled", "retry_paused", "manual_retry_requested", "run_interrupted":
 			return phase, attempt, session, false, nil
 		}
 	}
@@ -730,6 +834,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 	}
 	o.mu.Lock()
 	delete(o.liveSessions, runIssue.ID)
+	delete(o.paused, runIssue.ID)
 	o.running[runIssue.ID] = entry
 	delete(o.retries, runIssue.ID)
 	o.appendEventLocked("run_started", map[string]interface{}{
@@ -741,6 +846,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 		"issue_state": string(runIssue.State),
 	})
 	o.mu.Unlock()
+	o.clearSessionWriteState(runIssue.ID)
 	slog.Info("Agent run started", issueLogAttrs(&runIssue, attempt, "phase", phase)...)
 	o.persistExecutionSession(&runIssue, phase, attempt, "run_started", "", &appserver.Session{
 		IssueID:         runIssue.ID,
@@ -800,6 +906,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	o.mu.Lock()
 	delete(o.liveSessions, issue.ID)
 	o.mu.Unlock()
+	o.clearSessionWriteState(issue.ID)
 }
 
 func nextAttempt(attempt int) int {
@@ -841,6 +948,13 @@ func (o *Orchestrator) handleFailedRun(workflow *config.Workflow, issue *kanban.
 	}
 	attachResultMetrics(fields, result)
 	o.appendEventLocked(eventKind, fields)
+	if o.shouldPauseInterruptedRunLocked(issue.ID, errText) {
+		o.pauseRetryLocked(issue, next, nextPhase, errText)
+		if result != nil && result.AppSession != nil {
+			o.persistExecutionSessionSnapshot(issue, nextPhase, next, "retry_paused", errText, result)
+		}
+		return next
+	}
 	o.scheduleRetryLocked(issue, next, nextPhase, "failure", errText, workflow.Config.Agent.MaxRetryBackoffMs)
 	return next
 }
@@ -868,6 +982,68 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 	}
 	o.appendEventLocked("run_completed", fields)
 	return 0, false
+}
+
+func (o *Orchestrator) handleInterruptedRunLocked(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, session *appserver.Session, errText string) (int, bool) {
+	next := nextAttempt(attempt)
+	if o.shouldPauseInterruptedRunLocked(issue.ID, errText) {
+		o.pauseRetryLocked(issue, next, phase, errText)
+		if session != nil {
+			o.persistExecutionSession(issue, phase, next, "retry_paused", errText, session)
+		}
+		return next, true
+	}
+	o.scheduleRetryLocked(issue, next, phase, "failure", errText, 0)
+	return next, false
+}
+
+func (o *Orchestrator) shouldPauseInterruptedRunLocked(issueID, errText string) bool {
+	if !isInterruptedRunError(errText) {
+		return false
+	}
+	streak, err := o.interruptedFailureStreak(issueID, 50)
+	if err != nil {
+		slog.Warn("Failed to compute interrupted run streak", "issue_id", issueID, "error", err)
+		return false
+	}
+	return streak >= interruptedRunPauseThreshold
+}
+
+func (o *Orchestrator) pauseRetryLocked(issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, errText string) {
+	now := time.Now().UTC()
+	streak, err := o.interruptedFailureStreak(issue.ID, 50)
+	if err != nil {
+		slog.Warn("Failed to compute interrupted run streak for pause", "issue_id", issue.ID, "error", err)
+		streak = interruptedRunPauseThreshold
+	}
+	entry := pausedEntry{
+		Attempt:             attempt,
+		Phase:               string(phase),
+		PausedAt:            now,
+		Error:               errText,
+		ConsecutiveFailures: streak,
+		PauseThreshold:      interruptedRunPauseThreshold,
+	}
+	o.paused[issue.ID] = entry
+	delete(o.retries, issue.ID)
+	o.appendEventLocked("retry_paused", map[string]interface{}{
+		"issue_id":             issue.ID,
+		"identifier":           issue.Identifier,
+		"phase":                string(phase),
+		"attempt":              attempt,
+		"paused_at":            now.Format(time.RFC3339),
+		"error":                errText,
+		"consecutive_failures": entry.ConsecutiveFailures,
+		"pause_threshold":      entry.PauseThreshold,
+	})
+	slog.Warn("Automatic retries paused after interrupted runs",
+		issueLogAttrs(issue, attempt,
+			"phase", phase,
+			"error", errText,
+			"consecutive_failures", entry.ConsecutiveFailures,
+			"pause_threshold", entry.PauseThreshold,
+		)...,
+	)
 }
 
 func (o *Orchestrator) advanceIssueAfterSuccess(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase) (kanban.WorkflowPhase, bool) {
@@ -1061,6 +1237,12 @@ func (o *Orchestrator) shouldCleanupTerminalIssue(workflow *config.Workflow, iss
 
 func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.Issue) (bool, string, kanban.WorkflowPhase) {
 	phase := o.executionPhase(workflow, issue)
+	o.mu.RLock()
+	_, paused := o.paused[issue.ID]
+	o.mu.RUnlock()
+	if paused {
+		return false, "paused", phase
+	}
 	switch phase {
 	case kanban.WorkflowPhaseComplete:
 		if o.isTerminalState(workflow, string(issue.State)) {
@@ -1099,6 +1281,107 @@ func failureRetryDelay(attempt, maxBackoffMs int) time.Duration {
 		return maxDelay
 	}
 	return delay
+}
+
+func interruptedFailureStreak(events []kanban.RuntimeEvent) int {
+	streak := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		switch event.Kind {
+		case "retry_scheduled", "run_started", "claim_released":
+			continue
+		case "retry_paused":
+			if streak == 0 {
+				if recovered := payloadInt(event.Payload, "consecutive_failures"); recovered > 0 {
+					return recovered
+				}
+			}
+			return streak
+		case "manual_retry_requested", "run_completed":
+			return streak
+		case "run_interrupted":
+			streak++
+		case "run_failed", "run_unsuccessful":
+			if isInterruptedRunError(event.Error) {
+				streak++
+				continue
+			}
+			return streak
+		default:
+			if streak > 0 {
+				return streak
+			}
+		}
+	}
+	return streak
+}
+
+func (o *Orchestrator) interruptedFailureStreak(issueID string, limit int) (int, error) {
+	events, err := o.store.ListIssueRuntimeEvents(issueID, limit)
+	if err != nil {
+		return 0, err
+	}
+	return interruptedFailureStreak(events), nil
+}
+
+func isInterruptedRunError(errText string) bool {
+	switch strings.TrimSpace(errText) {
+	case "stall_timeout", "turn_timeout", "read_timeout", "run_interrupted":
+		return true
+	default:
+		return false
+	}
+}
+
+func payloadInt(payload map[string]interface{}, key string) int {
+	if payload == nil {
+		return 0
+	}
+	switch value := payload[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
+}
+
+func payloadString(payload map[string]interface{}, key string) string {
+	if payload == nil {
+		return ""
+	}
+	value, _ := payload[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func payloadTime(payload map[string]interface{}, key string) time.Time {
+	raw := payloadString(payload, key)
+	if raw == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func pausedEntryFromRuntimeEvent(event kanban.RuntimeEvent) pausedEntry {
+	pausedAt := payloadTime(event.Payload, "paused_at")
+	if pausedAt.IsZero() {
+		pausedAt = event.TS
+	}
+	return pausedEntry{
+		Attempt:             event.Attempt,
+		Phase:               event.Phase,
+		PausedAt:            pausedAt,
+		Error:               event.Error,
+		ConsecutiveFailures: payloadInt(event.Payload, "consecutive_failures"),
+		PauseThreshold:      payloadInt(event.Payload, "pause_threshold"),
+	}
 }
 
 func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
@@ -1173,6 +1456,12 @@ func (o *Orchestrator) releaseClaim(issueID string) {
 	delete(o.claimed, issueID)
 	delete(o.retries, issueID)
 	o.appendEventLocked("claim_released", map[string]interface{}{"issue_id": issueID})
+}
+
+func (o *Orchestrator) clearPausedState(issueID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.paused, issueID)
 }
 
 func (o *Orchestrator) isBlocked(workflow *config.Workflow, issue kanban.Issue) bool {
@@ -1287,6 +1576,18 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		}
 	}
 
+	pausedQueue := make(map[string]interface{}, len(o.paused))
+	for id, entry := range o.paused {
+		pausedQueue[id] = map[string]interface{}{
+			"attempt":              entry.Attempt,
+			"phase":                entry.Phase,
+			"paused_at":            entry.PausedAt.UTC().Format(time.RFC3339),
+			"error":                entry.Error,
+			"consecutive_failures": entry.ConsecutiveFailures,
+			"pause_threshold":      entry.PauseThreshold,
+		}
+	}
+
 	uptimeSec := int(time.Since(o.startedAt).Seconds())
 	lastTick := ""
 	if !o.lastTickAt.IsZero() {
@@ -1301,6 +1602,8 @@ func (o *Orchestrator) Status() map[string]interface{} {
 		"active_issues":     activeIDs,
 		"retry_queue_count": len(o.retries),
 		"retry_queue":       retryQueue,
+		"paused_count":      len(o.paused),
+		"paused":            pausedQueue,
 		"events_count":      len(o.events),
 		"last_event_seq":    o.eventSeq,
 		"run_metrics": map[string]int{
@@ -1342,6 +1645,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		GeneratedAt: time.Now().UTC(),
 		Running:     make([]observability.RunningEntry, 0, len(o.running)),
 		Retrying:    make([]observability.RetryEntry, 0, len(o.retries)),
+		Paused:      make([]observability.PausedEntry, 0, len(o.paused)),
 		RateLimits:  nil,
 	}
 	if workflow != nil {
@@ -1404,11 +1708,33 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		snapshot.Retrying = append(snapshot.Retrying, retry)
 	}
 
+	for issueID, entry := range o.paused {
+		identifier := issueID
+		if running, ok := o.running[issueID]; ok {
+			identifier = running.issue.Identifier
+		} else if issue, err := o.refreshIssue(context.Background(), issueID); err == nil && issue != nil {
+			identifier = issue.Identifier
+		}
+		snapshot.Paused = append(snapshot.Paused, observability.PausedEntry{
+			IssueID:             issueID,
+			Identifier:          identifier,
+			Phase:               entry.Phase,
+			Attempt:             entry.Attempt,
+			PausedAt:            entry.PausedAt,
+			Error:               entry.Error,
+			ConsecutiveFailures: entry.ConsecutiveFailures,
+			PauseThreshold:      entry.PauseThreshold,
+		})
+	}
+
 	sort.Slice(snapshot.Running, func(i, j int) bool {
 		return snapshot.Running[i].Identifier < snapshot.Running[j].Identifier
 	})
 	sort.Slice(snapshot.Retrying, func(i, j int) bool {
 		return snapshot.Retrying[i].Identifier < snapshot.Retrying[j].Identifier
+	})
+	sort.Slice(snapshot.Paused, func(i, j int) bool {
+		return snapshot.Paused[i].Identifier < snapshot.Paused[j].Identifier
 	})
 	return snapshot
 }
@@ -1448,10 +1774,33 @@ func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Sess
 	cp.IssueID = issueID
 	cp.IssueIdentifier = entry.issue.Identifier
 	o.liveSessions[issueID] = &cp
+	shouldPersist := o.shouldPersistLiveSessionLocked(issueID, &cp)
 	o.mu.Unlock()
 
-	issue := entry.issue
-	o.persistExecutionSession(&issue, entry.phase, entry.attempt, "run_started", "", &cp)
+	if shouldPersist {
+		issue := entry.issue
+		o.persistExecutionSession(&issue, entry.phase, entry.attempt, "run_started", "", &cp)
+	}
+}
+
+func (o *Orchestrator) shouldPersistLiveSessionLocked(issueID string, session *appserver.Session) bool {
+	o.sessionWriteMu.Lock()
+	defer o.sessionWriteMu.Unlock()
+	now := time.Now().UTC()
+	state, ok := o.sessionWrites[issueID]
+	if !ok {
+		return true
+	}
+	if state.SessionID == "" && strings.TrimSpace(session.SessionID) != "" {
+		return true
+	}
+	return now.Sub(state.LastPersistedAt) >= liveSessionPersistInterval
+}
+
+func (o *Orchestrator) clearSessionWriteState(issueID string) {
+	o.sessionWriteMu.Lock()
+	defer o.sessionWriteMu.Unlock()
+	delete(o.sessionWrites, issueID)
 }
 
 func (o *Orchestrator) copyLiveSessionsLocked() map[string]*appserver.Session {
@@ -1496,6 +1845,7 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 	if entry, ok := o.retries[issue.ID]; ok {
 		entry.DueAt = time.Now().UTC()
 		o.retries[issue.ID] = entry
+		delete(o.paused, issue.ID)
 		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
 			"issue_id":   issue.ID,
 			"identifier": issue.Identifier,
@@ -1505,6 +1855,29 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 			"status":       "queued_now",
 			"issue":        identifier,
 			"retry_due_at": entry.DueAt.Format(time.RFC3339),
+		}
+	}
+
+	if entry, ok := o.paused[issue.ID]; ok {
+		dueAt := time.Now().UTC()
+		o.retries[issue.ID] = retryEntry{
+			Attempt:   entry.Attempt,
+			Phase:     entry.Phase,
+			DueAt:     dueAt,
+			Error:     entry.Error,
+			DelayType: "manual",
+		}
+		o.claimed[issue.ID] = struct{}{}
+		delete(o.paused, issue.ID)
+		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      entry.Phase,
+		})
+		return map[string]interface{}{
+			"status":       "queued_now",
+			"issue":        identifier,
+			"retry_due_at": dueAt.Format(time.RFC3339),
 		}
 	}
 
@@ -1574,7 +1947,14 @@ func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban
 		AppSession: cloned,
 	}); err != nil {
 		slog.Warn("Failed to persist issue execution session", "issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+		return
 	}
+	o.sessionWriteMu.Lock()
+	o.sessionWrites[issue.ID] = sessionPersistenceState{
+		LastPersistedAt: time.Now().UTC(),
+		SessionID:       cloned.SessionID,
+	}
+	o.sessionWriteMu.Unlock()
 }
 
 func (o *Orchestrator) persistExecutionSessionSnapshot(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, result *agent.RunResult) {

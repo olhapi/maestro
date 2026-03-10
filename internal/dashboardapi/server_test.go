@@ -239,6 +239,71 @@ func TestIssueExecutionEndpointReturnsPersistedSessionAndRetryMetadata(t *testin
 	}
 }
 
+func TestIssueExecutionEndpointReturnsPausedRetryMetadata(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	issue, err := store.CreateIssue("", "", "Paused execution", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewServer(store, testProvider{}).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    3,
+		RunKind:    "retry_paused",
+		Error:      "stall_timeout",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-paused-turn-paused",
+			LastEvent:       "item.started",
+			LastTimestamp:   now,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession failed: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{
+		"issue_id":             issue.ID,
+		"identifier":           issue.Identifier,
+		"phase":                "implementation",
+		"attempt":              3,
+		"paused_at":            now.Format(time.RFC3339),
+		"error":                "stall_timeout",
+		"consecutive_failures": 3,
+		"pause_threshold":      3,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent retry_paused failed: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/v1/app/issues/" + issue.Identifier + "/execution")
+	if err != nil {
+		t.Fatalf("GET execution failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode execution payload: %v", err)
+	}
+	if payload["retry_state"] != "paused" || payload["pause_reason"] != "stall_timeout" {
+		t.Fatalf("unexpected paused execution payload: %#v", payload)
+	}
+	if payload["consecutive_failures"].(float64) != 3 || payload["pause_threshold"].(float64) != 3 {
+		t.Fatalf("unexpected paused streak payload: %#v", payload)
+	}
+}
+
 func TestIssueExecutionEndpointReturnsNotFoundForMissingIssue(t *testing.T) {
 	_, srv := setupDashboardServerTest(t, testProvider{})
 	resp, err := http.Get(srv.URL + "/api/v1/app/issues/ISS-404/execution")

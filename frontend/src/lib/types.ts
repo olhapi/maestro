@@ -163,10 +163,22 @@ export interface RetryEntry {
   delay_type?: string
 }
 
+export interface PausedEntry {
+  issue_id: string
+  identifier: string
+  phase?: string
+  attempt: number
+  paused_at: string
+  error?: string
+  consecutive_failures: number
+  pause_threshold: number
+}
+
 export interface Snapshot {
   generated_at: string
   running: RunningEntry[]
   retrying: RetryEntry[]
+  paused: PausedEntry[]
   codex_totals: TokenTotals
   workspace_root?: string
 }
@@ -236,8 +248,12 @@ export interface IssueExecutionDetail {
   attempt_number: number
   failure_class?: string
   current_error?: string
-  retry_state: 'none' | 'active' | 'scheduled'
+  retry_state: 'none' | 'active' | 'scheduled' | 'paused'
   next_retry_at?: string
+  paused_at?: string
+  pause_reason?: string
+  consecutive_failures?: number
+  pause_threshold?: number
   session_source: 'none' | 'live' | 'persisted'
   session?: Session
   runtime_events: RuntimeEvent[]

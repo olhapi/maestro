@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ExternalLink, GitBranch, RotateCcw, Save, Trash2, Workflow } from 'lucide-react'
+import { AlertTriangle, ExternalLink, GitBranch, RotateCcw, Save, Trash2, Workflow } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { IssueDialog } from '@/components/forms'
@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api'
-import { getRetryForIssue, getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
+import { getPausedForIssue, getRetryForIssue, getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { appRoutes } from '@/lib/routes'
 import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from '@/lib/types'
 import { formatDateTime, formatNumber, formatRelativeTime } from '@/lib/utils'
@@ -57,6 +57,7 @@ export function IssuePreviewSheet({
   const activeIssue = detail ?? issue
   const session = activeIssue ? getSessionForIssue(bootstrap, activeIssue.id) : undefined
   const retry = activeIssue ? getRetryForIssue(bootstrap, activeIssue.id) : undefined
+  const paused = activeIssue ? getPausedForIssue(bootstrap, activeIssue.id) : undefined
   const availableStates = activeIssue ? issueStatesFor(bootstrap?.issues.items ?? [activeIssue], [activeIssue.state]) : []
 
   if (!activeIssue) return null
@@ -71,6 +72,7 @@ export function IssuePreviewSheet({
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge>{activeIssue.identifier}</Badge>
                   <Badge className="border-white/12 bg-white/5 text-white">{getStateMeta(activeIssue.state).label}</Badge>
+                  {paused ? <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">Paused</Badge> : null}
                   {activeIssue.project_name ? <Badge className="border-white/12 bg-white/5 text-white">{activeIssue.project_name}</Badge> : null}
                   {activeIssue.epic_name ? <Badge className="border-white/12 bg-white/5 text-white">{activeIssue.epic_name}</Badge> : null}
                 </div>
@@ -104,6 +106,12 @@ export function IssuePreviewSheet({
                     {session ? session.last_event || 'Live session' : 'No live session'}
                   </span>
                   {retry ? <span>Retry at {formatDateTime(retry.due_at)}</span> : <span>No retry scheduled</span>}
+                  {paused ? (
+                    <span className="inline-flex items-center gap-2 text-rose-100">
+                      <AlertTriangle className="size-4 text-rose-300" />
+                      Auto-retries paused after {paused.consecutive_failures} interrupted runs
+                    </span>
+                  ) : null}
                 </div>
               </div>
             </div>

@@ -20,6 +20,20 @@ type Store struct {
 	storeID string
 }
 
+func nullableStringValue(value string) interface{} {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func stringFromNull(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
 func DefaultDBPath() string {
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
@@ -46,13 +60,34 @@ func NewStore(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	store := &Store{db: db, dbPath: absDBPath}
+	if err := store.configureConnection(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to configure sqlite connection: %w", err)
+	}
 	if err := store.migrate(); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 
 	return store, nil
+}
+
+func (s *Store) configureConnection() error {
+	pragmas := []string{
+		`PRAGMA journal_mode=WAL`,
+		`PRAGMA busy_timeout=10000`,
+		`PRAGMA synchronous=NORMAL`,
+		`PRAGMA foreign_keys=ON`,
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.db.Exec(pragma); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close closes the database connection
@@ -564,7 +599,7 @@ func (s *Store) CreateEpic(projectID, name, description string) (*Epic, error) {
 	_, err := s.db.Exec(`
 		INSERT INTO epics (id, project_id, name, description, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
-		id, projectID, name, description, now, now,
+		id, nullableStringValue(projectID), name, description, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -594,9 +629,11 @@ func (s *Store) ListEpics(projectID string) ([]Epic, error) {
 	var epics []Epic
 	for rows.Next() {
 		e := Epic{}
-		if err := rows.Scan(&e.ID, &e.ProjectID, &e.Name, &e.Description, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		var projectID sql.NullString
+		if err := rows.Scan(&e.ID, &projectID, &e.Name, &e.Description, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, err
 		}
+		e.ProjectID = stringFromNull(projectID)
 		epics = append(epics, e)
 	}
 	return epics, nil
@@ -604,13 +641,15 @@ func (s *Store) ListEpics(projectID string) ([]Epic, error) {
 
 func (s *Store) GetEpic(id string) (*Epic, error) {
 	e := &Epic{}
+	var projectID sql.NullString
 	err := s.db.QueryRow(`
 		SELECT id, project_id, name, description, created_at, updated_at
 		FROM epics WHERE id = ?`, id,
-	).Scan(&e.ID, &e.ProjectID, &e.Name, &e.Description, &e.CreatedAt, &e.UpdatedAt)
+	).Scan(&e.ID, &projectID, &e.Name, &e.Description, &e.CreatedAt, &e.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	e.ProjectID = stringFromNull(projectID)
 	return e, nil
 }
 
@@ -627,7 +666,7 @@ func (s *Store) UpdateEpic(id, projectID, name, description string) error {
 	res, err := s.db.Exec(`
 		UPDATE epics SET project_id = ?, name = ?, description = ?, updated_at = ?
 		WHERE id = ?`,
-		projectID, name, description, time.Now(), id,
+		nullableStringValue(projectID), name, description, time.Now(), id,
 	)
 	if err != nil {
 		return err
@@ -639,6 +678,9 @@ func (s *Store) UpdateEpic(id, projectID, name, description string) error {
 }
 
 func (s *Store) DeleteEpic(id string) error {
+	if _, err := s.db.Exec(`UPDATE issues SET epic_id = NULL, updated_at = ? WHERE epic_id = ?`, time.Now(), id); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(`DELETE FROM epics WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -651,27 +693,31 @@ func (s *Store) DeleteEpic(id string) error {
 
 // Issue operations
 
-func (s *Store) generateIdentifier(projectID string) (string, error) {
-	// Get project prefix (first 3-4 chars of ID or name)
+func (s *Store) identifierPrefix(projectID string) (string, error) {
 	var prefix string
 	if projectID != "" {
 		p, err := s.GetProject(projectID)
-		if err == nil && p != nil {
+		if err != nil {
+			return "", err
+		}
+		if p != nil {
 			prefix = strings.ToUpper(strings.ReplaceAll(p.Name, " ", ""))[:min(4, len(p.Name))]
 		}
 	}
 	if prefix == "" {
 		prefix = "ISS"
 	}
+	return prefix, nil
+}
 
-	// Get and increment counter
+func generateIdentifierTx(tx *sql.Tx, prefix string) (string, error) {
 	var counter int
-	err := s.db.QueryRow(`SELECT value FROM counters WHERE name = ?`, prefix).Scan(&counter)
+	err := tx.QueryRow(`SELECT value FROM counters WHERE name = ?`, prefix).Scan(&counter)
 	if err == sql.ErrNoRows {
 		counter = 0
-		_, err = s.db.Exec(`INSERT INTO counters (name, value) VALUES (?, 1)`, prefix)
+		_, err = tx.Exec(`INSERT INTO counters (name, value) VALUES (?, 1)`, prefix)
 	} else if err == nil {
-		_, err = s.db.Exec(`UPDATE counters SET value = value + 1 WHERE name = ?`, prefix)
+		_, err = tx.Exec(`UPDATE counters SET value = value + 1 WHERE name = ?`, prefix)
 		counter++
 	}
 	if err != nil {
@@ -679,6 +725,31 @@ func (s *Store) generateIdentifier(projectID string) (string, error) {
 	}
 
 	return fmt.Sprintf("%s-%d", prefix, counter+1), nil
+}
+
+func (s *Store) generateIdentifier(projectID string) (string, error) {
+	prefix, err := s.identifierPrefix(projectID)
+	if err != nil {
+		return "", err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	identifier, err := generateIdentifierTx(tx, prefix)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	tx = nil
+	return identifier, nil
 }
 
 func (s *Store) resolveIssueAssociations(projectID, epicID string) (string, string, error) {
@@ -759,18 +830,30 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 	if err != nil {
 		return nil, err
 	}
+	prefix, err := s.identifierPrefix(projectID)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	id := generateID("iss")
-
-	identifier, err := s.generateIdentifier(projectID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	identifier, err := generateIdentifierTx(tx, prefix)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = s.db.Exec(`
+	_, err = tx.Exec(`
 		INSERT INTO issues (id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, projectID, epicID, identifier, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
+		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -778,11 +861,15 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 
 	// Insert labels
 	for _, label := range labels {
-		_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
+		_, _ = tx.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
 	}
-	if err := s.appendChange("issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": identifier, "title": title}); err != nil {
+	if err := s.appendChangeTx(tx, "issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": identifier, "title": title}); err != nil {
 		return nil, err
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
 
 	return s.GetIssue(id)
 }
@@ -914,8 +1001,8 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		}
 		_, err = s.db.Exec(`
 			INSERT INTO issues (id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at, last_synced_at)
-			VALUES (?, ?, '', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, incoming.Identifier, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, createdAt, updatedAt, lastSyncedAt,
+			VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, projectID, nil, incoming.Identifier, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, createdAt, updatedAt, lastSyncedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -1058,14 +1145,24 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var issues []Issue
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	issues := make([]Issue, 0, len(ids))
+	for _, id := range ids {
 		issue, err := s.GetIssue(id)
 		if err != nil {
 			return nil, err
@@ -1248,11 +1345,11 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	}
 	if projectID, ok := updates["project_id"].(string); ok {
 		query += ", project_id = ?"
-		args = append(args, projectID)
+		args = append(args, nullableStringValue(projectID))
 	}
 	if epicID, ok := updates["epic_id"].(string); ok {
 		query += ", epic_id = ?"
-		args = append(args, epicID)
+		args = append(args, nullableStringValue(epicID))
 	}
 	if prNum, ok := updates["pr_number"].(int); ok {
 		query += ", pr_number = ?"
@@ -1333,6 +1430,7 @@ func (s *Store) DeleteIssue(id string) error {
 	_, _ = s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id)
+	_, _ = s.db.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id)
 	res, err := s.db.Exec(`DELETE FROM issues WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -1412,21 +1510,22 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 	countsByProject := map[string]IssueStateCounts{}
 	stateCountsByProject := map[string]map[string]int{}
 	for rows.Next() {
-		var projectID string
+		var projectID sql.NullString
 		var state State
 		var count int
 		if err := rows.Scan(&projectID, &state, &count); err != nil {
 			return nil, err
 		}
-		counts := countsByProject[projectID]
+		projectKey := stringFromNull(projectID)
+		counts := countsByProject[projectKey]
 		for i := 0; i < count; i++ {
 			counts.Add(state)
 		}
-		countsByProject[projectID] = counts
-		if stateCountsByProject[projectID] == nil {
-			stateCountsByProject[projectID] = map[string]int{}
+		countsByProject[projectKey] = counts
+		if stateCountsByProject[projectKey] == nil {
+			stateCountsByProject[projectKey] = map[string]int{}
 		}
-		stateCountsByProject[projectID][string(state)] += count
+		stateCountsByProject[projectKey][string(state)] += count
 	}
 
 	out := make([]ProjectSummary, 0, len(projects))
@@ -1932,7 +2031,7 @@ func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEven
 		SELECT seq, kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json
 		FROM runtime_events
 		WHERE issue_id = ?
-			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'manual_retry_requested', 'run_completed')
+			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed')
 		ORDER BY seq DESC
 		LIMIT ?`, issueID, limit)
 	if err != nil {

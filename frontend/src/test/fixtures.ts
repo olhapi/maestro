@@ -70,6 +70,7 @@ export function makeBootstrapResponse(overrides: Partial<BootstrapResponse> = {}
             delay_type: 'failure',
           },
         ],
+        paused: [],
         codex_totals: { input_tokens: 5, output_tokens: 8, total_tokens: 13, seconds_running: 60 },
       },
       board: {

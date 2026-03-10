@@ -30,6 +30,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 
 	running := findRunningEntry(snapshot.Running, issue.ID, issue.Identifier)
 	retry := findRetryEntry(snapshot.Retrying, issue.ID, issue.Identifier)
+	paused := findPausedEntry(snapshot.Paused, issue.ID, issue.Identifier)
 
 	var liveSession *appserver.Session
 	if runtimeAvailable {
@@ -41,6 +42,9 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	persistedSession, err := store.GetIssueExecutionSession(issue.ID)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
+	}
+	if paused == nil {
+		paused = findPersistedPausedEntry(events)
 	}
 
 	sessionSource := "none"
@@ -59,6 +63,8 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		attempt = running.Attempt
 	case retry != nil && retry.Attempt > 0:
 		attempt = retry.Attempt
+	case paused != nil && paused.Attempt > 0:
+		attempt = paused.Attempt
 	case persistedSession != nil && persistedSession.Attempt > 0:
 		attempt = persistedSession.Attempt
 	case len(events) > 0:
@@ -71,18 +77,21 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		phase = running.Phase
 	case retry != nil && strings.TrimSpace(retry.Phase) != "":
 		phase = retry.Phase
+	case paused != nil && strings.TrimSpace(paused.Phase) != "":
+		phase = paused.Phase
 	case persistedSession != nil && strings.TrimSpace(persistedSession.Phase) != "":
 		phase = persistedSession.Phase
 	}
 
-	currentError := deriveCurrentError(running != nil, retry, persistedSession, events)
-	failureClass := deriveFailureClass(running != nil, retry, persistedSession, events)
+	currentError := deriveCurrentError(running != nil, retry, paused, persistedSession, events)
+	failureClass := deriveFailureClass(running != nil, retry, paused, persistedSession, events)
 	retryState := "none"
 	if running != nil {
 		retryState = "active"
-	}
-	if retry != nil {
+	} else if retry != nil {
 		retryState = "scheduled"
+	} else if paused != nil {
+		retryState = "paused"
 	}
 
 	payload := map[string]interface{}{
@@ -100,6 +109,12 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	}
 	if retry != nil {
 		payload["next_retry_at"] = retry.DueAt.UTC().Format(time.RFC3339)
+	}
+	if paused != nil {
+		payload["paused_at"] = paused.PausedAt.UTC().Format(time.RFC3339)
+		payload["pause_reason"] = paused.Error
+		payload["consecutive_failures"] = paused.ConsecutiveFailures
+		payload["pause_threshold"] = paused.PauseThreshold
 	}
 	if session != nil {
 		payload["session"] = session
@@ -123,6 +138,41 @@ func findRetryEntry(entries []observability.RetryEntry, issueID, identifier stri
 		}
 	}
 	return nil
+}
+
+func findPausedEntry(entries []observability.PausedEntry, issueID, identifier string) *observability.PausedEntry {
+	for i := range entries {
+		if entries[i].IssueID == issueID || entries[i].Identifier == identifier {
+			return &entries[i]
+		}
+	}
+	return nil
+}
+
+func findPersistedPausedEntry(events []kanban.RuntimeEvent) *observability.PausedEntry {
+	if len(events) == 0 {
+		return nil
+	}
+	latest := events[len(events)-1]
+	if latest.Kind != "retry_paused" {
+		return nil
+	}
+	pausedAt := latest.TS
+	if raw, ok := latest.Payload["paused_at"].(string); ok && raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			pausedAt = parsed
+		}
+	}
+	return &observability.PausedEntry{
+		IssueID:             latest.IssueID,
+		Identifier:          latest.Identifier,
+		Phase:               latest.Phase,
+		Attempt:             latest.Attempt,
+		PausedAt:            pausedAt,
+		Error:               latest.Error,
+		ConsecutiveFailures: asPayloadInt(latest.Payload["consecutive_failures"]),
+		PauseThreshold:      asPayloadInt(latest.Payload["pause_threshold"]),
+	}
 }
 
 func findLiveSession(all map[string]interface{}, identifier string) (appserver.Session, bool) {
@@ -157,7 +207,7 @@ func findLiveSession(all map[string]interface{}, identifier string) (appserver.S
 	}
 }
 
-func deriveFailureClass(active bool, retry *observability.RetryEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
+func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
 	if active {
 		return ""
 	}
@@ -172,6 +222,10 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, persisted 
 	switch {
 	case retry != nil:
 		if class := normalizeFailureClass(retry.Error); class != "" {
+			return class
+		}
+	case paused != nil:
+		if class := normalizeFailureClass(paused.Error); class != "" {
 			return class
 		}
 	case persisted != nil:
@@ -193,13 +247,15 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, persisted 
 	return ""
 }
 
-func deriveCurrentError(active bool, retry *observability.RetryEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
+func deriveCurrentError(active bool, retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
 	if active {
 		return ""
 	}
 	switch {
 	case retry != nil && strings.TrimSpace(retry.Error) != "":
 		return retry.Error
+	case paused != nil && strings.TrimSpace(paused.Error) != "":
+		return paused.Error
 	case persisted != nil && strings.TrimSpace(persisted.Error) != "":
 		return persisted.Error
 	default:
@@ -210,6 +266,19 @@ func deriveCurrentError(active bool, retry *observability.RetryEntry, persisted 
 		}
 	}
 	return ""
+}
+
+func asPayloadInt(value interface{}) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
 }
 
 func normalizeFailureClass(value string) string {

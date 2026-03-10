@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RotateCcw, Save, Trash2 } from 'lucide-react'
+import { AlertTriangle, RotateCcw, Save, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { PageHeader } from '@/components/dashboard/page-header'
@@ -81,15 +81,22 @@ export function IssueDetailPage() {
   const sessionHistory = session?.history?.slice(-8) ?? []
   const runtimeEvents = execution.data.runtime_events.slice(-8)
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state])
-  const sessionStatusLabel = execution.data.failure_class === 'run_interrupted'
+  const sessionStatusLabel = execution.data.retry_state === 'paused'
+    ? 'Paused'
+    : execution.data.failure_class === 'run_interrupted'
     ? 'Interrupted'
     : execution.data.active
       ? 'Active session'
       : 'Idle'
-  const sessionHeadline = execution.data.failure_class === 'run_interrupted'
+  const sessionHeadline = execution.data.retry_state === 'paused'
+    ? 'Automatic retries paused'
+    : execution.data.failure_class === 'run_interrupted'
     ? 'Last run interrupted'
     : session?.last_event || 'No app-server session recorded'
   const sessionMessage = (() => {
+    if (execution.data.retry_state === 'paused') {
+      return `Retry loop paused after ${execution.data.consecutive_failures ?? 0} interrupted runs.`
+    }
     if (execution.data.session_source === 'persisted' && session?.last_timestamp) {
       return `Last session update ${formatRelativeTime(session.last_timestamp)}`
     }
@@ -247,6 +254,24 @@ export function IssueDetailPage() {
                   </Badge>
                 ) : null}
               </div>
+
+              {execution.data.retry_state === 'paused' ? (
+                <div className="rounded-[1.5rem] border border-amber-400/25 bg-amber-400/10 p-4 text-sm text-amber-50">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
+                    <div>
+                      <p className="font-medium text-amber-100">Automatic retries paused</p>
+                      <p className="mt-2 text-amber-50/90">
+                        Maestro stopped retrying after {execution.data.consecutive_failures ?? 0} interrupted runs.
+                        {execution.data.pause_reason ? ` Last reason: ${execution.data.pause_reason}.` : ''}
+                      </p>
+                      <p className="mt-2 text-amber-100/80">
+                        Use Retry now after checking the workspace or runtime conditions.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {execution.data.current_error ? (
                 <div className="rounded-[1.5rem] border border-rose-400/15 bg-rose-400/10 p-4 text-sm text-rose-100">

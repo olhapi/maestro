@@ -36,10 +36,22 @@ type RetryEntry struct {
 	DelayType  string    `json:"delay_type,omitempty"`
 }
 
+type PausedEntry struct {
+	IssueID             string    `json:"issue_id"`
+	Identifier          string    `json:"identifier"`
+	Phase               string    `json:"phase,omitempty"`
+	Attempt             int       `json:"attempt"`
+	PausedAt            time.Time `json:"paused_at"`
+	Error               string    `json:"error,omitempty"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	PauseThreshold      int       `json:"pause_threshold"`
+}
+
 type Snapshot struct {
 	GeneratedAt   time.Time      `json:"generated_at"`
 	Running       []RunningEntry `json:"running"`
 	Retrying      []RetryEntry   `json:"retrying"`
+	Paused        []PausedEntry  `json:"paused"`
 	CodexTotals   TokenTotals    `json:"codex_totals"`
 	RateLimits    interface{}    `json:"rate_limits"`
 	WorkspaceRoot string         `json:"workspace_root,omitempty"`

@@ -20,7 +20,7 @@ func FormatDashboard(snapshot Snapshot, opts DashboardOptions) string {
 	lines := []string{
 		"MAESTRO STATUS",
 		fmt.Sprintf("generated_at=%s", snapshot.GeneratedAt.UTC().Format(time.RFC3339)),
-		fmt.Sprintf("running=%d retrying=%d total_tokens=%d", len(snapshot.Running), len(snapshot.Retrying), snapshot.CodexTotals.TotalTokens),
+		fmt.Sprintf("running=%d retrying=%d paused=%d total_tokens=%d", len(snapshot.Running), len(snapshot.Retrying), len(snapshot.Paused), snapshot.CodexTotals.TotalTokens),
 	}
 	if strings.TrimSpace(opts.DashboardURL) != "" {
 		lines = append(lines, "dashboard_url="+strings.TrimSpace(opts.DashboardURL))
@@ -57,6 +57,23 @@ func FormatDashboard(snapshot Snapshot, opts DashboardOptions) string {
 				entry.Identifier,
 				entry.Attempt,
 				dueIn,
+				sanitizeMessage(entry.Error),
+			))
+		}
+	}
+
+	if len(snapshot.Paused) == 0 {
+		lines = append(lines, "paused_queue=empty")
+	} else {
+		lines = append(lines, "paused_queue:")
+		for _, entry := range snapshot.Paused {
+			lines = append(lines, fmt.Sprintf(
+				"  %s attempt=%d paused_at=%s failures=%d/%d error=%s",
+				entry.Identifier,
+				entry.Attempt,
+				entry.PausedAt.UTC().Format(time.RFC3339),
+				entry.ConsecutiveFailures,
+				entry.PauseThreshold,
 				sanitizeMessage(entry.Error),
 			))
 		}

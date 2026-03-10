@@ -29,6 +29,10 @@ vi.mock('@/lib/api', () => ({
 const { api } = await import('@/lib/api')
 
 describe('IssuePreviewSheet', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('loads detail and triggers retry action', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary()
@@ -57,5 +61,46 @@ describe('IssuePreviewSheet', () => {
       expect(api.retryIssue).toHaveBeenCalledWith(summary.identifier)
       expect(onInvalidate).toHaveBeenCalled()
     })
+  })
+
+  it('shows paused execution status from bootstrap data', async () => {
+    const summary = makeIssueSummary()
+    const bootstrap = makeBootstrapResponse({
+      overview: {
+        ...makeBootstrapResponse().overview,
+        snapshot: {
+          ...makeBootstrapResponse().overview.snapshot,
+          paused: [
+            {
+              issue_id: summary.id,
+              identifier: summary.identifier,
+              phase: 'implementation',
+              attempt: 3,
+              paused_at: '2026-03-09T12:05:00Z',
+              error: 'stall_timeout',
+              consecutive_failures: 3,
+              pause_threshold: 3,
+            },
+          ],
+        },
+      },
+    })
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
+    })
+
+    expect(screen.getByText(/auto-retries paused after 3 interrupted runs/i)).toBeInTheDocument()
   })
 })

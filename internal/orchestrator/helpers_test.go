@@ -19,6 +19,11 @@ type retryTestRunner struct {
 	release      chan struct{}
 }
 
+type interruptedFailureRunner struct {
+	store *kanban.Store
+	calls int
+}
+
 func newRetryTestRunner() *retryTestRunner {
 	return &retryTestRunner{
 		runCalls:     make(chan string, 8),
@@ -39,6 +44,32 @@ func (r *retryTestRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, a
 
 func (r *retryTestRunner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
 	r.cleanupCalls <- issue.Identifier
+	return nil
+}
+
+func (r *interruptedFailureRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
+	r.calls++
+	if issue.State == kanban.StateReady {
+		if err := r.store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+			return nil, err
+		}
+	}
+	return &agent.RunResult{
+		Success: false,
+		Error:   errors.New("stall_timeout"),
+		AppSession: &appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-stall-turn-stall",
+			ThreadID:        "thread-stall",
+			TurnID:          "turn-stall",
+			LastEvent:       "item.started",
+			LastTimestamp:   time.Now().UTC(),
+		},
+	}, nil
+}
+
+func (r *interruptedFailureRunner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
 	return nil
 }
 
@@ -223,7 +254,7 @@ func TestUpdateLiveSessionPersistsWhileRunIsActive(t *testing.T) {
 	waitForNoRunning(t, orch, time.Second)
 }
 
-func TestReconcileRecoversOrphanedRunWithImmediateRetry(t *testing.T) {
+func TestReconcileRecoversOrphanedRunWithBackoffRetry(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)
 
@@ -272,8 +303,8 @@ func TestReconcileRecoversOrphanedRunWithImmediateRetry(t *testing.T) {
 	if retry.Attempt != 3 || retry.Phase != "implementation" || retry.Error != "run_interrupted" || retry.DelayType != "failure" {
 		t.Fatalf("unexpected retry payload: %+v", retry)
 	}
-	if retry.DueAt.After(time.Now().UTC().Add(2 * time.Second)) {
-		t.Fatalf("expected immediate retry scheduling, got due_at=%v", retry.DueAt)
+	if retry.DueAt.Before(time.Now().UTC().Add(9 * time.Second)) {
+		t.Fatalf("expected failure backoff retry scheduling, got due_at=%v", retry.DueAt)
 	}
 
 	snapshot, err := store.GetIssueExecutionSession(issue.ID)
@@ -298,6 +329,205 @@ func TestReconcileRecoversOrphanedRunWithImmediateRetry(t *testing.T) {
 	if !foundInterrupted {
 		t.Fatalf("expected run_interrupted event in %#v", events)
 	}
+}
+
+func TestInterruptedFailuresPauseAutomaticRetriesAfterThreshold(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	runner := &interruptedFailureRunner{store: store}
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Pause retries", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	for i := 0; i < 2; i++ {
+		orch.mu.Lock()
+		entry := orch.retries[issue.ID]
+		entry.DueAt = time.Now().UTC()
+		orch.retries[issue.ID] = entry
+		orch.mu.Unlock()
+		orch.processRetries(context.Background())
+		waitForNoRunning(t, orch, time.Second)
+	}
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	_, retryScheduled := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !pausedOK {
+		t.Fatal("expected issue to be paused after three interrupted failures")
+	}
+	if retryScheduled {
+		t.Fatal("expected retries to be cleared after pause")
+	}
+	if paused.Attempt != 3 || paused.ConsecutiveFailures != 3 || paused.PauseThreshold != 3 || paused.Error != "stall_timeout" {
+		t.Fatalf("unexpected paused payload: %+v", paused)
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected three interrupted runs before pause, got %d", runner.calls)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch while paused: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if runner.calls != 3 {
+		t.Fatalf("expected paused issue not to redispatch, got %d calls", runner.calls)
+	}
+
+	resp := orch.RetryIssueNow(issue.Identifier)
+	if resp["status"] != "queued_now" {
+		t.Fatalf("unexpected retry response: %#v", resp)
+	}
+	orch.processRetries(context.Background())
+	waitForNoRunning(t, orch, time.Second)
+	if runner.calls != 4 {
+		t.Fatalf("expected manual retry to resume execution, got %d calls", runner.calls)
+	}
+}
+
+func TestReconcileRestoresPausedRunStateFromPersistedEvents(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+
+	issue, err := store.CreateIssue("", "", "Paused restore", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	pausedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    3,
+		RunKind:    "retry_paused",
+		Error:      "stall_timeout",
+		UpdatedAt:  pausedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-stall-turn-stall",
+			LastEvent:       "item.started",
+			LastTimestamp:   pausedAt,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{
+		"issue_id":             issue.ID,
+		"identifier":           issue.Identifier,
+		"phase":                "implementation",
+		"attempt":              3,
+		"paused_at":            pausedAt.Format(time.RFC3339),
+		"error":                "stall_timeout",
+		"consecutive_failures": 3,
+		"pause_threshold":      3,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent retry_paused: %v", err)
+	}
+
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	paused, ok := orch.paused[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected paused state to be restored from persisted events")
+	}
+	if paused.Attempt != 3 || paused.ConsecutiveFailures != 3 {
+		t.Fatalf("unexpected restored paused payload: %+v", paused)
+	}
+}
+
+func TestUpdateLiveSessionCoalescesPersistenceWhileRunIsActive(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	runner := newRetryTestRunner()
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Coalesced live snapshot", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	waitForRunCall(t, runner.runCalls, time.Second)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		SessionID:     "thread-live-turn-live",
+		ThreadID:      "thread-live",
+		TurnID:        "turn-live",
+		LastEvent:     "turn.started",
+		LastTimestamp: now,
+		LastMessage:   "first persist",
+	})
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.AppSession.LastMessage != "first persist" {
+		t.Fatalf("expected first live message to persist, got %#v", snapshot.AppSession)
+	}
+
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		SessionID:     "thread-live-turn-live",
+		ThreadID:      "thread-live",
+		TurnID:        "turn-live",
+		LastEvent:     "item.updated",
+		LastTimestamp: now.Add(time.Second),
+		LastMessage:   "coalesced away",
+	})
+	snapshot, err = store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession second read: %v", err)
+	}
+	if snapshot.AppSession.LastMessage != "first persist" {
+		t.Fatalf("expected coalesced update not to persist immediately, got %#v", snapshot.AppSession)
+	}
+
+	orch.sessionWriteMu.Lock()
+	state := orch.sessionWrites[issue.ID]
+	state.LastPersistedAt = time.Now().UTC().Add(-3 * time.Second)
+	orch.sessionWrites[issue.ID] = state
+	orch.sessionWriteMu.Unlock()
+
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		SessionID:     "thread-live-turn-live",
+		ThreadID:      "thread-live",
+		TurnID:        "turn-live",
+		LastEvent:     "item.updated",
+		LastTimestamp: now.Add(3 * time.Second),
+		LastMessage:   "persisted later",
+	})
+	snapshot, err = store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession third read: %v", err)
+	}
+	if snapshot.AppSession.LastMessage != "persisted later" {
+		t.Fatalf("expected delayed live update to persist, got %#v", snapshot.AppSession)
+	}
+
+	close(runner.release)
+	waitForNoRunning(t, orch, time.Second)
 }
 
 func TestReconcileRecoversBlockedOrphanWithoutRetry(t *testing.T) {

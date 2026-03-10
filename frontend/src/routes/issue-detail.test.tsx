@@ -35,6 +35,10 @@ vi.mock('@/lib/api', () => ({
 const { api } = await import('@/lib/api')
 
 describe('IssueDetailPage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('shows interrupted persisted session details instead of an idle no-session view', async () => {
     const bootstrap = makeBootstrapResponse()
     const issue = makeIssueDetail({ state: 'in_progress' })
@@ -80,5 +84,54 @@ describe('IssueDetailPage', () => {
     expect(screen.getByText('Interrupted')).toBeInTheDocument()
     expect(screen.getByText(/Last session update/i)).toBeInTheDocument()
     expect(screen.getByText('Persisted')).toBeInTheDocument()
+  })
+
+  it('shows a paused retry banner when automatic retries are halted', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const issue = makeIssueDetail({ state: 'in_progress' })
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(issue)
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: 'implementation',
+      attempt_number: 3,
+      failure_class: 'stall_timeout',
+      current_error: 'stall_timeout',
+      retry_state: 'paused',
+      paused_at: '2026-03-09T12:05:00Z',
+      pause_reason: 'stall_timeout',
+      consecutive_failures: 3,
+      pause_threshold: 3,
+      session_source: 'persisted',
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: 'thread-paused-turn-paused',
+        thread_id: 'thread-paused',
+        turn_id: 'turn-paused',
+        last_event: 'item.started',
+        last_timestamp: '2026-03-09T12:05:00Z',
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        events_processed: 1,
+        turns_started: 1,
+        turns_completed: 0,
+        terminal: false,
+        history: [],
+      },
+      runtime_events: [],
+    })
+
+    renderWithQueryClient(<IssueDetailPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/stopped retrying after 3 interrupted runs/i)).toBeInTheDocument()
+    })
+
+    expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
+    expect(screen.getByText(/stopped retrying after 3 interrupted runs/i)).toBeInTheDocument()
   })
 })

@@ -1,4 +1,4 @@
-import type { BootstrapResponse, IssueState, IssueSummary, RetryEntry, Session } from '@/lib/types'
+import type { BootstrapResponse, IssueState, IssueSummary, PausedEntry, RetryEntry, Session } from '@/lib/types'
 
 export const issueStates: IssueState[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled']
 
@@ -50,6 +50,10 @@ export function getSessionForIssue(bootstrap: BootstrapResponse | undefined, iss
 
 export function getRetryForIssue(bootstrap: BootstrapResponse | undefined, issueID: string): RetryEntry | undefined {
   return bootstrap?.overview.snapshot.retrying.find((item) => item.issue_id === issueID)
+}
+
+export function getPausedForIssue(bootstrap: BootstrapResponse | undefined, issueID: string): PausedEntry | undefined {
+  return bootstrap?.overview.snapshot.paused.find((item) => item.issue_id === issueID)
 }
 
 export function groupIssuesByState(items: IssueSummary[], states: IssueState[] = issueStatesFor(items)) {

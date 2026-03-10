@@ -56,6 +56,41 @@ func TestResolveDBPathPreservesExplicitPath(t *testing.T) {
 	}
 }
 
+func TestNewStoreConfiguresSQLitePragmas(t *testing.T) {
+	store := setupTestStore(t)
+
+	checkString := func(name, query, want string) {
+		t.Helper()
+		var got string
+		if err := store.db.QueryRow(query).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.ToLower(got) != strings.ToLower(want) {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+	checkInt := func(name, query string, want int) {
+		t.Helper()
+		var got int
+		if err := store.db.QueryRow(query).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%s = %d, want %d", name, got, want)
+		}
+	}
+
+	checkString("journal_mode", `PRAGMA journal_mode`, "wal")
+	checkInt("busy_timeout", `PRAGMA busy_timeout`, 10000)
+	checkInt("foreign_keys", `PRAGMA foreign_keys`, 1)
+	checkInt("synchronous", `PRAGMA synchronous`, 1)
+
+	stats := store.db.Stats()
+	if stats.MaxOpenConnections != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
+	}
+}
+
 func TestStateValidation(t *testing.T) {
 	tests := []struct {
 		state    State

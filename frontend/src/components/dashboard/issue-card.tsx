@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/context-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { BootstrapResponse, IssueState, IssueSummary } from '@/lib/types'
-import { getRetryForIssue, getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
+import { getPausedForIssue, getRetryForIssue, getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { cn, formatRelativeTime } from '@/lib/utils'
 
 export function IssueCard({
@@ -32,6 +32,7 @@ export function IssueCard({
 }) {
   const session = getSessionForIssue(bootstrap, issue.id)
   const retry = getRetryForIssue(bootstrap, issue.id)
+  const paused = getPausedForIssue(bootstrap, issue.id)
   const meta = getStateMeta(issue.state)
   const availableStates = issueStatesFor([issue])
 
@@ -51,6 +52,7 @@ export function IssueCard({
             {issue.priority <= 1 ? <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-200">P{issue.priority}</Badge> : null}
             {issue.is_blocked ? <Badge className="border-red-500/20 bg-red-500/10 text-red-200">Blocked</Badge> : null}
             {session ? <Badge className="border-lime-400/20 bg-lime-400/10 text-lime-200">Live</Badge> : null}
+            {paused ? <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">Paused</Badge> : null}
           </div>
           <p className="text-sm font-semibold leading-6 text-white">{issue.title}</p>
         </div>
@@ -114,6 +116,12 @@ export function IssueCard({
                   <div className="inline-flex items-center gap-2">
                     <RotateCcw className="size-3.5 text-amber-300" />
                     Retry pending
+                  </div>
+                ) : null}
+                {paused ? (
+                  <div className="inline-flex items-center gap-2">
+                    <AlertTriangle className="size-3.5 text-rose-300" />
+                    Auto-retries paused
                   </div>
                 ) : null}
                 {issue.is_blocked ? (

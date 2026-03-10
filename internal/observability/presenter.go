@@ -21,9 +21,11 @@ func StatePayload(provider SnapshotProvider) map[string]interface{} {
 		"counts": map[string]int{
 			"running":  len(snapshot.Running),
 			"retrying": len(snapshot.Retrying),
+			"paused":   len(snapshot.Paused),
 		},
 		"running":      runningPayload(snapshot.Running),
 		"retrying":     retryPayload(snapshot.Retrying),
+		"paused":       pausedPayload(snapshot.Paused),
 		"codex_totals": snapshot.CodexTotals,
 		"rate_limits":  snapshot.RateLimits,
 	}
@@ -45,7 +47,14 @@ func IssuePayload(provider SnapshotProvider, issueIdentifier string) (map[string
 			break
 		}
 	}
-	if running == nil && retry == nil {
+	var paused *PausedEntry
+	for i := range snapshot.Paused {
+		if snapshot.Paused[i].Identifier == issueIdentifier {
+			paused = &snapshot.Paused[i]
+			break
+		}
+	}
+	if running == nil && retry == nil && paused == nil {
 		return nil, false
 	}
 
@@ -83,6 +92,16 @@ func IssuePayload(provider SnapshotProvider, issueIdentifier string) (map[string
 		payload["retry"] = retryEntryPayload(*retry)
 		payload["last_error"] = retry.Error
 	}
+	if paused != nil {
+		payload["issue_id"] = paused.IssueID
+		if running == nil && retry == nil {
+			payload["status"] = "paused"
+			payload["recent_events"] = []map[string]interface{}{}
+		}
+		payload["phase"] = paused.Phase
+		payload["paused"] = pausedEntryPayload(*paused)
+		payload["last_error"] = paused.Error
+	}
 	if _, ok := payload["status"]; !ok {
 		payload["status"] = "running"
 	}
@@ -109,6 +128,14 @@ func retryPayload(entries []RetryEntry) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, retryEntryPayload(entry))
+	}
+	return out
+}
+
+func pausedPayload(entries []PausedEntry) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, pausedEntryPayload(entry))
 	}
 	return out
 }
@@ -141,6 +168,19 @@ func retryEntryPayload(entry RetryEntry) map[string]interface{} {
 		"attempt":          entry.Attempt,
 		"due_at":           entry.DueAt.UTC().Format(time.RFC3339),
 		"error":            sanitizeMessage(entry.Error),
+	}
+}
+
+func pausedEntryPayload(entry PausedEntry) map[string]interface{} {
+	return map[string]interface{}{
+		"issue_id":             entry.IssueID,
+		"issue_identifier":     entry.Identifier,
+		"phase":                entry.Phase,
+		"attempt":              entry.Attempt,
+		"paused_at":            entry.PausedAt.UTC().Format(time.RFC3339),
+		"error":                sanitizeMessage(entry.Error),
+		"consecutive_failures": entry.ConsecutiveFailures,
+		"pause_threshold":      entry.PauseThreshold,
 	}
 }
 
