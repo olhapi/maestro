@@ -146,6 +146,7 @@ agent:
   max_concurrent_agents: 3
   max_turns: 4
   max_retry_backoff_ms: 60000
+  max_automatic_retries: 8
   mode: %s
 codex:
   command: %s

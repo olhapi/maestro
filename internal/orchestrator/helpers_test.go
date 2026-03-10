@@ -705,6 +705,34 @@ func TestRuntimeResolutionAndUtilityHelpers(t *testing.T) {
 	if got := failureRetryDelay(10, 1000); got != time.Second {
 		t.Fatalf("expected capped retry delay, got %v", got)
 	}
+	if got := failureRetryDelay(210, 60000); got != time.Minute {
+		t.Fatalf("expected saturating retry delay, got %v", got)
+	}
+	if got := failureRetryDelay(210, 1); got != time.Millisecond {
+		t.Fatalf("expected millisecond cap, got %v", got)
+	}
+	if got := automaticRetryCount([]kanban.RuntimeEvent{
+		{Kind: "retry_scheduled", DelayType: "failure"},
+		{Kind: "retry_scheduled", DelayType: "continuation"},
+		{Kind: "manual_retry_requested"},
+		{Kind: "retry_scheduled", DelayType: "failure"},
+	}); got != 1 {
+		t.Fatalf("expected retry count after manual reset to be 1, got %d", got)
+	}
+	if got := automaticRetryCount([]kanban.RuntimeEvent{
+		{Kind: "retry_scheduled", DelayType: "failure"},
+		{Kind: "run_completed", Payload: map[string]interface{}{"next_retry": 2}},
+		{Kind: "retry_scheduled", DelayType: "continuation"},
+		{Kind: "retry_paused"},
+	}); got != 0 {
+		t.Fatalf("expected paused lifecycle to reset retry count, got %d", got)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+	if !shared.shouldPauseRunLocked("missing-issue", "stall_timeout") {
+		t.Fatal("expected interrupted retry pause to fail closed when streak lookup fails")
+	}
 
 	events := shared.Events(10, 0)
 	if events["since"].(int64) != 10 {

@@ -25,7 +25,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.ExpectedVersion != "0.111.0" {
 		t.Fatalf("expected codex expected version 0.111.0, got %q", cfg.Codex.ExpectedVersion)
 	}
-	if cfg.Agent.MaxTurns != 4 || cfg.Agent.MaxRetryBackoffMs != 60000 {
+	if cfg.Agent.MaxTurns != 4 || cfg.Agent.MaxRetryBackoffMs != 60000 || cfg.Agent.MaxAutomaticRetries != 8 {
 		t.Fatalf("unexpected agent defaults: %+v", cfg.Agent)
 	}
 	if cfg.Codex.TurnTimeoutMs != 600000 || cfg.Codex.ReadTimeoutMs != 5000 || cfg.Codex.StallTimeoutMs != 60000 {
@@ -56,6 +56,7 @@ agent:
   max_concurrent_agents: 5
   max_turns: 4
   max_retry_backoff_ms: 9000
+  max_automatic_retries: 6
   mode: stdio
 codex:
   command: codex --model test app-server
@@ -86,6 +87,9 @@ Issue {{ issue.identifier }}
 	}
 	if workflow.Config.Agent.Mode != AgentModeStdio {
 		t.Fatalf("unexpected agent mode: %s", workflow.Config.Agent.Mode)
+	}
+	if workflow.Config.Agent.MaxAutomaticRetries != 6 {
+		t.Fatalf("unexpected max automatic retries: %d", workflow.Config.Agent.MaxAutomaticRetries)
 	}
 	if workflow.Config.Hooks.BeforeRemove != "echo cleanup" {
 		t.Fatalf("unexpected before_remove hook: %q", workflow.Config.Hooks.BeforeRemove)

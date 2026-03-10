@@ -971,6 +971,43 @@ func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestIssueExecutionSessionUpsertDoesNotEmitChangeEvents(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Quiet session issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	before, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq failed: %v", err)
+	}
+
+	if err := store.UpsertIssueExecutionSession(ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  time.Now().UTC(),
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-quiet-turn-quiet",
+			LastEvent:       "item.started",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession failed: %v", err)
+	}
+
+	after, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq failed: %v", err)
+	}
+	if after != before {
+		t.Fatalf("expected execution session upsert not to emit change event, before=%d after=%d", before, after)
+	}
+}
+
 func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "extra.db")

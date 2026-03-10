@@ -2097,18 +2097,7 @@ func (s *Store) UpsertIssueExecutionSession(snapshot ExecutionSessionSnapshot) e
 	if err != nil {
 		return err
 	}
-	return s.appendChange("issue_execution_session", snapshot.IssueID, "upserted", map[string]interface{}{
-		"issue_id":    snapshot.IssueID,
-		"identifier":  snapshot.Identifier,
-		"phase":       snapshot.Phase,
-		"attempt":     snapshot.Attempt,
-		"run_kind":    snapshot.RunKind,
-		"error":       snapshot.Error,
-		"updated_at":  snapshot.UpdatedAt.UTC().Format(time.RFC3339),
-		"session_id":  snapshot.AppSession.SessionID,
-		"last_event":  snapshot.AppSession.LastEvent,
-		"last_reason": snapshot.AppSession.TerminalReason,
-	})
+	return nil
 }
 
 func (s *Store) GetIssueExecutionSession(issueID string) (*ExecutionSessionSnapshot, error) {

@@ -304,6 +304,50 @@ func TestIssueExecutionEndpointReturnsPausedRetryMetadata(t *testing.T) {
 	}
 }
 
+func TestIssueExecutionEndpointReturnsRetryLimitPauseReason(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	issue, err := store.CreateIssue("", "", "Retry limit execution", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewServer(store, testProvider{}).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{
+		"issue_id":        issue.ID,
+		"identifier":      issue.Identifier,
+		"issue_state":     "in_progress",
+		"phase":           "implementation",
+		"attempt":         4,
+		"paused_at":       now.Format(time.RFC3339),
+		"error":           "retry_limit_reached",
+		"pause_threshold": 8,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent retry_paused failed: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/v1/app/issues/" + issue.Identifier + "/execution")
+	if err != nil {
+		t.Fatalf("GET execution failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode execution payload: %v", err)
+	}
+	if payload["retry_state"] != "paused" || payload["pause_reason"] != "retry_limit_reached" {
+		t.Fatalf("unexpected retry limit execution payload: %#v", payload)
+	}
+}
+
 func TestIssueExecutionEndpointReturnsNotFoundForMissingIssue(t *testing.T) {
 	_, srv := setupDashboardServerTest(t, testProvider{})
 	resp, err := http.Get(srv.URL + "/api/v1/app/issues/ISS-404/execution")

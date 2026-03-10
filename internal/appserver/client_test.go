@@ -229,7 +229,7 @@ func TestRunAutoApprovesCommandExecutionWhenNever(t *testing.T) {
 	}
 }
 
-func TestRunAnswersToolInputAndContinues(t *testing.T) {
+func TestRunAutoApprovesApprovalStyleToolInput(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")
 	workspace := filepath.Join(workspaceRoot, "ISS-3")
@@ -246,8 +246,8 @@ func TestRunAnswersToolInputAndContinues(t *testing.T) {
 					"questions": []map[string]interface{}{{
 						"id": "options-3",
 						"options": []map[string]interface{}{
-							{"label": "Use default"},
-							{"label": "Skip"},
+							{"label": "Approve this session"},
+							{"label": "Reject"},
 						},
 					}},
 				},
@@ -266,6 +266,7 @@ func TestRunAnswersToolInputAndContinues(t *testing.T) {
 	})
 	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
 	cfg.Title = "ISS-3: Tool input"
+	cfg.ApprovalPolicy = "never"
 	cfg = withTrace(cfg, traceFile)
 
 	_, err := Run(context.Background(), cfg)
@@ -279,7 +280,7 @@ func TestRunAnswersToolInputAndContinues(t *testing.T) {
 		if id, ok := asInt(payload["id"]); ok && id == 110 {
 			if answers, ok := nestedMap(payload, "result", "answers"); ok {
 				if q, ok := answers["options-3"].(map[string]interface{}); ok {
-					if vals, ok := q["answers"].([]interface{}); ok && len(vals) == 1 && vals[0] == nonInteractiveToolInputAnswer {
+					if vals, ok := q["answers"].([]interface{}); ok && len(vals) == 1 && vals[0] == "Approve this session" {
 						foundAnswer = true
 					}
 				}
@@ -287,7 +288,54 @@ func TestRunAnswersToolInputAndContinues(t *testing.T) {
 		}
 	}
 	if !foundAnswer {
-		t.Fatal("expected generic tool input answer in trace")
+		t.Fatal("expected approval-style tool input answer in trace")
+	}
+}
+
+func TestRunRejectsNonApprovalToolInputInUnattendedMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-3A")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := baseScenario("thread-3a", "turn-3a",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id":     111,
+				"method": "item/tool/requestUserInput",
+				"params": map[string]interface{}{
+					"questions": []map[string]interface{}{{
+						"id": "options-3a",
+						"options": []map[string]interface{}{
+							{"label": "Use default"},
+							{"label": "Skip"},
+						},
+					}},
+				},
+			},
+		},
+	)
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.Title = "ISS-3A: Tool input"
+	cfg.ApprovalPolicy = "never"
+	cfg = withTrace(cfg, traceFile)
+
+	_, err := Run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected non-approval tool input to require input")
+	}
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != "turn_input_required" {
+		t.Fatalf("expected turn_input_required, got %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	for _, payload := range lines {
+		if id, ok := asInt(payload["id"]); ok && id == 111 {
+			t.Fatal("expected no auto-answer payload for non-approval tool input")
+		}
 	}
 }
 

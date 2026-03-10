@@ -60,6 +60,7 @@ type AgentConfig struct {
 	MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
 	MaxTurns            int    `yaml:"max_turns"`
 	MaxRetryBackoffMs   int    `yaml:"max_retry_backoff_ms"`
+	MaxAutomaticRetries int    `yaml:"max_automatic_retries"`
 	Mode                string `yaml:"mode"`
 }
 
@@ -115,6 +116,7 @@ func DefaultConfig() Config {
 			MaxConcurrentAgents: 3,
 			MaxTurns:            4,
 			MaxRetryBackoffMs:   60000,
+			MaxAutomaticRetries: 8,
 			Mode:                AgentModeAppServer,
 		},
 		Codex: CodexConfig{
@@ -329,6 +331,7 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveNumeric(out, agent, "max_concurrent_agents", "max_concurrent_agents")
 	moveNumeric(out, agent, "max_turns", "max_turns")
 	moveNumeric(out, agent, "max_retry_backoff_ms", "max_retry_backoff_ms")
+	moveNumeric(out, agent, "max_automatic_retries", "max_automatic_retries")
 	moveString(out, agent, "agent_mode", "mode")
 	moveString(out, codex, "codex_command", "command")
 	moveString(out, codex, "codex_expected_version", "expected_version")
@@ -477,6 +480,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Agent.MaxRetryBackoffMs <= 0 {
 		c.Agent.MaxRetryBackoffMs = defaults.Agent.MaxRetryBackoffMs
+	}
+	if c.Agent.MaxAutomaticRetries <= 0 {
+		c.Agent.MaxAutomaticRetries = defaults.Agent.MaxAutomaticRetries
 	}
 	if strings.TrimSpace(c.Agent.Mode) == "" {
 		c.Agent.Mode = defaults.Agent.Mode

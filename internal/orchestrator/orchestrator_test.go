@@ -1,10 +1,13 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +54,7 @@ agent:
   max_concurrent_agents: ` + fmt.Sprintf("%d", maxConcurrent) + `
   max_turns: 2
   max_retry_backoff_ms: 100
+  max_automatic_retries: 8
   mode: stdio
 codex:
   command: ` + command + `
@@ -103,6 +107,7 @@ agent:
   max_concurrent_agents: 1
   max_turns: 2
   max_retry_backoff_ms: 100
+  max_automatic_retries: 8
   mode: stdio
 codex:
   command: cat
@@ -154,6 +159,7 @@ agent:
   max_concurrent_agents: 1
   max_turns: 1
   max_retry_backoff_ms: 100
+  max_automatic_retries: 8
   mode: app_server
 codex:
   command: ` + command + `
@@ -172,6 +178,21 @@ Test prompt for {{ issue.identifier }}
 	}
 	if _, err := manager.Refresh(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func setWorkflowMaxAutomaticRetries(t *testing.T, manager *config.Manager, maxAutomaticRetries int) {
+	t.Helper()
+	data, err := os.ReadFile(manager.Path())
+	if err != nil {
+		t.Fatalf("ReadFile workflow: %v", err)
+	}
+	updated := strings.Replace(string(data), "  max_automatic_retries: 8\n", fmt.Sprintf("  max_automatic_retries: %d\n", maxAutomaticRetries), 1)
+	if err := os.WriteFile(manager.Path(), []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatalf("Refresh workflow: %v", err)
 	}
 }
 
@@ -245,6 +266,125 @@ func waitForRunningCount(t *testing.T, orch *Orchestrator, expected int, timeout
 	t.Fatalf("timed out waiting for running count %d", expected)
 }
 
+func forceRetryDue(t *testing.T, orch *Orchestrator, issueID string) {
+	t.Helper()
+	orch.mu.Lock()
+	defer orch.mu.Unlock()
+	entry, ok := orch.retries[issueID]
+	if !ok {
+		t.Fatalf("expected retry entry for %s", issueID)
+	}
+	entry.DueAt = time.Now().UTC().Add(-time.Millisecond)
+	orch.retries[issueID] = entry
+}
+
+func waitForIssuePauseReason(t *testing.T, store *kanban.Store, issueID, reason string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		events, err := store.ListIssueRuntimeEvents(issueID, 20)
+		if err == nil && len(events) > 0 {
+			latest := events[len(events)-1]
+			if latest.Kind == "retry_paused" && latest.Error == reason {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for pause reason %s on %s", reason, issueID)
+}
+
+func waitForIssueRetryState(t *testing.T, store *kanban.Store, issueID, delayType string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		events, err := store.ListIssueRuntimeEvents(issueID, 20)
+		if err == nil && len(events) > 0 {
+			latest := events[len(events)-1]
+			if latest.Kind == "retry_scheduled" && latest.DelayType == delayType {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for retry type %s on %s", delayType, issueID)
+}
+
+func assertRetryEventInvariants(t *testing.T, events []kanban.RuntimeEvent) {
+	t.Helper()
+	pendingRetries := 0
+	paused := false
+	for _, event := range events {
+		switch event.Kind {
+		case "retry_scheduled":
+			if paused {
+				t.Fatalf("found retry scheduled after pause: %+v", events)
+			}
+			pendingRetries++
+			if pendingRetries > 1 {
+				t.Fatalf("found more than one pending retry in event stream: %+v", events)
+			}
+			if delay := payloadInt(event.Payload, "delay_ms"); delay <= 0 {
+				t.Fatalf("found non-positive retry delay in event stream: %+v", events)
+			}
+		case "retry_paused":
+			paused = true
+			pendingRetries = 0
+		case "run_started", "run_completed", "run_failed", "run_unsuccessful", "manual_retry_requested":
+			pendingRetries = 0
+			if event.Kind != "retry_paused" {
+				paused = false
+			}
+		}
+	}
+}
+
+func writeSharedAppServerWorkflow(t *testing.T, workflowPath, workspaceRoot, command string, reviewEnabled bool, maxAutomaticRetries, turnTimeoutMs, stallTimeoutMs int) {
+	t.Helper()
+	workflowContent := fmt.Sprintf(`---
+tracker:
+  kind: kanban
+  active_states:
+    - ready
+    - in_progress
+    - in_review
+  terminal_states:
+    - done
+    - cancelled
+polling:
+  interval_ms: 50
+workspace:
+  root: %s
+hooks:
+  timeout_ms: 1000
+phases:
+  review:
+    enabled: %t
+  done:
+    enabled: false
+agent:
+  max_concurrent_agents: 1
+  max_turns: 1
+  max_retry_backoff_ms: 100
+  max_automatic_retries: %d
+  mode: app_server
+codex:
+  command: %s
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  read_timeout_ms: 200
+  turn_timeout_ms: %d
+  stall_timeout_ms: %d
+---
+Shared retry stress harness for {{ issue.identifier }}
+`, workspaceRoot, reviewEnabled, maxAutomaticRetries, command, turnTimeoutMs, stallTimeoutMs)
+	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+}
+
 func TestDispatchCreatesWorkspace(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	issue, _ := store.CreateIssue("", "", "Ready Issue", "", 0, nil)
@@ -290,8 +430,95 @@ func TestFailureRetryScheduling(t *testing.T) {
 	waitForNoRunning(t, orch, time.Second)
 }
 
+func TestAutomaticRetryLimitPausesRunawayFailures(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "false")
+	setWorkflowMaxAutomaticRetries(t, manager, 2)
+
+	issue, _ := store.CreateIssue("", "", "Retry limited", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	for i := 0; i < 2; i++ {
+		forceRetryDue(t, orch, issue.ID)
+		orch.processRetries(context.Background())
+		waitForNoRunning(t, orch, time.Second)
+	}
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	_, retryScheduled := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !pausedOK {
+		t.Fatal("expected retry limit to pause automatic retries")
+	}
+	if retryScheduled {
+		t.Fatal("expected retry limit to clear scheduled retries")
+	}
+	if paused.Error != "retry_limit_reached" || paused.Attempt != 3 {
+		t.Fatalf("unexpected paused payload: %+v", paused)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 20)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	if latest := events[len(events)-1]; latest.Kind != "retry_paused" || latest.Error != "retry_limit_reached" {
+		t.Fatalf("unexpected latest runtime event: %+v", latest)
+	}
+}
+
+func TestManualRetryResetsAutomaticRetryLimit(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "false")
+	setWorkflowMaxAutomaticRetries(t, manager, 1)
+
+	issue, _ := store.CreateIssue("", "", "Retry reset", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	forceRetryDue(t, orch, issue.ID)
+	orch.processRetries(context.Background())
+	waitForNoRunning(t, orch, time.Second)
+
+	orch.mu.RLock()
+	if orch.paused[issue.ID].Error != "retry_limit_reached" {
+		t.Fatalf("expected retry limit pause, got %+v", orch.paused[issue.ID])
+	}
+	orch.mu.RUnlock()
+
+	result := orch.RetryIssueNow(issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("unexpected RetryIssueNow result: %#v", result)
+	}
+
+	orch.processRetries(context.Background())
+	waitForNoRunning(t, orch, time.Second)
+
+	orch.mu.RLock()
+	retry, retryOK := orch.retries[issue.ID]
+	paused, pausedOK := orch.paused[issue.ID]
+	orch.mu.RUnlock()
+	if !retryOK {
+		t.Fatal("expected new failure retry after manual reset")
+	}
+	if pausedOK {
+		t.Fatalf("expected manual retry to clear paused state, got %+v", paused)
+	}
+	if retry.Error == "retry_limit_reached" {
+		t.Fatalf("expected reset retry payload, got %+v", retry)
+	}
+}
+
 func TestContinuationRetryAfterSuccess(t *testing.T) {
-	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
 	issue, _ := store.CreateIssue("", "", "Succeeds", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
@@ -338,6 +565,45 @@ func TestImplementationSuccessTransitionsToReviewPhase(t *testing.T) {
 	orch.mu.RUnlock()
 	if retry.Phase != string(kanban.WorkflowPhaseReview) {
 		t.Fatalf("expected review retry, got %+v", retry)
+	}
+}
+
+func TestImplementationSuccessWithoutStateTransitionPausesAutomaticRetry(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	orch.runner = &phaseScriptRunner{store: store}
+
+	issue, _ := store.CreateIssue("", "", "No transition", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	_, retryScheduled := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !pausedOK {
+		t.Fatal("expected retry pause after same-phase successful run")
+	}
+	if retryScheduled {
+		t.Fatal("expected no continuation retry after same-phase successful run")
+	}
+	if paused.Error != "no_state_transition" || paused.Attempt != 1 {
+		t.Fatalf("unexpected paused payload: %+v", paused)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected runtime events for paused retry")
+	}
+	latest := events[len(events)-1]
+	if latest.Kind != "retry_paused" || latest.Error != "no_state_transition" || latest.Attempt != 1 {
+		t.Fatalf("unexpected latest runtime event: %+v", latest)
 	}
 }
 
@@ -484,6 +750,33 @@ func TestDoneFailureRetriesInDonePhase(t *testing.T) {
 	orch.mu.RUnlock()
 	if retry.Phase != string(kanban.WorkflowPhaseDone) || retry.DelayType != "failure" {
 		t.Fatalf("expected done failure retry, got %+v", retry)
+	}
+}
+
+func TestInReviewIssuesAreNotDispatchedWhenReviewPhaseDisabled(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runner := newControlledRunner(store)
+	orch.runner = runner
+
+	issue, _ := store.CreateIssue("", "", "Review disabled", "", 0, nil)
+	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	orch.mu.RLock()
+	_, running := orch.running[issue.ID]
+	_, retrying := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if running || retrying {
+		t.Fatalf("expected in_review issue to stay idle when review is disabled, running=%v retrying=%v", running, retrying)
+	}
+	if len(runner.snapshotEvents()) != 0 {
+		t.Fatal("expected no run start when review is disabled")
 	}
 }
 
@@ -669,6 +962,64 @@ func TestStalledRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	}
 }
 
+func TestTurnInputRequiredPausesAutomaticRetries(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-input"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-input"}}}},
+				{JSON: map[string]interface{}{
+					"id":     4,
+					"method": "item/tool/requestUserInput",
+					"params": map[string]interface{}{
+						"questions": []map[string]interface{}{{
+							"id": "input-choice",
+							"options": []map[string]interface{}{
+								{"label": "Use default"},
+								{"label": "Skip"},
+							},
+						}},
+					},
+				}},
+			}, WaitForRelease: "never"},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 3000)
+
+	issue, _ := store.CreateIssue("", "", "Input required", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	_, retryScheduled := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !pausedOK {
+		t.Fatal("expected turn_input_required to pause retries")
+	}
+	if retryScheduled {
+		t.Fatal("expected turn_input_required not to schedule retry")
+	}
+	if paused.Error != "turn_input_required" {
+		t.Fatalf("unexpected paused payload: %+v", paused)
+	}
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "retry_paused" || snapshot.Error != "turn_input_required" {
+		t.Fatalf("unexpected execution snapshot: %+v", snapshot)
+	}
+}
+
 func TestCompletedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
@@ -693,7 +1044,7 @@ func TestCompletedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 3*time.Second)
 	waitForNoRunning(t, orch, 3*time.Second)
 
-	if snapshot.RunKind != "run_completed" || snapshot.Error != "" {
+	if snapshot.RunKind != "retry_paused" || snapshot.Error != "no_state_transition" {
 		t.Fatalf("unexpected completion snapshot: %+v", snapshot)
 	}
 	if snapshot.AppSession.SessionID != "thread-complete-turn-complete" || snapshot.AppSession.TerminalReason != "turn.completed" {
@@ -974,6 +1325,7 @@ agent:
   max_concurrent_agents: 1
   max_turns: 1
   max_retry_backoff_ms: 100
+  max_automatic_retries: 8
   mode: stdio
 codex:
   command: cat
@@ -1017,6 +1369,211 @@ Test prompt for {{ issue.identifier }}
 
 	runner.complete(issue.Identifier)
 	waitForNoRunning(t, orch, time.Second)
+}
+
+func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "stress.db")
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+
+	logBuffer := &bytes.Buffer{}
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	adminStore, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore admin: %v", err)
+	}
+	t.Cleanup(func() { _ = adminStore.Close() })
+
+	completeCommand, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-complete"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-complete"}}}},
+				{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-complete", "turn": map[string]interface{}{"id": "turn-complete", "status": "completed", "items": []interface{}{}}}}},
+			}, ExitCode: fakeappserver.Int(0)},
+		},
+	})
+	inputCommand, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-input"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-input"}}}},
+				{JSON: map[string]interface{}{"id": 4, "method": "item/tool/requestUserInput", "params": map[string]interface{}{"questions": []map[string]interface{}{{"id": "path", "options": []map[string]interface{}{{"label": "Option A"}, {"label": "Option B"}}}}}}},
+			}, WaitForRelease: "never"},
+		},
+	})
+	stallCommand, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-stall"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-stall"}}}}}, WaitForRelease: "never"},
+		},
+	})
+
+	type sharedFixture struct {
+		repoPath     string
+		workflowPath string
+		projectID    string
+		issueID      string
+		identifier   string
+	}
+
+	createFixture := func(name, command string, reviewEnabled bool, turnTimeoutMs, stallTimeoutMs int) sharedFixture {
+		repoPath := filepath.Join(tmpDir, name)
+		workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+		if err := os.MkdirAll(repoPath, 0o755); err != nil {
+			t.Fatalf("MkdirAll repo: %v", err)
+		}
+		writeSharedAppServerWorkflow(t, workflowPath, workspaceRoot, command, reviewEnabled, 8, turnTimeoutMs, stallTimeoutMs)
+		project, err := adminStore.CreateProject(name, "", repoPath, workflowPath)
+		if err != nil {
+			t.Fatalf("CreateProject %s: %v", name, err)
+		}
+		issue, err := adminStore.CreateIssue(project.ID, "", name+" issue", "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue %s: %v", name, err)
+		}
+		if err := adminStore.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+			t.Fatalf("UpdateIssueState %s: %v", name, err)
+		}
+		return sharedFixture{
+			repoPath:     repoPath,
+			workflowPath: workflowPath,
+			projectID:    project.ID,
+			issueID:      issue.ID,
+			identifier:   issue.Identifier,
+		}
+	}
+
+	fixtures := []sharedFixture{
+		createFixture("advance-project", completeCommand, true, 1500, 1500),
+		createFixture("no-transition-project", completeCommand, false, 1500, 1500),
+		createFixture("input-project", inputCommand, false, 1500, 1500),
+		createFixture("stall-project", stallCommand, false, 1500, 250),
+	}
+
+	var (
+		orchestrators []*Orchestrator
+		stores        []*kanban.Store
+	)
+	for _, fixture := range fixtures {
+		store, err := kanban.NewStore(dbPath)
+		if err != nil {
+			t.Fatalf("NewStore shared: %v", err)
+		}
+		stores = append(stores, store)
+		orch := NewSharedWithExtensions(store, nil, fixture.repoPath, fixture.workflowPath)
+		orchestrators = append(orchestrators, orch)
+	}
+	t.Cleanup(func() {
+		for _, orch := range orchestrators {
+			orch.stopAllRuns()
+		}
+		for _, orch := range orchestrators {
+			waitForNoRunning(t, orch, 3*time.Second)
+		}
+		for _, store := range stores {
+			_ = store.Close()
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(orchestrators))
+	for _, orch := range orchestrators {
+		wg.Add(1)
+		go func(orch *Orchestrator) {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := orch.tick(ctx); err != nil {
+					errCh <- err
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}(orch)
+	}
+
+	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", 3*time.Second)
+	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", 3*time.Second)
+	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", 3*time.Second)
+	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", 3*time.Second)
+
+	cancel()
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("tick failed: %v", err)
+		}
+	}
+
+	if strings.Contains(logBuffer.String(), "database is locked") {
+		t.Fatalf("unexpected sqlite lock contention in logs: %s", logBuffer.String())
+	}
+
+	for _, fixture := range fixtures {
+		events, err := adminStore.ListIssueRuntimeEvents(fixture.issueID, 50)
+		if err != nil {
+			t.Fatalf("ListIssueRuntimeEvents %s: %v", fixture.identifier, err)
+		}
+		assertRetryEventInvariants(t, events)
+	}
+
+	advanceEvents, err := adminStore.ListIssueRuntimeEvents(fixtures[0].issueID, 20)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents advance: %v", err)
+	}
+	foundContinuation := false
+	for _, event := range advanceEvents {
+		if event.Kind == "retry_scheduled" && event.DelayType == "continuation" {
+			foundContinuation = true
+			break
+		}
+	}
+	if !foundContinuation {
+		t.Fatalf("expected continuation retry for normal advancement, got %+v", advanceEvents)
+	}
+	if latest := advanceEvents[len(advanceEvents)-1]; latest.Kind == "retry_paused" {
+		t.Fatalf("expected advance path to stay unpaused, got %+v", latest)
+	}
+
+	noTransitionSnapshot, err := adminStore.GetIssueExecutionSession(fixtures[1].issueID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession no-transition: %v", err)
+	}
+	if noTransitionSnapshot.Error != "no_state_transition" {
+		t.Fatalf("unexpected no-transition snapshot: %+v", noTransitionSnapshot)
+	}
+
+	inputSnapshot, err := adminStore.GetIssueExecutionSession(fixtures[2].issueID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession input: %v", err)
+	}
+	if inputSnapshot.Error != "turn_input_required" {
+		t.Fatalf("unexpected input snapshot: %+v", inputSnapshot)
+	}
+
+	stallSnapshot, err := adminStore.GetIssueExecutionSession(fixtures[3].issueID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession stall: %v", err)
+	}
+	if stallSnapshot.Error != "stall_timeout" {
+		t.Fatalf("unexpected stall snapshot: %+v", stallSnapshot)
+	}
 }
 
 type runnerEvent struct {

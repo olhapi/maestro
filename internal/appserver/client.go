@@ -862,13 +862,15 @@ func answersForToolInput(params map[string]interface{}, autoApprove bool) (map[s
 		if strings.TrimSpace(id) == "" {
 			return nil, false
 		}
-		answer := nonInteractiveToolInputAnswer
 		if autoApprove {
-			if label := approvalOptionLabel(q["options"]); label != "" {
-				answer = label
+			label := approvalOptionLabel(q["options"])
+			if label == "" {
+				return nil, false
 			}
+			answers[id] = map[string]interface{}{"answers": []string{label}}
+			continue
 		}
-		answers[id] = map[string]interface{}{"answers": []string{answer}}
+		answers[id] = map[string]interface{}{"answers": []string{nonInteractiveToolInputAnswer}}
 	}
 	return answers, autoApprove
 }
@@ -882,13 +884,15 @@ func answersForToolInputParams(params gen.ToolRequestUserInputParams, autoApprov
 		if strings.TrimSpace(question.ID) == "" {
 			return nil, false
 		}
-		answer := nonInteractiveToolInputAnswer
 		if autoApprove {
-			if label := approvalOptionLabelFromQuestions(question.Options); label != "" {
-				answer = label
+			label := approvalOptionLabelFromQuestions(question.Options)
+			if label == "" {
+				return nil, false
 			}
+			answers[question.ID] = gen.ToolRequestUserInputAnswer{Answers: []string{label}}
+			continue
 		}
-		answers[question.ID] = gen.ToolRequestUserInputAnswer{Answers: []string{answer}}
+		answers[question.ID] = gen.ToolRequestUserInputAnswer{Answers: []string{nonInteractiveToolInputAnswer}}
 	}
 	return answers, autoApprove
 }
