@@ -39,7 +39,7 @@ import type {
   IssueState,
   IssueSummary,
 } from "@/lib/types";
-import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
+import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 
 export function IssuePreviewSheet({
   issue,
@@ -128,18 +128,18 @@ export function IssuePreviewSheet({
             </div>
           </SheetHeader>
 
-          <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
-            <div className="rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4">
+          <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+            <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5">
               <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                 Description
               </p>
-              <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--muted-foreground)]">
+              <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
                 {activeIssue.description || "No description provided."}
               </p>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Workspace
                 </p>
@@ -150,7 +150,7 @@ export function IssuePreviewSheet({
                   {formatNumber(activeIssue.workspace_run_count)} runs
                 </p>
               </div>
-              <div className="rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Execution
                 </p>
@@ -162,7 +162,7 @@ export function IssuePreviewSheet({
                       : "No live session"}
                   </span>
                   <span>
-                    {formatNumber(activeIssue.total_tokens_spent)} lifetime
+                    {formatCompactNumber(activeIssue.total_tokens_spent)} lifetime
                     tokens
                   </span>
                   {retry ? (
@@ -183,7 +183,7 @@ export function IssuePreviewSheet({
               </div>
             </div>
 
-            <div className="grid gap-4 rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4">
+            <div className="grid gap-3.5 rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5">
               <div className="grid gap-2">
                 <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   State

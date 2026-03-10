@@ -36,7 +36,7 @@ export function PageHeader({
   statsClassName?: string
 }) {
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       {crumbs.length > 0 ? (
         <Breadcrumb>
           <BreadcrumbList>
@@ -60,16 +60,23 @@ export function PageHeader({
         </Breadcrumb>
       ) : null}
 
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="max-w-3xl">
           {eyebrow ? <Badge>{eyebrow}</Badge> : null}
-          <h1 className={cn('mt-4 font-display text-4xl font-semibold tracking-tight text-white', eyebrow ? '' : 'mt-0')}>{title}</h1>
-          {description ? <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--muted-foreground)]">{description}</p> : null}
+          <h1
+            className={cn(
+              'mt-3 font-display text-[length:var(--page-title-size)] font-semibold tracking-tight text-white leading-[var(--page-title-line-height)]',
+              eyebrow ? '' : 'mt-0',
+            )}
+          >
+            {title}
+          </h1>
+          {description ? <p className="mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]">{description}</p> : null}
         </div>
-        {actions ? <div className="flex flex-wrap items-center gap-3">{actions}</div> : null}
+        {actions ? <div className="flex flex-wrap items-center gap-2.5">{actions}</div> : null}
       </div>
 
-      {stats ? <div className={cn('grid gap-3 md:grid-cols-2 xl:grid-cols-4', statsClassName)}>{stats}</div> : null}
+      {stats ? <div className={cn('grid gap-3 sm:grid-cols-2 lg:grid-cols-4', statsClassName)}>{stats}</div> : null}
     </div>
   )
 }

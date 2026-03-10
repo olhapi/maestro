@@ -21,9 +21,9 @@ import { formatRelativeTime } from '@/lib/utils'
 function StatCard({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
     <Card>
-      <CardContent className="p-5">
+      <CardContent>
         <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
-        <p className="mt-3 font-display text-4xl text-white">{value}</p>
+        <p className="mt-2.5 font-display text-[length:var(--metric-value-size)] leading-none text-white">{value}</p>
         <p className="mt-2 text-sm text-[var(--muted-foreground)]">{detail}</p>
       </CardContent>
     </Card>
@@ -66,7 +66,7 @@ export function EpicDetailPage() {
   }
 
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         eyebrow="Epic hub"
         title={epic.data.epic.name}
@@ -99,14 +99,14 @@ export function EpicDetailPage() {
         }
       />
 
-      <div className="grid gap-5 xl:grid-cols-[1fr_.9fr]">
+      <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1fr_.9fr]">
         <Card>
-          <CardContent className="p-5">
+          <CardContent>
             <Badge>Recent work</Badge>
             <h2 className="mt-4 text-2xl font-semibold text-white">What changed in this epic</h2>
-            <div className="mt-5 grid gap-3">
+            <div className="mt-4 grid gap-2.5">
               {epic.data.issues.items.slice(0, 5).map((issue) => (
-                <button key={issue.id} className="rounded-[1.25rem] border border-white/8 bg-white/[0.04] p-4 text-left transition hover:bg-white/[0.07]" onClick={() => setPreviewIssue(issue)}>
+                <button key={issue.id} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5 text-left transition hover:bg-white/[0.07]" onClick={() => setPreviewIssue(issue)}>
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium text-white">{issue.identifier}</p>
@@ -122,14 +122,14 @@ export function EpicDetailPage() {
         </Card>
 
         <Card>
-          <CardContent className="p-5">
+          <CardContent>
             <Badge>Sibling epics</Badge>
             <h2 className="mt-4 text-2xl font-semibold text-white">Adjacent delivery arcs</h2>
-            <div className="mt-5 grid gap-3">
+            <div className="mt-4 grid gap-2.5">
               {epic.data.sibling_epics
                 .filter((sibling) => sibling.id !== epic.data.epic.id)
                 .map((sibling) => (
-                  <Link key={sibling.id} className="rounded-[1.25rem] border border-white/8 bg-white/[0.04] p-4 transition hover:bg-white/[0.07]" params={{ epicId: sibling.id }} to={appRoutes.epicDetail}>
+                  <Link key={sibling.id} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5 transition hover:bg-white/[0.07]" params={{ epicId: sibling.id }} to={appRoutes.epicDetail}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="font-medium text-white">{sibling.name}</p>
@@ -150,7 +150,7 @@ export function EpicDetailPage() {
       </div>
 
       <Card>
-        <CardContent className="p-5">
+        <CardContent>
           <div className="flex items-center justify-between gap-3">
             <div>
               <Badge>Epic lanes</Badge>
@@ -161,9 +161,9 @@ export function EpicDetailPage() {
               <ArrowRight className="size-4" />
             </Link>
           </div>
-          <div className="mt-5 grid gap-4 xl:grid-cols-3">
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
             {laneStates.map((state) => (
-              <div key={state} className="rounded-[1.5rem] border border-white/8 bg-white/[0.03] p-4">
+              <div key={state} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.03] p-3.5">
                 <div>
                   <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{getStateMeta(state).label}</p>
                   <p className="mt-2 text-2xl font-semibold text-white">{groupedIssues[state].length}</p>

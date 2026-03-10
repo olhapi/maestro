@@ -14,6 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
 import {
+  isProjectDispatchReady,
   projectDispatchBadgeClass,
   projectDispatchLabel,
   projectRunningCount,
@@ -23,7 +24,7 @@ import {
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
 import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
+import { formatCompactNumber, formatRelativeTime } from "@/lib/utils";
 
 function ProjectStat({
   label,
@@ -122,9 +123,12 @@ export function ProjectDetailPage() {
 
   const totalIssues = project.data.issues.items.length;
   const runningCount = projectRunningCount(projectId, bootstrap.data);
+  const dispatchReady = isProjectDispatchReady(project.data.project);
+  const isRunning = runningCount > 0;
+  const togglePending = runProject.isPending || stopProject.isPending;
 
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         title={project.data.project.name}
         description={
@@ -138,21 +142,11 @@ export function ProjectDetailPage() {
           <>
             <Button
               variant="secondary"
-              disabled={
-                !project.data.project.dispatch_ready || runProject.isPending
-              }
-              onClick={() => runProject.mutate()}
+              disabled={!dispatchReady || togglePending}
+              onClick={() => (isRunning ? stopProject.mutate() : runProject.mutate())}
             >
-              <Play className="size-4" />
-              Run project
-            </Button>
-            <Button
-              variant="secondary"
-              disabled={runningCount === 0 || stopProject.isPending}
-              onClick={() => stopProject.mutate()}
-            >
-              <Square className="size-4" />
-              Stop runs
+              {isRunning ? <Square className="size-4" /> : <Play className="size-4" />}
+              {isRunning ? "Stop project" : "Run project"}
             </Button>
             <Button
               variant="secondary"
@@ -196,16 +190,16 @@ export function ProjectDetailPage() {
             />
             <ProjectStat
               label="Tokens"
-              value={String(summaryTokenSpend(project.data.project))}
+              value={formatCompactNumber(summaryTokenSpend(project.data.project))}
               detail="Lifetime tokens spent across all project issues."
             />
           </>
         }
-        statsClassName="overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.04] md:grid-cols-5 md:gap-0"
+        statsClassName="overflow-hidden rounded-[var(--panel-radius)] border border-white/10 bg-white/[0.04] sm:grid-cols-2 lg:grid-cols-5 lg:gap-0"
       />
 
       <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
               Repo binding
@@ -229,15 +223,17 @@ export function ProjectDetailPage() {
               </p>
             ) : null}
           </div>
-          <Badge className={projectDispatchBadgeClass(project.data.project)}>
-            {projectDispatchLabel(project.data.project)}
-          </Badge>
+          {!dispatchReady ? (
+            <Badge className={projectDispatchBadgeClass(project.data.project)}>
+              {projectDispatchLabel(project.data.project)}
+            </Badge>
+          ) : null}
         </CardContent>
       </Card>
 
-      <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]">
+      <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.1fr_.9fr]">
         <Card>
-          <CardContent className="p-5">
+          <CardContent>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold text-white">
@@ -256,11 +252,11 @@ export function ProjectDetailPage() {
                 <Plus className="size-4 shrink-0 text-[var(--accent)]" />
               </Button>
             </div>
-            <div className="mt-5 grid gap-3">
+            <div className="mt-4 grid gap-2.5">
               {project.data.epics.map((epic) => (
                 <div
                   key={epic.id}
-                  className="rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4"
+                  className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -272,7 +268,7 @@ export function ProjectDetailPage() {
                           {epic.name}
                         </Link>
                       </p>
-                      <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                      <p className="mt-2 text-sm leading-5 text-[var(--muted-foreground)]">
                         {epic.description || "No epic description yet."}
                       </p>
                     </div>
@@ -280,7 +276,7 @@ export function ProjectDetailPage() {
                       {summaryActiveCount(epic)} active
                     </span>
                   </div>
-                  <div className="mt-4 grid grid-cols-4 gap-2 text-xs text-[var(--muted-foreground)]">
+                  <div className="mt-3.5 grid gap-2 text-xs text-[var(--muted-foreground)] sm:grid-cols-2 xl:grid-cols-4">
                     <div className="rounded-xl border border-white/8 bg-black/20 p-3">
                       Backlog {epic.counts.backlog}
                     </div>
@@ -301,15 +297,15 @@ export function ProjectDetailPage() {
         </Card>
 
         <Card>
-          <CardContent className="p-5">
+          <CardContent>
             <h2 className="text-2xl font-semibold text-white">
               What changed most recently
             </h2>
-            <div className="mt-5 grid gap-3">
+            <div className="mt-4 grid gap-2.5">
               {project.data.issues.items.slice(0, 5).map((issue) => (
                 <button
                   key={issue.id}
-                  className="rounded-[1.25rem] border border-white/8 bg-white/[0.04] p-4 text-left transition hover:bg-white/[0.07]"
+                  className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5 text-left transition hover:bg-white/[0.07]"
                   onClick={() => setPreviewIssue(issue)}
                 >
                   <div className="flex items-center justify-between gap-3">

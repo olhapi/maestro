@@ -37,7 +37,7 @@ export function SessionDetailPage() {
   }
 
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         eyebrow="Session detail"
         title={issue.data.title}
@@ -66,7 +66,7 @@ export function SessionDetailPage() {
         {issue.data.project_name ? <Badge className="border-white/10 bg-white/5 text-white">{issue.data.project_name}</Badge> : null}
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
+      <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.2fr_.8fr]">
         <SessionExecutionCard
           execution={execution.data}
           issueTotalTokens={issue.data.total_tokens_spent}
@@ -74,20 +74,20 @@ export function SessionDetailPage() {
           pausedActionHint="Open the issue page to retry after checking the workspace or runtime conditions."
         />
 
-        <div className="grid gap-5">
+        <div className="grid gap-[var(--section-gap)]">
           <Card>
-            <CardContent className="grid gap-4 p-5">
-              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+            <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Updated</p>
                 <p className="mt-3 text-white">{formatRelativeTime(issue.data.updated_at)}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">{formatDateTime(issue.data.updated_at)}</p>
               </div>
-              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Workspace</p>
                 <p className="mt-3 break-all text-white">{issue.data.workspace_path || 'Not created yet'}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">Runs: {issue.data.workspace_run_count}</p>
               </div>
-              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3 sm:col-span-2 lg:col-span-1">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Branch / PR</p>
                 <p className="mt-3 text-white">{issue.data.branch_name || 'No branch linked'}</p>
                 <p className="mt-2 break-all text-sm text-[var(--muted-foreground)]">{issue.data.pr_url || 'No pull request linked'}</p>
@@ -96,9 +96,9 @@ export function SessionDetailPage() {
           </Card>
 
           <Card>
-            <CardContent className="p-5">
+            <CardContent className="pt-3.5 pb-3.5">
               <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Description</p>
-              <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--muted-foreground)]">
+              <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
                 {issue.data.description || 'No description provided.'}
               </p>
             </CardContent>

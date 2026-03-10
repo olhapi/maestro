@@ -28,6 +28,13 @@ export function formatNumber(value: number | undefined) {
   return new Intl.NumberFormat('en-US').format(value ?? 0)
 }
 
+export function formatCompactNumber(value: number | undefined) {
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value ?? 0)
+}
+
 export function toTitleCase(value: string) {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase())
 }

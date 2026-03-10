@@ -3,7 +3,7 @@ import { AlertTriangle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { IssueExecutionDetail } from '@/lib/types'
-import { formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
+import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
 export function SessionExecutionCard({
   execution,
@@ -49,7 +49,7 @@ export function SessionExecutionCard({
       <CardHeader>
         <CardTitle>{title}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-3.5">
         <div className="flex flex-wrap gap-2">
           <Badge className="border-white/10 bg-white/5 text-white">{sessionStatusLabel}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.retry_state)}</Badge>
@@ -66,7 +66,7 @@ export function SessionExecutionCard({
         </div>
 
         {execution.retry_state === 'paused' ? (
-          <div className="rounded-[1.5rem] border border-amber-400/25 bg-amber-400/10 p-4 text-sm text-amber-50">
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
               <div>
@@ -82,13 +82,13 @@ export function SessionExecutionCard({
         ) : null}
 
         {execution.current_error ? (
-          <div className="rounded-[1.5rem] border border-rose-400/15 bg-rose-400/10 p-4 text-sm text-rose-100">
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-rose-400/15 bg-rose-400/10 p-3.5 text-sm text-rose-100">
             <p className="text-xs uppercase tracking-[0.18em] text-rose-200/80">Current error</p>
             <p className="mt-2 whitespace-pre-wrap break-words">{execution.current_error}</p>
           </div>
         ) : null}
 
-        <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+        <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-sm text-[var(--muted-foreground)]">Session snapshot</p>
@@ -99,38 +99,38 @@ export function SessionExecutionCard({
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+        <div className="grid gap-2.5 md:grid-cols-3">
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Turns</p>
-            <p className="mt-2 font-display text-3xl text-white">{session?.turns_started ?? 0}</p>
+            <p className="mt-2 font-display text-[calc(var(--metric-value-size)-0.25rem)] leading-none text-white">{session?.turns_started ?? 0}</p>
             <p className="mt-2 text-sm text-[var(--muted-foreground)]">Completed: {formatNumber(session?.turns_completed)}</p>
           </div>
-          <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Session tokens</p>
-            <p className="mt-2 font-display text-3xl text-white">{formatNumber(session?.total_tokens)}</p>
+            <p className="mt-2 font-display text-[calc(var(--metric-value-size)-0.25rem)] leading-none text-white">{formatCompactNumber(session?.total_tokens)}</p>
             <p className="mt-2 text-sm text-[var(--muted-foreground)]">Updated: {session ? formatDateTime(session.last_timestamp) : 'n/a'}</p>
           </div>
-          <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Issue total</p>
-            <p className="mt-2 font-display text-3xl text-white">{formatNumber(issueTotalTokens)}</p>
+            <p className="mt-2 font-display text-[calc(var(--metric-value-size)-0.25rem)] leading-none text-white">{formatCompactNumber(issueTotalTokens)}</p>
             <p className="mt-2 text-sm text-[var(--muted-foreground)]">Lifetime tokens across all runs</p>
           </div>
         </div>
 
-        <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+        <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-medium text-white">Recent session history</p>
             <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{sessionHistory.length} events</span>
           </div>
-          <div className="mt-4 space-y-3">
+          <div className="mt-3.5 space-y-2.5">
             {sessionHistory.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No session history captured for this issue yet.</p>
             ) : (
               sessionHistory.map((event, index) => (
-                <div key={`${event.type}-${event.turn_id || index}`} className="rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                <div key={`${event.type}-${event.turn_id || index}`} className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-white/[0.03] p-3">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm font-medium text-white">{event.type}</p>
-                    <span className="text-xs text-[var(--muted-foreground)]">{formatNumber(event.total_tokens)} tokens</span>
+                    <span className="text-xs text-[var(--muted-foreground)]">{formatCompactNumber(event.total_tokens)} tokens</span>
                   </div>
                   <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.message || 'No message'}</p>
                 </div>
@@ -139,17 +139,17 @@ export function SessionExecutionCard({
           </div>
         </div>
 
-        <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+        <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-medium text-white">Runtime events</p>
             <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{execution.runtime_events.length} tracked</span>
           </div>
-          <div className="mt-4 space-y-3">
+          <div className="mt-3.5 space-y-2.5">
             {runtimeEvents.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No persisted runtime events for this issue yet.</p>
             ) : (
               runtimeEvents.map((event) => (
-                <div key={event.seq} className="rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                <div key={event.seq} className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-white/[0.03] p-3">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm font-medium text-white">{toTitleCase(event.kind)}</p>
                     <span className="text-xs text-[var(--muted-foreground)]">{formatDateTime(event.ts)}</span>

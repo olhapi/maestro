@@ -7,7 +7,7 @@ export const Tabs = TabsPrimitive.Root
 export function TabsList({ className, ...props }: TabsPrimitive.TabsListProps) {
   return (
     <TabsPrimitive.List
-      className={cn('inline-flex rounded-2xl border border-white/10 bg-black/20 p-1', className)}
+      className={cn('inline-flex rounded-[var(--panel-radius)] border border-white/10 bg-black/20 p-0.75', className)}
       {...props}
     />
   )
@@ -17,7 +17,7 @@ export function TabsTrigger({ className, ...props }: TabsPrimitive.TabsTriggerPr
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        'rounded-xl px-4 py-2 text-sm text-[var(--muted-foreground)] transition data-[state=active]:bg-white data-[state=active]:text-black',
+        'rounded-[calc(var(--panel-radius)-0.375rem)] px-3.5 py-1.5 text-sm text-[var(--muted-foreground)] transition data-[state=active]:bg-white data-[state=active]:text-black',
         className,
       )}
       {...props}

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import {
+  isProjectDispatchReady,
   projectDispatchBadgeClass,
   projectDispatchLabel,
   projectRunningCount,
@@ -21,14 +22,15 @@ import {
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
 import type { EpicSummary, ProjectSummary } from "@/lib/types";
+import { formatCompactNumber } from "@/lib/utils";
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[1.25rem] border border-white/8 bg-black/20 p-4">
+    <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
       <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
         {label}
       </p>
-      <p className="mt-3 font-display text-3xl text-white">{value}</p>
+      <p className="mt-2.5 font-display text-[calc(var(--metric-value-size)-0.25rem)] leading-none text-white">{value}</p>
     </div>
   );
 }
@@ -97,7 +99,7 @@ export function ProjectsPage() {
   );
 
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         eyebrow="Portfolio surface"
         title="Projects are now entry points, not dead-end rollups"
@@ -133,12 +135,15 @@ export function ProjectsPage() {
         }
       />
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-[var(--section-gap)] lg:grid-cols-2">
         {projects.data.items.map((project) => {
           const runningCount = projectRunningCount(project.id, bootstrap.data);
+          const dispatchReady = isProjectDispatchReady(project);
+          const isRunning = runningCount > 0;
+          const togglePending = runProject.isPending || stopProject.isPending;
           return (
             <Card key={project.id} className="overflow-hidden">
-              <CardHeader className="items-start">
+              <CardHeader className="flex-col gap-3 lg:flex-row lg:items-start">
                 <div className="space-y-3">
                   <Badge>{summaryActiveCount(project)} active</Badge>
                   <div>
@@ -150,7 +155,7 @@ export function ProjectsPage() {
                         {project.name}
                       </Link>
                     </CardTitle>
-                    <p className="mt-3 max-w-xl text-sm leading-7 text-[var(--muted-foreground)]">
+                    <p className="mt-2.5 max-w-xl text-sm leading-6 text-[var(--muted-foreground)]">
                       {project.description || "No description yet."}
                     </p>
                     <p className="mt-2 text-xs text-[var(--muted-foreground)]">
@@ -169,25 +174,27 @@ export function ProjectsPage() {
                     ) : null}
                   </div>
                 </div>
-                <div className="flex gap-2">
-                  <Badge className={projectDispatchBadgeClass(project)}>
-                    {projectDispatchLabel(project)}
-                  </Badge>
+                <div className="flex flex-wrap gap-2">
+                  {!dispatchReady ? (
+                    <Badge className={projectDispatchBadgeClass(project)}>
+                      {projectDispatchLabel(project)}
+                    </Badge>
+                  ) : null}
                   <Button
                     variant="ghost"
-                    disabled={!project.dispatch_ready || runProject.isPending}
-                    onClick={() => runProject.mutate(project.id)}
+                    disabled={!dispatchReady || togglePending}
+                    onClick={() =>
+                      isRunning
+                        ? stopProject.mutate(project.id)
+                        : runProject.mutate(project.id)
+                    }
                   >
-                    <Play className="size-4" />
-                    Run
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={runningCount === 0 || stopProject.isPending}
-                    onClick={() => stopProject.mutate(project.id)}
-                  >
-                    <Square className="size-4" />
-                    Stop
+                    {isRunning ? (
+                      <Square className="size-4" />
+                    ) : (
+                      <Play className="size-4" />
+                    )}
+                    {isRunning ? "Stop" : "Run"}
                   </Button>
                   <Button
                     variant="ghost"
@@ -208,8 +215,8 @@ export function ProjectsPage() {
                 </div>
               </CardHeader>
 
-              <CardContent className="grid gap-4">
-                <div className="grid grid-cols-4 gap-3">
+              <CardContent className="grid gap-3">
+                <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
                   <StatCard
                     label="Total"
                     value={String(summaryTotalCount(project))}
@@ -224,7 +231,7 @@ export function ProjectsPage() {
                   />
                   <StatCard
                     label="Tokens"
-                    value={String(summaryTokenSpend(project))}
+                    value={formatCompactNumber(summaryTokenSpend(project))}
                   />
                 </div>
 

@@ -33,7 +33,7 @@ import {
   getStateMeta,
   issueStatesFor,
 } from "@/lib/dashboard";
-import { cn, formatNumber, formatRelativeTime } from "@/lib/utils";
+import { cn, formatCompactNumber, formatRelativeTime } from "@/lib/utils";
 
 export function IssueCard({
   issue,
@@ -59,13 +59,13 @@ export function IssueCard({
   const content = (
     <button
       className={cn(
-        "group w-full rounded-[1.35rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))] p-4 text-left transition hover:border-white/20 hover:bg-white/[0.08]",
-        compact ? "min-h-[132px]" : "min-h-[176px]",
+        "group w-full rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))] p-[var(--panel-padding-tight)] text-left transition hover:border-white/20 hover:bg-white/[0.08]",
+        compact ? "min-h-[var(--issue-card-min-height-compact)]" : "min-h-[var(--issue-card-min-height)]",
       )}
       onClick={() => onOpen(issue)}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-2">
+      <div className="flex items-start justify-between gap-2.5">
+        <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-xs uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
               {issue.identifier}
@@ -94,25 +94,25 @@ export function IssueCard({
               </Badge>
             ) : null}
           </div>
-          <p className="text-sm font-semibold leading-6 text-white">
+          <p className="text-sm font-semibold leading-5 text-white">
             {issue.title}
           </p>
         </div>
         <ArrowUpRight className="size-4 text-[var(--muted-foreground)] transition group-hover:text-white" />
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--muted-foreground)]">
+      <div className="mt-2.5 flex flex-wrap gap-x-2 gap-y-1 text-xs text-[var(--muted-foreground)]">
         {issue.project_name ? <span>{issue.project_name}</span> : null}
         {issue.epic_name ? <span>/ {issue.epic_name}</span> : null}
       </div>
 
       {!compact ? (
-        <p className="mt-3 line-clamp-3 text-sm leading-6 text-[var(--muted-foreground)]">
+        <p className="mt-2.5 line-clamp-3 text-sm leading-5 text-[var(--muted-foreground)]">
           {issue.description || "No description yet."}
         </p>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-[var(--muted-foreground)]">
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-[var(--muted-foreground)]">
         <span className="inline-flex items-center gap-1.5">
           <Clock3 className="size-3.5" />
           {formatRelativeTime(issue.updated_at)}
@@ -137,7 +137,7 @@ export function IssueCard({
         ) : null}
         <span className="inline-flex items-center gap-1.5">
           <Coins className="size-3.5" />
-          {formatNumber(issue.total_tokens_spent)} tokens
+          {formatCompactNumber(issue.total_tokens_spent)} tokens
         </span>
       </div>
     </button>

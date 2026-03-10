@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
 import type { SessionFeedEntry } from '@/lib/types'
-import { formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
+import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
 const quietThresholdMs = 10_000
 
@@ -63,11 +63,11 @@ export function SessionsPage() {
   const entries = sessions.data.entries
 
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       <div>
-        <h3 className="font-display text-4xl font-semibold">Threads, turns, and event traces</h3>
+        <h3 className="font-display text-[length:var(--page-title-size)] font-semibold leading-[var(--page-title-line-height)]">Threads, turns, and event traces</h3>
       </div>
-      <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
+      <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.2fr_.8fr]">
         <Card>
           <CardHeader>
             <div>
@@ -75,7 +75,7 @@ export function SessionsPage() {
               <CardDescription>Live sessions first, followed by recent persisted runs sorted by issue title for faster triage.</CardDescription>
             </div>
           </CardHeader>
-          <CardContent className="grid gap-3">
+          <CardContent className="grid gap-2.5">
             {entries.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No live or recent runs are available.</p>
             ) : (
@@ -91,7 +91,7 @@ export function SessionsPage() {
                   .join(' · ')
 
                 return (
-                  <div key={`${entry.source}-${entry.issue_identifier}`} className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
+                  <div key={`${entry.source}-${entry.issue_identifier}`} className="rounded-[var(--panel-radius)] border border-white/8 bg-black/20 p-[var(--panel-padding)]">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
@@ -117,17 +117,17 @@ export function SessionsPage() {
                       </Link>
                     </div>
 
-                    <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
-                      <div className="rounded-2xl border border-white/8 bg-white/4 p-3 text-[var(--muted-foreground)]">
+                    <div className="mt-3.5 grid gap-2.5 text-sm sm:grid-cols-3">
+                      <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/4 p-3 text-[var(--muted-foreground)]">
                         <p className="text-xs uppercase tracking-[0.18em]">Tokens</p>
-                        <p className="mt-2 text-xl text-white">{formatNumber(entry.total_tokens)}</p>
+                        <p className="mt-2 text-xl text-white">{formatCompactNumber(entry.total_tokens)}</p>
                       </div>
-                      <div className="rounded-2xl border border-white/8 bg-white/4 p-3 text-[var(--muted-foreground)]">
+                      <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/4 p-3 text-[var(--muted-foreground)]">
                         <p className="text-xs uppercase tracking-[0.18em]">Turns</p>
                         <p className="mt-2 text-xl text-white">{formatNumber(entry.turns_started)}</p>
                         <p className="mt-1 text-xs">Completed {formatNumber(entry.turns_completed)}</p>
                       </div>
-                      <div className="rounded-2xl border border-white/8 bg-white/4 p-3 text-[var(--muted-foreground)]">
+                      <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/4 p-3 text-[var(--muted-foreground)]">
                         <p className="text-xs uppercase tracking-[0.18em]">Events</p>
                         <p className="mt-2 text-xl text-white">{formatNumber(entry.events_processed)}</p>
                       </div>
@@ -146,9 +146,9 @@ export function SessionsPage() {
               <CardDescription>Global orchestration context for the current control-plane state.</CardDescription>
             </div>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-2.5">
             {events.data.events.slice(-12).reverse().map((event) => (
-              <div key={event.seq} className="rounded-2xl border border-white/8 bg-black/20 p-4">
+              <div key={event.seq} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm font-medium text-white">{toTitleCase(event.kind)}</p>
                   <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(event.ts)}</span>

@@ -16,6 +16,33 @@
   --accent: #c4ff57;
   --accent-strong: #d9ff87;
   --muted-foreground: #9aa2b3;
+  --shell-sidebar-width: 15.5rem;
+  --shell-padding: 1rem;
+  --section-gap: 1rem;
+  --panel-padding: 1rem;
+  --panel-padding-tight: 0.875rem;
+  --panel-radius: 1.25rem;
+  --page-title-size: clamp(2rem, 2.7vw, 2.85rem);
+  --page-title-line-height: 1.02;
+  --metric-value-size: 2.5rem;
+  --board-lane-width: 18rem;
+  --issue-card-min-height: 10rem;
+  --issue-card-min-height-compact: 7.1rem;
+}
+
+@media (max-width: 1440px) {
+  :root {
+    --shell-sidebar-width: 5rem;
+    --shell-padding: 0.875rem;
+    --section-gap: 0.875rem;
+    --panel-padding: 0.875rem;
+    --panel-padding-tight: 0.75rem;
+    --page-title-size: clamp(1.75rem, 2.3vw, 2.35rem);
+    --metric-value-size: 2.125rem;
+    --board-lane-width: 16.5rem;
+    --issue-card-min-height: 8.75rem;
+    --issue-card-min-height-compact: 6.5rem;
+  }
 }
 
 html,

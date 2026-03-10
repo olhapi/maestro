@@ -77,8 +77,16 @@ describe("ProjectsPage", () => {
     expect(screen.getByText("Tokens")).toBeInTheDocument();
   });
 
-  it("shows run and stop controls and calls project actions", async () => {
-    const bootstrap = makeBootstrapResponse();
+  it("uses a single run-stop toggle and calls the matching project action", async () => {
+    const bootstrap = makeBootstrapResponse({
+      overview: {
+        ...makeBootstrapResponse().overview,
+        snapshot: {
+          ...makeBootstrapResponse().overview.snapshot,
+          running: [],
+        },
+      },
+    });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
     vi.mocked(api.listProjects).mockResolvedValue({
       items: bootstrap.projects,
@@ -95,14 +103,42 @@ describe("ProjectsPage", () => {
       ).toBeInTheDocument();
     });
 
+    expect(screen.queryByText("Runnable")).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
     await waitFor(() => {
       expect(api.runProject).toHaveBeenCalledWith(bootstrap.projects[0].id);
     });
 
+    const runningBootstrap = makeBootstrapResponse({
+      overview: {
+        ...bootstrap.overview,
+        snapshot: {
+          ...bootstrap.overview.snapshot,
+          running: [
+            {
+              ...makeBootstrapResponse().overview.snapshot.running[0],
+              issue_id: bootstrap.issues.items[0].id,
+            },
+          ],
+        },
+      },
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(runningBootstrap);
+    vi.mocked(api.listProjects).mockResolvedValue({
+      items: runningBootstrap.projects,
+    });
+    vi.mocked(api.listEpics).mockResolvedValue({ items: runningBootstrap.epics });
+
+    renderWithQueryClient(<ProjectsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^stop$/i })).toBeInTheDocument();
+    });
+
     fireEvent.click(screen.getByRole("button", { name: /^stop$/i }));
     await waitFor(() => {
-      expect(api.stopProject).toHaveBeenCalledWith(bootstrap.projects[0].id);
+      expect(api.stopProject).toHaveBeenCalledWith(runningBootstrap.projects[0].id);
     });
   });
 });

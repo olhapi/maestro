@@ -93,7 +93,7 @@ export function IssueDetailPage() {
   ]);
 
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         eyebrow="Issue detail"
         title={issue.data.title}
@@ -163,11 +163,11 @@ export function IssueDetailPage() {
         ) : null}
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
-        <div className="grid gap-5">
+      <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.2fr_.8fr]">
+        <div className="grid gap-[var(--section-gap)]">
           <Card>
-            <CardContent className="grid gap-4 p-5 md:grid-cols-3">
-              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+            <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Updated
                 </p>
@@ -178,7 +178,7 @@ export function IssueDetailPage() {
                   {formatDateTime(issue.data.updated_at)}
                 </p>
               </div>
-              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Workspace
                 </p>
@@ -189,7 +189,7 @@ export function IssueDetailPage() {
                   Runs: {formatNumber(issue.data.workspace_run_count)}
                 </p>
               </div>
-              <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-4">
+              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Branch / PR
                 </p>
@@ -204,23 +204,23 @@ export function IssueDetailPage() {
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="pb-2.5">
               <CardTitle>Description</CardTitle>
             </CardHeader>
-            <CardContent>
-              <p className="whitespace-pre-wrap text-sm leading-7 text-[var(--muted-foreground)]">
+            <CardContent className="pt-0 pb-3.5">
+              <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
                 {issue.data.description || "No description provided."}
               </p>
             </CardContent>
           </Card>
         </div>
 
-        <div className="grid gap-5">
+        <div className="grid gap-[var(--section-gap)]">
           <Card>
             <CardHeader>
               <CardTitle>Live adjustments</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3.5">
               <div className="grid gap-2">
                 <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   State

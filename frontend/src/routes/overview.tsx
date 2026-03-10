@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { api } from '@/lib/api'
 import type { RuntimeEvent } from '@/lib/types'
-import { formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
+import { formatCompactNumber, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
 function Metric({
   label,
@@ -22,14 +22,14 @@ function Metric({
 }) {
   return (
     <Card className="bg-[linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.03))]">
-      <CardContent className="pt-5">
+      <CardContent className="pt-[var(--panel-padding)]">
         <div className="flex items-start justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
-            <p className="mt-3 font-display text-4xl font-semibold">{value}</p>
+            <p className="mt-2.5 font-display text-[length:var(--metric-value-size)] font-semibold leading-none">{value}</p>
             <p className="mt-2 text-sm text-[var(--muted-foreground)]">{detail}</p>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-white/5 p-2.5">
             <Icon className="size-5 text-[var(--accent)]" />
           </div>
         </div>
@@ -49,10 +49,10 @@ function EventRail({ events }: { events: RuntimeEvent[] }) {
         </div>
       </CardHeader>
       <CardContent>
-        <ScrollArea className="h-[320px] md:h-[420px]">
-          <div className="space-y-3 pr-4">
+        <ScrollArea className="h-[300px] md:h-[400px]">
+          <div className="space-y-2.5 pr-3">
             {events.map((event) => (
-              <div key={event.seq} className="rounded-2xl border border-white/8 bg-black/20 p-4">
+              <div key={event.seq} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm font-medium text-white">{toTitleCase(event.kind)}</p>
                   <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(event.ts)}</span>
@@ -84,14 +84,14 @@ export function OverviewPage() {
   const recentEvents = data.overview.recent_events.slice(-8).reverse()
 
   return (
-    <div className="grid gap-5">
-      <section className="grid gap-4 lg:grid-cols-4">
+    <div className="grid gap-[var(--section-gap)]">
+      <section className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
         <Metric label="Running agents" value={formatNumber(activeRuns)} detail="Live execution slots currently occupied." icon={Rocket} />
         <Metric label="Retry pressure" value={formatNumber(retryQueue)} detail="Queued retries waiting to re-enter execution." icon={RotateCcw} />
         <Metric label="Total issues" value={formatNumber(data.overview.issue_count)} detail="Current tracked work across the portfolio." icon={FolderKanban} />
         <Metric
           label="Token burn"
-          value={formatNumber(snapshot.codex_totals.total_tokens)}
+          value={formatCompactNumber(snapshot.codex_totals.total_tokens)}
           detail={`Last snapshot refreshed ${formatRelativeTime(data.generated_at)}.`}
           icon={Activity}
         />
@@ -131,25 +131,25 @@ export function OverviewPage() {
         </Card>
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-2">
+      <section className="grid gap-[var(--section-gap)] lg:grid-cols-2">
         <Card>
           <CardHeader>
             <div>
               <CardTitle>Active runs</CardTitle>
             </div>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-2.5">
             {snapshot.running.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No agents are currently running.</p>
             ) : (
               snapshot.running.map((entry) => (
-                <div key={entry.issue_id} className="rounded-2xl border border-white/8 bg-black/20 p-4">
+                <div key={entry.issue_id} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium text-white">{entry.identifier}</p>
                       <p className="text-sm text-[var(--muted-foreground)]">{entry.last_message || 'Waiting for next event'}</p>
                     </div>
-                    <Badge>{formatNumber(entry.tokens.total_tokens)} tokens</Badge>
+                    <Badge>{formatCompactNumber(entry.tokens.total_tokens)} tokens</Badge>
                   </div>
                 </div>
               ))
@@ -163,12 +163,12 @@ export function OverviewPage() {
               <CardTitle>Pending retries</CardTitle>
             </div>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-2.5">
             {snapshot.retrying.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">Retry queue is empty.</p>
             ) : (
               snapshot.retrying.map((entry) => (
-                <div key={entry.issue_id} className="rounded-2xl border border-white/8 bg-black/20 p-4">
+                <div key={entry.issue_id} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium text-white">{entry.identifier}</p>
@@ -183,13 +183,13 @@ export function OverviewPage() {
         </Card>
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {Object.entries(data.overview.board).map(([key, value]) => (
           <Card key={key} className="overflow-hidden">
-            <CardContent className="pt-5">
+            <CardContent className="pt-[var(--panel-padding)]">
               <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{key.replaceAll('_', ' ')}</p>
-              <p className="mt-3 font-display text-3xl font-semibold">{value}</p>
-              <div className="mt-4 flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+              <p className="mt-2.5 font-display text-[calc(var(--metric-value-size)-0.25rem)] font-semibold leading-none">{value}</p>
+              <div className="mt-3.5 flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
                 <TimerReset className="size-3.5" />
                 state load
               </div>

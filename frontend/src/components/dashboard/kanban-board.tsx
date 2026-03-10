@@ -35,11 +35,11 @@ export function KanbanBoard({
   })
 
   return (
-    <div className="grid gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.75rem] border border-white/10 bg-white/[0.04] p-4">
+    <div className="grid gap-[var(--section-gap)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--panel-radius)] border border-white/10 bg-white/[0.04] p-[var(--panel-padding)]">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted-foreground)]">Execution board</p>
-          <h2 className="mt-2 text-xl font-semibold text-white">Triage, route, and monitor work in one surface</h2>
+          <h2 className="mt-1.5 text-lg font-semibold text-white">Triage, route, and monitor work in one surface</h2>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--muted-foreground)]">
           <span className="inline-flex items-center gap-2">
@@ -57,8 +57,8 @@ export function KanbanBoard({
         </div>
       </div>
 
-      <ScrollArea className="rounded-[1.75rem] border border-white/10 bg-white/[0.03]">
-        <div className="flex min-w-max gap-4 p-4">
+      <ScrollArea className="rounded-[var(--panel-radius)] border border-white/10 bg-white/[0.03]">
+        <div className="flex min-w-max gap-[var(--section-gap)] p-[var(--panel-padding)]">
           {lanes.map((lane) => {
             const meta = getStateMeta(lane.state)
             const activeDrop = dropState === lane.state
@@ -66,7 +66,7 @@ export function KanbanBoard({
               <div
                 key={lane.state}
                 className={cn(
-                  'flex min-h-[68vh] w-[320px] shrink-0 flex-col rounded-[1.5rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02))] transition',
+                  'flex min-h-[62vh] w-[var(--board-lane-width)] shrink-0 flex-col rounded-[calc(var(--panel-radius)+0.125rem)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02))] transition lg:max-[1440px]:min-h-[58vh]',
                   activeDrop && 'border-[var(--accent)]/40 bg-white/[0.06]',
                 )}
                 onDragOver={(event) => {
@@ -83,29 +83,34 @@ export function KanbanBoard({
                   setDragged(null)
                 }}
               >
-                <div className={cn('sticky top-0 z-10 rounded-t-[1.5rem] border-b border-white/8 bg-gradient-to-br p-4 backdrop-blur-xl', meta.boardTint)}>
+                <div
+                  className={cn(
+                    'sticky top-0 z-10 rounded-t-[calc(var(--panel-radius)+0.125rem)] border-b border-white/8 bg-gradient-to-br p-[var(--panel-padding)] backdrop-blur-xl',
+                    meta.boardTint,
+                  )}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className={cn('text-xs uppercase tracking-[0.22em]', meta.accent)}>{meta.label}</p>
-                      <p className="mt-2 text-2xl font-semibold text-white">{lane.items.length}</p>
+                      <p className="mt-1.5 text-[1.65rem] font-semibold leading-none text-white">{lane.items.length}</p>
                     </div>
                     <Button
                       variant="secondary"
                       size="sm"
-                      className="rounded-full border-white/12 bg-white/6 px-3 text-white hover:bg-white/10"
+                      className="rounded-full border-white/12 bg-white/6 px-2.5 text-white hover:bg-white/10"
                       onClick={() => onCreateIssue?.(lane.state)}
                     >
                       <Plus className="size-4" />
                       New
                     </Button>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--muted-foreground)]">
+                  <div className="mt-2.5 flex flex-wrap gap-2 text-xs text-[var(--muted-foreground)]">
                     <span>{lane.blocked} blocked</span>
                     <span>{lane.live} live</span>
                   </div>
                 </div>
 
-                <div className="flex flex-1 flex-col gap-3 p-3">
+                <div className="flex flex-1 flex-col gap-2.5 p-2.5">
                   {lane.items.map((issue) => (
                     <div
                       key={issue.id}
@@ -121,7 +126,7 @@ export function KanbanBoard({
                   ))}
                   {lane.items.length === 0 ? (
                     <button
-                      className="flex flex-1 items-center justify-center rounded-[1.25rem] border border-dashed border-white/10 bg-transparent px-4 py-6 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
+                      className="flex flex-1 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
                       onClick={() => onCreateIssue?.(lane.state)}
                     >
                       Add the next issue

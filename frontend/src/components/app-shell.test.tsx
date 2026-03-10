@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { AnchorHTMLAttributes, ReactNode } from 'react'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
@@ -10,7 +10,19 @@ const invalidateSocket = vi.fn()
 let pathname = '/work'
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
+  Link: ({
+    children,
+    to,
+    ...props
+  }: {
+    children: ReactNode
+    to?: string
+    params?: Record<string, string>
+  } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a href={to ?? '#'} {...props}>
+      {children}
+    </a>
+  ),
   Outlet: () => <div data-testid="outlet">Outlet</div>,
   useRouterState: () => ({ location: { pathname } }),
 }))
@@ -48,8 +60,10 @@ describe('AppShell', () => {
       expect(screen.getByText('Maestro Control Center')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('Work')).toBeInTheDocument()
-    expect(screen.getByText('Sessions')).toBeInTheDocument()
+    const workLink = screen.getByRole('link', { name: 'Work' })
+    expect(workLink).toHaveAttribute('aria-label', 'Work')
+    expect(workLink.className).toContain('lg:max-[1440px]:justify-center')
+    expect(screen.getByRole('link', { name: 'Sessions' })).toBeInTheDocument()
     expect(document.title).toContain('Work')
 
     fireEvent.click(screen.getByText('Command Palette'))
@@ -70,7 +84,7 @@ describe('AppShell', () => {
     renderWithQueryClient(<AppShell />)
 
     await waitFor(() => {
-      expect(screen.getByText('Sessions')).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Sessions' })).toBeInTheDocument()
     })
 
     expect(document.title).toContain('Sessions')

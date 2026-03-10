@@ -23,9 +23,9 @@ import { formatRelativeTime } from '@/lib/utils'
 function StatCard({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
     <Card className="bg-white/[0.04]">
-      <CardContent className="p-5">
+      <CardContent className="pt-[var(--panel-padding)]">
         <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
-        <p className="mt-3 font-display text-4xl font-semibold text-white">{value}</p>
+        <p className="mt-2.5 font-display text-[length:var(--metric-value-size)] font-semibold leading-none text-white">{value}</p>
         <p className="mt-2 text-sm text-[var(--muted-foreground)]">{detail}</p>
       </CardContent>
     </Card>
@@ -123,7 +123,7 @@ export function WorkPage() {
   const availableStates = issueStatesFor(issues.data.items)
 
   return (
-    <div className="grid gap-5">
+    <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         title="Coordinate delivery without leaving the board"
         description="This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed."
@@ -157,11 +157,11 @@ export function WorkPage() {
       />
 
       <Card>
-        <CardHeader className="flex-col gap-4 lg:flex-row lg:items-center">
+        <CardHeader className="flex-col gap-3 lg:flex-row lg:items-center">
           <div>
             <CardTitle>Filter the board without losing spatial context</CardTitle>
           </div>
-          <div className="grid w-full gap-3 lg:grid-cols-[1.4fr_repeat(2,minmax(0,220px))]">
+          <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.25fr)_repeat(2,minmax(0,190px))]">
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by identifier, title, or description" />
             <Select value={state} onChange={(event) => setState(event.target.value)}>
               <option value="">All states</option>
@@ -181,7 +181,7 @@ export function WorkPage() {
         </CardHeader>
       </Card>
 
-      <Tabs defaultValue="board" className="grid gap-4">
+      <Tabs defaultValue="board" className="grid gap-3">
         <TabsList>
           <TabsTrigger value="board">Board</TabsTrigger>
           <TabsTrigger value="list">List</TabsTrigger>
@@ -206,7 +206,7 @@ export function WorkPage() {
 
         <TabsContent value="list" className="m-0">
           <Card>
-            <CardContent className="overflow-x-auto pt-5">
+            <CardContent className="overflow-x-auto pt-[var(--panel-padding)]">
               <table className="w-full min-w-[960px] text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   <tr>

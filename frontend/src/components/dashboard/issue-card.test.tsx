@@ -37,4 +37,18 @@ describe('IssueCard', () => {
     fireEvent.click(screen.getByRole('button'))
     expect(onOpen).toHaveBeenCalledWith(issue)
   })
+
+  it('keeps key metadata visible in compact mode', () => {
+    const issue = makeIssueSummary({
+      branch_name: 'feature/retries',
+      total_tokens_spent: 144,
+      workspace_run_count: 3,
+    })
+
+    renderWithQueryClient(<IssueCard issue={issue} compact onOpen={vi.fn()} />)
+
+    expect(screen.getByText('feature/retries')).toBeInTheDocument()
+    expect(screen.getByText('3 runs')).toBeInTheDocument()
+    expect(screen.getByText('144 tokens')).toBeInTheDocument()
+  })
 })
