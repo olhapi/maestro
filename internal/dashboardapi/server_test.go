@@ -251,7 +251,7 @@ func TestIssueExecutionEndpointReturnsPersistedSessionAndRetryMetadata(t *testin
 }
 
 func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
-	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)

@@ -205,6 +205,20 @@ func (s *Store) migrate() error {
 			session_json TEXT NOT NULL DEFAULT '{}',
 			FOREIGN KEY (issue_id) REFERENCES issues(id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS issue_agent_commands (
+			id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			command TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at DATETIME NOT NULL,
+			delivered_at DATETIME,
+			delivery_mode TEXT NOT NULL DEFAULT '',
+			delivery_thread_id TEXT NOT NULL DEFAULT '',
+			delivery_attempt INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_agent_commands_issue_created ON issue_agent_commands(issue_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_agent_commands_issue_status_created ON issue_agent_commands(issue_id, status, created_at ASC)`,
 		`CREATE TABLE IF NOT EXISTS change_events (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT,
 			entity_type TEXT NOT NULL,
@@ -1246,7 +1260,10 @@ func (s *Store) UpdateProviderIssueState(id string, state State, phase WorkflowP
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("issue", id)
 	}
-	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase})
+	if err := s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase}); err != nil {
+		return err
+	}
+	return s.ActivateIssueAgentCommandsIfDispatchable(id)
 }
 
 func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowPhase) error {
@@ -1287,7 +1304,10 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("issue", id)
 	}
-	return s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase})
+	if err := s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase}); err != nil {
+		return err
+	}
+	return s.ActivateIssueAgentCommandsIfDispatchable(id)
 }
 
 func (s *Store) unresolvedBlockersForIssue(id string) ([]string, error) {
@@ -1435,7 +1455,7 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 		return err
 	}
 	tx = nil
-	return nil
+	return s.ActivateIssueAgentCommandsIfDispatchable(id)
 }
 
 func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, error) {
@@ -1460,6 +1480,7 @@ func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, e
 		return nil, err
 	}
 	tx = nil
+	_ = s.ActivateIssueAgentCommandsIfDispatchable(issueID)
 	return persisted, nil
 }
 
@@ -1470,6 +1491,7 @@ func (s *Store) DeleteIssue(id string) error {
 	_, _ = s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id)
 	_, _ = s.db.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id)
+	_, _ = s.db.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id)
 	res, err := s.db.Exec(`DELETE FROM issues WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -1893,6 +1915,26 @@ func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[stri
 }
 
 func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := s.appendRuntimeEventTx(tx, kind, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
+}
+
+func (s *Store) appendRuntimeEventTx(tx *sql.Tx, kind string, payload map[string]interface{}) error {
 	if payload == nil {
 		payload = map[string]interface{}{}
 	}
@@ -1906,7 +1948,7 @@ func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) 
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`
+	_, err = tx.Exec(`
 		INSERT INTO runtime_events (kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		kind,
@@ -1925,7 +1967,7 @@ func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) 
 	if err != nil {
 		return err
 	}
-	return s.appendChange("runtime_event", asString(payload["issue_id"]), kind, payload)
+	return s.appendChangeTx(tx, "runtime_event", asString(payload["issue_id"]), kind, payload)
 }
 
 func (s *Store) appendChange(entityType, entityID, action string, payload map[string]interface{}) error {
@@ -2219,6 +2261,196 @@ func (s *Store) GetIssueExecutionSession(issueID string) (*ExecutionSessionSnaps
 	return &snapshot, nil
 }
 
+func (s *Store) CreateIssueAgentCommand(issueID, command string, status IssueAgentCommandStatus) (*IssueAgentCommand, error) {
+	return s.CreateIssueAgentCommandWithRuntimeEvent(issueID, command, status, "", nil)
+}
+
+func (s *Store) CreateIssueAgentCommandWithRuntimeEvent(issueID, command string, status IssueAgentCommandStatus, eventKind string, eventPayload map[string]interface{}) (*IssueAgentCommand, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	record, err := s.createIssueAgentCommandTx(tx, issueID, command, status)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(eventKind) != "" {
+		if eventPayload == nil {
+			eventPayload = map[string]interface{}{}
+		}
+		if _, ok := eventPayload["command_id"]; !ok {
+			eventPayload["command_id"] = record.ID
+		}
+		if _, ok := eventPayload["command"]; !ok {
+			eventPayload["command"] = record.Command
+		}
+		if err := s.appendRuntimeEventTx(tx, eventKind, eventPayload); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return record, nil
+}
+
+func (s *Store) createIssueAgentCommandTx(tx *sql.Tx, issueID, command string, status IssueAgentCommandStatus) (*IssueAgentCommand, error) {
+	command = strings.TrimSpace(command)
+	if strings.TrimSpace(issueID) == "" {
+		return nil, fmt.Errorf("missing issue_id")
+	}
+	if command == "" {
+		return nil, validationErrorf("command is required")
+	}
+	if status == "" {
+		status = IssueAgentCommandPending
+	}
+	now := time.Now().UTC()
+	record := &IssueAgentCommand{
+		ID:        generateID("cmd"),
+		IssueID:   issueID,
+		Command:   command,
+		Status:    status,
+		CreatedAt: now,
+	}
+	_, err := tx.Exec(`
+		INSERT INTO issue_agent_commands (id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt)
+		VALUES (?, ?, ?, ?, ?, NULL, '', '', 0)`,
+		record.ID,
+		record.IssueID,
+		record.Command,
+		record.Status,
+		record.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.appendChangeTx(tx, "issue_agent_command", issueID, "created", map[string]interface{}{
+		"id":       record.ID,
+		"issue_id": issueID,
+		"status":   record.Status,
+	}); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+func (s *Store) ListIssueAgentCommands(issueID string) ([]IssueAgentCommand, error) {
+	rows, err := s.db.Query(`
+		SELECT id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt
+		FROM issue_agent_commands
+		WHERE issue_id = ?
+		ORDER BY created_at DESC`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanIssueAgentCommands(rows)
+}
+
+func (s *Store) UpdateIssueAgentCommandStatus(id string, status IssueAgentCommandStatus) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("missing id")
+	}
+	if status == "" {
+		return validationErrorf("status is required")
+	}
+	res, err := s.db.Exec(`UPDATE issue_agent_commands SET status = ? WHERE id = ?`, status, id)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue_agent_command", id)
+	}
+	return nil
+}
+
+func (s *Store) ListPendingIssueAgentCommands(issueID string) ([]IssueAgentCommand, error) {
+	rows, err := s.db.Query(`
+		SELECT id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt
+		FROM issue_agent_commands
+		WHERE issue_id = ? AND status = ?
+		ORDER BY created_at ASC`, issueID, IssueAgentCommandPending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanIssueAgentCommands(rows)
+}
+
+func (s *Store) ActivateIssueAgentCommandsIfDispatchable(issueID string) error {
+	if strings.TrimSpace(issueID) == "" {
+		return nil
+	}
+	issue, err := s.GetIssue(issueID)
+	if err != nil {
+		return err
+	}
+	if issue.State != StateReady && issue.State != StateInProgress && issue.State != StateInReview {
+		return nil
+	}
+	unresolved, err := s.unresolvedBlockersForIssue(issueID)
+	if err != nil {
+		return err
+	}
+	if len(unresolved) > 0 {
+		return nil
+	}
+	_, err = s.db.Exec(`
+		UPDATE issue_agent_commands
+		SET status = ?
+		WHERE issue_id = ? AND status = ?`,
+		IssueAgentCommandPending,
+		issueID,
+		IssueAgentCommandWaitingForUnblock,
+	)
+	return err
+}
+
+func (s *Store) UnresolvedBlockersForIssue(issueID string) ([]string, error) {
+	return s.unresolvedBlockersForIssue(issueID)
+}
+
+func (s *Store) MarkIssueAgentCommandsDelivered(issueID string, ids []string, mode, threadID string, attempt int) error {
+	if strings.TrimSpace(issueID) == "" || len(ids) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	args := make([]interface{}, 0, 5+len(ids))
+	args = append(args, IssueAgentCommandDelivered, now, strings.TrimSpace(mode), strings.TrimSpace(threadID), attempt, issueID)
+	placeholders := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	if len(placeholders) == 0 {
+		return nil
+	}
+	query := `
+		UPDATE issue_agent_commands
+		SET status = ?, delivered_at = ?, delivery_mode = ?, delivery_thread_id = ?, delivery_attempt = ?
+		WHERE issue_id = ? AND id IN (` + strings.Join(placeholders, ",") + `)`
+	if _, err := s.db.Exec(query, args...); err != nil {
+		return err
+	}
+	return s.appendChange("issue_agent_command", issueID, "delivered", map[string]interface{}{
+		"ids":                ids,
+		"delivery_mode":      strings.TrimSpace(mode),
+		"delivery_thread_id": strings.TrimSpace(threadID),
+		"delivery_attempt":   attempt,
+	})
+}
+
 func (s *Store) ListRecentExecutionSessions(since time.Time, limit int) ([]ExecutionSessionSnapshot, error) {
 	if limit <= 0 {
 		limit = 12
@@ -2264,6 +2496,33 @@ func (s *Store) ListRecentExecutionSessions(since time.Time, limit int) ([]Execu
 			}
 		}
 		out = append(out, snapshot)
+	}
+	return out, rows.Err()
+}
+
+func scanIssueAgentCommands(rows *sql.Rows) ([]IssueAgentCommand, error) {
+	out := []IssueAgentCommand{}
+	for rows.Next() {
+		var record IssueAgentCommand
+		var deliveredAt sql.NullTime
+		if err := rows.Scan(
+			&record.ID,
+			&record.IssueID,
+			&record.Command,
+			&record.Status,
+			&record.CreatedAt,
+			&deliveredAt,
+			&record.DeliveryMode,
+			&record.DeliveryThreadID,
+			&record.DeliveryAttempt,
+		); err != nil {
+			return nil, err
+		}
+		if deliveredAt.Valid {
+			ts := deliveredAt.Time
+			record.DeliveredAt = &ts
+		}
+		out = append(out, record)
 	}
 	return out, rows.Err()
 }

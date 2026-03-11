@@ -283,6 +283,18 @@ export interface SessionDisplayHistoryEntry {
   event_type?: string;
 }
 
+export interface AgentCommand {
+  id: string;
+  issue_id: string;
+  command: string;
+  status: "pending" | "waiting_for_unblock" | "delivered";
+  created_at: string;
+  delivered_at?: string;
+  delivery_mode?: string;
+  delivery_thread_id?: string;
+  delivery_attempt?: number;
+}
+
 export interface IssueExecutionDetail {
   issue_id: string;
   identifier: string;
@@ -301,6 +313,7 @@ export interface IssueExecutionDetail {
   session?: Session;
   runtime_events: RuntimeEvent[];
   session_display_history?: SessionDisplayHistoryEntry[];
+  agent_commands: AgentCommand[];
 }
 
 export interface BootstrapResponse {

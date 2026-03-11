@@ -92,6 +92,38 @@ func TestNewStoreConfiguresSQLitePragmas(t *testing.T) {
 	}
 }
 
+func TestCreateIssueAgentCommandWithRuntimeEventRollsBackOnEventFailure(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Follow-up", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	_, err = store.CreateIssueAgentCommandWithRuntimeEvent(
+		issue.ID,
+		"Retry after failure.",
+		IssueAgentCommandPending,
+		"manual_command_submitted",
+		map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      string(issue.WorkflowPhase),
+			"bad":        func() {},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected event payload error")
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected rollback to remove command, got %+v", commands)
+	}
+}
+
 func TestStateValidation(t *testing.T) {
 	tests := []struct {
 		state    State

@@ -680,6 +680,53 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "blocked_by": body.BlockedBy})
 	case "retry":
 		writeJSON(w, s.provider.RetryIssueNow(identifier))
+	case "commands":
+		var body struct {
+			Command string `json:"command"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		issue, err := s.service.GetIssueByIdentifier(r.Context(), identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		status := kanban.IssueAgentCommandPending
+		if issue.State == kanban.StateInProgress {
+			unresolved, err := s.store.UnresolvedBlockersForIssue(issue.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if len(unresolved) > 0 {
+				status = kanban.IssueAgentCommandWaitingForUnblock
+			}
+		} else {
+			if _, err := s.service.SetIssueState(r.Context(), identifier, string(kanban.StateInProgress)); err != nil {
+				if kanban.IsBlockedTransition(err) {
+					status = kanban.IssueAgentCommandWaitingForUnblock
+				} else {
+					writeError(w, appErrorStatus(err), err)
+					return
+				}
+			}
+		}
+		eventPayload := map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      string(issue.WorkflowPhase),
+		}
+		command, err := s.store.CreateIssueAgentCommandWithRuntimeEvent(issue.ID, body.Command, status, "manual_command_submitted", eventPayload)
+		if err != nil {
+			writeError(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"ok":      true,
+			"issue":   identifier,
+			"command": command,
+		})
 	default:
 		http.NotFound(w, r)
 	}

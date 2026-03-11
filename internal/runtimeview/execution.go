@@ -41,6 +41,10 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if err != nil {
 		return nil, err
 	}
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	runtimeAvailable := provider != nil
 	snapshot := observability.Snapshot{}
@@ -135,6 +139,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		"runtime_events":          events,
 		"session_display_history": sessionDisplayHistory,
 		"runtime_available":       runtimeAvailable,
+		"agent_commands":          commands,
 	}
 	if retry != nil {
 		payload["next_retry_at"] = retry.DueAt.UTC().Format(time.RFC3339)

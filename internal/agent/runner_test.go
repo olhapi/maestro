@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
@@ -166,6 +167,36 @@ Implement {{ issue.identifier }} in {{ phase }}
 	}
 }
 
+func TestBuildTurnPromptIncludesPendingAgentCommands(t *testing.T) {
+	runner, store, manager, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, _ := store.CreateIssue("", "", "Follow-up", "", 0, nil)
+	workflow, _ := manager.Current()
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
+
+	if _, err := store.CreateIssueAgentCommand(issue.ID, "First follow-up", kanban.IssueAgentCommandPending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateIssueAgentCommand(issue.ID, "Second follow-up", kanban.IssueAgentCommandPending); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := runner.buildTurnPrompt(workflow, issue, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Operator follow-up commands:") {
+		t.Fatalf("expected operator follow-up section, got %q", prompt)
+	}
+	firstIndex := strings.Index(prompt, "1. First follow-up")
+	secondIndex := strings.Index(prompt, "2. Second follow-up")
+	if firstIndex == -1 || secondIndex == -1 || firstIndex > secondIndex {
+		t.Fatalf("expected ordered commands in prompt, got %q", prompt)
+	}
+}
+
 func TestContinuationPrompt(t *testing.T) {
 	runner, store, manager, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Continue", "", 0, nil)
@@ -254,6 +285,234 @@ func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 	}
 	if reloaded.State != kanban.StateReady {
 		t.Fatalf("expected blocked issue to remain ready, got %s", reloaded.State)
+	}
+}
+
+func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, _ := store.CreateIssue("", "", "Prompt command", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
+
+	if _, err := store.CreateIssueAgentCommand(issue.ID, "Merge the branch to master.", kanban.IssueAgentCommandPending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateIssueAgentCommand(issue.ID, "Close the follow-up checklist.", kanban.IssueAgentCommandPending); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if !strings.Contains(result.Output, "Merge the branch to master.") {
+		t.Fatalf("expected output to contain command, got %q", result.Output)
+	}
+	firstIndex := strings.Index(result.Output, "1. Merge the branch to master.")
+	secondIndex := strings.Index(result.Output, "2. Close the follow-up checklist.")
+	if firstIndex == -1 || secondIndex == -1 || firstIndex > secondIndex {
+		t.Fatalf("expected ordered command output, got %q", result.Output)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("expected two commands, got %+v", commands)
+	}
+	for _, command := range commands {
+		if command.Status != kanban.IssueAgentCommandDelivered || command.DeliveryMode != "next_run" {
+			t.Fatalf("unexpected command state: %+v", commands)
+		}
+	}
+}
+
+func TestRunAgentStdioKeepsCommandsPendingWhenTurnFails(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "command-that-does-not-exist", config.AgentModeStdio)
+	issue, _ := store.CreateIssue("", "", "Broken stdio command", "", 0, nil)
+
+	command, err := store.CreateIssueAgentCommand(issue.ID, "Retry after the command is fixed.", kanban.IssueAgentCommandPending)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected unsuccessful run, got %+v", result)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 || commands[0].ID != command.ID || commands[0].Status != kanban.IssueAgentCommandPending {
+		t.Fatalf("expected command to remain pending, got %+v", commands)
+	}
+}
+
+func TestRunAgentStdioPromotesWaitingCommandsOnceDispatchable(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	issue, _ := store.CreateIssue("", "", "Blocked follow-up", "", 0, nil)
+
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateIssueAgentCommand(issue.ID, "Wait for unblock then merge.", kanban.IssueAgentCommandWaitingForUnblock); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.SetIssueBlockers(issue.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
+
+	result, err := runner.RunAttempt(context.Background(), issue, 0)
+	if err != nil {
+		t.Fatalf("RunAttempt failed: %v", err)
+	}
+	if !strings.Contains(result.Output, "Wait for unblock then merge.") {
+		t.Fatalf("expected promoted command in output, got %q", result.Output)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 1 || commands[0].Status != kanban.IssueAgentCommandDelivered {
+		t.Fatalf("unexpected command state: %+v", commands)
+	}
+}
+
+func TestBuildTurnPromptSkipsPendingCommandsWhileBlocked(t *testing.T) {
+	runner, store, manager, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	issue, _ := store.CreateIssue("", "", "Blocked follow-up", "", 0, nil)
+	workflow, _ := manager.Current()
+
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateIssueAgentCommand(issue.ID, "Do not deliver while blocked.", kanban.IssueAgentCommandPending); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := runner.buildTurnPrompt(workflow, issue, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "Do not deliver while blocked.") {
+		t.Fatalf("expected blocked pending command to be skipped, got %q", prompt)
+	}
+}
+
+func TestRunAgentAppServerConsumesPendingCommandsInSameThread(t *testing.T) {
+	tmpDir := t.TempDir()
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	releaseFile := filepath.Join(tmpDir, "release")
+	scriptPath := filepath.Join(tmpDir, "fake-codex.sh")
+	script := `#!/bin/sh
+trace_file="$TRACE_FILE"
+release_file="$RELEASE_FILE"
+count=0
+while IFS= read -r line; do
+  count=$((count + 1))
+  printf 'JSON:%s\n' "$line" >> "$trace_file"
+  case "$count" in
+    1) printf '%s\n' '{"id":1,"result":{}}' ;;
+    2) ;;
+    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-live"}}}' ;;
+    4)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-one"}}}'
+      while [ ! -f "$release_file" ]; do sleep 0.01; done
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-live","turnId":"turn-one"}}'
+      ;;
+    5)
+      printf '%s\n' '{"id":4,"result":{"turn":{"id":"turn-two"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-live","turnId":"turn-two"}}'
+      exit 0
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TRACE_FILE", traceFile)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	runner, store, _, _, _ := setupTestRunner(t, "sh "+scriptPath, config.AgentModeAppServer)
+	issue, _ := store.CreateIssue("", "", "Live follow-up", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
+
+	done := make(chan struct{})
+	resultCh := make(chan *RunResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		result, err := runner.Run(context.Background(), issue)
+		resultCh <- result
+		errCh <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := store.CreateIssueAgentCommand(issue.ID, "Handle the missed merge step.", kanban.IssueAgentCommandPending); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(releaseFile, []byte("go"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for runner to finish")
+	}
+	result := <-resultCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run, got %+v", result)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 || commands[0].Status != kanban.IssueAgentCommandDelivered || commands[0].DeliveryMode != "same_thread" || commands[0].DeliveryThreadID != "thread-live" {
+		t.Fatalf("unexpected command state: %+v", commands)
+	}
+	lines := readTraceLines(t, traceFile)
+	turnStarts := 0
+	for _, payload := range lines {
+		if method, _ := payload["method"].(string); method == "turn/start" {
+			turnStarts++
+		}
+	}
+	if turnStarts != 2 {
+		t.Fatalf("expected two turn/start requests, got %d from %#v", turnStarts, lines)
 	}
 }
 

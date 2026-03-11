@@ -147,6 +147,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ blocked_by: blockedBy }),
     }),
+  sendIssueCommand: (identifier: string, command: string) =>
+    request<{ ok: boolean }>(`/api/v1/app/issues/${identifier}/commands`, {
+      method: "POST",
+      body: JSON.stringify({ command }),
+    }),
   retryIssue: (identifier: string) =>
     request<Record<string, unknown>>(`/api/v1/app/issues/${identifier}/retry`, {
       method: "POST",

@@ -290,6 +290,42 @@ func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *te
 	}
 }
 
+func TestIssueExecutionPayloadIncludesAgentCommands(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Commanded issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	command, err := store.CreateIssueAgentCommand(issue.ID, "Merge the branch to master.", kanban.IssueAgentCommandPending)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand: %v", err)
+	}
+	if err := store.MarkIssueAgentCommandsDelivered(issue.ID, []string{command.ID}, "same_thread", "thread-live", 2); err != nil {
+		t.Fatalf("MarkIssueAgentCommandsDelivered: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	commands, ok := payload["agent_commands"].([]kanban.IssueAgentCommand)
+	if !ok {
+		t.Fatalf("expected typed agent command list, got %#v", payload["agent_commands"])
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one command, got %#v", commands)
+	}
+	if commands[0].Status != kanban.IssueAgentCommandDelivered || commands[0].DeliveryThreadID != "thread-live" {
+		t.Fatalf("unexpected command payload: %+v", commands[0])
+	}
+}
+
 func TestIssueExecutionPayloadReturnsPausedRetryMetadata(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

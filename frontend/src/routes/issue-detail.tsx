@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, Save, Trash2 } from "lucide-react";
+import { RotateCcw, Save, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -15,12 +15,28 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { appRoutes } from "@/lib/routes";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
-import type { IssueState } from "@/lib/types";
-import {
-  formatDateTime,
-  formatNumber,
-  formatRelativeTime,
-} from "@/lib/utils";
+import type { AgentCommand, IssueState } from "@/lib/types";
+import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
+
+function commandStatusMeta(status: AgentCommand["status"]) {
+  switch (status) {
+    case "delivered":
+      return {
+        label: "Delivered",
+        className: "border-emerald-400/20 bg-emerald-400/10 text-emerald-100",
+      };
+    case "waiting_for_unblock":
+      return {
+        label: "Waiting for unblock",
+        className: "border-amber-400/20 bg-amber-400/10 text-amber-100",
+      };
+    default:
+      return {
+        label: "Pending",
+        className: "border-white/10 bg-white/5 text-white",
+      };
+  }
+}
 
 export function IssueDetailPage() {
   const { identifier } = useParams({ from: "/issues/$identifier" });
@@ -28,6 +44,7 @@ export function IssueDetailPage() {
   const queryClient = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
   const [blockersDraft, setBlockersDraft] = useState<string | null>(null);
+  const [commandDraft, setCommandDraft] = useState("");
 
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -69,6 +86,15 @@ export function IssueDetailPage() {
     mutationFn: () => api.retryIssue(identifier),
     onSuccess: async () => {
       toast.success("Retry requested");
+      await invalidate();
+    },
+  });
+
+  const commandMutation = useMutation({
+    mutationFn: () => api.sendIssueCommand(identifier, commandDraft.trim()),
+    onSuccess: async () => {
+      toast.success("Command queued for agent");
+      setCommandDraft("");
       await invalidate();
     },
   });
@@ -271,6 +297,84 @@ export function IssueDetailPage() {
                   <Save className="size-4" />
                   Save blockers
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Agent commands</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3.5">
+              <div className="grid gap-2">
+                <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                  Follow-up command
+                </span>
+                <Textarea
+                  value={commandDraft}
+                  onChange={(event) => setCommandDraft(event.target.value)}
+                  className="min-h-[120px]"
+                  placeholder="Tell the agent what it missed or what it should do next."
+                />
+                <Button
+                  onClick={() => commandMutation.mutate()}
+                  disabled={!commandDraft.trim() || commandMutation.isPending}
+                >
+                  <Send className="size-4" />
+                  Send to agent
+                </Button>
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                    Command log
+                  </span>
+                  <span className="text-xs text-[var(--muted-foreground)]">
+                    {execution.data.agent_commands.length} total
+                  </span>
+                </div>
+                {execution.data.agent_commands.length === 0 ? (
+                  <p className="text-sm text-[var(--muted-foreground)]">
+                    No follow-up commands sent yet.
+                  </p>
+                ) : (
+                  execution.data.agent_commands.map((command) => {
+                    const status = commandStatusMeta(command.status);
+                    return (
+                      <div
+                        key={command.id}
+                        className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <Badge className={status.className}>
+                            {status.label}
+                          </Badge>
+                          <span className="text-xs text-[var(--muted-foreground)]">
+                            {formatRelativeTime(command.created_at)}
+                          </span>
+                        </div>
+                        <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">
+                          {command.command}
+                        </p>
+                        <p className="mt-3 text-xs text-[var(--muted-foreground)]">
+                          Sent {formatDateTime(command.created_at)}
+                        </p>
+                        {command.delivered_at ? (
+                          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                            Delivered {formatDateTime(command.delivered_at)}
+                            {command.delivery_mode
+                              ? ` via ${command.delivery_mode}`
+                              : ""}
+                            {command.delivery_thread_id
+                              ? ` on ${command.delivery_thread_id}`
+                              : ""}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </CardContent>
           </Card>

@@ -39,6 +39,11 @@ type RunResult struct {
 	AppSession *appserver.Session
 }
 
+type preparedTurnPrompt struct {
+	Prompt   string
+	Commands []kanban.IssueAgentCommand
+}
+
 const firstTurnExecutionGuidance = `
 Execution guidance:
 
@@ -48,6 +53,8 @@ Execution guidance:
 - For static or local web pages, verify with local commands before considering browser tooling.
 - If a verification path is blocked by local environment issues such as browser-session conflicts, stop retrying that path and choose another deterministic local check.
 `
+
+const activeThreadCommandPollWindow = 250 * time.Millisecond
 
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
 	return NewRunnerWithExtensions(provider, store, nil)
@@ -191,11 +198,11 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 
 func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int, allOutput *strings.Builder) (*RunResult, error) {
 	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
-		prompt, err := r.buildTurnPrompt(workflow, issue, attempt, turn)
+		prepared, err := r.prepareTurnPrompt(workflow, issue, attempt, turn)
 		if err != nil {
 			return nil, err
 		}
-		out, err := r.executeStdioTurn(ctx, workspacePath, workflow.Config.Codex.Command, prompt, workflow.Config.Codex.TurnTimeoutMs)
+		out, err := r.executeStdioTurn(ctx, workspacePath, workflow.Config.Codex.Command, prepared.Prompt, workflow.Config.Codex.TurnTimeoutMs)
 		if out != "" {
 			if allOutput.Len() > 0 {
 				allOutput.WriteString("\n")
@@ -203,6 +210,9 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 			allOutput.WriteString(out)
 		}
 		if err != nil {
+			return &RunResult{Success: false, Output: allOutput.String(), Error: err}, nil
+		}
+		if err := r.markDeliveredCommands(issue, prepared.Commands, "next_run", "", attempt); err != nil {
 			return &RunResult{Success: false, Output: allOutput.String(), Error: err}, nil
 		}
 
@@ -249,7 +259,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 	defer client.Close()
 
 	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
-		prompt, err := r.buildTurnPrompt(workflow, issue, attempt, turn)
+		prepared, err := r.prepareTurnPrompt(workflow, issue, attempt, turn)
 		if err != nil {
 			return nil, err
 		}
@@ -257,13 +267,36 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		if title == ":" {
 			title = "Maestro turn"
 		}
-		if err := client.RunTurn(ctx, prompt, title); err != nil {
+		var deliverErr error
+		if err := client.RunTurnWithStartCallback(ctx, prepared.Prompt, title, func(session *appserver.Session) {
+			deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
+		}); err != nil {
 			return &RunResult{
 				Success:    false,
 				Output:     client.Output(),
 				Error:      err,
 				AppSession: client.Session(),
 			}, nil
+		}
+		if deliverErr != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      deliverErr,
+				AppSession: client.Session(),
+			}, nil
+		}
+		deliveredManualCommands, err := r.runPendingCommandsInActiveThread(ctx, client, issue, attempt, title)
+		if err != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+		if deliveredManualCommands {
+			return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
 		}
 
 		refreshed, continueRun := r.refreshForContinuation(workflow, issue.ID)
@@ -291,8 +324,16 @@ func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID strin
 }
 
 func (r *Runner) buildTurnPrompt(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int) (string, error) {
+	prepared, err := r.prepareTurnPrompt(workflow, issue, attempt, turn)
+	if err != nil {
+		return "", err
+	}
+	return prepared.Prompt, nil
+}
+
+func (r *Runner) prepareTurnPrompt(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int) (preparedTurnPrompt, error) {
 	if turn > 1 {
-		return fmt.Sprintf(strings.TrimSpace(`
+		return preparedTurnPrompt{Prompt: fmt.Sprintf(strings.TrimSpace(`
 Continuation guidance:
 
 - The previous turn completed normally, but the issue is still in an active state.
@@ -300,7 +341,7 @@ Continuation guidance:
 - Resume from the current workspace state instead of restarting from scratch.
 - The original task instructions are already present in the thread history; do not restate them before acting.
 - If a verification approach was blocked by local tooling or browser issues, switch to another deterministic local check instead of retrying the same path.
-`), turn, workflow.Config.Agent.MaxTurns), nil
+`), turn, workflow.Config.Agent.MaxTurns)}, nil
 	}
 	phase := issue.WorkflowPhase
 	if !phase.IsValid() {
@@ -330,13 +371,24 @@ Continuation guidance:
 	}
 	rendered, err := config.RenderLiquidTemplate(promptTemplateForPhase(workflow, phase), ctx)
 	if err != nil {
-		return "", fmt.Errorf("template_render_error: %w", err)
+		return preparedTurnPrompt{}, fmt.Errorf("template_render_error: %w", err)
 	}
 	rendered = strings.TrimSpace(rendered)
-	if rendered == "" {
-		return strings.TrimSpace(firstTurnExecutionGuidance), nil
+	commands, err := r.pendingCommandsForIssue(issue.ID)
+	if err != nil {
+		return preparedTurnPrompt{}, err
 	}
-	return rendered + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance), nil
+	rendered = appendOperatorCommands(rendered, commands)
+	if rendered == "" {
+		return preparedTurnPrompt{
+			Prompt:   strings.TrimSpace(firstTurnExecutionGuidance),
+			Commands: commands,
+		}, nil
+	}
+	return preparedTurnPrompt{
+		Prompt:   rendered + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance),
+		Commands: commands,
+	}, nil
 }
 
 func promptTemplateForPhase(workflow *config.Workflow, phase kanban.WorkflowPhase) string {
@@ -348,6 +400,107 @@ func promptTemplateForPhase(workflow *config.Workflow, phase kanban.WorkflowPhas
 	default:
 		return workflow.PromptTemplate
 	}
+}
+
+func (r *Runner) pendingCommandsForIssue(issueID string) ([]kanban.IssueAgentCommand, error) {
+	if err := r.store.ActivateIssueAgentCommandsIfDispatchable(issueID); err != nil {
+		return nil, err
+	}
+	issue, err := r.store.GetIssue(issueID)
+	if err != nil {
+		return nil, err
+	}
+	if issue.State != kanban.StateReady && issue.State != kanban.StateInProgress && issue.State != kanban.StateInReview {
+		return nil, nil
+	}
+	unresolved, err := r.store.UnresolvedBlockersForIssue(issueID)
+	if err != nil {
+		return nil, err
+	}
+	if len(unresolved) > 0 {
+		return nil, nil
+	}
+	return r.store.ListPendingIssueAgentCommands(issueID)
+}
+
+func appendOperatorCommands(prompt string, commands []kanban.IssueAgentCommand) string {
+	prompt = strings.TrimSpace(prompt)
+	if len(commands) == 0 {
+		return prompt
+	}
+	lines := []string{
+		"Operator follow-up commands:",
+		"",
+		"- These commands supplement the original issue instructions.",
+		"- Act on them directly without restating the original task.",
+	}
+	for i, command := range commands {
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, command.Command))
+	}
+	section := strings.Join(lines, "\n")
+	if prompt == "" {
+		return section
+	}
+	return prompt + "\n\n" + section
+}
+
+func buildOperatorFollowUpPrompt(commands []kanban.IssueAgentCommand) string {
+	return appendOperatorCommands("", commands) + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance)
+}
+
+func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.IssueAgentCommand, mode, threadID string, attempt int) error {
+	if issue == nil || len(commands) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(commands))
+	for _, command := range commands {
+		ids = append(ids, command.ID)
+	}
+	if err := r.store.MarkIssueAgentCommandsDelivered(issue.ID, ids, mode, threadID, attempt); err != nil {
+		return err
+	}
+	return r.store.AppendRuntimeEvent("manual_command_delivered", map[string]interface{}{
+		"issue_id":           issue.ID,
+		"identifier":         issue.Identifier,
+		"attempt":            attempt,
+		"delivery_mode":      mode,
+		"delivery_thread_id": threadID,
+		"command_ids":        ids,
+		"command_count":      len(ids),
+	})
+}
+
+func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, client *appserver.Client, issue *kanban.Issue, attempt int, title string) (bool, error) {
+	deadline := time.Now().Add(activeThreadCommandPollWindow)
+	var commands []kanban.IssueAgentCommand
+	for {
+		var err error
+		commands, err = r.pendingCommandsForIssue(issue.ID)
+		if err != nil {
+			return false, err
+		}
+		if len(commands) > 0 || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	if len(commands) == 0 {
+		return false, nil
+	}
+	var deliverErr error
+	if err := client.RunTurnWithStartCallback(ctx, buildOperatorFollowUpPrompt(commands), title, func(session *appserver.Session) {
+		deliverErr = r.markDeliveredCommands(issue, commands, "same_thread", session.ThreadID, attempt)
+	}); err != nil {
+		return false, err
+	}
+	if deliverErr != nil {
+		return false, deliverErr
+	}
+	return true, nil
 }
 
 func (r *Runner) runHook(parentCtx context.Context, workspacePath, hook, hookName string) error {

@@ -180,6 +180,26 @@ type ExecutionSessionSnapshot struct {
 	AppSession     appserver.Session `json:"session"`
 }
 
+type IssueAgentCommandStatus string
+
+const (
+	IssueAgentCommandPending           IssueAgentCommandStatus = "pending"
+	IssueAgentCommandWaitingForUnblock IssueAgentCommandStatus = "waiting_for_unblock"
+	IssueAgentCommandDelivered         IssueAgentCommandStatus = "delivered"
+)
+
+type IssueAgentCommand struct {
+	ID               string                  `json:"id"`
+	IssueID          string                  `json:"issue_id"`
+	Command          string                  `json:"command"`
+	Status           IssueAgentCommandStatus `json:"status"`
+	CreatedAt        time.Time               `json:"created_at"`
+	DeliveredAt      *time.Time              `json:"delivered_at,omitempty"`
+	DeliveryMode     string                  `json:"delivery_mode,omitempty"`
+	DeliveryThreadID string                  `json:"delivery_thread_id,omitempty"`
+	DeliveryAttempt  int                     `json:"delivery_attempt,omitempty"`
+}
+
 type SessionFeedEntry struct {
 	IssueID         string            `json:"issue_id"`
 	IssueIdentifier string            `json:"issue_identifier"`

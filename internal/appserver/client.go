@@ -262,6 +262,10 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
+	return c.RunTurnWithStartCallback(ctx, prompt, title, nil)
+}
+
+func (c *Client) RunTurnWithStartCallback(ctx context.Context, prompt, title string, onStarted func(*Session)) error {
 	requestID := c.nextRequestID()
 	req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, prompt, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.TurnSandboxPolicy)
 	if err != nil {
@@ -294,6 +298,9 @@ func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
 		"thread_id":  c.session.ThreadID,
 		"turn_id":    turnID,
 	})
+	if onStarted != nil {
+		onStarted(c.Session())
+	}
 	return c.awaitTurnCompletion(ctx)
 }
 

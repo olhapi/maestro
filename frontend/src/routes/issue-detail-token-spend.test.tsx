@@ -29,6 +29,7 @@ vi.mock("@/lib/api", () => ({
     updateIssue: vi.fn(),
     setIssueState: vi.fn(),
     setIssueBlockers: vi.fn(),
+    sendIssueCommand: vi.fn(),
   },
 }));
 
@@ -71,6 +72,7 @@ describe("IssueDetailPage token spend", () => {
         history: [],
       },
       runtime_events: [],
+      agent_commands: [],
     });
 
     renderWithQueryClient(<IssueDetailPage />);
