@@ -914,6 +914,29 @@ func TestUpdateWorkspaceRun(t *testing.T) {
 	}
 }
 
+func TestUpdateWorkspacePath(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
+	_, _ = store.CreateWorkspace(issue.ID, "/tmp/workspace")
+
+	updated, err := store.UpdateWorkspacePath(issue.ID, "/tmp/workspace-renamed")
+	if err != nil {
+		t.Fatalf("Failed to update workspace path: %v", err)
+	}
+	if updated.Path != "/tmp/workspace-renamed" {
+		t.Fatalf("expected updated path, got %q", updated.Path)
+	}
+
+	loaded, err := store.GetWorkspace(issue.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace failed: %v", err)
+	}
+	if loaded.Path != "/tmp/workspace-renamed" {
+		t.Fatalf("expected persisted path, got %q", loaded.Path)
+	}
+}
+
 func TestDeleteWorkspace(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -934,6 +957,30 @@ func TestDeleteWorkspace(t *testing.T) {
 	}
 	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
 		t.Fatalf("expected workspace path to be removed, got err=%v", err)
+	}
+}
+
+func TestGenerateIdentifierHelper(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProject("Tooling", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	first, err := store.generateIdentifier(project.ID)
+	if err != nil {
+		t.Fatalf("generateIdentifier first failed: %v", err)
+	}
+	second, err := store.generateIdentifier(project.ID)
+	if err != nil {
+		t.Fatalf("generateIdentifier second failed: %v", err)
+	}
+	if first == second {
+		t.Fatalf("expected unique identifiers, got %q twice", first)
+	}
+	if !strings.HasPrefix(first, "TOOL-") || !strings.HasPrefix(second, "TOOL-") {
+		t.Fatalf("expected project prefix identifiers, got %q and %q", first, second)
 	}
 }
 
