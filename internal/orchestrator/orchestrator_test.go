@@ -349,6 +349,31 @@ func waitForIssueRetryState(t *testing.T, store *kanban.Store, issueID, delayTyp
 	t.Fatalf("timed out waiting for retry type %s on %s", delayType, issueID)
 }
 
+func waitForIssueStateAndPhase(
+	t *testing.T,
+	store *kanban.Store,
+	issueID string,
+	state kanban.State,
+	phase kanban.WorkflowPhase,
+	timeout time.Duration,
+) *kanban.Issue {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		issue, err := store.GetIssue(issueID)
+		if err == nil && issue.State == state && issue.WorkflowPhase == phase {
+			return issue
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	current, err := store.GetIssue(issueID)
+	if err != nil {
+		t.Fatalf("timed out waiting for %s/%s on %s (last error: %v)", state, phase, issueID, err)
+	}
+	t.Fatalf("timed out waiting for %s/%s on %s (last state: %s/%s)", state, phase, issueID, current.State, current.WorkflowPhase)
+	return nil
+}
+
 func assertRetryEventInvariants(t *testing.T, events []kanban.RuntimeEvent) {
 	t.Helper()
 	pendingRetries := 0
@@ -591,10 +616,7 @@ func TestImplementationSuccessTransitionsToReviewPhase(t *testing.T) {
 	}
 	waitForNoRunning(t, orch, time.Second)
 
-	updated, err := store.GetIssue(issue.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview, time.Second)
 	if updated.State != kanban.StateInReview || updated.WorkflowPhase != kanban.WorkflowPhaseReview {
 		t.Fatalf("expected in_review/review, got %s/%s", updated.State, updated.WorkflowPhase)
 	}
@@ -669,10 +691,7 @@ func TestImplementationSuccessCanSkipReviewAndQueueDonePhase(t *testing.T) {
 	}
 	waitForNoRunning(t, orch, time.Second)
 
-	updated, err := store.GetIssue(issue.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone, time.Second)
 	if updated.State != kanban.StateDone || updated.WorkflowPhase != kanban.WorkflowPhaseDone {
 		t.Fatalf("expected done/done, got %s/%s", updated.State, updated.WorkflowPhase)
 	}
@@ -707,10 +726,7 @@ func TestReviewFailureMovesIssueBackToImplementation(t *testing.T) {
 	}
 	waitForNoRunning(t, orch, time.Second)
 
-	updated, err := store.GetIssue(issue.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateInProgress, kanban.WorkflowPhaseImplementation, time.Second)
 	if updated.State != kanban.StateInProgress || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
 		t.Fatalf("expected in_progress/implementation, got %s/%s", updated.State, updated.WorkflowPhase)
 	}
@@ -738,10 +754,7 @@ func TestReviewSuccessTransitionsToDonePhase(t *testing.T) {
 	}
 	waitForNoRunning(t, orch, time.Second)
 
-	updated, err := store.GetIssue(issue.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone, time.Second)
 	if updated.State != kanban.StateDone || updated.WorkflowPhase != kanban.WorkflowPhaseDone {
 		t.Fatalf("expected done/done, got %s/%s", updated.State, updated.WorkflowPhase)
 	}
@@ -776,10 +789,7 @@ func TestDoneFailureRetriesInDonePhase(t *testing.T) {
 	}
 	waitForNoRunning(t, orch, time.Second)
 
-	updated, err := store.GetIssue(issue.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone, time.Second)
 	if updated.State != kanban.StateDone || updated.WorkflowPhase != kanban.WorkflowPhaseDone {
 		t.Fatalf("expected done/done, got %s/%s", updated.State, updated.WorkflowPhase)
 	}
