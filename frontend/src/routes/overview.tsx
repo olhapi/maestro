@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { Activity, FolderKanban, RotateCcw, Rocket, TimerReset } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
@@ -6,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { api } from '@/lib/api'
+import { appRoutes } from '@/lib/routes'
 import type { RuntimeEvent } from '@/lib/types'
 import { formatCompactNumber, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
@@ -143,7 +145,12 @@ export function OverviewPage() {
               <p className="text-sm text-[var(--muted-foreground)]">No agents are currently running.</p>
             ) : (
               snapshot.running.map((entry) => (
-                <div key={entry.issue_id} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
+                <Link
+                  key={entry.issue_id}
+                  className="block rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5 transition hover:border-white/16 hover:bg-white/[0.05]"
+                  params={{ identifier: entry.identifier }}
+                  to={appRoutes.issueDetail}
+                >
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium text-white">{entry.identifier}</p>
@@ -151,7 +158,7 @@ export function OverviewPage() {
                     </div>
                     <Badge>{formatCompactNumber(entry.tokens.total_tokens)} tokens</Badge>
                   </div>
-                </div>
+                </Link>
               ))
             )}
           </CardContent>
@@ -168,7 +175,12 @@ export function OverviewPage() {
               <p className="text-sm text-[var(--muted-foreground)]">Retry queue is empty.</p>
             ) : (
               snapshot.retrying.map((entry) => (
-                <div key={entry.issue_id} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
+                <Link
+                  key={entry.issue_id}
+                  className="block rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5 transition hover:border-white/16 hover:bg-white/[0.05]"
+                  params={{ identifier: entry.identifier }}
+                  to={appRoutes.issueDetail}
+                >
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium text-white">{entry.identifier}</p>
@@ -176,7 +188,7 @@ export function OverviewPage() {
                     </div>
                     <Badge>{formatRelativeTime(entry.due_at)}</Badge>
                   </div>
-                </div>
+                </Link>
               ))
             )}
           </CardContent>
