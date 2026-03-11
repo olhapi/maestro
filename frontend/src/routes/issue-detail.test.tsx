@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { IssueDetailPage } from "@/routes/issue-detail";
@@ -219,7 +219,7 @@ describe("IssueDetailPage", () => {
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
   });
 
-  it("submits agent commands and renders the command log", async () => {
+  it("keeps the composer in the rail and renders command history in the main column", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({ state: "done" });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
@@ -262,6 +262,17 @@ describe("IssueDetailPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Agent commands")).toBeInTheDocument();
     });
+    expect(screen.getByText("Command history")).toBeInTheDocument();
+
+    const mainColumn = screen.getByTestId("issue-main-column");
+    const controlRail = screen.getByTestId("issue-control-rail");
+
+    expect(within(mainColumn).getByText("Execution triage")).toBeInTheDocument();
+    expect(within(mainColumn).getByText("Command history")).toBeInTheDocument();
+    expect(within(controlRail).getByText("Issue actions")).toBeInTheDocument();
+    expect(within(controlRail).getByText("Agent commands")).toBeInTheDocument();
+    expect(within(controlRail).getByText("Latest command")).toBeInTheDocument();
+    expect(within(controlRail).queryByText("Command history")).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/tell the agent/i), {
       target: { value: "Merge the branch to master." },
@@ -276,8 +287,15 @@ describe("IssueDetailPage", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Waiting for unblock")).toBeInTheDocument();
+      expect(
+        within(mainColumn).getByText("Waiting for unblock"),
+      ).toBeInTheDocument();
     });
-    expect(screen.getByText("Merge the branch to master.")).toBeInTheDocument();
+    expect(
+      within(mainColumn).getByText("Merge the branch to master."),
+    ).toBeInTheDocument();
+    expect(
+      within(controlRail).getByText("Merge the branch to master."),
+    ).toBeInTheDocument();
   });
 });

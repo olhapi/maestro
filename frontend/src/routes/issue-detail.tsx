@@ -38,6 +38,34 @@ function commandStatusMeta(status: AgentCommand["status"]) {
   }
 }
 
+function AgentCommandEntry({ command }: { command: AgentCommand }) {
+  const status = commandStatusMeta(command.status);
+
+  return (
+    <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <Badge className={status.className}>{status.label}</Badge>
+        <span className="text-xs text-[var(--muted-foreground)]">
+          {formatRelativeTime(command.created_at)}
+        </span>
+      </div>
+      <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">
+        {command.command}
+      </p>
+      <p className="mt-3 text-xs text-[var(--muted-foreground)]">
+        Sent {formatDateTime(command.created_at)}
+      </p>
+      {command.delivered_at ? (
+        <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+          Delivered {formatDateTime(command.delivered_at)}
+          {command.delivery_mode ? ` via ${command.delivery_mode}` : ""}
+          {command.delivery_thread_id ? ` on ${command.delivery_thread_id}` : ""}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function IssueDetailPage() {
   const { identifier } = useParams({ from: "/issues/$identifier" });
   const navigate = useNavigate();
@@ -117,6 +145,7 @@ export function IssueDetailPage() {
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [
     issue.data.state,
   ]);
+  const latestCommand = execution.data.agent_commands[0] ?? null;
 
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -140,24 +169,6 @@ export function IssueDetailPage() {
             : { label: issue.data.identifier },
           { label: issue.data.identifier },
         ]}
-        actions={
-          <>
-            <Button variant="secondary" onClick={() => setEditOpen(true)}>
-              Edit issue
-            </Button>
-            <Button variant="secondary" onClick={() => retryMutation.mutate()}>
-              <RotateCcw className="size-4" />
-              Retry now
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => deleteMutation.mutate()}
-            >
-              <Trash2 className="size-4" />
-              Delete
-            </Button>
-          </>
-        }
       />
 
       <div className="flex flex-wrap gap-2">
@@ -187,8 +198,11 @@ export function IssueDetailPage() {
         ) : null}
       </div>
 
-      <div className="grid items-start gap-[var(--section-gap)] lg:grid-cols-[1.2fr_.8fr]">
-        <div className="grid gap-[var(--section-gap)]">
+      <div className="grid items-start gap-[var(--section-gap)] xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div
+          className="grid min-w-0 gap-[var(--section-gap)]"
+          data-testid="issue-main-column"
+        >
           <Card>
             <CardContent className="grid gap-3 pt-[var(--panel-padding)] sm:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
@@ -237,9 +251,66 @@ export function IssueDetailPage() {
               </p>
             </CardContent>
           </Card>
+
+          <SessionExecutionCard
+            execution={execution.data}
+            issueTotalTokens={issue.data.total_tokens_spent}
+          />
+
+          <Card>
+            <CardHeader className="pb-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle>Command history</CardTitle>
+                <span className="text-xs text-[var(--muted-foreground)]">
+                  {execution.data.agent_commands.length} total
+                </span>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2.5 pt-0">
+              {execution.data.agent_commands.length === 0 ? (
+                <p className="text-sm text-[var(--muted-foreground)]">
+                  No follow-up commands sent yet.
+                </p>
+              ) : (
+                execution.data.agent_commands.map((command) => (
+                  <AgentCommandEntry key={command.id} command={command} />
+                ))
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="grid gap-[var(--section-gap)]">
+        <div
+          className="grid content-start gap-[var(--section-gap)]"
+          data-testid="issue-control-rail"
+        >
+          <Card>
+            <CardHeader>
+              <CardTitle>Issue actions</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-2.5">
+              <Button variant="secondary" onClick={() => setEditOpen(true)}>
+                Edit issue
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => retryMutation.mutate()}
+                disabled={retryMutation.isPending}
+              >
+                <RotateCcw className="size-4" />
+                Retry now
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+              >
+                <Trash2 className="size-4" />
+                Delete
+              </Button>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Live adjustments</CardTitle>
@@ -323,64 +394,44 @@ export function IssueDetailPage() {
                 </Button>
               </div>
 
-              <div className="space-y-2.5">
+              <div className="space-y-2.5 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                    Command log
+                    Latest command
                   </span>
                   <span className="text-xs text-[var(--muted-foreground)]">
                     {execution.data.agent_commands.length} total
                   </span>
                 </div>
-                {execution.data.agent_commands.length === 0 ? (
+                {latestCommand ? (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <Badge
+                        className={
+                          commandStatusMeta(latestCommand.status).className
+                        }
+                      >
+                        {commandStatusMeta(latestCommand.status).label}
+                      </Badge>
+                      <span className="text-xs text-[var(--muted-foreground)]">
+                        {formatRelativeTime(latestCommand.created_at)}
+                      </span>
+                    </div>
+                    <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-white">
+                      {latestCommand.command}
+                    </p>
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      Sent {formatDateTime(latestCommand.created_at)}
+                    </p>
+                  </>
+                ) : (
                   <p className="text-sm text-[var(--muted-foreground)]">
                     No follow-up commands sent yet.
                   </p>
-                ) : (
-                  execution.data.agent_commands.map((command) => {
-                    const status = commandStatusMeta(command.status);
-                    return (
-                      <div
-                        key={command.id}
-                        className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <Badge className={status.className}>
-                            {status.label}
-                          </Badge>
-                          <span className="text-xs text-[var(--muted-foreground)]">
-                            {formatRelativeTime(command.created_at)}
-                          </span>
-                        </div>
-                        <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">
-                          {command.command}
-                        </p>
-                        <p className="mt-3 text-xs text-[var(--muted-foreground)]">
-                          Sent {formatDateTime(command.created_at)}
-                        </p>
-                        {command.delivered_at ? (
-                          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                            Delivered {formatDateTime(command.delivered_at)}
-                            {command.delivery_mode
-                              ? ` via ${command.delivery_mode}`
-                              : ""}
-                            {command.delivery_thread_id
-                              ? ` on ${command.delivery_thread_id}`
-                              : ""}
-                          </p>
-                        ) : null}
-                      </div>
-                    );
-                  })
                 )}
               </div>
             </CardContent>
           </Card>
-
-          <SessionExecutionCard
-            execution={execution.data}
-            issueTotalTokens={issue.data.total_tokens_spent}
-          />
         </div>
       </div>
 
