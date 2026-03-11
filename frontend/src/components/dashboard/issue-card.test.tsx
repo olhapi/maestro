@@ -51,4 +51,10 @@ describe('IssueCard', () => {
     expect(screen.getByText('3 runs')).toBeInTheDocument()
     expect(screen.getByText('144 tokens')).toBeInTheDocument()
   })
+
+  it('allows draggable surfaces to override the card cursor affordance', () => {
+    renderWithQueryClient(<IssueCard issue={makeIssueSummary()} className="cursor-grab active:cursor-grabbing" onOpen={vi.fn()} />)
+
+    expect(screen.getByRole('button')).toHaveClass('cursor-grab', 'active:cursor-grabbing')
+  })
 })

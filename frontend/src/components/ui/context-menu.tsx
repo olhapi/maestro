@@ -20,7 +20,7 @@ export function ContextMenuSubTrigger({
   return (
     <ContextMenuPrimitive.SubTrigger
       className={cn(
-        'flex cursor-default items-center rounded-xl px-3 py-2 text-sm text-white outline-none transition data-[state=open]:bg-white/10 focus:bg-white/10',
+        'flex cursor-pointer items-center rounded-xl px-3 py-2 text-sm text-white outline-none transition data-[disabled]:pointer-events-none data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40 data-[state=open]:bg-white/10 focus:bg-white/10',
         inset && 'pl-8',
         className,
       )}
@@ -61,7 +61,7 @@ export function ContextMenuItem({
   return (
     <ContextMenuPrimitive.Item
       className={cn(
-        'flex cursor-default items-center gap-2 rounded-xl px-3 py-2 text-sm outline-none transition focus:bg-white/10',
+        'flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-sm outline-none transition data-[disabled]:pointer-events-none data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40 focus:bg-white/10',
         variant === 'destructive' ? 'text-red-200 focus:bg-red-500/10' : 'text-white',
         inset && 'pl-8',
         className,
@@ -78,7 +78,7 @@ export function ContextMenuCheckboxItem({
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.CheckboxItem>) {
   return (
-    <ContextMenuPrimitive.CheckboxItem className={cn('relative rounded-xl py-2 pl-8 pr-3 text-sm text-white outline-none focus:bg-white/10', className)} checked={checked} {...props}>
+    <ContextMenuPrimitive.CheckboxItem className={cn('relative cursor-pointer rounded-xl py-2 pl-8 pr-3 text-sm text-white outline-none data-[disabled]:pointer-events-none data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40 focus:bg-white/10', className)} checked={checked} {...props}>
       <span className="absolute left-3 top-1/2 -translate-y-1/2">
         <ContextMenuPrimitive.ItemIndicator>
           <Check className="size-4" />
@@ -91,7 +91,7 @@ export function ContextMenuCheckboxItem({
 
 export function ContextMenuRadioItem({ className, children, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.RadioItem>) {
   return (
-    <ContextMenuPrimitive.RadioItem className={cn('relative rounded-xl py-2 pl-8 pr-3 text-sm text-white outline-none focus:bg-white/10', className)} {...props}>
+    <ContextMenuPrimitive.RadioItem className={cn('relative cursor-pointer rounded-xl py-2 pl-8 pr-3 text-sm text-white outline-none data-[disabled]:pointer-events-none data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40 focus:bg-white/10', className)} {...props}>
       <span className="absolute left-3 top-1/2 -translate-y-1/2">
         <ContextMenuPrimitive.ItemIndicator>
           <Circle className="size-2 fill-current" />

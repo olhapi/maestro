@@ -94,13 +94,21 @@ export function KanbanBoard({
                     <div
                       key={issue.id}
                       draggable
+                      className="cursor-grab active:cursor-grabbing"
                       onDragStart={() => setDragged(issue)}
                       onDragEnd={() => {
                         setDragged(null)
                         setDropState(null)
                       }}
                     >
-                      <IssueCard issue={issue} bootstrap={bootstrap} compact onOpen={onOpenIssue} onStateChange={onMoveIssue} />
+                      <IssueCard
+                        issue={issue}
+                        bootstrap={bootstrap}
+                        compact
+                        className="cursor-grab active:cursor-grabbing"
+                        onOpen={onOpenIssue}
+                        onStateChange={onMoveIssue}
+                      />
                     </div>
                   ))}
                   {lane.items.length === 0 ? (

@@ -68,6 +68,29 @@ textarea {
   font: inherit;
 }
 
+button:not(:disabled),
+select:not(:disabled),
+summary,
+[role='button']:not([aria-disabled='true']) {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled,
+[role='button'][aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
+[draggable='true'] {
+  cursor: grab;
+}
+
+[draggable='true']:active {
+  cursor: grabbing;
+}
+
 a {
   color: inherit;
   text-decoration: none;

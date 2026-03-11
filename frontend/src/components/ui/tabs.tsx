@@ -17,7 +17,7 @@ export function TabsTrigger({ className, ...props }: TabsPrimitive.TabsTriggerPr
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        'rounded-[calc(var(--panel-radius)-0.375rem)] px-3.5 py-1.5 text-sm text-[var(--muted-foreground)] transition data-[state=active]:bg-white data-[state=active]:text-black',
+        'cursor-pointer rounded-[calc(var(--panel-radius)-0.375rem)] px-3.5 py-1.5 text-sm text-[var(--muted-foreground)] transition disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 data-[state=active]:bg-white data-[state=active]:text-black',
         className,
       )}
       {...props}

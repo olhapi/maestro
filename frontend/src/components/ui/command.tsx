@@ -90,7 +90,7 @@ const CommandItem = forwardRef<ElementRef<typeof CommandPrimitive.Item>, Compone
     <CommandPrimitive.Item
       ref={ref}
       className={cn(
-        'relative flex cursor-default items-center gap-3 rounded-2xl px-3 py-3 text-sm outline-none select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-40 data-[selected=true]:bg-white/8 data-[selected=true]:text-white',
+        'relative flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-3 text-sm outline-none select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-40 data-[selected=true]:bg-white/8 data-[selected=true]:text-white',
         className,
       )}
       {...props}

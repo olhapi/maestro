@@ -42,6 +42,7 @@ export function IssueCard({
   onOpen,
   onStateChange,
   menuFooter,
+  className,
 }: {
   issue: IssueSummary;
   bootstrap?: BootstrapResponse;
@@ -49,6 +50,7 @@ export function IssueCard({
   onOpen: (issue: IssueSummary) => void;
   onStateChange?: (issue: IssueSummary, state: IssueState) => void;
   menuFooter?: ReactNode;
+  className?: string;
 }) {
   const session = getSessionForIssue(bootstrap, issue.id);
   const retry = getRetryForIssue(bootstrap, issue.id);
@@ -62,6 +64,7 @@ export function IssueCard({
       className={cn(
         "group w-full rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))] p-[var(--panel-padding-tight)] text-left transition hover:border-white/20 hover:bg-white/[0.08]",
         compact ? "min-h-[var(--issue-card-min-height-compact)]" : "min-h-[var(--issue-card-min-height)]",
+        className,
       )}
       onClick={() => onOpen(issue)}
     >
