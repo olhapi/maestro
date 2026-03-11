@@ -5,9 +5,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/olhapi/maestro/internal/kanban"
+)
+
+var providerReadSyncTimeout = 2 * time.Second
+
+type syncMode int
+
+const (
+	syncModeBlocking syncMode = iota
+	syncModeBestEffort
 )
 
 type Service struct {
@@ -143,6 +154,72 @@ func (s *Service) ListEpicSummaries(projectID string) ([]kanban.EpicSummary, err
 }
 
 func (s *Service) SyncIssues(ctx context.Context, query kanban.IssueQuery) error {
+	return s.syncIssuesWithMode(ctx, query, syncModeBlocking)
+}
+
+func (s *Service) syncIssuesWithMode(ctx context.Context, query kanban.IssueQuery, mode syncMode) error {
+	switch mode {
+	case syncModeBestEffort:
+		return s.syncIssuesBestEffort(ctx, query)
+	default:
+		return s.syncIssues(ctx, query)
+	}
+}
+
+func (s *Service) syncIssuesBestEffort(ctx context.Context, query kanban.IssueQuery) error {
+	projects, err := s.store.ListProjects()
+	if err != nil {
+		return err
+	}
+	var firstUncachedErr error
+	for i := range projects {
+		project := projects[i]
+		if query.ProjectID != "" && project.ID != query.ProjectID {
+			continue
+		}
+		provider := s.ProviderForProject(&project)
+		if provider.Kind() == kanban.ProviderKindKanban {
+			continue
+		}
+		readCtx, cancel := s.newReadSyncContext(ctx)
+		issues, err := provider.ListIssues(readCtx, &project, query)
+		cancel()
+		if err != nil {
+			if shouldPropagateReadSyncError(ctx, err) {
+				return err
+			}
+			hasCache, cacheErr := s.hasCachedProviderIssues(project.ID, provider.Kind())
+			if cacheErr != nil {
+				return cacheErr
+			}
+			if !hasCache && firstUncachedErr == nil {
+				firstUncachedErr = err
+			}
+			slog.Warn("Provider sync on read failed; serving cached issues for project",
+				"query", query,
+				"project_id", project.ID,
+				"provider_kind", provider.Kind(),
+				"error", err,
+			)
+			continue
+		}
+		if err := s.reconcileProviderIssues(project.ID, provider.Kind(), issues); err != nil {
+			return err
+		}
+	}
+	if firstUncachedErr != nil {
+		_, total, err := s.store.ListIssueSummaries(query)
+		if err != nil {
+			return err
+		}
+		if total == 0 {
+			return firstUncachedErr
+		}
+	}
+	return nil
+}
+
+func (s *Service) syncIssues(ctx context.Context, query kanban.IssueQuery) error {
 	projects, err := s.store.ListProjects()
 	if err != nil {
 		return err
@@ -167,6 +244,20 @@ func (s *Service) SyncIssues(ctx context.Context, query kanban.IssueQuery) error
 	return nil
 }
 
+func (s *Service) newReadSyncContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= providerReadSyncTimeout {
+		return context.WithDeadline(ctx, deadline)
+	}
+	return context.WithTimeout(ctx, providerReadSyncTimeout)
+}
+
+func shouldPropagateReadSyncError(parent context.Context, err error) bool {
+	return parent != nil && parent.Err() != nil && errors.Is(err, parent.Err())
+}
+
 func (s *Service) reconcileProviderIssues(projectID, providerKind string, issues []kanban.Issue) error {
 	refs := make([]string, 0, len(issues))
 	for i := range issues {
@@ -176,6 +267,17 @@ func (s *Service) reconcileProviderIssues(projectID, providerKind string, issues
 		}
 	}
 	return s.store.DeleteProviderIssuesExcept(projectID, providerKind, refs)
+}
+
+func (s *Service) hasCachedProviderIssues(projectID, providerKind string) (bool, error) {
+	issues, err := s.store.ListIssues(map[string]interface{}{
+		"project_id":    projectID,
+		"provider_kind": providerKind,
+	})
+	if err != nil {
+		return false, err
+	}
+	return len(issues) > 0, nil
 }
 
 func (s *Service) RefreshIssue(ctx context.Context, issue *kanban.Issue) (*kanban.Issue, error) {
@@ -206,7 +308,25 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 	if err == nil {
 		_, provider, providerErr := s.resolveIssueProvider(issue)
 		if providerErr == nil && provider.Kind() != kanban.ProviderKindKanban {
-			return s.RefreshIssue(ctx, issue)
+			readCtx, cancel := s.newReadSyncContext(ctx)
+			defer cancel()
+			refreshed, refreshErr := s.RefreshIssue(readCtx, issue)
+			if refreshErr == nil {
+				return refreshed, nil
+			}
+			if shouldPropagateReadSyncError(ctx, refreshErr) {
+				return nil, refreshErr
+			}
+			if kanban.IsNotFound(refreshErr) {
+				return nil, refreshErr
+			}
+			slog.Warn("Provider issue refresh on read failed; serving cached issue",
+				"identifier", identifier,
+				"issue_id", issue.ID,
+				"provider_kind", provider.Kind(),
+				"error", refreshErr,
+			)
+			return issue, nil
 		}
 		return issue, nil
 	}
@@ -217,17 +337,29 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 	if listErr != nil {
 		return nil, listErr
 	}
+	var firstProviderErr error
 	for i := range projects {
 		project := projects[i]
 		provider := s.ProviderForProject(&project)
 		if provider.Kind() == kanban.ProviderKindKanban {
 			continue
 		}
-		refreshed, getErr := provider.GetIssue(ctx, &project, identifier)
+		readCtx, cancel := s.newReadSyncContext(ctx)
+		refreshed, getErr := provider.GetIssue(readCtx, &project, identifier)
+		cancel()
+		if shouldPropagateReadSyncError(ctx, getErr) {
+			return nil, getErr
+		}
 		if getErr != nil {
+			if !kanban.IsNotFound(getErr) && firstProviderErr == nil {
+				firstProviderErr = getErr
+			}
 			continue
 		}
 		return s.store.UpsertProviderIssue(project.ID, refreshed)
+	}
+	if firstProviderErr != nil {
+		return nil, firstProviderErr
 	}
 	return nil, err
 }
@@ -241,7 +373,7 @@ func (s *Service) GetIssueDetailByIdentifier(ctx context.Context, identifier str
 }
 
 func (s *Service) ListIssueSummaries(ctx context.Context, query kanban.IssueQuery) ([]kanban.IssueSummary, int, error) {
-	if err := s.SyncIssues(ctx, query); err != nil {
+	if err := s.syncIssuesWithMode(ctx, query, syncModeBestEffort); err != nil {
 		return nil, 0, err
 	}
 	return s.store.ListIssueSummaries(query)

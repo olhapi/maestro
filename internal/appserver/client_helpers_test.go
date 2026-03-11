@@ -156,7 +156,7 @@ func TestHandleRequestAutoApprovalAndToolExecution(t *testing.T) {
 			cfg: ClientConfig{
 				ApprovalPolicy: "never",
 				Logger:         discardLogger(),
-				ToolExecutor: func(name string, arguments interface{}) map[string]interface{} {
+				ToolExecutor: func(_ context.Context, name string, arguments interface{}) map[string]interface{} {
 					return map[string]interface{}{
 						"success": true,
 						"contentItems": []map[string]interface{}{
@@ -206,7 +206,7 @@ func TestHandleRequestAutoApprovalAndToolExecution(t *testing.T) {
 			if !ok {
 				t.Fatalf("failed to decode test message %q", tc.line)
 			}
-			handled, err := client.handleRequest(msg)
+			handled, err := client.handleRequest(context.Background(), msg)
 			if err != nil {
 				t.Fatalf("handleRequest failed: %v", err)
 			}

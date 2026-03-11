@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -59,10 +60,18 @@ func TestServerStartsAndServesState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	Start(ctx, ":18987", testProvider{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	if _, err := Start(ctx, addr, testProvider{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://127.0.0.1:18987/api/v1/state")
+	resp, err := http.Get("http://" + addr + "/api/v1/state")
 	if err != nil {
 		t.Fatalf("failed GET state: %v", err)
 	}
@@ -77,7 +86,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 		t.Fatalf("unexpected state payload: %#v", payload)
 	}
 
-	resp2, err := http.Get("http://127.0.0.1:18987/api/v1/sessions")
+	resp2, err := http.Get("http://" + addr + "/api/v1/sessions")
 	if err != nil {
 		t.Fatalf("failed GET sessions: %v", err)
 	}
@@ -90,7 +99,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 		t.Fatalf("unexpected sessions payload: %#v", payload2)
 	}
 
-	resp3, err := http.Get("http://127.0.0.1:18987/api/v1/sessions?issue=iss-1")
+	resp3, err := http.Get("http://" + addr + "/api/v1/sessions?issue=iss-1")
 	if err != nil {
 		t.Fatalf("failed GET session by issue: %v", err)
 	}
@@ -99,7 +108,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp3.StatusCode)
 	}
 
-	resp4, err := http.Get("http://127.0.0.1:18987/api/v1/sessions?issue=missing")
+	resp4, err := http.Get("http://" + addr + "/api/v1/sessions?issue=missing")
 	if err != nil {
 		t.Fatalf("failed GET missing issue: %v", err)
 	}
@@ -108,7 +117,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 		t.Fatalf("expected 404, got %d", resp4.StatusCode)
 	}
 
-	resp5, err := http.Get("http://127.0.0.1:18987/api/v1/events?since=1&limit=10")
+	resp5, err := http.Get("http://" + addr + "/api/v1/events?since=1&limit=10")
 	if err != nil {
 		t.Fatalf("failed GET events: %v", err)
 	}
@@ -121,7 +130,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 		t.Fatalf("unexpected events payload: %#v", payload5)
 	}
 
-	resp6, err := http.Get("http://127.0.0.1:18987/api/v1/dashboard")
+	resp6, err := http.Get("http://" + addr + "/api/v1/dashboard")
 	if err != nil {
 		t.Fatalf("failed GET dashboard: %v", err)
 	}
@@ -137,7 +146,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 		t.Fatalf("dashboard missing events: %#v", payload6)
 	}
 
-	resp7, err := http.Get("http://127.0.0.1:18987/api/v1/iss-1")
+	resp7, err := http.Get("http://" + addr + "/api/v1/iss-1")
 	if err != nil {
 		t.Fatalf("failed GET issue payload: %v", err)
 	}
@@ -146,7 +155,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 		t.Fatalf("expected 200 for issue payload, got %d", resp7.StatusCode)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:18987/api/v1/refresh", nil)
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/v1/refresh", nil)
 	if err != nil {
 		t.Fatalf("request refresh: %v", err)
 	}
@@ -157,5 +166,20 @@ func TestServerStartsAndServesState(t *testing.T) {
 	defer resp8.Body.Close()
 	if resp8.StatusCode != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d", resp8.StatusCode)
+	}
+}
+
+func TestStartFailsWhenPortIsOccupied(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	if _, err := Start(ctx, ln.Addr().String(), testProvider{}); err == nil {
+		t.Fatal("expected Start to fail on an occupied port")
 	}
 }

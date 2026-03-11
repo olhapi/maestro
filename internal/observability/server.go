@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -149,10 +150,14 @@ func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 }
 
 // Start launches an HTTP server exposing runtime status endpoints.
-func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
+func Start(ctx context.Context, addr string, provider StatusProvider) (*Server, error) {
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, provider)
 
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
 	srv := &http.Server{Addr: addr, Handler: mux}
 
 	go func() {
@@ -163,11 +168,11 @@ func Start(ctx context.Context, addr string, provider StatusProvider) *Server {
 	}()
 
 	go func() {
-		slog.Info("Observability API started", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Info("Observability API started", "addr", ln.Addr().String())
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("Observability API failed", "error", err)
 		}
 	}()
 
-	return &Server{http: srv}
+	return &Server{http: srv}, nil
 }

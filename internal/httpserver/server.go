@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -40,7 +41,11 @@ func newHandler(store *kanban.Store, provider dashboardapi.Provider) http.Handle
 	return mux
 }
 
-func Start(ctx context.Context, addr string, store *kanban.Store, provider dashboardapi.Provider) *Server {
+func Start(ctx context.Context, addr string, store *kanban.Store, provider dashboardapi.Provider) (*Server, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
 	srv := &http.Server{Addr: addr, Handler: newHandler(store, provider)}
 
 	go func() {
@@ -51,11 +56,11 @@ func Start(ctx context.Context, addr string, store *kanban.Store, provider dashb
 	}()
 
 	go func() {
-		slog.Info("HTTP API started", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Info("HTTP API started", "addr", ln.Addr().String())
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP API failed", "error", err)
 		}
 	}()
 
-	return &Server{http: srv}
+	return &Server{http: srv}, nil
 }

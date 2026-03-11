@@ -22,7 +22,7 @@ import (
 
 const nonInteractiveToolInputAnswer = "This is a non-interactive session. Operator input is unavailable."
 
-type ToolExecutor func(name string, arguments interface{}) map[string]interface{}
+type ToolExecutor func(ctx context.Context, name string, arguments interface{}) map[string]interface{}
 
 type ClientConfig struct {
 	Executable        string
@@ -525,7 +525,7 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 			return &RunError{Kind: "turn_cancelled", Payload: payload.Raw}
 		}
 
-		handled, err := c.handleRequest(payload)
+		handled, err := c.handleRequest(ctx, payload)
 		if err != nil {
 			return err
 		}
@@ -554,7 +554,7 @@ func (c *Client) turnFinishedByCleanProcessExit() bool {
 	}
 }
 
-func (c *Client) handleRequest(payload protocol.Message) (bool, error) {
+func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (bool, error) {
 	method := payload.Method
 	if method == "" || !payload.HasID() {
 		return false, nil
@@ -636,7 +636,7 @@ func (c *Client) handleRequest(payload protocol.Message) (bool, error) {
 		}
 		result := unsupportedToolResult(params.Tool, supportedToolNames(c.cfg.DynamicTools))
 		if c.cfg.ToolExecutor != nil {
-			result = c.cfg.ToolExecutor(params.Tool, params.Arguments)
+			result = c.cfg.ToolExecutor(ctx, params.Tool, params.Arguments)
 		}
 		typedResult, err := protocol.DynamicToolCallResultFromMap(payload.ID, result)
 		if err != nil {

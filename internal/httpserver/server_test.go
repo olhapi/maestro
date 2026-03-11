@@ -2,9 +2,9 @@ package httpserver
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,7 +119,9 @@ func TestStartServesAndShutsDownWithContext(t *testing.T) {
 	_ = ln.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	Start(ctx, addr, store, testProvider{})
+	if _, err := Start(ctx, addr, store, testProvider{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
 	var resp *http.Response
 	deadline := time.Now().Add(2 * time.Second)
@@ -146,4 +148,24 @@ func TestStartServesAndShutsDownWithContext(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("expected server shutdown for %s", addr)
+}
+
+func TestStartFailsWhenPortIsOccupied(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := Start(ctx, ln.Addr().String(), store, testProvider{}); err == nil {
+		t.Fatal("expected Start to fail on an occupied port")
+	}
 }

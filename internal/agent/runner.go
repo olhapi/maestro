@@ -624,8 +624,8 @@ func (r *Runner) extensionToolExecutor() appserver.ToolExecutor {
 	if r.extensions == nil || !r.extensions.HasTools() {
 		return nil
 	}
-	return func(name string, arguments interface{}) map[string]interface{} {
-		output, err := r.extensions.Execute(context.Background(), name, arguments)
+	return func(ctx context.Context, name string, arguments interface{}) map[string]interface{} {
+		output, err := r.extensions.Execute(ctx, name, arguments)
 		if err != nil {
 			return dynamicToolError(err.Error())
 		}

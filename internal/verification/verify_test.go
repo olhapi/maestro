@@ -11,11 +11,14 @@ func TestRunVerification(t *testing.T) {
 	tmp := t.TempDir()
 	db := filepath.Join(tmp, "db", "maestro.db")
 	res := Run(tmp, db)
-	if !res.OK {
-		t.Fatalf("expected ok result, got %+v", res)
+	if res.OK {
+		t.Fatalf("expected missing workflow to fail verification, got %+v", res)
 	}
-	if res.Checks["workflow"] != "ok" {
-		t.Fatalf("workflow check failed: %+v", res)
+	if res.Checks["workflow"] != "fail" || res.Checks["workflow_load"] != "fail" {
+		t.Fatalf("expected workflow checks to fail without creating a file: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "WORKFLOW.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected verify to stay read-only, stat err=%v", err)
 	}
 	if res.Checks["db_open"] != "ok" {
 		t.Fatalf("db check failed: %+v", res)
@@ -28,8 +31,11 @@ func TestRunVerificationUsesHomeDefaultDBPath(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	res := Run(tmp, "")
-	if !res.OK {
-		t.Fatalf("expected ok result, got %+v", res)
+	if res.OK {
+		t.Fatalf("expected missing workflow to fail verification, got %+v", res)
+	}
+	if res.Checks["workflow"] != "fail" {
+		t.Fatalf("expected workflow check to fail, got %+v", res)
 	}
 
 	dbPath := filepath.Join(home, ".maestro", "maestro.db")

@@ -27,6 +27,7 @@ const (
 	liveSessionPersistInterval   = 2 * time.Second
 	automaticRetryHistoryLimit   = 200
 	gracefulShutdownStopReason   = "graceful_shutdown"
+	gracefulShutdownWaitTimeout  = 5 * time.Second
 )
 
 type runningEntry struct {
@@ -121,6 +122,7 @@ type Orchestrator struct {
 	eventSeq       int64
 	events         []map[string]interface{}
 	maxEvents      int
+	runWG          sync.WaitGroup
 }
 
 func New(store *kanban.Store, workflows *config.Manager) *Orchestrator {
@@ -382,6 +384,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			timer.Stop()
 			o.stopAllRunsGracefully()
+			if !o.waitForActiveRuns(gracefulShutdownWaitTimeout) {
+				slog.Warn("Timed out waiting for active runs to stop during shutdown", "timeout", gracefulShutdownWaitTimeout)
+			}
 			return ctx.Err()
 		case <-timer.C:
 			if err := o.tick(ctx); err != nil {
@@ -985,7 +990,9 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 		IssueIdentifier: runIssue.Identifier,
 	})
 
+	o.runWG.Add(1)
 	go func() {
+		defer o.runWG.Done()
 		result, err := runner.RunAttempt(runCtx, &runIssue, attempt)
 		o.finishRun(workflow, &runIssue, phase, attempt, result, err)
 	}()
@@ -1812,6 +1819,26 @@ func (o *Orchestrator) stopAllRuns() {
 	}
 }
 
+func (o *Orchestrator) waitForActiveRuns(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		o.runWG.Wait()
+		close(done)
+	}()
+	if timeout <= 0 {
+		<-done
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 func (o *Orchestrator) tryClaim(issueID string) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -1890,7 +1917,6 @@ func (o *Orchestrator) appendEventLocked(kind string, fields map[string]interfac
 	if err := o.store.AppendRuntimeEvent(kind, event); err != nil {
 		slog.Warn("Failed to persist runtime event", "kind", kind, "error", err)
 	}
-	observability.BroadcastUpdate()
 }
 
 func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {

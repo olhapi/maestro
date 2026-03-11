@@ -25,6 +25,24 @@ type syncBuffer struct {
 	buf bytes.Buffer
 }
 
+type blockingRunner struct {
+	started      chan struct{}
+	ctxCancelled chan struct{}
+	release      chan struct{}
+}
+
+func (r *blockingRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
+	close(r.started)
+	<-ctx.Done()
+	close(r.ctxCancelled)
+	<-r.release
+	return nil, ctx.Err()
+}
+
+func (r *blockingRunner) CleanupWorkspace(context.Context, *kanban.Issue) error {
+	return nil
+}
+
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -282,7 +300,7 @@ func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
 		orch.mu.RLock()
 		running := len(orch.running)
 		orch.mu.RUnlock()
-		if running == 0 {
+		if running == 0 && orch.waitForActiveRuns(20*time.Millisecond) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1017,6 +1035,57 @@ func TestGracefulShutdownMarksActiveAppServerRunResumeEligible(t *testing.T) {
 	}
 	if snapshot.AppSession.ThreadID != "thread-graceful" {
 		t.Fatalf("expected persisted thread id for resume, got %+v", snapshot.AppSession)
+	}
+}
+
+func TestRunWaitsForActiveRunsDuringShutdown(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := kanban.NewStore(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	orch := NewSharedWithExtensions(store, nil, "", "")
+	issue, err := store.CreateIssue("", "", "Shutdown wait", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	runner := &blockingRunner{
+		started:      make(chan struct{}),
+		ctxCancelled: make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Agent.Mode = config.AgentModeAppServer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	orch.startRun(ctx, workflow, runner, issue, 0)
+	<-runner.started
+
+	done := make(chan error, 1)
+	go func() {
+		done <- orch.Run(ctx)
+	}()
+
+	cancel()
+	<-runner.ctxCancelled
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned before active run finished: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(runner.release)
+
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Run to return after active run finished")
 	}
 }
 
@@ -2247,7 +2316,11 @@ func TestDispatchRespectsDependencyOrderParallel(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 	starts = runner.waitForStarts(t, 4, time.Second)
-	if starts[2] != issues["B"].Identifier || starts[3] != issues["C"].Identifier {
+	got := map[string]bool{
+		starts[2]: true,
+		starts[3]: true,
+	}
+	if !got[issues["B"].Identifier] || !got[issues["C"].Identifier] {
 		t.Fatalf("expected B and C after A, got %v", starts)
 	}
 

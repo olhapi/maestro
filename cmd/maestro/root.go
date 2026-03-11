@@ -159,7 +159,9 @@ func (a *cliApp) newRunCmd() *cobra.Command {
 				if !strings.Contains(addr, ":") {
 					addr = ":" + addr
 				}
-				httpserver.Start(ctx, addr, store, orch)
+				if _, err := httpserver.Start(ctx, addr, store, orch); err != nil {
+					return wrapRuntime(err, "failed to start HTTP API")
+				}
 			}
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

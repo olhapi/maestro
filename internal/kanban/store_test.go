@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,8 +88,8 @@ func TestNewStoreConfiguresSQLitePragmas(t *testing.T) {
 	checkInt("synchronous", `PRAGMA synchronous`, 1)
 
 	stats := store.db.Stats()
-	if stats.MaxOpenConnections != 1 {
-		t.Fatalf("MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
+	if stats.MaxOpenConnections != sqliteMaxOpenConns {
+		t.Fatalf("MaxOpenConnections = %d, want %d", stats.MaxOpenConnections, sqliteMaxOpenConns)
 	}
 }
 
@@ -1099,6 +1100,80 @@ func TestLatestChangeSeqAdvancesOnMutations(t *testing.T) {
 	}
 	if after <= before {
 		t.Fatalf("expected change seq to increase, before=%d after=%d", before, after)
+	}
+}
+
+func TestNewStoreUsesSmallSQLitePool(t *testing.T) {
+	store := setupTestStore(t)
+	if got := store.db.Stats().MaxOpenConnections; got != sqliteMaxOpenConns {
+		t.Fatalf("expected sqlite max open connections to be %d, got %d", sqliteMaxOpenConns, got)
+	}
+}
+
+func TestStoreAllowsConcurrentReadsWhileWriting(t *testing.T) {
+	store := setupTestStore(t)
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+
+	for writer := 0; writer < 4; writer++ {
+		writer := writer
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 12; i++ {
+				if _, err := store.CreateIssue("", "", "Concurrent issue", "", writer, nil); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+				if err := store.AppendRuntimeEvent("tick", map[string]interface{}{
+					"issue_id":     "",
+					"identifier":   "",
+					"title":        "Concurrent issue",
+					"attempt":      i,
+					"total_tokens": writer + i,
+				}); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	for reader := 0; reader < 4; reader++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 30; i++ {
+				if _, _, err := store.ListIssueSummaries(IssueQuery{Sort: "updated_desc", Limit: 25}); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+				if _, err := store.LatestChangeSeq(); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("expected concurrent read/write access without sqlite errors, got %v", err)
+		}
 	}
 }
 

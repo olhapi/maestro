@@ -11,6 +11,8 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/olhapi/maestro/internal/observability"
 )
 
 // Store manages persistence for the kanban board
@@ -19,6 +21,11 @@ type Store struct {
 	dbPath  string
 	storeID string
 }
+
+const (
+	sqliteMaxOpenConns = 8
+	sqliteMaxIdleConns = 4
+)
 
 func nullableStringValue(value string) interface{} {
 	if strings.TrimSpace(value) == "" {
@@ -56,12 +63,13 @@ func NewStore(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve database path: %w", err)
 	}
-	db, err := sql.Open("sqlite3", absDBPath)
+	dsn := absDBPath + "?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on&_txlock=immediate"
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	db.SetMaxOpenConns(sqliteMaxOpenConns)
+	db.SetMaxIdleConns(sqliteMaxIdleConns)
 
 	store := &Store{db: db, dbPath: absDBPath}
 	if err := store.configureConnection(); err != nil {
@@ -729,17 +737,33 @@ func (s *Store) UpdateEpic(id, projectID, name, description string) error {
 }
 
 func (s *Store) DeleteEpic(id string) error {
-	if _, err := s.db.Exec(`UPDATE issues SET epic_id = NULL, updated_at = ? WHERE epic_id = ?`, time.Now(), id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`DELETE FROM epics WHERE id = ?`, id)
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec(`UPDATE issues SET epic_id = NULL, updated_at = ? WHERE epic_id = ?`, time.Now(), id); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM epics WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("epic", id)
 	}
-	return s.appendChange("epic", id, "deleted", nil)
+	if err := s.appendChangeTx(tx, "epic", id, "deleted", nil); err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
 }
 
 // Issue operations
@@ -796,7 +820,7 @@ func (s *Store) generateIdentifier(projectID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitTx(tx, false); err != nil {
 		return "", err
 	}
 	tx = nil
@@ -917,7 +941,7 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 	if err := s.appendChangeTx(tx, "issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": identifier, "title": title}); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitTx(tx, true); err != nil {
 		return nil, err
 	}
 	tx = nil
@@ -1034,7 +1058,17 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		return nil, validationErrorf("provider issue reference is required for provider-backed issues")
 	}
 	now := time.Now().UTC()
-	current, err := s.GetIssueByProviderRef(providerKind, providerIssueRef)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	var currentID string
+	err = tx.QueryRow(`SELECT id FROM issues WHERE provider_kind = ? AND provider_issue_ref = ?`, providerKind, providerIssueRef).Scan(&currentID)
 	switch {
 	case err == sql.ErrNoRows:
 		id := generateID("iss")
@@ -1050,7 +1084,7 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		if incoming.LastSyncedAt != nil {
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
-		_, err = s.db.Exec(`
+		_, err = tx.Exec(`
 			INSERT INTO issues (id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at, last_synced_at)
 			VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, projectID, nil, incoming.Identifier, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, createdAt, updatedAt, lastSyncedAt,
@@ -1058,21 +1092,19 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		if err != nil {
 			return nil, err
 		}
-		if _, err := s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
+		if err := replaceIssueLabelsTx(tx, id, incoming.Labels); err != nil {
 			return nil, err
 		}
-		for _, label := range incoming.Labels {
-			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
-		}
-		if _, err := s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
+		if err := replaceIssueBlockersRawTx(tx, id, incoming.BlockedBy); err != nil {
 			return nil, err
 		}
-		for _, blocker := range incoming.BlockedBy {
-			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_blockers (issue_id, blocked_by) VALUES (?, ?)`, id, blocker)
-		}
-		if err := s.appendChange("issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
+		if err := s.appendChangeTx(tx, "issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
 			return nil, err
 		}
+		if err := s.commitTx(tx, true); err != nil {
+			return nil, err
+		}
+		tx = nil
 		return s.GetIssue(id)
 	case err != nil:
 		return nil, err
@@ -1081,35 +1113,57 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		if incoming.LastSyncedAt != nil {
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
-		res, err := s.db.Exec(`
+		res, err := tx.Exec(`
 			UPDATE issues
 			SET project_id = ?, identifier = ?, title = ?, description = ?, state = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
 			WHERE id = ?`,
-			projectID, incoming.Identifier, incoming.Title, incoming.Description, incoming.State, incoming.Priority, providerKind, providerIssueRef, incoming.UpdatedAt, lastSyncedAt, current.ID,
+			projectID, incoming.Identifier, incoming.Title, incoming.Description, incoming.State, incoming.Priority, providerKind, providerIssueRef, incoming.UpdatedAt, lastSyncedAt, currentID,
 		)
 		if err != nil {
 			return nil, err
 		}
 		if rows, err := res.RowsAffected(); err == nil && rows == 0 {
-			return nil, notFoundError("issue", current.ID)
+			return nil, notFoundError("issue", currentID)
 		}
-		if _, err := s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, current.ID); err != nil {
+		if err := replaceIssueLabelsTx(tx, currentID, incoming.Labels); err != nil {
 			return nil, err
 		}
-		for _, label := range incoming.Labels {
-			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, current.ID, label)
-		}
-		if _, err := s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, current.ID); err != nil {
+		if err := replaceIssueBlockersRawTx(tx, currentID, incoming.BlockedBy); err != nil {
 			return nil, err
 		}
-		for _, blocker := range incoming.BlockedBy {
-			_, _ = s.db.Exec(`INSERT OR IGNORE INTO issue_blockers (issue_id, blocked_by) VALUES (?, ?)`, current.ID, blocker)
-		}
-		if err := s.appendChange("issue", current.ID, "updated", map[string]interface{}{"identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
+		if err := s.appendChangeTx(tx, "issue", currentID, "updated", map[string]interface{}{"identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
 			return nil, err
 		}
-		return s.GetIssue(current.ID)
+		if err := s.commitTx(tx, true); err != nil {
+			return nil, err
+		}
+		tx = nil
+		return s.GetIssue(currentID)
 	}
+}
+
+func replaceIssueLabelsTx(tx *sql.Tx, issueID string, labels []string) error {
+	if _, err := tx.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, issueID); err != nil {
+		return err
+	}
+	for _, label := range labels {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, issueID, label); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func replaceIssueBlockersRawTx(tx *sql.Tx, issueID string, blockers []string) error {
+	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, issueID); err != nil {
+		return err
+	}
+	for _, blocker := range normalizeBlockers(blockers) {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO issue_blockers (issue_id, blocked_by) VALUES (?, ?)`, issueID, blocker); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) DeleteProviderIssuesExcept(projectID, providerKind string, keepRefs []string) error {
@@ -1451,7 +1505,7 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	if err := s.appendChangeTx(tx, "issue", id, "updated", updates); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitTx(tx, true); err != nil {
 		return err
 	}
 	tx = nil
@@ -1476,7 +1530,7 @@ func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, e
 	if err := s.appendChangeTx(tx, "issue", issueID, "updated", map[string]interface{}{"blocked_by": persisted}); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitTx(tx, true); err != nil {
 		return nil, err
 	}
 	tx = nil
@@ -1485,21 +1539,60 @@ func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, e
 }
 
 func (s *Store) DeleteIssue(id string) error {
-	if err := s.DeleteWorkspace(id); err != nil {
+	var workspace *Workspace
+	workspace, err := s.GetWorkspace(id)
+	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	_, _ = s.db.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id)
-	_, _ = s.db.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id)
-	_, _ = s.db.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id)
-	_, _ = s.db.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id)
-	res, err := s.db.Exec(`DELETE FROM issues WHERE id = ?`, id)
+	if workspace != nil {
+		if err := os.RemoveAll(workspace.Path); err != nil {
+			return err
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM issues WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("issue", id)
 	}
-	return s.appendChange("issue", id, "deleted", nil)
+	if workspace != nil {
+		if err := s.appendChangeTx(tx, "workspace", id, "deleted", map[string]interface{}{"path": workspace.Path}); err != nil {
+			return err
+		}
+	}
+	if err := s.appendChangeTx(tx, "issue", id, "deleted", nil); err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
 }
 
 // Workspace operations
@@ -1942,7 +2035,7 @@ func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) 
 	if err := s.appendRuntimeEventTx(tx, kind, payload); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitTx(tx, true); err != nil {
 		return err
 	}
 	tx = nil
@@ -2002,7 +2095,11 @@ func (s *Store) appendChange(entityType, entityID, action string, payload map[st
 		time.Now().UTC(),
 		string(body),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	observability.BroadcastUpdate()
+	return nil
 }
 
 func (s *Store) appendChangeTx(tx *sql.Tx, entityType, entityID, action string, payload map[string]interface{}) error {
@@ -2023,6 +2120,19 @@ func (s *Store) appendChangeTx(tx *sql.Tx, entityType, entityID, action string, 
 		string(body),
 	)
 	return err
+}
+
+func (s *Store) commitTx(tx *sql.Tx, broadcast bool) error {
+	if tx == nil {
+		return nil
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if broadcast {
+		observability.BroadcastUpdate()
+	}
+	return nil
 }
 
 func (s *Store) setIssueBlockersTx(tx *sql.Tx, issueID string, blockers []string) ([]string, error) {
@@ -2308,7 +2418,7 @@ func (s *Store) CreateIssueAgentCommandWithRuntimeEvent(issueID, command string,
 			return nil, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitTx(tx, true); err != nil {
 		return nil, err
 	}
 	tx = nil

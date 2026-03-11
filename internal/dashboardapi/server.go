@@ -37,6 +37,12 @@ type Server struct {
 	upgrader websocket.Upgrader
 }
 
+const (
+	dashboardWSReadTimeout  = 60 * time.Second
+	dashboardWSWriteTimeout = 5 * time.Second
+	dashboardWSPingInterval = 30 * time.Second
+)
+
 func NewServer(store *kanban.Store, provider Provider) *Server {
 	return &Server{
 		store:    store,
@@ -775,13 +781,28 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	updates, unsubscribe := observability.Subscribe()
+	defer unsubscribe()
 	lastSeq, _ := s.store.LatestChangeSeq()
+	writeJSON := func(payload map[string]interface{}) error {
+		if err := conn.SetWriteDeadline(time.Now().Add(dashboardWSWriteTimeout)); err != nil {
+			return err
+		}
+		return conn.WriteJSON(payload)
+	}
+	conn.SetReadLimit(1024)
+	_ = conn.SetReadDeadline(time.Now().Add(dashboardWSReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(dashboardWSReadTimeout))
+	})
 
-	_ = conn.WriteJSON(map[string]interface{}{
+	if err := writeJSON(map[string]interface{}{
 		"type": "connected",
 		"at":   time.Now().UTC().Format(time.RFC3339),
 		"seq":  lastSeq,
-	})
+	}); err != nil {
+		return
+	}
 
 	go func() {
 		defer cancel()
@@ -792,21 +813,31 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	pingTicker := time.NewTicker(dashboardWSPingInterval)
+	defer pingTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(750 * time.Millisecond):
+		case <-updates:
 			seq, err := s.store.LatestChangeSeq()
 			if err != nil || seq <= lastSeq {
 				continue
 			}
 			lastSeq = seq
-			if err := conn.WriteJSON(map[string]interface{}{
+			if err := writeJSON(map[string]interface{}{
 				"type": "invalidate",
 				"at":   time.Now().UTC().Format(time.RFC3339),
 				"seq":  seq,
 			}); err != nil {
+				return
+			}
+		case <-pingTicker.C:
+			if err := conn.SetWriteDeadline(time.Now().Add(dashboardWSWriteTimeout)); err != nil {
+				return
+			}
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}
