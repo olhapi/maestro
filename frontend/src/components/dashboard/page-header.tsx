@@ -22,6 +22,7 @@ export function PageHeader({
   eyebrow,
   title,
   description,
+  descriptionClassName,
   crumbs = [],
   actions,
   stats,
@@ -30,6 +31,7 @@ export function PageHeader({
   eyebrow?: string
   title: string
   description?: string
+  descriptionClassName?: string
   crumbs?: Crumb[]
   actions?: ReactNode
   stats?: ReactNode
@@ -71,7 +73,9 @@ export function PageHeader({
           >
             {title}
           </h1>
-          {description ? <p className="mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]">{description}</p> : null}
+          {description ? (
+            <p className={cn('mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]', descriptionClassName)}>{description}</p>
+          ) : null}
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2.5">{actions}</div> : null}
       </div>

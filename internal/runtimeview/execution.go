@@ -474,7 +474,7 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 
 	id := fmt.Sprintf("session-command-%d", displayIndex)
 	if callID != "" {
-		id = "session-command-" + callID
+		id = fmt.Sprintf("session-command-%s-%d", callID, displayIndex)
 	}
 	entry := SessionDisplayHistoryEntry{
 		ID:         id,

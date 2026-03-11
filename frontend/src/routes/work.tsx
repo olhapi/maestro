@@ -37,6 +37,7 @@ export function WorkPage() {
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
+  const [projectID, setProjectID] = useState('')
   const [state, setState] = useState('')
   const [sort, setSort] = useState('updated_desc')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -46,11 +47,11 @@ export function WorkPage() {
   })
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>()
 
-  const issuesKey = ['issues', deferredSearch, state, sort] as const
+  const issuesKey = ['issues', deferredSearch, projectID, state, sort] as const
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
   const issues = useQuery({
     queryKey: issuesKey,
-    queryFn: () => api.listIssues({ search: deferredSearch, state, sort, limit: 200 }),
+    queryFn: () => api.listIssues({ search: deferredSearch, project_id: projectID, state, sort, limit: 200 }),
   })
 
   const invalidate = async () => {
@@ -161,8 +162,16 @@ export function WorkPage() {
           <div>
             <CardTitle>Filter the board without losing spatial context</CardTitle>
           </div>
-          <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.25fr)_repeat(2,minmax(0,190px))]">
+          <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.25fr)_repeat(3,minmax(0,190px))]">
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by identifier, title, or description" />
+            <Select aria-label="Filter by project" value={projectID} onChange={(event) => setProjectID(event.target.value)}>
+              <option value="">All projects</option>
+              {bootstrap.data.projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </Select>
             <Select value={state} onChange={(event) => setState(event.target.value)}>
               <option value="">All states</option>
               {availableStates.map((value) => (

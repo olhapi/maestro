@@ -142,4 +142,71 @@ describe('SessionDetailPage', () => {
     expect(screen.getByText('Persisted session')).toBeInTheDocument()
     expect(screen.getByText(/stopped retrying after 3 interrupted runs/i)).toBeInTheDocument()
   })
+
+  it('expands only the clicked history row when command IDs collide', async () => {
+    const issue = makeIssueDetail({ state: 'in_progress' })
+    vi.mocked(api.getIssue).mockResolvedValue(issue)
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: true,
+      phase: 'implementation',
+      attempt_number: 2,
+      retry_state: 'active',
+      session_source: 'live',
+      session_display_history: [
+        {
+          id: 'session-command-call-1',
+          kind: 'command',
+          title: 'Command output',
+          summary: 'First summary',
+          detail: '$ npm run dev\nfirst detail chunk',
+          expandable: true,
+          tone: 'default',
+          event_type: 'exec_command_output_delta',
+        },
+        {
+          id: 'session-command-call-1',
+          kind: 'command',
+          title: 'Command output',
+          summary: 'Second summary',
+          detail: '$ npm run dev\nsecond detail chunk',
+          expandable: true,
+          tone: 'default',
+          event_type: 'exec_command_output_delta',
+        },
+      ],
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: 'thread-live-turn-live',
+        thread_id: 'thread-live',
+        turn_id: 'turn-live',
+        last_event: 'turn.started',
+        last_timestamp: '2026-03-10T12:00:00Z',
+        last_message: 'Applying changes',
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 30,
+        events_processed: 1,
+        turns_started: 2,
+        turns_completed: 1,
+        terminal: false,
+        history: [{ type: 'turn.started', thread_id: 'thread-live', turn_id: 'turn-live', total_tokens: 30, message: 'Applying changes' }],
+      },
+      runtime_events: [],
+    })
+
+    renderWithQueryClient(<SessionDetailPage />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: issue.title })).toBeInTheDocument()
+    })
+
+    const expandButtons = screen.getAllByRole('button', { name: /expand/i })
+    fireEvent.click(expandButtons[1])
+
+    expect(screen.getByText(/second detail chunk/i)).toBeInTheDocument()
+    expect(screen.queryByText(/first detail chunk/i)).not.toBeInTheDocument()
+  })
 })

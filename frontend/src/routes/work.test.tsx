@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { WorkPage } from '@/routes/work'
@@ -46,5 +46,34 @@ describe('WorkPage', () => {
     expect(screen.getByText('Investigate retries')).toBeInTheDocument()
     expect(screen.getByText('Active work')).toBeInTheDocument()
     expect(screen.getByText('Create issue')).toBeInTheDocument()
+  })
+
+  it('filters issues by project from the work toolbar', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+    })
+
+    renderWithQueryClient(<WorkPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Coordinate delivery without leaving the board')).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByLabelText(/filter by project/i), { target: { value: 'project-1' } })
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: 'project-1',
+        state: '',
+        sort: 'updated_desc',
+        limit: 200,
+      })
+    })
   })
 })

@@ -45,8 +45,8 @@ export function SessionExecutionCard({
     }
     return session?.last_message || 'No message'
   })()
-  const toggleHistoryRow = (id: string) => {
-    setExpandedRows((current) => ({ ...current, [id]: !current[id] }))
+  const toggleHistoryRow = (rowKey: string) => {
+    setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }))
   }
 
   return (
@@ -95,10 +95,10 @@ export function SessionExecutionCard({
 
         <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
           <div className="flex items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0">
               <p className="text-sm text-[var(--muted-foreground)]">Session snapshot</p>
-              <p className="mt-2 font-medium text-white">{sessionHeadline}</p>
-              <p className="mt-2 text-sm text-[var(--muted-foreground)]">{sessionMessage}</p>
+              <p className="mt-2 font-medium text-white [overflow-wrap:anywhere] break-all">{sessionHeadline}</p>
+              <p className="mt-2 text-sm text-[var(--muted-foreground)] [overflow-wrap:anywhere] break-all">{sessionMessage}</p>
             </div>
             <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.session_source)}</Badge>
           </div>
@@ -131,45 +131,48 @@ export function SessionExecutionCard({
             {sessionHistory.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No session history captured for this issue yet.</p>
             ) : (
-              sessionHistory.map((event) => (
-                <div
-                  key={event.id}
-                  className={`rounded-[calc(var(--panel-radius)-0.25rem)] border p-3 ${
-                    event.tone === 'error'
-                      ? 'border-rose-400/20 bg-rose-400/10'
-                      : event.tone === 'success'
-                        ? 'border-emerald-400/20 bg-emerald-400/10'
-                        : 'border-white/8 bg-white/[0.03]'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-white">{event.title}</p>
-                      <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.summary || 'Execution signal'}</p>
+              sessionHistory.map((event, index) => {
+                const rowKey = `${event.id}-${index}`
+                return (
+                  <div
+                    key={rowKey}
+                    className={`rounded-[calc(var(--panel-radius)-0.25rem)] border p-3 ${
+                      event.tone === 'error'
+                        ? 'border-rose-400/20 bg-rose-400/10'
+                        : event.tone === 'success'
+                          ? 'border-emerald-400/20 bg-emerald-400/10'
+                          : 'border-white/8 bg-white/[0.03]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-white">{event.title}</p>
+                        <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.summary || 'Execution signal'}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {event.token_count && event.token_count > 0 ? (
+                          <span className="text-xs text-[var(--muted-foreground)]">{formatCompactNumber(event.token_count)} tokens</span>
+                        ) : null}
+                        {event.expandable ? (
+                          <button
+                            className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
+                            onClick={() => toggleHistoryRow(rowKey)}
+                            type="button"
+                          >
+                            {expandedRows[rowKey] ? 'Collapse' : 'Expand'}
+                            {expandedRows[rowKey] ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {event.token_count && event.token_count > 0 ? (
-                        <span className="text-xs text-[var(--muted-foreground)]">{formatCompactNumber(event.token_count)} tokens</span>
-                      ) : null}
-                      {event.expandable ? (
-                        <button
-                          className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
-                          onClick={() => toggleHistoryRow(event.id)}
-                          type="button"
-                        >
-                          {expandedRows[event.id] ? 'Collapse' : 'Expand'}
-                          {expandedRows[event.id] ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
-                        </button>
-                      ) : null}
-                    </div>
+                    {event.detail && expandedRows[rowKey] ? (
+                      <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-white/10 bg-black/30 p-2.5 text-xs text-white/90">
+                        {event.detail}
+                      </pre>
+                    ) : null}
                   </div>
-                  {event.detail && expandedRows[event.id] ? (
-                    <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-white/10 bg-black/30 p-2.5 text-xs text-white/90">
-                      {event.detail}
-                    </pre>
-                  ) : null}
-                </div>
-              ))
+                )
+              })
             )}
           </div>
         </div>

@@ -462,6 +462,64 @@ func TestIssueExecutionPayloadBuildsDisplayHistoryFromCommandDeltas(t *testing.T
 	}
 }
 
+func TestIssueExecutionPayloadBuildsUniqueIDsForSplitCommandCall(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Split command IDs", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 13, 0, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_failed",
+		Error:      "run_failed",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-split-turn-split",
+			ThreadID:        "thread-split",
+			TurnID:          "turn-split",
+			LastEvent:       "exec_command_output_delta",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "exec_command_output_delta", CallID: "cmd-1", Command: "npm run dev", CWD: "/repo/apps/frontend", Chunk: "ready line 1"},
+				{Type: "thread.tokenusage.updated", Message: "token usage updated"},
+				{Type: "exec_command_output_delta", CallID: "cmd-1", Command: "npm run dev", CWD: "/repo/apps/frontend", Chunk: "ready line 2"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 3 {
+		t.Fatalf("expected command + generic + command rows, got %#v", displayHistory)
+	}
+	if displayHistory[0].Kind != "command" || displayHistory[2].Kind != "command" {
+		t.Fatalf("expected split command rows at positions 0 and 2, got %#v", displayHistory)
+	}
+	if displayHistory[0].ID == displayHistory[2].ID {
+		t.Fatalf("expected unique IDs for split command rows, got %q", displayHistory[0].ID)
+	}
+}
+
 func intPtr(value int) *int {
 	return &value
 }

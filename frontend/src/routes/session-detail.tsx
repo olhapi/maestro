@@ -42,6 +42,7 @@ export function SessionDetailPage() {
         eyebrow="Session detail"
         title={issue.data.title}
         description={issue.data.description || 'No description provided.'}
+        descriptionClassName="overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere] break-all"
         crumbs={[
           { label: 'Sessions', to: appRoutes.sessions },
           { label: issue.data.identifier },
