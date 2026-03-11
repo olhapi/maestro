@@ -227,6 +227,43 @@ func (s *Store) migrate() error {
 			session_json TEXT NOT NULL DEFAULT '{}',
 			FOREIGN KEY (issue_id) REFERENCES issues(id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS issue_activity_entries (
+			seq INTEGER PRIMARY KEY AUTOINCREMENT,
+			issue_id TEXT NOT NULL,
+			identifier TEXT NOT NULL DEFAULT '',
+			logical_id TEXT NOT NULL UNIQUE,
+			attempt INTEGER NOT NULL DEFAULT 0,
+			thread_id TEXT NOT NULL DEFAULT '',
+			turn_id TEXT NOT NULL DEFAULT '',
+			item_id TEXT NOT NULL DEFAULT '',
+			kind TEXT NOT NULL DEFAULT '',
+			item_type TEXT NOT NULL DEFAULT '',
+			phase TEXT NOT NULL DEFAULT '',
+			entry_status TEXT NOT NULL DEFAULT '',
+			tier TEXT NOT NULL DEFAULT 'primary',
+			title TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			detail TEXT NOT NULL DEFAULT '',
+			tone TEXT NOT NULL DEFAULT '',
+			expandable INTEGER NOT NULL DEFAULT 0,
+			started_at DATETIME,
+			completed_at DATETIME,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			raw_payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_activity_entries_issue_attempt_seq ON issue_activity_entries(issue_id, attempt, seq)`,
+		`CREATE TABLE IF NOT EXISTS issue_activity_updates (
+			seq INTEGER PRIMARY KEY AUTOINCREMENT,
+			issue_id TEXT NOT NULL,
+			entry_id TEXT NOT NULL DEFAULT '',
+			event_type TEXT NOT NULL DEFAULT '',
+			event_ts DATETIME NOT NULL,
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_activity_updates_issue_seq ON issue_activity_updates(issue_id, seq)`,
 		`CREATE TABLE IF NOT EXISTS issue_agent_commands (
 			id TEXT PRIMARY KEY,
 			issue_id TEXT NOT NULL,
@@ -2298,22 +2335,27 @@ func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEven
 	if strings.TrimSpace(issueID) == "" {
 		return []RuntimeEvent{}, nil
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	rows, err := s.db.Query(`
+	query := `
 		SELECT seq, kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json
 		FROM runtime_events
 		WHERE issue_id = ?
 			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed')
-		ORDER BY seq DESC
-		LIMIT ?`, issueID, limit)
+		ORDER BY seq DESC`
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if limit > 0 && limit <= 200 {
+		rows, err = s.db.Query(query+" LIMIT ?", issueID, limit)
+	} else {
+		rows, err = s.db.Query(query, issueID)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := make([]RuntimeEvent, 0, limit)
+	out := make([]RuntimeEvent, 0)
 	for rows.Next() {
 		var event RuntimeEvent
 		var rawPayload string

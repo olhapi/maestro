@@ -73,6 +73,8 @@ describe("IssueDetailPage", () => {
         terminal: false,
         history: [],
       },
+      activity_groups: [],
+      debug_activity_groups: [],
       runtime_events: [],
       agent_commands: [],
     });
@@ -124,6 +126,8 @@ describe("IssueDetailPage", () => {
         terminal: false,
         history: [],
       },
+      activity_groups: [],
+      debug_activity_groups: [],
       runtime_events: [],
       agent_commands: [],
     });
@@ -155,30 +159,36 @@ describe("IssueDetailPage", () => {
       attempt_number: 2,
       retry_state: "active",
       session_source: "live",
-      session_display_history: [
+      activity_groups: [
         {
-          id: "session-agent-1",
-          kind: "agent",
-          title: "Agent update",
-          summary: "Planning the verification pass",
-          expandable: false,
-          phase: "commentary",
-          tone: "default",
-          event_type: "item.completed",
-        },
-        {
-          id: "session-command-1",
-          kind: "command",
-          title: "Command output",
-          summary: "Running the test suite",
-          detail: "$ npm test\nall checks green",
-          expandable: true,
-          tone: "success",
-          event_type: "exec_command_output_delta",
-          command: "npm test",
-          command_state: "completed",
+          attempt: 2,
+          phase: "implementation",
+          status: "active",
+          entries: [
+            {
+              id: "attempt-2-agent-1",
+              kind: "agent",
+              title: "Agent update",
+              summary: "Planning the verification pass",
+              expandable: false,
+              phase: "commentary",
+              tone: "default",
+            },
+            {
+              id: "attempt-2-command-1",
+              kind: "command",
+              title: "Command completed",
+              summary: "npm test",
+              detail: "$ npm test\n\nall checks green\n\nexit code: 0",
+              expandable: true,
+              tone: "success",
+              item_type: "commandExecution",
+              status: "completed",
+            },
+          ],
         },
       ],
+      debug_activity_groups: [],
       session: {
         issue_id: issue.id,
         issue_identifier: issue.identifier,
@@ -222,7 +232,7 @@ describe("IssueDetailPage", () => {
       within(transcript).getByText("Planning the verification pass"),
     ).toBeInTheDocument();
     expect(
-      within(transcript).getByText(/Background terminal finished with/i),
+      within(transcript).getByText("Command completed"),
     ).toBeInTheDocument();
     expect(within(transcript).getByText("npm test")).toBeInTheDocument();
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
@@ -243,6 +253,8 @@ describe("IssueDetailPage", () => {
         attempt_number: 0,
         retry_state: "none",
         session_source: "none",
+        activity_groups: [],
+        debug_activity_groups: [],
         runtime_events: [],
         agent_commands: [],
       })
@@ -254,6 +266,8 @@ describe("IssueDetailPage", () => {
         attempt_number: 1,
         retry_state: "none",
         session_source: "persisted",
+        activity_groups: [],
+        debug_activity_groups: [],
         runtime_events: [],
         agent_commands: [
           {
@@ -321,6 +335,8 @@ describe("IssueDetailPage", () => {
       attempt_number: 0,
       retry_state: "none",
       session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
       runtime_events: [],
       agent_commands: [],
     });

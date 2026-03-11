@@ -1,114 +1,72 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
-import type { SessionDisplayHistoryEntry } from '@/lib/types'
+import type { ActivityGroup, ActivityEntry } from '@/lib/types'
+import { toTitleCase } from '@/lib/utils'
 
-function normalizeText(value?: string) {
-  return (value ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
-}
-
-function visibleEntries(entries: SessionDisplayHistoryEntry[]) {
-  return entries.filter((entry) => entry.kind === 'agent' || entry.kind === 'command')
-}
-
-function isFinalAnswer(entry: SessionDisplayHistoryEntry) {
-  return entry.kind === 'agent' && entry.phase === 'final_answer'
-}
-
-function rowMarkerClass(entry: SessionDisplayHistoryEntry) {
-  if (isFinalAnswer(entry)) {
-    return 'bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.6)]'
+function rowMarkerClass(entry: ActivityEntry) {
+  if (entry.kind === 'agent') {
+    return entry.phase === 'final_answer'
+      ? 'bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.6)]'
+      : 'bg-sky-300/80'
   }
   if (entry.kind === 'command') {
-    return entry.tone === 'error' ? 'bg-rose-300' : 'bg-white/45'
+    return entry.tone === 'error' ? 'bg-rose-300' : entry.tone === 'success' ? 'bg-emerald-300' : 'bg-white/45'
   }
-  return 'bg-sky-300/80'
+  return entry.tone === 'error' ? 'bg-rose-300' : entry.tone === 'success' ? 'bg-emerald-300' : 'bg-amber-200'
 }
 
-function commandLeadIn(state?: SessionDisplayHistoryEntry['command_state']) {
-  switch (state) {
-    case 'completed':
-      return 'Background terminal finished with'
-    case 'failed':
-      return 'Background terminal failed with'
-    case 'started':
-      return 'Background terminal started with'
-    default:
-      return 'Background terminal streamed output from'
+function renderEntryBody(entry: ActivityEntry) {
+  if (entry.kind === 'status') {
+    return (
+      <div className="min-w-0">
+        <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+          {entry.title}
+        </p>
+        <p className="mt-1 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-sm leading-6 text-white/82">
+          {entry.summary}
+        </p>
+      </div>
+    )
   }
-}
 
-function commandText(entry: SessionDisplayHistoryEntry) {
-  return entry.command?.trim() || entry.summary.trim() || 'command'
-}
-
-function commandSecondarySummary(entry: SessionDisplayHistoryEntry) {
-  const summary = entry.summary.trim()
-  if (!summary) {
-    return ''
-  }
-  if (normalizeText(summary) === normalizeText(entry.command)) {
-    return ''
-  }
-  return summary
-}
-
-function agentBody(entry: SessionDisplayHistoryEntry) {
-  return entry.summary.trim() || entry.title.trim() || 'Agent update'
-}
-
-function renderCompactCommand(entry: SessionDisplayHistoryEntry) {
-  const summary = commandSecondarySummary(entry)
+  const headingTone =
+    entry.kind === 'agent' && entry.phase === 'final_answer'
+      ? 'text-emerald-200/85'
+      : 'text-[var(--muted-foreground)]'
 
   return (
     <div className="min-w-0">
-      <p className="break-all [overflow-wrap:anywhere] text-sm leading-6 text-[var(--muted-foreground)]">
-        {commandLeadIn(entry.command_state)}{' '}
-        <code className="rounded bg-white/[0.06] px-1 py-0.5 font-mono text-[11px] text-white break-all [overflow-wrap:anywhere]">
-          {commandText(entry)}
-        </code>
+      <p className={`text-[11px] font-medium uppercase tracking-[0.18em] ${headingTone}`}>
+        {entry.title}
       </p>
-      {summary ? (
-        <p className="mt-1 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-sm leading-6 text-white/80">
-          {summary}
-        </p>
-      ) : null}
+      <p className="mt-1.5 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92">
+        {entry.summary}
+      </p>
     </div>
   )
 }
 
-function renderAgentUpdate(entry: SessionDisplayHistoryEntry) {
-  const finalAnswer = isFinalAnswer(entry)
-
-  return (
-    <div className="min-w-0">
-      {finalAnswer ? (
-        <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-emerald-200/85">
-          Final answer
-        </p>
-      ) : null}
-      <p
-        className={`whitespace-pre-wrap break-all [overflow-wrap:anywhere] ${
-          finalAnswer
-            ? 'mt-1.5 text-base font-medium leading-7 text-white'
-            : 'text-[15px] leading-6 text-white/92'
-        }`}
-      >
-        {agentBody(entry)}
-      </p>
-    </div>
-  )
+function groupLabel(group: ActivityGroup) {
+  const labels = [`Attempt ${group.attempt}`]
+  if (group.phase) {
+    labels.push(toTitleCase(group.phase))
+  }
+  if (group.status) {
+    labels.push(toTitleCase(group.status))
+  }
+  return labels.join(' · ')
 }
 
 export function SessionActivityTranscript({
-  entries,
+  groups,
   emptyMessage = 'No visible activity captured for this issue yet.',
 }: {
-  entries: SessionDisplayHistoryEntry[]
+  groups: ActivityGroup[]
   emptyMessage?: string
 }) {
-  const transcriptEntries = visibleEntries(entries)
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
+  const totalEntries = groups.reduce((sum, group) => sum + group.entries.length, 0)
 
   const toggleHistoryRow = (rowKey: string) => {
     setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }))
@@ -122,55 +80,67 @@ export function SessionActivityTranscript({
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium text-white">Activity log</p>
         <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-          {transcriptEntries.length} updates
+          {totalEntries} updates
         </span>
       </div>
 
-      {transcriptEntries.length === 0 ? (
+      {totalEntries === 0 ? (
         <p className="mt-4 text-sm text-[var(--muted-foreground)]">{emptyMessage}</p>
       ) : (
         <div
           className="mt-4 max-h-[520px] overflow-y-auto pr-1"
           data-testid="activity-log-scroll"
         >
-          <div className="space-y-4">
-            {transcriptEntries.map((entry) => {
-              const rowKey = entry.id
-              const expanded = expandedRows[rowKey] ?? false
+          <div className="space-y-6">
+            {groups.map((group) => (
+              <section key={`attempt-${group.attempt}`} className="space-y-4">
+                <div className="flex items-center justify-between gap-3 border-b border-white/8 pb-2">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                    {groupLabel(group)}
+                  </p>
+                  <span className="text-xs text-[var(--muted-foreground)]">
+                    {group.entries.length} entries
+                  </span>
+                </div>
 
-              return (
-                <article key={rowKey} className="relative pl-4">
-                  <span
-                    className={`absolute top-2.5 left-0 block size-1.5 rounded-full ${rowMarkerClass(entry)}`}
-                  />
+                <div className="space-y-4">
+                  {group.entries.map((entry) => {
+                    const expanded = expandedRows[entry.id] ?? false
 
-                  <div className="flex items-start gap-3">
-                    <div className="min-w-0 flex-1">
-                      {entry.kind === 'command'
-                        ? renderCompactCommand(entry)
-                        : renderAgentUpdate(entry)}
+                    return (
+                      <article key={entry.id} className="relative pl-4">
+                        <span
+                          className={`absolute top-2.5 left-0 block size-1.5 rounded-full ${rowMarkerClass(entry)}`}
+                        />
 
-                      {entry.detail && expanded ? (
-                        <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88">
-                          {entry.detail}
-                        </pre>
-                      ) : null}
-                    </div>
+                        <div className="flex items-start gap-3">
+                          <div className="min-w-0 flex-1">
+                            {renderEntryBody(entry)}
 
-                    {entry.kind === 'command' && entry.expandable ? (
-                      <button
-                        className="inline-flex h-6 w-20 shrink-0 items-center justify-center gap-1 self-start rounded-sm border border-white/10 bg-white/[0.04] px-1.5 text-[10px] leading-none text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
-                        onClick={() => toggleHistoryRow(rowKey)}
-                        type="button"
-                      >
-                        {expanded ? 'Collapse' : 'Expand'}
-                        {expanded ? <ChevronUp className="size-2.5" /> : <ChevronDown className="size-2.5" />}
-                      </button>
-                    ) : null}
-                  </div>
-                </article>
-              )
-            })}
+                            {entry.detail && expanded ? (
+                              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88">
+                                {entry.detail}
+                              </pre>
+                            ) : null}
+                          </div>
+
+                          {entry.expandable ? (
+                            <button
+                              className="inline-flex h-6 w-20 shrink-0 items-center justify-center gap-1 self-start rounded-sm border border-white/10 bg-white/[0.04] px-1.5 text-[10px] leading-none text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
+                              onClick={() => toggleHistoryRow(entry.id)}
+                              type="button"
+                            >
+                              {expanded ? 'Collapse' : 'Expand'}
+                              {expanded ? <ChevronUp className="size-2.5" /> : <ChevronDown className="size-2.5" />}
+                            </button>
+                          ) : null}
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
+            ))}
           </div>
         </div>
       )}

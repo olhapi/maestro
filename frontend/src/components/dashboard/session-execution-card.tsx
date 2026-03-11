@@ -19,10 +19,10 @@ export function SessionExecutionCard({
   pausedActionHint?: string
 }) {
   const session = execution.session
-  const allSessionHistory = execution.session_display_history ?? []
-  const sessionDebugHistory = allSessionHistory.filter((entry) => entry.kind === 'event')
-  const recentSessionDebugHistory = sessionDebugHistory.slice(-8).reverse()
-  const runtimeEvents = execution.runtime_events.slice(-8).reverse()
+  const activityGroups = execution.activity_groups ?? []
+  const debugActivityGroups = execution.debug_activity_groups ?? []
+  const debugEntries = debugActivityGroups.flatMap((group) => group.entries)
+  const runtimeEvents = execution.runtime_events
   const failureLabel = failureStatusLabel(execution.failure_class)
   const failureSummaryReason =
     execution.pause_reason || execution.failure_class || execution.current_error
@@ -37,7 +37,7 @@ export function SessionExecutionCard({
       : execution.active
         ? 'Active session'
         : 'Idle'
-  const debugSignalCount = sessionDebugHistory.length + execution.runtime_events.length
+  const debugSignalCount = debugEntries.length + execution.runtime_events.length
 
   return (
     <Card>
@@ -102,7 +102,7 @@ export function SessionExecutionCard({
           </div>
         </div>
 
-        <SessionActivityTranscript entries={allSessionHistory} />
+        <SessionActivityTranscript groups={activityGroups} />
 
         <details className="group rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-white">
@@ -113,34 +113,43 @@ export function SessionExecutionCard({
             </span>
           </summary>
           <div className="mt-3.5 space-y-2.5">
-            {recentSessionDebugHistory.length === 0 && runtimeEvents.length === 0 ? (
+            {debugEntries.length === 0 && runtimeEvents.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No persisted runtime events for this issue yet.</p>
             ) : (
               <>
-                {recentSessionDebugHistory.length > 0 ? (
+                {debugActivityGroups.length > 0 ? (
                   <div className="space-y-2.5">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      Session signals
+                      Secondary Codex items
                     </p>
-                    {recentSessionDebugHistory.map((event, index) => (
-                      <div
-                        key={`${event.id}-${index}`}
-                        className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-white/[0.03] p-3"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-white">{event.title}</p>
-                          <span className="text-xs text-[var(--muted-foreground)]">
-                            {event.event_type || 'session'}
-                          </span>
-                        </div>
-                        <p className="mt-2 whitespace-pre-wrap break-words text-sm text-[var(--muted-foreground)]">
-                          {event.summary || 'Execution signal'}
+                    {debugActivityGroups.map((group) => (
+                      <div key={`debug-attempt-${group.attempt}`} className="space-y-2.5">
+                        <p className="text-xs text-[var(--muted-foreground)]">
+                          Attempt {group.attempt}
+                          {group.phase ? ` · ${toTitleCase(group.phase)}` : ''}
+                          {group.status ? ` · ${toTitleCase(group.status)}` : ''}
                         </p>
-                        {event.detail ? (
-                          <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-white/10 bg-black/30 p-2.5 text-xs text-white/88">
-                            {event.detail}
-                          </pre>
-                        ) : null}
+                        {group.entries.map((event) => (
+                          <div
+                            key={event.id}
+                            className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-white/[0.03] p-3"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-sm font-medium text-white">{event.title}</p>
+                              <span className="text-xs text-[var(--muted-foreground)]">
+                                {event.item_type || event.kind}
+                              </span>
+                            </div>
+                            <p className="mt-2 whitespace-pre-wrap break-words text-sm text-[var(--muted-foreground)]">
+                              {event.summary || 'Execution signal'}
+                            </p>
+                            {event.detail ? (
+                              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-white/10 bg-black/30 p-2.5 text-xs text-white/88">
+                                {event.detail}
+                              </pre>
+                            ) : null}
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </div>

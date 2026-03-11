@@ -1,41 +1,50 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
-import type { SessionDisplayHistoryEntry } from '@/lib/types'
+import type { ActivityEntry, ActivityGroup } from '@/lib/types'
 
-function makeCommandEntry(overrides: Partial<SessionDisplayHistoryEntry> = {}): SessionDisplayHistoryEntry {
+function makeCommandEntry(overrides: Partial<ActivityEntry> = {}): ActivityEntry {
   return {
-    id: 'session-command-call-1',
+    id: 'attempt-1-command-1',
     kind: 'command',
     title: 'Command output',
-    summary: 'Starting vite dev server',
+    summary: 'npm run dev',
     detail: '$ npm run dev\ncwd: /repo/apps/frontend\n\nStarting vite dev server',
     expandable: true,
     tone: 'default',
-    event_type: 'exec_command_output_delta',
-    command: 'npm run dev',
-    command_state: 'output',
+    item_type: 'commandExecution',
+    status: 'in_progress',
     ...overrides,
   }
+}
+
+function makeGroups(entries: ActivityEntry[]): ActivityGroup[] {
+  return [
+    {
+      attempt: 1,
+      phase: 'implementation',
+      status: 'active',
+      entries,
+    },
+  ]
 }
 
 describe('SessionActivityTranscript', () => {
   it('renders the transcript inside a scroll container with a fixed-width toggle', () => {
     render(
       <SessionActivityTranscript
-        entries={[
+        groups={makeGroups([
           {
-            id: 'session-agent-item-1',
+            id: 'attempt-1-agent-1',
             kind: 'agent',
             title: 'Agent update',
             summary: 'Planning the fix',
             expandable: false,
             phase: 'commentary',
             tone: 'default',
-            event_type: 'item.completed',
           },
           makeCommandEntry(),
-        ]}
+        ])}
       />,
     )
 
@@ -54,12 +63,12 @@ describe('SessionActivityTranscript', () => {
   it('keeps an expanded command row open when the same row updates in place', () => {
     const { rerender } = render(
       <SessionActivityTranscript
-        entries={[
+        groups={makeGroups([
           makeCommandEntry({
             summary: 'Initial summary',
             detail: '$ npm run dev\nfirst detail chunk',
           }),
-        ]}
+        ])}
       />,
     )
 
@@ -68,12 +77,12 @@ describe('SessionActivityTranscript', () => {
 
     rerender(
       <SessionActivityTranscript
-        entries={[
+        groups={makeGroups([
           makeCommandEntry({
             summary: 'Updated summary',
             detail: '$ npm run dev\nsecond detail chunk',
           }),
-        ]}
+        ])}
       />,
     )
 

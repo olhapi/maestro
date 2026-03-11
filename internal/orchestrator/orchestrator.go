@@ -152,6 +152,7 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
 		runner := agent.NewRunnerWithExtensions(manager, store, registry)
 		runner.SetSessionObserver(o.updateLiveSession)
+		runner.SetActivityObserver(o.updateIssueActivity)
 		return runner
 	}
 	o.runner = o.runnerFactory(workflows)
@@ -192,6 +193,7 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
 		runner := agent.NewRunnerWithExtensions(manager, store, registry)
 		runner.SetSessionObserver(o.updateLiveSession)
+		runner.SetActivityObserver(o.updateIssueActivity)
 		return runner
 	}
 	return o
@@ -2182,6 +2184,24 @@ func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Sess
 		o.persistExecutionSession(&issue, entry.phase, entry.attempt, "run_started", "", false, "", &cp)
 	}
 	o.observeIssueTokenSpend(issueID, &cp)
+}
+
+func (o *Orchestrator) updateIssueActivity(issueID string, event appserver.ActivityEvent) {
+	o.mu.RLock()
+	entry, ok := o.running[issueID]
+	o.mu.RUnlock()
+	if !ok {
+		return
+	}
+	if err := o.store.ApplyIssueActivityEvent(issueID, entry.issue.Identifier, entry.attempt, event); err != nil {
+		slog.Warn("Failed to persist issue activity event",
+			"issue_id", issueID,
+			"issue_identifier", entry.issue.Identifier,
+			"attempt", entry.attempt,
+			"event_type", event.Type,
+			"error", err,
+		)
+	}
 }
 
 func (o *Orchestrator) shouldPersistLiveSessionLocked(issueID string, session *appserver.Session) bool {

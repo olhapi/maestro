@@ -250,6 +250,98 @@ func TestIssueExecutionEndpointReturnsPersistedSessionAndRetryMetadata(t *testin
 	}
 }
 
+func TestIssueExecutionEndpointReturnsGroupedPersistentActivityHistory(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+	issue, err := store.CreateIssue("", "", "Persistent activity", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	for _, kind := range []string{"run_started", "run_completed"} {
+		if err := store.AppendRuntimeEvent(kind, map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+			"attempt":    2,
+		}); err != nil {
+			t.Fatalf("AppendRuntimeEvent(%s) failed: %v", kind, err)
+		}
+	}
+	for _, event := range []appserver.ActivityEvent{
+		{
+			Type:      "item.completed",
+			ThreadID:  "thread-1",
+			TurnID:    "turn-1",
+			ItemID:    "msg-1",
+			ItemType:  "agentMessage",
+			ItemPhase: "final_answer",
+			Item: map[string]interface{}{
+				"id":    "msg-1",
+				"type":  "agentMessage",
+				"phase": "final_answer",
+				"text":  "Authoritative completed answer",
+			},
+		},
+		{
+			Type:      "item.completed",
+			ThreadID:  "thread-1",
+			TurnID:    "turn-1",
+			ItemID:    "plan-1",
+			ItemType:  "plan",
+			ItemPhase: "planning",
+			Item: map[string]interface{}{
+				"id":   "plan-1",
+				"type": "plan",
+				"text": "1. Parse documented events",
+			},
+		},
+	} {
+		if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 2, event); err != nil {
+			t.Fatalf("ApplyIssueActivityEvent(%s) failed: %v", event.Type, err)
+		}
+	}
+
+	resp, err := http.Get(srv.URL + "/api/v1/app/issues/" + issue.Identifier + "/execution")
+	if err != nil {
+		t.Fatalf("GET execution failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode execution payload: %v", err)
+	}
+
+	groups, ok := payload["activity_groups"].([]interface{})
+	if !ok || len(groups) != 1 {
+		t.Fatalf("expected one primary activity group, got %#v", payload["activity_groups"])
+	}
+	group := groups[0].(map[string]interface{})
+	if group["attempt"].(float64) != 2 || group["phase"] != "implementation" || group["status"] != "completed" {
+		t.Fatalf("unexpected primary activity group metadata: %#v", group)
+	}
+	entries, ok := group["entries"].([]interface{})
+	if !ok || len(entries) != 1 {
+		t.Fatalf("expected one primary activity entry, got %#v", group["entries"])
+	}
+	entry := entries[0].(map[string]interface{})
+	if entry["kind"] != "agent" || entry["item_type"] != "agentMessage" || entry["summary"] != "Authoritative completed answer" {
+		t.Fatalf("unexpected primary activity entry: %#v", entry)
+	}
+
+	debugGroups, ok := payload["debug_activity_groups"].([]interface{})
+	if !ok || len(debugGroups) != 1 {
+		t.Fatalf("expected one debug activity group, got %#v", payload["debug_activity_groups"])
+	}
+	debugEntries := debugGroups[0].(map[string]interface{})["entries"].([]interface{})
+	if len(debugEntries) != 1 || debugEntries[0].(map[string]interface{})["item_type"] != "plan" {
+		t.Fatalf("unexpected debug activity entries: %#v", debugEntries)
+	}
+}
+
 func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))

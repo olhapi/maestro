@@ -30,6 +30,7 @@ type Runner struct {
 	service          *providers.Service
 	extensions       *extensions.Registry
 	sessionObserver  func(issueID string, session *appserver.Session)
+	activityObserver func(issueID string, event appserver.ActivityEvent)
 }
 
 type RunResult struct {
@@ -69,6 +70,10 @@ func NewRunnerWithExtensions(provider WorkflowProvider, store *kanban.Store, reg
 
 func (r *Runner) SetSessionObserver(observer func(issueID string, session *appserver.Session)) {
 	r.sessionObserver = observer
+}
+
+func (r *Runner) SetActivityObserver(observer func(issueID string, event appserver.ActivityEvent)) {
+	r.activityObserver = observer
 }
 
 func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, error) {
@@ -297,6 +302,12 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 				return
 			}
 			r.sessionObserver(issue.ID, session)
+		},
+		OnActivityEvent: func(event appserver.ActivityEvent) {
+			if r.activityObserver == nil || issue == nil {
+				return
+			}
+			r.activityObserver(issue.ID, event)
 		},
 	})
 	if err != nil {

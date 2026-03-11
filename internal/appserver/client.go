@@ -47,6 +47,7 @@ type ClientConfig struct {
 	Logger            *slog.Logger
 	OnMessage         func(map[string]interface{})
 	OnSessionUpdate   func(*Session)
+	OnActivityEvent   func(ActivityEvent)
 	ResumeThreadID    string
 	ResumeSource      string
 }
@@ -286,7 +287,14 @@ func (c *Client) RunTurnWithStartCallback(ctx context.Context, prompt, title str
 	if turnID == "" {
 		return fmt.Errorf("invalid turn/start response: missing turn.id")
 	}
-	c.applyEvent(Event{Type: "turn.started", ThreadID: c.session.ThreadID, TurnID: turnID})
+	if !c.hasTurnStarted(turnID) {
+		c.applyEvent(Event{Type: "turn.started", ThreadID: c.session.ThreadID, TurnID: turnID})
+		c.emitActivityEvent(ActivityEvent{
+			Type:     "turn.started",
+			ThreadID: c.session.ThreadID,
+			TurnID:   turnID,
+		})
+	}
 	c.logger.Info("Codex turn started",
 		"session_id", c.session.SessionID,
 		"thread_id", c.session.ThreadID,
@@ -755,6 +763,9 @@ func (c *Client) sendMessage(payload interface{}) error {
 }
 
 func (c *Client) captureEvent(line string, payload protocol.Message) {
+	if activity, ok := ActivityEventFromMessage(payload); ok {
+		c.emitActivityEvent(activity)
+	}
 	var primary Event
 	var primaryOK bool
 	if payload.Method != "" {
@@ -771,6 +782,20 @@ func (c *Client) captureEvent(line string, payload protocol.Message) {
 	}
 }
 
+func (c *Client) hasTurnStarted(turnID string) bool {
+	if c.session == nil || strings.TrimSpace(turnID) == "" {
+		return false
+	}
+	for i := len(c.session.History) - 1; i >= 0; i-- {
+		event := c.session.History[i]
+		if event.TurnID != turnID {
+			continue
+		}
+		return event.Type == "turn.started"
+	}
+	return false
+}
+
 func (c *Client) applyEvent(evt Event) {
 	c.session.ApplyEvent(evt)
 	if c.cfg.OnSessionUpdate == nil {
@@ -779,6 +804,13 @@ func (c *Client) applyEvent(evt Event) {
 	cp := *c.session
 	cp.History = append([]Event(nil), c.session.History...)
 	c.cfg.OnSessionUpdate(&cp)
+}
+
+func (c *Client) emitActivityEvent(event ActivityEvent) {
+	if c.cfg.OnActivityEvent == nil {
+		return
+	}
+	c.cfg.OnActivityEvent(event)
 }
 
 func (c *Client) emitMessage(event string, details map[string]interface{}) {

@@ -71,6 +71,8 @@ describe("IssueDetailPage token spend", () => {
         terminal: false,
         history: [],
       },
+      activity_groups: [],
+      debug_activity_groups: [],
       runtime_events: [],
       agent_commands: [],
     });

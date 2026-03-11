@@ -271,19 +271,26 @@ export interface SessionsResponse {
   entries: SessionFeedEntry[];
 }
 
-export interface SessionDisplayHistoryEntry {
+export interface ActivityEntry {
   id: string;
-  kind: "agent" | "command" | "event";
+  kind: "agent" | "command" | "status" | "secondary";
   title: string;
   summary: string;
   detail?: string;
   expandable: boolean;
-  token_count?: number;
+  item_type?: string;
   phase?: string;
+  status?: string;
   tone?: "default" | "success" | "error";
-  event_type?: string;
-  command?: string;
-  command_state?: "started" | "output" | "completed" | "failed";
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface ActivityGroup {
+  attempt: number;
+  phase?: string;
+  status?: string;
+  entries: ActivityEntry[];
 }
 
 export interface AgentCommand {
@@ -315,7 +322,8 @@ export interface IssueExecutionDetail {
   session_source: "none" | "live" | "persisted";
   session?: Session;
   runtime_events: RuntimeEvent[];
-  session_display_history?: SessionDisplayHistoryEntry[];
+  activity_groups: ActivityGroup[];
+  debug_activity_groups?: ActivityGroup[];
   agent_commands: AgentCommand[];
 }
 
