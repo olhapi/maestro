@@ -126,49 +126,54 @@ export function SessionActivityTranscript({
         </span>
       </div>
 
-      <div className="mt-4 space-y-4">
-        {transcriptEntries.length === 0 ? (
-          <p className="text-sm text-[var(--muted-foreground)]">{emptyMessage}</p>
-        ) : (
-          transcriptEntries.map((entry, index) => {
-            const rowKey = `${entry.id}-${index}`
-            const expanded = expandedRows[rowKey] ?? false
+      {transcriptEntries.length === 0 ? (
+        <p className="mt-4 text-sm text-[var(--muted-foreground)]">{emptyMessage}</p>
+      ) : (
+        <div
+          className="mt-4 max-h-[520px] overflow-y-auto pr-1"
+          data-testid="activity-log-scroll"
+        >
+          <div className="space-y-4">
+            {transcriptEntries.map((entry) => {
+              const rowKey = entry.id
+              const expanded = expandedRows[rowKey] ?? false
 
-            return (
-              <article key={rowKey} className="relative pl-4">
-                <span
-                  className={`absolute top-2.5 left-0 block size-1.5 rounded-full ${rowMarkerClass(entry)}`}
-                />
+              return (
+                <article key={rowKey} className="relative pl-4">
+                  <span
+                    className={`absolute top-2.5 left-0 block size-1.5 rounded-full ${rowMarkerClass(entry)}`}
+                  />
 
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    {entry.kind === 'command'
-                      ? renderCompactCommand(entry)
-                      : renderAgentUpdate(entry)}
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      {entry.kind === 'command'
+                        ? renderCompactCommand(entry)
+                        : renderAgentUpdate(entry)}
 
-                    {entry.detail && expanded ? (
-                      <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88">
-                        {entry.detail}
-                      </pre>
+                      {entry.detail && expanded ? (
+                        <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88">
+                          {entry.detail}
+                        </pre>
+                      ) : null}
+                    </div>
+
+                    {entry.kind === 'command' && entry.expandable ? (
+                      <button
+                        className="inline-flex h-6 w-20 shrink-0 items-center justify-center gap-1 self-start rounded-sm border border-white/10 bg-white/[0.04] px-1.5 text-[10px] leading-none text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
+                        onClick={() => toggleHistoryRow(rowKey)}
+                        type="button"
+                      >
+                        {expanded ? 'Collapse' : 'Expand'}
+                        {expanded ? <ChevronUp className="size-2.5" /> : <ChevronDown className="size-2.5" />}
+                      </button>
                     ) : null}
                   </div>
-
-                  {entry.kind === 'command' && entry.expandable ? (
-                    <button
-                      className="inline-flex h-6 shrink-0 items-center gap-0.5 self-start rounded-sm border border-white/10 bg-white/[0.04] px-1.5 text-[10px] leading-none text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
-                      onClick={() => toggleHistoryRow(rowKey)}
-                      type="button"
-                    >
-                      {expanded ? 'Collapse' : 'Expand'}
-                      {expanded ? <ChevronUp className="size-2.5" /> : <ChevronDown className="size-2.5" />}
-                    </button>
-                  ) : null}
-                </div>
-              </article>
-            )
-          })
-        )}
-      </div>
+                </article>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </section>
   )
 }

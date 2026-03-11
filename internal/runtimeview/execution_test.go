@@ -915,7 +915,7 @@ func TestIssueExecutionPayloadKeepsAdjacentStartedOnlyAgentUpdate(t *testing.T) 
 	}
 }
 
-func TestIssueExecutionPayloadCollapsesAdjacentCompletedCommentaryUpdatesIntoSingleRow(t *testing.T) {
+func TestIssueExecutionPayloadKeepsAdjacentCompletedCommentaryUpdatesAsSeparateRows(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -960,15 +960,18 @@ func TestIssueExecutionPayloadCollapsesAdjacentCompletedCommentaryUpdatesIntoSin
 	if !ok {
 		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
 	}
-	if len(displayHistory) != 1 {
-		t.Fatalf("expected completed commentary updates to collapse into one row, got %#v", displayHistory)
+	if len(displayHistory) != 2 {
+		t.Fatalf("expected completed commentary updates to remain separate, got %#v", displayHistory)
 	}
-	if displayHistory[0].Summary != "Searching the routes\nApplying the patch" {
-		t.Fatalf("expected merged commentary lifecycle text, got %#v", displayHistory[0])
+	if displayHistory[0].Summary != "Searching the routes" {
+		t.Fatalf("expected first commentary row preserved, got %#v", displayHistory[0])
+	}
+	if displayHistory[1].Summary != "Applying the patch" {
+		t.Fatalf("expected second commentary row preserved, got %#v", displayHistory[1])
 	}
 }
 
-func TestIssueExecutionPayloadCollapsesAdjacentCommentaryLifecycleUpdatesIntoSingleRow(t *testing.T) {
+func TestIssueExecutionPayloadKeepsAdjacentCommentaryLifecycleUpdatesAsSeparateRows(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -1013,11 +1016,56 @@ func TestIssueExecutionPayloadCollapsesAdjacentCommentaryLifecycleUpdatesIntoSin
 	if !ok {
 		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
 	}
-	if len(displayHistory) != 1 {
-		t.Fatalf("expected commentary lifecycle updates to collapse, got %#v", displayHistory)
+	if len(displayHistory) != 2 {
+		t.Fatalf("expected commentary lifecycle updates to remain separate, got %#v", displayHistory)
 	}
-	if displayHistory[0].Summary != "Searching the routes\nApplying the patch" {
-		t.Fatalf("expected merged commentary lifecycle text, got %#v", displayHistory[0])
+	if displayHistory[0].Summary != "Searching the routes" {
+		t.Fatalf("expected first commentary row preserved, got %#v", displayHistory[0])
+	}
+	if displayHistory[1].Summary != "Applying the patch" {
+		t.Fatalf("expected second commentary row preserved, got %#v", displayHistory[1])
+	}
+}
+
+func TestBuildSessionDisplayHistoryKeepsStableIDForStreamingCommentaryRow(t *testing.T) {
+	initial := buildSessionDisplayHistory([]appserver.Event{
+		{Type: "item.started", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Plan"},
+		{Type: "item.agentMessage.delta", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "ning"},
+	})
+	if len(initial) != 1 {
+		t.Fatalf("expected one streaming commentary row, got %#v", initial)
+	}
+
+	updated := buildSessionDisplayHistory([]appserver.Event{
+		{Type: "item.started", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Plan"},
+		{Type: "item.agentMessage.delta", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "ning"},
+		{Type: "item.agentMessage.delta", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: " now"},
+	})
+	if len(updated) != 1 {
+		t.Fatalf("expected updated commentary row to remain grouped, got %#v", updated)
+	}
+	if initial[0].ID != updated[0].ID {
+		t.Fatalf("expected stable row id across streaming updates, got %q then %q", initial[0].ID, updated[0].ID)
+	}
+	if updated[0].Summary != "ning now" {
+		t.Fatalf("expected updated commentary text, got %#v", updated[0])
+	}
+}
+
+func TestBuildSessionDisplayHistoryMakesRepeatedBaseIDsUnique(t *testing.T) {
+	displayHistory := buildSessionDisplayHistory([]appserver.Event{
+		{Type: "item.completed", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Searching the routes"},
+		{Type: "turn.started", Message: "next turn"},
+		{Type: "item.completed", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Applying the patch"},
+	})
+	if len(displayHistory) != 3 {
+		t.Fatalf("expected commentary, turn boundary, commentary rows, got %#v", displayHistory)
+	}
+	if displayHistory[0].ID != "session-agent-item-1" {
+		t.Fatalf("expected first stable id, got %#v", displayHistory[0])
+	}
+	if displayHistory[2].ID != "session-agent-item-1-2" {
+		t.Fatalf("expected duplicate base id to gain deterministic suffix, got %#v", displayHistory[2])
 	}
 }
 

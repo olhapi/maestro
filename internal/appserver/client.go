@@ -154,7 +154,7 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		cfg:     cfg,
 		cmd:     cmd,
 		stdin:   stdin,
-		session: &Session{MaxHistory: 50},
+		session: &Session{MaxHistory: defaultSessionHistoryLimit},
 		lines:   make(chan string, 128),
 		lineErr: make(chan error, 1),
 		waitCh:  make(chan error, 1),

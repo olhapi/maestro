@@ -1,6 +1,7 @@
 package appserver
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/olhapi/maestro/internal/appserver/protocol"
@@ -172,6 +173,22 @@ func TestSessionHistoryRingBuffer(t *testing.T) {
 	}
 	if s.History[0].Type != "b" || s.History[1].Type != "c" {
 		t.Fatalf("unexpected history order: %#v", s.History)
+	}
+}
+
+func TestSessionHistoryUsesDefaultHistoryLimit(t *testing.T) {
+	s := &Session{}
+	for i := 0; i < defaultSessionHistoryLimit+5; i++ {
+		s.ApplyEvent(Event{Type: fmt.Sprintf("event-%d", i)})
+	}
+	if len(s.History) != defaultSessionHistoryLimit {
+		t.Fatalf("expected default history limit %d, got %d", defaultSessionHistoryLimit, len(s.History))
+	}
+	if s.History[0].Type != "event-5" {
+		t.Fatalf("expected oldest retained event to be event-5, got %#v", s.History[0])
+	}
+	if s.History[len(s.History)-1].Type != fmt.Sprintf("event-%d", defaultSessionHistoryLimit+4) {
+		t.Fatalf("expected newest event retained, got %#v", s.History[len(s.History)-1])
 	}
 }
 

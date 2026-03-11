@@ -343,25 +343,29 @@ func buildSessionDisplayHistory(history []appserver.Event) []SessionDisplayHisto
 		return nil
 	}
 	out := make([]SessionDisplayHistoryEntry, 0, len(history))
+	idCounts := make(map[string]int, len(history))
 	for i := 0; i < len(history); {
 		switch {
 		case shouldSkipDisplayEvent(history[i]):
 			i++
 		case isAgentDisplayEvent(history[i]):
-			entry, next, ok := buildAgentDisplayEntry(history, i, len(out))
+			entry, next, ok := buildAgentDisplayEntry(history, i)
 			if ok {
+				entry.ID = uniqueDisplayID(entry.ID, idCounts)
 				out = append(out, entry)
 			}
 			i = next
 		case isCommandDisplayEvent(history[i]):
-			entry, next, ok := buildCommandDisplayEntry(history, i, len(out))
+			entry, next, ok := buildCommandDisplayEntry(history, i)
 			if ok {
+				entry.ID = uniqueDisplayID(entry.ID, idCounts)
 				out = append(out, entry)
 			}
 			i = next
 		default:
-			entry, ok := buildGenericDisplayEntry(history[i], len(out))
+			entry, ok := buildGenericDisplayEntry(history[i])
 			if ok {
+				entry.ID = uniqueDisplayID(entry.ID, idCounts)
 				out = append(out, entry)
 			}
 			i++
@@ -373,7 +377,19 @@ func buildSessionDisplayHistory(history []appserver.Event) []SessionDisplayHisto
 	return out
 }
 
-func buildAgentDisplayEntry(history []appserver.Event, start, displayIndex int) (SessionDisplayHistoryEntry, int, bool) {
+func uniqueDisplayID(base string, counts map[string]int) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "session-entry"
+	}
+	counts[base]++
+	if counts[base] == 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, counts[base])
+}
+
+func buildAgentDisplayEntry(history []appserver.Event, start int) (SessionDisplayHistoryEntry, int, bool) {
 	group := make([]appserver.Event, 0, 4)
 	groupItemID := ""
 	groupPhase := ""
@@ -391,7 +407,7 @@ func buildAgentDisplayEntry(history []appserver.Event, start, displayIndex int) 
 			consumed--
 			break
 		}
-		if !canContinueAgentGroup(groupItemID, groupPhase, hasStarted, hasCompleted, hasDelta, group, next) {
+		if !canContinueAgentSegment(groupItemID, groupPhase, hasStarted, hasCompleted, hasDelta, group, next) {
 			consumed--
 			break
 		}
@@ -415,26 +431,11 @@ func buildAgentDisplayEntry(history []appserver.Event, start, displayIndex int) 
 	if len(group) == 0 {
 		group = append(group, history[start])
 	}
-	entry := summarizeAgentGroup(group, displayIndex)
+	entry := summarizeAgentGroup(group)
 	if entry.Summary == "" {
 		return SessionDisplayHistoryEntry{}, start + consumed, false
 	}
 	return entry, start + consumed, true
-}
-
-func canContinueAgentGroup(groupItemID, groupPhase string, hasStarted, hasCompleted, hasDelta bool, group []appserver.Event, next appserver.Event) bool {
-	if len(group) == 0 {
-		return true
-	}
-	nextPhase := normalizeAgentPhase(next.ItemPhase)
-	currentPhase := normalizeAgentPhase(groupPhase)
-	if currentPhase != "" && nextPhase != "" && currentPhase != nextPhase {
-		return false
-	}
-	if currentPhase == "commentary" || (currentPhase == "" && nextPhase == "commentary") {
-		return true
-	}
-	return canContinueAgentSegment(groupItemID, currentPhase, hasStarted, hasCompleted, hasDelta, group, next)
 }
 
 func canContinueAgentSegment(groupItemID, groupPhase string, hasStarted, hasCompleted, hasDelta bool, group []appserver.Event, next appserver.Event) bool {
@@ -463,7 +464,7 @@ func canContinueAgentSegment(groupItemID, groupPhase string, hasStarted, hasComp
 	}
 }
 
-func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDisplayHistoryEntry {
+func summarizeAgentGroup(group []appserver.Event) SessionDisplayHistoryEntry {
 	phase := ""
 	itemID := ""
 	totalTokens := 0
@@ -481,14 +482,14 @@ func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDispl
 		}
 	}
 
-	body := summarizeAgentGroupBody(group, phase)
+	body := summarizeAgentSegmentBody(group)
 	if body == "" {
 		body = firstNonEmpty(defaultSummaryForAgentPhase(phase), "Agent update")
 	}
 	title := titleForAgentPhase(phase)
-	id := fmt.Sprintf("session-agent-%d", displayIndex)
+	id := "session-agent"
 	if itemID != "" {
-		id = fmt.Sprintf("session-agent-%s-%d", itemID, displayIndex)
+		id = fmt.Sprintf("session-agent-%s", itemID)
 	}
 	entry := SessionDisplayHistoryEntry{
 		ID:         id,
@@ -504,77 +505,6 @@ func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDispl
 		entry.TokenCount = totalTokens
 	}
 	return entry
-}
-
-func summarizeAgentGroupBody(group []appserver.Event, phase string) string {
-	if len(group) == 0 {
-		return ""
-	}
-	if normalizeAgentPhase(phase) != "commentary" {
-		return summarizeAgentSegmentBody(group)
-	}
-	segments := splitAgentGroupSegments(group)
-	if len(segments) == 0 {
-		return summarizeAgentSegmentBody(group)
-	}
-	parts := make([]string, 0, len(segments))
-	for _, segment := range segments {
-		if text := summarizeAgentSegmentBody(segment); text != "" {
-			parts = append(parts, text)
-		}
-	}
-	switch len(parts) {
-	case 0:
-		return ""
-	case 1:
-		return parts[0]
-	default:
-		return strings.Join(parts, "\n")
-	}
-}
-
-func splitAgentGroupSegments(group []appserver.Event) [][]appserver.Event {
-	if len(group) == 0 {
-		return nil
-	}
-	segments := make([][]appserver.Event, 0, len(group))
-	for i := 0; i < len(group); {
-		segment := make([]appserver.Event, 0, 4)
-		segmentItemID := ""
-		segmentPhase := ""
-		hasStarted := false
-		hasCompleted := false
-		hasDelta := false
-		for i < len(group) {
-			next := group[i]
-			if !canContinueAgentSegment(segmentItemID, segmentPhase, hasStarted, hasCompleted, hasDelta, segment, next) {
-				break
-			}
-			segment = append(segment, next)
-			if segmentItemID == "" {
-				segmentItemID = agentGroupID(next)
-			}
-			if segmentPhase == "" && strings.TrimSpace(next.ItemPhase) != "" {
-				segmentPhase = strings.TrimSpace(next.ItemPhase)
-			}
-			if isAgentMessageStartedEvent(next) {
-				hasStarted = true
-			}
-			if isAgentMessageCompletedEvent(next) {
-				hasCompleted = true
-			}
-			if isAgentDeltaEvent(next) {
-				hasDelta = true
-			}
-			i++
-		}
-		if len(segment) == 0 {
-			segment = append(segment, group[i])
-			i++
-		}
-		segments = append(segments, segment)
-	}
-	return segments
 }
 
 func summarizeAgentSegmentBody(group []appserver.Event) string {
@@ -604,7 +534,7 @@ func summarizeAgentSegmentBody(group []appserver.Event) string {
 	return firstNonEmpty(completedText, combinedText, startedText)
 }
 
-func buildCommandDisplayEntry(history []appserver.Event, start, displayIndex int) (SessionDisplayHistoryEntry, int, bool) {
+func buildCommandDisplayEntry(history []appserver.Event, start int) (SessionDisplayHistoryEntry, int, bool) {
 	group := make([]appserver.Event, 0, 4)
 	groupCallID := commandGroupID(history[start])
 	consumed := 0
@@ -635,10 +565,10 @@ func buildCommandDisplayEntry(history []appserver.Event, start, displayIndex int
 	if len(group) == 0 {
 		return SessionDisplayHistoryEntry{}, start + consumed, false
 	}
-	return summarizeCommandGroup(group, displayIndex), start + consumed, true
+	return summarizeCommandGroup(group), start + consumed, true
 }
 
-func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDisplayHistoryEntry {
+func summarizeCommandGroup(group []appserver.Event) SessionDisplayHistoryEntry {
 	command := ""
 	cwd := ""
 	totalTokens := 0
@@ -749,9 +679,9 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 	summary := summarizeText(summarySource, 180)
 	expandable := detail != "" && (strings.Contains(detail, "\n") || len(detail) > len(summary)+24)
 
-	id := fmt.Sprintf("session-command-%d", displayIndex)
+	id := "session-command"
 	if callID != "" {
-		id = fmt.Sprintf("session-command-%s-%d", callID, displayIndex)
+		id = fmt.Sprintf("session-command-%s", callID)
 	}
 	entry := SessionDisplayHistoryEntry{
 		ID:           id,
@@ -771,7 +701,7 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 	return entry
 }
 
-func buildGenericDisplayEntry(event appserver.Event, displayIndex int) (SessionDisplayHistoryEntry, bool) {
+func buildGenericDisplayEntry(event appserver.Event) (SessionDisplayHistoryEntry, bool) {
 	if !shouldKeepGenericEvent(event) {
 		return SessionDisplayHistoryEntry{}, false
 	}
@@ -786,9 +716,11 @@ func buildGenericDisplayEntry(event appserver.Event, displayIndex int) (SessionD
 	if isErrorEventType(event.Type) || isErrorText(cleanMessage) {
 		tone = "error"
 	}
-	id := fmt.Sprintf("session-event-%d", displayIndex)
+	id := "session-event"
 	if eventKey := firstNonEmpty(strings.TrimSpace(event.ItemID), strings.TrimSpace(event.CallID)); eventKey != "" {
-		id = fmt.Sprintf("session-event-%s-%d", eventKey, displayIndex)
+		id = fmt.Sprintf("session-event-%s", eventKey)
+	} else if eventType := strings.ToLower(strings.TrimSpace(event.Type)); eventType != "" {
+		id = fmt.Sprintf("session-event-%s", eventType)
 	}
 	entry := SessionDisplayHistoryEntry{
 		ID:         id,

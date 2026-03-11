@@ -9,6 +9,8 @@ import (
 	"github.com/olhapi/maestro/internal/appserver/protocol"
 )
 
+const defaultSessionHistoryLimit = 200
+
 // Event is a minimal app-server event envelope.
 type Event struct {
 	Type         string `json:"type"`
@@ -54,7 +56,7 @@ type Session struct {
 
 func (s *Session) ApplyEvent(e Event) {
 	if s.MaxHistory <= 0 {
-		s.MaxHistory = 50
+		s.MaxHistory = defaultSessionHistoryLimit
 	}
 	s.LastEvent = e.Type
 	s.LastTimestamp = time.Now().UTC()
