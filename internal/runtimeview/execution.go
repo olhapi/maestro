@@ -373,7 +373,11 @@ func buildSessionDisplayHistory(history []appserver.Event) []SessionDisplayHisto
 
 func buildAgentDisplayEntry(history []appserver.Event, start, displayIndex int) (SessionDisplayHistoryEntry, int, bool) {
 	group := make([]appserver.Event, 0, 4)
-	groupItemID := agentGroupID(history[start])
+	groupItemID := ""
+	groupPhase := ""
+	hasStarted := false
+	hasCompleted := false
+	hasDelta := false
 	consumed := 0
 	for i := start; i < len(history); i++ {
 		next := history[i]
@@ -385,18 +389,25 @@ func buildAgentDisplayEntry(history []appserver.Event, start, displayIndex int) 
 			consumed--
 			break
 		}
-		nextItemID := agentGroupID(next)
-		if groupItemID != "" && nextItemID != "" && nextItemID != groupItemID {
-			consumed--
-			break
-		}
-		if groupItemID == "" && nextItemID != "" && len(group) > 1 {
+		if !canContinueAgentGroup(groupItemID, groupPhase, hasStarted, hasCompleted, hasDelta, group, next) {
 			consumed--
 			break
 		}
 		group = append(group, next)
-		if groupItemID == "" && nextItemID != "" {
-			groupItemID = nextItemID
+		if groupItemID == "" {
+			groupItemID = agentGroupID(next)
+		}
+		if groupPhase == "" && strings.TrimSpace(next.ItemPhase) != "" {
+			groupPhase = strings.TrimSpace(next.ItemPhase)
+		}
+		if isAgentMessageStartedEvent(next) {
+			hasStarted = true
+		}
+		if isAgentMessageCompletedEvent(next) {
+			hasCompleted = true
+		}
+		if isAgentDeltaEvent(next) {
+			hasDelta = true
 		}
 	}
 	if len(group) == 0 {
@@ -407,6 +418,31 @@ func buildAgentDisplayEntry(history []appserver.Event, start, displayIndex int) 
 		return SessionDisplayHistoryEntry{}, start + consumed, false
 	}
 	return entry, start + consumed, true
+}
+
+func canContinueAgentGroup(groupItemID, groupPhase string, hasStarted, hasCompleted, hasDelta bool, group []appserver.Event, next appserver.Event) bool {
+	if len(group) == 0 {
+		return true
+	}
+	nextPhase := strings.TrimSpace(next.ItemPhase)
+	if groupPhase != "" && nextPhase != "" && !strings.EqualFold(groupPhase, nextPhase) {
+		return false
+	}
+	nextItemID := agentGroupID(next)
+	switch {
+	case groupItemID == "", nextItemID == "", strings.EqualFold(groupItemID, nextItemID):
+		return true
+	case isAgentDeltaEvent(next):
+		// Some streamed commentary chunks surface with fresh item IDs per delta.
+		// Keep consuming those fragments until we hit a real boundary.
+		return !hasCompleted
+	case isAgentMessageCompletedEvent(next):
+		return !hasCompleted && (hasStarted || hasDelta)
+	case isAgentMessageStartedEvent(next):
+		return hasDelta && !hasStarted && !hasCompleted
+	default:
+		return false
+	}
 }
 
 func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDisplayHistoryEntry {
@@ -441,7 +477,7 @@ func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDispl
 		if !isAgentDeltaEvent(event) {
 			continue
 		}
-		if chunk := cleanDeltaChunk(firstNonEmpty(event.Message, event.Chunk)); chunk != "" {
+		if chunk := cleanDeltaChunk(firstNonEmptyPreservingWhitespace(event.Message, event.Chunk)); chunk != "" {
 			builder.WriteString(chunk)
 		}
 	}
@@ -974,6 +1010,15 @@ func firstNonEmpty(values ...string) string {
 		trimmed := strings.TrimSpace(value)
 		if trimmed != "" {
 			return trimmed
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyPreservingWhitespace(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
 		}
 	}
 	return ""

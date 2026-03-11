@@ -671,6 +671,64 @@ func TestIssueExecutionPayloadCollapsesAgentMessageDeltasIntoSingleRow(t *testin
 	}
 }
 
+func TestIssueExecutionPayloadCollapsesFragmentedAgentDeltasAcrossChangingItemIDs(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Fragmented agent delta issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 13, 22, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-fragment-turn-fragment",
+			ThreadID:        "thread-fragment",
+			TurnID:          "turn-fragment",
+			LastEvent:       "item.agentMessage.delta",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "item.agentMessage.delta", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "the "},
+				{Type: "item.agentMessage.delta", ItemID: "item-2", ItemType: "agentMessage", ItemPhase: "commentary", Message: "routes "},
+				{Type: "item.agentMessage.delta", ItemID: "item-3", ItemType: "agentMessage", ItemPhase: "commentary", Message: "are "},
+				{Type: "item.agentMessage.delta", ItemID: "item-4", ItemType: "agentMessage", ItemPhase: "commentary", Message: "stable"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 1 {
+		t.Fatalf("expected fragmented deltas to collapse into one row, got %#v", displayHistory)
+	}
+	if displayHistory[0].Kind != "agent" || displayHistory[0].Phase != "commentary" {
+		t.Fatalf("unexpected collapsed agent row: %#v", displayHistory[0])
+	}
+	if displayHistory[0].Summary != "the routes are stable" {
+		t.Fatalf("expected merged commentary text, got %#v", displayHistory[0])
+	}
+}
+
 func TestIssueExecutionPayloadKeepsAdjacentStartedOnlyAgentUpdate(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -728,6 +786,62 @@ func TestIssueExecutionPayloadKeepsAdjacentStartedOnlyAgentUpdate(t *testing.T) 
 	}
 	if secondRow.Summary != "Done." {
 		t.Fatalf("expected started-only agent text to be used, got %#v", secondRow)
+	}
+}
+
+func TestIssueExecutionPayloadKeepsAdjacentCommentaryLifecycleUpdatesSeparated(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Adjacent commentary updates", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 13, 40, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-commentary-turn-commentary",
+			ThreadID:        "thread-commentary",
+			TurnID:          "turn-commentary",
+			LastEvent:       "item.started",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "item.completed", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Searching the routes"},
+				{Type: "item.started", ItemID: "item-2", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Applying the patch"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 2 {
+		t.Fatalf("expected commentary lifecycle updates to remain separate, got %#v", displayHistory)
+	}
+	if displayHistory[0].Summary != "Searching the routes" {
+		t.Fatalf("expected first commentary update preserved, got %#v", displayHistory[0])
+	}
+	if displayHistory[1].Summary != "Applying the patch" {
+		t.Fatalf("expected second commentary update preserved, got %#v", displayHistory[1])
 	}
 }
 
