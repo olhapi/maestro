@@ -192,12 +192,7 @@ func (a *cliApp) newMCPCmd() *cobra.Command {
 			if strings.TrimSpace(extensionsFile) != "" {
 				return usageErrorf("`maestro mcp` no longer accepts --extensions; start `maestro run --extensions %s` instead", extensionsFile)
 			}
-			store, err := openStore(a.opts.dbPath)
-			if err != nil {
-				return wrapRuntime(err, "failed to open database")
-			}
-			defer store.Close()
-			if err := mcp.ServeBridgeStdio(cmd.Context(), store, os.Stdin, a.stdout, a.stderr); err != nil {
+			if err := mcp.ServeBridgeStdioPath(cmd.Context(), a.opts.dbPath, os.Stdin, a.stdout, a.stderr); err != nil {
 				return wrapRuntime(err, "mcp bridge error")
 			}
 			return nil

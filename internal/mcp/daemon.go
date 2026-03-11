@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -41,11 +42,23 @@ type DaemonHandle struct {
 	Entry    DaemonEntry
 	listener net.Listener
 	server   *http.Server
+	lockFile *os.File
 	once     sync.Once
 }
 
 func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider RuntimeProvider, registry *extensions.Registry, version string) (*DaemonHandle, error) {
 	identity := store.Identity()
+	lockFile, err := acquireDaemonLock(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	releaseLock := true
+	defer func() {
+		if releaseLock {
+			_ = closeDaemonLock(lockFile)
+		}
+	}()
+
 	if err := ensureSingleDaemonOwner(ctx, identity); err != nil {
 		return nil, err
 	}
@@ -85,7 +98,9 @@ func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider Runti
 		Entry:    entry,
 		listener: ln,
 		server:   httpServer,
+		lockFile: lockFile,
 	}
+	releaseLock = false
 
 	go func() {
 		<-ctx.Done()
@@ -108,9 +123,50 @@ func (h *DaemonHandle) Close() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		closeErr = h.server.Shutdown(ctx)
+		if err := closeDaemonLock(h.lockFile); err != nil && closeErr == nil {
+			closeErr = err
+		}
 		_ = removeDaemonEntryIfOwned(h.Entry)
 	})
 	return closeErr
+}
+
+func acquireDaemonLock(ctx context.Context, identity kanban.StoreIdentity) (*os.File, error) {
+	lockPath, err := daemonLockPath(identity.StoreID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, err
+	}
+
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lockFile.Close()
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return nil, err
+		}
+		entry, _, readErr := readDaemonEntry(identity.StoreID)
+		if readErr == nil {
+			probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+			defer cancel()
+			if probeErr := probeDaemon(probeCtx, *entry, identity); probeErr == nil {
+				return nil, fmt.Errorf("a Maestro daemon is already running for %s at %s (pid %d)", identity.DBPath, entry.BaseURL, entry.PID)
+			}
+		}
+		return nil, fmt.Errorf("a Maestro daemon is already starting or running for %s", identity.DBPath)
+	}
+	return lockFile, nil
+}
+
+func closeDaemonLock(lockFile *os.File) error {
+	if lockFile == nil {
+		return nil
+	}
+	return lockFile.Close()
 }
 
 func ensureSingleDaemonOwner(ctx context.Context, identity kanban.StoreIdentity) error {
@@ -149,6 +205,45 @@ func DiscoverDaemonForStore(ctx context.Context, identity kanban.StoreIdentity) 
 		return nil, fmt.Errorf("Maestro daemon for %s is unavailable: %w", identity.DBPath, err)
 	}
 	return entry, nil
+}
+
+func DiscoverDaemonForDBPath(ctx context.Context, dbPath string) (*DaemonEntry, error) {
+	absDBPath, err := canonicalDBPath(dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := listDaemonEntries()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("no live Maestro daemon found for %s; start `maestro run --db %s` first", absDBPath, absDBPath)
+		}
+		return nil, err
+	}
+
+	var probeErr error
+	for _, entry := range entries {
+		if filepath.Clean(entry.DBPath) != filepath.Clean(absDBPath) {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		err := probeDaemon(probeCtx, entry, kanban.StoreIdentity{
+			DBPath:  absDBPath,
+			StoreID: entry.StoreID,
+		})
+		cancel()
+		if err == nil {
+			matched := entry
+			return &matched, nil
+		}
+		if probeErr == nil {
+			probeErr = err
+		}
+	}
+	if probeErr != nil {
+		return nil, fmt.Errorf("Maestro daemon for %s is unavailable: %w", absDBPath, probeErr)
+	}
+	return nil, fmt.Errorf("no live Maestro daemon found for %s; start `maestro run --db %s` first", absDBPath, absDBPath)
 }
 
 func probeDaemon(ctx context.Context, entry DaemonEntry, expected kanban.StoreIdentity) error {
@@ -290,6 +385,14 @@ func daemonEntryPath(storeID string) (string, error) {
 	return filepath.Join(root, storeID+".json"), nil
 }
 
+func daemonLockPath(storeID string) (string, error) {
+	root, err := daemonRegistryRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, storeID+".lock"), nil
+}
+
 func daemonRegistryRoot() (string, error) {
 	if override := strings.TrimSpace(os.Getenv(daemonRegistryEnv)); override != "" {
 		return filepath.Abs(override)
@@ -307,4 +410,45 @@ func generateSecretToken(bytesLen int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func canonicalDBPath(dbPath string) (string, error) {
+	return filepath.Abs(kanban.ResolveDBPath(dbPath))
+}
+
+func listDaemonEntries() ([]DaemonEntry, error) {
+	root, err := daemonRegistryRoot()
+	if err != nil {
+		return nil, err
+	}
+	dirEntries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]DaemonEntry, 0, len(dirEntries))
+	for _, dirEntry := range dirEntries {
+		if dirEntry.IsDir() || filepath.Ext(dirEntry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(root, dirEntry.Name())
+		entry, err := readDaemonEntryFile(path)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, *entry)
+	}
+	return entries, nil
+}
+
+func readDaemonEntryFile(path string) (*DaemonEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entry DaemonEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil, fmt.Errorf("read daemon registry %s: %w", path, err)
+	}
+	return &entry, nil
 }

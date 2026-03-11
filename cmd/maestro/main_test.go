@@ -264,6 +264,9 @@ func TestMCPCommandFailsFastWithoutLiveDaemon(t *testing.T) {
 	if !strings.Contains(stderr, "no live Maestro daemon found") {
 		t.Fatalf("expected missing daemon error, got %q", stderr)
 	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("expected attach-only mcp command not to create %s, err=%v", dbPath, err)
+	}
 }
 
 func TestIssueStateValidationAndAliases(t *testing.T) {

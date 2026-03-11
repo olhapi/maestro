@@ -36,6 +36,13 @@ type rawJSONRPCMessage struct {
 }
 
 func ServeBridgeStdio(ctx context.Context, store *kanban.Store, stdin io.Reader, stdout, stderr io.Writer) error {
+	if store == nil {
+		return fmt.Errorf("store is required")
+	}
+	return ServeBridgeStdioPath(ctx, store.DBPath(), stdin, stdout, stderr)
+}
+
+func ServeBridgeStdioPath(ctx context.Context, dbPath string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if stdin == nil {
 		return fmt.Errorf("stdin is required")
 	}
@@ -43,7 +50,7 @@ func ServeBridgeStdio(ctx context.Context, store *kanban.Store, stdin io.Reader,
 		return fmt.Errorf("stdout is required")
 	}
 
-	entry, err := DiscoverDaemonForStore(ctx, store.Identity())
+	entry, err := DiscoverDaemonForDBPath(ctx, dbPath)
 	if err != nil {
 		return err
 	}

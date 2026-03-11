@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/olhapi/maestro/internal/kanban"
 )
 
 func TestManagedDaemonRegistryLifecycle(t *testing.T) {
@@ -110,8 +113,62 @@ func TestManagedDaemonRejectsSecondOwnerForSameStore(t *testing.T) {
 
 	if _, err := StartManagedDaemon(ctx, store, testRuntimeProvider{store: store}, nil, "test"); err == nil {
 		t.Fatal("expected second daemon start to fail for the same store")
-	} else if !strings.Contains(err.Error(), "already running") {
+	} else if !strings.Contains(err.Error(), "already") {
 		t.Fatalf("unexpected duplicate-owner error: %v", err)
+	}
+}
+
+func TestManagedDaemonClaimsOwnershipAtomically(t *testing.T) {
+	t.Setenv(daemonRegistryEnv, t.TempDir())
+
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	storeA := testStore(t, dbPath)
+	storeB := testStore(t, dbPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type result struct {
+		handle *DaemonHandle
+		err    error
+	}
+
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+
+	for _, store := range []*kanban.Store{storeA, storeB} {
+		store := store
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			handle, err := StartManagedDaemon(ctx, store, testRuntimeProvider{store: store}, nil, "test")
+			results <- result{handle: handle, err: err}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var handles []*DaemonHandle
+	var errs []error
+	for result := range results {
+		if result.err != nil {
+			errs = append(errs, result.err)
+			continue
+		}
+		handles = append(handles, result.handle)
+	}
+	for _, handle := range handles {
+		defer func(handle *DaemonHandle) { _ = handle.Close() }(handle)
+	}
+
+	if len(handles) != 1 || len(errs) != 1 {
+		t.Fatalf("expected exactly one daemon owner, got %d handles and %d errors", len(handles), len(errs))
+	}
+	if !strings.Contains(errs[0].Error(), "already") {
+		t.Fatalf("unexpected concurrent-owner error: %v", errs[0])
 	}
 }
 
