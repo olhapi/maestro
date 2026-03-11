@@ -138,8 +138,8 @@ func DefaultConfig() Config {
 				"type":          "workspaceWrite",
 				"networkAccess": true,
 			},
-			TurnTimeoutMs:  600000,
-			ReadTimeoutMs:  5000,
+			TurnTimeoutMs:  1800000,
+			ReadTimeoutMs:  10000,
 			StallTimeoutMs: 300000,
 		},
 	}

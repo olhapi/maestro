@@ -31,7 +31,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.DispatchMode != DispatchModeParallel {
 		t.Fatalf("expected dispatch mode %q, got %q", DispatchModeParallel, cfg.Agent.DispatchMode)
 	}
-	if cfg.Codex.TurnTimeoutMs != 600000 || cfg.Codex.ReadTimeoutMs != 5000 || cfg.Codex.StallTimeoutMs != 300000 {
+	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
 		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
 	if cfg.Codex.TurnSandboxPolicy["networkAccess"] != true {

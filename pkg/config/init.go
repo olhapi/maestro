@@ -157,8 +157,8 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
-  turn_timeout_ms: 600000
-  read_timeout_ms: 5000
+  turn_timeout_ms: 1800000
+  read_timeout_ms: 10000
   stall_timeout_ms: 300000
 ---
 

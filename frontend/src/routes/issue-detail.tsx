@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, Save, Send, Trash2 } from "lucide-react";
+import { RotateCcw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -71,7 +71,6 @@ export function IssueDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
-  const [blockersDraft, setBlockersDraft] = useState<string | null>(null);
   const [commandDraft, setCommandDraft] = useState("");
 
   const bootstrap = useQuery({
@@ -140,8 +139,6 @@ export function IssueDetailPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
-  const blockersValue =
-    blockersDraft ?? issue.data.blocked_by?.join(", ") ?? "";
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [
     issue.data.state,
   ]);
@@ -289,6 +286,24 @@ export function IssueDetailPage() {
               <CardTitle>Issue actions</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-2.5">
+              <Select
+                aria-label="Issue state"
+                value={issue.data.state}
+                onChange={async (event) => {
+                  await api.setIssueState(
+                    identifier,
+                    event.target.value as IssueState,
+                  );
+                  toast.success("State updated");
+                  await invalidate();
+                }}
+              >
+                {availableStates.map((value) => (
+                  <option key={value} value={value}>
+                    {getStateMeta(value).label}
+                  </option>
+                ))}
+              </Select>
               <Button variant="secondary" onClick={() => setEditOpen(true)}>
                 Edit issue
               </Button>
@@ -308,65 +323,6 @@ export function IssueDetailPage() {
                 <Trash2 className="size-4" />
                 Delete
               </Button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Live adjustments</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3.5">
-              <div className="grid gap-2">
-                <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                  State
-                </span>
-                <Select
-                  value={issue.data.state}
-                  onChange={async (event) => {
-                    await api.setIssueState(
-                      identifier,
-                      event.target.value as IssueState,
-                    );
-                    toast.success("State updated");
-                    await invalidate();
-                  }}
-                >
-                  {availableStates.map((value) => (
-                    <option key={value} value={value}>
-                      {getStateMeta(value).label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-
-              <div className="grid gap-2">
-                <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                  Blockers
-                </span>
-                <Textarea
-                  value={blockersValue}
-                  onChange={(event) => setBlockersDraft(event.target.value)}
-                  className="min-h-[120px]"
-                />
-                <Button
-                  variant="secondary"
-                  onClick={async () => {
-                    await api.setIssueBlockers(
-                      identifier,
-                      blockersValue
-                        .split(",")
-                        .map((value) => value.trim())
-                        .filter(Boolean),
-                    );
-                    toast.success("Blockers updated");
-                    setBlockersDraft(null);
-                    await invalidate();
-                  }}
-                >
-                  <Save className="size-4" />
-                  Save blockers
-                </Button>
-              </div>
             </CardContent>
           </Card>
 

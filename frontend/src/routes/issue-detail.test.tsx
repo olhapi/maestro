@@ -307,4 +307,47 @@ describe("IssueDetailPage", () => {
       within(controlRail).getByText("Merge the branch to master."),
     ).toBeInTheDocument();
   });
+
+  it("keeps the state selector under issue actions and removes the extra control cards", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "backlog" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.setIssueState).mockResolvedValue({
+      ...issue,
+      state: "ready",
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Issue actions")).toBeInTheDocument();
+    });
+
+    const controlRail = screen.getByTestId("issue-control-rail");
+    expect(within(controlRail).queryByText("Live adjustments")).not.toBeInTheDocument();
+    expect(within(controlRail).queryByText("Blockers")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: /issue state/i }), {
+      target: { value: "ready" },
+    });
+
+    await waitFor(() => {
+      expect(api.setIssueState).toHaveBeenCalledWith(
+        issue.identifier,
+        "ready",
+      );
+    });
+  });
 });
