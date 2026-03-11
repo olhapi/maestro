@@ -2304,7 +2304,11 @@ func TestDispatchRespectsDependencyOrderParallel(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 	starts := runner.waitForStarts(t, 2, time.Second)
-	if starts[0] != issues["A"].Identifier || starts[1] != issues["E"].Identifier {
+	got := map[string]bool{
+		starts[0]: true,
+		starts[1]: true,
+	}
+	if !got[issues["A"].Identifier] || !got[issues["E"].Identifier] {
 		t.Fatalf("expected initial parallel starts A and E, got %v", starts)
 	}
 
@@ -2316,7 +2320,7 @@ func TestDispatchRespectsDependencyOrderParallel(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 	starts = runner.waitForStarts(t, 4, time.Second)
-	got := map[string]bool{
+	got = map[string]bool{
 		starts[2]: true,
 		starts[3]: true,
 	}
