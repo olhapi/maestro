@@ -40,7 +40,7 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
-  turn_timeout_ms: 1800000
+  turn_timeout_ms: 3600000
   read_timeout_ms: 10000
   stall_timeout_ms: 300000
 ---
