@@ -5,7 +5,7 @@ import { IssueCard } from '@/components/dashboard/issue-card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { BootstrapResponse, IssueState, IssueSummary } from '@/lib/types'
-import { getStateMeta, issueStatesFor } from '@/lib/dashboard'
+import { getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { cn } from '@/lib/utils'
 
 export function KanbanBoard({
@@ -30,7 +30,7 @@ export function KanbanBoard({
       state,
       items: laneItems,
       blocked: laneItems.filter((item) => item.is_blocked).length,
-      live: laneItems.filter((item) => bootstrap?.sessions.sessions[item.id]).length,
+      live: laneItems.filter((item) => getSessionForIssue(bootstrap, item.id, item.identifier)).length,
     }
   })
 

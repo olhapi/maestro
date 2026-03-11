@@ -44,16 +44,39 @@ export function issueStatesFor(items: IssueSummary[], preferredStates: string[] 
   return ordered
 }
 
-export function getSessionForIssue(bootstrap: BootstrapResponse | undefined, issueID: string): Session | undefined {
-  return bootstrap?.sessions.sessions[issueID]
+function matchesIssue(issueID: string, issueIdentifier: string | undefined, candidateIssueID?: string, candidateIdentifier?: string) {
+  return candidateIssueID === issueID || (!!issueIdentifier && candidateIdentifier === issueIdentifier)
 }
 
-export function getRetryForIssue(bootstrap: BootstrapResponse | undefined, issueID: string): RetryEntry | undefined {
-  return bootstrap?.overview.snapshot.retrying.find((item) => item.issue_id === issueID)
+export function getSessionForIssue(
+  bootstrap: BootstrapResponse | undefined,
+  issueID: string,
+  issueIdentifier?: string,
+): Session | undefined {
+  const sessions = bootstrap?.sessions.sessions
+  if (!sessions) {
+    return undefined
+  }
+  if (issueIdentifier && sessions[issueIdentifier]) {
+    return sessions[issueIdentifier]
+  }
+  return sessions[issueID]
 }
 
-export function getPausedForIssue(bootstrap: BootstrapResponse | undefined, issueID: string): PausedEntry | undefined {
-  return bootstrap?.overview.snapshot.paused.find((item) => item.issue_id === issueID)
+export function getRetryForIssue(
+  bootstrap: BootstrapResponse | undefined,
+  issueID: string,
+  issueIdentifier?: string,
+): RetryEntry | undefined {
+  return bootstrap?.overview.snapshot.retrying.find((item) => matchesIssue(issueID, issueIdentifier, item.issue_id, item.identifier))
+}
+
+export function getPausedForIssue(
+  bootstrap: BootstrapResponse | undefined,
+  issueID: string,
+  issueIdentifier?: string,
+): PausedEntry | undefined {
+  return bootstrap?.overview.snapshot.paused.find((item) => matchesIssue(issueID, issueIdentifier, item.issue_id, item.identifier))
 }
 
 export function groupIssuesByState(items: IssueSummary[], states: IssueState[] = issueStatesFor(items)) {

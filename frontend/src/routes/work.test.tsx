@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { WorkPage } from '@/routes/work'
-import { makeBootstrapResponse } from '@/test/fixtures'
+import { makeBootstrapResponse, makeIssueDetail } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 vi.mock('@tanstack/react-router', () => ({
@@ -30,6 +30,7 @@ describe('WorkPage', () => {
   it('renders board data from bootstrap and issues queries', async () => {
     const bootstrap = makeBootstrapResponse()
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,
       total: bootstrap.issues.total,
@@ -45,6 +46,7 @@ describe('WorkPage', () => {
 
     expect(screen.getByText('Investigate retries')).toBeInTheDocument()
     expect(screen.getByText('Active work')).toBeInTheDocument()
+    expect(screen.getByText('1 live')).toBeInTheDocument()
     expect(screen.queryByText('Create issue')).not.toBeInTheDocument()
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Board view' })).toHaveAttribute('data-state', 'on')
@@ -54,11 +56,18 @@ describe('WorkPage', () => {
       expect(screen.getByRole('columnheader', { name: 'Issue' })).toBeInTheDocument()
     })
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /investigate retries/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('turn.started')).toBeInTheDocument()
+    })
   })
 
   it('filters issues by project from the work toolbar', async () => {
     const bootstrap = makeBootstrapResponse()
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,
       total: bootstrap.issues.total,

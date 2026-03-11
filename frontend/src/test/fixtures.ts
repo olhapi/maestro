@@ -179,7 +179,7 @@ export function makeBootstrapResponse(
     },
     sessions: {
       sessions: {
-        [issue.id]: {
+        [issue.identifier]: {
           issue_id: issue.id,
           issue_identifier: issue.identifier,
           session_id: "thread-1-turn-1",

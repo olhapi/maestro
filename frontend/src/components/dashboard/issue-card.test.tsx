@@ -6,6 +6,14 @@ import { makeBootstrapResponse, makeIssueSummary } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 describe('IssueCard', () => {
+  it('renders a live badge when bootstrap sessions are keyed by issue identifier', () => {
+    const issue = makeIssueSummary()
+
+    renderWithQueryClient(<IssueCard issue={issue} bootstrap={makeBootstrapResponse()} onOpen={vi.fn()} />)
+
+    expect(screen.getByText('Live')).toBeInTheDocument()
+  })
+
   it('renders a paused badge when retries are paused for an issue', () => {
     const issue = makeIssueSummary()
     const bootstrap = makeBootstrapResponse({

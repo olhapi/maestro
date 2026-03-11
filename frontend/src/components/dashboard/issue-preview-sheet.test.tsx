@@ -55,6 +55,9 @@ describe('IssuePreviewSheet', () => {
       expect(screen.getByText('Investigate retries')).toBeInTheDocument()
     })
 
+    expect(screen.getByText('turn.started')).toBeInTheDocument()
+    expect(screen.queryByText('No live session')).not.toBeInTheDocument()
+
     fireEvent.click(screen.getByText('Retry now'))
 
     await waitFor(() => {

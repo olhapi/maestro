@@ -52,9 +52,9 @@ export function IssueCard({
   menuFooter?: ReactNode;
   className?: string;
 }) {
-  const session = getSessionForIssue(bootstrap, issue.id);
-  const retry = getRetryForIssue(bootstrap, issue.id);
-  const paused = getPausedForIssue(bootstrap, issue.id);
+  const session = getSessionForIssue(bootstrap, issue.id, issue.identifier);
+  const retry = getRetryForIssue(bootstrap, issue.id, issue.identifier);
+  const paused = getPausedForIssue(bootstrap, issue.id, issue.identifier);
   const meta = getStateMeta(issue.state);
   const availableStates = issueStatesFor([issue]);
   const cardBadgeClass = "px-1.75 py-0.5 text-[9px] tracking-[0.14em]";

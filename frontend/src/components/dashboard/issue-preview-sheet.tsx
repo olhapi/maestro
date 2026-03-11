@@ -74,13 +74,13 @@ export function IssuePreviewSheet({
 
   const activeIssue = detail ?? issue;
   const session = activeIssue
-    ? getSessionForIssue(bootstrap, activeIssue.id)
+    ? getSessionForIssue(bootstrap, activeIssue.id, activeIssue.identifier)
     : undefined;
   const retry = activeIssue
-    ? getRetryForIssue(bootstrap, activeIssue.id)
+    ? getRetryForIssue(bootstrap, activeIssue.id, activeIssue.identifier)
     : undefined;
   const paused = activeIssue
-    ? getPausedForIssue(bootstrap, activeIssue.id)
+    ? getPausedForIssue(bootstrap, activeIssue.id, activeIssue.identifier)
     : undefined;
   const availableStates = activeIssue
     ? issueStatesFor(bootstrap?.issues.items ?? [activeIssue], [
