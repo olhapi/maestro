@@ -398,6 +398,14 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 				}
 				continue
 			}
+			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit() {
+				c.logger.Info("Codex turn completed after clean app-server exit",
+					"session_id", c.session.SessionID,
+					"thread_id", c.session.ThreadID,
+					"turn_id", c.session.TurnID,
+				)
+				return nil
+			}
 			return err
 		}
 		lastProgressAt = time.Now()
@@ -443,6 +451,22 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 		if needsInput(method, payload.Raw) {
 			return &RunError{Kind: "turn_input_required", Payload: payload.Raw}
 		}
+	}
+}
+
+func (c *Client) turnFinishedByCleanProcessExit() bool {
+	if c.session == nil || strings.TrimSpace(c.session.ThreadID) == "" || strings.TrimSpace(c.session.TurnID) == "" {
+		return false
+	}
+	select {
+	case err := <-c.waitCh:
+		select {
+		case c.waitCh <- err:
+		default:
+		}
+		return err == nil
+	default:
+		return false
 	}
 }
 
