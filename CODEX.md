@@ -1,0 +1,1 @@
+- never run "--no-verify", if coverage is missing or there are errors then they should be fixed
