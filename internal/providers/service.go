@@ -181,11 +181,11 @@ func (s *Service) syncIssuesBestEffort(ctx context.Context, query kanban.IssueQu
 		if provider.Kind() == kanban.ProviderKindKanban {
 			continue
 		}
-		readCtx, cancel := s.newReadSyncContext(ctx)
+		readCtx, cancel, propagateParentContext := s.newReadSyncContext(ctx)
 		issues, err := provider.ListIssues(readCtx, &project, query)
 		cancel()
 		if err != nil {
-			if shouldPropagateReadSyncError(ctx, err) {
+			if shouldPropagateReadSyncError(ctx, err, propagateParentContext) {
 				return err
 			}
 			hasCache, cacheErr := s.hasCachedProviderIssues(project.ID, provider.Kind())
@@ -244,18 +244,30 @@ func (s *Service) syncIssues(ctx context.Context, query kanban.IssueQuery) error
 	return nil
 }
 
-func (s *Service) newReadSyncContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func (s *Service) newReadSyncContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= providerReadSyncTimeout {
-		return context.WithDeadline(ctx, deadline)
+	if ctx.Err() != nil {
+		child, cancel := context.WithCancel(ctx)
+		return child, cancel, true
 	}
-	return context.WithTimeout(ctx, providerReadSyncTimeout)
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= providerReadSyncTimeout {
+		child, cancel := context.WithDeadline(ctx, deadline)
+		return child, cancel, true
+	}
+	child, cancel := context.WithTimeout(ctx, providerReadSyncTimeout)
+	return child, cancel, false
 }
 
-func shouldPropagateReadSyncError(parent context.Context, err error) bool {
-	return parent != nil && parent.Err() != nil && errors.Is(err, parent.Err())
+func shouldPropagateReadSyncError(parent context.Context, err error, propagateParentContext bool) bool {
+	if err == nil || !propagateParentContext {
+		return false
+	}
+	if parent != nil && parent.Err() != nil && errors.Is(err, parent.Err()) {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 func (s *Service) reconcileProviderIssues(projectID, providerKind string, issues []kanban.Issue) error {
@@ -308,13 +320,13 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 	if err == nil {
 		_, provider, providerErr := s.resolveIssueProvider(issue)
 		if providerErr == nil && provider.Kind() != kanban.ProviderKindKanban {
-			readCtx, cancel := s.newReadSyncContext(ctx)
+			readCtx, cancel, propagateParentContext := s.newReadSyncContext(ctx)
 			defer cancel()
 			refreshed, refreshErr := s.RefreshIssue(readCtx, issue)
 			if refreshErr == nil {
 				return refreshed, nil
 			}
-			if shouldPropagateReadSyncError(ctx, refreshErr) {
+			if shouldPropagateReadSyncError(ctx, refreshErr, propagateParentContext) {
 				return nil, refreshErr
 			}
 			if kanban.IsNotFound(refreshErr) {
@@ -344,10 +356,10 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 		if provider.Kind() == kanban.ProviderKindKanban {
 			continue
 		}
-		readCtx, cancel := s.newReadSyncContext(ctx)
+		readCtx, cancel, propagateParentContext := s.newReadSyncContext(ctx)
 		refreshed, getErr := provider.GetIssue(readCtx, &project, identifier)
 		cancel()
-		if shouldPropagateReadSyncError(ctx, getErr) {
+		if shouldPropagateReadSyncError(ctx, getErr, propagateParentContext) {
 			return nil, getErr
 		}
 		if getErr != nil {
