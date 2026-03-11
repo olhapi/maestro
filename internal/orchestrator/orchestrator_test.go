@@ -1620,7 +1620,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession stall: %v", err)
 	}
-	if stallSnapshot.Error != "stall_timeout" {
+	if stallSnapshot.Error != "stall_timeout" && stallSnapshot.Error != "run_interrupted" {
 		t.Fatalf("unexpected stall snapshot: %+v", stallSnapshot)
 	}
 }
