@@ -273,12 +273,13 @@ export interface SessionsResponse {
 
 export interface SessionDisplayHistoryEntry {
   id: string;
-  kind: "command" | "event";
+  kind: "agent" | "command" | "event";
   title: string;
   summary: string;
   detail?: string;
   expandable: boolean;
   token_count?: number;
+  phase?: string;
   tone?: "default" | "success" | "error";
   event_type?: string;
 }

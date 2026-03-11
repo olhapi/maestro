@@ -62,6 +62,43 @@ func TestParseEventLineAgentMessageContentDelta(t *testing.T) {
 	}
 }
 
+func TestParseEventLineItemStartedPreservesAgentMessageMetadata(t *testing.T) {
+	line := `{"method":"item/started","params":{"threadId":"th5","turnId":"tu5","item":{"id":"item-5","type":"agentMessage","phase":"commentary","text":"Thinking through the change"}}}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "item.started" || e.ThreadID != "th5" || e.TurnID != "tu5" {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+	if e.ItemID != "item-5" || e.ItemType != "agentMessage" || e.ItemPhase != "commentary" {
+		t.Fatalf("expected nested item metadata, got %#v", e)
+	}
+	if e.Message != "Thinking through the change" {
+		t.Fatalf("expected nested item text as message, got %#v", e)
+	}
+}
+
+func TestParseEventLineItemCompletedPreservesCommandMetadata(t *testing.T) {
+	line := `{"method":"item/completed","params":{"threadId":"th6","turnId":"tu6","item":{"id":"item-6","type":"commandExecution","command":"npm run test","cwd":"/repo","aggregatedOutput":"tests passed","exitCode":0}}}`
+	e, ok := ParseEventLine(line)
+	if !ok {
+		t.Fatal("expected parse ok")
+	}
+	if e.Type != "item.completed" || e.ThreadID != "th6" || e.TurnID != "tu6" {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+	if e.ItemID != "item-6" || e.ItemType != "commandExecution" {
+		t.Fatalf("expected command item metadata, got %#v", e)
+	}
+	if e.Command != "npm run test" || e.CWD != "/repo" || e.Chunk != "tests passed" {
+		t.Fatalf("expected nested command metadata, got %#v", e)
+	}
+	if e.ExitCode == nil || *e.ExitCode != 0 {
+		t.Fatalf("expected nested exit code, got %#v", e)
+	}
+}
+
 func TestParseEventLineThreadTokenUsageUpdated(t *testing.T) {
 	line := `{"method":"thread/tokenUsage/updated","params":{"threadId":"th3","turnId":"tu3","tokenUsage":{"last":{"inputTokens":4,"outputTokens":5,"totalTokens":9,"cachedInputTokens":0,"reasoningOutputTokens":0},"total":{"inputTokens":10,"outputTokens":20,"totalTokens":30,"cachedInputTokens":0,"reasoningOutputTokens":0}}}}`
 	e, ok := ParseEventLine(line)
@@ -180,6 +217,27 @@ func TestMergeEventsIncludesCommandMetadata(t *testing.T) {
 	}
 	if merged.Chunk != "command failed" || merged.ExitCode == nil || *merged.ExitCode != 1 {
 		t.Fatalf("expected merged output payload, got %#v", merged)
+	}
+}
+
+func TestMergeEventsIncludesItemMetadata(t *testing.T) {
+	primary := Event{
+		Type:     "item.agentMessage.delta",
+		ThreadID: "th7",
+		TurnID:   "tu7",
+		ItemID:   "item-7",
+	}
+	fallback := Event{
+		ItemType:  "agentMessage",
+		ItemPhase: "final_answer",
+		Message:   "Done.",
+	}
+	merged := MergeEvents(primary, fallback)
+	if merged.ItemID != "item-7" || merged.ItemType != "agentMessage" || merged.ItemPhase != "final_answer" {
+		t.Fatalf("expected merged item metadata, got %#v", merged)
+	}
+	if merged.Message != "Done." {
+		t.Fatalf("expected fallback message, got %#v", merged)
 	}
 }
 

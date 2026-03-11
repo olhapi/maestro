@@ -15,6 +15,9 @@ type Event struct {
 	ThreadID     string `json:"thread_id"`
 	TurnID       string `json:"turn_id"`
 	CallID       string `json:"call_id,omitempty"`
+	ItemID       string `json:"item_id,omitempty"`
+	ItemType     string `json:"item_type,omitempty"`
+	ItemPhase    string `json:"item_phase,omitempty"`
 	Stream       string `json:"stream,omitempty"`
 	Command      string `json:"command,omitempty"`
 	CWD          string `json:"cwd,omitempty"`
@@ -232,6 +235,15 @@ func MergeEvents(primary, fallback Event) Event {
 	if out.CallID == "" {
 		out.CallID = fallback.CallID
 	}
+	if out.ItemID == "" {
+		out.ItemID = fallback.ItemID
+	}
+	if out.ItemType == "" {
+		out.ItemType = fallback.ItemType
+	}
+	if out.ItemPhase == "" {
+		out.ItemPhase = fallback.ItemPhase
+	}
 	if out.Stream == "" {
 		out.Stream = fallback.Stream
 	}
@@ -264,13 +276,17 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 	}
 	e.ThreadID = firstStr(m, "thread_id", "threadId")
 	e.TurnID = firstStr(m, "turn_id", "turnId")
-	e.CallID = strings.TrimSpace(firstStr(m, "call_id", "callId", "item_id", "itemId"))
+	e.CallID = strings.TrimSpace(firstStr(m, "call_id", "callId"))
+	e.ItemID = strings.TrimSpace(firstStr(m, "item_id", "itemId"))
+	e.ItemType = strings.TrimSpace(firstStr(m, "item_type", "itemType"))
+	e.ItemPhase = strings.TrimSpace(firstStr(m, "item_phase", "itemPhase"))
 	e.Stream = strings.TrimSpace(firstStr(m, "stream"))
 	e.Command = strings.TrimSpace(firstStr(m, "command"))
 	e.CWD = strings.TrimSpace(firstStr(m, "cwd"))
 	e.Chunk = firstStr(m, "chunk")
 	e.ExitCode = firstIntPtr(m, "exit_code", "exitCode")
 	e.Message = firstStr(m, "message", "content", "reason")
+	applyNestedItemMetadata(&e, m)
 	if e.ThreadID == "" {
 		e.ThreadID = firstStr(root, "thread_id", "threadId")
 	}
@@ -285,7 +301,16 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 			e.TurnID = firstStr(params, "turn_id", "turnId")
 		}
 		if e.CallID == "" {
-			e.CallID = strings.TrimSpace(firstStr(params, "call_id", "callId", "item_id", "itemId"))
+			e.CallID = strings.TrimSpace(firstStr(params, "call_id", "callId"))
+		}
+		if e.ItemID == "" {
+			e.ItemID = strings.TrimSpace(firstStr(params, "item_id", "itemId"))
+		}
+		if e.ItemType == "" {
+			e.ItemType = strings.TrimSpace(firstStr(params, "item_type", "itemType"))
+		}
+		if e.ItemPhase == "" {
+			e.ItemPhase = strings.TrimSpace(firstStr(params, "item_phase", "itemPhase"))
 		}
 		if e.Stream == "" {
 			e.Stream = strings.TrimSpace(firstStr(params, "stream"))
@@ -305,12 +330,22 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 		if e.Message == "" {
 			e.Message = extractMessage(params)
 		}
+		applyNestedItemMetadata(&e, params)
 		if e.TotalTokens == 0 {
 			e.InputTokens, e.OutputTokens, e.TotalTokens = tokenUsageFromMap(params)
 		}
 	}
 	if e.CallID == "" {
-		e.CallID = strings.TrimSpace(firstStr(root, "call_id", "callId", "item_id", "itemId"))
+		e.CallID = strings.TrimSpace(firstStr(root, "call_id", "callId"))
+	}
+	if e.ItemID == "" {
+		e.ItemID = strings.TrimSpace(firstStr(root, "item_id", "itemId"))
+	}
+	if e.ItemType == "" {
+		e.ItemType = strings.TrimSpace(firstStr(root, "item_type", "itemType"))
+	}
+	if e.ItemPhase == "" {
+		e.ItemPhase = strings.TrimSpace(firstStr(root, "item_phase", "itemPhase"))
 	}
 	if e.Stream == "" {
 		e.Stream = strings.TrimSpace(firstStr(root, "stream"))
@@ -330,6 +365,7 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 	if e.Message == "" {
 		e.Message = extractMessage(m)
 	}
+	applyNestedItemMetadata(&e, root)
 	if e.Message == "" {
 		e.Message = extractMessage(root)
 	}
@@ -363,6 +399,40 @@ func eventFromMap(m map[string]interface{}, root map[string]interface{}) Event {
 		e.TotalTokens = e.InputTokens + e.OutputTokens
 	}
 	return e
+}
+
+func applyNestedItemMetadata(event *Event, container map[string]interface{}) {
+	if event == nil || container == nil {
+		return
+	}
+	item, ok := asMap(container["item"])
+	if !ok {
+		return
+	}
+	if event.ItemID == "" {
+		event.ItemID = strings.TrimSpace(firstStr(item, "id", "item_id", "itemId"))
+	}
+	if event.ItemType == "" {
+		event.ItemType = strings.TrimSpace(firstStr(item, "type", "item_type", "itemType"))
+	}
+	if event.ItemPhase == "" {
+		event.ItemPhase = strings.TrimSpace(firstStr(item, "phase", "item_phase", "itemPhase"))
+	}
+	if event.Message == "" {
+		event.Message = extractMessage(item)
+	}
+	if event.Command == "" {
+		event.Command = strings.TrimSpace(firstStr(item, "command"))
+	}
+	if event.CWD == "" {
+		event.CWD = strings.TrimSpace(firstStr(item, "cwd"))
+	}
+	if event.ExitCode == nil {
+		event.ExitCode = firstIntPtr(item, "exit_code", "exitCode")
+	}
+	if event.Chunk == "" && strings.EqualFold(strings.TrimSpace(event.ItemType), "commandExecution") {
+		event.Chunk = firstStr(item, "aggregatedOutput", "aggregated_output")
+	}
 }
 
 func tokenUsageFromMap(m map[string]interface{}) (int, int, int) {

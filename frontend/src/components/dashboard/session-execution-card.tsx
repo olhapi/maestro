@@ -4,8 +4,39 @@ import { AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { describeFailureRuns, failureHeadline, failureMessage, failureStatusLabel } from '@/lib/execution'
-import type { IssueExecutionDetail } from '@/lib/types'
+import type { IssueExecutionDetail, SessionDisplayHistoryEntry } from '@/lib/types'
 import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
+
+function currentActivityEntry(history: SessionDisplayHistoryEntry[]) {
+  const reversed = [...history].reverse()
+  return reversed.find((entry) => entry.kind === 'agent') ?? reversed.find((entry) => entry.kind === 'command') ?? null
+}
+
+function activityContainerClass(entry: SessionDisplayHistoryEntry) {
+  if (entry.kind === 'agent') {
+    return entry.phase === 'final_answer'
+      ? 'border-emerald-400/20 bg-emerald-400/10'
+      : 'border-sky-400/20 bg-sky-400/10'
+  }
+  if (entry.kind === 'command') {
+    return entry.tone === 'error'
+      ? 'border-rose-400/20 bg-rose-400/10'
+      : entry.tone === 'success'
+        ? 'border-emerald-400/20 bg-emerald-400/10'
+        : 'border-white/8 bg-white/[0.03]'
+  }
+  return entry.tone === 'error' ? 'border-rose-400/15 bg-rose-400/8' : 'border-white/8 bg-black/10'
+}
+
+function activityBadgeLabel(entry: SessionDisplayHistoryEntry) {
+  if (entry.kind === 'agent') {
+    return entry.phase === 'final_answer' ? 'Final answer' : 'Agent update'
+  }
+  if (entry.kind === 'command') {
+    return 'Command'
+  }
+  return 'Signal'
+}
 
 export function SessionExecutionCard({
   execution,
@@ -19,8 +50,10 @@ export function SessionExecutionCard({
   pausedActionHint?: string
 }) {
   const session = execution.session
-  const sessionHistory = execution.session_display_history?.slice(-8) ?? []
-  const runtimeEvents = execution.runtime_events.slice(-8)
+  const allSessionHistory = execution.session_display_history ?? []
+  const sessionHistory = allSessionHistory.slice(-8)
+  const currentActivity = currentActivityEntry(allSessionHistory)
+  const runtimeEvents = execution.runtime_events.slice(-8).reverse()
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
   const failureLabel = failureStatusLabel(execution.failure_class)
   const failureSummaryReason =
@@ -103,14 +136,34 @@ export function SessionExecutionCard({
           </div>
         ) : null}
 
-        <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
+        <div className={`rounded-[calc(var(--panel-radius)-0.125rem)] border p-3.5 ${currentActivity ? activityContainerClass(currentActivity) : 'border-white/8 bg-black/20'}`}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-sm text-[var(--muted-foreground)]">Session snapshot</p>
-              <p className="mt-2 font-medium text-white [overflow-wrap:anywhere] break-all">{sessionHeadline}</p>
-              <p className="mt-2 text-sm text-[var(--muted-foreground)] [overflow-wrap:anywhere] break-all">{sessionMessage}</p>
+              <p className="text-sm text-[var(--muted-foreground)]">Current activity</p>
+              <p className="mt-2 font-medium text-white [overflow-wrap:anywhere] break-all">
+                {currentActivity ? currentActivity.title : sessionHeadline}
+              </p>
+              <p className={`mt-3 whitespace-pre-wrap break-words ${
+                currentActivity?.kind === 'agent'
+                  ? 'text-base leading-7 text-white'
+                  : currentActivity?.kind === 'command'
+                    ? 'text-sm text-white/90'
+                    : 'text-sm text-[var(--muted-foreground)] [overflow-wrap:anywhere] break-all'
+              }`}>
+                {currentActivity ? currentActivity.summary || 'No progress details yet.' : sessionMessage}
+              </p>
+              {currentActivity?.kind === 'command' && currentActivity.expandable ? (
+                <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                  Expand the command row below for full output.
+                </p>
+              ) : null}
             </div>
-            <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.session_source)}</Badge>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.session_source)}</Badge>
+              {currentActivity ? (
+                <Badge className="border-white/10 bg-white/5 text-white">{activityBadgeLabel(currentActivity)}</Badge>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -134,30 +187,37 @@ export function SessionExecutionCard({
 
         <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium text-white">Recent session history</p>
+            <p className="text-sm font-medium text-white">Activity feed</p>
             <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{sessionHistory.length} events</span>
           </div>
           <div className="mt-3.5 space-y-2.5">
             {sessionHistory.length === 0 ? (
-              <p className="text-sm text-[var(--muted-foreground)]">No session history captured for this issue yet.</p>
+              <p className="text-sm text-[var(--muted-foreground)]">No visible activity captured for this issue yet.</p>
             ) : (
               sessionHistory.map((event, index) => {
                 const rowKey = `${event.id}-${index}`
                 return (
                   <div
                     key={rowKey}
-                    className={`rounded-[calc(var(--panel-radius)-0.25rem)] border p-3 ${
-                      event.tone === 'error'
-                        ? 'border-rose-400/20 bg-rose-400/10'
-                        : event.tone === 'success'
-                          ? 'border-emerald-400/20 bg-emerald-400/10'
-                          : 'border-white/8 bg-white/[0.03]'
-                    }`}
+                    className={`rounded-[calc(var(--panel-radius)-0.25rem)] border p-3 ${activityContainerClass(event)}`}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium text-white">{event.title}</p>
-                        <p className="mt-2 text-sm text-[var(--muted-foreground)]">{event.summary || 'Execution signal'}</p>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-medium text-white">{event.title}</p>
+                          {event.kind === 'agent' ? (
+                            <Badge className="border-white/10 bg-white/5 text-white">{activityBadgeLabel(event)}</Badge>
+                          ) : null}
+                        </div>
+                        <p className={`mt-2 whitespace-pre-wrap break-words ${
+                          event.kind === 'agent'
+                            ? 'text-sm leading-6 text-white'
+                            : event.kind === 'command'
+                              ? 'text-sm text-[var(--muted-foreground)]'
+                              : 'text-sm text-[var(--muted-foreground)]'
+                        }`}>
+                          {event.summary || 'Execution signal'}
+                        </p>
                       </div>
                       <div className="flex items-center gap-2">
                         {event.token_count && event.token_count > 0 ? (
@@ -187,11 +247,14 @@ export function SessionExecutionCard({
           </div>
         </div>
 
-        <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium text-white">Runtime events</p>
-            <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{execution.runtime_events.length} tracked</span>
-          </div>
+        <details className="group rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-white">
+            <span>Debug signals</span>
+            <span className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+              {execution.runtime_events.length} tracked
+              <ChevronDown className="size-3 transition group-open:rotate-180" />
+            </span>
+          </summary>
           <div className="mt-3.5 space-y-2.5">
             {runtimeEvents.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No persisted runtime events for this issue yet.</p>
@@ -216,7 +279,7 @@ export function SessionExecutionCard({
               ))
             )}
           </div>
-        </div>
+        </details>
       </CardContent>
     </Card>
   )

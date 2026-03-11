@@ -38,6 +38,16 @@ describe("SessionDetailPage", () => {
       session_source: "live",
       session_display_history: [
         {
+          id: "session-agent-1",
+          kind: "agent",
+          title: "Agent update",
+          summary: "Planning the fix",
+          expandable: false,
+          phase: "commentary",
+          tone: "default",
+          event_type: "item.completed",
+        },
+        {
           id: "session-command-call-1",
           kind: "command",
           title: "Command output",
@@ -84,7 +94,16 @@ describe("SessionDetailPage", () => {
           },
         ],
       },
-      runtime_events: [],
+      runtime_events: [
+        {
+          seq: 1,
+          kind: "run_started",
+          phase: "implementation",
+          attempt: 2,
+          ts: "2026-03-10T12:00:01Z",
+          payload: {},
+        },
+      ],
       agent_commands: [],
     });
 
@@ -100,8 +119,13 @@ describe("SessionDetailPage", () => {
     expect(screen.getByText("Open issue")).toBeInTheDocument();
     expect(screen.getAllByText("Session detail")).toHaveLength(1);
     expect(screen.getByText("Live session")).toBeInTheDocument();
+    expect(screen.getByText("Current activity")).toBeInTheDocument();
+    expect(screen.getAllByText("Planning the fix").length).toBeGreaterThan(0);
+    expect(screen.getByText("Activity feed")).toBeInTheDocument();
     expect(screen.getByText("Command output")).toBeInTheDocument();
     expect(screen.queryByText("0 tokens")).not.toBeInTheDocument();
+    const debugDetails = screen.getByText("Debug signals").closest("details");
+    expect(debugDetails).not.toHaveAttribute("open");
     fireEvent.click(screen.getByRole("button", { name: /expand/i }));
     expect(screen.getByText(/\$ npm run dev/i)).toBeInTheDocument();
     expect(screen.getAllByText("Applying changes").length).toBeGreaterThan(0);

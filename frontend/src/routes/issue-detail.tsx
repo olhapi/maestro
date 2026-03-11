@@ -121,9 +121,7 @@ export function IssueDetailPage() {
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
-        eyebrow="Issue detail"
         title={issue.data.title}
-        description={issue.data.description || "No description provided."}
         crumbs={[
           { label: "Work", to: appRoutes.work },
           issue.data.project_id && issue.data.project_name
@@ -189,10 +187,10 @@ export function IssueDetailPage() {
         ) : null}
       </div>
 
-      <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.2fr_.8fr]">
+      <div className="grid items-start gap-[var(--section-gap)] lg:grid-cols-[1.2fr_.8fr]">
         <div className="grid gap-[var(--section-gap)]">
           <Card>
-            <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <CardContent className="grid gap-3 pt-[var(--panel-padding)] sm:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Updated

@@ -32,6 +32,7 @@ type SessionDisplayHistoryEntry struct {
 	Detail     string `json:"detail,omitempty"`
 	Expandable bool   `json:"expandable"`
 	TokenCount int    `json:"token_count,omitempty"`
+	Phase      string `json:"phase,omitempty"`
 	Tone       string `json:"tone,omitempty"`
 	EventType  string `json:"event_type,omitempty"`
 }
@@ -341,31 +342,157 @@ func buildSessionDisplayHistory(history []appserver.Event) []SessionDisplayHisto
 	}
 	out := make([]SessionDisplayHistoryEntry, 0, len(history))
 	for i := 0; i < len(history); {
-		if isCommandExecutionEvent(history[i]) {
-			entry, next := buildCommandDisplayEntry(history, i, len(out))
-			out = append(out, entry)
+		switch {
+		case shouldSkipDisplayEvent(history[i]):
+			i++
+		case isAgentDisplayEvent(history[i]):
+			entry, next, ok := buildAgentDisplayEntry(history, i, len(out))
+			if ok {
+				out = append(out, entry)
+			}
 			i = next
-			continue
+		case isCommandDisplayEvent(history[i]):
+			entry, next, ok := buildCommandDisplayEntry(history, i, len(out))
+			if ok {
+				out = append(out, entry)
+			}
+			i = next
+		default:
+			entry, ok := buildGenericDisplayEntry(history[i], len(out))
+			if ok {
+				out = append(out, entry)
+			}
+			i++
 		}
-		out = append(out, buildGenericDisplayEntry(history[i], len(out)))
-		i++
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
 
-func buildCommandDisplayEntry(history []appserver.Event, start, displayIndex int) (SessionDisplayHistoryEntry, int) {
-	group := []appserver.Event{history[start]}
-	groupCallID := strings.TrimSpace(history[start].CallID)
-	for i := start + 1; i < len(history); i++ {
+func buildAgentDisplayEntry(history []appserver.Event, start, displayIndex int) (SessionDisplayHistoryEntry, int, bool) {
+	group := make([]appserver.Event, 0, 4)
+	groupItemID := agentGroupID(history[start])
+	consumed := 0
+	for i := start; i < len(history); i++ {
 		next := history[i]
-		if !isCommandExecutionEvent(next) {
+		consumed++
+		if shouldSkipDisplayEvent(next) {
+			continue
+		}
+		if !isAgentDisplayEvent(next) {
+			consumed--
 			break
 		}
-		nextCallID := strings.TrimSpace(next.CallID)
+		nextItemID := agentGroupID(next)
+		if groupItemID != "" && nextItemID != "" && nextItemID != groupItemID {
+			consumed--
+			break
+		}
+		if groupItemID == "" && nextItemID != "" && len(group) > 1 {
+			consumed--
+			break
+		}
+		group = append(group, next)
+		if groupItemID == "" && nextItemID != "" {
+			groupItemID = nextItemID
+		}
+	}
+	if len(group) == 0 {
+		group = append(group, history[start])
+	}
+	entry := summarizeAgentGroup(group, displayIndex)
+	if entry.Summary == "" {
+		return SessionDisplayHistoryEntry{}, start + consumed, false
+	}
+	return entry, start + consumed, true
+}
+
+func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDisplayHistoryEntry {
+	phase := ""
+	itemID := ""
+	totalTokens := 0
+	var builder strings.Builder
+	startedText := ""
+	completedText := ""
+	lastType := ""
+	for _, event := range group {
+		lastType = strings.TrimSpace(event.Type)
+		if strings.TrimSpace(event.ItemPhase) != "" {
+			phase = strings.TrimSpace(event.ItemPhase)
+		}
+		if itemID == "" {
+			itemID = agentGroupID(event)
+		}
+		if event.TotalTokens > 0 {
+			totalTokens = event.TotalTokens
+		}
+		if isAgentMessageStartedEvent(event) {
+			if text := cleanTerminalText(firstNonEmpty(event.Message, event.Chunk)); text != "" && startedText == "" {
+				startedText = text
+			}
+		}
+		if isAgentMessageCompletedEvent(event) {
+			if text := cleanTerminalText(firstNonEmpty(event.Message, event.Chunk)); text != "" {
+				completedText = text
+			}
+		}
+		if !isAgentDeltaEvent(event) {
+			continue
+		}
+		if chunk := cleanDeltaChunk(firstNonEmpty(event.Message, event.Chunk)); chunk != "" {
+			builder.WriteString(chunk)
+		}
+	}
+
+	combinedText := cleanTerminalText(builder.String())
+	body := firstNonEmpty(completedText, combinedText, startedText)
+	if body == "" {
+		body = firstNonEmpty(defaultSummaryForAgentPhase(phase), "Agent update")
+	}
+	title := titleForAgentPhase(phase)
+	id := fmt.Sprintf("session-agent-%d", displayIndex)
+	if itemID != "" {
+		id = fmt.Sprintf("session-agent-%s-%d", itemID, displayIndex)
+	}
+	entry := SessionDisplayHistoryEntry{
+		ID:         id,
+		Kind:       "agent",
+		Title:      title,
+		Summary:    body,
+		Expandable: false,
+		Phase:      phase,
+		Tone:       toneForAgentPhase(phase),
+		EventType:  lastType,
+	}
+	if totalTokens > 0 {
+		entry.TokenCount = totalTokens
+	}
+	return entry
+}
+
+func buildCommandDisplayEntry(history []appserver.Event, start, displayIndex int) (SessionDisplayHistoryEntry, int, bool) {
+	group := make([]appserver.Event, 0, 4)
+	groupCallID := commandGroupID(history[start])
+	consumed := 0
+	for i := start; i < len(history); i++ {
+		next := history[i]
+		consumed++
+		if shouldSkipDisplayEvent(next) {
+			continue
+		}
+		if !isCommandDisplayEvent(next) {
+			consumed--
+			break
+		}
+		nextCallID := commandGroupID(next)
 		if groupCallID != "" && nextCallID != "" && nextCallID != groupCallID {
+			consumed--
 			break
 		}
 		if groupCallID == "" && nextCallID != "" && len(group) > 1 {
+			consumed--
 			break
 		}
 		group = append(group, next)
@@ -373,7 +500,10 @@ func buildCommandDisplayEntry(history []appserver.Event, start, displayIndex int
 			groupCallID = nextCallID
 		}
 	}
-	return summarizeCommandGroup(group, displayIndex), start + len(group)
+	if len(group) == 0 {
+		return SessionDisplayHistoryEntry{}, start + consumed, false
+	}
+	return summarizeCommandGroup(group, displayIndex), start + consumed, true
 }
 
 func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDisplayHistoryEntry {
@@ -390,8 +520,8 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 	callID := ""
 	for _, event := range group {
 		lastType = strings.TrimSpace(event.Type)
-		if strings.TrimSpace(callID) == "" && strings.TrimSpace(event.CallID) != "" {
-			callID = strings.TrimSpace(event.CallID)
+		if strings.TrimSpace(callID) == "" && commandGroupID(event) != "" {
+			callID = commandGroupID(event)
 		}
 		if command == "" && strings.TrimSpace(event.Command) != "" {
 			command = strings.TrimSpace(event.Command)
@@ -408,6 +538,10 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 		}
 		eventType := strings.ToLower(strings.TrimSpace(event.Type))
 		switch {
+		case isCommandLifecycleStart(event):
+			hasStart = true
+		case isCommandLifecycleEnd(event):
+			hasEnd = true
 		case strings.Contains(eventType, "begin"):
 			hasStart = true
 		case strings.Contains(eventType, "end"):
@@ -420,7 +554,7 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 		if text == "" {
 			text = cleanTerminalText(event.Message)
 		}
-		if text != "" && (isCommandOutputEvent(event) || eventType == "terminal_interaction") {
+		if text != "" && (isCommandOutputEvent(event) || eventType == "terminal_interaction" || (isCommandLifecycleEvent(event) && strings.TrimSpace(event.Chunk) != "")) {
 			hasOutput = true
 			outputParts = append(outputParts, text)
 		}
@@ -497,7 +631,10 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 	return entry
 }
 
-func buildGenericDisplayEntry(event appserver.Event, displayIndex int) SessionDisplayHistoryEntry {
+func buildGenericDisplayEntry(event appserver.Event, displayIndex int) (SessionDisplayHistoryEntry, bool) {
+	if !shouldKeepGenericEvent(event) {
+		return SessionDisplayHistoryEntry{}, false
+	}
 	cleanMessage := cleanTerminalText(event.Message)
 	summary := summarizeText(firstNonEmpty(firstMeaningfulLine(cleanMessage), defaultSummaryForEvent(event.Type)), 180)
 	detail := strings.TrimSpace(cleanMessage)
@@ -510,8 +647,8 @@ func buildGenericDisplayEntry(event appserver.Event, displayIndex int) SessionDi
 		tone = "error"
 	}
 	id := fmt.Sprintf("session-event-%d", displayIndex)
-	if strings.TrimSpace(event.CallID) != "" {
-		id = fmt.Sprintf("session-event-%s-%d", strings.TrimSpace(event.CallID), displayIndex)
+	if eventKey := firstNonEmpty(strings.TrimSpace(event.ItemID), strings.TrimSpace(event.CallID)); eventKey != "" {
+		id = fmt.Sprintf("session-event-%s-%d", eventKey, displayIndex)
 	}
 	entry := SessionDisplayHistoryEntry{
 		ID:         id,
@@ -526,7 +663,146 @@ func buildGenericDisplayEntry(event appserver.Event, displayIndex int) SessionDi
 	if event.TotalTokens > 0 {
 		entry.TokenCount = event.TotalTokens
 	}
-	return entry
+	return entry, true
+}
+
+func shouldSkipDisplayEvent(event appserver.Event) bool {
+	return strings.EqualFold(strings.TrimSpace(event.Type), "thread.tokenusage.updated")
+}
+
+func isAgentDisplayEvent(event appserver.Event) bool {
+	return isAgentDeltaEvent(event) || isAgentLifecycleEvent(event)
+}
+
+func isAgentDeltaEvent(event appserver.Event) bool {
+	switch strings.ToLower(strings.TrimSpace(event.Type)) {
+	case "item.agentmessage.delta", "agent_message_content_delta":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAgentLifecycleEvent(event appserver.Event) bool {
+	eventType := strings.ToLower(strings.TrimSpace(event.Type))
+	if eventType != "item.started" && eventType != "item.completed" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(event.ItemType), "agentMessage")
+}
+
+func isAgentMessageCompletedEvent(event appserver.Event) bool {
+	return strings.EqualFold(strings.TrimSpace(event.Type), "item.completed") &&
+		strings.EqualFold(strings.TrimSpace(event.ItemType), "agentMessage")
+}
+
+func isAgentMessageStartedEvent(event appserver.Event) bool {
+	return strings.EqualFold(strings.TrimSpace(event.Type), "item.started") &&
+		strings.EqualFold(strings.TrimSpace(event.ItemType), "agentMessage")
+}
+
+func agentGroupID(event appserver.Event) string {
+	return firstNonEmpty(strings.TrimSpace(event.ItemID), strings.TrimSpace(event.CallID))
+}
+
+func titleForAgentPhase(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "final_answer":
+		return "Final answer"
+	default:
+		return "Agent update"
+	}
+}
+
+func toneForAgentPhase(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "final_answer":
+		return "success"
+	default:
+		return "default"
+	}
+}
+
+func defaultSummaryForAgentPhase(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "final_answer":
+		return "The agent produced a final answer."
+	default:
+		return "The agent posted a progress update."
+	}
+}
+
+func cleanDeltaChunk(value string) string {
+	text := strings.ReplaceAll(value, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = ansiSequencePattern.ReplaceAllString(text, "")
+	text = bareAnsiCodePattern.ReplaceAllString(text, "")
+	text = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case unicode.IsControl(r):
+			return -1
+		default:
+			return r
+		}
+	}, text)
+	return text
+}
+
+func isCommandDisplayEvent(event appserver.Event) bool {
+	return isCommandExecutionEvent(event) || isCommandLifecycleEvent(event)
+}
+
+func isCommandLifecycleEvent(event appserver.Event) bool {
+	eventType := strings.ToLower(strings.TrimSpace(event.Type))
+	if eventType != "item.started" && eventType != "item.completed" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(event.ItemType), "commandExecution")
+}
+
+func isCommandLifecycleStart(event appserver.Event) bool {
+	return strings.EqualFold(strings.TrimSpace(event.Type), "item.started") &&
+		strings.EqualFold(strings.TrimSpace(event.ItemType), "commandExecution")
+}
+
+func isCommandLifecycleEnd(event appserver.Event) bool {
+	return strings.EqualFold(strings.TrimSpace(event.Type), "item.completed") &&
+		strings.EqualFold(strings.TrimSpace(event.ItemType), "commandExecution")
+}
+
+func commandGroupID(event appserver.Event) string {
+	return firstNonEmpty(strings.TrimSpace(event.CallID), strings.TrimSpace(event.ItemID))
+}
+
+func shouldKeepGenericEvent(event appserver.Event) bool {
+	if shouldSkipDisplayEvent(event) || isAgentLifecycleEvent(event) || isCommandLifecycleEvent(event) {
+		return false
+	}
+	eventType := strings.ToLower(strings.TrimSpace(event.Type))
+	cleanMessage := cleanTerminalText(event.Message)
+	switch eventType {
+	case "turn.started", "turn.completed":
+		return true
+	case "item.started", "item.completed":
+		return false
+	}
+	if isApprovalLikeEventType(eventType) || isErrorEventType(event.Type) {
+		return true
+	}
+	return cleanMessage != ""
+}
+
+func isApprovalLikeEventType(eventType string) bool {
+	switch {
+	case strings.Contains(eventType, "approval"):
+		return true
+	case strings.Contains(eventType, "input_required"):
+		return true
+	default:
+		return false
+	}
 }
 
 func isCommandExecutionEvent(event appserver.Event) bool {

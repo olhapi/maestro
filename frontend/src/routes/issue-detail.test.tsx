@@ -142,6 +142,83 @@ describe("IssueDetailPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders the shared progress-first activity feed for issue execution details", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "in_progress" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: true,
+      phase: "implementation",
+      attempt_number: 2,
+      retry_state: "active",
+      session_source: "live",
+      session_display_history: [
+        {
+          id: "session-agent-1",
+          kind: "agent",
+          title: "Agent update",
+          summary: "Planning the verification pass",
+          expandable: false,
+          phase: "commentary",
+          tone: "default",
+          event_type: "item.completed",
+        },
+        {
+          id: "session-command-1",
+          kind: "command",
+          title: "Command output",
+          summary: "Running the test suite",
+          detail: "$ npm test\nall checks green",
+          expandable: true,
+          tone: "success",
+          event_type: "exec_command_output_delta",
+        },
+      ],
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: "thread-live-turn-live",
+        thread_id: "thread-live",
+        turn_id: "turn-live",
+        last_event: "turn.started",
+        last_timestamp: "2026-03-10T12:00:00Z",
+        last_message: "Planning the verification pass",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 30,
+        events_processed: 2,
+        turns_started: 2,
+        turns_completed: 1,
+        terminal: false,
+        history: [],
+      },
+      runtime_events: [
+        {
+          seq: 1,
+          kind: "run_started",
+          phase: "implementation",
+          attempt: 2,
+          ts: "2026-03-10T12:00:01Z",
+          payload: {},
+        },
+      ],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Current activity")).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText("Planning the verification pass").length).toBeGreaterThan(0);
+    expect(screen.getByText("Activity feed")).toBeInTheDocument();
+    expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
+  });
+
   it("submits agent commands and renders the command log", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({ state: "done" });

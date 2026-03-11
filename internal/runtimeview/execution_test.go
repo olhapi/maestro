@@ -475,8 +475,8 @@ func TestIssueExecutionPayloadBuildsDisplayHistoryFromCommandDeltas(t *testing.T
 	if !ok {
 		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
 	}
-	if len(displayHistory) != 2 {
-		t.Fatalf("expected grouped command + item event, got %#v", displayHistory)
+	if len(displayHistory) != 1 {
+		t.Fatalf("expected only the grouped command row in the focused feed, got %#v", displayHistory)
 	}
 	commandRow := displayHistory[0]
 	if commandRow.Kind != "command" || commandRow.Title != "Command failed (exit 1)" || commandRow.Tone != "error" {
@@ -491,10 +491,61 @@ func TestIssueExecutionPayloadBuildsDisplayHistoryFromCommandDeltas(t *testing.T
 	if commandRow.TokenCount != 0 {
 		t.Fatalf("expected zero token count omitted in display row struct value, got %#v", commandRow.TokenCount)
 	}
+}
 
-	itemRow := displayHistory[1]
-	if itemRow.Title != "Item completed" || itemRow.Summary == "" {
-		t.Fatalf("unexpected item row: %#v", itemRow)
+func TestIssueExecutionPayloadRetainsTurnBoundaryAfterCommandGroup(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Command boundary issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 12, 45, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-command-boundary-turn-command-boundary",
+			ThreadID:        "thread-command-boundary",
+			TurnID:          "turn-command-boundary",
+			LastEvent:       "turn.completed",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "exec_command_output_delta", CallID: "cmd-1", Command: "npm test", CWD: "/repo", Chunk: "tests passed"},
+				{Type: "turn.completed", Message: "Turn finished cleanly"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 2 {
+		t.Fatalf("expected command row plus turn boundary, got %#v", displayHistory)
+	}
+	if displayHistory[0].Kind != "command" {
+		t.Fatalf("expected first row to remain the command summary, got %#v", displayHistory)
+	}
+	if displayHistory[1].Title != "Turn completed" || displayHistory[1].Kind != "event" {
+		t.Fatalf("expected turn boundary retained after command row, got %#v", displayHistory[1])
 	}
 }
 
@@ -545,14 +596,138 @@ func TestIssueExecutionPayloadBuildsUniqueIDsForSplitCommandCall(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
 	}
-	if len(displayHistory) != 3 {
-		t.Fatalf("expected command + generic + command rows, got %#v", displayHistory)
+	if len(displayHistory) != 1 {
+		t.Fatalf("expected token updates to be suppressed and command deltas merged, got %#v", displayHistory)
 	}
-	if displayHistory[0].Kind != "command" || displayHistory[2].Kind != "command" {
-		t.Fatalf("expected split command rows at positions 0 and 2, got %#v", displayHistory)
+	if displayHistory[0].Kind != "command" {
+		t.Fatalf("expected a single command row, got %#v", displayHistory)
 	}
-	if displayHistory[0].ID == displayHistory[2].ID {
-		t.Fatalf("expected unique IDs for split command rows, got %q", displayHistory[0].ID)
+	if !strings.Contains(displayHistory[0].Detail, "ready line 1") || !strings.Contains(displayHistory[0].Detail, "ready line 2") {
+		t.Fatalf("expected merged command detail, got %#v", displayHistory[0])
+	}
+}
+
+func TestIssueExecutionPayloadCollapsesAgentMessageDeltasIntoSingleRow(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Agent delta issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 13, 15, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-agent-turn-agent",
+			ThreadID:        "thread-agent",
+			TurnID:          "turn-agent",
+			LastEvent:       "item.completed",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "item.started", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Starting"},
+				{Type: "item.agentMessage.delta", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Planning"},
+				{Type: "thread.tokenusage.updated", TotalTokens: 24},
+				{Type: "agent_message_content_delta", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: " the fix"},
+				{Type: "item.completed", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Planning the fix"},
+				{Type: "turn.started", Message: "Turn began"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 2 {
+		t.Fatalf("expected combined agent row plus turn boundary, got %#v", displayHistory)
+	}
+	agentRow := displayHistory[0]
+	if agentRow.Kind != "agent" || agentRow.Title != "Agent update" || agentRow.Phase != "commentary" {
+		t.Fatalf("unexpected agent row: %#v", agentRow)
+	}
+	if agentRow.Summary != "Planning the fix" {
+		t.Fatalf("expected completed-item text to win, got %#v", agentRow)
+	}
+	if displayHistory[1].Title != "Turn started" {
+		t.Fatalf("expected turn boundary retained, got %#v", displayHistory[1])
+	}
+}
+
+func TestIssueExecutionPayloadKeepsAdjacentStartedOnlyAgentUpdate(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Adjacent agent updates", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 13, 30, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-adjacent-agent-turn-adjacent-agent",
+			ThreadID:        "thread-adjacent-agent",
+			TurnID:          "turn-adjacent-agent",
+			LastEvent:       "item.started",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "item.completed", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Planning the fix"},
+				{Type: "item.started", ItemID: "item-2", ItemType: "agentMessage", ItemPhase: "final_answer", Message: "Done."},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 2 {
+		t.Fatalf("expected both agent updates to remain visible, got %#v", displayHistory)
+	}
+	if displayHistory[0].Summary != "Planning the fix" {
+		t.Fatalf("expected first agent row to preserve completed text, got %#v", displayHistory[0])
+	}
+	secondRow := displayHistory[1]
+	if secondRow.Kind != "agent" || secondRow.Title != "Final answer" || secondRow.Phase != "final_answer" {
+		t.Fatalf("unexpected second agent row metadata: %#v", secondRow)
+	}
+	if secondRow.Summary != "Done." {
+		t.Fatalf("expected started-only agent text to be used, got %#v", secondRow)
 	}
 }
 
