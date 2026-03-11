@@ -31,6 +31,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.TurnTimeoutMs != 600000 || cfg.Codex.ReadTimeoutMs != 5000 || cfg.Codex.StallTimeoutMs != 60000 {
 		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
+	if cfg.Codex.TurnSandboxPolicy["networkAccess"] != true {
+		t.Fatalf("expected default turn sandbox networkAccess=true, got %+v", cfg.Codex.TurnSandboxPolicy)
+	}
 }
 
 func TestLoadWorkflowNestedSchema(t *testing.T) {
@@ -358,7 +361,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "phases:", "enabled: false", "expected_version: 0.111.0", "codex app-server --model test", "{{ issue.identifier }}"} {
+	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "phases:", "enabled: false", "expected_version: 0.111.0", "networkAccess: true", "codex app-server --model test", "{{ issue.identifier }}"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}

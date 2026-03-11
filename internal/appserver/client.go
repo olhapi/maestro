@@ -115,9 +115,7 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if cfg.ApprovalPolicy == nil {
 		cfg.ApprovalPolicy = defaultApprovalPolicy()
 	}
-	if cfg.TurnSandboxPolicy == nil {
-		cfg.TurnSandboxPolicy = defaultTurnSandboxPolicy(cfg.Workspace)
-	}
+	cfg.TurnSandboxPolicy = normalizeTurnSandboxPolicy(cfg.TurnSandboxPolicy, cfg.Workspace, cfg.WorkspaceRoot)
 	if strings.TrimSpace(cfg.CodexCommand) == "" && looksLikeCodexCommand(cfg.Executable) {
 		cfg.CodexCommand = cfg.Executable
 	}
@@ -748,20 +746,88 @@ func defaultApprovalPolicy() map[string]interface{} {
 	}
 }
 
-func defaultTurnSandboxPolicy(workspace string) map[string]interface{} {
-	root := workspace
-	if strings.TrimSpace(root) == "" {
-		root = "."
+func normalizeTurnSandboxPolicy(raw map[string]interface{}, workspace, workspaceRoot string) map[string]interface{} {
+	if raw == nil {
+		return defaultTurnSandboxPolicy(workspace, workspaceRoot)
 	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		absRoot = filepath.Clean(root)
+
+	sandbox := make(map[string]interface{}, len(raw)+4)
+	for k, v := range raw {
+		sandbox[k] = v
 	}
+	if strings.TrimSpace(fmt.Sprintf("%v", sandbox["type"])) == "" {
+		sandbox["type"] = "workspaceWrite"
+	}
+	if _, ok := sandbox["networkAccess"]; !ok {
+		sandbox["networkAccess"] = true
+	}
+
+	if strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", sandbox["type"])), "workspaceWrite") {
+		if _, ok := sandbox["writableRoots"]; !ok {
+			sandbox["writableRoots"] = defaultSandboxWritableRoots(workspace, workspaceRoot)
+		}
+		if _, ok := sandbox["readOnlyAccess"]; !ok {
+			sandbox["readOnlyAccess"] = map[string]interface{}{"type": "fullAccess"}
+		}
+		if _, ok := sandbox["excludeTmpdirEnvVar"]; !ok {
+			sandbox["excludeTmpdirEnvVar"] = false
+		}
+		if _, ok := sandbox["excludeSlashTmp"]; !ok {
+			sandbox["excludeSlashTmp"] = false
+		}
+	}
+	return sandbox
+}
+
+func defaultSandboxWritableRoots(workspace, workspaceRoot string) []string {
+	roots := make([]string, 0, 3)
+	seen := map[string]struct{}{}
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = filepath.Clean(path)
+		}
+		if abs == "" {
+			return
+		}
+		if _, ok := seen[abs]; ok {
+			return
+		}
+		seen[abs] = struct{}{}
+		roots = append(roots, abs)
+	}
+
+	add(workspace)
+	add(workspaceRoot)
+	if workspaceRoot != "" {
+		rootAbs, err := filepath.Abs(workspaceRoot)
+		if err != nil {
+			rootAbs = filepath.Clean(workspaceRoot)
+		}
+		parent := filepath.Dir(rootAbs)
+		if parent != "" && parent != "." && parent != rootAbs {
+			if _, err := os.Stat(filepath.Join(parent, ".git")); err == nil {
+				add(parent)
+			}
+		}
+	}
+
+	if len(roots) == 0 {
+		add(".")
+	}
+	return roots
+}
+
+func defaultTurnSandboxPolicy(workspace, workspaceRoot string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":                "workspaceWrite",
-		"writableRoots":       []string{absRoot},
+		"writableRoots":       defaultSandboxWritableRoots(workspace, workspaceRoot),
 		"readOnlyAccess":      map[string]interface{}{"type": "fullAccess"},
-		"networkAccess":       false,
+		"networkAccess":       true,
 		"excludeTmpdirEnvVar": false,
 		"excludeSlashTmp":     false,
 	}

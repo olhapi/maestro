@@ -155,6 +155,7 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+    networkAccess: true
   turn_timeout_ms: 600000
   read_timeout_ms: 5000
   stall_timeout_ms: 60000

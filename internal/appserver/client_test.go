@@ -751,13 +751,19 @@ func TestHelperDefaultsAndWorkspaceValidation(t *testing.T) {
 		t.Fatalf("unexpected default approval policy: %#v", policy)
 	}
 
-	sandbox := defaultTurnSandboxPolicy(workspace)
+	sandbox := defaultTurnSandboxPolicy(workspace, root)
 	if sandbox["type"] != "workspaceWrite" {
 		t.Fatalf("unexpected sandbox type: %#v", sandbox)
 	}
 	roots, ok := sandbox["writableRoots"].([]string)
-	if !ok || len(roots) != 1 || roots[0] == "" {
+	if !ok || len(roots) < 2 {
 		t.Fatalf("unexpected writable roots: %#v", sandbox)
+	}
+	if roots[0] == "" || roots[1] == "" {
+		t.Fatalf("expected non-empty writable roots: %#v", roots)
+	}
+	if sandbox["networkAccess"] != true {
+		t.Fatalf("expected default sandbox networkAccess=true, got %#v", sandbox)
 	}
 
 	if !looksLikeCodexCommand("/usr/local/bin/codex") || !looksLikeCodexCommand("C:/tools/codex.exe") {
@@ -765,6 +771,34 @@ func TestHelperDefaultsAndWorkspaceValidation(t *testing.T) {
 	}
 	if looksLikeCodexCommand("/bin/sh") {
 		t.Fatal("expected non-codex executable to be rejected")
+	}
+}
+
+func TestNormalizeTurnSandboxPolicyFillsMissingWorkspaceWriteDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoRoot := filepath.Join(tmpDir, "repo")
+	workspaceRoot := filepath.Join(repoRoot, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-9")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	got := normalizeTurnSandboxPolicy(map[string]interface{}{"type": "workspaceWrite"}, workspace, workspaceRoot)
+	if got["networkAccess"] != true {
+		t.Fatalf("expected networkAccess=true, got %#v", got)
+	}
+	roots, ok := got["writableRoots"].([]string)
+	if !ok {
+		t.Fatalf("expected writableRoots to be []string, got %#v", got["writableRoots"])
+	}
+	if len(roots) != 3 {
+		t.Fatalf("expected workspace, workspace root, and repo root; got %#v", roots)
+	}
+	if roots[2] != repoRoot {
+		t.Fatalf("expected repo root writable for local-path pushes, got %#v", roots)
 	}
 }
 

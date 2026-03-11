@@ -129,11 +129,14 @@ func DefaultConfig() Config {
 					"mcp_elicitations": true,
 				},
 			},
-			ThreadSandbox:     "workspace-write",
-			TurnSandboxPolicy: map[string]interface{}{"type": "workspaceWrite"},
-			TurnTimeoutMs:     600000,
-			ReadTimeoutMs:     5000,
-			StallTimeoutMs:    60000,
+			ThreadSandbox: "workspace-write",
+			TurnSandboxPolicy: map[string]interface{}{
+				"type":          "workspaceWrite",
+				"networkAccess": true,
+			},
+			TurnTimeoutMs:  600000,
+			ReadTimeoutMs:  5000,
+			StallTimeoutMs: 60000,
 		},
 	}
 }
