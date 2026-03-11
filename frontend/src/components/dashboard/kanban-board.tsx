@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Activity, AlertTriangle, ArrowRightLeft, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 
 import { IssueCard } from '@/components/dashboard/issue-card'
 import { Button } from '@/components/ui/button'
@@ -35,28 +35,7 @@ export function KanbanBoard({
   })
 
   return (
-    <div className="grid gap-[var(--section-gap)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--panel-radius)] border border-white/10 bg-white/[0.04] p-[var(--panel-padding)]">
-        <div>
-          <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted-foreground)]">Execution board</p>
-          <h2 className="mt-1.5 text-lg font-semibold text-white">Triage, route, and monitor work in one surface</h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--muted-foreground)]">
-          <span className="inline-flex items-center gap-2">
-            <Activity className="size-4 text-lime-300" />
-            {bootstrap?.overview.snapshot.running.length ?? 0} active runs
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <AlertTriangle className="size-4 text-amber-300" />
-            {bootstrap?.overview.snapshot.retrying.length ?? 0} retries queued
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <ArrowRightLeft className="size-4 text-cyan-300" />
-            Drag cards between lanes
-          </span>
-        </div>
-      </div>
-
+    <div className="grid">
       <ScrollArea className="rounded-[var(--panel-radius)] border border-white/10 bg-white/[0.03]">
         <div className="flex min-w-max gap-[var(--section-gap)] p-[var(--panel-padding)]">
           {lanes.map((lane) => {

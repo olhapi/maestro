@@ -55,6 +55,7 @@ export function IssueCard({
   const paused = getPausedForIssue(bootstrap, issue.id);
   const meta = getStateMeta(issue.state);
   const availableStates = issueStatesFor([issue]);
+  const cardBadgeClass = "px-1.75 py-0.5 text-[9px] tracking-[0.14em]";
 
   const content = (
     <button
@@ -66,30 +67,27 @@ export function IssueCard({
     >
       <div className="flex items-start justify-between gap-2.5">
         <div className="space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-mono text-xs uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
               {issue.identifier}
             </span>
-            <Badge className={cn("border-white/12 bg-white/5", meta.accent)}>
-              {meta.label}
-            </Badge>
             {issue.priority <= 1 ? (
-              <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-200">
+              <Badge className={cn(cardBadgeClass, "border-amber-400/20 bg-amber-400/10 text-amber-200")}>
                 P{issue.priority}
               </Badge>
             ) : null}
             {issue.is_blocked ? (
-              <Badge className="border-red-500/20 bg-red-500/10 text-red-200">
+              <Badge className={cn(cardBadgeClass, "border-red-500/20 bg-red-500/10 text-red-200")}>
                 Blocked
               </Badge>
             ) : null}
             {session ? (
-              <Badge className="border-lime-400/20 bg-lime-400/10 text-lime-200">
+              <Badge className={cn(cardBadgeClass, "border-lime-400/20 bg-lime-400/10 text-lime-200")}>
                 Live
               </Badge>
             ) : null}
             {paused ? (
-              <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">
+              <Badge className={cn(cardBadgeClass, "border-rose-400/20 bg-rose-400/10 text-rose-100")}>
                 Paused
               </Badge>
             ) : null}

@@ -178,7 +178,7 @@ Use standard Git `--no-verify` only when you intentionally need to bypass hooks.
 - tracker settings
 - workspace root
 - hook commands and timeout
-- agent concurrency and mode
+- agent concurrency, mode, and dispatch behavior
 - optional review/done phase prompts
 - Codex command and sandbox settings
 - the prompt template rendered for each issue
@@ -191,6 +191,11 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 - `{{ issue.state }}`
 - `{{ phase }}`
 - `{{ attempt }}`
+
+`agent.dispatch_mode` controls scheduling behavior:
+
+- `parallel` (default): use `agent.max_concurrent_agents` per project
+- `per_project_serial`: run one issue at a time per project while still allowing different projects to run in parallel
 
 Codex app-server compatibility is versioned:
 

@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	TrackerKindKanban  = "kanban"
-	AgentModeAppServer = "app_server"
-	AgentModeStdio     = "stdio"
+	TrackerKindKanban            = "kanban"
+	AgentModeAppServer           = "app_server"
+	AgentModeStdio               = "stdio"
+	DispatchModeParallel         = "parallel"
+	DispatchModePerProjectSerial = "per_project_serial"
 )
 
 var (
@@ -62,6 +64,7 @@ type AgentConfig struct {
 	MaxRetryBackoffMs   int    `yaml:"max_retry_backoff_ms"`
 	MaxAutomaticRetries int    `yaml:"max_automatic_retries"`
 	Mode                string `yaml:"mode"`
+	DispatchMode        string `yaml:"dispatch_mode"`
 }
 
 type CodexConfig struct {
@@ -118,6 +121,7 @@ func DefaultConfig() Config {
 			MaxRetryBackoffMs:   60000,
 			MaxAutomaticRetries: 8,
 			Mode:                AgentModeAppServer,
+			DispatchMode:        DispatchModeParallel,
 		},
 		Codex: CodexConfig{
 			Command:         "codex app-server",
@@ -336,6 +340,7 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveNumeric(out, agent, "max_retry_backoff_ms", "max_retry_backoff_ms")
 	moveNumeric(out, agent, "max_automatic_retries", "max_automatic_retries")
 	moveString(out, agent, "agent_mode", "mode")
+	moveString(out, agent, "dispatch_mode", "dispatch_mode")
 	moveString(out, codex, "codex_command", "command")
 	moveString(out, codex, "codex_expected_version", "expected_version")
 	moveValue(out, codex, "codex_approval_policy", "approval_policy")
@@ -490,6 +495,9 @@ func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.Agent.Mode) == "" {
 		c.Agent.Mode = defaults.Agent.Mode
 	}
+	if strings.TrimSpace(c.Agent.DispatchMode) == "" {
+		c.Agent.DispatchMode = defaults.Agent.DispatchMode
+	}
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		c.Codex.Command = defaults.Codex.Command
 	}
@@ -528,6 +536,10 @@ func validateConfig(c *Config) error {
 	}
 	if strings.TrimSpace(c.Agent.Mode) != AgentModeAppServer && strings.TrimSpace(c.Agent.Mode) != AgentModeStdio {
 		return fmt.Errorf("unsupported agent.mode %q", c.Agent.Mode)
+	}
+	dispatchMode := strings.TrimSpace(c.Agent.DispatchMode)
+	if dispatchMode != DispatchModeParallel && dispatchMode != DispatchModePerProjectSerial {
+		return fmt.Errorf("unsupported agent.dispatch_mode %q", c.Agent.DispatchMode)
 	}
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		return fmt.Errorf("codex.command is required")

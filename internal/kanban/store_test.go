@@ -798,13 +798,38 @@ func TestIssuePrioritySorting(t *testing.T) {
 	// Create issues with different priorities
 	_, _ = store.CreateIssue("", "", "Low Priority", "", 10, nil)
 	_, _ = store.CreateIssue("", "", "High Priority", "", 1, nil)
+	_, _ = store.CreateIssue("", "", "Unprioritized", "", 0, nil)
 	_, _ = store.CreateIssue("", "", "Medium Priority", "", 5, nil)
 
 	issues, _ := store.ListIssues(nil)
 
-	// Should be sorted by priority
-	if issues[0].Priority > issues[1].Priority {
-		t.Error("Issues should be sorted by priority (ascending)")
+	// Positive priorities should be sorted ascending before unprioritized (0).
+	if len(issues) < 4 {
+		t.Fatalf("expected 4 issues, got %d", len(issues))
+	}
+	if issues[0].Priority != 1 || issues[1].Priority != 5 || issues[2].Priority != 10 || issues[3].Priority != 0 {
+		t.Fatalf("unexpected priority order: got [%d %d %d %d]", issues[0].Priority, issues[1].Priority, issues[2].Priority, issues[3].Priority)
+	}
+}
+
+func TestListIssueSummariesPrioritySortTreatsZeroAsUnprioritized(t *testing.T) {
+	store := setupTestStore(t)
+	_, _ = store.CreateIssue("", "", "No priority", "", 0, nil)
+	_, _ = store.CreateIssue("", "", "P3", "", 3, nil)
+	_, _ = store.CreateIssue("", "", "P1", "", 1, nil)
+
+	items, _, err := store.ListIssueSummaries(IssueQuery{
+		Sort:  "priority_asc",
+		Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries failed: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 issues, got %d", len(items))
+	}
+	if items[0].Priority != 1 || items[1].Priority != 3 || items[2].Priority != 0 {
+		t.Fatalf("unexpected priority_asc order: got [%d %d %d]", items[0].Priority, items[1].Priority, items[2].Priority)
 	}
 }
 

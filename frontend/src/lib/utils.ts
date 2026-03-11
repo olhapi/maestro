@@ -24,6 +24,30 @@ export function formatRelativeTime(value?: string | null) {
   return 'just now'
 }
 
+export function formatRelativeTimeCompact(value?: string | null) {
+  if (!value) return 'n/a'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'n/a'
+
+  const seconds = Math.round((Date.now() - date.getTime()) / 1000)
+  const absolute = Math.abs(seconds)
+  const units: Array<[suffix: string, size: number]> = [
+    ['d', 86_400],
+    ['h', 3_600],
+    ['m', 60],
+    ['s', 1],
+  ]
+
+  for (const [suffix, size] of units) {
+    if (absolute >= size || suffix === 's') {
+      const amount = Math.max(0, Math.round(absolute / size))
+      const label = `${amount}${suffix}`
+      return seconds >= 0 ? `${label} ago` : `in ${label}`
+    }
+  }
+  return '0s ago'
+}
+
 export function formatNumber(value: number | undefined) {
   return new Intl.NumberFormat('en-US').format(value ?? 0)
 }

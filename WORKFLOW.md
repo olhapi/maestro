@@ -32,6 +32,7 @@ agent:
   max_turns: 50
   max_retry_backoff_ms: 300000
   mode: app_server
+  dispatch_mode: parallel
 codex:
   command: codex app-server
   expected_version: 0.111.0

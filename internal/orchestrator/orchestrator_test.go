@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -205,6 +206,27 @@ func setWorkflowMaxAutomaticRetries(t *testing.T, manager *config.Manager, maxAu
 		t.Fatalf("ReadFile workflow: %v", err)
 	}
 	updated := strings.Replace(string(data), "  max_automatic_retries: 8\n", fmt.Sprintf("  max_automatic_retries: %d\n", maxAutomaticRetries), 1)
+	if err := os.WriteFile(manager.Path(), []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatalf("Refresh workflow: %v", err)
+	}
+}
+
+func setWorkflowDispatchMode(t *testing.T, manager *config.Manager, dispatchMode string) {
+	t.Helper()
+	data, err := os.ReadFile(manager.Path())
+	if err != nil {
+		t.Fatalf("ReadFile workflow: %v", err)
+	}
+	updated := string(data)
+	if strings.Contains(updated, "  dispatch_mode:") {
+		updated = regexp.MustCompile(`(?m)^  dispatch_mode: .*$`).ReplaceAllString(updated, "  dispatch_mode: "+dispatchMode)
+	} else {
+		updated = strings.Replace(updated, "  mode: stdio\n", "  mode: stdio\n  dispatch_mode: "+dispatchMode+"\n", 1)
+		updated = strings.Replace(updated, "  mode: app_server\n", "  mode: app_server\n  dispatch_mode: "+dispatchMode+"\n", 1)
+	}
 	if err := os.WriteFile(manager.Path(), []byte(updated), 0o644); err != nil {
 		t.Fatalf("WriteFile workflow: %v", err)
 	}
@@ -1131,7 +1153,7 @@ func TestDispatchBlockedByInvalidWorkflowReloadKeepsLastGood(t *testing.T) {
 func TestStatusIncludesWorkflowAndRetryFields(t *testing.T) {
 	orch, _, _, _ := setupTestOrchestrator(t, "cat")
 	status := orch.Status()
-	for _, key := range []string{"active_runs", "max_concurrent", "started_at", "uptime_seconds", "poll_interval_ms", "retry_queue", "run_metrics"} {
+	for _, key := range []string{"active_runs", "max_concurrent", "dispatch_mode", "started_at", "uptime_seconds", "poll_interval_ms", "retry_queue", "run_metrics"} {
 		if _, ok := status[key]; !ok {
 			t.Fatalf("Expected status to have key %s", key)
 		}
@@ -1897,4 +1919,119 @@ func TestDispatchRespectsDependencyOrderParallel(t *testing.T) {
 		issues["C"].Identifier: {issues["A"].Identifier},
 		issues["D"].Identifier: {issues["B"].Identifier, issues["C"].Identifier},
 	})
+}
+
+func TestDispatchPerProjectSerialStartsOneIssueAtATimePerProject(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestratorWithConcurrency(t, "cat", 2)
+	setWorkflowDispatchMode(t, manager, config.DispatchModePerProjectSerial)
+	runner := newControlledRunner(store)
+	orch.runner = runner
+
+	project, err := store.CreateProject("Serial", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	first, err := store.CreateIssue(project.ID, "", "First", "", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue first failed: %v", err)
+	}
+	second, err := store.CreateIssue(project.ID, "", "Second", "", 2, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue second failed: %v", err)
+	}
+	if err := store.UpdateIssueState(first.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState first failed: %v", err)
+	}
+	if err := store.UpdateIssueState(second.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState second failed: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+	starts := runner.waitForStarts(t, 1, time.Second)
+	if starts[0] != first.Identifier {
+		t.Fatalf("expected first start %s, got %v", first.Identifier, starts)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("second dispatch failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	startCount := len(runner.starts)
+	runner.mu.Unlock()
+	if startCount != 1 {
+		t.Fatalf("expected only one active start for project in serial mode, got %d starts: %v", startCount, starts)
+	}
+
+	runner.complete(first.Identifier)
+	waitForNoRunning(t, orch, time.Second)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("third dispatch failed: %v", err)
+	}
+	starts = runner.waitForStarts(t, 2, time.Second)
+	if starts[1] != second.Identifier {
+		t.Fatalf("expected second start %s after first completed, got %v", second.Identifier, starts)
+	}
+	runner.complete(second.Identifier)
+	waitForNoRunning(t, orch, time.Second)
+}
+
+func TestPerProjectSerialDispatchPrefersHigherPriorityOverDueRetry(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestratorWithConcurrency(t, "cat", 2)
+	setWorkflowDispatchMode(t, manager, config.DispatchModePerProjectSerial)
+	runner := newControlledRunner(store)
+	orch.runner = runner
+
+	project, err := store.CreateProject("Priority", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	high, err := store.CreateIssue(project.ID, "", "High", "", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue high failed: %v", err)
+	}
+	lowWithRetry, err := store.CreateIssue(project.ID, "", "Low retry", "", 5, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue low failed: %v", err)
+	}
+	if err := store.UpdateIssueState(high.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState high failed: %v", err)
+	}
+	if err := store.UpdateIssueState(lowWithRetry.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState low failed: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.retries[lowWithRetry.ID] = retryEntry{
+		Attempt:   2,
+		Phase:     string(kanban.WorkflowPhaseImplementation),
+		DueAt:     time.Now().UTC().Add(-time.Second),
+		DelayType: "manual",
+	}
+	orch.claimed[lowWithRetry.ID] = struct{}{}
+	orch.mu.Unlock()
+
+	if err := orch.tick(context.Background()); err != nil {
+		t.Fatalf("tick failed: %v", err)
+	}
+	starts := runner.waitForStarts(t, 1, time.Second)
+	if starts[0] != high.Identifier {
+		t.Fatalf("expected higher priority fresh issue %s to start first, got %v", high.Identifier, starts)
+	}
+
+	runner.complete(high.Identifier)
+	waitForNoRunning(t, orch, time.Second)
+
+	if err := orch.tick(context.Background()); err != nil {
+		t.Fatalf("second tick failed: %v", err)
+	}
+	starts = runner.waitForStarts(t, 2, time.Second)
+	if starts[1] != lowWithRetry.Identifier {
+		t.Fatalf("expected retry issue %s to start second, got %v", lowWithRetry.Identifier, starts)
+	}
+	runner.complete(lowWithRetry.Identifier)
+	waitForNoRunning(t, orch, time.Second)
 }

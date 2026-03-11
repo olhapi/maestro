@@ -40,12 +40,20 @@ describe('WorkPage', () => {
     renderWithQueryClient(<WorkPage />)
 
     await waitFor(() => {
-      expect(screen.getByText('Coordinate delivery without leaving the board')).toBeInTheDocument()
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
     expect(screen.getByText('Investigate retries')).toBeInTheDocument()
     expect(screen.getByText('Active work')).toBeInTheDocument()
-    expect(screen.getByText('Create issue')).toBeInTheDocument()
+    expect(screen.queryByText('Create issue')).not.toBeInTheDocument()
+    expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Board view' })).toHaveAttribute('data-state', 'on')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
+    await waitFor(() => {
+      expect(screen.getByRole('columnheader', { name: 'Issue' })).toBeInTheDocument()
+    })
+    expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
   })
 
   it('filters issues by project from the work toolbar', async () => {
@@ -61,7 +69,7 @@ describe('WorkPage', () => {
     renderWithQueryClient(<WorkPage />)
 
     await waitFor(() => {
-      expect(screen.getByText('Coordinate delivery without leaving the board')).toBeInTheDocument()
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
     fireEvent.change(screen.getByLabelText(/filter by project/i), { target: { value: 'project-1' } })
@@ -71,7 +79,7 @@ describe('WorkPage', () => {
         search: '',
         project_id: 'project-1',
         state: '',
-        sort: 'updated_desc',
+        sort: 'priority_asc',
         limit: 200,
       })
     })

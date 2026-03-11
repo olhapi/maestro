@@ -1,0 +1,17 @@
+import * as ToggleGroupPrimitive from '@radix-ui/react-toggle-group'
+
+import { cn } from '@/lib/utils'
+
+export const ToggleGroup = ToggleGroupPrimitive.Root
+
+export function ToggleGroupItem({ className, ...props }: ToggleGroupPrimitive.ToggleGroupItemProps) {
+  return (
+    <ToggleGroupPrimitive.Item
+      className={cn(
+        'rounded-[calc(var(--panel-radius)-0.375rem)] px-3.5 py-1.5 text-sm text-[var(--muted-foreground)] transition data-[state=on]:bg-white data-[state=on]:text-black',
+        className,
+      )}
+      {...props}
+    />
+  )
+}

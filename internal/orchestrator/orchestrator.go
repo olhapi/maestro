@@ -686,6 +686,78 @@ func (o *Orchestrator) shouldAllowRunningTerminalTransition(workflow *config.Wor
 	}
 }
 
+func dispatchMode(workflow *config.Workflow) string {
+	if workflow == nil {
+		return config.DispatchModeParallel
+	}
+	mode := strings.TrimSpace(workflow.Config.Agent.DispatchMode)
+	if mode == "" {
+		return config.DispatchModeParallel
+	}
+	return mode
+}
+
+func isPerProjectSerialDispatch(workflow *config.Workflow) bool {
+	return dispatchMode(workflow) == config.DispatchModePerProjectSerial
+}
+
+func priorityBucket(priority int) int {
+	if priority > 0 {
+		return 0
+	}
+	return 1
+}
+
+func issuePriorityLess(left, right *kanban.Issue) bool {
+	leftBucket := priorityBucket(left.Priority)
+	rightBucket := priorityBucket(right.Priority)
+	if leftBucket != rightBucket {
+		return leftBucket < rightBucket
+	}
+	if leftBucket == 0 && left.Priority != right.Priority {
+		return left.Priority < right.Priority
+	}
+	if !left.CreatedAt.Equal(right.CreatedAt) {
+		return left.CreatedAt.Before(right.CreatedAt)
+	}
+	return left.Identifier < right.Identifier
+}
+
+func (o *Orchestrator) hasProjectCapacity(workflow *config.Workflow, projectID string) bool {
+	limit := workflow.Config.Agent.MaxConcurrentAgents
+	if isPerProjectSerialDispatch(workflow) {
+		limit = 1
+	}
+	if limit <= 0 {
+		return false
+	}
+	return o.runningCountForProject(projectID) < limit
+}
+
+func (o *Orchestrator) dueRetryEntry(issueID string, now time.Time) (retryEntry, bool) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	entry, ok := o.retries[issueID]
+	if !ok {
+		return retryEntry{}, false
+	}
+	if _, running := o.running[issueID]; running {
+		return retryEntry{}, false
+	}
+	if entry.DueAt.After(now) {
+		return retryEntry{}, false
+	}
+	return entry, true
+}
+
+func (o *Orchestrator) isClaimed(issueID string) bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	_, ok := o.claimed[issueID]
+	return ok
+}
+
 func (o *Orchestrator) dispatch(ctx context.Context) error {
 	o.syncProviderIssues(ctx)
 	states := []string{"ready", "in_progress", "in_review", "done"}
@@ -704,15 +776,10 @@ func (o *Orchestrator) dispatch(ctx context.Context) error {
 		return err
 	}
 	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Priority != issues[j].Priority {
-			return issues[i].Priority < issues[j].Priority
-		}
-		if !issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
-			return issues[i].CreatedAt.Before(issues[j].CreatedAt)
-		}
-		return issues[i].Identifier < issues[j].Identifier
+		return issuePriorityLess(&issues[i], &issues[j])
 	})
 
+	now := time.Now().UTC()
 	for _, issue := range issues {
 		runtime, workflow, err := o.runtimeForIssue(&issue)
 		if err != nil {
@@ -721,8 +788,7 @@ func (o *Orchestrator) dispatch(ctx context.Context) error {
 			)
 			continue
 		}
-		capacity := workflow.Config.Agent.MaxConcurrentAgents
-		if capacity <= 0 || o.runningCountForProject(issue.ProjectID) >= capacity {
+		if !o.hasProjectCapacity(workflow, issue.ProjectID) {
 			continue
 		}
 		dispatchable, reason, phase := o.isDispatchable(workflow, &issue)
@@ -734,7 +800,19 @@ func (o *Orchestrator) dispatch(ctx context.Context) error {
 			}
 			continue
 		}
-		if !o.tryClaim(issue.ID) {
+		retry, useDueRetry := retryEntry{}, false
+		if isPerProjectSerialDispatch(workflow) {
+			if due, ok := o.dueRetryEntry(issue.ID, now); ok {
+				retry = due
+				useDueRetry = true
+			}
+		}
+
+		claimed := o.tryClaim(issue.ID)
+		if !claimed && useDueRetry && o.isClaimed(issue.ID) {
+			claimed = true
+		}
+		if !claimed {
 			slog.Debug("Issue claim rejected because it is already claimed",
 				issueLogAttrs(&issue, 0)...,
 			)
@@ -749,7 +827,11 @@ func (o *Orchestrator) dispatch(ctx context.Context) error {
 			continue
 		}
 		issue.WorkflowPhase = phase
-		o.startRun(ctx, workflow, runtime.runner, &issue, 0)
+		attempt := 0
+		if useDueRetry {
+			attempt = retry.Attempt
+		}
+		o.startRun(ctx, workflow, runtime.runner, &issue, attempt)
 	}
 	return nil
 }
@@ -828,9 +910,10 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			o.mu.Unlock()
 			continue
 		}
-
-		capacity := workflow.Config.Agent.MaxConcurrentAgents
-		if capacity > 0 && o.runningCountForProject(issue.ProjectID) >= capacity {
+		if isPerProjectSerialDispatch(workflow) {
+			continue
+		}
+		if !o.hasProjectCapacity(workflow, issue.ProjectID) {
 			continue
 		}
 		slog.Info("Retry is due; starting issue run",
@@ -1788,6 +1871,7 @@ func (o *Orchestrator) Status() map[string]interface{} {
 	}
 	if workflow != nil {
 		out["max_concurrent"] = workflow.Config.Agent.MaxConcurrentAgents
+		out["dispatch_mode"] = dispatchMode(workflow)
 		out["max_automatic_retries"] = workflow.Config.Agent.MaxAutomaticRetries
 		out["poll_interval_ms"] = workflow.Config.Polling.IntervalMs
 		out["active_states"] = workflow.Config.Tracker.ActiveStates

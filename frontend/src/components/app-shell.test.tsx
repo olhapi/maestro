@@ -57,13 +57,14 @@ describe('AppShell', () => {
     renderWithQueryClient(<AppShell />)
 
     await waitFor(() => {
-      expect(screen.getByText('Maestro Control Center')).toBeInTheDocument()
+      expect(screen.getByText('Maestro')).toBeInTheDocument()
     })
 
     const workLink = screen.getByRole('link', { name: 'Work' })
     expect(workLink).toHaveAttribute('aria-label', 'Work')
     expect(workLink.className).toContain('lg:max-[1440px]:justify-center')
     expect(screen.getByRole('link', { name: 'Sessions' })).toBeInTheDocument()
+    expect(screen.getByText(/^\d+s ago$/)).toBeInTheDocument()
     expect(document.title).toContain('Work')
 
     fireEvent.click(screen.getByText('Command Palette'))

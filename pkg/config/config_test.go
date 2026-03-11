@@ -28,6 +28,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.MaxTurns != 4 || cfg.Agent.MaxRetryBackoffMs != 60000 || cfg.Agent.MaxAutomaticRetries != 8 {
 		t.Fatalf("unexpected agent defaults: %+v", cfg.Agent)
 	}
+	if cfg.Agent.DispatchMode != DispatchModeParallel {
+		t.Fatalf("expected dispatch mode %q, got %q", DispatchModeParallel, cfg.Agent.DispatchMode)
+	}
 	if cfg.Codex.TurnTimeoutMs != 600000 || cfg.Codex.ReadTimeoutMs != 5000 || cfg.Codex.StallTimeoutMs != 60000 {
 		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
@@ -143,6 +146,50 @@ Implement {{ issue.identifier }}
 	}
 	if strings.TrimSpace(workflow.Config.Phases.Done.Prompt) != "Finalize {{ issue.identifier }} during {{ phase }}" {
 		t.Fatalf("unexpected done prompt: %q", workflow.Config.Phases.Done.Prompt)
+	}
+}
+
+func TestLoadWorkflowAcceptsPerProjectSerialDispatchMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+agent:
+  dispatch_mode: per_project_serial
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Agent.DispatchMode != DispatchModePerProjectSerial {
+		t.Fatalf("expected dispatch mode %q, got %q", DispatchModePerProjectSerial, workflow.Config.Agent.DispatchMode)
+	}
+}
+
+func TestLoadWorkflowRejectsUnsupportedDispatchMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+agent:
+  dispatch_mode: global_serial
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadWorkflow(workflowPath); err == nil || !strings.Contains(err.Error(), "unsupported agent.dispatch_mode") {
+		t.Fatalf("expected unsupported dispatch mode error, got %v", err)
 	}
 }
 
@@ -361,7 +408,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "phases:", "enabled: false", "expected_version: 0.111.0", "networkAccess: true", "codex app-server --model test", "{{ issue.identifier }}"} {
+	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "dispatch_mode: parallel", "phases:", "enabled: false", "expected_version: 0.111.0", "networkAccess: true", "codex app-server --model test", "{{ issue.identifier }}"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}

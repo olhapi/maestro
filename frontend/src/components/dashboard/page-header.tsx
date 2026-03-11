@@ -1,5 +1,5 @@
-import { Fragment, type ReactNode } from 'react'
-import { Link } from '@tanstack/react-router'
+import { Fragment, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
 
 import {
   Breadcrumb,
@@ -8,14 +8,14 @@ import {
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
-} from '@/components/ui/breadcrumb'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+} from "@/components/ui/breadcrumb";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 interface Crumb {
-  label: string
-  to?: string
-  params?: Record<string, string>
+  label: string;
+  to?: string;
+  params?: Record<string, string>;
 }
 
 export function PageHeader({
@@ -28,14 +28,14 @@ export function PageHeader({
   stats,
   statsClassName,
 }: {
-  eyebrow?: string
-  title: string
-  description?: string
-  descriptionClassName?: string
-  crumbs?: Crumb[]
-  actions?: ReactNode
-  stats?: ReactNode
-  statsClassName?: string
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  descriptionClassName?: string;
+  crumbs?: Crumb[];
+  actions?: ReactNode;
+  stats?: ReactNode;
+  statsClassName?: string;
 }) {
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -63,24 +63,24 @@ export function PageHeader({
       ) : null}
 
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="max-w-3xl">
-          {eyebrow ? <Badge>{eyebrow}</Badge> : null}
-          <h1
-            className={cn(
-              'mt-3 font-display text-[length:var(--page-title-size)] font-semibold tracking-tight text-white leading-[var(--page-title-line-height)]',
-              eyebrow ? '' : 'mt-0',
-            )}
-          >
-            {title}
-          </h1>
-          {description ? (
-            <p className={cn('mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]', descriptionClassName)}>{description}</p>
-          ) : null}
-        </div>
+        {eyebrow ? <Badge>{eyebrow}</Badge> : null}
+        <h1
+          className={cn(
+            "mt-3 font-display text-[length:var(--page-title-size)] font-semibold tracking-tight text-white leading-[var(--page-title-line-height)]",
+            eyebrow ? "" : "mt-0",
+          )}
+        >
+          {title}
+        </h1>
+        {description ? (
+          <p className={cn("mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]", descriptionClassName)}>
+            {description}
+          </p>
+        ) : null}
         {actions ? <div className="flex flex-wrap items-center gap-2.5">{actions}</div> : null}
       </div>
 
-      {stats ? <div className={cn('grid gap-3 sm:grid-cols-2 lg:grid-cols-4', statsClassName)}>{stats}</div> : null}
+      {stats ? <div className={cn("grid gap-3 sm:grid-cols-2 lg:grid-cols-4", statsClassName)}>{stats}</div> : null}
     </div>
-  )
+  );
 }

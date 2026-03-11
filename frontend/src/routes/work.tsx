@@ -1,7 +1,7 @@
 import { useDeferredValue, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
-import { List, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { LayoutGrid, List, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { KanbanBoard } from '@/components/dashboard/kanban-board'
@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { api } from '@/lib/api'
 import { getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { appRoutes } from '@/lib/routes'
@@ -34,12 +34,12 @@ function StatCard({ label, value, detail }: { label: string; value: string; deta
 
 export function WorkPage() {
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
   const [projectID, setProjectID] = useState('')
   const [state, setState] = useState('')
-  const [sort, setSort] = useState('updated_desc')
+  const [sort, setSort] = useState('priority_asc')
+  const [view, setView] = useState<'board' | 'list'>('board')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<IssueDetail | undefined>()
   const [composerDefaults, setComposerDefaults] = useState<Partial<IssueDetail>>({
@@ -126,27 +126,8 @@ export function WorkPage() {
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
-        title="Coordinate delivery without leaving the board"
+        title="Coordinate work on one board"
         description="This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed."
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setEditing(undefined)
-                setComposerDefaults({
-                  state: 'backlog',
-                  project_id: bootstrap.data?.projects[0]?.id,
-                })
-                setDialogOpen(true)
-              }}
-            >
-              <Plus className="size-4" />
-              Create issue
-            </Button>
-            <Button onClick={() => void navigate({ to: appRoutes.projects })}>Open portfolio</Button>
-          </>
-        }
         stats={
           <>
             <StatCard label="Active work" value={String(metrics.active)} detail="Ready, in progress, and in review across the portfolio." />
@@ -162,7 +143,7 @@ export function WorkPage() {
           <div>
             <CardTitle>Filter the board without losing spatial context</CardTitle>
           </div>
-          <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.25fr)_repeat(3,minmax(0,190px))]">
+          <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.4fr)_repeat(2,minmax(0,210px))]">
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by identifier, title, or description" />
             <Select aria-label="Filter by project" value={projectID} onChange={(event) => setProjectID(event.target.value)}>
               <option value="">All projects</option>
@@ -180,23 +161,44 @@ export function WorkPage() {
                 </option>
               ))}
             </Select>
-            <Select value={sort} onChange={(event) => setSort(event.target.value)}>
+          </div>
+        </CardHeader>
+      </Card>
+
+      <Card className="bg-white/[0.04]">
+        <CardHeader className="flex-row items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-white">Triage, route, and monitor work in one surface</h2>
+          <div className="flex items-center gap-2">
+            <Select aria-label="Sort issues" className="h-9 w-[176px] text-xs" value={sort} onChange={(event) => setSort(event.target.value)}>
               <option value="updated_desc">Recently updated</option>
               <option value="priority_asc">Highest priority</option>
               <option value="identifier_asc">Identifier A-Z</option>
               <option value="state_asc">State grouping</option>
             </Select>
+            <ToggleGroup
+              aria-label="Switch work view"
+              className="inline-flex rounded-[var(--panel-radius)] border border-white/10 bg-black/20 p-0.75"
+              type="single"
+              value={view}
+              onValueChange={(next) => {
+                if (next === 'board' || next === 'list') {
+                  setView(next)
+                }
+              }}
+            >
+              <ToggleGroupItem aria-label="Board view" className="px-2.5 py-1.5" title="Board view" value="board">
+                <LayoutGrid className="size-4" />
+              </ToggleGroupItem>
+              <ToggleGroupItem aria-label="List view" className="px-2.5 py-1.5" title="List view" value="list">
+                <List className="size-4" />
+              </ToggleGroupItem>
+            </ToggleGroup>
           </div>
         </CardHeader>
       </Card>
 
-      <Tabs defaultValue="board" className="grid gap-3">
-        <TabsList>
-          <TabsTrigger value="board">Board</TabsTrigger>
-          <TabsTrigger value="list">List</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="board" className="m-0">
+      {view === 'board' ? (
+        <div className="m-0">
           <KanbanBoard
             items={issues.data.items}
             bootstrap={bootstrap.data}
@@ -211,9 +213,9 @@ export function WorkPage() {
               setDialogOpen(true)
             }}
           />
-        </TabsContent>
-
-        <TabsContent value="list" className="m-0">
+        </div>
+      ) : (
+        <div className="m-0">
           <Card>
             <CardContent className="overflow-x-auto pt-[var(--panel-padding)]">
               <table className="w-full min-w-[960px] text-left text-sm">
@@ -285,8 +287,8 @@ export function WorkPage() {
               </table>
             </CardContent>
           </Card>
-        </TabsContent>
-      </Tabs>
+        </div>
+      )}
 
       <IssueDialog
         open={dialogOpen}

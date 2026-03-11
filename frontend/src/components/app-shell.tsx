@@ -10,7 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { api } from '@/lib/api'
 import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
-import { cn, formatRelativeTime } from '@/lib/utils'
+import { cn, formatRelativeTimeCompact } from '@/lib/utils'
 
 const nav = [
   { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard, match: (pathname: string) => pathname === appRoutes.overview },
@@ -20,6 +20,7 @@ const nav = [
 ]
 
 const APP_TITLE = 'Maestro Control Center'
+const SIDEBAR_TITLE = 'Maestro'
 
 function getPageTitle(pathname: string) {
   if (pathname === appRoutes.overview) return 'Overview'
@@ -74,7 +75,7 @@ export function AppShell() {
               MC
             </div>
             <div className="lg:max-[1440px]:hidden">
-              <h1 className="font-display text-[1.65rem] font-semibold leading-none">{APP_TITLE}</h1>
+              <h1 className="font-display text-[1.65rem] font-semibold leading-none">{SIDEBAR_TITLE}</h1>
             </div>
           </div>
 
@@ -124,7 +125,7 @@ export function AppShell() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[var(--muted-foreground)]">Last signal</span>
-                <span className="text-white">{formatRelativeTime(lastRefresh)}</span>
+                <span className="text-white">{formatRelativeTimeCompact(lastRefresh)}</span>
               </div>
             </div>
           </div>

@@ -148,6 +148,7 @@ agent:
   max_retry_backoff_ms: 60000
   max_automatic_retries: 8
   mode: %s
+  dispatch_mode: parallel
 codex:
   command: %s
   expected_version: %s

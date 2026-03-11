@@ -1159,7 +1159,7 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 		}
 	}
 
-	query += " ORDER BY priority ASC, created_at ASC"
+	query += " ORDER BY CASE WHEN priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN priority > 0 THEN priority END ASC, created_at ASC, identifier ASC"
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -1702,11 +1702,11 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	case "created_asc":
 		orderBy = "i.created_at ASC"
 	case "priority_asc":
-		orderBy = "i.priority ASC, i.updated_at DESC"
+		orderBy = "CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
 	case "identifier_asc":
 		orderBy = "i.identifier ASC"
 	case "state_asc":
-		orderBy = "i.state ASC, i.priority ASC"
+		orderBy = "i.state ASC, CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
 	}
 
 	rows, err := s.db.Query(`
