@@ -1008,7 +1008,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	if result != nil && result.AppSession != nil {
 		o.observeIssueTokenSpend(issue.ID, result.AppSession)
 	}
-	if errors.Is(err, context.Canceled) {
+	if isCancelledRunCompletion(err, result) {
 		if snapshot, snapshotErr := o.store.GetIssueExecutionSession(issue.ID); snapshotErr == nil && snapshot != nil && snapshot.StopReason == gracefulShutdownStopReason {
 			o.flushIssueTokenSpend(issue.ID)
 			o.mu.Lock()
@@ -1018,6 +1018,16 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 			o.clearIssueTokenSpendState(issue.ID)
 			return
 		}
+		slog.Info("Agent run cancelled",
+			issueLogAttrs(current, attempt, "phase", phase)...,
+		)
+		o.flushIssueTokenSpend(issue.ID)
+		o.mu.Lock()
+		delete(o.liveSessions, issue.ID)
+		o.mu.Unlock()
+		o.clearSessionWriteState(issue.ID)
+		o.clearIssueTokenSpendState(issue.ID)
+		return
 	}
 
 	switch {
@@ -1055,6 +1065,16 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	o.mu.Unlock()
 	o.clearSessionWriteState(issue.ID)
 	o.clearIssueTokenSpendState(issue.ID)
+}
+
+func isCancelledRunCompletion(err error, result *agent.RunResult) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if result == nil || result.Error == nil {
+		return false
+	}
+	return errors.Is(result.Error, context.Canceled)
 }
 
 func nextAttempt(attempt int) int {

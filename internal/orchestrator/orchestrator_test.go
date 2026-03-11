@@ -1360,7 +1360,47 @@ func TestReconcileStopsCancelledRunsAndCleansWorkspace(t *testing.T) {
 	}
 
 	orch.reconcile(context.Background())
+	waitForNoRunning(t, orch, time.Second)
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.State != kanban.StateCancelled {
+		t.Fatalf("expected issue to remain cancelled, got %s", reloaded.State)
+	}
 	waitForWorkspaceRemoval(t, store, issue.ID, time.Second)
+}
+
+func TestReconcileStopsCancelledRunsWithoutRetryWhenRunnerReturnsCancelledResult(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runner := newCancelledResultRunner(store)
+	orch.runner = runner
+	issue, _ := store.CreateIssue("", "", "Sleep", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.waitForStarts(t, 1, time.Second)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateCancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	orch.reconcile(context.Background())
+	waitForNoRunning(t, orch, time.Second)
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.State != kanban.StateCancelled {
+		t.Fatalf("expected issue to remain cancelled, got %s", reloaded.State)
+	}
+	orch.mu.RLock()
+	_, hasRetry := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if hasRetry {
+		t.Fatal("expected cancelled issue not to schedule a retry")
+	}
 }
 
 func TestCleanupTerminalWorkspacesOnStartup(t *testing.T) {
@@ -2038,6 +2078,65 @@ func (r *controlledRunner) snapshotEvents() []runnerEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]runnerEvent(nil), r.events...)
+}
+
+type cancelledResultRunner struct {
+	store   *kanban.Store
+	mu      sync.Mutex
+	starts  []string
+	waiters map[string]chan struct{}
+}
+
+func newCancelledResultRunner(store *kanban.Store) *cancelledResultRunner {
+	return &cancelledResultRunner{
+		store:   store,
+		waiters: make(map[string]chan struct{}),
+	}
+}
+
+func (r *cancelledResultRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
+	if issue.State == kanban.StateReady {
+		_ = r.store.UpdateIssueState(issue.ID, kanban.StateInProgress)
+	}
+	r.mu.Lock()
+	r.starts = append(r.starts, issue.Identifier)
+	ch, ok := r.waiters[issue.Identifier]
+	if !ok {
+		ch = make(chan struct{})
+		r.waiters[issue.Identifier] = ch
+	}
+	r.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return &agent.RunResult{Success: false, Error: ctx.Err()}, nil
+	case <-ch:
+	}
+
+	if err := r.store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+		return nil, err
+	}
+	return &agent.RunResult{Success: true}, nil
+}
+
+func (r *cancelledResultRunner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
+	return nil
+}
+
+func (r *cancelledResultRunner) waitForStarts(t *testing.T, expected int, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		starts := append([]string(nil), r.starts...)
+		r.mu.Unlock()
+		if len(starts) >= expected {
+			return starts
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d starts", expected)
+	return nil
 }
 
 func assertBlockedExecution(t *testing.T, events []runnerEvent, blockers map[string][]string) {
