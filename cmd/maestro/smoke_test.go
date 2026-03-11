@@ -107,12 +107,13 @@ Test prompt for {{ issue.identifier }}
 	if runErr != nil {
 		t.Fatalf("run command never served health: %v", runErr)
 	}
+
 	_ = runCmd.Process.Signal(os.Interrupt)
 	if err := runCmd.Wait(); err != nil {
 		t.Fatalf("run command wait: %v", err)
 	}
 
-	client, err := mcpclient.NewStdioMCPClient(bin, "mcp", "--db", dbPath)
+	client, err := mcpclient.NewStdioMCPClient(bin, nil, "mcp", "--db", dbPath)
 	if err != nil {
 		t.Fatalf("new stdio mcp client: %v", err)
 	}
@@ -120,14 +121,20 @@ Test prompt for {{ issue.identifier }}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	result, err := client.Initialize(ctx, mcp.ClientCapabilities{}, mcp.Implementation{Name: "smoke", Version: "test"}, "2024-11-05")
+	result, err := client.Initialize(ctx, mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "smoke", Version: "test"},
+			Capabilities:    mcp.ClientCapabilities{},
+		},
+	})
 	if err != nil {
 		t.Fatalf("initialize mcp client: %v", err)
 	}
 	if result.ServerInfo.Name == "" {
 		t.Fatalf("expected server info in initialize result: %+v", result)
 	}
-	tools, err := client.ListTools(ctx, nil)
+	tools, err := client.ListTools(ctx, mcp.ListToolsRequest{})
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}

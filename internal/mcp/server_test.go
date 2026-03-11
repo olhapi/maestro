@@ -32,6 +32,23 @@ type testRuntimeProvider struct {
 	scopedRepoPath string
 }
 
+type testMCPClient struct {
+	*mcpclient.Client
+}
+
+func (c *testMCPClient) CallTool(ctx context.Context, name string, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	return c.Client.CallTool(ctx, mcpapi.CallToolRequest{
+		Params: mcpapi.CallToolParams{
+			Name:      name,
+			Arguments: args,
+		},
+	})
+}
+
+func (c *testMCPClient) ListTools(ctx context.Context, _ any) (*mcpapi.ListToolsResult, error) {
+	return c.Client.ListTools(ctx, mcpapi.ListToolsRequest{})
+}
+
 func (p testRuntimeProvider) Status() map[string]interface{} {
 	status := map[string]interface{}{"active_runs": len(p.snapshot().Running)}
 	if strings.TrimSpace(p.scopedRepoPath) != "" {
@@ -326,6 +343,8 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 		"ext_schema",
 		"ext_fallback",
 	}
+	sort.Strings(names)
+	sort.Strings(wantNames)
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("unexpected tool list:\n got %v\nwant %v", names, wantNames)
 	}
@@ -960,21 +979,16 @@ func TestStdioUnknownToolReturnsToolError(t *testing.T) {
 	client := newTestMCPClient(t, dbPath, testClientOptions{})
 	defer client.Close()
 
-	res, err := client.CallTool(context.Background(), "unknown_tool", map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("unknown tool transport failed: %v", err)
+	_, err := client.CallTool(context.Background(), "unknown_tool", map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected unknown tool call to fail")
 	}
-	if !res.IsError {
-		t.Fatal("expected unknown tool to return tool error")
-	}
-	env := decodeEnvelope(t, res)
-	msg := asString(env["error"].(map[string]interface{})["message"])
-	if !strings.Contains(strings.ToLower(msg), "unknown tool") {
-		t.Fatalf("unexpected unknown tool payload: %#v", env)
+	if !strings.Contains(strings.ToLower(err.Error()), "tool") || !strings.Contains(strings.ToLower(err.Error()), "not found") {
+		t.Fatalf("unexpected unknown tool error: %v", err)
 	}
 }
 
-func newTestMCPClient(t *testing.T, dbPath string, opts testClientOptions) *mcpclient.StdioMCPClient {
+func newTestMCPClient(t *testing.T, dbPath string, opts testClientOptions) *testMCPClient {
 	t.Helper()
 	envPath, err := exec.LookPath("env")
 	if err != nil {
@@ -996,14 +1010,20 @@ func newTestMCPClient(t *testing.T, dbPath string, opts testClientOptions) *mcpc
 		"--",
 		dbPath,
 	)
-	client, err := mcpclient.NewStdioMCPClient(envPath, args...)
+	client, err := mcpclient.NewStdioMCPClient(envPath, nil, args...)
 	if err != nil {
 		t.Fatalf("NewStdioMCPClient failed: %v", err)
 	}
-	if _, err := client.Initialize(context.Background(), mcpapi.ClientCapabilities{}, mcpapi.Implementation{Name: "test", Version: "1.0.0"}, "1.0"); err != nil {
+	if _, err := client.Initialize(context.Background(), mcpapi.InitializeRequest{
+		Params: mcpapi.InitializeParams{
+			ProtocolVersion: mcpapi.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcpapi.Implementation{Name: "test", Version: "1.0.0"},
+			Capabilities:    mcpapi.ClientCapabilities{},
+		},
+	}); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
-	return client
+	return &testMCPClient{Client: client}
 }
 
 func decodeEnvelope(t *testing.T, result *mcpapi.CallToolResult) map[string]interface{} {
@@ -1013,8 +1033,6 @@ func decodeEnvelope(t *testing.T, result *mcpapi.CallToolResult) map[string]inte
 	}
 	var text string
 	switch content := result.Content[0].(type) {
-	case map[string]interface{}:
-		text = asString(content["text"])
 	case mcpapi.TextContent:
 		text = content.Text
 	default:

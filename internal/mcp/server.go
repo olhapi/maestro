@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 
@@ -32,7 +33,7 @@ type Server struct {
 	store      *kanban.Store
 	service    *providers.Service
 	provider   RuntimeProvider
-	server     mcpserver.MCPServer
+	server     *mcpserver.MCPServer
 	tools      []mcpapi.Tool
 	extensions *extensions.Registry
 	instanceID string
@@ -65,7 +66,7 @@ func NewServerWithRegistry(store *kanban.Store, provider RuntimeProvider, regist
 		store:      store,
 		service:    providers.NewService(store),
 		provider:   provider,
-		server:     mcpserver.NewDefaultServer("maestro", "1.0.0"),
+		server:     mcpserver.NewMCPServer("maestro", "1.0.0", mcpserver.WithToolCapabilities(false)),
 		extensions: registry,
 		instanceID: generateServerInstanceID(),
 	}
@@ -197,10 +198,18 @@ func (s *Server) registerTools() {
 		})
 	}
 
-	s.server.HandleListTools(func(ctx context.Context, cursor *string) (*mcpapi.ListToolsResult, error) {
-		return &mcpapi.ListToolsResult{Tools: s.tools}, nil
-	})
-	s.server.HandleCallTool(s.handleCallTool)
+	for _, tool := range s.tools {
+		tool := tool
+		s.server.AddTool(tool, func(ctx context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
+			args := map[string]interface{}{}
+			if request.Params.Arguments != nil {
+				if typed, ok := request.Params.Arguments.(map[string]interface{}); ok {
+					args = typed
+				}
+			}
+			return s.handleCallTool(ctx, tool.Name, args)
+		})
+	}
 }
 
 // handleCallTool routes tool calls to appropriate handlers.
@@ -289,6 +298,11 @@ func (s *Server) handleExtensionTool(ctx context.Context, name string, args map[
 // ServeStdio runs the MCP server over stdin/stdout.
 func (s *Server) ServeStdio() error {
 	return mcpserver.ServeStdio(s.server)
+}
+
+// StreamableHTTPHandler exposes the MCP server over Streamable HTTP.
+func (s *Server) StreamableHTTPHandler() http.Handler {
+	return mcpserver.NewStreamableHTTPServer(s.server)
 }
 
 func (s *Server) handleServerInfo(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -768,6 +782,21 @@ func (s *Server) envelopeResult(name string, data interface{}, message string, i
 			Text: string(body),
 		}},
 	}
+}
+
+func decodeEnvelopeResult(result *mcpapi.CallToolResult) (*responseEnvelope, error) {
+	if result == nil || len(result.Content) == 0 {
+		return nil, fmt.Errorf("missing MCP content")
+	}
+	content, ok := result.Content[0].(mcpapi.TextContent)
+	if !ok {
+		return nil, fmt.Errorf("unexpected MCP content type %T", result.Content[0])
+	}
+	var envelope responseEnvelope
+	if err := json.Unmarshal([]byte(content.Text), &envelope); err != nil {
+		return nil, err
+	}
+	return &envelope, nil
 }
 
 func (s *Server) lookupIssue(identifier string) (*kanban.Issue, error) {
