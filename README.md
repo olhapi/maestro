@@ -192,10 +192,64 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 - `{{ phase }}`
 - `{{ attempt }}`
 
+A typical Codex-backed workflow section looks like:
+
+```yaml
+agent:
+  max_concurrent_agents: 3
+  max_turns: 4
+  max_retry_backoff_ms: 60000
+  max_automatic_retries: 8
+  mode: app_server
+  dispatch_mode: parallel
+codex:
+  command: codex app-server
+  expected_version: 0.111.0
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+  turn_timeout_ms: 600000
+  read_timeout_ms: 5000
+  stall_timeout_ms: 60000
+```
+
+The main knobs are:
+
+- `agent.mode`: `app_server` for the Codex app-server protocol, or `stdio` for `codex exec` style runners.
+- `agent.max_concurrent_agents`: maximum simultaneous issues per project when `dispatch_mode` is `parallel`.
+- `agent.max_turns`: maximum turns Maestro gives Codex before ending a run attempt.
+- `codex.command`: exact command Maestro launches for the agent.
+- `codex.expected_version`: version Maestro expects from `codex --version`. Mismatches warn but do not hard-fail.
+- `codex.approval_policy`: should stay `never` for unattended runs so Codex does not stop waiting for interactive approvals.
+- `codex.thread_sandbox`: thread-level sandbox. The default is `workspace-write`.
+- `codex.turn_sandbox_policy`: per-turn sandbox policy. If you omit extra fields, Maestro fills in safe defaults for writable roots and read-only access.
+- `codex.turn_timeout_ms`, `codex.read_timeout_ms`, `codex.stall_timeout_ms`: run budget, stream-read timeout, and inactivity timeout.
+
 `agent.dispatch_mode` controls scheduling behavior:
 
 - `parallel` (default): use `agent.max_concurrent_agents` per project
 - `per_project_serial`: run one issue at a time per project while still allowing different projects to run in parallel
+
+### Codex Access Requirements
+
+For `maestro run` to work reliably, Codex needs both the right workflow settings and the right local credentials:
+
+- Codex must already be installed and logged in before Maestro launches it.
+- The configured `codex.command` must be available on `PATH`, or you should use an absolute path.
+- Unattended orchestration should use `approval_policy: never`. Any approval mode that expects human interaction can stall the queue.
+- The default `thread_sandbox: workspace-write` is intentional. It lets Codex edit files in the issue workspace without giving it unrestricted filesystem write access.
+- By default, Maestro expands `turn_sandbox_policy` so Codex can write to the issue workspace, the configured workspace root, and the repo root when needed for normal Git worktree flows.
+- The default turn sandbox also sets `readOnlyAccess: fullAccess`, so Codex can inspect the wider machine state while still limiting where it writes.
+- `networkAccess: true` is enabled by default. Keep it on if your tasks need package installs, remote Git operations, API calls, or other external fetches.
+
+If you tighten the sandbox further, make sure Codex can still:
+
+- read the target repository
+- write inside the per-issue workspace created under `workspace.root`
+- reach the network when the task depends on external package registries, Git remotes, or APIs
+- run non-interactively without waiting for approval prompts
 
 Codex app-server compatibility is versioned:
 
