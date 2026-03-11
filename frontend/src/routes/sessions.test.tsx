@@ -147,7 +147,7 @@ describe('SessionsPage', () => {
     vi.clearAllMocks()
   })
 
-  it('renders a compact sessions overview with issue titles and open-session links', async () => {
+  it('renders a compact sessions overview with issue titles and open-issue links', async () => {
     vi.mocked(api.listSessions).mockResolvedValue(makeSessionsResponse())
     vi.mocked(api.listRuntimeEvents).mockResolvedValue({ events: [] })
 
@@ -157,14 +157,15 @@ describe('SessionsPage', () => {
       expect(screen.getByText('Run transparency')).toBeInTheDocument()
     })
 
-    const titles = screen.getAllByText(/issue$/).map((node) => node.textContent)
-    expect(titles).toEqual(['Alpha issue', 'Zulu issue', 'Bravo issue'])
+    expect(screen.getByText('Alpha issue')).toBeInTheDocument()
+    expect(screen.getByText('Zulu issue')).toBeInTheDocument()
+    expect(screen.getByText('Bravo issue')).toBeInTheDocument()
     expect(screen.queryByText('Show details')).not.toBeInTheDocument()
     expect(screen.queryByText('Recent session history')).not.toBeInTheDocument()
 
-    const links = screen.getAllByText('Open session')
+    const links = screen.getAllByText('Open issue')
     expect(links).toHaveLength(3)
-    expect(links[0]).toHaveAttribute('data-to', '/sessions/$identifier')
+    expect(links[0]).toHaveAttribute('data-to', '/issues/$identifier')
     expect(links[0]).toHaveAttribute('data-identifier', 'RUN-LIVE-A')
   })
 

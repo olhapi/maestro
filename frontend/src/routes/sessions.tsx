@@ -111,9 +111,9 @@ export function SessionsPage() {
                       <Link
                         className="rounded-full border border-white/10 px-3 py-1.5 text-sm text-white transition hover:border-white/20 hover:bg-white/5"
                         params={{ identifier: entry.issue_identifier }}
-                        to={appRoutes.sessionDetail}
+                        to={appRoutes.issueDetail}
                       >
-                        Open session
+                        Open issue
                       </Link>
                     </div>
 
