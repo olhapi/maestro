@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -50,6 +51,7 @@ func TestBinarySmokeRunAndMCP(t *testing.T) {
 	bin := buildSmokeBinary(t)
 
 	repoPath := t.TempDir()
+	registryDir := t.TempDir()
 	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
 	workspaceRoot := filepath.Join(repoPath, "workspaces")
 	workflow := `---
@@ -83,6 +85,7 @@ Test prompt for {{ issue.identifier }}
 	addr := freeAddr(t)
 	dbPath := filepath.Join(repoPath, "maestro.db")
 	runCmd := exec.Command(bin, "run", "--workflow", workflowPath, "--db", dbPath, "--port", addr, guardrailsAcknowledgementFlag, repoPath)
+	runCmd.Env = append(os.Environ(), "MAESTRO_DAEMON_REGISTRY_DIR="+registryDir)
 	if err := runCmd.Start(); err != nil {
 		t.Fatalf("start run command: %v", err)
 	}
@@ -108,12 +111,7 @@ Test prompt for {{ issue.identifier }}
 		t.Fatalf("run command never served health: %v", runErr)
 	}
 
-	_ = runCmd.Process.Signal(os.Interrupt)
-	if err := runCmd.Wait(); err != nil {
-		t.Fatalf("run command wait: %v", err)
-	}
-
-	client, err := mcpclient.NewStdioMCPClient(bin, nil, "mcp", "--db", dbPath)
+	client, err := mcpclient.NewStdioMCPClient(bin, append(os.Environ(), "MAESTRO_DAEMON_REGISTRY_DIR="+registryDir), "mcp", "--db", dbPath)
 	if err != nil {
 		t.Fatalf("new stdio mcp client: %v", err)
 	}
@@ -141,4 +139,41 @@ Test prompt for {{ issue.identifier }}
 	if len(tools.Tools) == 0 {
 		t.Fatal("expected at least one MCP tool")
 	}
+
+	serverInfo, err := client.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "server_info",
+			Arguments: map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("server_info failed: %v", err)
+	}
+	envelope := decodeSmokeEnvelope(t, serverInfo)
+	if runtimeAvailable, _ := envelope["data"].(map[string]any)["runtime_available"].(bool); !runtimeAvailable {
+		t.Fatalf("expected runtime_available=true, got %#v", envelope)
+	}
+
+	_ = runCmd.Process.Signal(os.Interrupt)
+	if err := runCmd.Wait(); err != nil {
+		t.Fatalf("run command wait: %v", err)
+	}
+}
+
+func decodeSmokeEnvelope(t *testing.T, result *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	if len(result.Content) == 0 {
+		t.Fatal("expected tool content")
+	}
+
+	text, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("unexpected content type %T", result.Content[0])
+	}
+
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(text.Text), &envelope); err != nil {
+		t.Fatalf("decode tool envelope: %v", err)
+	}
+	return envelope
 }

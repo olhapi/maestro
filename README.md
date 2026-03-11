@@ -91,7 +91,7 @@ Add the built binary to your MCP client config:
 }
 ```
 
-The MCP server exposes project, issue, board, and blocker-management tools backed by the local Kanban store.
+`maestro mcp` is now a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let your MCP client invoke `maestro mcp`.
 
 For a shared multi-project setup, point both `maestro mcp` and `maestro run` at the same central DB.
 
@@ -109,7 +109,7 @@ The orchestrator:
 2. polls for issues in the `ready` state
 3. creates per-issue workspaces
 4. dispatches work to the configured agent command
-5. tracks retries, logs, and runtime status
+5. tracks retries, logs, runtime status, and the private MCP transport used by `maestro mcp`
 
 `run` prints a preview warning because the default workflow can launch Codex without extra guardrails. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when that is intentional for your environment.
 
@@ -138,7 +138,7 @@ maestro issue block <identifier> <blocker_identifier...>
 
 # Orchestration
 maestro --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
-maestro --log-level <debug|info|warn|error> mcp [--db <path>] [--extensions <json-file>]
+maestro --log-level <debug|info|warn|error> mcp [--db <path>]
 maestro --log-level <debug|info|warn|error> status [--json]
 maestro --log-level <debug|info|warn|error> status --dashboard [--dashboard-url <url>]
 maestro --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
@@ -285,7 +285,10 @@ Bootstrap behavior matters:
 Codex or ChatGPT (via MCP)
         |
         v
-MCP server <-> SQLite Kanban store
+maestro mcp (stdio bridge)
+        |
+        v
+maestro run daemon <-> SQLite Kanban store
         |
         v
 Orchestrator -> workspace lifecycle -> agent runner
@@ -298,9 +301,10 @@ Orchestrator -> workspace lifecycle -> agent runner
 
 ```bash
 docker build -t maestro .
-docker run --rm -i -v ./data:/data maestro mcp --db /data/maestro.db
 docker run --rm -v ./repo:/repo -v ./data:/data maestro run /repo --db /data/maestro.db
 ```
+
+If you run `maestro mcp` in a separate environment from `maestro run`, both processes must share the same database path and daemon registry location.
 
 ## License
 

@@ -204,7 +204,7 @@ func TestFlagErrorsAndUnknownFlags(t *testing.T) {
 	}
 }
 
-func TestMCPCommandFailsFastOnBadExtensions(t *testing.T) {
+func TestMCPCommandRejectsExtensionsFlag(t *testing.T) {
 	tests := []struct {
 		name    string
 		setup   func(t *testing.T) string
@@ -215,7 +215,7 @@ func TestMCPCommandFailsFastOnBadExtensions(t *testing.T) {
 			setup: func(t *testing.T) string {
 				return filepath.Join(t.TempDir(), "missing.json")
 			},
-			wantErr: "failed to load extensions",
+			wantErr: "no longer accepts --extensions",
 		},
 		{
 			name: "malformed json",
@@ -226,7 +226,7 @@ func TestMCPCommandFailsFastOnBadExtensions(t *testing.T) {
 				}
 				return path
 			},
-			wantErr: "failed to load extensions",
+			wantErr: "no longer accepts --extensions",
 		},
 		{
 			name: "invalid input schema",
@@ -238,7 +238,7 @@ func TestMCPCommandFailsFastOnBadExtensions(t *testing.T) {
 				}
 				return path
 			},
-			wantErr: "failed to load extensions",
+			wantErr: "no longer accepts --extensions",
 		},
 	}
 
@@ -252,6 +252,17 @@ func TestMCPCommandFailsFastOnBadExtensions(t *testing.T) {
 				t.Fatalf("expected %q in stderr %q", tc.wantErr, stderr)
 			}
 		})
+	}
+}
+
+func TestMCPCommandFailsFastWithoutLiveDaemon(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	code, _, stderr := runCLI(t, "--db", dbPath, "mcp")
+	if code == 0 {
+		t.Fatalf("expected mcp to fail without a live daemon")
+	}
+	if !strings.Contains(stderr, "no live Maestro daemon found") {
+		t.Fatalf("expected missing daemon error, got %q", stderr)
 	}
 }
 

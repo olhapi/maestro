@@ -145,6 +145,15 @@ func (a *cliApp) newRunCmd() *cobra.Command {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			orch := orchestrator.NewSharedWithExtensions(store, registry, repoPath, workflowPath)
+			daemon, err := mcp.StartManagedDaemon(ctx, store, orch, registry, version)
+			if err != nil {
+				return wrapRuntime(err, "failed to start private MCP daemon")
+			}
+			defer func() {
+				if closeErr := daemon.Close(); closeErr != nil {
+					_, _ = fmt.Fprintf(a.stderr, "failed to stop private MCP daemon: %v\n", closeErr)
+				}
+			}()
 			if port != "" {
 				addr := port
 				if !strings.Contains(addr, ":") {
@@ -178,20 +187,18 @@ func (a *cliApp) newMCPCmd() *cobra.Command {
 	var extensionsFile string
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Start the MCP server over stdio",
+		Short: "Bridge the live MCP daemon over stdio",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(extensionsFile) != "" {
+				return usageErrorf("`maestro mcp` no longer accepts --extensions; start `maestro run --extensions %s` instead", extensionsFile)
+			}
 			store, err := openStore(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			registry, err := loadExtensions(extensionsFile)
-			if err != nil {
-				return wrapRuntime(err, "failed to load extensions")
-			}
-			server := mcp.NewServerWithRegistry(store, nil, registry)
-			if err := server.ServeStdio(); err != nil {
-				return wrapRuntime(err, "mcp server error")
+			if err := mcp.ServeBridgeStdio(cmd.Context(), store, os.Stdin, a.stdout, a.stderr); err != nil {
+				return wrapRuntime(err, "mcp bridge error")
 			}
 			return nil
 		},

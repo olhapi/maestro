@@ -27,6 +27,23 @@ Available endpoints:
 
 Session payloads include both `issue_id` and `issue_identifier`, and the `sessions` map is keyed by issue identifier.
 
+## MCP Attach Model
+
+`maestro run` is the only long-lived daemon for a given database. It owns:
+
+- the SQLite store
+- the orchestrator runtime
+- the public observability API
+- a private loopback-only MCP transport endpoint
+
+`maestro mcp` no longer starts a standalone MCP server. It attaches to the live `maestro run` daemon for the same store and bridges that daemon over stdio for MCP clients.
+
+Operationally:
+
+- start `maestro run` first
+- point `maestro mcp` at the same `--db`
+- if `maestro mcp` cannot find a live daemon for that store, it exits with an error instead of falling back to DB-only mode
+
 ## Workflow Bootstrap and Checks
 
 `WORKFLOW.md` is required for orchestration. The commands treat it differently:
@@ -40,7 +57,9 @@ Session payloads include both `issue_id` and `issue_identifier`, and the `sessio
 
 ## Extensions File
 
-Both `maestro run` and `maestro mcp` can load the same JSON file via `--extensions`.
+Only `maestro run` loads extension tools via `--extensions`.
+
+`maestro mcp` inherits whatever tool set the live daemon started with. It rejects `--extensions` so the stdio bridge cannot drift away from the daemon it is attached to.
 
 Each extension entry supports:
 
