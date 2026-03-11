@@ -9,6 +9,7 @@ const (
 	MethodInitialize                   = "initialize"
 	MethodInitialized                  = "initialized"
 	MethodThreadStart                  = "thread/start"
+	MethodThreadResume                 = "thread/resume"
 	MethodThreadStarted                = "thread/started"
 	MethodTurnStart                    = "turn/start"
 	MethodTurnStarted                  = "turn/started"

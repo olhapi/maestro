@@ -229,6 +229,176 @@ func TestRunAutoApprovesCommandExecutionWhenNever(t *testing.T) {
 	}
 }
 
+func TestRunResumesThreadWhenConfigured(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-RESUME")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/resume"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-resumed"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-resumed"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-resumed", "turn": map[string]interface{}{"id": "turn-resumed"}}}},
+				},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.ResumeThreadID = "thread-stale"
+	cfg.ResumeSource = "required"
+	cfg = withTrace(cfg, traceFile)
+
+	res, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if res.Session == nil || res.Session.ThreadID != "thread-resumed" {
+		t.Fatalf("expected resumed thread, got %+v", res.Session)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundResume := false
+	foundStart := false
+	for _, payload := range lines {
+		switch nestedStringMap(payload, "method") {
+		case "thread/resume":
+			foundResume = nestedStringMap(payload, "params", "threadId") == "thread-stale"
+		case "thread/start":
+			foundStart = true
+		}
+	}
+	if !foundResume {
+		t.Fatal("expected thread/resume payload in trace")
+	}
+	if foundStart {
+		t.Fatal("expected successful resume not to fall back to thread/start")
+	}
+}
+
+func TestRunFallsBackToThreadStartWhenResumeFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-FALLBACK")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/resume"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "error": map[string]interface{}{"code": -32000, "message": "resume unavailable"}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-fresh"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-fresh"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-fresh", "turn": map[string]interface{}{"id": "turn-fresh"}}}},
+				},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.ResumeThreadID = "thread-stale"
+	cfg.ResumeSource = "opportunistic"
+	cfg = withTrace(cfg, traceFile)
+
+	res, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if res.Session == nil || res.Session.ThreadID != "thread-fresh" {
+		t.Fatalf("expected fresh thread after fallback, got %+v", res.Session)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundResume := false
+	foundStart := false
+	for _, payload := range lines {
+		switch nestedStringMap(payload, "method") {
+		case "thread/resume":
+			foundResume = true
+		case "thread/start":
+			foundStart = true
+		}
+	}
+	if !foundResume || !foundStart {
+		t.Fatalf("expected resume attempt and fallback thread/start, got %#v", lines)
+	}
+}
+
+func TestRunWithoutResumeConfigStartsFreshThread(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-FRESH")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, baseScenario("thread-fresh-default", "turn-fresh-default",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-fresh-default", "turn": map[string]interface{}{"id": "turn-fresh-default"}},
+			},
+		},
+	))
+	cfg = withTrace(cfg, traceFile)
+
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundResume := false
+	foundStart := false
+	for _, payload := range lines {
+		switch nestedStringMap(payload, "method") {
+		case "thread/resume":
+			foundResume = true
+		case "thread/start":
+			foundStart = true
+		}
+	}
+	if foundResume {
+		t.Fatal("expected default initialization not to send thread/resume")
+	}
+	if !foundStart {
+		t.Fatal("expected default initialization to send thread/start")
+	}
+}
+
 func TestRunAutoApprovesApprovalStyleToolInput(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")

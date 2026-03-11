@@ -199,6 +199,8 @@ func (s *Store) migrate() error {
 			attempt INTEGER NOT NULL DEFAULT 0,
 			run_kind TEXT NOT NULL DEFAULT '',
 			error TEXT NOT NULL DEFAULT '',
+			resume_eligible INTEGER NOT NULL DEFAULT 0,
+			stop_reason TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL,
 			session_json TEXT NOT NULL DEFAULT '{}',
 			FOREIGN KEY (issue_id) REFERENCES issues(id)
@@ -223,6 +225,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.ensureIssueColumns(); err != nil {
+		return err
+	}
+	if err := s.ensureIssueExecutionSessionColumns(); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_projects_repo_path_unique`); err != nil {
@@ -266,6 +271,18 @@ func (s *Store) ensureIssueColumns() error {
 		return err
 	}
 	return s.backfillWorkflowPhases()
+}
+
+func (s *Store) ensureIssueExecutionSessionColumns() error {
+	for _, stmt := range []string{
+		`ALTER TABLE issue_execution_sessions ADD COLUMN resume_eligible INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE issue_execution_sessions ADD COLUMN stop_reason TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) backfillWorkflowPhases() error {
@@ -2141,14 +2158,16 @@ func (s *Store) UpsertIssueExecutionSession(snapshot ExecutionSessionSnapshot) e
 		return err
 	}
 	_, err = s.db.Exec(`
-		INSERT INTO issue_execution_sessions (issue_id, identifier, phase, attempt, run_kind, error, updated_at, session_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO issue_execution_sessions (issue_id, identifier, phase, attempt, run_kind, error, resume_eligible, stop_reason, updated_at, session_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(issue_id) DO UPDATE SET
 			identifier = excluded.identifier,
 			phase = excluded.phase,
 			attempt = excluded.attempt,
 			run_kind = excluded.run_kind,
 			error = excluded.error,
+			resume_eligible = excluded.resume_eligible,
+			stop_reason = excluded.stop_reason,
 			updated_at = excluded.updated_at,
 			session_json = excluded.session_json`,
 		snapshot.IssueID,
@@ -2157,6 +2176,8 @@ func (s *Store) UpsertIssueExecutionSession(snapshot ExecutionSessionSnapshot) e
 		snapshot.Attempt,
 		snapshot.RunKind,
 		snapshot.Error,
+		snapshot.ResumeEligible,
+		snapshot.StopReason,
 		snapshot.UpdatedAt.UTC(),
 		string(body),
 	)
@@ -2173,7 +2194,7 @@ func (s *Store) GetIssueExecutionSession(issueID string) (*ExecutionSessionSnaps
 	var snapshot ExecutionSessionSnapshot
 	var rawSession string
 	err := s.db.QueryRow(`
-		SELECT issue_id, identifier, phase, attempt, run_kind, error, updated_at, session_json
+		SELECT issue_id, identifier, phase, attempt, run_kind, error, resume_eligible, stop_reason, updated_at, session_json
 		FROM issue_execution_sessions
 		WHERE issue_id = ?`, issueID).Scan(
 		&snapshot.IssueID,
@@ -2182,6 +2203,8 @@ func (s *Store) GetIssueExecutionSession(issueID string) (*ExecutionSessionSnaps
 		&snapshot.Attempt,
 		&snapshot.RunKind,
 		&snapshot.Error,
+		&snapshot.ResumeEligible,
+		&snapshot.StopReason,
 		&snapshot.UpdatedAt,
 		&rawSession,
 	)
@@ -2201,7 +2224,7 @@ func (s *Store) ListRecentExecutionSessions(since time.Time, limit int) ([]Execu
 		limit = 12
 	}
 	query := `
-		SELECT issue_id, identifier, phase, attempt, run_kind, error, updated_at, session_json
+		SELECT issue_id, identifier, phase, attempt, run_kind, error, resume_eligible, stop_reason, updated_at, session_json
 		FROM issue_execution_sessions`
 	args := make([]interface{}, 0, 2)
 	if !since.IsZero() {
@@ -2228,6 +2251,8 @@ func (s *Store) ListRecentExecutionSessions(since time.Time, limit int) ([]Execu
 			&snapshot.Attempt,
 			&snapshot.RunKind,
 			&snapshot.Error,
+			&snapshot.ResumeEligible,
+			&snapshot.StopReason,
 			&snapshot.UpdatedAt,
 			&rawSession,
 		); err != nil {

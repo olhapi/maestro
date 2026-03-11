@@ -168,14 +168,16 @@ type RuntimeSeriesPoint struct {
 }
 
 type ExecutionSessionSnapshot struct {
-	IssueID    string            `json:"issue_id"`
-	Identifier string            `json:"identifier"`
-	Phase      string            `json:"phase,omitempty"`
-	Attempt    int               `json:"attempt"`
-	RunKind    string            `json:"run_kind,omitempty"`
-	Error      string            `json:"error,omitempty"`
-	UpdatedAt  time.Time         `json:"updated_at"`
-	AppSession appserver.Session `json:"session"`
+	IssueID        string            `json:"issue_id"`
+	Identifier     string            `json:"identifier"`
+	Phase          string            `json:"phase,omitempty"`
+	Attempt        int               `json:"attempt"`
+	RunKind        string            `json:"run_kind,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	ResumeEligible bool              `json:"resume_eligible,omitempty"`
+	StopReason     string            `json:"-"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	AppSession     appserver.Session `json:"session"`
 }
 
 type SessionFeedEntry struct {

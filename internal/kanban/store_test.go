@@ -1,6 +1,7 @@
 package kanban
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1015,13 +1016,15 @@ func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	snapshot := ExecutionSessionSnapshot{
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		Phase:      "implementation",
-		Attempt:    2,
-		RunKind:    "run_failed",
-		Error:      "approval_required",
-		UpdatedAt:  now,
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		Phase:          "implementation",
+		Attempt:        2,
+		RunKind:        "run_failed",
+		Error:          "approval_required",
+		ResumeEligible: true,
+		StopReason:     "graceful_shutdown",
+		UpdatedAt:      now,
 		AppSession: appserver.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
@@ -1051,6 +1054,9 @@ func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 	if loaded.Attempt != 2 || loaded.RunKind != "run_failed" || loaded.Error != "approval_required" {
 		t.Fatalf("unexpected snapshot metadata: %+v", loaded)
 	}
+	if !loaded.ResumeEligible || loaded.StopReason != "graceful_shutdown" {
+		t.Fatalf("expected resume metadata, got %+v", loaded)
+	}
 	if loaded.AppSession.SessionID != "thread-1-turn-1" || len(loaded.AppSession.History) != 2 {
 		t.Fatalf("unexpected session payload: %+v", loaded.AppSession)
 	}
@@ -1058,6 +1064,8 @@ func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 	snapshot.Attempt = 3
 	snapshot.RunKind = "run_completed"
 	snapshot.Error = ""
+	snapshot.ResumeEligible = false
+	snapshot.StopReason = ""
 	snapshot.AppSession.LastEvent = "turn.completed"
 	if err := store.UpsertIssueExecutionSession(snapshot); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession update failed: %v", err)
@@ -1068,6 +1076,67 @@ func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 	}
 	if loaded.Attempt != 3 || loaded.RunKind != "run_completed" || loaded.AppSession.LastEvent != "turn.completed" {
 		t.Fatalf("unexpected updated snapshot: %+v", loaded)
+	}
+	if loaded.ResumeEligible || loaded.StopReason != "" {
+		t.Fatalf("expected cleared resume metadata, got %+v", loaded)
+	}
+}
+
+func TestIssueExecutionSessionMigrationAddsResumeColumns(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "legacy.db")
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE issue_execution_sessions (
+			issue_id TEXT PRIMARY KEY,
+			identifier TEXT NOT NULL DEFAULT '',
+			phase TEXT NOT NULL DEFAULT '',
+			attempt INTEGER NOT NULL DEFAULT 0,
+			run_kind TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL,
+			session_json TEXT NOT NULL DEFAULT '{}'
+		)`); err != nil {
+		t.Fatalf("create legacy table failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db failed: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	issue, err := store.CreateIssue("", "", "Migrated session", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(ExecutionSessionSnapshot{
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		Phase:          "implementation",
+		Attempt:        1,
+		RunKind:        "run_started",
+		ResumeEligible: true,
+		StopReason:     "graceful_shutdown",
+		UpdatedAt:      time.Now().UTC(),
+		AppSession:     appserver.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, ThreadID: "thread-migrated"},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession failed: %v", err)
+	}
+
+	loaded, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession failed: %v", err)
+	}
+	if !loaded.ResumeEligible || loaded.StopReason != "graceful_shutdown" {
+		t.Fatalf("expected migrated resume metadata, got %+v", loaded)
 	}
 }
 

@@ -47,6 +47,8 @@ type ClientConfig struct {
 	Logger            *slog.Logger
 	OnMessage         func(map[string]interface{})
 	OnSessionUpdate   func(*Session)
+	ResumeThreadID    string
+	ResumeSource      string
 }
 
 type Result struct {
@@ -307,29 +309,104 @@ func (c *Client) initialize(ctx context.Context) error {
 		return err
 	}
 
-	threadRequestID := c.nextRequestID()
-	req, err := protocol.ThreadStartRequest(threadRequestID, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.ThreadSandbox, c.cfg.DynamicTools)
+	return c.initializeThread(ctx)
+}
+
+func (c *Client) initializeThread(ctx context.Context) error {
+	if threadID, resumed := c.tryResumeThread(ctx); resumed {
+		c.session.ThreadID = threadID
+		c.logger.Info("Codex thread resumed", "thread_id", threadID, "source", strings.TrimSpace(c.cfg.ResumeSource))
+		return nil
+	}
+
+	threadID, err := c.startThread(ctx)
 	if err != nil {
 		return err
-	}
-	if err := c.sendMessage(req); err != nil {
-		return err
-	}
-	threadResp, err := c.awaitResponse(ctx, threadRequestID)
-	if err != nil {
-		return err
-	}
-	var result gen.ThreadStartResponse
-	if err := threadResp.UnmarshalResult(&result); err != nil {
-		return fmt.Errorf("decode thread/start response: %w", err)
-	}
-	threadID := strings.TrimSpace(result.Thread.ID)
-	if threadID == "" {
-		return fmt.Errorf("invalid thread/start response: missing thread.id")
 	}
 	c.session.ThreadID = threadID
 	c.logger.Info("Codex thread started", "thread_id", threadID)
 	return nil
+}
+
+func (c *Client) tryResumeThread(ctx context.Context) (string, bool) {
+	threadID := strings.TrimSpace(c.cfg.ResumeThreadID)
+	if threadID == "" {
+		return "", false
+	}
+
+	requestID := c.nextRequestID()
+	req, err := protocol.ThreadResumeRequest(requestID, threadID, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.ThreadSandbox)
+	if err != nil {
+		c.logger.Warn("Codex thread resume unavailable; falling back to thread/start",
+			"thread_id", threadID,
+			"source", strings.TrimSpace(c.cfg.ResumeSource),
+			"error", err,
+		)
+		return "", false
+	}
+	if err := c.sendMessage(req); err != nil {
+		c.logger.Warn("Codex thread resume send failed; falling back to thread/start",
+			"thread_id", threadID,
+			"source", strings.TrimSpace(c.cfg.ResumeSource),
+			"error", err,
+		)
+		return "", false
+	}
+	resp, err := c.awaitResponse(ctx, requestID)
+	if err != nil {
+		c.logger.Warn("Codex thread resume failed; falling back to thread/start",
+			"thread_id", threadID,
+			"source", strings.TrimSpace(c.cfg.ResumeSource),
+			"error", err,
+		)
+		return "", false
+	}
+	resumedThreadID, err := decodeThreadResponse(resp)
+	if err != nil {
+		c.logger.Warn("Codex thread resume returned invalid payload; falling back to thread/start",
+			"thread_id", threadID,
+			"source", strings.TrimSpace(c.cfg.ResumeSource),
+			"error", err,
+		)
+		return "", false
+	}
+	return resumedThreadID, true
+}
+
+func (c *Client) startThread(ctx context.Context) (string, error) {
+	requestID := c.nextRequestID()
+	req, err := protocol.ThreadStartRequest(requestID, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.ThreadSandbox, c.cfg.DynamicTools)
+	if err != nil {
+		return "", err
+	}
+	if err := c.sendMessage(req); err != nil {
+		return "", err
+	}
+	resp, err := c.awaitResponse(ctx, requestID)
+	if err != nil {
+		return "", err
+	}
+	threadID, err := decodeThreadResponse(resp)
+	if err != nil {
+		return "", fmt.Errorf("decode thread/start response: %w", err)
+	}
+	return threadID, nil
+}
+
+func decodeThreadResponse(resp protocol.Message) (string, error) {
+	var result struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := resp.UnmarshalResult(&result); err != nil {
+		return "", err
+	}
+	threadID := strings.TrimSpace(result.Thread.ID)
+	if threadID == "" {
+		return "", fmt.Errorf("missing thread.id")
+	}
+	return threadID, nil
 }
 
 func (c *Client) nextRequestID() int {

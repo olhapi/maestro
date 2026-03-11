@@ -15,6 +15,13 @@ type ThreadStartParams struct {
 	Sandbox        string                   `json:"sandbox,omitempty"`
 }
 
+type ThreadResumeParams struct {
+	ApprovalPolicy interface{} `json:"approvalPolicy,omitempty"`
+	Cwd            *string     `json:"cwd,omitempty"`
+	Sandbox        string      `json:"sandbox,omitempty"`
+	ThreadID       string      `json:"threadId"`
+}
+
 type TurnStartParams struct {
 	ApprovalPolicy interface{}            `json:"approvalPolicy,omitempty"`
 	Cwd            *string                `json:"cwd,omitempty"`
@@ -68,6 +75,19 @@ func ThreadStartRequest(id int, workspace string, approvalPolicy interface{}, sa
 			Cwd:            StringPtr(workspace),
 			DynamicTools:   dynamicTools,
 			Sandbox:        sandbox,
+		},
+	}, nil
+}
+
+func ThreadResumeRequest(id int, threadID, workspace string, approvalPolicy interface{}, sandbox string) (Request[ThreadResumeParams], error) {
+	return Request[ThreadResumeParams]{
+		ID:     id,
+		Method: MethodThreadResume,
+		Params: ThreadResumeParams{
+			ApprovalPolicy: approvalPolicy,
+			Cwd:            StringPtr(workspace),
+			Sandbox:        sandbox,
+			ThreadID:       threadID,
 		},
 	}, nil
 }

@@ -234,6 +234,8 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		StallTimeout:      time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
 		DynamicTools:      r.extensions.Specs(),
 		ToolExecutor:      r.extensionToolExecutor(),
+		ResumeThreadID:    strings.TrimSpace(issue.ResumeThreadID),
+		ResumeSource:      "orphaned_run_recovery",
 		OnSessionUpdate: func(session *appserver.Session) {
 			if r.sessionObserver == nil || issue == nil || session == nil {
 				return

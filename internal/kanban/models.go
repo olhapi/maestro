@@ -120,6 +120,7 @@ type Issue struct {
 	StartedAt        *time.Time    `json:"started_at,omitempty"`
 	CompletedAt      *time.Time    `json:"completed_at,omitempty"`
 	LastSyncedAt     *time.Time    `json:"last_synced_at,omitempty"`
+	ResumeThreadID   string        `json:"-"`
 }
 
 // Workspace represents an isolated working directory for an issue

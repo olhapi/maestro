@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -25,6 +26,7 @@ const (
 	interruptedRunPauseThreshold = 3
 	liveSessionPersistInterval   = 2 * time.Second
 	automaticRetryHistoryLimit   = 200
+	gracefulShutdownStopReason   = "graceful_shutdown"
 )
 
 type runningEntry struct {
@@ -36,11 +38,12 @@ type runningEntry struct {
 }
 
 type retryEntry struct {
-	Attempt   int       `json:"attempt"`
-	Phase     string    `json:"phase,omitempty"`
-	DueAt     time.Time `json:"due_at"`
-	Error     string    `json:"error,omitempty"`
-	DelayType string    `json:"delay_type,omitempty"`
+	Attempt        int       `json:"attempt"`
+	Phase          string    `json:"phase,omitempty"`
+	DueAt          time.Time `json:"due_at"`
+	Error          string    `json:"error,omitempty"`
+	DelayType      string    `json:"delay_type,omitempty"`
+	ResumeThreadID string    `json:"-"`
 }
 
 type pausedEntry struct {
@@ -378,7 +381,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			o.stopAllRuns()
+			o.stopAllRunsGracefully()
 			return ctx.Err()
 		case <-timer.C:
 			if err := o.tick(ctx); err != nil {
@@ -538,7 +541,7 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 			)
 			continue
 		}
-		phase, attempt, session, orphaned, err := o.findOrphanedRun(issue)
+		phase, attempt, session, persisted, orphaned, err := o.findOrphanedRun(issue)
 		if err != nil {
 			slog.Warn("Skipping orphaned run reconciliation because execution state lookup failed",
 				issueLogAttrs(issue, -1, "error", err)...,
@@ -551,7 +554,9 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 
 		dispatchable, reason, _ := o.isDispatchable(workflow, issue)
 		errText := "run_interrupted"
-		o.persistExecutionSession(issue, phase, attempt, "run_interrupted", errText, session)
+		resumeThreadID, resumeMode := classifyOrphanedResume(workflow, persisted)
+		immediateResume := resumeMode != ""
+		o.persistExecutionSession(issue, phase, attempt, "run_interrupted", errText, false, "", session)
 
 		o.mu.Lock()
 		if _, ok := o.running[issue.ID]; ok {
@@ -576,7 +581,7 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 		nextAttemptNumber := 0
 		pausedRun := false
 		if dispatchable {
-			nextAttemptNumber, pausedRun = o.handleInterruptedRunLocked(issue, phase, attempt, session, errText)
+			nextAttemptNumber, pausedRun = o.handleInterruptedRunLocked(issue, phase, attempt, session, errText, resumeThreadID, immediateResume)
 		}
 		o.mu.Unlock()
 
@@ -622,18 +627,18 @@ func (o *Orchestrator) findPausedRun(issue *kanban.Issue) (pausedEntry, bool, er
 	return pausedEntryFromRuntimeEvent(latest), true, nil
 }
 
-func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhase, int, *appserver.Session, bool, error) {
+func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhase, int, *appserver.Session, *kanban.ExecutionSessionSnapshot, bool, error) {
 	if issue == nil {
-		return "", 0, nil, false, nil
+		return "", 0, nil, nil, false, nil
 	}
 
 	persisted, err := o.store.GetIssueExecutionSession(issue.ID)
 	if err != nil && err != sql.ErrNoRows {
-		return "", 0, nil, false, err
+		return "", 0, nil, nil, false, err
 	}
 	events, err := o.store.ListIssueRuntimeEvents(issue.ID, 20)
 	if err != nil {
-		return "", 0, nil, false, err
+		return "", 0, nil, nil, false, err
 	}
 
 	phase := issue.WorkflowPhase
@@ -660,15 +665,36 @@ func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhas
 		}
 		switch latest.Kind {
 		case "run_started":
-			return phase, attempt, session, true, nil
+			return phase, attempt, session, persisted, true, nil
 		case "run_failed", "run_unsuccessful", "run_completed", "retry_scheduled", "retry_paused", "manual_retry_requested", "run_interrupted":
-			return phase, attempt, session, false, nil
+			return phase, attempt, session, persisted, false, nil
 		}
 	}
 	if persisted != nil && strings.TrimSpace(persisted.RunKind) == "run_started" {
-		return phase, attempt, session, true, nil
+		return phase, attempt, session, persisted, true, nil
 	}
-	return phase, attempt, session, false, nil
+	return phase, attempt, session, persisted, false, nil
+}
+
+func classifyOrphanedResume(workflow *config.Workflow, persisted *kanban.ExecutionSessionSnapshot) (string, string) {
+	if !isAppServerWorkflow(workflow) || persisted == nil {
+		return "", ""
+	}
+	threadID := strings.TrimSpace(persisted.AppSession.ThreadID)
+	if threadID == "" {
+		return "", ""
+	}
+	if persisted.ResumeEligible && strings.TrimSpace(persisted.StopReason) == gracefulShutdownStopReason {
+		return threadID, "required"
+	}
+	if strings.TrimSpace(persisted.StopReason) == "" {
+		return threadID, "opportunistic"
+	}
+	return "", ""
+}
+
+func isAppServerWorkflow(workflow *config.Workflow) bool {
+	return workflow != nil && strings.TrimSpace(workflow.Config.Agent.Mode) == config.AgentModeAppServer
 }
 
 func (o *Orchestrator) shouldAllowRunningTerminalTransition(workflow *config.Workflow, issue *kanban.Issue, runningPhase kanban.WorkflowPhase) bool {
@@ -920,6 +946,7 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			issueLogAttrs(issue, entry.Attempt, "delay_type", entry.DelayType, "phase", phase)...,
 		)
 		issue.WorkflowPhase = phase
+		issue.ResumeThreadID = strings.TrimSpace(entry.ResumeThreadID)
 		o.startRun(ctx, workflow, runtime.runner, issue, entry.Attempt)
 	}
 }
@@ -953,7 +980,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 	o.clearSessionWriteState(runIssue.ID)
 	o.clearIssueTokenSpendState(runIssue.ID)
 	slog.Info("Agent run started", issueLogAttrs(&runIssue, attempt, "phase", phase)...)
-	o.persistExecutionSession(&runIssue, phase, attempt, "run_started", "", &appserver.Session{
+	o.persistExecutionSession(&runIssue, phase, attempt, "run_started", "", false, "", &appserver.Session{
 		IssueID:         runIssue.ID,
 		IssueIdentifier: runIssue.Identifier,
 	})
@@ -980,6 +1007,17 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	current.WorkflowPhase = phase
 	if result != nil && result.AppSession != nil {
 		o.observeIssueTokenSpend(issue.ID, result.AppSession)
+	}
+	if errors.Is(err, context.Canceled) {
+		if snapshot, snapshotErr := o.store.GetIssueExecutionSession(issue.ID); snapshotErr == nil && snapshot != nil && snapshot.StopReason == gracefulShutdownStopReason {
+			o.flushIssueTokenSpend(issue.ID)
+			o.mu.Lock()
+			delete(o.liveSessions, issue.ID)
+			o.mu.Unlock()
+			o.clearSessionWriteState(issue.ID)
+			o.clearIssueTokenSpendState(issue.ID)
+			return
+		}
 	}
 
 	switch {
@@ -1113,18 +1151,23 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 	return 0, false
 }
 
-func (o *Orchestrator) handleInterruptedRunLocked(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, session *appserver.Session, errText string) (int, bool) {
+func (o *Orchestrator) handleInterruptedRunLocked(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, session *appserver.Session, errText, resumeThreadID string, immediate bool) (int, bool) {
 	next := nextAttempt(attempt)
 	if o.shouldPauseRunLocked(issue.ID, errText) {
 		o.pauseRetryLocked(issue, next, phase, errText)
 		if session != nil {
-			o.persistExecutionSession(issue, phase, next, "retry_paused", errText, session)
+			o.persistExecutionSession(issue, phase, next, "retry_paused", errText, false, "", session)
 		}
 		return next, true
 	}
-	if !o.scheduleAutomaticRetryLocked(nil, issue, next, phase, "failure", errText, 0) {
+	var dueAt *time.Time
+	if immediate {
+		now := time.Now().UTC()
+		dueAt = &now
+	}
+	if !o.scheduleAutomaticRetryLockedWithResume(nil, issue, next, phase, "failure", errText, 0, dueAt, resumeThreadID) {
 		if session != nil {
-			o.persistExecutionSession(issue, phase, next, "retry_paused", "retry_limit_reached", session)
+			o.persistExecutionSession(issue, phase, next, "retry_paused", "retry_limit_reached", false, "", session)
 		}
 		return next, true
 	}
@@ -1271,6 +1314,10 @@ func (o *Orchestrator) advanceIssueAfterSuccess(workflow *config.Workflow, issue
 }
 
 func (o *Orchestrator) scheduleAutomaticRetryLocked(workflow *config.Workflow, issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, delayType, errText string, maxBackoffMs int) bool {
+	return o.scheduleAutomaticRetryLockedWithResume(workflow, issue, attempt, phase, delayType, errText, maxBackoffMs, nil, "")
+}
+
+func (o *Orchestrator) scheduleAutomaticRetryLockedWithResume(workflow *config.Workflow, issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, delayType, errText string, maxBackoffMs int, dueAt *time.Time, resumeThreadID string) bool {
 	if issue == nil {
 		return false
 	}
@@ -1289,6 +1336,10 @@ func (o *Orchestrator) scheduleAutomaticRetryLocked(workflow *config.Workflow, i
 			return false
 		}
 	}
+	if dueAt != nil {
+		o.scheduleRetryLockedAt(issue, attempt, phase, delayType, errText, dueAt.UTC(), resumeThreadID)
+		return true
+	}
 	o.scheduleRetryLocked(issue, attempt, phase, delayType, errText, maxBackoffMs)
 	return true
 }
@@ -1298,21 +1349,22 @@ func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, pha
 	if delayType != "continuation" {
 		delay = failureRetryDelay(attempt, maxBackoffMs)
 	}
-	o.scheduleRetryLockedAt(issue, attempt, phase, delayType, errText, time.Now().UTC().Add(delay))
+	o.scheduleRetryLockedAt(issue, attempt, phase, delayType, errText, time.Now().UTC().Add(delay), "")
 }
 
-func (o *Orchestrator) scheduleRetryLockedAt(issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, delayType, errText string, dueAt time.Time) {
+func (o *Orchestrator) scheduleRetryLockedAt(issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, delayType, errText string, dueAt time.Time, resumeThreadID string) {
 	now := time.Now().UTC()
 	if dueAt.Before(now) {
 		dueAt = now
 	}
 	delayMs := dueAt.Sub(now).Milliseconds()
 	o.retries[issue.ID] = retryEntry{
-		Attempt:   attempt,
-		Phase:     string(phase),
-		DueAt:     dueAt,
-		Error:     errText,
-		DelayType: delayType,
+		Attempt:        attempt,
+		Phase:          string(phase),
+		DueAt:          dueAt,
+		Error:          errText,
+		DelayType:      delayType,
+		ResumeThreadID: strings.TrimSpace(resumeThreadID),
 	}
 	o.claimed[issue.ID] = struct{}{}
 	o.appendEventLocked("retry_scheduled", map[string]interface{}{
@@ -1687,6 +1739,50 @@ func (o *Orchestrator) stopRun(issueID string) {
 	}
 }
 
+func (o *Orchestrator) stopAllRunsGracefully() {
+	o.mu.RLock()
+	type runningSnapshot struct {
+		entry   runningEntry
+		session *appserver.Session
+	}
+	runs := make([]runningSnapshot, 0, len(o.running))
+	for issueID, entry := range o.running {
+		var sessionCopy *appserver.Session
+		if session := o.liveSessions[issueID]; session != nil {
+			cp := cloneSessionWithIssue(session, issueID, entry.issue.Identifier)
+			sessionCopy = &cp
+		}
+		runs = append(runs, runningSnapshot{
+			entry:   entry,
+			session: sessionCopy,
+		})
+	}
+	o.mu.RUnlock()
+
+	for _, run := range runs {
+		issue := run.entry.issue
+		_, workflow, err := o.runtimeForIssue(&issue)
+		if err != nil {
+			slog.Warn("Skipping graceful run marker because runtime resolution failed",
+				issueLogAttrs(&issue, run.entry.attempt, "error", err)...,
+			)
+			continue
+		}
+		if !isAppServerWorkflow(workflow) {
+			continue
+		}
+		resumeEligible := false
+		if run.session != nil && strings.TrimSpace(run.session.ThreadID) != "" {
+			resumeEligible = true
+		} else if snapshot, err := o.store.GetIssueExecutionSession(issue.ID); err == nil && snapshot != nil && strings.TrimSpace(snapshot.AppSession.ThreadID) != "" {
+			resumeEligible = true
+		}
+		o.persistExecutionSession(&issue, run.entry.phase, run.entry.attempt, "run_started", "", resumeEligible, gracefulShutdownStopReason, run.session)
+	}
+
+	o.stopAllRuns()
+}
+
 func (o *Orchestrator) stopAllRuns() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -2037,7 +2133,7 @@ func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Sess
 
 	if shouldPersist {
 		issue := entry.issue
-		o.persistExecutionSession(&issue, entry.phase, entry.attempt, "run_started", "", &cp)
+		o.persistExecutionSession(&issue, entry.phase, entry.attempt, "run_started", "", false, "", &cp)
 	}
 	o.observeIssueTokenSpend(issueID, &cp)
 }
@@ -2258,6 +2354,7 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 
 	if entry, ok := o.retries[issue.ID]; ok {
 		entry.DueAt = time.Now().UTC()
+		entry.ResumeThreadID = ""
 		o.retries[issue.ID] = entry
 		delete(o.paused, issue.ID)
 		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
@@ -2345,32 +2442,43 @@ func attachResultMetrics(fields map[string]interface{}, result *agent.RunResult)
 	fields["total_tokens"] = result.AppSession.TotalTokens
 }
 
-func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, session *appserver.Session) {
-	if issue == nil || session == nil {
+func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, resumeEligible bool, stopReason string, session *appserver.Session) {
+	if issue == nil {
 		return
 	}
-	cloned := cloneSessionWithIssue(session, issue.ID, issue.Identifier)
-	if err := o.store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		Phase:      string(phase),
-		Attempt:    attempt,
-		RunKind:    runKind,
-		Error:      errText,
-		UpdatedAt:  time.Now().UTC(),
-		AppSession: cloned,
-	}); err != nil {
+	now := time.Now().UTC()
+	snapshot := kanban.ExecutionSessionSnapshot{
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		Phase:          string(phase),
+		Attempt:        attempt,
+		RunKind:        runKind,
+		Error:          errText,
+		ResumeEligible: resumeEligible,
+		StopReason:     stopReason,
+		UpdatedAt:      now,
+	}
+	if session != nil {
+		snapshot.AppSession = cloneSessionWithIssue(session, issue.ID, issue.Identifier)
+	} else {
+		if existing, err := o.store.GetIssueExecutionSession(issue.ID); err == nil && existing != nil {
+			snapshot.AppSession = existing.AppSession
+		}
+		snapshot.AppSession.IssueID = issue.ID
+		snapshot.AppSession.IssueIdentifier = issue.Identifier
+	}
+	if err := o.store.UpsertIssueExecutionSession(snapshot); err != nil {
 		slog.Warn("Failed to persist issue execution session", "issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 		return
 	}
 	o.sessionWriteMu.Lock()
 	o.sessionWrites[issue.ID] = sessionPersistenceState{
-		LastPersistedAt: time.Now().UTC(),
-		SessionID:       cloned.SessionID,
-		LastEvent:       cloned.LastEvent,
-		LastTimestamp:   cloned.LastTimestamp,
-		TerminalReason:  cloned.TerminalReason,
-		Terminal:        cloned.Terminal,
+		LastPersistedAt: now,
+		SessionID:       snapshot.AppSession.SessionID,
+		LastEvent:       snapshot.AppSession.LastEvent,
+		LastTimestamp:   snapshot.AppSession.LastTimestamp,
+		TerminalReason:  snapshot.AppSession.TerminalReason,
+		Terminal:        snapshot.AppSession.Terminal,
 	}
 	o.sessionWriteMu.Unlock()
 }
@@ -2379,7 +2487,7 @@ func (o *Orchestrator) persistExecutionSessionSnapshot(issue *kanban.Issue, phas
 	if result == nil || result.AppSession == nil {
 		return
 	}
-	o.persistExecutionSession(issue, phase, attempt, runKind, errText, result.AppSession)
+	o.persistExecutionSession(issue, phase, attempt, runKind, errText, false, "", result.AppSession)
 }
 
 func issueLogAttrs(issue *kanban.Issue, attempt int, extra ...interface{}) []interface{} {

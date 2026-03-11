@@ -600,6 +600,9 @@ func TestContinuationRetryAfterSuccess(t *testing.T) {
 	if retry.DelayType != "continuation" {
 		t.Fatalf("expected continuation retry, got %s", retry.DelayType)
 	}
+	if retry.ResumeThreadID != "" {
+		t.Fatalf("expected continuation retry to start fresh, got %+v", retry)
+	}
 	waitForNoRunning(t, orch, time.Second)
 }
 
@@ -982,6 +985,246 @@ func TestInterruptedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	}
 }
 
+func TestGracefulShutdownMarksActiveAppServerRunResumeEligible(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-graceful"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-graceful"}}}}}, WaitForRelease: "never"},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 6000, 0)
+
+	issue, _ := store.CreateIssue("", "", "Graceful shutdown", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForLiveSession(t, orch, issue.Identifier, 2*time.Second)
+
+	orch.stopAllRunsGracefully()
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "run_started" || snapshot.StopReason != gracefulShutdownStopReason || !snapshot.ResumeEligible {
+		t.Fatalf("expected graceful shutdown resume marker, got %+v", snapshot)
+	}
+	if snapshot.AppSession.ThreadID != "thread-graceful" {
+		t.Fatalf("expected persisted thread id for resume, got %+v", snapshot.AppSession)
+	}
+}
+
+func TestOrphanedGracefulAppServerRunSchedulesImmediateResumeRetry(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	writeAppServerWorkflow(t, manager, workspaceRoot, "cat", "never", 3000, 0)
+
+	issue, err := store.CreateIssue("", "", "Graceful orphan", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		Phase:          "implementation",
+		Attempt:        2,
+		RunKind:        "run_started",
+		ResumeEligible: true,
+		StopReason:     gracefulShutdownStopReason,
+		UpdatedAt:      now,
+		AppSession:     appserver.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, SessionID: "thread-graceful-turn-stale", ThreadID: "thread-graceful"},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    2,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected orphaned graceful run retry to be scheduled")
+	}
+	if retry.ResumeThreadID != "thread-graceful" {
+		t.Fatalf("expected resume thread id, got %+v", retry)
+	}
+	if retry.DueAt.After(time.Now().UTC().Add(time.Second)) {
+		t.Fatalf("expected immediate recovery retry, got due_at=%v", retry.DueAt)
+	}
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "run_interrupted" || snapshot.ResumeEligible || snapshot.StopReason != "" {
+		t.Fatalf("expected interrupted snapshot with cleared resume marker, got %+v", snapshot)
+	}
+}
+
+func TestOrphanedAppServerRunWithoutGracefulMarkerOpportunisticallyResumes(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	writeAppServerWorkflow(t, manager, workspaceRoot, "cat", "never", 3000, 0)
+
+	issue, err := store.CreateIssue("", "", "Opportunistic orphan", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, ThreadID: "thread-opportunistic"},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    1,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected opportunistic resume retry to be scheduled")
+	}
+	if retry.ResumeThreadID != "thread-opportunistic" {
+		t.Fatalf("expected opportunistic resume hint, got %+v", retry)
+	}
+	if retry.DueAt.After(time.Now().UTC().Add(time.Second)) {
+		t.Fatalf("expected immediate opportunistic retry, got due_at=%v", retry.DueAt)
+	}
+}
+
+func TestOrphanedAppServerRunWithoutThreadIDKeepsFreshStartBackoff(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	writeAppServerWorkflow(t, manager, workspaceRoot, "cat", "never", 3000, 0)
+
+	issue, err := store.CreateIssue("", "", "No thread orphan", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, SessionID: "thread-missing-turn-missing"},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    2,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected orphaned run retry to be scheduled")
+	}
+	if retry.ResumeThreadID != "" {
+		t.Fatalf("expected no resume thread id, got %+v", retry)
+	}
+	if retry.DueAt.Before(time.Now().UTC().Add(9 * time.Second)) {
+		t.Fatalf("expected backoff retry scheduling, got due_at=%v", retry.DueAt)
+	}
+}
+
+func TestProcessRetriesResumesOrphanedAppServerRunAndFallsBackToFreshStart(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/resume"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "error": map[string]interface{}{"code": -32000, "message": "resume unavailable"}}}}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-fresh"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-fresh"}}}},
+				{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-fresh", "turn": map[string]interface{}{"id": "turn-fresh"}}}},
+			}, ExitCode: fakeappserver.Int(0)},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 0)
+
+	issue, err := store.CreateIssue("", "", "Resume fallback", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.claimed[issue.ID] = struct{}{}
+	orch.retries[issue.ID] = retryEntry{
+		Attempt:        2,
+		Phase:          string(kanban.WorkflowPhaseImplementation),
+		DueAt:          time.Now().UTC(),
+		DelayType:      "failure",
+		Error:          "run_interrupted",
+		ResumeThreadID: "thread-stale",
+	}
+	orch.mu.Unlock()
+
+	orch.processRetries(context.Background())
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 3*time.Second)
+	if snapshot.AppSession.ThreadID != "thread-fresh" {
+		t.Fatalf("expected fallback to start a fresh thread, got %+v", snapshot)
+	}
+	orch.mu.RLock()
+	if retry := orch.retries[issue.ID]; retry.ResumeThreadID != "" {
+		orch.mu.RUnlock()
+		t.Fatalf("expected resume hint to be cleared after fallback run, got %+v", retry)
+	}
+	orch.mu.RUnlock()
+}
+
 func TestStalledRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
@@ -1246,11 +1489,12 @@ func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
 		IssueIdentifier: runningIssue.Identifier,
 	}
 	orch.retries[doneIssue.ID] = retryEntry{
-		Attempt:   3,
-		Phase:     string(kanban.WorkflowPhaseDone),
-		DueAt:     time.Now().UTC().Add(5 * time.Minute),
-		Error:     "approval_required",
-		DelayType: "failure",
+		Attempt:        3,
+		Phase:          string(kanban.WorkflowPhaseDone),
+		DueAt:          time.Now().UTC().Add(5 * time.Minute),
+		Error:          "approval_required",
+		DelayType:      "failure",
+		ResumeThreadID: "thread-stale",
 	}
 	orch.mu.Unlock()
 
@@ -1283,6 +1527,12 @@ func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
 	if updated.Retrying[0].DueInMs > 1000 {
 		t.Fatalf("expected retry to be due immediately, got %+v", updated.Retrying[0])
 	}
+	orch.mu.RLock()
+	if retry := orch.retries[doneIssue.ID]; retry.ResumeThreadID != "" {
+		orch.mu.RUnlock()
+		t.Fatalf("expected manual retry to clear resume hint, got %+v", retry)
+	}
+	orch.mu.RUnlock()
 
 	events, err := store.ListRuntimeEvents(0, 10)
 	if err != nil {
