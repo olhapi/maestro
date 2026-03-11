@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { SessionDetailPage } from "@/routes/session-detail";
@@ -57,6 +57,8 @@ describe("SessionDetailPage", () => {
           expandable: true,
           tone: "default",
           event_type: "exec_command_output_delta",
+          command: "npm run dev",
+          command_state: "output",
         },
         {
           id: "session-event-1",
@@ -119,16 +121,21 @@ describe("SessionDetailPage", () => {
     expect(screen.getByText("Open issue")).toBeInTheDocument();
     expect(screen.getAllByText("Session detail")).toHaveLength(1);
     expect(screen.getByText("Live session")).toBeInTheDocument();
-    expect(screen.getByText("Current activity")).toBeInTheDocument();
-    expect(screen.getAllByText("Planning the fix").length).toBeGreaterThan(0);
-    expect(screen.getByText("Activity feed")).toBeInTheDocument();
-    expect(screen.getByText("Command output")).toBeInTheDocument();
+    expect(screen.queryByText("Current activity")).not.toBeInTheDocument();
+    expect(screen.getByText("Activity log")).toBeInTheDocument();
+    const transcript = screen.getByTestId("activity-log");
+    expect(within(transcript).getByText("Planning the fix")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText(/Background terminal streamed output from/i),
+    ).toBeInTheDocument();
+    expect(within(transcript).getByText("npm run dev")).toBeInTheDocument();
+    expect(within(transcript).queryByText("Turn started")).not.toBeInTheDocument();
     expect(screen.queryByText("0 tokens")).not.toBeInTheDocument();
     const debugDetails = screen.getByText("Debug signals").closest("details");
     expect(debugDetails).not.toHaveAttribute("open");
     fireEvent.click(screen.getByRole("button", { name: /expand/i }));
     expect(screen.getByText(/\$ npm run dev/i)).toBeInTheDocument();
-    expect(screen.getAllByText("Applying changes").length).toBeGreaterThan(0);
+    expect(screen.getByText("Turn started")).toBeInTheDocument();
   });
 
   it("shows persisted paused execution context", async () => {
@@ -206,6 +213,8 @@ describe("SessionDetailPage", () => {
           expandable: true,
           tone: "default",
           event_type: "exec_command_output_delta",
+          command: "npm run dev",
+          command_state: "output",
         },
         {
           id: "session-command-call-1",
@@ -216,6 +225,8 @@ describe("SessionDetailPage", () => {
           expandable: true,
           tone: "default",
           event_type: "exec_command_output_delta",
+          command: "npm run dev",
+          command_state: "output",
         },
       ],
       session: {
@@ -261,5 +272,75 @@ describe("SessionDetailPage", () => {
 
     expect(screen.getByText(/second detail chunk/i)).toBeInTheDocument();
     expect(screen.queryByText(/first detail chunk/i)).not.toBeInTheDocument();
+  });
+
+  it("renders final answers distinctly in the shared activity log", async () => {
+    const issue = makeIssueDetail({ state: "done" });
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "complete",
+      attempt_number: 1,
+      retry_state: "none",
+      session_source: "persisted",
+      session_display_history: [
+        {
+          id: "session-agent-1",
+          kind: "agent",
+          title: "Agent update",
+          summary: "Running the final verification pass",
+          expandable: false,
+          phase: "commentary",
+          tone: "default",
+          event_type: "item.completed",
+        },
+        {
+          id: "session-agent-2",
+          kind: "agent",
+          title: "Final answer",
+          summary: "Issue resolved and ready for review.",
+          expandable: false,
+          phase: "final_answer",
+          tone: "success",
+          event_type: "item.completed",
+        },
+      ],
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: "thread-final-turn-final",
+        thread_id: "thread-final",
+        turn_id: "turn-final",
+        last_event: "item.completed",
+        last_timestamp: "2026-03-10T12:10:00Z",
+        last_message: "Issue resolved and ready for review.",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 30,
+        events_processed: 2,
+        turns_started: 1,
+        turns_completed: 1,
+        terminal: true,
+        history: [],
+      },
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<SessionDetailPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { name: issue.title }),
+      ).toBeInTheDocument();
+    });
+
+    const transcript = screen.getByTestId("activity-log");
+    expect(within(transcript).getByText("Final answer")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText("Issue resolved and ready for review."),
+    ).toBeInTheDocument();
   });
 });

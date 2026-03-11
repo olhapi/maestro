@@ -482,6 +482,9 @@ func TestIssueExecutionPayloadBuildsDisplayHistoryFromCommandDeltas(t *testing.T
 	if commandRow.Kind != "command" || commandRow.Title != "Command failed (exit 1)" || commandRow.Tone != "error" {
 		t.Fatalf("unexpected command row: %#v", commandRow)
 	}
+	if commandRow.Command != "npm run dev" || commandRow.CommandState != "failed" {
+		t.Fatalf("expected explicit command metadata for failed row, got %#v", commandRow)
+	}
 	if !commandRow.Expandable || !strings.Contains(commandRow.Detail, "$ npm run dev") {
 		t.Fatalf("expected expandable command detail, got %#v", commandRow)
 	}
@@ -544,8 +547,64 @@ func TestIssueExecutionPayloadRetainsTurnBoundaryAfterCommandGroup(t *testing.T)
 	if displayHistory[0].Kind != "command" {
 		t.Fatalf("expected first row to remain the command summary, got %#v", displayHistory)
 	}
+	if displayHistory[0].Command != "npm test" || displayHistory[0].CommandState != "output" {
+		t.Fatalf("expected command row metadata preserved, got %#v", displayHistory[0])
+	}
 	if displayHistory[1].Title != "Turn completed" || displayHistory[1].Kind != "event" {
 		t.Fatalf("expected turn boundary retained after command row, got %#v", displayHistory[1])
+	}
+}
+
+func TestIssueExecutionPayloadMarksCompletedCommandState(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Completed command state", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 12, 50, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-command-complete-turn-command-complete",
+			ThreadID:        "thread-command-complete",
+			TurnID:          "turn-command-complete",
+			LastEvent:       "exec_command_end",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "exec_command_begin", CallID: "cmd-2", Command: "go test ./...", CWD: "/repo"},
+				{Type: "exec_command_end", CallID: "cmd-2", ExitCode: intPtr(0)},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 1 {
+		t.Fatalf("expected a single completed command row, got %#v", displayHistory)
+	}
+	if displayHistory[0].Command != "go test ./..." || displayHistory[0].CommandState != "completed" {
+		t.Fatalf("expected completed command metadata, got %#v", displayHistory[0])
 	}
 }
 
@@ -601,6 +660,9 @@ func TestIssueExecutionPayloadBuildsUniqueIDsForSplitCommandCall(t *testing.T) {
 	}
 	if displayHistory[0].Kind != "command" {
 		t.Fatalf("expected a single command row, got %#v", displayHistory)
+	}
+	if displayHistory[0].Command != "npm run dev" || displayHistory[0].CommandState != "output" {
+		t.Fatalf("expected merged command metadata, got %#v", displayHistory[0])
 	}
 	if !strings.Contains(displayHistory[0].Detail, "ready line 1") || !strings.Contains(displayHistory[0].Detail, "ready line 2") {
 		t.Fatalf("expected merged command detail, got %#v", displayHistory[0])
@@ -729,6 +791,70 @@ func TestIssueExecutionPayloadCollapsesFragmentedAgentDeltasAcrossChangingItemID
 	}
 }
 
+func TestIssueExecutionPayloadCollapsesAgentDeltasAcrossCodexMarkerEvents(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Codex marker delta issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 11, 19, 38, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-codex-markers-turn-codex-markers",
+			ThreadID:        "thread-codex-markers",
+			TurnID:          "turn-codex-markers",
+			LastEvent:       "item.completed",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "codex.event.agent_message_delta"},
+				{Type: "item.agentMessage.delta", ItemID: "msg-1", Message: "tree"},
+				{Type: "codex.event.agent_message_content_delta"},
+				{Type: "item.agentMessage.delta", ItemID: "msg-1", Message: " onto"},
+				{Type: "codex.event.agent_message_delta"},
+				{Type: "item.agentMessage.delta", ItemID: "msg-1", Message: " `codex/PHOT-11`"},
+				{Type: "codex.event.agent_message_content_delta"},
+				{Type: "item.agentMessage.delta", ItemID: "msg-1", Message: " without"},
+				{Type: "codex.event.agent_message_delta"},
+				{Type: "item.agentMessage.delta", ItemID: "msg-1", Message: " touching"},
+				{Type: "codex.event.agent_message_content_delta"},
+				{Type: "item.agentMessage.delta", ItemID: "msg-1", Message: " that unrelated change."},
+				{Type: "item.completed", ItemID: "msg-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "tree onto `codex/PHOT-11` without touching that unrelated change."},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 1 {
+		t.Fatalf("expected codex marker events to stay inside one transcript row, got %#v", displayHistory)
+	}
+	if displayHistory[0].Summary != "tree onto `codex/PHOT-11` without touching that unrelated change." {
+		t.Fatalf("expected merged transcript text, got %#v", displayHistory[0])
+	}
+}
+
 func TestIssueExecutionPayloadKeepsAdjacentStartedOnlyAgentUpdate(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -789,7 +915,60 @@ func TestIssueExecutionPayloadKeepsAdjacentStartedOnlyAgentUpdate(t *testing.T) 
 	}
 }
 
-func TestIssueExecutionPayloadKeepsAdjacentCommentaryLifecycleUpdatesSeparated(t *testing.T) {
+func TestIssueExecutionPayloadCollapsesAdjacentCompletedCommentaryUpdatesIntoSingleRow(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Adjacent completed commentary updates", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 13, 35, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-commentary-completed-turn-commentary-completed",
+			ThreadID:        "thread-commentary-completed",
+			TurnID:          "turn-commentary-completed",
+			LastEvent:       "item.completed",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "item.completed", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Searching the routes"},
+				{Type: "item.completed", ItemID: "item-2", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Applying the patch"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 1 {
+		t.Fatalf("expected completed commentary updates to collapse into one row, got %#v", displayHistory)
+	}
+	if displayHistory[0].Summary != "Searching the routes\nApplying the patch" {
+		t.Fatalf("expected merged commentary lifecycle text, got %#v", displayHistory[0])
+	}
+}
+
+func TestIssueExecutionPayloadCollapsesAdjacentCommentaryLifecycleUpdatesIntoSingleRow(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -834,14 +1013,71 @@ func TestIssueExecutionPayloadKeepsAdjacentCommentaryLifecycleUpdatesSeparated(t
 	if !ok {
 		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
 	}
-	if len(displayHistory) != 2 {
-		t.Fatalf("expected commentary lifecycle updates to remain separate, got %#v", displayHistory)
+	if len(displayHistory) != 1 {
+		t.Fatalf("expected commentary lifecycle updates to collapse, got %#v", displayHistory)
+	}
+	if displayHistory[0].Summary != "Searching the routes\nApplying the patch" {
+		t.Fatalf("expected merged commentary lifecycle text, got %#v", displayHistory[0])
+	}
+}
+
+func TestIssueExecutionPayloadKeepsCommandBoundaryBetweenCommentaryUpdates(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Commentary command boundary", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 13, 45, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-command-boundary-turn-command-boundary",
+			ThreadID:        "thread-command-boundary",
+			TurnID:          "turn-command-boundary",
+			LastEvent:       "item.started",
+			LastTimestamp:   now,
+			History: []appserver.Event{
+				{Type: "item.completed", ItemID: "item-1", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Searching the routes"},
+				{Type: "exec_command_output_delta", CallID: "call-1", Stream: "stdout", Chunk: "go test ./...", Message: "go test ./..."},
+				{Type: "item.started", ItemID: "item-2", ItemType: "agentMessage", ItemPhase: "commentary", Message: "Applying the patch"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	displayHistory, ok := payload["session_display_history"].([]SessionDisplayHistoryEntry)
+	if !ok {
+		t.Fatalf("expected typed display history, got %#v", payload["session_display_history"])
+	}
+	if len(displayHistory) != 3 {
+		t.Fatalf("expected command output to break commentary groups, got %#v", displayHistory)
 	}
 	if displayHistory[0].Summary != "Searching the routes" {
-		t.Fatalf("expected first commentary update preserved, got %#v", displayHistory[0])
+		t.Fatalf("expected first commentary row preserved, got %#v", displayHistory[0])
 	}
-	if displayHistory[1].Summary != "Applying the patch" {
-		t.Fatalf("expected second commentary update preserved, got %#v", displayHistory[1])
+	if displayHistory[1].Kind != "command" {
+		t.Fatalf("expected middle row to remain a command event, got %#v", displayHistory[1])
+	}
+	if displayHistory[2].Summary != "Applying the patch" {
+		t.Fatalf("expected second commentary row preserved, got %#v", displayHistory[2])
 	}
 }
 

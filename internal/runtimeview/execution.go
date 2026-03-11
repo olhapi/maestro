@@ -25,16 +25,18 @@ var (
 )
 
 type SessionDisplayHistoryEntry struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Title      string `json:"title"`
-	Summary    string `json:"summary"`
-	Detail     string `json:"detail,omitempty"`
-	Expandable bool   `json:"expandable"`
-	TokenCount int    `json:"token_count,omitempty"`
-	Phase      string `json:"phase,omitempty"`
-	Tone       string `json:"tone,omitempty"`
-	EventType  string `json:"event_type,omitempty"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	Title        string `json:"title"`
+	Summary      string `json:"summary"`
+	Detail       string `json:"detail,omitempty"`
+	Expandable   bool   `json:"expandable"`
+	TokenCount   int    `json:"token_count,omitempty"`
+	Phase        string `json:"phase,omitempty"`
+	Tone         string `json:"tone,omitempty"`
+	EventType    string `json:"event_type,omitempty"`
+	Command      string `json:"command,omitempty"`
+	CommandState string `json:"command_state,omitempty"`
 }
 
 func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issue *kanban.Issue) (map[string]interface{}, error) {
@@ -424,8 +426,24 @@ func canContinueAgentGroup(groupItemID, groupPhase string, hasStarted, hasComple
 	if len(group) == 0 {
 		return true
 	}
-	nextPhase := strings.TrimSpace(next.ItemPhase)
-	if groupPhase != "" && nextPhase != "" && !strings.EqualFold(groupPhase, nextPhase) {
+	nextPhase := normalizeAgentPhase(next.ItemPhase)
+	currentPhase := normalizeAgentPhase(groupPhase)
+	if currentPhase != "" && nextPhase != "" && currentPhase != nextPhase {
+		return false
+	}
+	if currentPhase == "commentary" || (currentPhase == "" && nextPhase == "commentary") {
+		return true
+	}
+	return canContinueAgentSegment(groupItemID, currentPhase, hasStarted, hasCompleted, hasDelta, group, next)
+}
+
+func canContinueAgentSegment(groupItemID, groupPhase string, hasStarted, hasCompleted, hasDelta bool, group []appserver.Event, next appserver.Event) bool {
+	if len(group) == 0 {
+		return true
+	}
+	nextPhase := normalizeAgentPhase(next.ItemPhase)
+	currentPhase := normalizeAgentPhase(groupPhase)
+	if currentPhase != "" && nextPhase != "" && currentPhase != nextPhase {
 		return false
 	}
 	nextItemID := agentGroupID(next)
@@ -449,9 +467,6 @@ func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDispl
 	phase := ""
 	itemID := ""
 	totalTokens := 0
-	var builder strings.Builder
-	startedText := ""
-	completedText := ""
 	lastType := ""
 	for _, event := range group {
 		lastType = strings.TrimSpace(event.Type)
@@ -464,26 +479,9 @@ func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDispl
 		if event.TotalTokens > 0 {
 			totalTokens = event.TotalTokens
 		}
-		if isAgentMessageStartedEvent(event) {
-			if text := cleanTerminalText(firstNonEmpty(event.Message, event.Chunk)); text != "" && startedText == "" {
-				startedText = text
-			}
-		}
-		if isAgentMessageCompletedEvent(event) {
-			if text := cleanTerminalText(firstNonEmpty(event.Message, event.Chunk)); text != "" {
-				completedText = text
-			}
-		}
-		if !isAgentDeltaEvent(event) {
-			continue
-		}
-		if chunk := cleanDeltaChunk(firstNonEmptyPreservingWhitespace(event.Message, event.Chunk)); chunk != "" {
-			builder.WriteString(chunk)
-		}
 	}
 
-	combinedText := cleanTerminalText(builder.String())
-	body := firstNonEmpty(completedText, combinedText, startedText)
+	body := summarizeAgentGroupBody(group, phase)
 	if body == "" {
 		body = firstNonEmpty(defaultSummaryForAgentPhase(phase), "Agent update")
 	}
@@ -506,6 +504,104 @@ func summarizeAgentGroup(group []appserver.Event, displayIndex int) SessionDispl
 		entry.TokenCount = totalTokens
 	}
 	return entry
+}
+
+func summarizeAgentGroupBody(group []appserver.Event, phase string) string {
+	if len(group) == 0 {
+		return ""
+	}
+	if normalizeAgentPhase(phase) != "commentary" {
+		return summarizeAgentSegmentBody(group)
+	}
+	segments := splitAgentGroupSegments(group)
+	if len(segments) == 0 {
+		return summarizeAgentSegmentBody(group)
+	}
+	parts := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if text := summarizeAgentSegmentBody(segment); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	default:
+		return strings.Join(parts, "\n")
+	}
+}
+
+func splitAgentGroupSegments(group []appserver.Event) [][]appserver.Event {
+	if len(group) == 0 {
+		return nil
+	}
+	segments := make([][]appserver.Event, 0, len(group))
+	for i := 0; i < len(group); {
+		segment := make([]appserver.Event, 0, 4)
+		segmentItemID := ""
+		segmentPhase := ""
+		hasStarted := false
+		hasCompleted := false
+		hasDelta := false
+		for i < len(group) {
+			next := group[i]
+			if !canContinueAgentSegment(segmentItemID, segmentPhase, hasStarted, hasCompleted, hasDelta, segment, next) {
+				break
+			}
+			segment = append(segment, next)
+			if segmentItemID == "" {
+				segmentItemID = agentGroupID(next)
+			}
+			if segmentPhase == "" && strings.TrimSpace(next.ItemPhase) != "" {
+				segmentPhase = strings.TrimSpace(next.ItemPhase)
+			}
+			if isAgentMessageStartedEvent(next) {
+				hasStarted = true
+			}
+			if isAgentMessageCompletedEvent(next) {
+				hasCompleted = true
+			}
+			if isAgentDeltaEvent(next) {
+				hasDelta = true
+			}
+			i++
+		}
+		if len(segment) == 0 {
+			segment = append(segment, group[i])
+			i++
+		}
+		segments = append(segments, segment)
+	}
+	return segments
+}
+
+func summarizeAgentSegmentBody(group []appserver.Event) string {
+	var builder strings.Builder
+	startedText := ""
+	completedText := ""
+	for _, event := range group {
+		if isAgentMessageStartedEvent(event) {
+			if text := cleanTerminalText(firstNonEmpty(event.Message, event.Chunk)); text != "" && startedText == "" {
+				startedText = text
+			}
+		}
+		if isAgentMessageCompletedEvent(event) {
+			if text := cleanTerminalText(firstNonEmpty(event.Message, event.Chunk)); text != "" {
+				completedText = text
+			}
+		}
+		if !isAgentDeltaEvent(event) {
+			continue
+		}
+		if chunk := cleanDeltaChunk(firstNonEmptyPreservingWhitespace(event.Message, event.Chunk)); chunk != "" {
+			builder.WriteString(chunk)
+		}
+	}
+
+	combinedText := cleanTerminalText(builder.String())
+	return firstNonEmpty(completedText, combinedText, startedText)
 }
 
 func buildCommandDisplayEntry(history []appserver.Event, start, displayIndex int) (SessionDisplayHistoryEntry, int, bool) {
@@ -606,19 +702,25 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 
 	title := "Command event"
 	tone := "default"
+	commandState := ""
 	switch {
 	case exitCode != nil && *exitCode == 0:
 		title = "Command completed"
 		tone = "success"
+		commandState = "completed"
 	case exitCode != nil && *exitCode != 0:
 		title = fmt.Sprintf("Command failed (exit %d)", *exitCode)
 		tone = "error"
+		commandState = "failed"
 	case hasOutput:
 		title = "Command output"
+		commandState = "output"
 	case hasStart:
 		title = "Command started"
+		commandState = "started"
 	case hasEnd:
 		title = "Command finished"
+		commandState = "completed"
 	}
 	if tone == "default" && (hasStderr || isErrorText(summarySource)) {
 		tone = "error"
@@ -652,14 +754,16 @@ func summarizeCommandGroup(group []appserver.Event, displayIndex int) SessionDis
 		id = fmt.Sprintf("session-command-%s-%d", callID, displayIndex)
 	}
 	entry := SessionDisplayHistoryEntry{
-		ID:         id,
-		Kind:       "command",
-		Title:      title,
-		Summary:    summary,
-		Detail:     detail,
-		Expandable: expandable,
-		Tone:       tone,
-		EventType:  lastType,
+		ID:           id,
+		Kind:         "command",
+		Title:        title,
+		Summary:      summary,
+		Detail:       detail,
+		Expandable:   expandable,
+		Tone:         tone,
+		EventType:    lastType,
+		Command:      command,
+		CommandState: commandState,
 	}
 	if totalTokens > 0 {
 		entry.TokenCount = totalTokens
@@ -712,7 +816,10 @@ func isAgentDisplayEvent(event appserver.Event) bool {
 
 func isAgentDeltaEvent(event appserver.Event) bool {
 	switch strings.ToLower(strings.TrimSpace(event.Type)) {
-	case "item.agentmessage.delta", "agent_message_content_delta":
+	case "item.agentmessage.delta",
+		"agent_message_content_delta",
+		"codex.event.agent_message_delta",
+		"codex.event.agent_message_content_delta":
 		return true
 	default:
 		return false
@@ -741,8 +848,12 @@ func agentGroupID(event appserver.Event) string {
 	return firstNonEmpty(strings.TrimSpace(event.ItemID), strings.TrimSpace(event.CallID))
 }
 
+func normalizeAgentPhase(phase string) string {
+	return strings.ToLower(strings.TrimSpace(phase))
+}
+
 func titleForAgentPhase(phase string) string {
-	switch strings.ToLower(strings.TrimSpace(phase)) {
+	switch normalizeAgentPhase(phase) {
 	case "final_answer":
 		return "Final answer"
 	default:
@@ -751,7 +862,7 @@ func titleForAgentPhase(phase string) string {
 }
 
 func toneForAgentPhase(phase string) string {
-	switch strings.ToLower(strings.TrimSpace(phase)) {
+	switch normalizeAgentPhase(phase) {
 	case "final_answer":
 		return "success"
 	default:
@@ -760,7 +871,7 @@ func toneForAgentPhase(phase string) string {
 }
 
 func defaultSummaryForAgentPhase(phase string) string {
-	switch strings.ToLower(strings.TrimSpace(phase)) {
+	switch normalizeAgentPhase(phase) {
 	case "final_answer":
 		return "The agent produced a final answer."
 	default:

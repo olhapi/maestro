@@ -80,11 +80,11 @@ describe("IssueDetailPage", () => {
     renderWithQueryClient(<IssueDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Last run interrupted")).toBeInTheDocument();
+      expect(screen.getByText("Persisted")).toBeInTheDocument();
     });
 
     expect(screen.getByText("Interrupted")).toBeInTheDocument();
-    expect(screen.getByText(/Last session update/i)).toBeInTheDocument();
+    expect(screen.getByText("Activity log")).toBeInTheDocument();
     expect(screen.getByText("Persisted")).toBeInTheDocument();
   });
 
@@ -175,6 +175,8 @@ describe("IssueDetailPage", () => {
           expandable: true,
           tone: "success",
           event_type: "exec_command_output_delta",
+          command: "npm test",
+          command_state: "completed",
         },
       ],
       session: {
@@ -211,11 +213,18 @@ describe("IssueDetailPage", () => {
     renderWithQueryClient(<IssueDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Current activity")).toBeInTheDocument();
+      expect(screen.getByText("Activity log")).toBeInTheDocument();
     });
 
-    expect(screen.getAllByText("Planning the verification pass").length).toBeGreaterThan(0);
-    expect(screen.getByText("Activity feed")).toBeInTheDocument();
+    expect(screen.queryByText("Current activity")).not.toBeInTheDocument();
+    const transcript = screen.getByTestId("activity-log");
+    expect(
+      within(transcript).getByText("Planning the verification pass"),
+    ).toBeInTheDocument();
+    expect(
+      within(transcript).getByText(/Background terminal finished with/i),
+    ).toBeInTheDocument();
+    expect(within(transcript).getByText("npm test")).toBeInTheDocument();
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
   });
 

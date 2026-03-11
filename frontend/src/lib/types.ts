@@ -282,6 +282,8 @@ export interface SessionDisplayHistoryEntry {
   phase?: string;
   tone?: "default" | "success" | "error";
   event_type?: string;
+  command?: string;
+  command_state?: "started" | "output" | "completed" | "failed";
 }
 
 export interface AgentCommand {
