@@ -98,6 +98,7 @@ describe("SessionDetailPage", () => {
 
     expect(screen.getByText(issue.title)).toBeInTheDocument();
     expect(screen.getByText("Open issue")).toBeInTheDocument();
+    expect(screen.getAllByText("Session detail")).toHaveLength(1);
     expect(screen.getByText("Live session")).toBeInTheDocument();
     expect(screen.getByText("Command output")).toBeInTheDocument();
     expect(screen.queryByText("0 tokens")).not.toBeInTheDocument();

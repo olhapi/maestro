@@ -62,22 +62,33 @@ export function PageHeader({
         </Breadcrumb>
       ) : null}
 
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        {eyebrow ? <Badge>{eyebrow}</Badge> : null}
-        <h1
-          className={cn(
-            "mt-3 font-display text-[length:var(--page-title-size)] font-semibold tracking-tight text-white leading-[var(--page-title-line-height)]",
-            eyebrow ? "" : "mt-0",
-          )}
-        >
-          {title}
-        </h1>
-        {description ? (
-          <p className={cn("mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]", descriptionClassName)}>
-            {description}
-          </p>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1">
+          {eyebrow ? <Badge className="w-fit">{eyebrow}</Badge> : null}
+          <h1
+            className={cn(
+              "font-display text-[length:var(--page-title-size)] font-semibold leading-[var(--page-title-line-height)] tracking-tight text-white",
+              eyebrow ? "mt-3" : "mt-0",
+            )}
+          >
+            {title}
+          </h1>
+          {description ? (
+            <p
+              className={cn(
+                "mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]",
+                descriptionClassName,
+              )}
+            >
+              {description}
+            </p>
+          ) : null}
+        </div>
+        {actions ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-2.5 lg:justify-end">
+            {actions}
+          </div>
         ) : null}
-        {actions ? <div className="flex flex-wrap items-center gap-2.5">{actions}</div> : null}
       </div>
 
       {stats ? <div className={cn("grid gap-3 sm:grid-cols-2 lg:grid-cols-4", statsClassName)}>{stats}</div> : null}
