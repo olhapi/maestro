@@ -266,6 +266,136 @@ func TestApplyIssueActivityEventKeepsHistoricalAttemptsAndSecondaryRows(t *testi
 	}
 }
 
+func TestApplyIssueActivityEventPersistsApprovalAndInputStatusRows(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Approval and input timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	approvalRaw := map[string]interface{}{
+		"params": map[string]interface{}{
+			"command": "pnpm lint",
+			"cwd":     "/repo",
+			"reason":  "Needs approval",
+		},
+	}
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 4, appserver.ActivityEvent{
+		Type:      "item.commandExecution.requestApproval",
+		RequestID: "req-1",
+		ThreadID:  "thread-4",
+		TurnID:    "turn-4",
+		ItemID:    "cmd-approval",
+		Command:   "pnpm lint",
+		CWD:       "/repo",
+		Reason:    "Needs approval",
+		Raw:       approvalRaw,
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent approval: %v", err)
+	}
+
+	inputRaw := map[string]interface{}{
+		"params": map[string]interface{}{
+			"questions": []interface{}{
+				map[string]interface{}{"question": "Which environment should I use?"},
+			},
+		},
+	}
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 4, appserver.ActivityEvent{
+		Type:      "item.tool.requestUserInput",
+		RequestID: "req-2",
+		ThreadID:  "thread-4",
+		TurnID:    "turn-4",
+		Raw:       inputRaw,
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent input request: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected two status rows, got %#v", entries)
+	}
+	if entries[0].Status != "approval_required" || entries[0].Tone != "error" || !strings.Contains(entries[0].Detail, "\"command\": \"pnpm lint\"") {
+		t.Fatalf("unexpected approval entry: %#v", entries[0])
+	}
+	if entries[1].Status != "input_required" || entries[1].Summary != "Which environment should I use?" || !strings.Contains(entries[1].Detail, "\"questions\"") {
+		t.Fatalf("unexpected input request entry: %#v", entries[1])
+	}
+}
+
+func TestApplyIssueActivityEventProjectsSecondaryAndFailureEntries(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Secondary activity timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	for _, event := range []appserver.ActivityEvent{
+		{
+			Type:     "item.plan.delta",
+			ThreadID: "thread-5",
+			TurnID:   "turn-5",
+			ItemID:   "plan-1",
+			Delta:    "1. Parse docs\n",
+		},
+		{
+			Type:      "item.completed",
+			ThreadID:  "thread-5",
+			TurnID:    "turn-5",
+			ItemID:    "plan-1",
+			ItemType:  "plan",
+			ItemPhase: "planning",
+			Item: map[string]interface{}{
+				"id":   "plan-1",
+				"type": "plan",
+				"text": "1. Parse docs\n2. Persist rows",
+			},
+		},
+		{
+			Type:      "item.completed",
+			ThreadID:  "thread-5",
+			TurnID:    "turn-5",
+			ItemID:    "reason-1",
+			ItemType:  "reasoning",
+			ItemPhase: "analysis",
+			Item: map[string]interface{}{
+				"id":      "reason-1",
+				"type":    "reasoning",
+				"summary": []interface{}{"Need stable ids", "Need authoritative completed items"},
+			},
+		},
+		{
+			Type:     "turn.failed",
+			ThreadID: "thread-5",
+			TurnID:   "turn-5",
+		},
+	} {
+		if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 5, event); err != nil {
+			t.Fatalf("ApplyIssueActivityEvent(%s): %v", event.Type, err)
+		}
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected three persisted entries, got %#v", entries)
+	}
+	if entries[0].Tier != "secondary" || entries[0].ItemType != "plan" || !strings.Contains(entries[0].Summary, "Parse docs") {
+		t.Fatalf("unexpected plan entry: %#v", entries[0])
+	}
+	if entries[1].Tier != "secondary" || entries[1].ItemType != "reasoning" || !strings.Contains(entries[1].Summary, "Need stable ids") {
+		t.Fatalf("unexpected reasoning entry: %#v", entries[1])
+	}
+	if entries[2].Kind != "status" || entries[2].Status != "failed" || entries[2].Tone != "error" || entries[2].Summary != "Turn execution failed." {
+		t.Fatalf("unexpected failed turn entry: %#v", entries[2])
+	}
+}
+
 func intPtr(value int) *int {
 	return &value
 }
