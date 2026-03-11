@@ -41,6 +41,20 @@ func stringFromNull(value sql.NullString) string {
 	return value.String
 }
 
+func isResolvedBlockerState(state State) bool {
+	return state == StateDone || state == StateCancelled
+}
+
+func unresolvedBlockerExistsClause(issueAlias string) string {
+	return `EXISTS (
+		SELECT 1
+		FROM issue_blockers b
+		LEFT JOIN issues blocker ON blocker.identifier = b.blocked_by
+		WHERE b.issue_id = ` + issueAlias + `.id
+		  AND (blocker.id IS NULL OR blocker.state NOT IN ('done', 'cancelled'))
+	)`
+}
+
 func DefaultDBPath() string {
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
@@ -1381,7 +1395,7 @@ func (s *Store) unresolvedBlockersForIssue(id string) ([]string, error) {
 		blockerIssue, err := s.GetIssueByIdentifier(blocker)
 		switch {
 		case err == nil:
-			if blockerIssue.State != StateDone && blockerIssue.State != StateCancelled {
+			if !isResolvedBlockerState(blockerIssue.State) {
 				unresolved = append(unresolved, blockerIssue.Identifier)
 			}
 		case err == sql.ErrNoRows:
@@ -1832,9 +1846,9 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	}
 	if query.Blocked != nil {
 		if *query.Blocked {
-			where = append(where, "EXISTS (SELECT 1 FROM issue_blockers b WHERE b.issue_id = i.id)")
+			where = append(where, unresolvedBlockerExistsClause("i"))
 		} else {
-			where = append(where, "NOT EXISTS (SELECT 1 FROM issue_blockers b WHERE b.issue_id = i.id)")
+			where = append(where, "NOT "+unresolvedBlockerExistsClause("i"))
 		}
 	}
 
@@ -1928,14 +1942,14 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		issueIDs = append(issueIDs, item.ID)
 	}
 
-	labelMap, blockerMap, err := s.issueRelations(issueIDs)
+	labelMap, blockerMap, unresolvedBlockerMap, err := s.issueRelations(issueIDs)
 	if err != nil {
 		return nil, 0, err
 	}
 	for i := range out {
 		out[i].Labels = labelMap[out[i].ID]
 		out[i].BlockedBy = blockerMap[out[i].ID]
-		out[i].IsBlocked = len(out[i].BlockedBy) > 0
+		out[i].IsBlocked = unresolvedBlockerMap[out[i].ID]
 	}
 	return out, total, nil
 }
@@ -1982,11 +1996,12 @@ func (s *Store) AddIssueTokenSpend(issueID string, delta int) error {
 	return nil
 }
 
-func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[string][]string, error) {
+func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[string][]string, map[string]bool, error) {
 	labels := map[string][]string{}
 	blockers := map[string][]string{}
+	unresolved := map[string]bool{}
 	if len(issueIDs) == 0 {
-		return labels, blockers, nil
+		return labels, blockers, unresolved, nil
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(issueIDs)), ",")
 	args := make([]interface{}, 0, len(issueIDs))
@@ -1996,30 +2011,39 @@ func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[stri
 
 	labelRows, err := s.db.Query(`SELECT issue_id, label FROM issue_labels WHERE issue_id IN (`+placeholders+`) ORDER BY label`, args...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer labelRows.Close()
 	for labelRows.Next() {
 		var issueID, label string
 		if err := labelRows.Scan(&issueID, &label); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		labels[issueID] = append(labels[issueID], label)
 	}
 
-	blockRows, err := s.db.Query(`SELECT issue_id, blocked_by FROM issue_blockers WHERE issue_id IN (`+placeholders+`) ORDER BY blocked_by`, args...)
+	blockRows, err := s.db.Query(`
+		SELECT b.issue_id, b.blocked_by, blocker.state
+		FROM issue_blockers b
+		LEFT JOIN issues blocker ON blocker.identifier = b.blocked_by
+		WHERE b.issue_id IN (`+placeholders+`)
+		ORDER BY b.blocked_by`, args...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer blockRows.Close()
 	for blockRows.Next() {
 		var issueID, blockedBy string
-		if err := blockRows.Scan(&issueID, &blockedBy); err != nil {
-			return nil, nil, err
+		var blockerState sql.NullString
+		if err := blockRows.Scan(&issueID, &blockedBy, &blockerState); err != nil {
+			return nil, nil, nil, err
 		}
 		blockers[issueID] = append(blockers[issueID], blockedBy)
+		if !blockerState.Valid || !isResolvedBlockerState(State(blockerState.String)) {
+			unresolved[issueID] = true
+		}
 	}
-	return labels, blockers, nil
+	return labels, blockers, unresolved, nil
 }
 
 func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) error {

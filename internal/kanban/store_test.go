@@ -1049,16 +1049,28 @@ func TestListIssueSummariesSupportsBlockedAndProjectNameFilters(t *testing.T) {
 
 	project, _ := store.CreateProject("Platform", "", "", "")
 	other, _ := store.CreateProject("Other", "", "", "")
-	blocker, _ := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
-	blocked, _ := store.CreateIssue(project.ID, "", "Blocked", "", 0, nil)
+	activeBlocker, _ := store.CreateIssue(project.ID, "", "Active blocker", "", 0, nil)
+	resolvedBlocker, _ := store.CreateIssue(project.ID, "", "Resolved blocker", "", 0, nil)
+	blocked, _ := store.CreateIssue(project.ID, "", "Blocked subject", "", 0, nil)
+	resolved, _ := store.CreateIssue(project.ID, "", "Resolved subject", "", 0, nil)
 	_, _ = store.CreateIssue(other.ID, "", "Elsewhere", "", 0, nil)
-	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+	if err := store.UpdateIssueState(activeBlocker.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState activeBlocker: %v", err)
+	}
+	if err := store.UpdateIssueState(resolvedBlocker.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState resolvedBlocker: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{activeBlocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers failed: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(resolved.ID, []string{resolvedBlocker.Identifier}); err != nil {
 		t.Fatalf("SetIssueBlockers failed: %v", err)
 	}
 
 	blockedOnly := true
 	items, total, err := store.ListIssueSummaries(IssueQuery{
 		ProjectName: "platform",
+		Search:      "subject",
 		Blocked:     &blockedOnly,
 		Limit:       20,
 	})
@@ -1070,6 +1082,35 @@ func TestListIssueSummariesSupportsBlockedAndProjectNameFilters(t *testing.T) {
 	}
 	if items[0].Identifier != blocked.Identifier {
 		t.Fatalf("expected blocked identifier %s, got %s", blocked.Identifier, items[0].Identifier)
+	}
+	if !items[0].IsBlocked {
+		t.Fatalf("expected %s to be marked blocked", blocked.Identifier)
+	}
+	if len(items[0].BlockedBy) != 1 || items[0].BlockedBy[0] != activeBlocker.Identifier {
+		t.Fatalf("expected %s blockers [%s], got %v", blocked.Identifier, activeBlocker.Identifier, items[0].BlockedBy)
+	}
+
+	blockedOnly = false
+	items, total, err = store.ListIssueSummaries(IssueQuery{
+		ProjectName: "platform",
+		Search:      "subject",
+		Blocked:     &blockedOnly,
+		Limit:       20,
+	})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries failed: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected one unblocked platform issue with resolved blockers, got total=%d items=%d", total, len(items))
+	}
+	if items[0].Identifier != resolved.Identifier {
+		t.Fatalf("expected resolved identifier %s, got %s", resolved.Identifier, items[0].Identifier)
+	}
+	if items[0].IsBlocked {
+		t.Fatalf("expected %s not to be marked blocked once its blocker is done", resolved.Identifier)
+	}
+	if len(items[0].BlockedBy) != 1 || items[0].BlockedBy[0] != resolvedBlocker.Identifier {
+		t.Fatalf("expected %s blockers [%s], got %v", resolved.Identifier, resolvedBlocker.Identifier, items[0].BlockedBy)
 	}
 }
 
