@@ -106,7 +106,12 @@ export function EpicDetailPage() {
             <h2 className="mt-4 text-2xl font-semibold text-white">What changed in this epic</h2>
             <div className="mt-4 grid gap-2.5">
               {epic.data.issues.items.slice(0, 5).map((issue) => (
-                <button key={issue.id} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5 text-left transition hover:bg-white/[0.07]" onClick={() => setPreviewIssue(issue)}>
+                <Link
+                  key={issue.id}
+                  className="block rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5 text-left transition hover:bg-white/[0.07]"
+                  params={{ identifier: issue.identifier }}
+                  to={appRoutes.issueDetail}
+                >
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium text-white">{issue.identifier}</p>
@@ -115,7 +120,7 @@ export function EpicDetailPage() {
                     <Badge className="border-white/10 bg-white/5 text-white">{getStateMeta(issue.state).label}</Badge>
                   </div>
                   <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{formatRelativeTime(issue.updated_at)}</p>
-                </button>
+                </Link>
               ))}
             </div>
           </CardContent>

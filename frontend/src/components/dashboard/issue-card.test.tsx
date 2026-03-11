@@ -1,9 +1,26 @@
-import { fireEvent, screen } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { screen } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { IssueCard } from '@/components/dashboard/issue-card'
 import { makeBootstrapResponse, makeIssueSummary } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
+
+vi.mock('@tanstack/react-router', () => ({
+  Link: ({
+    children,
+    className,
+    params,
+  }: {
+    children: ReactNode
+    className?: string
+    params?: { identifier?: string }
+  }) => (
+    <a className={className} href={params?.identifier ? `/issues/${params.identifier}` : '#'}>
+      {children}
+    </a>
+  ),
+}))
 
 describe('IssueCard', () => {
   it('renders a live badge when bootstrap sessions are keyed by issue identifier', () => {
@@ -36,14 +53,10 @@ describe('IssueCard', () => {
         },
       },
     })
-    const onOpen = vi.fn()
-
-    renderWithQueryClient(<IssueCard issue={issue} bootstrap={bootstrap} onOpen={onOpen} />)
+    renderWithQueryClient(<IssueCard issue={issue} bootstrap={bootstrap} onOpen={vi.fn()} />)
 
     expect(screen.getByText('Paused')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button'))
-    expect(onOpen).toHaveBeenCalledWith(issue)
+    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveAttribute('href', '/issues/ISS-1')
   })
 
   it('keeps key metadata visible in compact mode', () => {
@@ -63,6 +76,12 @@ describe('IssueCard', () => {
   it('allows draggable surfaces to override the card cursor affordance', () => {
     renderWithQueryClient(<IssueCard issue={makeIssueSummary()} className="cursor-grab active:cursor-grabbing" onOpen={vi.fn()} />)
 
-    expect(screen.getByRole('button')).toHaveClass('cursor-grab', 'active:cursor-grabbing')
+    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveClass('cursor-grab', 'active:cursor-grabbing')
+  })
+
+  it('links the card to the issue detail page', () => {
+    renderWithQueryClient(<IssueCard issue={makeIssueSummary()} onOpen={vi.fn()} />)
+
+    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveAttribute('href', '/issues/ISS-1')
   })
 })

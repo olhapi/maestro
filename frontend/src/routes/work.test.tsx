@@ -7,7 +7,13 @@ import { makeBootstrapResponse, makeIssueDetail } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
+  Link: ({
+    children,
+    params,
+  }: {
+    children: ReactNode
+    params?: { identifier?: string }
+  }) => <a href={params?.identifier ? `/issues/${params.identifier}` : '#'}>{children}</a>,
   useNavigate: () => vi.fn(),
 }))
 
@@ -50,6 +56,7 @@ describe('WorkPage', () => {
     expect(screen.queryByText('Create issue')).not.toBeInTheDocument()
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Board view' })).toHaveAttribute('data-state', 'on')
+    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveAttribute('href', '/issues/ISS-1')
 
     fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
     await waitFor(() => {
@@ -57,7 +64,7 @@ describe('WorkPage', () => {
     })
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /investigate retries/i }))
+    fireEvent.click(screen.getByRole('button', { name: /iss-1 investigate retries/i }))
 
     await waitFor(() => {
       expect(screen.getByText('turn.started')).toBeInTheDocument()

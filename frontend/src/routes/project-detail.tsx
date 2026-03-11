@@ -303,10 +303,11 @@ export function ProjectDetailPage() {
             </h2>
             <div className="mt-4 grid gap-2.5">
               {project.data.issues.items.slice(0, 5).map((issue) => (
-                <button
+                <Link
                   key={issue.id}
-                  className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5 text-left transition hover:bg-white/[0.07]"
-                  onClick={() => setPreviewIssue(issue)}
+                  className="block rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5 text-left transition hover:bg-white/[0.07]"
+                  params={{ identifier: issue.identifier }}
+                  to={appRoutes.issueDetail}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div>
@@ -324,7 +325,7 @@ export function ProjectDetailPage() {
                   <p className="mt-3 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                     {formatRelativeTime(issue.updated_at)}
                   </p>
-                </button>
+                </Link>
               ))}
             </div>
           </CardContent>

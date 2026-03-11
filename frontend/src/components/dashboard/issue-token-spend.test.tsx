@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 
@@ -13,6 +14,13 @@ import { renderWithQueryClient } from "@/test/test-utils";
 const navigate = vi.fn();
 
 vi.mock("@tanstack/react-router", () => ({
+  Link: ({
+    children,
+    params,
+  }: {
+    children: ReactNode;
+    params?: { identifier?: string };
+  }) => <a href={params?.identifier ? `/issues/${params.identifier}` : "#"}>{children}</a>,
   useNavigate: () => navigate,
 }));
 

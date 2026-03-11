@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Workflow,
 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +34,7 @@ import {
   getStateMeta,
   issueStatesFor,
 } from "@/lib/dashboard";
+import { appRoutes } from "@/lib/routes";
 import { cn, formatCompactNumber, formatRelativeTime } from "@/lib/utils";
 
 export function IssueCard({
@@ -60,13 +62,15 @@ export function IssueCard({
   const cardBadgeClass = "px-1.75 py-0.5 text-[9px] tracking-[0.14em]";
 
   const content = (
-    <button
+    <Link
       className={cn(
-        "group w-full rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))] p-[var(--panel-padding-tight)] text-left transition hover:border-white/20 hover:bg-white/[0.08]",
+        "group block w-full rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))] p-[var(--panel-padding-tight)] text-left transition hover:border-white/20 hover:bg-white/[0.08]",
         compact ? "min-h-[var(--issue-card-min-height-compact)]" : "min-h-[var(--issue-card-min-height)]",
         className,
       )}
-      onClick={() => onOpen(issue)}
+      draggable={false}
+      params={{ identifier: issue.identifier }}
+      to={appRoutes.issueDetail}
     >
       <div className="flex items-start justify-between gap-2.5">
         <div className="space-y-1.5">
@@ -141,7 +145,7 @@ export function IssueCard({
           {formatCompactNumber(issue.total_tokens_spent)} tokens
         </span>
       </div>
-    </button>
+    </Link>
   );
 
   return (
@@ -192,26 +196,29 @@ export function IssueCard({
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuLabel>Issue actions</ContextMenuLabel>
-        <ContextMenuItem onSelect={() => onOpen(issue)}>
-          Open details
+        <ContextMenuItem asChild>
+          <Link params={{ identifier: issue.identifier }} to={appRoutes.issueDetail}>
+            Open details
+          </Link>
         </ContextMenuItem>
-        {onStateChange ? (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuLabel>Move to</ContextMenuLabel>
-            {availableStates.map((state) => (
+        <ContextMenuItem onSelect={() => onOpen(issue)}>
+          Quick preview
+        </ContextMenuItem>
+        {onStateChange || menuFooter ? <ContextMenuSeparator /> : null}
+        {onStateChange ? <ContextMenuLabel>Move to</ContextMenuLabel> : null}
+        {onStateChange
+          ? availableStates.map((state) => (
               <ContextMenuItem
                 key={state}
                 onSelect={() => onStateChange(issue, state)}
               >
                 {getStateMeta(state).label}
               </ContextMenuItem>
-            ))}
-          </>
-        ) : null}
+            ))
+          : null}
         {menuFooter ? (
           <>
-            <ContextMenuSeparator />
+            {onStateChange ? <ContextMenuSeparator /> : null}
             {menuFooter}
           </>
         ) : null}
