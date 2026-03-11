@@ -224,7 +224,7 @@ func (c *Client) Wait() error {
 		if err == nil {
 			select {
 			case readErr := <-c.lineErr:
-				if readErr != nil && !errors.Is(readErr, io.EOF) {
+				if readErr != nil && !isBenignReadCloseError(readErr) {
 					return readErr
 				}
 			default:
@@ -573,7 +573,7 @@ func (c *Client) nextLine(ctx context.Context, timeout time.Duration) (string, e
 		if !ok {
 			select {
 			case err := <-c.lineErr:
-				if err == nil {
+				if err == nil || isBenignReadCloseError(err) {
 					return "", io.EOF
 				}
 				return "", err
@@ -596,21 +596,29 @@ func (c *Client) readStdout(wg *sync.WaitGroup, r io.Reader) {
 			c.lines <- trimmed
 		}
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				select {
-				case c.lineErr <- err:
-				default:
-				}
-			} else {
-				select {
-				case c.lineErr <- io.EOF:
-				default:
-				}
+			lineErr := err
+			if isBenignReadCloseError(err) {
+				lineErr = io.EOF
+			}
+			select {
+			case c.lineErr <- lineErr:
+			default:
 			}
 			close(c.lines)
 			return
 		}
 	}
+}
+
+func isBenignReadCloseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "file already closed") || strings.Contains(msg, "closed pipe")
 }
 
 func (c *Client) readStderr(wg *sync.WaitGroup, r io.Reader) {

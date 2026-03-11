@@ -884,6 +884,22 @@ func TestClientHelperMethodsUpdateSessionAndMessages(t *testing.T) {
 	client.waitCh = make(chan error, 1)
 	client.lineErr = make(chan error, 1)
 	client.waitCh <- nil
+	client.lineErr <- os.ErrClosed
+	if err := client.Wait(); err != nil {
+		t.Fatalf("expected nil wait error for closed stream, got %v", err)
+	}
+
+	client.waitCh = make(chan error, 1)
+	client.lineErr = make(chan error, 1)
+	client.waitCh <- nil
+	client.lineErr <- errors.New("read |0: file already closed")
+	if err := client.Wait(); err != nil {
+		t.Fatalf("expected nil wait error for closed descriptor text, got %v", err)
+	}
+
+	client.waitCh = make(chan error, 1)
+	client.lineErr = make(chan error, 1)
+	client.waitCh <- nil
 	client.lineErr <- errors.New("read failed")
 	if err := client.Wait(); err == nil || !strings.Contains(err.Error(), "read failed") {
 		t.Fatalf("expected read failure, got %v", err)
