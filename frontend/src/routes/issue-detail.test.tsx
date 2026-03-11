@@ -132,13 +132,13 @@ describe("IssueDetailPage", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/stopped retrying after 3 interrupted runs/i),
+        screen.getByText(/stopped retrying after 3 stalled runs/i),
       ).toBeInTheDocument();
     });
 
     expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
     expect(
-      screen.getByText(/stopped retrying after 3 interrupted runs/i),
+      screen.getByText(/stopped retrying after 3 stalled runs/i),
     ).toBeInTheDocument();
   });
 

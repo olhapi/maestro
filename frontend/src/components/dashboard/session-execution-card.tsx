@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { describeFailureRuns, failureHeadline, failureMessage, failureStatusLabel } from '@/lib/execution'
 import type { IssueExecutionDetail } from '@/lib/types'
 import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
@@ -21,27 +22,36 @@ export function SessionExecutionCard({
   const sessionHistory = execution.session_display_history?.slice(-8) ?? []
   const runtimeEvents = execution.runtime_events.slice(-8)
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
+  const failureLabel = failureStatusLabel(execution.failure_class)
+  const failureSummaryReason =
+    execution.pause_reason || execution.failure_class || execution.current_error
+  const pausedRunSummary = describeFailureRuns(
+    execution.consecutive_failures,
+    failureSummaryReason,
+  )
+  const failureCardHeadline = failureHeadline(execution.failure_class)
   const sessionStatusLabel = execution.retry_state === 'paused'
     ? 'Paused'
-    : execution.failure_class === 'run_interrupted'
-      ? 'Interrupted'
+    : failureLabel
+      ? failureLabel
       : execution.active
         ? 'Active session'
         : 'Idle'
   const sessionHeadline = execution.retry_state === 'paused'
     ? 'Automatic retries paused'
-    : execution.failure_class === 'run_interrupted'
-      ? 'Last run interrupted'
+    : failureCardHeadline
+      ? failureCardHeadline
       : session?.last_event || 'No app-server session recorded'
   const sessionMessage = (() => {
     if (execution.retry_state === 'paused') {
-      return `Retry loop paused after ${execution.consecutive_failures ?? 0} interrupted runs.`
+      return `Retry loop paused after ${pausedRunSummary}.`
     }
     if (execution.session_source === 'persisted' && session?.last_timestamp) {
       return `Last session update ${formatRelativeTime(session.last_timestamp)}`
     }
-    if (execution.failure_class === 'run_interrupted') {
-      return 'The last known execution ended without a live completion signal.'
+    const failureDetail = failureMessage(execution.failure_class)
+    if (failureDetail) {
+      return failureDetail
     }
     return session?.last_message || 'No message'
   })()
@@ -77,7 +87,7 @@ export function SessionExecutionCard({
               <div>
                 <p className="font-medium text-amber-100">Automatic retries paused</p>
                 <p className="mt-2 text-amber-50/90">
-                  Maestro stopped retrying after {execution.consecutive_failures ?? 0} interrupted runs.
+                  Maestro stopped retrying after {pausedRunSummary}.
                   {execution.pause_reason ? ` Last reason: ${execution.pause_reason}.` : ''}
                 </p>
                 <p className="mt-2 text-amber-100/80">{pausedActionHint}</p>

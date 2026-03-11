@@ -132,10 +132,6 @@ func sanitizeWorkspaceKey(identifier string) string {
 }
 
 func (r *Runner) getOrCreateWorkspace(workflow *config.Workflow, issue *kanban.Issue) (*kanban.Workspace, error) {
-	if existing, err := r.store.GetWorkspace(issue.ID); err == nil {
-		return existing, nil
-	}
-
 	rootAbs, err := filepath.Abs(workflow.Config.Workspace.Root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
@@ -145,33 +141,31 @@ func (r *Runner) getOrCreateWorkspace(workflow *config.Workflow, issue *kanban.I
 	}
 
 	workspacePath := filepath.Join(rootAbs, sanitizeWorkspaceKey(issue.Identifier))
-	if fi, err := os.Lstat(workspacePath); err == nil {
-		if fi.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(workspacePath)
+	if existing, err := r.store.GetWorkspace(issue.ID); err == nil {
+		preparedPath, createdNow, err := prepareWorkspaceDir(existing.Path, rootAbs)
+		if err != nil {
+			return nil, err
+		}
+		if preparedPath != existing.Path {
+			existing, err = r.store.UpdateWorkspacePath(issue.ID, preparedPath)
 			if err != nil {
-				return nil, fmt.Errorf("workspace symlink check failed: %w", err)
-			}
-			resolvedAbs, _ := filepath.Abs(resolved)
-			if !strings.HasPrefix(resolvedAbs, rootAbs+string(os.PathSeparator)) && resolvedAbs != rootAbs {
-				return nil, fmt.Errorf("workspace symlink escape: %s outside %s", resolvedAbs, rootAbs)
+				return nil, err
 			}
 		}
-		if !fi.IsDir() {
-			if err := os.Remove(workspacePath); err != nil {
-				return nil, fmt.Errorf("remove stale workspace path: %w", err)
+		if createdNow {
+			if err := r.runHook(context.Background(), preparedPath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
+				return nil, err
 			}
 		}
+		return existing, nil
 	}
 
-	createdNow := false
-	if _, err := os.Stat(workspacePath); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-			return nil, fmt.Errorf("failed to create workspace directory: %w", err)
-		}
-		createdNow = true
+	preparedPath, createdNow, err := prepareWorkspaceDir(workspacePath, rootAbs)
+	if err != nil {
+		return nil, err
 	}
 
-	workspace, err := r.store.CreateWorkspace(issue.ID, workspacePath)
+	workspace, err := r.store.CreateWorkspace(issue.ID, preparedPath)
 	if err != nil {
 		if existing, gerr := r.store.GetWorkspace(issue.ID); gerr == nil {
 			workspace = existing
@@ -180,11 +174,63 @@ func (r *Runner) getOrCreateWorkspace(workflow *config.Workflow, issue *kanban.I
 		}
 	}
 	if createdNow {
-		if err := r.runHook(context.Background(), workspacePath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
+		if err := r.runHook(context.Background(), preparedPath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
 			return nil, err
 		}
 	}
 	return workspace, nil
+}
+
+func prepareWorkspaceDir(path, rootAbs string) (string, bool, error) {
+	workspacePath, err := filepath.Abs(path)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve workspace path: %w", err)
+	}
+	if !pathWithinRoot(workspacePath, rootAbs) {
+		return "", false, fmt.Errorf("workspace path escape: %s outside %s", workspacePath, rootAbs)
+	}
+	if fi, err := os.Lstat(workspacePath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(workspacePath)
+			if err != nil {
+				return "", false, fmt.Errorf("workspace symlink check failed: %w", err)
+			}
+			resolvedAbs, err := filepath.Abs(resolved)
+			if err != nil {
+				return "", false, fmt.Errorf("resolve workspace symlink: %w", err)
+			}
+			if !pathWithinRoot(resolvedAbs, rootAbs) {
+				return "", false, fmt.Errorf("workspace symlink escape: %s outside %s", resolvedAbs, rootAbs)
+			}
+		}
+		if !fi.IsDir() {
+			if err := os.Remove(workspacePath); err != nil {
+				return "", false, fmt.Errorf("remove stale workspace path: %w", err)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+
+	createdNow := false
+	if _, err := os.Stat(workspacePath); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+			return "", false, fmt.Errorf("failed to create workspace directory: %w", err)
+		}
+		createdNow = true
+	} else if err != nil {
+		return "", false, err
+	}
+
+	return workspacePath, createdNow, nil
+}
+
+func pathWithinRoot(path, rootAbs string) bool {
+	rel, err := filepath.Rel(rootAbs, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
 }
 
 func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int) (*RunResult, error) {

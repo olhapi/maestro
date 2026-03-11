@@ -212,7 +212,7 @@ codex:
     networkAccess: true
   turn_timeout_ms: 600000
   read_timeout_ms: 5000
-  stall_timeout_ms: 60000
+  stall_timeout_ms: 300000
 ```
 
 The main knobs are:

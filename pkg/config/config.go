@@ -140,7 +140,7 @@ func DefaultConfig() Config {
 			},
 			TurnTimeoutMs:  600000,
 			ReadTimeoutMs:  5000,
-			StallTimeoutMs: 60000,
+			StallTimeoutMs: 300000,
 		},
 	}
 }

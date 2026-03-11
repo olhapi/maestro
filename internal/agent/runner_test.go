@@ -564,6 +564,35 @@ func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
+	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, _ := store.CreateIssue("", "", "Missing", "", 0, nil)
+	path := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, _ := runner.workflowProvider.Current()
+	ws, err := runner.getOrCreateWorkspace(workflow, issue)
+	if err != nil {
+		t.Fatalf("expected missing workspace recovery, got err: %v", err)
+	}
+	if ws.Path != path {
+		t.Fatalf("expected recovered workspace path %s, got %s", path, ws.Path)
+	}
+	fi, err := os.Stat(ws.Path)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("expected recreated workspace dir at %s", ws.Path)
+	}
+}
+
 func TestRunAgentAppServerModeTracksSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	traceFile := filepath.Join(tmpDir, "trace.log")

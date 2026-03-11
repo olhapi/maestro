@@ -32,6 +32,7 @@ import {
   getStateMeta,
   issueStatesFor,
 } from "@/lib/dashboard";
+import { describeFailureRuns } from "@/lib/execution";
 import { appRoutes } from "@/lib/routes";
 import type {
   BootstrapResponse,
@@ -173,10 +174,7 @@ export function IssuePreviewSheet({
                   {paused ? (
                     <span className="inline-flex items-center gap-2 text-rose-100">
                       <AlertTriangle className="size-4 text-rose-300" />
-                      Auto-retries paused after {
-                        paused.consecutive_failures
-                      }{" "}
-                      interrupted runs
+                      Auto-retries paused after {describeFailureRuns(paused.consecutive_failures, paused.error)}
                     </span>
                   ) : null}
                 </div>

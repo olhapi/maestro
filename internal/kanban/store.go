@@ -1549,6 +1549,21 @@ func (s *Store) UpdateWorkspaceRun(issueID string) error {
 	return s.appendChange("workspace", issueID, "run_updated", nil)
 }
 
+func (s *Store) UpdateWorkspacePath(issueID, path string) (*Workspace, error) {
+	_, err := s.db.Exec(`
+		UPDATE workspaces SET path = ?
+		WHERE issue_id = ?`,
+		path, issueID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.appendChange("workspace", issueID, "path_updated", map[string]interface{}{"path": path}); err != nil {
+		return nil, err
+	}
+	return s.GetWorkspace(issueID)
+}
+
 func (s *Store) DeleteWorkspace(issueID string) error {
 	workspace, err := s.GetWorkspace(issueID)
 	if err != nil {

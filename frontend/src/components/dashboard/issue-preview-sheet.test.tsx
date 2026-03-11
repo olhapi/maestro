@@ -101,6 +101,6 @@ describe('IssuePreviewSheet', () => {
       expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
     })
 
-    expect(screen.getByText(/auto-retries paused after 3 interrupted runs/i)).toBeInTheDocument()
+    expect(screen.getByText(/auto-retries paused after 3 stalled runs/i)).toBeInTheDocument()
   })
 })

@@ -157,7 +157,7 @@ describe("SessionDetailPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Persisted session")).toBeInTheDocument();
     expect(
-      screen.getByText(/stopped retrying after 3 interrupted runs/i),
+      screen.getByText(/stopped retrying after 3 stalled runs/i),
     ).toBeInTheDocument();
   });
 
