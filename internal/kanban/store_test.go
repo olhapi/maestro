@@ -124,6 +124,136 @@ func TestCreateIssueAgentCommandWithRuntimeEventRollsBackOnEventFailure(t *testi
 	}
 }
 
+func TestIssueAgentCommandLifecycle(t *testing.T) {
+	store := setupTestStore(t)
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	issue, err := store.CreateIssue("", "", "Follow-up", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue issue: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState issue: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	unresolved, err := store.UnresolvedBlockersForIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("UnresolvedBlockersForIssue: %v", err)
+	}
+	if len(unresolved) != 1 || unresolved[0] != blocker.Identifier {
+		t.Fatalf("expected unresolved blocker %q, got %#v", blocker.Identifier, unresolved)
+	}
+
+	submitted, err := store.CreateIssueAgentCommandWithRuntimeEvent(
+		issue.ID,
+		"Resume implementation after unblock.",
+		IssueAgentCommandPending,
+		"manual_command_submitted",
+		map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      string(issue.WorkflowPhase),
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommandWithRuntimeEvent: %v", err)
+	}
+	waiting, err := store.CreateIssueAgentCommand(issue.ID, "Run the final check.", IssueAgentCommandWaitingForUnblock)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand waiting: %v", err)
+	}
+	if err := store.UpdateIssueAgentCommandStatus(submitted.ID, IssueAgentCommandWaitingForUnblock); err != nil {
+		t.Fatalf("UpdateIssueAgentCommandStatus: %v", err)
+	}
+
+	pending, err := store.ListPendingIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands while blocked: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending commands while blocked, got %#v", pending)
+	}
+
+	if err := store.UpdateIssueState(blocker.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState blocker done: %v", err)
+	}
+	if err := store.ActivateIssueAgentCommandsIfDispatchable(issue.ID); err != nil {
+		t.Fatalf("ActivateIssueAgentCommandsIfDispatchable: %v", err)
+	}
+
+	pending, err = store.ListPendingIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands after unblock: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected two pending commands after unblock, got %#v", pending)
+	}
+	if pending[0].ID != submitted.ID || pending[1].ID != waiting.ID {
+		t.Fatalf("expected oldest-first pending ordering, got %#v", pending)
+	}
+
+	beforeDeliveredChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq before delivered change: %v", err)
+	}
+	if err := store.MarkIssueAgentCommandsDelivered(issue.ID, []string{submitted.ID, waiting.ID}, "same_thread", "thread-live", 2); err != nil {
+		t.Fatalf("MarkIssueAgentCommandsDelivered: %v", err)
+	}
+	afterDeliveredChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq after delivered change: %v", err)
+	}
+	if afterDeliveredChange <= beforeDeliveredChange {
+		t.Fatalf("expected delivered change event to advance seq: before=%d after=%d", beforeDeliveredChange, afterDeliveredChange)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("expected two commands, got %#v", commands)
+	}
+	for _, command := range commands {
+		if command.Status != IssueAgentCommandDelivered {
+			t.Fatalf("expected delivered status, got %+v", command)
+		}
+		if command.DeliveryMode != "same_thread" || command.DeliveryThreadID != "thread-live" || command.DeliveryAttempt != 2 {
+			t.Fatalf("unexpected delivery metadata: %+v", command)
+		}
+		if command.DeliveredAt == nil || command.DeliveredAt.IsZero() {
+			t.Fatalf("expected delivered timestamp, got %+v", command)
+		}
+	}
+
+	events, err := store.ListRuntimeEvents(0, 20)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	foundSubmission := false
+	for _, event := range events {
+		switch event.Kind {
+		case "manual_command_submitted":
+			if event.Payload["command_id"] != submitted.ID || event.Payload["command"] != submitted.Command {
+				t.Fatalf("unexpected submitted payload: %+v", event)
+			}
+			foundSubmission = true
+		}
+	}
+	if !foundSubmission {
+		t.Fatal("expected manual_command_submitted runtime event")
+	}
+}
+
 func TestStateValidation(t *testing.T) {
 	tests := []struct {
 		state    State
