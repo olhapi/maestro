@@ -63,6 +63,29 @@ jobs:
       - name: Run frontend tests
         run: npm run test:ci
 
+  website-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install website dependencies
+        run: npm ci
+      - name: Run website checks
+        run: npm run check
+      - name: Run website build
+        run: npm run build
+      - name: Run website tests
+        run: npm run test:ci
+      - name: Run website smoke checks
+        run: npm run smoke
+
   retry-safety-e2e:
     if: github.event_name == 'schedule' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest

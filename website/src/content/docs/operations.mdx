@@ -1,0 +1,109 @@
+---
+title: Operations and observability
+description: Use the HTTP runtime endpoints, workflow checks, extension file, logs, and Docker path without guesswork.
+section: reference
+order: 1
+navLabel: Operations
+---
+
+## Observability endpoints
+
+Start the daemon with an HTTP port:
+
+```bash
+./maestro run /path/to/repo --port 8787
+```
+
+If `--db` is omitted, `run` uses the current Maestro workspace's `.maestro/maestro.db`.
+
+Available endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Process health and timestamp |
+| `GET /api/v1/state` | Orchestrator status payload |
+| `GET /api/v1/<issue_identifier>` | Single running or retrying issue payload |
+| `GET /api/v1/sessions` | All live app-server sessions |
+| `GET /api/v1/sessions?issue=ISS-1` | Single session lookup by issue identifier |
+| `GET /api/v1/events?since=0&limit=100` | In-memory event feed |
+| `POST /api/v1/refresh` | Request a refresh event |
+| `GET /api/v1/dashboard` | Combined snapshot of state, sessions, and recent events |
+
+`maestro status --dashboard` is a local CLI rendering helper. It is not the same thing as the live HTTP observability API.
+
+## Workflow bootstrap and checks
+
+Use these commands differently:
+
+- `maestro workflow init [repo_path]` creates `WORKFLOW.md` explicitly
+- `maestro run [repo_path]` bootstraps a missing file automatically
+- `maestro verify [--repo <path>] [--db <path>] [--json]` bootstraps a missing file, verifies it loads, and checks database initialization
+- `maestro spec-check [--repo <path>] [--json]` is non-mutating and fails if the workflow file is missing or invalid
+
+`verify` is the readiness check. `spec-check` is the lightweight conformance check.
+
+## Extensions file
+
+Only `maestro run` loads extension tools via `--extensions`.
+
+`maestro mcp` inherits whatever tool set the live daemon started with. It rejects `--extensions` so the stdio bridge cannot drift away from the daemon it is attached to.
+
+Each extension entry supports:
+
+- `name`
+- `description`
+- `command`
+- `timeout_sec`
+- `allowed`
+- `working_dir`
+- `require_args`
+- `deny_env_passthrough`
+
+Example:
+
+```json
+[
+  {
+    "name": "echo_issue",
+    "description": "Print the args object for debugging",
+    "command": "jq -r . <<< \"$MAESTRO_ARGS_JSON\"",
+    "timeout_sec": 10,
+    "require_args": true
+  }
+]
+```
+
+At runtime, Maestro passes `MAESTRO_TOOL_NAME` and `MAESTRO_ARGS_JSON` into the shell command environment.
+
+## Logs
+
+Write structured JSON logs to both stdout and a rotating file sink:
+
+```bash
+./maestro --log-level info run /path/to/repo --logs-root ./log
+./maestro --log-level debug run /path/to/repo --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
+```
+
+Important behavior:
+
+- the main log file is `maestro.log`
+- rotation is size-based
+- `debug` includes raw app-server stream output
+- `info` keeps logs focused on lifecycle and status transitions
+
+## Docker
+
+```bash
+docker build -t maestro .
+docker run --rm -v ./repo:/repo -v ./data:/data maestro run /repo --db /data/maestro.db
+```
+
+If `maestro mcp` runs in a different environment from `maestro run`, both processes must share the same database path and daemon registry location.
+
+## Deliberate scope
+
+Current non-goals:
+
+- no Linear-backed tracker
+- no Phoenix-style live observability layer
+- no separate plugin runtime for extensions

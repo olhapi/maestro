@@ -1,0 +1,29 @@
+---
+import type { MarkdownHeading } from "astro";
+
+const { headings = [] } = Astro.props as { headings?: MarkdownHeading[] };
+const visibleHeadings = headings.filter((heading) => heading.depth <= 3);
+---
+
+{
+  visibleHeadings.length > 0 ? (
+    <aside class="hidden xl:block">
+      <div class="panel sticky top-28 p-5">
+        <p class="kicker !mb-4 !text-[0.7rem]">On this page</p>
+        <nav class="space-y-2">
+          {visibleHeadings.map((heading) => (
+            <a
+              class:list={[
+                "block text-sm leading-6 text-[var(--muted)] transition hover:text-white",
+                heading.depth === 3 ? "pl-4" : "",
+              ]}
+              href={`#${heading.slug}`}
+            >
+              {heading.text}
+            </a>
+          ))}
+        </nav>
+      </div>
+    </aside>
+  ) : null
+}

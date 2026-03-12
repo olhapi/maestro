@@ -1,0 +1,40 @@
+---
+import { getCollection } from "astro:content";
+
+import SiteShell from "../components/SiteShell.astro";
+import { getSearchEntries } from "../lib/docs";
+import { siteOrigin } from "../site.config";
+import "../styles/global.css";
+
+const { title, description, path = "/", activeNav = "/" } = Astro.props;
+
+const docs = await getCollection("docs");
+const searchEntries = getSearchEntries(docs);
+const pageTitle = title === "Maestro" ? "Maestro" : `${title} · Maestro`;
+const canonical = new URL(path, siteOrigin).toString();
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1" name="viewport" />
+    <meta content={description} name="description" />
+    <meta content={pageTitle} property="og:title" />
+    <meta content={description} property="og:description" />
+    <meta content="website" property="og:type" />
+    <meta content={canonical} property="og:url" />
+    <meta content={canonical} name="twitter:url" />
+    <meta content={pageTitle} name="twitter:title" />
+    <meta content={description} name="twitter:description" />
+    <meta content="summary_large_image" name="twitter:card" />
+    <link href={canonical} rel="canonical" />
+    <link href="/favicon.svg" rel="icon" type="image/svg+xml" />
+    <title>{pageTitle}</title>
+  </head>
+  <body>
+    <SiteShell activeNav={activeNav} searchEntries={searchEntries}>
+      <slot />
+    </SiteShell>
+  </body>
+</html>

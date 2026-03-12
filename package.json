@@ -3,9 +3,14 @@
   "private": true,
   "scripts": {
     "prepare": "husky",
-    "postinstall": "npm --prefix frontend install",
+    "postinstall": "npm --prefix frontend install && npm --prefix website install",
     "hooks:pre-commit": "./scripts/git-hooks/pre-commit.sh",
-    "hooks:pre-push": "./scripts/git-hooks/pre-push.sh"
+    "hooks:pre-push": "./scripts/git-hooks/pre-push.sh",
+    "website:dev": "npm --prefix website run dev",
+    "website:build": "npm --prefix website run build",
+    "website:check": "npm --prefix website run check",
+    "website:test": "npm --prefix website run test:ci",
+    "website:smoke": "npm --prefix website run smoke"
   },
   "devDependencies": {
     "husky": "^9.1.7"

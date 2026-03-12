@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
 import type { ActivityGroup, ActivityEntry } from '@/lib/types'
@@ -16,35 +16,21 @@ function rowMarkerClass(entry: ActivityEntry) {
   return entry.tone === 'error' ? 'bg-rose-300' : entry.tone === 'success' ? 'bg-emerald-300' : 'bg-amber-200'
 }
 
-function renderEntryBody(entry: ActivityEntry) {
-  if (entry.kind === 'status') {
-    return (
-      <div className="min-w-0">
-        <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-          {entry.title}
-        </p>
-        <p className="mt-1 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-sm leading-6 text-white/82">
-          {entry.summary}
-        </p>
-      </div>
-    )
-  }
-
+function entryHeadingClass(entry: ActivityEntry) {
   const headingTone =
     entry.kind === 'agent' && entry.phase === 'final_answer'
       ? 'text-emerald-200/85'
       : 'text-[var(--muted-foreground)]'
 
-  return (
-    <div className="min-w-0">
-      <p className={`text-[11px] font-medium uppercase tracking-[0.18em] ${headingTone}`}>
-        {entry.title}
-      </p>
-      <p className="mt-1.5 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92">
-        {entry.summary}
-      </p>
-    </div>
-  )
+  return `text-[11px] font-medium uppercase tracking-[0.18em] ${headingTone}`
+}
+
+function entrySummaryClass(entry: ActivityEntry) {
+  if (entry.kind === 'status') {
+    return 'mt-1 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-sm leading-6 text-white/82'
+  }
+
+  return 'mt-1.5 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92'
 }
 
 function groupLabel(group: ActivityGroup) {
@@ -66,11 +52,32 @@ export function SessionActivityTranscript({
   emptyMessage?: string
 }) {
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const totalEntries = groups.reduce((sum, group) => sum + group.entries.length, 0)
+  // Track transcript growth without copying the full command output into a dependency key.
+  const scrollVersion = groups
+    .map((group) =>
+      [
+        group.attempt,
+        group.phase ?? '',
+        group.status ?? '',
+        ...group.entries.map((entry) =>
+          `${entry.id}:${entry.status ?? ''}:${entry.summary.length}:${entry.detail?.length ?? 0}`),
+      ].join('|'),
+    )
+    .join('||')
 
   const toggleHistoryRow = (rowKey: string) => {
     setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }))
   }
+
+  useLayoutEffect(() => {
+    const node = scrollContainerRef.current
+    if (!node || totalEntries === 0) {
+      return
+    }
+    node.scrollTop = node.scrollHeight
+  }, [scrollVersion, totalEntries])
 
   return (
     <section
@@ -90,6 +97,7 @@ export function SessionActivityTranscript({
         <div
           className="mt-4 max-h-[520px] overflow-y-auto pr-1"
           data-testid="activity-log-scroll"
+          ref={scrollContainerRef}
         >
           <div className="space-y-6">
             {groups.map((group) => (
@@ -108,14 +116,15 @@ export function SessionActivityTranscript({
                     const expanded = expandedRows[entry.id] ?? false
 
                     return (
-                      <article key={entry.id} className="relative pl-4">
-                        <span
-                          className={`absolute top-2.5 left-0 block size-1.5 rounded-full ${rowMarkerClass(entry)}`}
-                        />
+                      <article key={entry.id} className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2.5">
+                            <span className={`block size-1.5 shrink-0 rounded-full ${rowMarkerClass(entry)}`} />
+                            <p className={entryHeadingClass(entry)}>{entry.title}</p>
+                          </div>
 
-                        <div className="flex items-start gap-3">
-                          <div className="min-w-0 flex-1">
-                            {renderEntryBody(entry)}
+                          <div className="pl-4">
+                            <p className={entrySummaryClass(entry)}>{entry.summary}</p>
 
                             {entry.detail && expanded ? (
                               <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88">
@@ -123,18 +132,18 @@ export function SessionActivityTranscript({
                               </pre>
                             ) : null}
                           </div>
-
-                          {entry.expandable ? (
-                            <button
-                              className="inline-flex h-6 w-20 shrink-0 items-center justify-center gap-1 self-start rounded-sm border border-white/10 bg-white/[0.04] px-1.5 text-[10px] leading-none text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
-                              onClick={() => toggleHistoryRow(entry.id)}
-                              type="button"
-                            >
-                              {expanded ? 'Collapse' : 'Expand'}
-                              {expanded ? <ChevronUp className="size-2.5" /> : <ChevronDown className="size-2.5" />}
-                            </button>
-                          ) : null}
                         </div>
+
+                        {entry.expandable ? (
+                          <button
+                            className="inline-flex h-6 w-20 shrink-0 items-center justify-center gap-1 self-start rounded-sm border border-white/10 bg-white/[0.04] px-1.5 text-[10px] leading-none text-[var(--muted-foreground)] transition hover:bg-white/[0.08] hover:text-white"
+                            onClick={() => toggleHistoryRow(entry.id)}
+                            type="button"
+                          >
+                            {expanded ? 'Collapse' : 'Expand'}
+                            {expanded ? <ChevronUp className="size-2.5" /> : <ChevronDown className="size-2.5" />}
+                          </button>
+                        ) : null}
                       </article>
                     )
                   })}

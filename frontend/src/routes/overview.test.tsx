@@ -34,8 +34,8 @@ describe('OverviewPage', () => {
       expect(screen.getByText('Running agents')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('Event rail')).toBeInTheDocument()
     expect(screen.getByText('Execution tempo')).toBeInTheDocument()
+    expect(screen.queryByText('Recent signals')).not.toBeInTheDocument()
     expect(screen.getByText('Retry pressure')).toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: /ISS-1/i })).toHaveLength(2)
   })

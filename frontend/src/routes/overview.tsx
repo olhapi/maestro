@@ -5,11 +5,9 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
-import type { RuntimeEvent } from '@/lib/types'
-import { formatCompactNumber, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
+import { formatCompactNumber, formatNumber, formatRelativeTime } from '@/lib/utils'
 
 function Metric({
   label,
@@ -40,38 +38,6 @@ function Metric({
   )
 }
 
-function EventRail({ events }: { events: RuntimeEvent[] }) {
-  return (
-    <Card>
-      <CardHeader>
-        <div>
-          <Badge>Recent signals</Badge>
-          <CardTitle className="mt-4">Event rail</CardTitle>
-          <CardDescription>Most recent orchestration events persisted for operator triage.</CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <ScrollArea className="h-[300px] md:h-[400px]">
-          <div className="space-y-2.5 pr-3">
-            {events.map((event) => (
-              <div key={event.seq} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium text-white">{toTitleCase(event.kind)}</p>
-                  <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(event.ts)}</span>
-                </div>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                  {event.identifier ? `${event.identifier} · ` : ''}
-                  {event.error || event.title || 'Runtime signal captured'}
-                </p>
-              </div>
-            ))}
-          </div>
-        </ScrollArea>
-      </CardContent>
-    </Card>
-  )
-}
-
 export function OverviewPage() {
   const { data, isLoading } = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
 
@@ -83,7 +49,6 @@ export function OverviewPage() {
   const status = data.overview.status
   const activeRuns = Number(status.active_runs ?? snapshot.running.length)
   const retryQueue = Number(status.retry_queue_count ?? snapshot.retrying.length)
-  const recentEvents = data.overview.recent_events.slice(-8).reverse()
 
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -195,23 +160,19 @@ export function OverviewPage() {
         </Card>
       </section>
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="grid gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
         {Object.entries(data.overview.board).map(([key, value]) => (
           <Card key={key} className="overflow-hidden">
-            <CardContent className="pt-[var(--panel-padding)]">
-              <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{key.replaceAll('_', ' ')}</p>
-              <p className="mt-2.5 font-display text-[calc(var(--metric-value-size)-0.25rem)] font-semibold leading-none">{value}</p>
-              <div className="mt-3.5 flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+            <CardContent className="px-[var(--panel-padding-tight)] pb-[var(--panel-padding-tight)] pt-[var(--panel-padding-tight)]">
+              <p className="text-[0.68rem] uppercase tracking-[0.14em] text-[var(--muted-foreground)]">{key.replaceAll('_', ' ')}</p>
+              <p className="mt-2 font-display text-[calc(var(--metric-value-size)-0.5rem)] font-semibold leading-none">{value}</p>
+              <div className="mt-3 flex items-center gap-1.5 text-[0.7rem] text-[var(--muted-foreground)]">
                 <TimerReset className="size-3.5" />
                 state load
               </div>
             </CardContent>
           </Card>
         ))}
-      </section>
-
-      <section>
-        <EventRail events={recentEvents} />
       </section>
     </div>
   )

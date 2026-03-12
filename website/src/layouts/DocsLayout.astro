@@ -1,0 +1,30 @@
+---
+import { getCollection } from "astro:content";
+
+import DocsSidebar from "../components/DocsSidebar.astro";
+import TableOfContents from "../components/TableOfContents.astro";
+import BaseLayout from "./BaseLayout.astro";
+import { groupDocs } from "../lib/docs";
+
+const { title, description, path, sectionTitle, headings = [], currentHref } = Astro.props;
+const groups = groupDocs(await getCollection("docs"));
+---
+
+<BaseLayout activeNav="/docs" description={description} path={path} title={title}>
+  <section class="section-shell py-10 md:py-14">
+    <div class="grid gap-6 lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[17rem_minmax(0,1fr)_15rem]">
+      <DocsSidebar currentHref={currentHref} groups={groups} />
+
+      <article class="panel p-6 md:p-8">
+        <p class="badge-pill w-fit">{sectionTitle}</p>
+        <h1 class="mt-5 font-display text-4xl font-semibold leading-[1.02] tracking-tight text-white md:text-6xl">{title}</h1>
+        <p class="mt-4 max-w-3xl text-base leading-7 text-[var(--muted)] md:text-lg">{description}</p>
+        <div class="docs-copy mt-10">
+          <slot />
+        </div>
+      </article>
+
+      <TableOfContents headings={headings} />
+    </div>
+  </section>
+</BaseLayout>

@@ -1,0 +1,74 @@
+---
+title: Architecture
+description: Understand the attach path, daemon, SQLite-backed tracker, and workspace orchestration loop before you start tuning behavior.
+section: concepts
+order: 0
+navLabel: Architecture
+---
+
+## Three durable surfaces
+
+Maestro keeps the orchestration loop split into three surfaces that stay aligned:
+
+- a local tracker for projects and issues
+- an MCP bridge so Codex or ChatGPT can manage that tracker
+- an orchestrator that reads `WORKFLOW.md`, picks up `ready` issues, and dispatches them to an agent
+
+## Runtime path
+
+```text
+Codex or ChatGPT (via MCP)
+        |
+        v
+maestro mcp (stdio bridge)
+        |
+        v
+maestro run daemon <-> SQLite Kanban store
+        |
+        v
+Orchestrator -> workspace lifecycle -> agent runner
+        ^
+        |
+   WORKFLOW.md
+```
+
+## MCP attach model
+
+`maestro run` is the long-lived daemon for a given database. It owns:
+
+- the SQLite store
+- the orchestrator runtime
+- the public observability API
+- a private loopback-only MCP transport endpoint
+
+`maestro mcp` does not start a separate daemon. It attaches to the live `maestro run` process for the same store and bridges that daemon over stdio for MCP clients.
+
+Operationally, that means:
+
+- start `maestro run` first
+- point `maestro mcp` at the same `--db`
+- expect an explicit error if no live daemon exists for that store
+
+## Workflow-driven orchestration
+
+`WORKFLOW.md` is the repo-local source of truth for:
+
+- tracker settings
+- workspace root
+- hook commands and timeout
+- agent concurrency, mode, and dispatch behavior
+- optional review and done phase prompts
+- Codex command and sandbox settings
+- the prompt template rendered for each issue
+
+The orchestrator does not guess its way around missing repo context. It reads the workflow file, then turns queue state into per-issue workspaces and agent runs.
+
+## Why the architecture stays local-first
+
+The current design intentionally differs from the original Maestro project:
+
+- the tracker is local Kanban backed by SQLite, not Linear
+- the observability surface is HTTP JSON plus an embedded dashboard, not Phoenix pubsub
+- extensions stay as local shell commands rather than a separate plugin runtime
+
+That keeps the operational footprint small enough that you can reason about the full loop from a single repo checkout.

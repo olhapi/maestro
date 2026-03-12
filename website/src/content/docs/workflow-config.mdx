@@ -1,0 +1,83 @@
+---
+title: Workflow config
+description: Tune agent mode, dispatch behavior, retries, sandboxing, and prompt rendering through the repo-local WORKFLOW.md file.
+section: concepts
+order: 2
+navLabel: Workflow config
+---
+
+## What `WORKFLOW.md` controls
+
+`WORKFLOW.md` is the repo-local source of truth for orchestration. It covers:
+
+- tracker settings
+- workspace root
+- hook commands and timeout
+- agent concurrency, mode, and dispatch behavior
+- optional review and done phase prompts
+- Codex command and sandbox settings
+- the prompt template rendered for each issue
+
+## Typical Codex-backed section
+
+```yaml
+agent:
+  max_concurrent_agents: 3
+  max_turns: 4
+  max_retry_backoff_ms: 60000
+  max_automatic_retries: 8
+  mode: app_server
+  dispatch_mode: parallel
+codex:
+  command: codex app-server
+  expected_version: 0.111.0
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+  turn_timeout_ms: 1800000
+  read_timeout_ms: 10000
+  stall_timeout_ms: 300000
+```
+
+## Main knobs
+
+- `agent.mode`: use `app_server` for the Codex app-server protocol or `stdio` for `codex exec` style runners.
+- `agent.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
+- `agent.max_turns`: limit how many turns Maestro gives the agent before ending an attempt.
+- `agent.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time.
+- `codex.command`: exact command Maestro launches.
+- `codex.expected_version`: version Maestro expects from `codex --version`.
+- `codex.approval_policy`: keep this at `never` for unattended runs.
+- `codex.thread_sandbox` and `codex.turn_sandbox_policy`: define where Codex can write and whether network access stays on.
+- `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
+
+## Template variables
+
+The issue prompt template can interpolate:
+
+- `{{ issue.identifier }}`
+- `{{ issue.title }}`
+- `{{ issue.description }}`
+- `{{ issue.state }}`
+- `{{ phase }}`
+- `{{ attempt }}`
+
+## Bootstrap behavior
+
+The workflow file is required for orchestration, but different commands treat a missing file differently:
+
+- `maestro workflow init` creates it explicitly
+- `maestro run` bootstraps a missing file automatically
+- `maestro verify` also bootstraps a missing file
+- `maestro spec-check` is non-mutating and fails if the file is missing or invalid
+
+## Codex access requirements
+
+For reliable unattended orchestration:
+
+- Codex must already be installed and logged in
+- the configured command must resolve on `PATH`, or you should use an absolute path
+- the sandbox must still allow reads from the repo and writes inside the per-issue workspace
+- network access should stay enabled when tasks depend on package registries, Git remotes, or APIs

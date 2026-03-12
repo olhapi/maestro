@@ -1,0 +1,30 @@
+---
+import { getCollection, render } from "astro:content";
+
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import { getDocHref, getDocSlug, sectionMeta, sortDocs, type DocsEntry } from "../../lib/docs";
+
+export async function getStaticPaths() {
+  const docs = sortDocs(await getCollection("docs"));
+
+  return docs.map((entry) => ({
+    params: { slug: getDocSlug(entry) },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props as { entry: DocsEntry };
+const { Content, headings } = await render(entry);
+const href = getDocHref(entry);
+---
+
+<DocsLayout
+  currentHref={href}
+  description={entry.data.description}
+  headings={headings}
+  path={href}
+  sectionTitle={sectionMeta[entry.data.section].title}
+  title={entry.data.title}
+>
+  <Content />
+</DocsLayout>

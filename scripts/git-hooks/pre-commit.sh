@@ -16,6 +16,7 @@ fi
 
 needs_make_test=0
 needs_frontend=0
+needs_website=0
 go_packages=""
 
 old_ifs=$IFS
@@ -25,6 +26,9 @@ for path in $STAGED; do
   case "$path" in
     frontend/*)
       needs_frontend=1
+      ;;
+    website/*)
+      needs_website=1
       ;;
   esac
 
@@ -56,4 +60,9 @@ fi
 if [ "$needs_frontend" -eq 1 ]; then
   run_step npm --prefix frontend run lint
   run_step npm --prefix frontend run test:ci
+fi
+
+if [ "$needs_website" -eq 1 ]; then
+  run_step npm --prefix website run check
+  run_step npm --prefix website run test:ci
 fi

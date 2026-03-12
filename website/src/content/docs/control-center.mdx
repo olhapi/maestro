@@ -1,0 +1,63 @@
+---
+title: Control center
+description: Read the embedded dashboard as the live supervision surface for queue state, retries, issue execution, and active sessions.
+section: concepts
+order: 1
+navLabel: Control center
+---
+
+## What the dashboard is for
+
+The embedded dashboard is the live supervision surface for Maestro. It is designed to keep enough runtime state visible that you can answer three questions quickly:
+
+- What is the queue doing right now?
+- Which issue actually needs attention?
+- Are retries, sessions, or token burn drifting in the wrong direction?
+
+## Core surfaces
+
+### Overview
+
+Use the overview page to read system pressure before opening a specific issue:
+
+- running agents
+- retry queue pressure
+- total issue count
+- token burn across recent runtime snapshots
+- 24h throughput and retry trends
+
+### Work board
+
+The work board keeps routing decisions spatial:
+
+- drag issues between lanes
+- filter by project, state, and search
+- keep blockers, live sessions, and token spend visible on the card
+- inspect an issue quickly without losing board context
+
+### Issue detail
+
+Issue pages are intentionally dense. They keep the execution transcript, live state, blockers, branch and PR state, token usage, and agent controls close together so you do not have to context-switch during supervision.
+
+### Sessions
+
+The sessions surface is for active orchestration periods when multiple workspaces are moving at once. Use it to read live session identifiers, last activity, and retry context without opening each issue individually.
+
+## Embedded server behavior
+
+When `maestro run` starts with `--port`, the HTTP server serves:
+
+- the embedded dashboard on `/`
+- the health endpoint on `/health`
+- the observability API on `/api/v1/...`
+
+The UI and API are intentionally colocated because they describe the same live daemon.
+
+## Practical reading order
+
+If you are debugging live behavior:
+
+1. Start on overview.
+2. Move to the work board to isolate the affected issue.
+3. Open the issue detail page for transcript and control data.
+4. Use sessions when the problem is broader than one issue.

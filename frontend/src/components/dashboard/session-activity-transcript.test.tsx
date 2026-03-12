@@ -60,6 +60,15 @@ describe('SessionActivityTranscript', () => {
     expect(toggle).toHaveTextContent('Collapse')
   })
 
+  it('renders the status marker inline and centered with the entry title row', () => {
+    render(<SessionActivityTranscript groups={makeGroups([makeCommandEntry()])} />)
+
+    const titleRow = screen.getByText('Command output').parentElement
+    expect(titleRow).toHaveClass('flex')
+    expect(titleRow).toHaveClass('items-center')
+    expect(titleRow?.querySelector('span')).toHaveClass('size-1.5')
+  })
+
   it('keeps an expanded command row open when the same row updates in place', () => {
     const { rerender } = render(
       <SessionActivityTranscript
@@ -89,5 +98,51 @@ describe('SessionActivityTranscript', () => {
     expect(screen.getByRole('button', { name: /collapse/i })).toBeInTheDocument()
     expect(screen.getByText(/second detail chunk/i)).toBeInTheDocument()
     expect(screen.queryByText(/first detail chunk/i)).not.toBeInTheDocument()
+  })
+
+  it('scrolls the activity log to the bottom when activity updates arrive', () => {
+    const { rerender } = render(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          makeCommandEntry({
+            summary: 'Initial summary',
+            detail: '$ npm run dev\nfirst detail chunk',
+          }),
+        ])}
+      />,
+    )
+
+    const scrollContainer = screen.getByTestId('activity-log-scroll')
+    Object.defineProperty(scrollContainer, 'scrollHeight', {
+      configurable: true,
+      get: () => 480,
+    })
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 0,
+    })
+
+    rerender(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          makeCommandEntry({
+            summary: 'Updated summary',
+            detail: '$ npm run dev\nsecond detail chunk',
+          }),
+          {
+            id: 'attempt-1-agent-2',
+            kind: 'agent',
+            title: 'Agent update',
+            summary: 'Newer message at the bottom',
+            expandable: false,
+            phase: 'commentary',
+            tone: 'default',
+          },
+        ])}
+      />,
+    )
+
+    expect(scrollContainer.scrollTop).toBe(480)
   })
 })

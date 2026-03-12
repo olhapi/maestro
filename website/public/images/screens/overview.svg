@@ -1,0 +1,35 @@
+<svg width="1400" height="900" viewBox="0 0 1400 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1400" height="900" rx="42" fill="#07080A"/>
+  <rect x="34" y="34" width="170" height="832" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="248" y="34" width="1118" height="94" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="248" y="156" width="260" height="168" rx="30" fill="url(#card1)"/>
+  <rect x="530" y="156" width="260" height="168" rx="30" fill="url(#card2)"/>
+  <rect x="812" y="156" width="260" height="168" rx="30" fill="url(#card3)"/>
+  <rect x="1094" y="156" width="272" height="168" rx="30" fill="url(#card4)"/>
+  <rect x="248" y="352" width="728" height="346" rx="34" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="1002" y="352" width="364" height="166" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="1002" y="532" width="364" height="166" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="248" y="722" width="1118" height="144" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <path d="M308 611C394 540 435 466 547 476C644 485 693 576 780 561C852 548 889 474 916 430" stroke="#C4FF57" stroke-width="8" stroke-linecap="round"/>
+  <path d="M309 629C394 610 445 568 532 588C616 608 705 684 808 658C875 641 915 585 958 526" stroke="#53D9FF" stroke-width="8" stroke-linecap="round" opacity="0.8"/>
+  <circle cx="916" cy="430" r="11" fill="#C4FF57"/>
+  <circle cx="958" cy="526" r="11" fill="#53D9FF"/>
+  <defs>
+    <linearGradient id="card1" x1="248" y1="156" x2="508" y2="324" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(255,255,255,0.08)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0.03)"/>
+    </linearGradient>
+    <linearGradient id="card2" x1="530" y1="156" x2="790" y2="324" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(196,255,87,0.16)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0.03)"/>
+    </linearGradient>
+    <linearGradient id="card3" x1="812" y1="156" x2="1072" y2="324" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(83,217,255,0.16)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0.03)"/>
+    </linearGradient>
+    <linearGradient id="card4" x1="1094" y1="156" x2="1366" y2="324" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(255,255,255,0.08)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0.03)"/>
+    </linearGradient>
+  </defs>
+</svg>

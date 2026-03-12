@@ -1,0 +1,57 @@
+---
+title: Install Maestro
+description: Install Maestro from npm on macOS arm64, build it from source on other platforms, and bootstrap contributor tooling locally.
+section: getting-started
+order: 0
+navLabel: Install
+---
+
+## Preferred install path
+
+If you are on macOS arm64, the fastest path is the published npm package:
+
+```bash
+npm install -g @olhapi/maestro
+```
+
+Update an existing global install with:
+
+```bash
+npm update -g @olhapi/maestro
+```
+
+The installed command name is still `maestro`.
+
+## Build from source
+
+For local development or unsupported platforms, build the binary directly from the repo:
+
+```bash
+go build -o maestro ./cmd/maestro
+```
+
+Optional Docker build:
+
+```bash
+docker build -t maestro .
+```
+
+## Contributor tooling
+
+If you are working in the repo itself, install the root development dependency once:
+
+```bash
+npm install
+```
+
+That installs the repo-managed Git hooks and bootstraps the nested frontend and website dependencies used by those hooks.
+
+## What to install first
+
+- Install `go` if you need source builds or local development.
+- Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
+- Use the npm package when you want the shortest path to a working local install on macOS arm64.
+
+## Next step
+
+Once the binary is available on your machine, move to [quickstart](/docs/quickstart) and create the first local workflow file.

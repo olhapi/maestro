@@ -1,0 +1,79 @@
+---
+title: CLI reference
+description: Reach for the core project, issue, orchestration, and workflow commands without scanning the README.
+section: reference
+order: 0
+navLabel: CLI reference
+---
+
+## Projects
+
+```bash
+maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
+maestro project list
+maestro project delete <id>
+```
+
+Use project commands to register a repo, inspect the local tracker, and remove stale projects from the store.
+
+## Issues
+
+```bash
+maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
+maestro issue list [--state <state>] [--project <id>]
+maestro issue show <identifier>
+maestro issue move <identifier> <state>
+maestro issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
+maestro issue delete <identifier>
+maestro issue block <identifier> <blocker_identifier...>
+```
+
+Issue commands are the local queue manipulation layer. Most day-to-day supervision boils down to create, list, move, show, and block/unblock flows.
+
+## Orchestration
+
+```bash
+maestro --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
+maestro --log-level <debug|info|warn|error> mcp [--db <path>]
+maestro --log-level <debug|info|warn|error> status [--json]
+maestro --log-level <debug|info|warn|error> status --dashboard [--dashboard-url <url>]
+maestro --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
+maestro --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
+maestro --log-level <debug|info|warn|error> workflow init [repo_path]
+```
+
+`--log-level` defaults to `info`. Use `debug` when you need raw app-server stream output and session churn in the structured logs.
+
+## Issue states
+
+| State | Meaning |
+| --- | --- |
+| `backlog` | Not yet prioritized |
+| `ready` | Available for the orchestrator |
+| `in_progress` | Actively being worked |
+| `in_review` | Waiting for human review |
+| `done` | Completed |
+| `cancelled` | Closed without completion |
+
+## Common operator flows
+
+### Put a single issue into execution
+
+```bash
+maestro issue list --state backlog
+maestro issue move ISS-1 ready
+maestro run /path/to/repo --port 8787
+```
+
+### Verify a repo before launching the loop
+
+```bash
+maestro verify --repo /path/to/repo --json
+maestro spec-check --repo /path/to/repo --json
+```
+
+### Inspect live status without opening the dashboard
+
+```bash
+maestro status --dashboard --dashboard-url http://127.0.0.1:8787
+```

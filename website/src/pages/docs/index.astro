@@ -1,0 +1,88 @@
+---
+import { getCollection } from "astro:content";
+
+import FeatureCard from "../../components/FeatureCard.astro";
+import SectionHeading from "../../components/SectionHeading.astro";
+import CommandBlock from "../../components/react/CommandBlock";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { getDocHref, groupDocs } from "../../lib/docs";
+import { quickstartSteps } from "../../site.config";
+
+const groups = groupDocs(await getCollection("docs"));
+---
+
+<BaseLayout
+  activeNav="/docs"
+  description="Read the Maestro docs from install and quickstart through workflow configuration, control-center concepts, and operational reference."
+  path="/docs"
+  title="Documentation"
+>
+  <section class="section-shell pb-12 pt-10 md:pb-16 md:pt-16">
+    <div class="grid gap-8 lg:grid-cols-[1.1fr_minmax(0,0.9fr)] lg:items-start">
+      <div>
+        <h1 class="font-display text-[clamp(3rem,7vw,5.2rem)] font-semibold leading-[0.97] tracking-tight text-white">
+          Durable docs for a live orchestration loop.
+        </h1>
+        <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--muted)] md:text-xl">
+          Start with install and quickstart, then move into the runtime model, workflow file, and operations reference when you need more control.
+        </p>
+        <div class="mt-8 flex flex-wrap gap-3">
+          <a class="button-primary" href="/docs/quickstart">Open quickstart</a>
+          <button class="button-secondary" data-search-trigger type="button">Search docs</button>
+        </div>
+      </div>
+      <div class="panel p-6">
+        <div class="grid gap-4">
+          {quickstartSteps.map((step) => <CommandBlock client:load command={step.command} detail={step.detail} title={step.title} />)}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-shell pb-18 md:pb-24">
+    <SectionHeading
+      description="The docs tree is intentionally compact. Each section maps to a real decision point in setup or operations instead of splitting the surface into thin pages."
+      title="Read in the order you actually hit the decisions."
+    />
+    <div class="mt-8 grid gap-4 lg:grid-cols-2">
+      {groups.map((group) => (
+        <div class="panel p-6">
+          <p class="kicker !mb-4">{group.title}</p>
+          <p class="text-base leading-7 text-[var(--muted)]">{group.description}</p>
+          <div class="mt-5 space-y-3">
+            {group.items.map((entry) => (
+              <a class="block rounded-2xl border border-white/8 bg-black/20 px-4 py-3 transition hover:border-white/14 hover:bg-white/5" href={getDocHref(entry)}>
+                <span class="block font-medium text-white">{entry.data.navLabel ?? entry.data.title}</span>
+                <p class="mt-2 text-sm leading-6 text-[var(--muted)]">{entry.data.description}</p>
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <section class="section-shell pb-18">
+    <SectionHeading
+      description="If you already know what you want, jump directly into the pages most likely to unblock setup, runtime supervision, or command lookup."
+      title="Three common entry points."
+    />
+    <div class="mt-8 grid gap-4 md:grid-cols-3">
+      <FeatureCard
+        description="Use this if you want the shortest path from install to a visible local run."
+        href="/docs/quickstart"
+        title="Install and quickstart"
+      />
+      <FeatureCard
+        description="Use this if you already have Maestro running and want to understand what the dashboard is telling you."
+        href="/docs/control-center"
+        title="Control center"
+      />
+      <FeatureCard
+        description="Use this if you are ready to tune retries, dispatch, sandboxing, or phase prompts."
+        href="/docs/workflow-config"
+        title="Workflow config"
+      />
+    </div>
+  </section>
+</BaseLayout>

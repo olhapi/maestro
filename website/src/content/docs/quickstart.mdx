@@ -1,0 +1,91 @@
+---
+title: Quickstart
+description: Bootstrap a workflow file, create a small queue, attach MCP, and start the orchestrator with a visible control center.
+section: getting-started
+order: 1
+navLabel: Quickstart
+---
+
+## 1. Initialize a workflow file
+
+Start in the repo you want Maestro to orchestrate:
+
+```bash
+maestro workflow init .
+```
+
+This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template.
+
+## 2. Create a small queue
+
+Create a project and a few issues so the queue has something to schedule:
+
+```bash
+maestro project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
+maestro issue create "Add login page" --project <project_id> --labels feature,ui
+maestro issue create "Fix auth bug" --priority 1 --labels bug
+maestro issue list
+maestro board
+```
+
+Move an issue into `ready` when you want Maestro to pick it up:
+
+```bash
+maestro issue move ISS-1 ready
+```
+
+## 3. Expose the tracker to MCP clients
+
+Point your MCP client at the built binary:
+
+```json
+{
+  "mcpServers": {
+    "maestro": {
+      "command": "/absolute/path/to/maestro",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start the daemon first, then let your MCP client attach.
+
+## 4. Start the orchestrator
+
+Run the daemon against the target repo and expose the observability API:
+
+```bash
+maestro run /path/to/repo --port 8787
+```
+
+If `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default.
+
+The loop is straightforward:
+
+1. Maestro loads `WORKFLOW.md`.
+2. It polls for issues in the `ready` state.
+3. It creates per-issue workspaces.
+4. It dispatches work to the configured agent command.
+5. It tracks retries, logs, runtime status, and the MCP transport used by `maestro mcp`.
+
+## 5. Open the control center
+
+When you run with `--port`, Maestro serves the embedded dashboard and the observability API on the same HTTP server.
+
+- Dashboard: `http://127.0.0.1:8787/`
+- API root: `http://127.0.0.1:8787/api/v1/`
+
+The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
+
+## Local UI development
+
+If you want to work on the embedded dashboard against another repo:
+
+```bash
+REPO_PATH=/path/to/repo make dev
+```
+
+## Next step
+
+Read [architecture](/docs/architecture) if you want the runtime model first, or skip straight to [workflow config](/docs/workflow-config) if you are ready to tune the loop.

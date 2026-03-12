@@ -1,0 +1,33 @@
+<svg width="1400" height="900" viewBox="0 0 1400 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1400" height="900" rx="42" fill="#07080A"/>
+  <rect x="34" y="34" width="170" height="832" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="248" y="34" width="1118" height="112" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="248" y="178" width="255" height="688" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="526" y="178" width="255" height="688" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="804" y="178" width="255" height="688" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="1082" y="178" width="284" height="688" rx="30" fill="#0D1014" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="272" y="248" width="207" height="142" rx="24" fill="url(#soft)"/>
+  <rect x="272" y="410" width="207" height="122" rx="24" fill="url(#soft)"/>
+  <rect x="550" y="248" width="207" height="174" rx="24" fill="url(#lime)"/>
+  <rect x="550" y="446" width="207" height="128" rx="24" fill="url(#soft)"/>
+  <rect x="828" y="248" width="207" height="156" rx="24" fill="url(#cyan)"/>
+  <rect x="828" y="426" width="207" height="174" rx="24" fill="url(#soft)"/>
+  <rect x="1106" y="248" width="236" height="210" rx="24" fill="url(#soft)"/>
+  <rect x="1106" y="482" width="236" height="148" rx="24" fill="url(#soft)"/>
+  <circle cx="1002" cy="272" r="10" fill="#53D9FF"/>
+  <circle cx="728" cy="272" r="10" fill="#C4FF57"/>
+  <defs>
+    <linearGradient id="soft" x1="272" y1="248" x2="1342" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(255,255,255,0.08)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0.03)"/>
+    </linearGradient>
+    <linearGradient id="lime" x1="550" y1="248" x2="757" y2="422" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(196,255,87,0.18)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0.04)"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="828" y1="248" x2="1035" y2="404" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(83,217,255,0.18)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0.04)"/>
+    </linearGradient>
+  </defs>
+</svg>
