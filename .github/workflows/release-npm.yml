@@ -5,11 +5,54 @@ on:
     tags:
       - 'v*'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
-  publish-npm:
-    runs-on: macos-latest
+  go-test:
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go tests
+        run: make test
+
+  build-leaf-packages:
+    needs: go-test
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            tarball_glob: olhapi-maestro-darwin-arm64-*.tgz
+          - target: darwin-x64
+            runner: macos-15-intel
+            tarball_glob: olhapi-maestro-darwin-x64-*.tgz
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+            tarball_glob: olhapi-maestro-linux-x64-gnu-*.tgz
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            tarball_glob: olhapi-maestro-linux-arm64-gnu-*.tgz
+          - target: win32-x64
+            runner: windows-2022
+            tarball_glob: olhapi-maestro-win32-x64-*.tgz
+            needs_msys2: true
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -23,16 +66,97 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
+      - name: Install Windows GCC toolchain
+        if: matrix.needs_msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Configure Windows GCC
+        if: matrix.needs_msys2
+        run: echo "CC=gcc" >> "$GITHUB_ENV"
+
+      - name: Build leaf package
+        run: ./scripts/package_npm_release.sh pack-leaf "${GITHUB_REF_NAME}" "${{ matrix.target }}"
+
+      - name: Build root package for smoke test
+        run: ./scripts/package_npm_release.sh pack-root "${GITHUB_REF_NAME}"
+
+      - name: Smoke test npm install
+        run: ./scripts/smoke_npm_package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
+
+      - name: Upload leaf tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-leaf-${{ matrix.target }}
+          path: dist/npm/${{ matrix.tarball_glob }}
+          if-no-files-found: error
+
+  build-root-package:
+    needs: go-test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Build root package
+        run: ./scripts/package_npm_release.sh pack-root "${GITHUB_REF_NAME}"
+
+      - name: Upload root tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-root-package
+          path: dist/npm/olhapi-maestro-*.tgz
+          if-no-files-found: error
+
+  publish-npm:
+    needs:
+      - build-leaf-packages
+      - build-root-package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Run Go tests
-        run: make test
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/npm
+          pattern: npm-*
+          merge-multiple: true
 
-      - name: Build and pack npm release
-        run: ./scripts/package_npm_release.sh "${GITHUB_REF_NAME}"
-
-      - name: Publish npm package
-        run: npm publish --access public
-        working-directory: dist/npm-package
+      - name: Publish npm packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for tarball in \
+            "dist/npm/olhapi-maestro-darwin-arm64-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-darwin-x64-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-linux-x64-gnu-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-linux-arm64-gnu-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-win32-x64-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-${VERSION}.tgz"; do
+            npm publish --access public "$tarball"
+          done

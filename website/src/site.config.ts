@@ -20,7 +20,7 @@ export const quickstartSteps = [
   {
     title: "Install",
     command: "npm install -g @olhapi/maestro",
-    detail: "Preferred global install for macOS arm64.",
+    detail: "Preferred global install for macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.",
   },
   {
     title: "Bootstrap workflow",

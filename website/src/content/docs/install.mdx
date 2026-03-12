@@ -1,6 +1,6 @@
 ---
 title: Install Maestro
-description: Install Maestro from npm on macOS arm64, build it from source on other platforms, and bootstrap contributor tooling locally.
+description: Install Maestro from npm on supported macOS, Linux, and Windows targets, or build it from source when you need an unsupported environment.
 section: getting-started
 order: 0
 navLabel: Install
@@ -8,7 +8,7 @@ navLabel: Install
 
 ## Preferred install path
 
-If you are on macOS arm64, the fastest path is the published npm package:
+If you are on a supported platform, the fastest path is the published npm package:
 
 ```bash
 npm install -g @olhapi/maestro
@@ -21,6 +21,16 @@ npm update -g @olhapi/maestro
 ```
 
 The installed command name is still `maestro`.
+
+Official npm builds currently cover:
+
+- macOS arm64
+- macOS x64
+- Linux x64 (glibc)
+- Linux arm64 (glibc)
+- Windows x64
+
+Linux npm packages target glibc only. Alpine and other musl-based distros should build from source or use Docker.
 
 ## Build from source
 
@@ -50,7 +60,7 @@ That installs the repo-managed Git hooks and bootstraps the nested frontend and 
 
 - Install `go` if you need source builds or local development.
 - Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
-- Use the npm package when you want the shortest path to a working local install on macOS arm64.
+- Use the npm package when you want the shortest path to a working local install on a supported platform.
 
 ## Next step
 

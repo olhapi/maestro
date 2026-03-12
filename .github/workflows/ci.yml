@@ -46,6 +46,62 @@ jobs:
       - name: Run Go coverage gates
         run: make test-cover
 
+  npm-packaging-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Run npm packaging unit tests
+        run: node --test packaging/npm/root/lib/get-exe-path.test.js
+
+  go-platform-smoke:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+          - target: win32-x64
+            runner: windows-2022
+            needs_msys2: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install Windows GCC toolchain
+        if: matrix.needs_msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Configure Windows GCC
+        if: matrix.needs_msys2
+        run: echo "CC=gcc" >> "$GITHUB_ENV"
+      - name: Build leaf package
+        run: ./scripts/package_npm_release.sh pack-leaf 0.0.0-ci "${{ matrix.target }}"
+      - name: Build root package
+        run: ./scripts/package_npm_release.sh pack-root 0.0.0-ci
+      - name: Smoke test npm install
+        run: ./scripts/smoke_npm_package.sh 0.0.0-ci "${{ matrix.target }}"
+
   frontend-test:
     runs-on: ubuntu-latest
     defaults:

@@ -22,7 +22,7 @@ docker build -t maestro .
 
 ## Install
 
-Preferred global install for macOS arm64:
+Preferred global install on supported platforms:
 
 ```bash
 npm install -g @olhapi/maestro
@@ -34,7 +34,15 @@ Update an existing global install:
 npm update -g @olhapi/maestro
 ```
 
-The npm package currently supports macOS arm64 only. The installed command name is still `maestro`.
+The installed command name is still `maestro`. Official npm builds currently cover:
+
+- macOS arm64
+- macOS x64
+- Linux x64 (glibc)
+- Linux arm64 (glibc)
+- Windows x64
+
+Linux npm packages target glibc only. Alpine and other musl-based distros should build from source or use Docker.
 
 For local development or unsupported platforms, build from source with Go:
 

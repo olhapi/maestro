@@ -3,18 +3,20 @@
   "version": "__VERSION__",
   "description": "Maestro CLI packaged for global npm installation",
   "bin": {
-    "maestro": "bin/maestro"
+    "maestro": "bin/maestro.js"
   },
   "files": [
-    "bin/maestro",
+    "bin/maestro.js",
+    "lib/get-exe-path.js",
     "README.md"
   ],
-  "os": [
-    "darwin"
-  ],
-  "cpu": [
-    "arm64"
-  ],
+  "optionalDependencies": {
+    "@olhapi/maestro-darwin-arm64": "__VERSION__",
+    "@olhapi/maestro-darwin-x64": "__VERSION__",
+    "@olhapi/maestro-linux-x64-gnu": "__VERSION__",
+    "@olhapi/maestro-linux-arm64-gnu": "__VERSION__",
+    "@olhapi/maestro-win32-x64": "__VERSION__"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/olhapi/maestro.git"
