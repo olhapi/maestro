@@ -408,10 +408,89 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"tracker:", "kind: kanban", "root: ./ws", "mode: stdio", "dispatch_mode: parallel", "phases:", "enabled: false", "expected_version: 0.111.0", "networkAccess: true", "codex app-server --model test", "{{ issue.identifier }}"} {
+	for _, want := range []string{
+		"# Tracker provider configuration. Supported tracker kind today: kanban.",
+		"tracker:",
+		"kind: kanban",
+		"active_states:",
+		"terminal_states:",
+		"interval_ms: 10000",
+		"root: ./ws",
+		"# after_create: ./scripts/after-create.sh",
+		"# before_run: ./scripts/before-run.sh",
+		"# after_run: ./scripts/after-run.sh",
+		"# before_remove: ./scripts/before-remove.sh",
+		"timeout_ms: 60000",
+		"phases:",
+		"enabled: false",
+		"issue.*, phase, and attempt",
+		"max_concurrent_agents: 3",
+		"max_turns: 4",
+		"max_retry_backoff_ms: 60000",
+		"max_automatic_retries: 8",
+		"mode: stdio",
+		"Other options: parallel, per_project_serial.",
+		"codex app-server --model test",
+		"expected_version: 0.111.0",
+		"approval_policy: never",
+		"on-request, on-failure, untrusted",
+		"read-only, workspace-write, danger-full-access",
+		"type: workspaceWrite",
+		"networkAccess: true",
+		"# writableRoots:",
+		"# readOnlyAccess:",
+		"# excludeTmpdirEnvVar: false",
+		"# excludeSlashTmp: false",
+		"turn_timeout_ms: 1800000",
+		"read_timeout_ms: 10000",
+		"stall_timeout_ms: 300000",
+		"{{ issue.identifier }}",
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
+	}
+}
+
+func TestGeneratedWorkflowRoundTrips(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := buildWorkflowFile(InitOptions{
+		WorkspaceRoot: "./ws",
+		CodexCommand:  "codex app-server --model test",
+		AgentMode:     AgentModeStdio,
+	})
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Tracker.Kind != TrackerKindKanban {
+		t.Fatalf("unexpected tracker kind: %q", workflow.Config.Tracker.Kind)
+	}
+	if workflow.Config.Workspace.Root != filepath.Join(tmpDir, "ws") {
+		t.Fatalf("unexpected workspace root: %s", workflow.Config.Workspace.Root)
+	}
+	if workflow.Config.Agent.Mode != AgentModeStdio {
+		t.Fatalf("unexpected agent mode: %q", workflow.Config.Agent.Mode)
+	}
+	if workflow.Config.Agent.DispatchMode != DispatchModeParallel {
+		t.Fatalf("unexpected dispatch mode: %q", workflow.Config.Agent.DispatchMode)
+	}
+	if workflow.Config.Agent.MaxAutomaticRetries != 8 {
+		t.Fatalf("unexpected max automatic retries: %d", workflow.Config.Agent.MaxAutomaticRetries)
+	}
+	if workflow.Config.Codex.Command != "codex app-server --model test" {
+		t.Fatalf("unexpected codex command: %q", workflow.Config.Codex.Command)
+	}
+	if workflow.Config.Codex.TurnSandboxPolicy["networkAccess"] != true {
+		t.Fatalf("expected networkAccess=true, got %+v", workflow.Config.Codex.TurnSandboxPolicy)
+	}
+	if !strings.Contains(workflow.PromptTemplate, "{{ issue.identifier }}") {
+		t.Fatalf("unexpected prompt template: %q", workflow.PromptTemplate)
 	}
 }
 

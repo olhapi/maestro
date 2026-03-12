@@ -192,45 +192,26 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 - `{{ phase }}`
 - `{{ attempt }}`
 
-A typical Codex-backed workflow section looks like:
+`maestro workflow init` now generates that file with inline comments for every supported key, and the checked-in example uses the same documented structure. The main knobs are:
 
-```yaml
-agent:
-  max_concurrent_agents: 3
-  max_turns: 4
-  max_retry_backoff_ms: 60000
-  max_automatic_retries: 8
-  mode: app_server
-  dispatch_mode: parallel
-codex:
-  command: codex app-server
-  expected_version: 0.111.0
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
-  turn_timeout_ms: 1800000
-  read_timeout_ms: 10000
-  stall_timeout_ms: 300000
-```
-
-The main knobs are:
-
-- `agent.mode`: `app_server` for the Codex app-server protocol, or `stdio` for `codex exec` style runners.
+- `tracker.kind`: tracker backend. Only `kanban` is supported today.
+- `tracker.active_states` and `tracker.terminal_states`: state names Maestro should treat as active work or terminal work.
+- `polling.interval_ms`: how often Maestro scans the tracker for runnable issues.
+- `workspace.root`: where per-issue workspaces are created. Relative paths resolve from the repo root; absolute paths, `$ENV_VAR` paths, and `~/` paths are also supported.
+- `hooks.after_create`, `hooks.before_run`, `hooks.after_run`, `hooks.before_remove`, `hooks.timeout_ms`: optional shell hooks that run inside the issue workspace, plus the per-hook timeout.
+- `phases.review.enabled`, `phases.review.prompt`, `phases.done.enabled`, `phases.done.prompt`: optional extra prompts for review and done passes after implementation.
 - `agent.max_concurrent_agents`: maximum simultaneous issues per project when `dispatch_mode` is `parallel`.
 - `agent.max_turns`: maximum turns Maestro gives Codex before ending a run attempt.
+- `agent.max_retry_backoff_ms`: upper bound for automatic retry backoff delays.
+- `agent.max_automatic_retries`: maximum automatic retry attempts for the same issue.
+- `agent.mode`: `app_server` for the Codex app-server protocol, or `stdio` for `codex exec` style runners.
+- `agent.dispatch_mode`: `parallel` (default) uses `agent.max_concurrent_agents` per project; `per_project_serial` runs one issue at a time per project while still allowing different projects to run in parallel.
 - `codex.command`: exact command Maestro launches for the agent.
 - `codex.expected_version`: version Maestro expects from `codex --version`. Mismatches warn but do not hard-fail.
-- `codex.approval_policy`: should stay `never` for unattended runs so Codex does not stop waiting for interactive approvals.
-- `codex.thread_sandbox`: thread-level sandbox. The default is `workspace-write`.
-- `codex.turn_sandbox_policy`: per-turn sandbox policy. If you omit extra fields, Maestro fills in safe defaults for writable roots and read-only access.
+- `codex.approval_policy`: should stay `never` for unattended runs so Codex does not stop waiting for interactive approvals. Other string options are `on-request`, `on-failure`, and `untrusted`; the structured `reject` object from the Codex schema is also supported.
+- `codex.thread_sandbox`: thread-level sandbox. Supported options are `read-only`, `workspace-write`, and `danger-full-access`.
+- `codex.turn_sandbox_policy`: per-turn sandbox policy object. `type` can be `workspaceWrite`, `readOnly`, `externalSandbox`, or `dangerFullAccess`. For `workspaceWrite`, the schema also supports `writableRoots`, `readOnlyAccess`, `excludeTmpdirEnvVar`, and `excludeSlashTmp`. If you omit those extras, Maestro fills in safe defaults for writable roots and read-only access.
 - `codex.turn_timeout_ms`, `codex.read_timeout_ms`, `codex.stall_timeout_ms`: run budget, stream-read timeout, and inactivity timeout.
-
-`agent.dispatch_mode` controls scheduling behavior:
-
-- `parallel` (default): use `agent.max_concurrent_agents` per project
-- `per_project_serial`: run one issue at a time per project while still allowing different projects to run in parallel
 
 ### Codex Access Requirements
 
