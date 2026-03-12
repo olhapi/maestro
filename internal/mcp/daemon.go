@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -144,9 +143,9 @@ func acquireDaemonLock(ctx context.Context, identity kanban.StoreIdentity) (*os.
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := tryLockFile(lockFile); err != nil {
 		_ = lockFile.Close()
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+		if !errors.Is(err, errDaemonLockAlreadyHeld) {
 			return nil, err
 		}
 		entry, _, readErr := readDaemonEntry(identity.StoreID)
@@ -165,6 +164,10 @@ func acquireDaemonLock(ctx context.Context, identity kanban.StoreIdentity) (*os.
 func closeDaemonLock(lockFile *os.File) error {
 	if lockFile == nil {
 		return nil
+	}
+	if err := unlockFile(lockFile); err != nil {
+		_ = lockFile.Close()
+		return err
 	}
 	return lockFile.Close()
 }
