@@ -10,6 +10,17 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
+func writeFakeCodexCLI(t *testing.T, version string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nprintf 'codex-cli " + version + "\\n'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	return path
+}
+
 func repoRootFromCaller(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -23,9 +34,10 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := setupRepo(t)
 	opsRepoPath := setupRepo(t)
+	codexPath := writeFakeCodexCLI(t, "0.111.0")
 
 	initRepo := t.TempDir()
-	code, stdout, stderr := runCLI(t, "workflow", "init", initRepo)
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init failed: %d stderr=%s", code, stderr)
 	}
@@ -33,7 +45,19 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	if _, err := os.Stat(workflowPath); err != nil {
 		t.Fatalf("expected workflow file: %v", err)
 	}
-	if !strings.Contains(stdout, "Initialized "+workflowPath) {
+	for _, want := range []string{
+		"Initialized " + workflowPath,
+		"Verification",
+		"codex_version: ok",
+		"Next steps",
+		"Register the repo:",
+		"Start the orchestrator:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected workflow init output to contain %q, got %q", want, stdout)
+		}
+	}
+	if !strings.Contains(stdout, "maestro --db "+dbPath+" project create \"My Project\" --repo "+initRepo) {
 		t.Fatalf("unexpected workflow init output %q", stdout)
 	}
 
@@ -226,6 +250,88 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout) != opsID {
 		t.Fatalf("unexpected quiet project delete output %q", stdout)
+	}
+}
+
+func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
+	code, stdout, stderr := runCLI(t, "workflow", "init", "--help")
+	if code != 0 {
+		t.Fatalf("workflow init help failed: %d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{
+		"--workspace-root",
+		"--codex-command",
+		"--agent-mode",
+		"--sandbox-profile",
+		"--force",
+		"--defaults",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected workflow init help to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestWorkflowInitRequiresForceToOverwriteExistingFile(t *testing.T) {
+	repoPath := setupRepo(t)
+	code, _, stderr := runCLI(t, "workflow", "init", repoPath, "--defaults")
+	if code != exitCodeUsage {
+		t.Fatalf("expected usage error, got %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "--force") {
+		t.Fatalf("expected overwrite guidance, got %q", stderr)
+	}
+}
+
+func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := t.TempDir()
+	missingCodex := filepath.Join(t.TempDir(), "codex")
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", missingCodex+" app-server")
+	if code != 0 {
+		t.Fatalf("workflow init should succeed with warnings: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	for _, want := range []string{
+		"Verification",
+		"Warnings:",
+		"codex_version:",
+		"Next steps",
+		"Review the warnings and remediation above",
+		"Re-run readiness checks:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected warning workflow init output to contain %q, got %q", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "Register the repo:") {
+		t.Fatalf("expected advisory next steps without project registration, got %q", stdout)
+	}
+}
+
+func TestWorkflowInitSandboxProfileFlagWritesSecureConfig(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := t.TempDir()
+	codexPath := writeFakeCodexCLI(t, "0.111.0")
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", codexPath+" app-server", "--sandbox-profile", "secure")
+	if code != 0 {
+		t.Fatalf("workflow init failed: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"thread_sandbox: workspace-write",
+		"type: workspaceWrite",
+		"networkAccess: false",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected workflow to contain %q, got %q", want, text)
+		}
 	}
 }
 

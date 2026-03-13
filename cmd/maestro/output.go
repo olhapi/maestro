@@ -308,3 +308,17 @@ func printRuntimeSeries(out io.Writer, series []kanban.RuntimeSeriesPoint) {
 	}
 	_ = tw.Flush()
 }
+
+func printWorkflowInitNextSteps(out io.Writer, hasAdvisories bool, verifyCmd, projectCmd, runCmd string) {
+	fmt.Fprintln(out, "Next steps")
+	fmt.Fprintln(out, strings.Repeat("=", len("Next steps")))
+	if hasAdvisories {
+		fmt.Fprintln(out, "1. Review the warnings and remediation above, then update WORKFLOW.md if needed.")
+		fmt.Fprintf(out, "2. Re-run readiness checks: %s\n", verifyCmd)
+		fmt.Fprintf(out, "3. Start the orchestrator after the repo is ready: %s\n", runCmd)
+		return
+	}
+	fmt.Fprintf(out, "1. Register the repo: %s\n", projectCmd)
+	fmt.Fprintf(out, "2. Start the orchestrator: %s\n", runCmd)
+	fmt.Fprintf(out, "3. Re-run readiness checks anytime: %s\n", verifyCmd)
+}

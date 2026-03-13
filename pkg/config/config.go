@@ -145,6 +145,12 @@ func DefaultConfig() Config {
 	}
 }
 
+func DefaultInitConfig() Config {
+	cfg := DefaultConfig()
+	cfg.Codex.ApprovalPolicy = "never"
+	return cfg
+}
+
 func DefaultPromptTemplate() string {
 	return strings.TrimSpace(`
 You are working on issue {{ issue.identifier }}.
@@ -185,6 +191,13 @@ Review the implementation in the current workspace, run focused verification, an
 `)
 }
 
+func DefaultInitReviewPromptTemplate() string {
+	return strings.TrimSpace(`
+Review the implementation for issue {{ issue.identifier }} in the current workspace.
+Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
+`)
+}
+
 func DefaultDonePromptTemplate() string {
 	return strings.TrimSpace(`
 You are performing the done pass for issue {{ issue.identifier }}.
@@ -201,6 +214,13 @@ No description provided.
 The implementation is already complete. Perform the project-specific finalization steps for a done issue from the current workspace, such as preparing or updating a PR, merging, or other release bookkeeping.
 
 - Keep the issue in done unless the work truly needs to be reopened.
+`)
+}
+
+func DefaultInitDonePromptTemplate() string {
+	return strings.TrimSpace(`
+Finalize issue {{ issue.identifier }} from the current workspace.
+Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
 `)
 }
 

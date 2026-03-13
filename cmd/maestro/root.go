@@ -1,13 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -205,6 +206,13 @@ func (a *cliApp) newMCPCmd() *cobra.Command {
 }
 
 func (a *cliApp) newWorkflowCmd() *cobra.Command {
+	var workspaceRoot string
+	var codexCommand string
+	var agentMode string
+	var sandboxProfile string
+	var force bool
+	var defaults bool
+
 	cmd := &cobra.Command{
 		Use:   "workflow",
 		Short: "Manage WORKFLOW.md files",
@@ -213,7 +221,7 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 			return usageErrorf("a workflow subcommand is required")
 		},
 	}
-	cmd.AddCommand(&cobra.Command{
+	initCmd := &cobra.Command{
 		Use:   "init [repo_path]",
 		Short: "Initialize WORKFLOW.md",
 		Args:  cobra.MaximumNArgs(1),
@@ -222,18 +230,41 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 			if len(args) == 1 {
 				repoPath = args[0]
 			}
-			interactive := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+			repoPath = resolveCLIRepoPath(repoPath)
+			interactive := !defaults && isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 			if err := config.InitWorkflow(repoPath, config.InitOptions{
-				Interactive: interactive,
-				Stdin:       bufio.NewReader(os.Stdin),
-				Stdout:      a.stdout,
+				WorkspaceRoot:  workspaceRoot,
+				CodexCommand:   codexCommand,
+				AgentMode:      agentMode,
+				SandboxProfile: sandboxProfile,
+				Interactive:    interactive,
+				Force:          force,
+				Stdin:          os.Stdin,
+				Stdout:         a.stdout,
 			}); err != nil {
+				switch {
+				case errors.Is(err, config.ErrWorkflowExists), errors.Is(err, config.ErrWorkflowInitCancelled), errors.Is(err, config.ErrInvalidInitAgentMode), errors.Is(err, config.ErrInvalidSandboxProfile):
+					return usageErrorf("%v", err)
+				}
 				return wrapRuntime(err, "failed to initialize workflow")
 			}
-			_, _ = fmt.Fprintf(a.stdout, "Initialized %s\n", config.WorkflowPath(repoPath))
+			workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+			_, _ = fmt.Fprintf(a.stdout, "Initialized %s\n\n", workflowPath)
+			res := verification.Run(repoPath, a.opts.dbPath)
+			printVerificationResult(a.stdout, "Verification", res)
+			fmt.Fprintln(a.stdout)
+			verifyCmd, projectCmd, runCmd := workflowInitCommands(repoPath, a.opts.dbPath)
+			printWorkflowInitNextSteps(a.stdout, hasWorkflowInitAdvisories(res), verifyCmd, projectCmd, runCmd)
 			return nil
 		},
-	})
+	}
+	initCmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "Workspace root to write into WORKFLOW.md")
+	initCmd.Flags().StringVar(&codexCommand, "codex-command", "", "Codex command to write into WORKFLOW.md")
+	initCmd.Flags().StringVar(&agentMode, "agent-mode", "", "Agent mode to write into WORKFLOW.md (app_server or stdio)")
+	initCmd.Flags().StringVar(&sandboxProfile, "sandbox-profile", "", "Sandbox profile to write into WORKFLOW.md (careful, secure, or yolo)")
+	initCmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing WORKFLOW.md")
+	initCmd.Flags().BoolVar(&defaults, "defaults", false, "Use defaults without prompting")
+	cmd.AddCommand(initCmd)
 	return cmd
 }
 
@@ -1286,13 +1317,7 @@ func (a *cliApp) newVerifyCmd(use string) *cobra.Command {
 			if a.opts.mode.json {
 				return writeJSON(a.stdout, res)
 			}
-			payload := map[string]interface{}{
-				"checks":      res.Checks,
-				"errors":      res.Errors,
-				"warnings":    res.Warnings,
-				"remediation": res.Remediation,
-			}
-			printVerification(a.stdout, title, payload)
+			printVerificationResult(a.stdout, title, res)
 			if !res.OK {
 				return runtimeErrorf("verification failed")
 			}
@@ -1301,6 +1326,47 @@ func (a *cliApp) newVerifyCmd(use string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Repository path")
 	return cmd
+}
+
+func printVerificationResult(out io.Writer, title string, res verification.Result) {
+	payload := map[string]interface{}{
+		"checks":      res.Checks,
+		"errors":      res.Errors,
+		"warnings":    res.Warnings,
+		"remediation": res.Remediation,
+	}
+	printVerification(out, title, payload)
+}
+
+func resolveCLIRepoPath(repoPath string) string {
+	if strings.TrimSpace(repoPath) == "" {
+		repoPath, _ = os.Getwd()
+	}
+	abs, err := filepath.Abs(repoPath)
+	if err != nil {
+		return filepath.Clean(repoPath)
+	}
+	return abs
+}
+
+func workflowInitCommands(repoPath, dbPath string) (string, string, string) {
+	verifyCmd := buildMaestroCommand(dbPath, "verify", "--repo", repoPath)
+	projectCmd := buildMaestroCommand(dbPath, "project", "create", "\"My Project\"", "--repo", repoPath)
+	runCmd := buildMaestroCommand(dbPath, "run", repoPath)
+	return verifyCmd, projectCmd, runCmd
+}
+
+func buildMaestroCommand(dbPath string, parts ...string) string {
+	args := []string{"maestro"}
+	if strings.TrimSpace(dbPath) != "" {
+		args = append(args, "--db", dbPath)
+	}
+	args = append(args, parts...)
+	return strings.Join(args, " ")
+}
+
+func hasWorkflowInitAdvisories(res verification.Result) bool {
+	return !res.OK || len(res.Warnings) > 0 || len(res.Errors) > 0
 }
 
 func (a *cliApp) newSpecCheckCmd() *cobra.Command {

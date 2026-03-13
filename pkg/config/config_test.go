@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -452,6 +454,106 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 	}
 }
 
+func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	var stdout bytes.Buffer
+	if err := InitWorkflow(tmpDir, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader("\n\n\n"),
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"root: ./workspaces",
+		"command: codex app-server",
+		"mode: app_server",
+		"thread_sandbox: workspace-write",
+		"type: workspaceWrite",
+		"networkAccess: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q", want)
+		}
+	}
+	if !strings.Contains(stdout.String(), "Target workflow file:") || !strings.Contains(stdout.String(), "Runtime setup:") || !strings.Contains(stdout.String(), "Sandbox access:") {
+		t.Fatalf("expected wizard output, got %q", stdout.String())
+	}
+}
+
+func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
+	tmpDir := t.TempDir()
+	var stdout bytes.Buffer
+	if err := InitWorkflow(tmpDir, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader("./ws\n2\ncodex exec --model test\nstdio\n3\n"),
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"root: ./ws",
+		"command: codex exec --model test",
+		"mode: stdio",
+		"thread_sandbox: danger-full-access",
+		"type: dangerFullAccess",
+		"networkAccess: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q", want)
+		}
+	}
+}
+
+func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
+	tmpDir := t.TempDir()
+	var stdout bytes.Buffer
+	if err := InitWorkflow(tmpDir, InitOptions{
+		Interactive:    true,
+		WorkspaceRoot:  "./flag-ws",
+		CodexCommand:   "codex exec --model custom",
+		AgentMode:      AgentModeStdio,
+		SandboxProfile: SandboxProfileSecure,
+		Stdin:          strings.NewReader(""),
+		Stdout:         &stdout,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"root: ./flag-ws",
+		"command: codex exec --model custom",
+		"mode: stdio",
+		"thread_sandbox: workspace-write",
+		"type: workspaceWrite",
+		"networkAccess: false",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q", want)
+		}
+	}
+	if strings.Contains(stdout.String(), "Runtime setup:") || strings.Contains(stdout.String(), "Workspace root [") || strings.Contains(stdout.String(), "Sandbox access:") {
+		t.Fatalf("expected explicit values to skip prompts, got %q", stdout.String())
+	}
+}
+
 func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
@@ -505,5 +607,143 @@ func TestEnsureWorkflowCreatesMissingFile(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected workflow file at %s: %v", path, err)
+	}
+}
+
+func TestInitWorkflowRejectsInvalidExplicitAgentMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	err := InitWorkflow(tmpDir, InitOptions{AgentMode: "invalid"})
+	if !errors.Is(err, ErrInvalidInitAgentMode) {
+		t.Fatalf("expected invalid agent mode error, got %v", err)
+	}
+}
+
+func TestInitWorkflowRejectsInvalidSandboxProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	err := InitWorkflow(tmpDir, InitOptions{SandboxProfile: "unsafe"})
+	if !errors.Is(err, ErrInvalidSandboxProfile) {
+		t.Fatalf("expected invalid sandbox profile error, got %v", err)
+	}
+}
+
+func TestInitWorkflowNonInteractiveRequiresForceToOverwrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := InitWorkflowAtPath(workflowPath, InitOptions{})
+	if !errors.Is(err, ErrWorkflowExists) {
+		t.Fatalf("expected existing workflow error, got %v", err)
+	}
+	data, readErr := os.ReadFile(workflowPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "original" {
+		t.Fatalf("expected existing file to remain unchanged, got %q", string(data))
+	}
+}
+
+func TestInitWorkflowForceOverwritesExistingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InitWorkflowAtPath(workflowPath, InitOptions{
+		Force:         true,
+		WorkspaceRoot: "./ws",
+	}); err != nil {
+		t.Fatalf("InitWorkflowAtPath: %v", err)
+	}
+	data, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if text == "original" || !strings.Contains(text, "root: ./ws") {
+		t.Fatalf("expected workflow to be overwritten, got %q", text)
+	}
+}
+
+func TestInitWorkflowInteractiveOverwriteDeclined(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := InitWorkflowAtPath(workflowPath, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader("n\n"),
+		Stdout:      &stdout,
+	})
+	if !errors.Is(err, ErrWorkflowInitCancelled) {
+		t.Fatalf("expected cancelled error, got %v", err)
+	}
+	data, readErr := os.ReadFile(workflowPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "original" {
+		t.Fatalf("expected existing file to remain unchanged, got %q", string(data))
+	}
+	if !strings.Contains(stdout.String(), "Overwrite?") {
+		t.Fatalf("expected overwrite prompt, got %q", stdout.String())
+	}
+}
+
+func TestInitWorkflowInteractiveOverwriteAccepted(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InitWorkflowAtPath(workflowPath, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader("y\n\n\n\n"),
+		Stdout:      &bytes.Buffer{},
+	}); err != nil {
+		t.Fatalf("InitWorkflowAtPath: %v", err)
+	}
+	data, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "original" {
+		t.Fatalf("expected existing workflow to be replaced")
+	}
+}
+
+func TestInitWorkflowSandboxProfilesMapToExpectedConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		profile       string
+		threadSandbox string
+		turnType      string
+		networkAccess string
+	}{
+		{name: "careful", profile: SandboxProfileCareful, threadSandbox: "workspace-write", turnType: "workspaceWrite", networkAccess: "networkAccess: true"},
+		{name: "secure", profile: SandboxProfileSecure, threadSandbox: "workspace-write", turnType: "workspaceWrite", networkAccess: "networkAccess: false"},
+		{name: "yolo", profile: SandboxProfileYolo, threadSandbox: "danger-full-access", turnType: "dangerFullAccess", networkAccess: "networkAccess: true"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			text := buildWorkflowFile(InitOptions{SandboxProfile: tc.profile})
+			for _, want := range []string{
+				"thread_sandbox: " + tc.threadSandbox,
+				"type: " + tc.turnType,
+				tc.networkAccess,
+			} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("expected generated workflow to contain %q", want)
+				}
+			}
+		})
 	}
 }
