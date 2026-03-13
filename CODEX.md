@@ -1,2 +1,2 @@
 - never run "--no-verify", if coverage is missing or there are errors then they should be fixed
-- use conventional commits with a scope
+- you must use conventional commits with a monorepo scope for each commit message

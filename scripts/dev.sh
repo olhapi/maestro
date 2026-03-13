@@ -88,8 +88,8 @@ backend_pid=$!
 
 wait_for_backend
 
-cd "$ROOT_DIR/frontend"
-npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort &
+cd "$ROOT_DIR/apps/frontend"
+pnpm dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort &
 frontend_pid=$!
 
 if [[ -n "$REPO_PATH" ]]; then

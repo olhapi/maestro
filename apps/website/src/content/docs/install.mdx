@@ -58,22 +58,29 @@ Contributor Docker build:
 
 If you are contributing from a repo checkout, run the root install once before anything else:
 
-<DocsCommandField command={`npm install`} />
+<DocsCommandField command={`pnpm install`} />
 
 That single install does three things:
 
 - installs the repo-managed Git hooks through Husky
-- bootstraps the nested `frontend` and `website` dependencies those hooks rely on
+- bootstraps the shared workspace across `apps/frontend` and `apps/website`
 - makes the root helper scripts available for common docs-site tasks
+
+If you contribute regularly across multiple machines or rely on CI often, you can also enable Turborepo Remote Cache locally with:
+
+<DocsCommandField command={`pnpm exec turbo login && pnpm exec turbo link`} />
+
+The repository CI workflow will use `TURBO_TEAM` and `TURBO_TOKEN` automatically when those are configured in GitHub.
 
 For website work, the most useful root commands are:
 
-- `npm run website:dev` for the local Astro docs server
-- `npm run website:check` for type and content validation
-- `npm run website:test` for the website test suite
-- `npm run website:build` for a production build check
+- `pnpm verify` for the full local verification suite before pushing
+- `pnpm run website:dev` for the local Astro docs server
+- `pnpm run website:check` for type and content validation
+- `pnpm run website:test` for the website test suite
+- `pnpm run website:build` for a production build check
 
-The hooks stay targeted. Frontend changes run frontend lint and tests, website changes run Astro checks and website tests, and broader Go changes run the relevant Go test commands.
+The hooks stay targeted. Frontend changes run frontend lint and tests, website changes run Astro checks and website tests, workspace and hook changes run the full `pnpm verify` suite, and `pre-push` runs that same full verifier before the push proceeds.
 
 ## Next step
 

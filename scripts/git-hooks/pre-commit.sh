@@ -14,6 +14,7 @@ if [ -z "$STAGED" ]; then
   exit 0
 fi
 
+needs_full_verify=0
 needs_make_test=0
 needs_frontend=0
 needs_website=0
@@ -24,11 +25,14 @@ IFS='
 '
 for path in $STAGED; do
   case "$path" in
-    frontend/*)
+    apps/frontend/*)
       needs_frontend=1
       ;;
-    website/*)
+    apps/website/*)
       needs_website=1
+      ;;
+    package.json|pnpm-lock.yaml|pnpm-workspace.yaml|turbo.json|.npmrc|scripts/git-hooks/*|.husky/*)
+      needs_full_verify=1
       ;;
   esac
 
@@ -51,6 +55,11 @@ for path in $STAGED; do
 done
 IFS=$old_ifs
 
+if [ "$needs_full_verify" -eq 1 ]; then
+  run_step pnpm verify
+  exit 0
+fi
+
 if [ "$needs_make_test" -eq 1 ]; then
   run_step make test
 elif [ -n "$go_packages" ]; then
@@ -58,11 +67,9 @@ elif [ -n "$go_packages" ]; then
 fi
 
 if [ "$needs_frontend" -eq 1 ]; then
-  run_step npm --prefix frontend run lint
-  run_step npm --prefix frontend run test:ci
+  run_step pnpm verify:frontend
 fi
 
 if [ "$needs_website" -eq 1 ]; then
-  run_step npm --prefix website run check
-  run_step npm --prefix website run test:ci
+  run_step pnpm verify:website
 fi

@@ -7,7 +7,7 @@ START_REPO_PATH ?=
 MAESTRO_BIN ?= ./maestro
 
 frontend-build:
-	npm --prefix frontend run build
+	pnpm run frontend:build
 
 build: frontend-build
 	go build -o $(MAESTRO_BIN) ./cmd/maestro

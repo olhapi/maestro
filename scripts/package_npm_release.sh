@@ -182,8 +182,10 @@ render_leaf_package_json() {
   "name": "$PACKAGE_NAME",
   "version": "$version",
   "description": "Maestro CLI binary for $PACKAGE_LABEL",
+  "license": "MIT",
   "files": [
     "lib/$BINARY_NAME",
+    "LICENSE",
     "README.md"
   ],
   "os": [
@@ -234,6 +236,7 @@ pack_root_package() {
 
   rm -rf "$stage_dir"
   mkdir -p "$stage_dir/bin" "$stage_dir/lib" "$PACK_DIR"
+  cp "$ROOT_DIR/LICENSE" "$stage_dir/LICENSE"
   cp "$ROOT_DIR/README.md" "$stage_dir/README.md"
   cp "$ROOT_PACKAGE_SOURCE_DIR/bin/maestro.js" "$stage_dir/bin/maestro.js"
   cp "$ROOT_PACKAGE_SOURCE_DIR/lib/get-exe-path.js" "$stage_dir/lib/get-exe-path.js"
@@ -275,6 +278,7 @@ pack_leaf_package() {
   chmod 755 "$bin_path"
 
   render_leaf_package_json "$version" >"$stage_dir/package.json"
+  cp "$ROOT_DIR/LICENSE" "$stage_dir/LICENSE"
   cp "$ROOT_DIR/README.md" "$stage_dir/README.md"
 
   local filename

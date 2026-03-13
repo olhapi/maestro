@@ -258,22 +258,32 @@ Missing-file behavior differs by command:
 If you are contributing from a repo checkout, run the root install once:
 
 ```bash
-npm install
+pnpm install
 ```
 
 That single install:
 
 - installs the repo-managed Git hooks through Husky
-- bootstraps both the nested `frontend` and `website` dependencies
-- makes the root helper scripts available for common local tasks
+- bootstraps the shared `pnpm` workspace across `apps/frontend` and `apps/website`
+- makes the root workspace scripts available for common local tasks
+
+If you want shared cache hits across machines, Turborepo supports Remote Cache out of the box:
+
+```bash
+pnpm exec turbo login
+pnpm exec turbo link
+```
+
+The CI workflow is already wired to use `TURBO_TEAM` and `TURBO_TOKEN` when those GitHub variables and secrets are configured.
 
 Common contributor commands:
 
 ```bash
 make build
 make test
-npm run website:dev
-npm run website:check
+pnpm verify
+pnpm run website:dev
+pnpm run website:check
 ```
 
 Repo-managed Git hooks stay targeted:
@@ -281,7 +291,10 @@ Repo-managed Git hooks stay targeted:
 - staged Go changes run package-scoped Go tests
 - staged frontend changes run frontend lint and tests
 - staged website changes run Astro checks and website tests
-- `pre-push` adds website build validation alongside the broader Go and frontend gates
+- staged workspace and hook changes run the full `pnpm verify` suite
+- `pnpm verify` runs the JS lint/test/check/smoke flow, npm packaging unit test, and Go build/test/coverage/race gates
+- package-scoped root commands such as `pnpm run frontend:test` and `pnpm run website:build` now go through `turbo --filter=...` so they benefit from task caching too
+- `pre-push` now runs the same full `pnpm verify` command
 
 ## License
 

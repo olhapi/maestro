@@ -1,0 +1,15 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "outputs": ["$TURBO_ROOT$/internal/dashboardui/dist/**"],
+      "inputs": ["$TURBO_DEFAULT$", "!README.md"]
+    },
+    "lint": {
+      "inputs": ["$TURBO_DEFAULT$", "!README.md"]
+    },
+    "test:ci": {
+      "inputs": ["$TURBO_DEFAULT$", "!README.md"]
+    }
+  }
+}

@@ -1,18 +1,37 @@
 {
-  "name": "maestro-hooks",
+  "name": "maestro-workspace",
   "private": true,
+  "license": "MIT",
+  "packageManager": "pnpm@10.30.3",
   "scripts": {
     "prepare": "husky",
-    "postinstall": "npm --prefix frontend install && npm --prefix website install",
+    "build": "turbo build",
+    "check": "turbo check",
+    "dev": "./scripts/dev.sh",
+    "dev:apps": "turbo dev --parallel --filter=@maestro/frontend --filter=@maestro/website",
+    "lint": "turbo lint",
+    "smoke": "turbo smoke",
+    "test": "turbo test:ci",
+    "verify": "pnpm verify:web && pnpm verify:package && pnpm verify:go",
+    "verify:frontend": "pnpm frontend:lint && pnpm frontend:test",
+    "verify:website": "pnpm website:check && pnpm website:test",
+    "verify:web": "pnpm lint && pnpm test && pnpm check && pnpm smoke",
+    "verify:go": "make build && make test && make test-cover && make test-race",
+    "verify:package": "node --test packaging/npm/root/lib/get-exe-path.test.js",
     "hooks:pre-commit": "./scripts/git-hooks/pre-commit.sh",
     "hooks:pre-push": "./scripts/git-hooks/pre-push.sh",
-    "website:dev": "npm --prefix website run dev",
-    "website:build": "npm --prefix website run build",
-    "website:check": "npm --prefix website run check",
-    "website:test": "npm --prefix website run test:ci",
-    "website:smoke": "npm --prefix website run smoke"
+    "frontend:dev": "pnpm --filter @maestro/frontend dev",
+    "frontend:build": "turbo build --filter=@maestro/frontend",
+    "frontend:lint": "turbo lint --filter=@maestro/frontend",
+    "frontend:test": "turbo test:ci --filter=@maestro/frontend",
+    "website:dev": "pnpm --filter @maestro/website dev",
+    "website:build": "turbo build --filter=@maestro/website",
+    "website:check": "turbo check --filter=@maestro/website",
+    "website:test": "turbo test:ci --filter=@maestro/website",
+    "website:smoke": "turbo smoke --filter=@maestro/website"
   },
   "devDependencies": {
-    "husky": "^9.1.7"
+    "husky": "^9.1.7",
+    "turbo": "^2.5.0"
   }
 }

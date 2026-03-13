@@ -27,7 +27,7 @@ export default defineConfig({
   },
   build: {
     emptyOutDir: true,
-    outDir: '../internal/dashboardui/dist',
+    outDir: '../../internal/dashboardui/dist',
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[name].js',

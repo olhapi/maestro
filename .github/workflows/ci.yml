@@ -12,6 +12,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
 
 jobs:
   go-test:
@@ -168,43 +170,41 @@ jobs:
 
   frontend-test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install frontend dependencies
-        run: npm ci
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
       - name: Run frontend tests
-        run: npm run test:ci
+        run: pnpm run frontend:test
 
   website-test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: website
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: website/package-lock.json
-      - name: Install website dependencies
-        run: npm ci
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
       - name: Run website checks
-        run: npm run check
+        run: pnpm run website:check
       - name: Run website build
-        run: npm run build
+        run: pnpm run website:build
       - name: Run website tests
-        run: npm run test:ci
+        run: pnpm run website:test
       - name: Run website smoke checks
-        run: npm run smoke
+        run: pnpm run website:smoke
 
   retry-safety-e2e:
     if: github.event_name == 'schedule' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'

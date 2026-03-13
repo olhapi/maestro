@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 set -eu
 
-npm run --silent hooks:pre-commit
+pnpm run --silent hooks:pre-commit

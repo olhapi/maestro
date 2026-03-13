@@ -1,0 +1,17 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "outputs": ["$TURBO_EXTENDS$", ".astro/**"],
+      "env": ["SITE_URL"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"]
+    },
+    "check": {
+      "env": ["SITE_URL"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"]
+    },
+    "dev": {
+      "env": ["SITE_URL"]
+    }
+  }
+}
