@@ -69,6 +69,8 @@ maestro --log-level <debug|info|warn|error> workflow init [repo_path]`}
 
 `--log-level` defaults to `info`. Use `debug` when you need raw app-server stream output and session churn in the structured logs.
 
+`maestro run` serves HTTP on port `8787` by default. Pass `--port` only when you want a different port.
+
 Live runtime helpers require `--api-url` because they talk to a running daemon over HTTP.
 
 ## Issue states
@@ -89,7 +91,7 @@ Live runtime helpers require `--api-url` because they talk to a running daemon o
 <DocsCommandField
   command={`maestro issue list --state backlog
 maestro issue move ISS-1 ready
-maestro run /path/to/repo --port 8787`}
+maestro run`}
 />
 
 ### Verify a repo before launching the loop

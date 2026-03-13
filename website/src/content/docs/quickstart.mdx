@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Bootstrap a workflow file, create a small queue, attach MCP, and start the orchestrator with a visible control center.
+description: Bootstrap a workflow file, register Maestro with Codex over MCP, start the orchestrator, and seed the tracker from a visible control center.
 section: getting-started
 order: 1
 navLabel: Quickstart
@@ -16,48 +16,25 @@ Start in the repo you want Maestro to orchestrate:
 
 This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template.
 
-## 2. Create a small queue
+## 2. Expose the tracker to MCP clients
 
-Create a project and a few issues so the queue has something to schedule:
+If you installed Maestro from npm, add the shipped `maestro` command to Codex once:
 
-<DocsCommandField
-  command={`maestro project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
-maestro issue create "Add login page" --project <project_id> --labels feature,ui
-maestro issue create "Fix auth bug" --priority 1 --labels bug
-maestro issue list
-maestro board`}
-/>
+<DocsCommandField command={`codex mcp add maestro -- maestro mcp`} />
 
-Move an issue into `ready` when you want Maestro to pick it up:
+That uses the npm-installed `maestro` binary already on your `PATH`; you do not need to point Codex at a manually built executable.
 
-<DocsCommandField command={`maestro issue move ISS-1 ready`} />
+`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Save the entry first, then start the daemon and let Codex attach through it.
 
-Projects default to the local `kanban` provider. You can also register a project with limited `linear` provider support through `maestro project create --provider linear --provider-project-ref <slug>`.
+## 3. Start the orchestrator
 
-## 3. Expose the tracker to MCP clients
+Start the daemon:
 
-Point your MCP client at the built binary:
+<DocsCommandField command={`maestro run`} />
 
-```json
-{
-  "mcpServers": {
-    "maestro": {
-      "command": "/absolute/path/to/maestro",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+If `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. If `--port` is omitted, Maestro serves the dashboard and HTTP APIs on `http://127.0.0.1:8787`.
 
-`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start the daemon first, then let your MCP client attach.
-
-## 4. Start the orchestrator
-
-Run the daemon against the target repo and expose the dashboard plus HTTP APIs:
-
-<DocsCommandField command={`maestro run /path/to/repo --port 8787`} />
-
-If `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default.
+Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
 
 The loop is straightforward:
 
@@ -67,9 +44,19 @@ The loop is straightforward:
 4. It dispatches work to the configured agent command.
 5. It tracks retries, logs, runtime status, and the MCP transport used by `maestro mcp`.
 
+## 4. Create a first queue from Codex
+
+With the daemon running, ask Codex to seed the tracker through the saved `maestro` MCP server:
+
+<DocsCommandField
+  command={`codex --cd /path/to/todo-app "Use the maestro MCP server to create a project, epics, and issues for a new react todo app. Set the project repo path to the current working directory. Plan the features first, split them into epics, add a priority value and blockers for each issue, set their state to ready."`}
+/>
+
+This example assumes the default local `kanban` provider, which supports epics, issue priorities, and blockers.
+
 ## 5. Open the control center
 
-When you run with `--port`, Maestro serves the embedded dashboard, the live observability API, and the richer dashboard application API on the same HTTP server.
+By default, `maestro run` serves the embedded dashboard, the live observability API, and the richer dashboard application API on the same HTTP server. Use `--port` to change the port.
 
 - Dashboard: `http://127.0.0.1:8787/`
 - Live API root: `http://127.0.0.1:8787/api/v1/`
@@ -83,12 +70,6 @@ maestro sessions --api-url http://127.0.0.1:8787`}
 />
 
 The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
-
-## Local UI development
-
-If you want to work on the embedded dashboard against another repo:
-
-<DocsCommandField command={`REPO_PATH=/path/to/repo make dev`} />
 
 ## Next step
 

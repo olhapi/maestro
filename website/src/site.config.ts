@@ -1,4 +1,5 @@
 export const siteOrigin = process.env.SITE_URL ?? "https://maestro.olhapi.dev";
+export const buyMeACoffeeUrl = "https://buymeacoffee.com/olhapi";
 export const repoUrl = "https://github.com/olhapi/maestro";
 export const patreonUrl = "https://patreon.com/olhapi";
 export const xUrl = "https://x.com/ollhapi";
@@ -31,8 +32,8 @@ export const quickstartSteps = [
   },
   {
     title: "Start orchestration",
-    command: "maestro run /path/to/repo --port 8787",
-    detail: "Run the daemon, observability API, and embedded control center.",
+    command: "maestro run",
+    detail: "Run the daemon, default HTTP API on 8787, and embedded control center.",
   },
 ] as const;
 
@@ -52,12 +53,6 @@ export const docsPreview = [
     href: "/docs/operations",
     description: "Use the HTTP runtime endpoints, validation commands, extensions file, and logs without guesswork.",
   },
-] as const;
-
-export const architectureSteps = [
-  "Codex or ChatGPT attaches through `maestro mcp`.",
-  "The live `maestro run` daemon owns the SQLite store, observability API, and orchestrator loop.",
-  "Ready issues move into workspaces and the configured agent command executes against them.",
 ] as const;
 
 export const tourChapters = [

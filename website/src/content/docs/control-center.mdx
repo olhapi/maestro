@@ -45,7 +45,7 @@ The sessions surface is for active orchestration periods when multiple workspace
 
 ## Embedded server behavior
 
-When `maestro run` starts with `--port`, the HTTP server serves:
+By default, `maestro run` starts the HTTP server on `http://127.0.0.1:8787`. Use `--port` to override it. That server serves:
 
 - the embedded dashboard on `/`
 - the health endpoint on `/health`

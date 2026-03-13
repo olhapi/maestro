@@ -25,6 +25,8 @@ import (
 	"github.com/olhapi/maestro/pkg/config"
 )
 
+const defaultHTTPPort = "8787"
+
 type rootOptions struct {
 	dbPath   string
 	apiURL   string
@@ -109,7 +111,7 @@ func (a *cliApp) newRunCmd() *cobra.Command {
 	var workflowPath string
 	var extensionsFile string
 	var logsRoot string
-	var port string
+	var port string = defaultHTTPPort
 	var logMaxBytes int64 = 10 * 1024 * 1024
 	var logMaxFiles int = 3
 	var acknowledgedUnsafe bool
@@ -179,7 +181,7 @@ func (a *cliApp) newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Path to WORKFLOW.md")
 	cmd.Flags().StringVar(&extensionsFile, "extensions", "", "Path to an extensions JSON file")
 	cmd.Flags().StringVar(&logsRoot, "logs-root", "", "Directory for structured logs")
-	cmd.Flags().StringVar(&port, "port", "", "HTTP port for observability endpoints")
+	cmd.Flags().StringVar(&port, "port", defaultHTTPPort, "HTTP port for observability endpoints")
 	cmd.Flags().Int64Var(&logMaxBytes, "log-max-bytes", logMaxBytes, "Max size of the rotating log file")
 	cmd.Flags().IntVar(&logMaxFiles, "log-max-files", logMaxFiles, "Number of rotated log files to keep")
 	cmd.Flags().BoolVar(&acknowledgedUnsafe, strings.TrimPrefix(guardrailsAcknowledgementFlag, "--"), false, "Silence the guardrails warning")

@@ -3,8 +3,12 @@ import { join } from "node:path";
 
 const checks = [
   { file: "index.html", text: "Local-first orchestration for Codex and ChatGPT" },
+  { file: "index.html", text: "How work moves through the live loop." },
+  { file: "index.html", text: "class=\"mermaid\"" },
   { file: "docs/index.html", text: "Documentation" },
   { file: "docs/install/index.html", text: "Install Maestro" },
+  { file: "docs/architecture/index.html", text: "The full runtime shape around the daemon." },
+  { file: "docs/architecture/index.html", text: "private MCP daemon" },
   { file: "docs/operations/index.html", text: "Operations and observability" },
   { file: "docs/advanced/e2e-harness/index.html", text: "Real Codex E2E harness" },
 ];

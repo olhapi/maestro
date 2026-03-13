@@ -1,4 +1,5 @@
 ---
+import ArchitectureDiagrams from "../components/docs/ArchitectureDiagrams.astro";
 import FeatureCard from "../components/FeatureCard.astro";
 import SectionHeading from "../components/SectionHeading.astro";
 import CommandBlock from "../components/react/CommandBlock";
@@ -6,15 +7,7 @@ import CopyCodeField from "../components/react/CopyCodeField";
 import HeroShowcase from "../components/react/HeroShowcase";
 import TourScroller from "../components/react/TourScroller";
 import BaseLayout from "../layouts/BaseLayout.astro";
-import { architectureSteps, docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../site.config";
-
-const architectureFlow = [
-  "Codex or ChatGPT (via MCP)",
-  "maestro mcp (stdio bridge)",
-  "maestro run daemon <-> SQLite Kanban store",
-  "Orchestrator -> workspace lifecycle -> agent runner",
-  "WORKFLOW.md",
-];
+import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../site.config";
 ---
 
 <BaseLayout
@@ -89,54 +82,8 @@ const architectureFlow = [
       description="The architecture stays compact. The attach path, daemon, tracker, and agent runner are close enough that you can explain the whole loop on one screen."
       title="Keep the system shape legible even when the work itself gets messy."
     />
-    <div class="mt-8 grid min-w-0 gap-4 lg:grid-cols-[1.05fr_minmax(0,0.95fr)]">
-      <div class="panel min-w-0 p-6 md:p-8">
-        <p class="kicker">Runtime path</p>
-        <div class="min-w-0 space-y-4">
-          {architectureSteps.map((step, index) => (
-            <div class="flex min-w-0 gap-4 rounded-[1.15rem] border border-white/8 bg-black/20 p-4">
-              <div class="flex size-10 shrink-0 items-center justify-center rounded-full border border-[rgba(196,255,87,0.25)] bg-[rgba(196,255,87,0.1)] font-display text-sm font-semibold text-[var(--accent-strong)]">
-                {index + 1}
-              </div>
-              <p class="min-w-0 flex-1 pt-1 text-sm leading-6 break-words text-[var(--muted)] sm:pt-2 sm:text-base sm:leading-7">{step}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div class="panel min-w-0 p-6 md:p-8">
-        <p class="kicker">Architecture</p>
-        <div class="space-y-2 sm:hidden">
-          {architectureFlow.map((node, index) => (
-            <div class="contents">
-              <div class="rounded-[1.15rem] border border-white/8 bg-black/20 px-4 py-3">
-                <p class="font-mono text-[0.82rem] leading-6 break-words text-[var(--muted-strong)]">{node}</p>
-              </div>
-              {
-                index < architectureFlow.length - 1 ? (
-                  <div class="flex justify-center py-1 text-[var(--accent-strong)]">
-                    <span class="flex size-7 items-center justify-center rounded-full border border-[rgba(196,255,87,0.24)] bg-[rgba(196,255,87,0.08)] text-sm">
-                      ↓
-                    </span>
-                  </div>
-                ) : null
-              }
-            </div>
-          ))}
-        </div>
-        <pre class="hidden max-w-full overflow-x-auto rounded-2xl border border-white/8 bg-black/35 p-5 font-mono text-sm text-[var(--muted-strong)] sm:block"><code>{`Codex or ChatGPT (via MCP)
-        |
-        v
-maestro mcp (stdio bridge)
-        |
-        v
-maestro run daemon <-> SQLite Kanban store
-        |
-        v
-Orchestrator -> workspace lifecycle -> agent runner
-        ^
-        |
-   WORKFLOW.md`}</code></pre>
-      </div>
+    <div class="mt-8">
+      <ArchitectureDiagrams context="home" />
     </div>
   </section>
 

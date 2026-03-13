@@ -10,11 +10,11 @@ import DocsCommandField from "./_components/DocsCommandField.astro";
 
 ## HTTP surfaces
 
-Start the daemon with an HTTP port:
+Start the daemon:
 
-<DocsCommandField command={`./maestro run /path/to/repo --port 8787`} />
+<DocsCommandField command={`maestro run`} />
 
-If `--db` is omitted, `run` uses `~/.maestro/maestro.db`.
+If `--db` is omitted, `run` uses `~/.maestro/maestro.db`. If `--port` is omitted, `run` serves HTTP on `8787`.
 
 Maestro serves the embedded dashboard plus two related API surfaces.
 
@@ -61,6 +61,15 @@ These endpoints back the embedded UI:
 | `GET /api/v1/ws` | Dashboard invalidate stream used to refetch live data |
 
 CLI helpers such as `status --dashboard`, `sessions`, and `events` require `--api-url`. The embedded dashboard does not because it talks to the colocated server directly.
+
+## Repo scope
+
+`maestro run` and `maestro run [repo_path]` are different modes.
+
+- `maestro run` is unscoped. It runs against the current database, does not infer a repo from the shell working directory, and dispatches work using each project's stored `repo_path` and `workflow_path`.
+- `maestro run /absolute/path/to/repo` scopes the daemon to one repo. Provider sync filters to that repo, MCP and dashboard project mutations must use that same repo path, and project-less issues resolve against that scoped `WORKFLOW.md`.
+
+Use the unscoped form when one daemon should supervise multiple registered projects in the same database. Use the scoped form when you want one daemon to stay pinned to a single repo.
 
 ## Workflow bootstrap and checks
 

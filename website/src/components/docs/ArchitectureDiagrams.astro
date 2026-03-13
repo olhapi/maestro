@@ -1,0 +1,64 @@
+---
+const { context = "docs" } = Astro.props as {
+  context?: "docs" | "home";
+};
+
+const isHome = context === "home";
+
+const runtimePathDiagram = `
+flowchart TB
+    MCPClient["Codex / ChatGPT<br>(via MCP)"] --> MCPBridge["maestro mcp<br>(stdio bridge)"]
+    MCPBridge --> MCPDaemon["private MCP daemon"]
+
+    BrowserCLI["Browser / live CLI helpers"] --> HTTP["public HTTP server (:port)"]
+    HTTP --> HTTPSurfaces["/, /api/v1/*,<br>/api/v1/app/*, /api/v1/ws"]
+
+    MCPDaemon --> Run["maestro run daemon"]
+    HTTPSurfaces --> Run
+
+    Run --> Provider["provider service"]
+    Run --> Orch["orchestrator"]
+
+    Provider <--> Store["local SQLite store"]
+    Provider --> Linear["Linear API (optional)"]
+
+    Orch --> Workspace["workspace lifecycle"]
+    Workspace --> Runner["agent runner"]
+    Runner --> Codex["Codex CLI"]
+
+    Workflow["WORKFLOW.md"] --> Orch
+    Workflow --> Runner
+
+    classDef accent fill:#17210c,stroke:#c4ff57,color:#ffffff,stroke-width:1.5px;
+    classDef cyan fill:#0e1a20,stroke:#53d9ff,color:#ffffff,stroke-width:1.5px;
+    classDef muted fill:#121418,stroke:#6b7485,color:#d9dee7,stroke-width:1px;
+
+    class MCPClient,MCPBridge,MCPDaemon accent;
+    class BrowserCLI,HTTP,HTTPSurfaces cyan;
+    class Run,Provider,Orch,Store,Linear,Workspace,Runner,Codex,Workflow muted;
+`.trim();
+
+const sections = [
+  {
+    kicker: "Runtime path",
+    title: "How work moves through the live loop.",
+    description: isHome
+      ? "Attach through MCP, keep the daemon in the middle, and let provider sync plus orchestration stay local."
+      : "The shortest operational view of the system: attach path, optional HTTP surface, local store, provider sync, and agent execution.",
+    diagram: runtimePathDiagram,
+  },
+] as const;
+---
+
+<div class:list={["architecture-diagrams", isHome ? "architecture-diagrams--home" : "architecture-diagrams--docs"]}>
+  {sections.map((section) => (
+    <section class="architecture-diagram-card panel p-5 md:p-6">
+      <div class="architecture-diagram-header">
+        <p class="kicker">{section.kicker}</p>
+        <p class="architecture-diagram-title">{section.title}</p>
+        <p class="architecture-diagram-description">{section.description}</p>
+      </div>
+      <pre class="mermaid">{section.diagram}</pre>
+    </section>
+  ))}
+</div>

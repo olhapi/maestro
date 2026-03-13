@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,17 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
+func TestRunCommandDefaultsPortTo8787(t *testing.T) {
+	cmd := newRootCmd(io.Discard, io.Discard)
+	runCmd, _, err := cmd.Find([]string{"run"})
+	if err != nil {
+		t.Fatalf("find run command: %v", err)
+	}
+	got := runCmd.Flags().Lookup("port").DefValue
+	if got != defaultHTTPPort {
+		t.Fatalf("run --port default = %q, want %q", got, defaultHTTPPort)
+	}
+}
 func writeFakeCodexCLI(t *testing.T, version string) string {
 	t.Helper()
 	dir := t.TempDir()

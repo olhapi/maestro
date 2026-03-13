@@ -6,6 +6,8 @@ order: 0
 navLabel: Architecture
 ---
 
+import ArchitectureDiagrams from "../../components/docs/ArchitectureDiagrams.astro";
+
 ## Runtime layers
 
 The current codebase is organized around five connected runtime layers:
@@ -14,34 +16,13 @@ The current codebase is organized around five connected runtime layers:
 - a provider service that reads local `kanban` projects and syncs limited `linear` projects into that local store
 - an orchestrator plus agent runner that turn queued issues into workspaces and Codex sessions
 - a private MCP daemon that `maestro mcp` bridges over stdio
-- an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
+- a public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs on the default port unless you override `--port`
 
-## Runtime path
+## Current diagrams
 
-```text
-Codex or ChatGPT (via MCP)        Browser / live CLI helpers
-            |                               |
-            v                               v
-   maestro mcp (stdio bridge)      public HTTP server (:port)
-            |                               |
-            v                               v
-    private MCP daemon              /api/v1/*, /api/v1/app/*, /api/v1/ws, /
-             \                              /
-              \                            /
-               v                          v
-                    maestro run daemon
-                            |
-            +---------------+---------------+
-            |                               |
-            v                               v
- provider service <-> local SQLite store    orchestrator
-            |                               |
-            |                               v
-            |                   workspace lifecycle -> agent runner -> Codex CLI
-            |                               ^
-            v                               |
-      Linear API (optional)            WORKFLOW.md
-```
+These diagrams are derived from the current runtime shape in `cmd/maestro` and the internal runtime packages, then rendered directly in the docs site.
+
+<ArchitectureDiagrams />
 
 ## Local store first
 
@@ -56,7 +37,7 @@ Even when a project uses a provider such as Linear, Maestro still supervises wor
 - the SQLite store and runtime persistence
 - the provider service and orchestrator runtime
 - the private loopback-only MCP transport endpoint
-- the optional public HTTP server when you pass `--port`
+- the public HTTP server and embedded dashboard, which default to port `8787` unless you override `--port`
 
 `maestro mcp` does not start a separate daemon. It attaches to the live `maestro run` process for the same store and bridges that daemon over stdio for MCP clients.
 
@@ -99,10 +80,10 @@ Linear support is intentionally limited:
 
 ## Why the architecture stays local-first
 
-The current design intentionally differs from the original Maestro project:
+Keeping the architecture local-first makes the system easier to inspect, debug, and trust.
 
-- the control plane stays local even when a project syncs issues from Linear
-- the observability surface is HTTP JSON plus an embedded dashboard, not Phoenix pubsub
-- extensions stay as local shell commands rather than a separate plugin runtime
+- the control plane stays on your machine, so the automation loop remains close to the code and config you are actually running
+- the observability surface is plain HTTP JSON plus an embedded dashboard, so you can understand system state with familiar tools
+- extensions stay as local shell commands, so customization remains easy to version, audit, and replace
 
-That keeps the operational footprint small enough that you can reason about the full loop from a single repo checkout.
+That keeps the operational footprint small and makes the full loop easier to reason about from a single repo checkout.

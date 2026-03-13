@@ -40,19 +40,32 @@ Optional Docker build:
 
 <DocsCommandField command={`docker build -t maestro .`} />
 
-## Contributor tooling
-
-If you are working in the repo itself, install the root development dependency once:
-
-<DocsCommandField command={`npm install`} />
-
-That installs the repo-managed Git hooks and bootstraps the nested frontend and website dependencies used by those hooks.
-
 ## What to install first
 
 - Install `go` if you need source builds or local development.
 - Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
 - Use the npm package when you want the shortest path to a working local install on a supported platform.
+
+## Contributor tooling
+
+If you are contributing from a repo checkout, run the root install once before anything else:
+
+<DocsCommandField command={`npm install`} />
+
+That single install does three things:
+
+- installs the repo-managed Git hooks through Husky
+- bootstraps the nested `frontend` and `website` dependencies those hooks rely on
+- makes the root helper scripts available for common docs-site tasks
+
+For website work, the most useful root commands are:
+
+- `npm run website:dev` for the local Astro docs server
+- `npm run website:check` for type and content validation
+- `npm run website:test` for the website test suite
+- `npm run website:build` for a production build check
+
+The hooks stay targeted. Frontend changes run frontend lint and tests, website changes run Astro checks and website tests, and broader Go changes run the relevant Go test commands.
 
 ## Next step
 

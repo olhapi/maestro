@@ -8,7 +8,7 @@ In the current codebase, the runtime is built from five connected layers:
 - a provider service that supports local `kanban` projects and limited `linear` project sync
 - an orchestrator plus agent runner that read `WORKFLOW.md`, claim runnable issues, and dispatch Codex work
 - a private MCP daemon that `maestro mcp` bridges over stdio
-- an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
+- a public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs on the default port unless you override `--port`
 
 Maestro stays local-first even when a project syncs issues from Linear. Provider-backed issues are synchronized into the local store, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces as local kanban issues.
 
@@ -112,10 +112,12 @@ For a shared multi-project setup, point both `maestro mcp` and `maestro run` at 
 ### 4. Start the orchestrator
 
 ```bash
-maestro run /path/to/repo --port 8787
+maestro run
 ```
 
-When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default.
+When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. When `--port` is omitted, Maestro serves HTTP on `http://127.0.0.1:8787`.
+
+Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
 
 The orchestrator:
 
@@ -123,11 +125,11 @@ The orchestrator:
 2. polls for issues in the `ready` state
 3. creates per-issue workspaces
 4. dispatches work to the configured agent command
-5. tracks retries, logs, runtime status, provider-backed issue refresh, the private MCP transport used by `maestro mcp`, and the public dashboard/API server when `--port` is set
+5. tracks retries, logs, runtime status, provider-backed issue refresh, the private MCP transport used by `maestro mcp`, and the public dashboard/API server
 
 `run` prints a preview warning because the default workflow can launch Codex without extra guardrails. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when that is intentional for your environment.
 
-When you run with `--port`, Maestro serves:
+By default, `maestro run` serves:
 
 - the embedded dashboard on `/`
 - the live observability API on `/api/v1/*`
