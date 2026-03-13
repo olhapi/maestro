@@ -56,6 +56,22 @@ jobs:
       - name: Run npm packaging unit tests
         run: node --test packaging/npm/root/lib/get-exe-path.test.js
 
+  npm-root-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Build root package
+        run: ./scripts/package_npm_release.sh pack-root 0.0.0-ci
+      - name: Upload root tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-root-package
+          path: dist/npm/olhapi-maestro-0.0.0-ci.tgz
+          if-no-files-found: error
+
   go-platform-smoke:
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -101,6 +117,48 @@ jobs:
         run: ./scripts/package_npm_release.sh pack-root 0.0.0-ci
       - name: Smoke test npm install
         run: ./scripts/smoke_npm_package.sh 0.0.0-ci "${{ matrix.target }}"
+      - name: Upload leaf tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-leaf-${{ matrix.target }}
+          path: dist/npm/olhapi-maestro-${{ matrix.target }}-0.0.0-ci.tgz
+          if-no-files-found: error
+
+  npm-registry-smoke:
+    needs:
+      - npm-root-package
+      - go-platform-smoke
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+          - target: win32-x64
+            runner: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/npm
+          pattern: npm-*
+          merge-multiple: true
+      - name: Smoke test root-only npm install through local registry
+        run: ./scripts/smoke_npm_registry_install.sh 0.0.0-ci "${{ matrix.target }}"
 
   frontend-test:
     runs-on: ubuntu-latest
