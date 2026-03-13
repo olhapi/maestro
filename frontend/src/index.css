@@ -13,6 +13,7 @@
   --accent-strong: #d9ff87;
   --muted-foreground: #9aa2b3;
   --shell-sidebar-width: 15.5rem;
+  --mobile-nav-height: 4.75rem;
   --shell-padding: 1rem;
   --section-gap: 1rem;
   --panel-padding: 1rem;
@@ -49,12 +50,26 @@ body,
 
 body {
   margin: 0;
+  overflow-x: clip;
   background:
     radial-gradient(circle at top left, rgba(196, 255, 87, 0.08), transparent 24%),
     radial-gradient(circle at top right, rgba(83, 217, 255, 0.08), transparent 28%),
     linear-gradient(180deg, #0b0d10 0%, #07080a 100%);
   color: white;
   font-family: var(--font-sans);
+}
+
+@media (max-width: 1023px) {
+  :root {
+    --shell-padding: 0.75rem;
+    --section-gap: 0.75rem;
+    --panel-padding: 0.875rem;
+    --panel-padding-tight: 0.75rem;
+    --page-title-size: clamp(1.75rem, 7vw, 2.2rem);
+    --metric-value-size: 2rem;
+    --issue-card-min-height: 8.25rem;
+    --issue-card-min-height-compact: 6rem;
+  }
 }
 
 * {

@@ -8,6 +8,7 @@ import { renderWithQueryClient } from '@/test/test-utils'
 
 const invalidateSocket = vi.fn()
 let pathname = '/work'
+const initialInnerWidth = window.innerWidth
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -49,6 +50,12 @@ const { api } = await import('@/lib/api')
 describe('AppShell', () => {
   beforeEach(() => {
     pathname = '/work'
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: initialInnerWidth,
+    })
+    window.dispatchEvent(new Event('resize'))
   })
 
   it('renders navigation and reacts to refresh controls', async () => {
@@ -57,13 +64,12 @@ describe('AppShell', () => {
     renderWithQueryClient(<AppShell />)
 
     await waitFor(() => {
-      expect(screen.getByText('Maestro')).toBeInTheDocument()
+      expect(screen.getAllByText('Maestro').length).toBeGreaterThan(0)
     })
 
-    const workLink = screen.getByRole('link', { name: 'Work' })
+    const workLink = screen.getAllByRole('link', { name: 'Work' })[0]
     expect(workLink).toHaveAttribute('aria-label', 'Work')
-    expect(workLink.className).toContain('lg:max-[1440px]:justify-center')
-    expect(screen.getByRole('link', { name: 'Sessions' })).toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: 'Sessions' }).length).toBeGreaterThan(0)
     expect(screen.getByText(/^\d+s ago$/)).toBeInTheDocument()
     expect(document.title).toContain('Work')
 
@@ -74,7 +80,7 @@ describe('AppShell', () => {
       invalidateSocket()
     })
     await waitFor(() => {
-      expect(screen.getByText('1 running')).toBeInTheDocument()
+      expect(screen.getAllByText('1 running').length).toBeGreaterThan(0)
     })
   })
 
@@ -85,9 +91,29 @@ describe('AppShell', () => {
     renderWithQueryClient(<AppShell />)
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: 'Sessions' })).toBeInTheDocument()
+      expect(screen.getAllByRole('link', { name: 'Sessions' }).length).toBeGreaterThan(0)
     })
 
     expect(document.title).toContain('Sessions')
+  })
+
+  it('switches to the compact mobile shell below the desktop breakpoint', async () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: 390,
+    })
+    window.dispatchEvent(new Event('resize'))
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Open command palette' })).toBeInTheDocument()
+    })
+
+    expect(screen.getByText(/Updated .*ago/)).toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: 'Overview' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('link', { name: 'Projects' }).length).toBeGreaterThan(0)
   })
 })

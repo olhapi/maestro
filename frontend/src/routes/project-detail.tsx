@@ -11,6 +11,7 @@ import { EpicDialog, IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
 import {
@@ -52,6 +53,7 @@ export function ProjectDetailPage() {
   const { projectId } = useParams({ from: "/projects/$projectId" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const isMobileLayout = useIsMobileLayout();
   const [epicDialogOpen, setEpicDialogOpen] = useState(false);
   const [issueDialogInitial, setIssueDialogInitial] = useState<
     Partial<IssueDetail>
@@ -335,6 +337,7 @@ export function ProjectDetailPage() {
       <KanbanBoard
         items={project.data.issues.items}
         bootstrap={bootstrap.data}
+        mode={isMobileLayout ? "grouped" : "board"}
         onOpenIssue={setPreviewIssue}
         onMoveIssue={(issue, nextState) =>
           stateMutation.mutate({ identifier: issue.identifier, nextState })

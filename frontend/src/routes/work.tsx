@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { api } from '@/lib/api'
+import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
 import { getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { appRoutes } from '@/lib/routes'
 import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from '@/lib/types'
@@ -34,6 +35,7 @@ function StatCard({ label, value, detail }: { label: string; value: string; deta
 
 export function WorkPage() {
   const queryClient = useQueryClient()
+  const isMobileLayout = useIsMobileLayout()
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
   const [projectID, setProjectID] = useState('')
@@ -122,12 +124,17 @@ export function WorkPage() {
   }
 
   const availableStates = issueStatesFor(issues.data.items)
+  const showBoardView = isMobileLayout || view === 'board'
 
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         title="Coordinate work on one board"
-        description="This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed."
+        description={
+          isMobileLayout
+            ? 'Review work by state, inspect execution context in-place, and open full issue pages only when you need more detail.'
+            : 'This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed.'
+        }
         stats={
           <>
             <StatCard label="Active work" value={String(metrics.active)} detail="Ready, in progress, and in review across the portfolio." />
@@ -166,42 +173,52 @@ export function WorkPage() {
       </Card>
 
       <Card className="bg-white/[0.04]">
-        <CardHeader className="flex-row items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-white">Triage, route, and monitor work in one surface</h2>
-          <div className="flex items-center gap-2">
-            <Select aria-label="Sort issues" className="h-9 w-[176px] text-xs" value={sort} onChange={(event) => setSort(event.target.value)}>
+        <CardHeader className="flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-lg font-semibold text-white">
+            {isMobileLayout ? 'Review work state by state' : 'Triage, route, and monitor work in one surface'}
+          </h2>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+            <Select
+              aria-label="Sort issues"
+              className={isMobileLayout ? 'h-9 w-full text-xs' : 'h-9 w-[176px] text-xs'}
+              value={sort}
+              onChange={(event) => setSort(event.target.value)}
+            >
               <option value="updated_desc">Recently updated</option>
               <option value="priority_asc">Highest priority</option>
               <option value="identifier_asc">Identifier A-Z</option>
               <option value="state_asc">State grouping</option>
             </Select>
-            <ToggleGroup
-              aria-label="Switch work view"
-              className="inline-flex rounded-[var(--panel-radius)] border border-white/10 bg-black/20 p-0.75"
-              type="single"
-              value={view}
-              onValueChange={(next) => {
-                if (next === 'board' || next === 'list') {
-                  setView(next)
-                }
-              }}
-            >
-              <ToggleGroupItem aria-label="Board view" className="px-2.5 py-1.5" title="Board view" value="board">
-                <LayoutGrid className="size-4" />
-              </ToggleGroupItem>
-              <ToggleGroupItem aria-label="List view" className="px-2.5 py-1.5" title="List view" value="list">
-                <List className="size-4" />
-              </ToggleGroupItem>
-            </ToggleGroup>
+            {!isMobileLayout ? (
+              <ToggleGroup
+                aria-label="Switch work view"
+                className="inline-flex rounded-[var(--panel-radius)] border border-white/10 bg-black/20 p-0.75"
+                type="single"
+                value={view}
+                onValueChange={(next) => {
+                  if (next === 'board' || next === 'list') {
+                    setView(next)
+                  }
+                }}
+              >
+                <ToggleGroupItem aria-label="Board view" className="px-2.5 py-1.5" title="Board view" value="board">
+                  <LayoutGrid className="size-4" />
+                </ToggleGroupItem>
+                <ToggleGroupItem aria-label="List view" className="px-2.5 py-1.5" title="List view" value="list">
+                  <List className="size-4" />
+                </ToggleGroupItem>
+              </ToggleGroup>
+            ) : null}
           </div>
         </CardHeader>
       </Card>
 
-      {view === 'board' ? (
+      {showBoardView ? (
         <div className="m-0">
           <KanbanBoard
             items={issues.data.items}
             bootstrap={bootstrap.data}
+            mode={isMobileLayout ? 'grouped' : 'board'}
             onOpenIssue={setPreviewIssue}
             onMoveIssue={(issue, nextState) => stateMutation.mutate({ identifier: issue.identifier, nextState })}
             onCreateIssue={(nextState) => {

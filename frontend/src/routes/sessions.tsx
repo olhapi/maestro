@@ -64,13 +64,13 @@ export function SessionsPage() {
 
   return (
     <div className="grid gap-[var(--section-gap)]">
-      <div>
+      <div className="min-w-0">
         <h3 className="font-display text-[length:var(--page-title-size)] font-semibold leading-[var(--page-title-line-height)]">Threads, turns, and event traces</h3>
       </div>
-      <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.2fr_.8fr]">
-        <Card>
+      <div className="grid min-w-0 gap-[var(--section-gap)] lg:grid-cols-[minmax(0,1.2fr)_minmax(0,.8fr)]">
+        <Card className="min-w-0">
           <CardHeader>
-            <div>
+            <div className="min-w-0">
               <CardTitle>Run transparency</CardTitle>
               <CardDescription>Live sessions first, followed by recent persisted runs sorted by issue title for faster triage.</CardDescription>
             </div>
@@ -92,7 +92,7 @@ export function SessionsPage() {
 
                 return (
                   <div key={`${entry.source}-${entry.issue_identifier}`} className="rounded-[var(--panel-radius)] border border-white/8 bg-black/20 p-[var(--panel-padding)]">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="font-medium text-white">{title}</p>
@@ -109,7 +109,7 @@ export function SessionsPage() {
                         </p>
                       </div>
                       <Link
-                        className="rounded-full border border-white/10 px-3 py-1.5 text-sm text-white transition hover:border-white/20 hover:bg-white/5"
+                        className="self-start rounded-full border border-white/10 px-3 py-1.5 text-sm text-white transition hover:border-white/20 hover:bg-white/5"
                         params={{ identifier: entry.issue_identifier }}
                         to={appRoutes.issueDetail}
                       >
@@ -117,7 +117,7 @@ export function SessionsPage() {
                       </Link>
                     </div>
 
-                    <div className="mt-3.5 grid gap-2.5 text-sm sm:grid-cols-3">
+                    <div className="mt-3.5 grid grid-cols-1 gap-2.5 text-sm sm:grid-cols-3">
                       <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/4 p-3 text-[var(--muted-foreground)]">
                         <p className="text-xs uppercase tracking-[0.18em]">Tokens</p>
                         <p className="mt-2 text-xl text-white">{formatCompactNumber(entry.total_tokens)}</p>
@@ -139,9 +139,9 @@ export function SessionsPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
-            <div>
+            <div className="min-w-0">
               <CardTitle>Recent runtime events</CardTitle>
               <CardDescription>Global orchestration context for the current control-plane state.</CardDescription>
             </div>

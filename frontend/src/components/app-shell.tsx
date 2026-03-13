@@ -7,6 +7,7 @@ import { CommandPalette } from '@/components/command-palette'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
 import { api } from '@/lib/api'
 import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
@@ -36,6 +37,7 @@ function getPageTitle(pathname: string) {
 export function AppShell() {
   const { location } = useRouterState()
   const queryClient = useQueryClient()
+  const isMobileLayout = useIsMobileLayout()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
@@ -59,17 +61,20 @@ export function AppShell() {
   }, [])
 
   const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
+  const pageTitle = getPageTitle(activePath) || SIDEBAR_TITLE
+  const runningCount = bootstrap.data?.overview.snapshot.running.length ?? 0
+  const retryCount = bootstrap.data?.overview.snapshot.retrying.length ?? 0
 
   useEffect(() => {
-    const pageTitle = getPageTitle(activePath)
-    document.title = pageTitle ? `${pageTitle} · ${APP_TITLE}` : APP_TITLE
+    const nextTitle = getPageTitle(activePath)
+    document.title = nextTitle ? `${nextTitle} · ${APP_TITLE}` : APP_TITLE
   }, [activePath])
 
   return (
-    <div className="min-h-screen bg-[var(--page)] text-white">
+    <div className="min-h-screen overflow-x-clip bg-[var(--page)] text-white">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(196,255,87,.12),transparent_24%),radial-gradient(circle_at_top_right,rgba(83,217,255,.1),transparent_26%),linear-gradient(180deg,rgba(255,255,255,.05),transparent_40%)]" />
-      <div className="relative grid min-h-screen lg:grid-cols-[var(--shell-sidebar-width)_1fr]">
-        <aside className="border-b border-white/8 bg-black/25 p-[var(--shell-padding)] backdrop-blur-2xl lg:border-b-0 lg:border-r">
+      <div className="relative min-h-screen lg:grid lg:grid-cols-[var(--shell-sidebar-width)_1fr]">
+        <aside className="hidden border-b border-white/8 bg-black/25 p-[var(--shell-padding)] backdrop-blur-2xl lg:flex lg:min-h-screen lg:flex-col lg:border-b-0 lg:border-r">
           <div className="flex items-center gap-3 lg:max-[1440px]:justify-center">
             <div className="hidden size-11 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-white/5 font-display text-sm font-semibold tracking-[0.24em] text-[var(--accent)] lg:max-[1440px]:flex">
               MC
@@ -131,16 +136,52 @@ export function AppShell() {
           </div>
         </aside>
 
-        <main className="relative flex min-h-screen flex-col">
-          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 px-[var(--shell-padding)] py-3 backdrop-blur-xl">
+        <div className="relative flex min-h-screen min-w-0 flex-col">
+          <header className="sticky top-0 z-30 border-b border-white/8 bg-black/30 backdrop-blur-xl lg:hidden">
+            <div className="flex items-start justify-between gap-3 px-[var(--shell-padding)] py-3">
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{SIDEBAR_TITLE}</p>
+                <h1 className="mt-1 truncate font-display text-lg font-semibold leading-none text-white">{pageTitle}</h1>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  aria-label="Refresh"
+                  className="h-9 w-9 shrink-0"
+                  size="icon"
+                  title="Refresh"
+                  variant="secondary"
+                  onClick={() => void queryClient.invalidateQueries()}
+                >
+                  <RefreshCw className="size-4" />
+                </Button>
+                <Button
+                  aria-label="Open command palette"
+                  className="h-9 w-9 shrink-0"
+                  size="icon"
+                  title="Open command palette"
+                  variant="secondary"
+                  onClick={() => setPaletteOpen(true)}
+                >
+                  <Command className="size-4" />
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 border-t border-white/6 px-[var(--shell-padding)] pb-3 pt-2">
+              <Badge className="border-lime-400/20 bg-lime-400/10 text-lime-100">{runningCount} running</Badge>
+              <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">{retryCount} retries</Badge>
+              <Badge className="border-white/10 bg-white/5 text-white">Updated {formatRelativeTimeCompact(lastRefresh)}</Badge>
+            </div>
+          </header>
+
+          <header className="sticky top-0 z-30 hidden flex-wrap items-center justify-between gap-3 border-b border-white/8 bg-black/10 px-[var(--shell-padding)] py-3 backdrop-blur-xl lg:flex">
             <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--muted-foreground)]">
               <span className="inline-flex items-center gap-2">
                 <Activity className="size-4 text-lime-300" />
-                {bootstrap.data?.overview.snapshot.running.length ?? 0} running
+                {runningCount} running
               </span>
               <span className="inline-flex items-center gap-2">
                 <RotateCcw className="size-4 text-amber-300" />
-                {bootstrap.data?.overview.snapshot.retrying.length ?? 0} retries
+                {retryCount} retries
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -154,11 +195,41 @@ export function AppShell() {
               </Button>
             </div>
           </header>
-          <div className="flex-1 p-[var(--shell-padding)]">
+          <div
+            className={cn(
+              'flex-1 min-w-0 p-[var(--shell-padding)]',
+              isMobileLayout ? 'pb-[calc(var(--mobile-nav-height)+var(--shell-padding)+env(safe-area-inset-bottom))]' : '',
+            )}
+          >
             <Outlet />
           </div>
-        </main>
+        </div>
       </div>
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/8 bg-[rgba(8,9,12,0.96)] px-[var(--shell-padding)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 backdrop-blur-2xl lg:hidden">
+        <div className="grid grid-cols-4 gap-2">
+          {nav.map((item) => {
+            const Icon = item.icon
+            const active = item.match(activePath)
+            return (
+              <Link
+                key={item.to}
+                aria-label={item.label}
+                className={cn(
+                  'flex min-w-0 flex-col items-center gap-1 rounded-[calc(var(--panel-radius)-0.25rem)] border px-2 py-2 text-xs transition',
+                  active
+                    ? 'border-[var(--accent)]/40 bg-[linear-gradient(135deg,rgba(196,255,87,.16),rgba(255,255,255,.05))] text-white'
+                    : 'border-transparent text-[var(--muted-foreground)] hover:border-white/8 hover:bg-white/4 hover:text-white',
+                )}
+                title={item.label}
+                to={item.to}
+              >
+                <Icon className="size-4 shrink-0" />
+                <span className="truncate text-[11px]">{item.label}</span>
+              </Link>
+            )
+          })}
+        </div>
+      </nav>
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
     </div>
   )

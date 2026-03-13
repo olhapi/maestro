@@ -6,6 +6,8 @@ import { WorkPage } from '@/routes/work'
 import { makeBootstrapResponse, makeIssueDetail } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
+const initialInnerWidth = window.innerWidth
+
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
     children,
@@ -33,6 +35,15 @@ vi.mock('@/lib/api', () => ({
 const { api } = await import('@/lib/api')
 
 describe('WorkPage', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: initialInnerWidth,
+    })
+    window.dispatchEvent(new Event('resize'))
+  })
+
   it('renders board data from bootstrap and issues queries', async () => {
     const bootstrap = makeBootstrapResponse()
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
@@ -99,5 +110,35 @@ describe('WorkPage', () => {
         limit: 200,
       })
     })
+  })
+
+  it('uses the grouped mobile board without exposing the desktop view toggle', async () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: 390,
+    })
+    window.dispatchEvent(new Event('resize'))
+
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+    })
+
+    renderWithQueryClient(<WorkPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Review work state by state')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByRole('radio', { name: 'Board view' })).not.toBeInTheDocument()
+    expect(screen.getAllByText('Backlog').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Ready').length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'New' }).length).toBeGreaterThan(0)
   })
 })
