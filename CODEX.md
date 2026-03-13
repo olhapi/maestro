@@ -1,2 +1,3 @@
 - never run "--no-verify", if coverage is missing or there are errors then they should be fixed
-- you must use conventional commits with a monorepo scope for each commit message
+- you must use conventional commits style with a monorepo scope for each commit message
+- do not write simplified test just for making them pass, tests should be written in order to verify the expected logic
