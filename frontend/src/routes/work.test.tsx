@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { WorkPage } from '@/routes/work'
-import { makeBootstrapResponse, makeIssueDetail } from '@/test/fixtures'
+import { makeBootstrapResponse, makeIssueDetail, makeIssueSummary } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 const initialInnerWidth = window.innerWidth
@@ -106,6 +106,51 @@ describe('WorkPage', () => {
         search: '',
         project_id: 'project-1',
         state: '',
+        issue_type: '',
+        sort: 'priority_asc',
+        limit: 200,
+      })
+    })
+  })
+
+  it('filters issues by type from the work toolbar', async () => {
+    const bootstrap = makeBootstrapResponse({
+      issues: {
+        ...makeBootstrapResponse().issues,
+        items: [
+          makeIssueSummary(),
+          makeIssueSummary({
+            id: 'issue-2',
+            identifier: 'ISS-2',
+            title: 'Nightly sync',
+            issue_type: 'recurring',
+          }),
+        ],
+      },
+    })
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+    })
+
+    renderWithQueryClient(<WorkPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByLabelText(/filter by issue type/i), { target: { value: 'recurring' } })
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: '',
+        state: '',
+        issue_type: 'recurring',
         sort: 'priority_asc',
         limit: 200,
       })

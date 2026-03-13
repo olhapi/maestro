@@ -125,6 +125,7 @@ export function makeBootstrapResponse(
         id: "project-1",
         name: "Platform",
         description: "Platform work",
+        state: "running",
         repo_path: "/repo",
         workflow_path: "/repo/WORKFLOW.md",
         provider_kind: "kanban",

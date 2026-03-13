@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { getStateMeta, issueStates } from '@/lib/dashboard'
-import type { EpicSummary, IssueDetail, ProjectSummary } from '@/lib/types'
+import type { EpicSummary, IssueDetail, IssueType, ProjectSummary } from '@/lib/types'
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -246,6 +246,9 @@ export function IssueDialog({
   const [epicID, setEpicID] = useState(initial?.epic_id ?? '')
   const [title, setTitle] = useState(initial?.title ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
+  const [issueType, setIssueType] = useState<IssueType>(initial?.issue_type ?? 'standard')
+  const [cron, setCron] = useState(initial?.cron ?? '')
+  const [enabled, setEnabled] = useState(String(initial?.enabled ?? true))
   const [state, setState] = useState<string>(initial?.state ?? 'backlog')
   const [priority, setPriority] = useState(String(initial?.priority ?? 0))
   const [labels, setLabels] = useState(initial?.labels?.join(', ') ?? '')
@@ -256,12 +259,16 @@ export function IssueDialog({
   const [pending, setPending] = useState(false)
   const selectedProject = projects.find((project) => project.id === projectID)
   const supportsEpics = selectedProject?.capabilities?.epics ?? true
+  const canChangeIssueType = !isEditing || initial?.provider_kind === 'kanban'
 
   useEffect(() => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? '')
     setEpicID(initial?.epic_id ?? '')
     setTitle(initial?.title ?? '')
     setDescription(initial?.description ?? '')
+    setIssueType(initial?.issue_type ?? 'standard')
+    setCron(initial?.cron ?? '')
+    setEnabled(String(initial?.enabled ?? true))
     setState(initial?.state ?? 'backlog')
     setPriority(String(initial?.priority ?? 0))
     setLabels(initial?.labels?.join(', ') ?? '')
@@ -271,7 +278,7 @@ export function IssueDialog({
     setPrURL(initial?.pr_url ?? '')
   }, [initial, open, projects])
 
-  const filteredEpics = epics.filter((epic) => !projectID || epic.project_id === projectID)
+  const filteredEpics = epics.filter((epic) => projectID !== '' && epic.project_id === projectID)
 
   useEffect(() => {
     if (!epicID) return
@@ -279,6 +286,15 @@ export function IssueDialog({
       setEpicID('')
     }
   }, [epicID, filteredEpics])
+
+  useEffect(() => {
+    if (canChangeIssueType) {
+      return
+    }
+    setIssueType(initial?.issue_type ?? 'standard')
+    setCron(initial?.cron ?? '')
+    setEnabled(String(initial?.enabled ?? true))
+  }, [canChangeIssueType, initial?.cron, initial?.enabled, initial?.issue_type])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -293,7 +309,9 @@ export function IssueDialog({
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Project">
               <Select value={projectID} onChange={(event) => setProjectID(event.target.value)}>
-                <option value="">No project</option>
+                <option value="" disabled>
+                  {projects.length > 0 ? 'Select project' : 'Create a project first'}
+                </option>
                 {projects.map((project) => (
                   <option key={project.id} value={project.id}>
                     {project.name}
@@ -314,6 +332,12 @@ export function IssueDialog({
             <Field label="Title">
               <Input value={title} onChange={(event) => setTitle(event.target.value)} />
             </Field>
+            <Field label="Type">
+              <Select disabled={!canChangeIssueType} value={issueType} onChange={(event) => setIssueType(event.target.value as IssueType)}>
+                <option value="standard">Standard</option>
+                <option value="recurring">Recurring</option>
+              </Select>
+            </Field>
             <Field label="State">
               <Select value={state} onChange={(event) => setState(event.target.value)}>
                 {[...new Set([state, ...issueStates])].map((value) => (
@@ -326,6 +350,19 @@ export function IssueDialog({
             <Field label="Priority">
               <Input type="number" min={0} value={priority} onChange={(event) => setPriority(event.target.value)} />
             </Field>
+            {issueType === 'recurring' ? (
+              <>
+                <Field label="Cron">
+                  <Input value={cron} onChange={(event) => setCron(event.target.value)} placeholder="*/30 * * * *" />
+                </Field>
+                <Field label="Schedule">
+                  <Select value={enabled} onChange={(event) => setEnabled(event.target.value)}>
+                    <option value="true">Enabled</option>
+                    <option value="false">Disabled</option>
+                  </Select>
+                </Field>
+              </>
+            ) : null}
             <Field label="Labels">
               <Input value={labels} onChange={(event) => setLabels(event.target.value)} placeholder="bug, api, urgent" />
             </Field>
@@ -350,16 +387,17 @@ export function IssueDialog({
               Cancel
             </Button>
             <Button
-              disabled={!title.trim() || pending}
+              disabled={!projectID || !title.trim() || pending || (issueType === 'recurring' && !cron.trim())}
               onClick={async () => {
                 setPending(true)
                 try {
-                  await onSubmit({
+                  const body: Record<string, unknown> = {
                     project_id: projectID,
                     epic_id: epicID,
                     title,
                     description,
                     state,
+                    issue_type: issueType,
                     priority: Number(priority),
                     labels: labels
                       .split(',')
@@ -372,6 +410,13 @@ export function IssueDialog({
                     branch_name: branchName,
                     pr_number: Number(prNumber),
                     pr_url: prURL,
+                  }
+                  if (issueType === 'recurring') {
+                    body.cron = cron
+                    body.enabled = enabled === 'true'
+                  }
+                  await onSubmit({
+                    ...body,
                   })
                   onOpenChange(false)
                 } finally {

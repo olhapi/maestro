@@ -1,130 +1,139 @@
-import { useDeferredValue, useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { LayoutGrid, List, Pencil, Trash2 } from 'lucide-react'
-import { toast } from 'sonner'
+import { useDeferredValue, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { LayoutGrid, List, Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
-import { KanbanBoard } from '@/components/dashboard/kanban-board'
-import { PageHeader } from '@/components/dashboard/page-header'
-import { IssuePreviewSheet } from '@/components/dashboard/issue-preview-sheet'
-import { IssueDialog } from '@/components/forms'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { api } from '@/lib/api'
-import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
-import { getStateMeta, issueStatesFor } from '@/lib/dashboard'
-import { appRoutes } from '@/lib/routes'
-import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from '@/lib/types'
-import { formatRelativeTime } from '@/lib/utils'
+import { KanbanBoard } from "@/components/dashboard/kanban-board";
+import { PageHeader } from "@/components/dashboard/page-header";
+import { IssuePreviewSheet } from "@/components/dashboard/issue-preview-sheet";
+import { IssueDialog } from "@/components/forms";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { api } from "@/lib/api";
+import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
+import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
+import { appRoutes } from "@/lib/routes";
+import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from "@/lib/types";
+import { formatRelativeTime } from "@/lib/utils";
 
 function StatCard({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
     <Card className="bg-white/[0.04]">
       <CardContent className="pt-[var(--panel-padding)]">
         <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
-        <p className="mt-2.5 font-display text-[length:var(--metric-value-size)] font-semibold leading-none text-white">{value}</p>
+        <p className="mt-2.5 font-display text-[length:var(--metric-value-size)] font-semibold leading-none text-white">
+          {value}
+        </p>
         <p className="mt-2 text-sm text-[var(--muted-foreground)]">{detail}</p>
       </CardContent>
     </Card>
-  )
+  );
 }
 
 export function WorkPage() {
-  const queryClient = useQueryClient()
-  const isMobileLayout = useIsMobileLayout()
-  const [search, setSearch] = useState('')
-  const deferredSearch = useDeferredValue(search)
-  const [projectID, setProjectID] = useState('')
-  const [state, setState] = useState('')
-  const [sort, setSort] = useState('priority_asc')
-  const [view, setView] = useState<'board' | 'list'>('board')
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editing, setEditing] = useState<IssueDetail | undefined>()
+  const queryClient = useQueryClient();
+  const isMobileLayout = useIsMobileLayout();
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [projectID, setProjectID] = useState("");
+  const [state, setState] = useState("");
+  const [issueType, setIssueType] = useState("");
+  const [sort, setSort] = useState("priority_asc");
+  const [view, setView] = useState<"board" | "list">("board");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<IssueDetail | undefined>();
   const [composerDefaults, setComposerDefaults] = useState<Partial<IssueDetail>>({
-    state: 'backlog',
-  })
-  const [previewIssue, setPreviewIssue] = useState<IssueSummary>()
+    state: "backlog",
+  });
+  const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
 
-  const issuesKey = ['issues', deferredSearch, projectID, state, sort] as const
-  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const issuesKey = ["issues", deferredSearch, projectID, state, issueType, sort] as const;
+  const bootstrap = useQuery({ queryKey: ["bootstrap"], queryFn: api.bootstrap });
   const issues = useQuery({
     queryKey: issuesKey,
-    queryFn: () => api.listIssues({ search: deferredSearch, project_id: projectID, state, sort, limit: 200 }),
-  })
+    queryFn: () => api.listIssues({ search: deferredSearch, project_id: projectID, state, issue_type: issueType, sort, limit: 200 }),
+  });
 
   const invalidate = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['issues'] }),
-      queryClient.invalidateQueries({ queryKey: ['bootstrap'] }),
-    ])
-  }
+      queryClient.invalidateQueries({ queryKey: ["issues"] }),
+      queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+    ]);
+  };
 
   const patchIssueState = (payload: { identifier: string; nextState: IssueState }) => {
-    const cached = queryClient.getQueryData<{ items: IssueSummary[]; total: number; limit: number; offset: number }>(issuesKey)
+    const cached = queryClient.getQueryData<{ items: IssueSummary[]; total: number; limit: number; offset: number }>(
+      issuesKey,
+    );
     const nextItems = cached?.items.map((item) =>
-      item.identifier === payload.identifier ? { ...item, state: payload.nextState, updated_at: new Date().toISOString() } : item,
-    )
+      item.identifier === payload.identifier
+        ? { ...item, state: payload.nextState, updated_at: new Date().toISOString() }
+        : item,
+    );
     if (cached && nextItems) {
-      queryClient.setQueryData(issuesKey, { ...cached, items: nextItems })
+      queryClient.setQueryData(issuesKey, { ...cached, items: nextItems });
     }
-    const cachedBootstrap = queryClient.getQueryData<BootstrapResponse>(['bootstrap'])
+    const cachedBootstrap = queryClient.getQueryData<BootstrapResponse>(["bootstrap"]);
     if (cachedBootstrap) {
-      queryClient.setQueryData(['bootstrap'], {
+      queryClient.setQueryData(["bootstrap"], {
         ...cachedBootstrap,
         issues: {
           ...cachedBootstrap.issues,
           items: cachedBootstrap.issues.items.map((item) =>
-            item.identifier === payload.identifier ? { ...item, state: payload.nextState, updated_at: new Date().toISOString() } : item,
+            item.identifier === payload.identifier
+              ? { ...item, state: payload.nextState, updated_at: new Date().toISOString() }
+              : item,
           ),
         },
-      })
+      });
     }
-    return { cached, cachedBootstrap }
-  }
+    return { cached, cachedBootstrap };
+  };
 
   const stateMutation = useMutation({
     mutationFn: ({ identifier, nextState }: { identifier: string; nextState: IssueState }) =>
       api.setIssueState(identifier, nextState),
     onMutate: async (payload) => patchIssueState(payload),
     onError: (_error, _vars, context) => {
-      if (context?.cached) queryClient.setQueryData(issuesKey, context.cached)
-      if (context?.cachedBootstrap) queryClient.setQueryData(['bootstrap'], context.cachedBootstrap)
-      toast.error('Unable to move issue')
+      if (context?.cached) queryClient.setQueryData(issuesKey, context.cached);
+      if (context?.cachedBootstrap) queryClient.setQueryData(["bootstrap"], context.cachedBootstrap);
+      toast.error("Unable to move issue");
     },
     onSuccess: async () => {
-      await invalidate()
+      await invalidate();
     },
-  })
+  });
 
   const deleteMutation = useMutation({
     mutationFn: (identifier: string) => api.deleteIssue(identifier),
     onSuccess: async () => {
-      toast.success('Issue deleted')
-      setPreviewIssue(undefined)
-      await invalidate()
+      toast.success("Issue deleted");
+      setPreviewIssue(undefined);
+      await invalidate();
     },
-  })
+  });
 
   const metrics = useMemo(() => {
-    const data = bootstrap.data?.overview.board
+    const data = bootstrap.data?.overview.board;
     return {
       active: (data?.ready ?? 0) + (data?.in_progress ?? 0) + (data?.in_review ?? 0),
       done: data?.done ?? 0,
       backlog: data?.backlog ?? 0,
       live: bootstrap.data?.overview.snapshot.running.length ?? 0,
-    }
-  }, [bootstrap.data])
+    };
+  }, [bootstrap.data]);
 
   if (!bootstrap.data || !issues.data) {
-    return <Card className="h-[420px] animate-pulse bg-white/5" />
+    return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
-  const availableStates = issueStatesFor(issues.data.items)
-  const showBoardView = isMobileLayout || view === 'board'
+  const availableStates = issueStatesFor(issues.data.items);
+  const showBoardView = isMobileLayout || view === "board";
 
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -132,27 +141,44 @@ export function WorkPage() {
         title="Coordinate work on one board"
         description={
           isMobileLayout
-            ? 'Review work by state, inspect execution context in-place, and open full issue pages only when you need more detail.'
-            : 'This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed.'
+            ? "Review work by state, inspect execution context in-place, and open full issue pages only when you need more detail."
+            : "This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed."
         }
         stats={
           <>
-            <StatCard label="Active work" value={String(metrics.active)} detail="Ready, in progress, and in review across the portfolio." />
-            <StatCard label="Backlog" value={String(metrics.backlog)} detail="Planned work not yet routed into execution." />
+            <StatCard
+              label="Active work"
+              value={String(metrics.active)}
+              detail="Ready, in progress, and in review across the portfolio."
+            />
+            <StatCard
+              label="Backlog"
+              value={String(metrics.backlog)}
+              detail="Planned work not yet routed into execution."
+            />
             <StatCard label="Completed" value={String(metrics.done)} detail="Issues already closed out successfully." />
-            <StatCard label="Live sessions" value={String(metrics.live)} detail="Issues currently attached to a running workspace." />
+            <StatCard
+              label="Live sessions"
+              value={String(metrics.live)}
+              detail="Issues currently attached to a running workspace."
+            />
           </>
         }
       />
 
       <Card>
         <CardHeader className="flex-col gap-3 lg:flex-row lg:items-center">
-          <div>
-            <CardTitle>Filter the board without losing spatial context</CardTitle>
-          </div>
-          <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.4fr)_repeat(2,minmax(0,210px))]">
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by identifier, title, or description" />
-            <Select aria-label="Filter by project" value={projectID} onChange={(event) => setProjectID(event.target.value)}>
+          <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,210px))]">
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search by identifier, title, or description"
+            />
+            <Select
+              aria-label="Filter by project"
+              value={projectID}
+              onChange={(event) => setProjectID(event.target.value)}
+            >
               <option value="">All projects</option>
               {bootstrap.data.projects.map((project) => (
                 <option key={project.id} value={project.id}>
@@ -168,6 +194,11 @@ export function WorkPage() {
                 </option>
               ))}
             </Select>
+            <Select aria-label="Filter by issue type" value={issueType} onChange={(event) => setIssueType(event.target.value)}>
+              <option value="">All types</option>
+              <option value="standard">Standard</option>
+              <option value="recurring">Recurring</option>
+            </Select>
           </div>
         </CardHeader>
       </Card>
@@ -175,12 +206,12 @@ export function WorkPage() {
       <Card className="bg-white/[0.04]">
         <CardHeader className="flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-lg font-semibold text-white">
-            {isMobileLayout ? 'Review work state by state' : 'Triage, route, and monitor work in one surface'}
+            {isMobileLayout ? "Review work state by state" : "Triage, route, and monitor work in one surface"}
           </h2>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
             <Select
               aria-label="Sort issues"
-              className={isMobileLayout ? 'h-9 w-full text-xs' : 'h-9 w-[176px] text-xs'}
+              className={isMobileLayout ? "h-9 w-full text-xs" : "h-9 w-[176px] text-xs"}
               value={sort}
               onChange={(event) => setSort(event.target.value)}
             >
@@ -196,8 +227,8 @@ export function WorkPage() {
                 type="single"
                 value={view}
                 onValueChange={(next) => {
-                  if (next === 'board' || next === 'list') {
-                    setView(next)
+                  if (next === "board" || next === "list") {
+                    setView(next);
                   }
                 }}
               >
@@ -218,16 +249,16 @@ export function WorkPage() {
           <KanbanBoard
             items={issues.data.items}
             bootstrap={bootstrap.data}
-            mode={isMobileLayout ? 'grouped' : 'board'}
+            mode={isMobileLayout ? "grouped" : "board"}
             onOpenIssue={setPreviewIssue}
             onMoveIssue={(issue, nextState) => stateMutation.mutate({ identifier: issue.identifier, nextState })}
             onCreateIssue={(nextState) => {
-              setEditing(undefined)
+              setEditing(undefined);
               setComposerDefaults({
-                state: nextState ?? 'backlog',
+                state: nextState ?? "backlog",
                 project_id: bootstrap.data?.projects[0]?.id,
-              })
-              setDialogOpen(true)
+              });
+              setDialogOpen(true);
             }}
           />
         </div>
@@ -256,24 +287,26 @@ export function WorkPage() {
                         </button>
                       </td>
                       <td className="py-4">
-                        <Badge className="border-white/10 bg-white/5 text-white">{getStateMeta(issue.state).label}</Badge>
+                        <Badge className="border-white/10 bg-white/5 text-white">
+                          {getStateMeta(issue.state).label}
+                        </Badge>
                       </td>
                       <td className="py-4 text-[var(--muted-foreground)]">
                         {issue.project_id ? (
                           <Link params={{ projectId: issue.project_id }} to={appRoutes.projectDetail}>
-                            {issue.project_name || 'Unassigned'}
+                            {issue.project_name || "Unassigned"}
                           </Link>
                         ) : (
-                          'Unassigned'
+                          "Unassigned"
                         )}
                       </td>
                       <td className="py-4 text-[var(--muted-foreground)]">
                         {issue.epic_id ? (
                           <Link params={{ epicId: issue.epic_id }} to={appRoutes.epicDetail}>
-                            {issue.epic_name || 'None'}
+                            {issue.epic_name || "None"}
                           </Link>
                         ) : (
-                          'None'
+                          "None"
                         )}
                       </td>
                       <td className="py-4 text-[var(--muted-foreground)]">{formatRelativeTime(issue.updated_at)}</td>
@@ -286,9 +319,9 @@ export function WorkPage() {
                             variant="ghost"
                             size="icon"
                             onClick={async () => {
-                              const detail = await api.getIssue(issue.identifier)
-                              setEditing(detail)
-                              setDialogOpen(true)
+                              const detail = await api.getIssue(issue.identifier);
+                              setEditing(detail);
+                              setDialogOpen(true);
                             }}
                           >
                             <Pencil className="size-4" />
@@ -315,13 +348,13 @@ export function WorkPage() {
         epics={bootstrap.data.epics}
         onSubmit={async (body) => {
           if (editing) {
-            await api.updateIssue(editing.identifier, body)
-            toast.success('Issue updated')
+            await api.updateIssue(editing.identifier, body);
+            toast.success("Issue updated");
           } else {
-            await api.createIssue(body)
-            toast.success('Issue created')
+            await api.createIssue(body);
+            toast.success("Issue created");
           }
-          await invalidate()
+          await invalidate();
         }}
       />
 
@@ -330,16 +363,16 @@ export function WorkPage() {
         bootstrap={bootstrap.data}
         open={Boolean(previewIssue)}
         onOpenChange={(nextOpen) => {
-          if (!nextOpen) setPreviewIssue(undefined)
+          if (!nextOpen) setPreviewIssue(undefined);
         }}
         onInvalidate={invalidate}
         onDelete={async (identifier) => {
-          await deleteMutation.mutateAsync(identifier)
+          await deleteMutation.mutateAsync(identifier);
         }}
         onStateChange={async (identifier, nextState) => {
-          await stateMutation.mutateAsync({ identifier, nextState })
+          await stateMutation.mutateAsync({ identifier, nextState });
         }}
       />
     </div>
-  )
+  );
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Plus, Square, Trash2 } from "lucide-react";
+import { Pencil, Play, Plus, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -12,9 +12,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import {
   isProjectDispatchReady,
+  isProjectRunning,
   projectDispatchBadgeClass,
   projectDispatchLabel,
-  projectRunningCount,
   summaryActiveCount,
   summaryDoneCount,
   summaryTokenSpend,
@@ -101,7 +101,6 @@ export function ProjectsPage() {
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
-        eyebrow="Portfolio surface"
         title="Projects are now entry points, not dead-end rollups"
         description="Open a project or epic to see execution health, linked work, and recent movement. This page stays focused on choosing the right delivery stream."
         actions={
@@ -114,7 +113,7 @@ export function ProjectsPage() {
               }}
             >
               <Plus className="size-4" />
-              New project
+              Project
             </Button>
             <Button
               variant="secondary"
@@ -125,11 +124,11 @@ export function ProjectsPage() {
               }}
             >
               <Plus className="size-4" />
-              New epic
+              Epic
             </Button>
             <Button onClick={() => setIssueDialogOpen(true)}>
               <Plus className="size-4" />
-              New issue
+              Issue
             </Button>
           </>
         }
@@ -137,9 +136,8 @@ export function ProjectsPage() {
 
       <div className="grid gap-[var(--section-gap)] lg:grid-cols-2">
         {projects.data.items.map((project) => {
-          const runningCount = projectRunningCount(project.id, bootstrap.data);
           const dispatchReady = isProjectDispatchReady(project);
-          const isRunning = runningCount > 0;
+          const isRunning = isProjectRunning(project);
           const togglePending = runProject.isPending || stopProject.isPending;
           return (
             <Card key={project.id} className="overflow-hidden">
@@ -174,49 +172,58 @@ export function ProjectsPage() {
                     ) : null}
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
                   {!dispatchReady ? (
                     <Badge className={projectDispatchBadgeClass(project)}>
                       {projectDispatchLabel(project)}
                     </Badge>
                   ) : null}
-                  <Button
-                    variant="ghost"
-                    disabled={!dispatchReady || togglePending}
-                    onClick={() =>
-                      isRunning
-                        ? stopProject.mutate(project.id)
-                        : runProject.mutate(project.id)
-                    }
-                  >
-                    {isRunning ? (
-                      <Square className="size-4" />
-                    ) : (
-                      <Play className="size-4" />
-                    )}
-                    {isRunning ? "Stop" : "Run"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setEditingProject(project);
-                      setProjectDialogOpen(true);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => deleteProject.mutate(project.id)}
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
+                  <div className="flex flex-nowrap items-center gap-1.5 self-start lg:self-end">
+                    <Button
+                      aria-label={isRunning ? "Stop" : "Run"}
+                      size="icon"
+                      title={isRunning ? "Stop" : "Run"}
+                      variant="ghost"
+                      disabled={!dispatchReady || togglePending}
+                      onClick={() =>
+                        isRunning
+                          ? stopProject.mutate(project.id)
+                          : runProject.mutate(project.id)
+                      }
+                    >
+                      {isRunning ? (
+                        <Square className="size-4" />
+                      ) : (
+                        <Play className="size-4" />
+                      )}
+                    </Button>
+                    <Button
+                      aria-label="Edit"
+                      size="icon"
+                      title="Edit"
+                      variant="ghost"
+                      onClick={() => {
+                        setEditingProject(project);
+                        setProjectDialogOpen(true);
+                      }}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      aria-label="Delete"
+                      size="icon"
+                      title="Delete"
+                      variant="ghost"
+                      onClick={() => deleteProject.mutate(project.id)}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
 
               <CardContent className="grid gap-3">
-                <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2.5">
                   <StatCard
                     label="Total"
                     value={String(summaryTotalCount(project))}

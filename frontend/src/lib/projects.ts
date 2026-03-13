@@ -1,5 +1,4 @@
 import type {
-  BootstrapResponse,
   EpicSummary,
   Project,
   ProjectSummary,
@@ -10,6 +9,10 @@ export function isProjectDispatchReady(
   project: Pick<Project, "orchestration_ready" | "dispatch_ready">,
 ) {
   return project.dispatch_ready ?? project.orchestration_ready;
+}
+
+export function isProjectRunning(project: Pick<Project, "state">) {
+  return project.state === "running";
 }
 
 export function projectDispatchLabel(
@@ -104,17 +107,4 @@ export function summaryDoneCount(summary: ProjectSummary | EpicSummary) {
 
 export function summaryTokenSpend(summary: ProjectSummary) {
   return summary.total_tokens_spent ?? 0;
-}
-
-export function projectRunningCount(
-  projectID: string,
-  bootstrap?: Pick<BootstrapResponse, "overview" | "issues">,
-) {
-  if (!bootstrap) return 0;
-  const issueProjectIDs = new Map(
-    bootstrap.issues.items.map((issue) => [issue.id, issue.project_id ?? ""]),
-  );
-  return bootstrap.overview.snapshot.running.reduce((count, entry) => {
-    return count + (issueProjectIDs.get(entry.issue_id) === projectID ? 1 : 0);
-  }, 0);
 }

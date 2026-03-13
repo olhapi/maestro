@@ -58,7 +58,7 @@ describe('AppShell', () => {
     window.dispatchEvent(new Event('resize'))
   })
 
-  it('renders navigation and reacts to refresh controls', async () => {
+  it('renders navigation and reacts to live updates', async () => {
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
 
     renderWithQueryClient(<AppShell />)
@@ -71,9 +71,10 @@ describe('AppShell', () => {
     expect(workLink).toHaveAttribute('aria-label', 'Work')
     expect(screen.getAllByRole('link', { name: 'Sessions' }).length).toBeGreaterThan(0)
     expect(screen.getByText(/^\d+s ago$/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument()
     expect(document.title).toContain('Work')
 
-    fireEvent.click(screen.getByText('Command Palette'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Search issues, projects, sessions, and actions' })[0])
     expect(screen.getByTestId('command-palette')).toHaveTextContent('open')
 
     await act(async () => {
@@ -109,9 +110,12 @@ describe('AppShell', () => {
     renderWithQueryClient(<AppShell />)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Open command palette' })).toBeInTheDocument()
+      expect(
+        screen.getAllByRole('button', { name: 'Search issues, projects, sessions, and actions' }).length,
+      ).toBeGreaterThan(0)
     })
 
+    expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument()
     expect(screen.getByText(/Updated .*ago/)).toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: 'Overview' }).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('link', { name: 'Projects' }).length).toBeGreaterThan(0)

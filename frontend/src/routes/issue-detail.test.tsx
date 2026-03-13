@@ -5,6 +5,7 @@ import { vi } from "vitest";
 import { IssueDetailPage } from "@/routes/issue-detail";
 import { makeBootstrapResponse, makeIssueDetail } from "@/test/fixtures";
 import { renderWithQueryClient } from "@/test/test-utils";
+import { formatDateTime } from "@/lib/utils";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
@@ -25,6 +26,7 @@ vi.mock("@/lib/api", () => ({
     getIssue: vi.fn(),
     getIssueExecution: vi.fn(),
     retryIssue: vi.fn(),
+    runIssueNow: vi.fn(),
     deleteIssue: vi.fn(),
     updateIssue: vi.fn(),
     setIssueState: vi.fn(),
@@ -236,6 +238,48 @@ describe("IssueDetailPage", () => {
     ).toBeInTheDocument();
     expect(within(transcript).getByText("npm test")).toBeInTheDocument();
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("shows recurring schedule details and triggers run-now", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      issue_type: "recurring",
+      cron: "*/15 * * * *",
+      enabled: true,
+      next_run_at: "2026-03-10T12:30:00Z",
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 1,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.runIssueNow).mockResolvedValue({ status: "queued_now" });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Recurring")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Schedule")).toBeInTheDocument();
+    expect(screen.getByText("*/15 * * * *")).toBeInTheDocument();
+    expect(screen.getByText(formatDateTime("2026-03-10T12:30:00Z"))).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Run now"));
+
+    await waitFor(() => {
+      expect(api.runIssueNow).toHaveBeenCalledWith("ISS-1");
+    });
   });
 
   it("keeps the composer in the rail and renders command history in the main column", async () => {

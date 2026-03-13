@@ -21,6 +21,7 @@ vi.mock('@/lib/api', () => ({
   api: {
     getIssue: vi.fn(),
     retryIssue: vi.fn(),
+    runIssueNow: vi.fn(),
     setIssueBlockers: vi.fn(),
     updateIssue: vi.fn(),
   },
@@ -105,5 +106,44 @@ describe('IssuePreviewSheet', () => {
     })
 
     expect(screen.getByText(/auto-retries paused after 3 stalled runs/i)).toBeInTheDocument()
+  })
+
+  it('shows recurring schedule details and triggers run-now', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const summary = makeIssueSummary({ issue_type: 'recurring', next_run_at: '2026-03-09T12:30:00Z' })
+    vi.mocked(api.getIssue).mockResolvedValue(
+      makeIssueDetail({
+        issue_type: 'recurring',
+        cron: '*/15 * * * *',
+        enabled: true,
+        next_run_at: '2026-03-09T12:30:00Z',
+      }),
+    )
+    vi.mocked(api.runIssueNow).mockResolvedValue({ status: 'queued_now' })
+
+    const onInvalidate = vi.fn().mockResolvedValue(undefined)
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={onInvalidate}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Recurring')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText(/next scheduled run/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Run now'))
+
+    await waitFor(() => {
+      expect(api.runIssueNow).toHaveBeenCalledWith(summary.identifier)
+      expect(onInvalidate).toHaveBeenCalled()
+    })
   })
 })

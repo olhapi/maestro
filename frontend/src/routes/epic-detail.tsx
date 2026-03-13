@@ -21,7 +21,7 @@ import { formatRelativeTime } from '@/lib/utils'
 function StatCard({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
     <Card>
-      <CardContent>
+      <CardContent className="pt-[var(--panel-padding)]">
         <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
         <p className="mt-2.5 font-display text-[length:var(--metric-value-size)] leading-none text-white">{value}</p>
         <p className="mt-2 text-sm text-[var(--muted-foreground)]">{detail}</p>
@@ -68,7 +68,6 @@ export function EpicDetailPage() {
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
-        eyebrow="Epic hub"
         title={epic.data.epic.name}
         description={epic.data.epic.description || 'No epic description yet.'}
         crumbs={[
@@ -101,9 +100,8 @@ export function EpicDetailPage() {
 
       <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1fr_.9fr]">
         <Card>
-          <CardContent>
-            <Badge>Recent work</Badge>
-            <h2 className="mt-4 text-2xl font-semibold text-white">What changed in this epic</h2>
+          <CardContent className="pt-[var(--panel-padding)]">
+            <h2 className="text-2xl font-semibold text-white">What changed in this epic</h2>
             <div className="mt-4 grid gap-2.5">
               {epic.data.issues.items.slice(0, 5).map((issue) => (
                 <Link
@@ -127,9 +125,8 @@ export function EpicDetailPage() {
         </Card>
 
         <Card>
-          <CardContent>
-            <Badge>Sibling epics</Badge>
-            <h2 className="mt-4 text-2xl font-semibold text-white">Adjacent delivery arcs</h2>
+          <CardContent className="pt-[var(--panel-padding)]">
+            <h2 className="text-2xl font-semibold text-white">Adjacent delivery arcs</h2>
             <div className="mt-4 grid gap-2.5">
               {epic.data.sibling_epics
                 .filter((sibling) => sibling.id !== epic.data.epic.id)
@@ -140,7 +137,7 @@ export function EpicDetailPage() {
                         <p className="font-medium text-white">{sibling.name}</p>
                         <p className="mt-1 text-sm text-[var(--muted-foreground)]">{sibling.description || 'No description yet.'}</p>
                       </div>
-                      <Badge>{summaryActiveCount(sibling)} active</Badge>
+                      <Badge className="shrink-0 whitespace-nowrap">{summaryActiveCount(sibling)} active</Badge>
                     </div>
                   </Link>
                 ))}
@@ -155,11 +152,10 @@ export function EpicDetailPage() {
       </div>
 
       <Card>
-        <CardContent>
+        <CardContent className="pt-[var(--panel-padding)]">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <Badge>Epic lanes</Badge>
-              <h2 className="mt-4 text-2xl font-semibold text-white">State of work across the epic</h2>
+              <h2 className="text-2xl font-semibold text-white">State of work across the epic</h2>
             </div>
             <Link className="inline-flex items-center gap-2 text-sm text-[var(--accent)]" to={appRoutes.work}>
               Open full board

@@ -107,6 +107,11 @@ export function IssuePreviewSheet({
                       Paused
                     </Badge>
                   ) : null}
+                  {activeIssue.issue_type === "recurring" ? (
+                    <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">
+                      Recurring
+                    </Badge>
+                  ) : null}
                   {activeIssue.project_name ? (
                     <Badge className="border-white/12 bg-white/5 text-white">
                       {activeIssue.project_name}
@@ -175,6 +180,15 @@ export function IssuePreviewSheet({
                     <span className="inline-flex items-center gap-2 text-rose-100">
                       <AlertTriangle className="size-4 text-rose-300" />
                       Auto-retries paused after {describeFailureRuns(paused.consecutive_failures, paused.error)}
+                    </span>
+                  ) : null}
+                  {activeIssue.issue_type === "recurring" ? (
+                    <span>
+                      {activeIssue.next_run_at
+                        ? `Next scheduled run ${formatDateTime(activeIssue.next_run_at)}`
+                        : activeIssue.enabled === false
+                          ? "Recurring schedule disabled"
+                          : "Recurring schedule ready"}
                     </span>
                   ) : null}
                 </div>
@@ -274,6 +288,17 @@ export function IssuePreviewSheet({
                 <RotateCcw className="size-4" />
                 Retry now
               </Button>
+              {activeIssue.issue_type === "recurring" ? (
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    void api.runIssueNow(activeIssue.identifier).then(onInvalidate)
+                  }
+                >
+                  <RotateCcw className="size-4" />
+                  Run now
+                </Button>
+              ) : null}
               {onDelete ? (
                 <Button
                   variant="destructive"

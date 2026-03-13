@@ -84,4 +84,19 @@ describe('IssueCard', () => {
 
     expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveAttribute('href', '/issues/ISS-1')
   })
+
+  it('renders recurring metadata when the issue is scheduled', () => {
+    renderWithQueryClient(
+      <IssueCard
+        issue={makeIssueSummary({
+          issue_type: 'recurring',
+          next_run_at: '2026-03-09T12:30:00Z',
+        })}
+        onOpen={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Recurring')).toBeInTheDocument()
+    expect(screen.getByText(/next/i)).toBeInTheDocument()
+  })
 })

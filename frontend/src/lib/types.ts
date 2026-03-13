@@ -1,4 +1,6 @@
 export type IssueState = string;
+export type IssueType = "standard" | "recurring";
+export type ProjectState = "stopped" | "running";
 
 export type WorkflowPhase = "implementation" | "review" | "done" | "complete";
 
@@ -30,6 +32,7 @@ export interface Project {
   id: string;
   name: string;
   description?: string;
+  state: ProjectState;
   repo_path?: string;
   workflow_path?: string;
   provider_kind?: string;
@@ -98,6 +101,7 @@ export interface Issue {
   project_id?: string;
   epic_id?: string;
   identifier: string;
+  issue_type?: IssueType;
   provider_kind?: string;
   provider_issue_ref?: string;
   provider_shadow?: boolean;
@@ -117,6 +121,11 @@ export interface Issue {
   started_at?: string;
   completed_at?: string;
   last_synced_at?: string;
+  cron?: string;
+  enabled?: boolean;
+  next_run_at?: string;
+  last_enqueued_at?: string;
+  pending_rerun?: boolean;
 }
 
 export interface IssueSummary extends Issue {

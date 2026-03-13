@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, Command, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw, RotateCcw } from 'lucide-react'
+import { Activity, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RotateCcw, Search } from 'lucide-react'
 
 import { CommandPalette } from '@/components/command-palette'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
 import { api } from '@/lib/api'
@@ -144,26 +143,19 @@ export function AppShell() {
                 <h1 className="mt-1 truncate font-display text-lg font-semibold leading-none text-white">{pageTitle}</h1>
               </div>
               <div className="flex items-center gap-2">
-                <Button
-                  aria-label="Refresh"
-                  className="h-9 w-9 shrink-0"
-                  size="icon"
-                  title="Refresh"
-                  variant="secondary"
-                  onClick={() => void queryClient.invalidateQueries()}
-                >
-                  <RefreshCw className="size-4" />
-                </Button>
-                <Button
-                  aria-label="Open command palette"
-                  className="h-9 w-9 shrink-0"
-                  size="icon"
+                <button
+                  aria-label="Search issues, projects, sessions, and actions"
+                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-[var(--muted-foreground)] transition hover:border-white/14 hover:bg-white/8 hover:text-white"
                   title="Open command palette"
-                  variant="secondary"
+                  type="button"
                   onClick={() => setPaletteOpen(true)}
                 >
-                  <Command className="size-4" />
-                </Button>
+                  <Search className="size-4 shrink-0" />
+                  <span className="hidden sm:inline">Search</span>
+                  <span className="inline-flex items-center rounded-md border border-white/10 bg-black/20 px-1.5 py-0.5 text-[10px] font-medium text-white/70">
+                    K
+                  </span>
+                </button>
               </div>
             </div>
             <div className="flex flex-wrap gap-2 border-t border-white/6 px-[var(--shell-padding)] pb-3 pt-2">
@@ -185,14 +177,21 @@ export function AppShell() {
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={() => void queryClient.invalidateQueries()}>
-                <RefreshCw className="size-4" />
-                Refresh
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => setPaletteOpen(true)}>
-                <Command className="size-4" />
-                Command Palette
-              </Button>
+              <button
+                aria-label="Search issues, projects, sessions, and actions"
+                className="group inline-flex h-11 min-w-[22rem] items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 text-sm text-[var(--muted-foreground)] transition hover:border-white/14 hover:bg-white/8 hover:text-white"
+                title="Open command palette"
+                type="button"
+                onClick={() => setPaletteOpen(true)}
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <Search className="size-4 shrink-0 text-[var(--muted-foreground)] transition group-hover:text-white" />
+                  <span className="truncate">Search issues, projects, sessions, actions</span>
+                </span>
+                <span className="inline-flex shrink-0 items-center rounded-lg border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-white/70">
+                  Command + K
+                </span>
+              </button>
             </div>
           </header>
           <div

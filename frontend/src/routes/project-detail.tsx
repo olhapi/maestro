@@ -16,9 +16,9 @@ import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
 import {
   isProjectDispatchReady,
+  isProjectRunning,
   projectDispatchBadgeClass,
   projectDispatchLabel,
-  projectRunningCount,
   summaryActiveCount,
   summaryDoneCount,
   summaryTokenSpend,
@@ -124,9 +124,8 @@ export function ProjectDetailPage() {
   }
 
   const totalIssues = project.data.issues.items.length;
-  const runningCount = projectRunningCount(projectId, bootstrap.data);
   const dispatchReady = isProjectDispatchReady(project.data.project);
-  const isRunning = runningCount > 0;
+  const isRunning = isProjectRunning(project.data.project);
   const togglePending = runProject.isPending || stopProject.isPending;
 
   return (
@@ -201,7 +200,7 @@ export function ProjectDetailPage() {
       />
 
       <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-3">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-[var(--panel-padding)]">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
               Repo binding
@@ -235,7 +234,7 @@ export function ProjectDetailPage() {
 
       <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.1fr_.9fr]">
         <Card>
-          <CardContent>
+          <CardContent className="pt-[var(--panel-padding)]">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold text-white">
@@ -274,9 +273,6 @@ export function ProjectDetailPage() {
                         {epic.description || "No epic description yet."}
                       </p>
                     </div>
-                    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-[var(--muted-foreground)]">
-                      {summaryActiveCount(epic)} active
-                    </span>
                   </div>
                   <div className="mt-3.5 grid gap-2 text-xs text-[var(--muted-foreground)] sm:grid-cols-2 xl:grid-cols-4">
                     <div className="rounded-xl border border-white/8 bg-black/20 p-3">
@@ -299,7 +295,7 @@ export function ProjectDetailPage() {
         </Card>
 
         <Card>
-          <CardContent>
+          <CardContent className="pt-[var(--panel-padding)]">
             <h2 className="text-2xl font-semibold text-white">
               What changed most recently
             </h2>

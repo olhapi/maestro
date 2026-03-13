@@ -35,6 +35,7 @@ export interface IssueFilters {
   project_id?: string;
   epic_id?: string;
   state?: string;
+  issue_type?: string;
   search?: string;
   sort?: string;
   limit?: number;
@@ -154,6 +155,10 @@ export const api = {
     }),
   retryIssue: (identifier: string) =>
     request<Record<string, unknown>>(`/api/v1/app/issues/${identifier}/retry`, {
+      method: "POST",
+    }),
+  runIssueNow: (identifier: string) =>
+    request<Record<string, unknown>>(`/api/v1/app/issues/${identifier}/run-now`, {
       method: "POST",
     }),
   listRuntimeEvents: () =>

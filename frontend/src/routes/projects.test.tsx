@@ -36,6 +36,48 @@ vi.mock("@/lib/api", () => ({
 const { api } = await import("@/lib/api");
 
 describe("ProjectsPage", () => {
+  it("does not render the portfolio surface badge in the header", async () => {
+    const bootstrap = makeBootstrapResponse();
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.listProjects).mockResolvedValue({
+      items: bootstrap.projects,
+    });
+    vi.mocked(api.listEpics).mockResolvedValue({ items: bootstrap.epics });
+
+    renderWithQueryClient(<ProjectsPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Projects are now entry points, not dead-end rollups"),
+      ).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Portfolio surface")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^\+?\s*project$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^\+?\s*epic$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^\+?\s*issue$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new project/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new epic/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new issue/i })).not.toBeInTheDocument();
+
+    const runButton = screen.getByRole("button", { name: /^(run|stop)$/i });
+    const editButton = screen.getByRole("button", { name: /^edit$/i });
+    const deleteButton = screen.getByRole("button", { name: /^delete$/i });
+
+    expect(runButton.parentElement).toHaveClass("flex-nowrap");
+    expect(runButton.parentElement).toContainElement(editButton);
+    expect(runButton.parentElement).toContainElement(deleteButton);
+    expect(screen.queryByText(/^(run|stop)$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^edit$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^delete$/i)).not.toBeInTheDocument();
+
+    const tokenStat = screen.getByText("Tokens").closest("div");
+    expect(tokenStat?.parentElement).toHaveClass(
+      "grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))]",
+    );
+  });
+
   it("marks out-of-scope projects as not runnable", async () => {
     const base = makeBootstrapResponse();
     const bootstrap = makeBootstrapResponse({
@@ -79,13 +121,7 @@ describe("ProjectsPage", () => {
 
   it("uses a single run-stop toggle and calls the matching project action", async () => {
     const bootstrap = makeBootstrapResponse({
-      overview: {
-        ...makeBootstrapResponse().overview,
-        snapshot: {
-          ...makeBootstrapResponse().overview.snapshot,
-          running: [],
-        },
-      },
+      projects: [{ ...makeBootstrapResponse().projects[0], state: "stopped" }],
     });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
     vi.mocked(api.listProjects).mockResolvedValue({
@@ -111,18 +147,7 @@ describe("ProjectsPage", () => {
     });
 
     const runningBootstrap = makeBootstrapResponse({
-      overview: {
-        ...bootstrap.overview,
-        snapshot: {
-          ...bootstrap.overview.snapshot,
-          running: [
-            {
-              ...makeBootstrapResponse().overview.snapshot.running[0],
-              issue_id: bootstrap.issues.items[0].id,
-            },
-          ],
-        },
-      },
+      projects: [{ ...bootstrap.projects[0], state: "running" }],
     });
     vi.mocked(api.bootstrap).mockResolvedValue(runningBootstrap);
     vi.mocked(api.listProjects).mockResolvedValue({

@@ -116,6 +116,13 @@ export function IssueDetailPage() {
       await invalidate();
     },
   });
+  const runNowMutation = useMutation({
+    mutationFn: () => api.runIssueNow(identifier),
+    onSuccess: async () => {
+      toast.success("Recurring issue queued");
+      await invalidate();
+    },
+  });
 
   const commandMutation = useMutation({
     mutationFn: () => api.sendIssueCommand(identifier, commandDraft.trim()),
@@ -173,6 +180,11 @@ export function IssueDetailPage() {
         <Badge className="border-white/10 bg-white/5 text-white">
           {getStateMeta(issue.data.state).label}
         </Badge>
+        {issue.data.issue_type === "recurring" ? (
+          <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">
+            Recurring
+          </Badge>
+        ) : null}
         {issue.data.project_name ? (
           <Badge className="border-white/10 bg-white/5 text-white">
             <Link
@@ -235,6 +247,19 @@ export function IssueDetailPage() {
                   {issue.data.pr_url || "No pull request linked"}
                 </p>
               </div>
+              {issue.data.issue_type === "recurring" ? (
+                <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-cyan-400/10 bg-cyan-400/[0.04] px-3.5 py-3">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                    Schedule
+                  </p>
+                  <p className="mt-3 text-white">
+                    {issue.data.enabled === false ? "Disabled" : issue.data.cron || "Recurring"}
+                  </p>
+                  <p className="mt-2 text-sm text-[var(--muted-foreground)]">
+                    {issue.data.next_run_at ? formatDateTime(issue.data.next_run_at) : "No next run scheduled"}
+                  </p>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -315,6 +340,16 @@ export function IssueDetailPage() {
                 <RotateCcw className="size-4" />
                 Retry now
               </Button>
+              {issue.data.issue_type === "recurring" ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => runNowMutation.mutate()}
+                  disabled={runNowMutation.isPending}
+                >
+                  <RotateCcw className="size-4" />
+                  Run now
+                </Button>
+              ) : null}
               <Button
                 variant="destructive"
                 onClick={() => deleteMutation.mutate()}

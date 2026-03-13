@@ -88,6 +88,11 @@ export function IssueCard({
                 Blocked
               </Badge>
             ) : null}
+            {issue.issue_type === "recurring" ? (
+              <Badge className={cn(cardBadgeClass, "border-cyan-400/20 bg-cyan-400/10 text-cyan-100")}>
+                Recurring
+              </Badge>
+            ) : null}
             {session ? (
               <Badge className={cn(cardBadgeClass, "border-lime-400/20 bg-lime-400/10 text-lime-200")}>
                 Live
@@ -140,6 +145,12 @@ export function IssueCard({
             {issue.workspace_run_count} runs
           </span>
         ) : null}
+        {issue.issue_type === "recurring" && issue.next_run_at ? (
+          <span className="inline-flex items-center gap-1.5">
+            <RotateCcw className="size-3.5" />
+            Next {formatRelativeTime(issue.next_run_at)}
+          </span>
+        ) : null}
         <span className="inline-flex items-center gap-1.5">
           <Coins className="size-3.5" />
           {formatCompactNumber(issue.total_tokens_spent)} tokens
@@ -181,6 +192,12 @@ export function IssueCard({
                   <div className="inline-flex items-center gap-2">
                     <AlertTriangle className="size-3.5 text-rose-300" />
                     Auto-retries paused
+                  </div>
+                ) : null}
+                {issue.issue_type === "recurring" ? (
+                  <div className="inline-flex items-center gap-2">
+                    <RotateCcw className="size-3.5 text-cyan-300" />
+                    {issue.next_run_at ? `Next run ${formatRelativeTime(issue.next_run_at)}` : "Recurring schedule configured"}
                   </div>
                 ) : null}
                 {issue.is_blocked ? (

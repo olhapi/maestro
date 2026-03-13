@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw } from 'lucide-react'
@@ -29,14 +29,27 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const inputRef = useRef<HTMLInputElement>(null)
   const recentIssues = useMemo(() => bootstrap.data?.issues.items.slice(0, 8) ?? [], [bootstrap.data?.issues.items])
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      inputRef.current?.focus()
+    })
+
+    return () => window.cancelAnimationFrame(rafId)
+  }, [open])
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
       <DialogTitle className="sr-only">Command palette</DialogTitle>
       <DialogDescription className="sr-only">Search navigation, issues, and quick actions.</DialogDescription>
       <Command>
-        <CommandInput placeholder="Type a command or search for an issue..." />
+        <CommandInput ref={inputRef} placeholder="Search issues, projects, sessions, or actions..." />
         <CommandList>
           <CommandEmpty>No results found.</CommandEmpty>
 

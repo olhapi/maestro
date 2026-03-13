@@ -41,13 +41,7 @@ describe("ProjectDetailPage", () => {
 
   it("renders a run-stop toggle for the project and triggers the actions", async () => {
     const bootstrap = makeBootstrapResponse({
-      overview: {
-        ...makeBootstrapResponse().overview,
-        snapshot: {
-          ...makeBootstrapResponse().overview.snapshot,
-          running: [],
-        },
-      },
+      projects: [{ ...makeBootstrapResponse().projects[0], state: "stopped" }],
     });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
     vi.mocked(api.getProject).mockResolvedValue({
@@ -70,6 +64,16 @@ describe("ProjectDetailPage", () => {
     expect(
       screen.getByText("Lifetime tokens spent across all project issues."),
     ).toBeInTheDocument();
+    expect(screen.getByText("Repo binding").parentElement?.parentElement).toHaveClass(
+      "pt-[var(--panel-padding)]",
+    );
+    expect(
+      screen.getByText("Epics driving this project").parentElement?.parentElement?.parentElement,
+    ).toHaveClass("pt-[var(--panel-padding)]");
+    expect(
+      screen.getByText("What changed most recently").parentElement,
+    ).toHaveClass("pt-[var(--panel-padding)]");
+    expect(screen.queryByText(/^\d+\s+active$/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /run project/i }));
     await waitFor(() => {
@@ -77,18 +81,7 @@ describe("ProjectDetailPage", () => {
     });
 
     const runningBootstrap = makeBootstrapResponse({
-      overview: {
-        ...bootstrap.overview,
-        snapshot: {
-          ...bootstrap.overview.snapshot,
-          running: [
-            {
-              ...makeBootstrapResponse().overview.snapshot.running[0],
-              issue_id: bootstrap.issues.items[0].id,
-            },
-          ],
-        },
-      },
+      projects: [{ ...bootstrap.projects[0], state: "running" }],
     });
     vi.mocked(api.bootstrap).mockResolvedValue(runningBootstrap);
     vi.mocked(api.getProject).mockResolvedValue({
