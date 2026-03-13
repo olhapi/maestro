@@ -149,6 +149,30 @@ func TestAwaitTurnCompletionTreatsCleanEOFAsCompletion(t *testing.T) {
 	}
 }
 
+func TestAwaitTurnCompletionWaitsBrieflyForCleanExitAfterEOF(t *testing.T) {
+	client := &Client{
+		cfg: ClientConfig{
+			ReadTimeout: 50 * time.Millisecond,
+			TurnTimeout: 200 * time.Millisecond,
+		},
+		lines:   make(chan string),
+		lineErr: make(chan error, 1),
+		waitCh:  make(chan error, 1),
+		session: &Session{ThreadID: "thread-eof-race", TurnID: "turn-eof-race", MaxHistory: 4},
+		logger:  discardLogger(),
+	}
+	close(client.lines)
+	client.lineErr <- io.EOF
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		client.waitCh <- nil
+	}()
+
+	if err := client.awaitTurnCompletion(context.Background()); err != nil {
+		t.Fatalf("expected delayed clean EOF to be treated as completion, got %v", err)
+	}
+}
+
 func TestHandleRequestAutoApprovalAndToolExecution(t *testing.T) {
 	makeClient := func() (*Client, *bufferWriteCloser) {
 		stdin := &bufferWriteCloser{}
