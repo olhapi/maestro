@@ -135,9 +135,11 @@ Important behavior:
 ## Docker
 
 <DocsCommandField
-  command={`docker build -t maestro .
-docker run --rm -v ./repo:/repo -v ./data:/data maestro run /repo --db /data/maestro.db`}
+  command={`docker pull ghcr.io/olhapi/maestro:latest
+docker run --rm -v ./repo:/repo -v ./data:/data ghcr.io/olhapi/maestro:latest run --db /data/maestro.db /repo --port 8787`}
 />
+
+The container entrypoint is `maestro`. If you omit explicit arguments, the image defaults to `maestro run --db /data/maestro.db`.
 
 If `maestro mcp` runs in a different environment from `maestro run`, both processes must share the same database path and daemon registry location.
 

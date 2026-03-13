@@ -1,33 +1,54 @@
-# Build stage
-FROM golang:1.22-alpine AS builder
+# syntax=docker/dockerfile:1.7
 
-WORKDIR /app
+ARG GO_VERSION=1.23.2
+ARG DEBIAN_SUITE=bookworm
 
-# Install build dependencies for SQLite
-RUN apk add --no-cache gcc musl-dev
+FROM golang:${GO_VERSION}-${DEBIAN_SUITE} AS builder
 
-# Copy go mod files
+ARG MAESTRO_VERSION=dev
+
+WORKDIR /src
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY go.mod go.sum ./
-RUN go mod download
 
-# Copy source
-COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
-# Build with CGO for SQLite
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o maestro ./cmd/maestro
+COPY cmd ./cmd
+COPY internal ./internal
+COPY pkg ./pkg
 
-# Runtime stage
-FROM alpine:3.19
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 go build -ldflags "-s -w -X main.version=${MAESTRO_VERSION}" -o /out/maestro ./cmd/maestro
 
-RUN apk add --no-cache ca-certificates
+FROM debian:${DEBIAN_SUITE}-slim
 
-WORKDIR /app
+ARG MAESTRO_VERSION=dev
+ARG VCS_REF=unknown
 
-# Copy binary
-COPY --from=builder /app/maestro /usr/local/bin/maestro
+LABEL org.opencontainers.image.title="Maestro" \
+      org.opencontainers.image.description="Local-first orchestration runtime for agent-driven software work" \
+      org.opencontainers.image.source="https://github.com/olhapi/maestro" \
+      org.opencontainers.image.url="https://github.com/olhapi/maestro" \
+      org.opencontainers.image.version="${MAESTRO_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}"
 
-# Create data directory
-RUN mkdir -p /data
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /data
+
+WORKDIR /data
+
+COPY --from=builder /out/maestro /usr/local/bin/maestro
+
+USER root
 
 ENTRYPOINT ["maestro"]
-CMD ["--help"]
+CMD ["run", "--db", "/data/maestro.db"]

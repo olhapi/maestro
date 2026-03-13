@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+AGENTS.md
+dist/
+frontend/
+website/
+workspaces/
+node_modules/
+**/node_modules/
+coverage/
+tmp/
+*.log
+*.out

@@ -30,15 +30,23 @@ Official npm builds currently cover:
 
 Linux npm packages target glibc only. Alpine and other musl-based distros should build from source or use Docker.
 
+## Docker image
+
+Use the published GHCR image when you want a containerized install path:
+
+<DocsCommandField command={`docker pull ghcr.io/olhapi/maestro:latest`} />
+
+The image entrypoint is `maestro`. Its default command is `run --db /data/maestro.db`, so mounting only a data directory is enough to start the shared daemon with the container defaults.
+
 ## Build from source
 
 For local development or unsupported platforms, build the binary directly from the repo:
 
 <DocsCommandField command={`go build -o maestro ./cmd/maestro`} />
 
-Optional Docker build:
+Contributor Docker build:
 
-<DocsCommandField command={`docker build -t maestro .`} />
+<DocsCommandField command={`docker build -t maestro-local .`} />
 
 ## What to install first
 

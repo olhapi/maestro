@@ -18,10 +18,10 @@ Maestro stays local-first even when a project syncs issues from Linear. Provider
 go build -o maestro ./cmd/maestro
 ```
 
-Optional Docker build:
+Local contributor Docker build:
 
 ```bash
-docker build -t maestro .
+docker build -t maestro-local .
 ```
 
 ## Install
@@ -47,6 +47,14 @@ The installed command name is still `maestro`. Official npm builds currently cov
 - Windows x64
 
 Linux npm packages target glibc only. Alpine and other musl-based distros should build from source or use Docker.
+
+Published Docker image:
+
+```bash
+docker pull ghcr.io/olhapi/maestro:latest
+```
+
+The container entrypoint is `maestro`. The default command is `run --db /data/maestro.db`, so mounting only `./data:/data` starts the shared daemon with the container defaults.
 
 For local development or unsupported platforms, build from source with Go:
 
@@ -340,8 +348,8 @@ Codex or ChatGPT (via MCP)      Browser / CLI helpers
 ## Docker
 
 ```bash
-docker build -t maestro .
-docker run --rm -v ./repo:/repo -v ./data:/data maestro run /repo --db /data/maestro.db
+docker pull ghcr.io/olhapi/maestro:latest
+docker run --rm -v ./repo:/repo -v ./data:/data ghcr.io/olhapi/maestro:latest run --db /data/maestro.db /repo --port 8787
 ```
 
 If you run `maestro mcp` in a separate environment from `maestro run`, both processes must share the same database path and daemon registry location.
