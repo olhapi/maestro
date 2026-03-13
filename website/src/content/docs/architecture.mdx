@@ -18,7 +18,9 @@ The current codebase is organized around five connected runtime layers:
 - a private MCP daemon that `maestro mcp` bridges over stdio
 - a public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs on the default port unless you override `--port`
 
-## Current diagrams
+## How work moves through the live loop
+
+The shortest operational view of the system: attach path, optional HTTP surface, local store, provider sync, and agent execution.
 
 These diagrams are derived from the current runtime shape in `cmd/maestro` and the internal runtime packages, then rendered directly in the docs site.
 

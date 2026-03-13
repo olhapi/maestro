@@ -329,14 +329,13 @@ input {
 .architecture-diagram-card::before {
   content: "";
   position: absolute;
-  inset: 0 auto auto 0;
-  height: 14rem;
-  width: 100%;
+  inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at top left, rgba(196, 255, 87, 0.12), transparent 42%),
-    radial-gradient(circle at top right, rgba(83, 217, 255, 0.1), transparent 46%);
-  opacity: 0.9;
+    radial-gradient(circle at top left, rgba(196, 255, 87, 0.16), transparent 34%),
+    radial-gradient(circle at top right, rgba(83, 217, 255, 0.14), transparent 38%),
+    linear-gradient(90deg, rgba(196, 255, 87, 0.08) 0%, rgba(196, 255, 87, 0) 30%, rgba(83, 217, 255, 0) 68%, rgba(83, 217, 255, 0.08) 100%);
+  opacity: 0.95;
 }
 
 .architecture-diagram-header {
@@ -359,8 +358,7 @@ input {
 }
 
 .architecture-diagram-description {
-  margin: 0.7rem 0 0;
-  max-width: 44rem;
+  margin: 0;
   color: var(--muted);
   line-height: 1.7;
 }
@@ -371,32 +369,25 @@ input {
   z-index: 1;
   display: flex;
   justify-content: flex-start;
-  margin: 1.35rem 0 0;
+  margin: 1.1rem 0 0;
   min-height: 0;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 1.2rem;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
-    rgba(0, 0, 0, 0.22);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  padding: 1rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
   overflow: auto;
 }
 
 .architecture-diagrams pre.mermaid:not([data-processed]),
 .docs-copy .architecture-diagrams pre.mermaid:not([data-processed]) {
-  background:
-    linear-gradient(110deg, rgba(16, 17, 20, 0.96) 22%, rgba(39, 45, 25, 0.88) 48%, rgba(14, 26, 32, 0.88) 74%, rgba(16, 17, 20, 0.96) 100%),
-    rgba(0, 0, 0, 0.22);
-  background-size: 220% 100%;
+  background: transparent;
 }
 
 .architecture-diagrams pre.mermaid[data-processed],
 .docs-copy .architecture-diagrams pre.mermaid[data-processed] {
   min-height: 0;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
-    rgba(0, 0, 0, 0.22);
+  background: transparent;
 }
 
 .architecture-diagrams pre.mermaid svg,
@@ -423,12 +414,7 @@ input {
 
 .architecture-diagrams--home .architecture-diagram-card {
   height: 100%;
-}
-
-@media (min-width: 1080px) {
-  .architecture-diagrams--home {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  width: 100%;
 }
 
 @media (max-width: 768px) {
@@ -454,7 +440,7 @@ input {
 
   .architecture-diagrams pre.mermaid,
   .docs-copy .architecture-diagrams pre.mermaid {
-    padding: 0.85rem;
+    margin-top: 0.95rem;
   }
 }
 

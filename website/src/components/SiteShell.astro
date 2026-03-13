@@ -26,8 +26,18 @@ const { searchEntries = [] } = Astro.props;
           Search
           <span class="rounded-full border border-white/10 px-2 py-0.5 font-mono text-xs text-[var(--muted)]">Ctrl K</span>
         </button>
-        <a class="button-secondary !px-3.5 !py-2 text-sm" href={repoUrl} rel="noreferrer" target="_blank">
-          GitHub
+        <a
+          aria-label="GitHub repository"
+          class="flex size-10 items-center justify-center rounded-full border border-white/10 bg-[rgba(255,255,255,0.04)] text-white transition hover:border-white/18 hover:bg-[rgba(255,255,255,0.08)]"
+          href={repoUrl}
+          rel="noreferrer"
+          target="_blank"
+          title="GitHub repository"
+        >
+          <svg aria-hidden="true" class="size-4.5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 .5a12 12 0 0 0-3.79 23.39c.6.12.82-.26.82-.58v-2.23c-3.34.73-4.04-1.42-4.04-1.42-.54-1.4-1.33-1.77-1.33-1.77-1.08-.76.08-.74.08-.74 1.2.09 1.82 1.24 1.82 1.24 1.06 1.85 2.79 1.31 3.47 1 .11-.79.42-1.31.76-1.61-2.67-.31-5.48-1.37-5.48-6.08 0-1.34.47-2.44 1.24-3.3-.12-.31-.54-1.56.12-3.25 0 0 1.01-.33 3.3 1.26a11.37 11.37 0 0 1 6 0c2.28-1.59 3.29-1.26 3.29-1.26.66 1.69.24 2.94.12 3.25.77.86 1.23 1.96 1.23 3.3 0 4.72-2.81 5.77-5.49 6.08.43.38.82 1.1.82 2.22v3.3c0 .32.21.7.82.58A12 12 0 0 0 12 .5Z" />
+          </svg>
+          <span class="sr-only">GitHub repository</span>
         </a>
         <a class="button-primary !px-3.5 !py-2 text-sm" href="/docs/quickstart">
           Quickstart

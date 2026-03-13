@@ -40,11 +40,9 @@ flowchart TB
 
 const sections = [
   {
-    kicker: "Runtime path",
-    title: "How work moves through the live loop.",
     description: isHome
       ? "Attach through MCP, keep the daemon in the middle, and let provider sync plus orchestration stay local."
-      : "The shortest operational view of the system: attach path, optional HTTP surface, local store, provider sync, and agent execution.",
+      : "",
     diagram: runtimePathDiagram,
   },
 ] as const;
@@ -53,11 +51,11 @@ const sections = [
 <div class:list={["architecture-diagrams", isHome ? "architecture-diagrams--home" : "architecture-diagrams--docs"]}>
   {sections.map((section) => (
     <section class="architecture-diagram-card panel p-5 md:p-6">
-      <div class="architecture-diagram-header">
-        <p class="kicker">{section.kicker}</p>
-        <p class="architecture-diagram-title">{section.title}</p>
-        <p class="architecture-diagram-description">{section.description}</p>
-      </div>
+      {section.description && (
+        <div class="architecture-diagram-header">
+          <p class="architecture-diagram-description">{section.description}</p>
+        </div>
+      )}
       <pre class="mermaid">{section.diagram}</pre>
     </section>
   ))}
