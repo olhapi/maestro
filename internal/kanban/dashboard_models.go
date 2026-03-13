@@ -89,6 +89,7 @@ type IssueQuery struct {
 	ProjectName string
 	EpicID      string
 	State       string
+	IssueType   string
 	Assignee    string
 	Search      string
 	Sort        string

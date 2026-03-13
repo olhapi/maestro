@@ -62,6 +62,7 @@ func Run(repoRoot string) Report {
 				"description": "Parses correctly",
 				"state":       "ready",
 			},
+			"phase":   "implementation",
 			"attempt": 1,
 		}); err != nil {
 			checks["workflow_prompt_render"] = "invalid"

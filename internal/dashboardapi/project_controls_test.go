@@ -15,12 +15,12 @@ type projectControlProvider struct {
 
 func (p *projectControlProvider) RequestProjectRefresh(projectID string) map[string]interface{} {
 	p.refreshed = append(p.refreshed, projectID)
-	return map[string]interface{}{"status": "accepted", "project_id": projectID}
+	return map[string]interface{}{"status": "accepted", "project_id": projectID, "state": "running"}
 }
 
 func (p *projectControlProvider) StopProjectRuns(projectID string) map[string]interface{} {
 	p.stopped = append(p.stopped, projectID)
-	return map[string]interface{}{"status": "stopped", "project_id": projectID, "stopped_runs": 1}
+	return map[string]interface{}{"status": "stopped", "project_id": projectID, "state": "stopped", "stopped_runs": 1}
 }
 
 func TestProjectControlEndpoints(t *testing.T) {
@@ -40,6 +40,9 @@ func TestProjectControlEndpoints(t *testing.T) {
 	if runResp.StatusCode != http.StatusOK {
 		t.Fatalf("run project expected 200, got %d", runResp.StatusCode)
 	}
+	if payload := decodeResponse(t, runResp); payload["state"] != "running" {
+		t.Fatalf("expected running state in project run response, got %#v", payload)
+	}
 	if len(provider.refreshed) != 1 || provider.refreshed[0] != project.ID {
 		t.Fatalf("expected project run to be forwarded, got %#v", provider.refreshed)
 	}
@@ -47,6 +50,9 @@ func TestProjectControlEndpoints(t *testing.T) {
 	stopResp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/projects/"+project.ID+"/stop", nil)
 	if stopResp.StatusCode != http.StatusOK {
 		t.Fatalf("stop project expected 200, got %d", stopResp.StatusCode)
+	}
+	if payload := decodeResponse(t, stopResp); payload["state"] != "stopped" {
+		t.Fatalf("expected stopped state in project stop response, got %#v", payload)
 	}
 	if len(provider.stopped) != 1 || provider.stopped[0] != project.ID {
 		t.Fatalf("expected project stop to be forwarded, got %#v", provider.stopped)

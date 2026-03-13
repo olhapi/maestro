@@ -18,10 +18,16 @@ import (
 type retryTrackingProvider struct {
 	testProvider
 	retried []string
+	runNow  []string
 }
 
 func (p *retryTrackingProvider) RetryIssueNow(identifier string) map[string]interface{} {
 	p.retried = append(p.retried, identifier)
+	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+}
+
+func (p *retryTrackingProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
+	p.runNow = append(p.runNow, identifier)
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
@@ -534,6 +540,90 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	_ = decodeResponse(t, deleteIssue)
 }
 
+func TestRecurringIssueContractsExposeRecurringFieldsAndRunNow(t *testing.T) {
+	provider := &retryTrackingProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	project, err := store.CreateProject("Automation", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	createIssue := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues", map[string]interface{}{
+		"project_id":  project.ID,
+		"title":       "Scan GitHub ready-to-work",
+		"description": "Mirror ready-to-work GitHub issues into Maestro.",
+		"issue_type":  "recurring",
+		"cron":        "*/15 * * * *",
+		"enabled":     false,
+	})
+	if createIssue.StatusCode != http.StatusCreated {
+		t.Fatalf("create recurring issue expected 201, got %d", createIssue.StatusCode)
+	}
+	created := decodeResponse(t, createIssue)
+	identifier := created["identifier"].(string)
+	if created["issue_type"] != "recurring" || created["cron"] != "*/15 * * * *" || created["enabled"] != false {
+		t.Fatalf("unexpected recurring create payload: %#v", created)
+	}
+
+	patchIssue := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/issues/"+identifier, map[string]interface{}{
+		"project_id": project.ID,
+		"cron":    "0 * * * *",
+		"enabled": true,
+	})
+	if patchIssue.StatusCode != http.StatusOK {
+		t.Fatalf("patch recurring issue expected 200, got %d", patchIssue.StatusCode)
+	}
+	patched := decodeResponse(t, patchIssue)
+	if patched["cron"] != "0 * * * *" || patched["enabled"] != true {
+		t.Fatalf("unexpected recurring patch payload: %#v", patched)
+	}
+
+	listIssues := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues?issue_type=recurring&limit=20", nil)
+	if listIssues.StatusCode != http.StatusOK {
+		t.Fatalf("list recurring issues expected 200, got %d", listIssues.StatusCode)
+	}
+	items := decodeResponse(t, listIssues)["items"].([]interface{})
+	if len(items) != 1 || items[0].(map[string]interface{})["identifier"] != identifier {
+		t.Fatalf("unexpected recurring issue list payload: %#v", items)
+	}
+
+	getIssue := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
+	if getIssue.StatusCode != http.StatusOK {
+		t.Fatalf("get recurring issue expected 200, got %d", getIssue.StatusCode)
+	}
+	got := decodeResponse(t, getIssue)
+	if got["issue_type"] != "recurring" || got["cron"] != "0 * * * *" || got["enabled"] != true {
+		t.Fatalf("unexpected recurring issue payload: %#v", got)
+	}
+
+	runNow := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/run-now", nil)
+	if runNow.StatusCode != http.StatusOK {
+		t.Fatalf("run-now expected 200, got %d", runNow.StatusCode)
+	}
+	if len(provider.runNow) != 1 || provider.runNow[0] != identifier {
+		t.Fatalf("expected run-now callback for %s, got %v", identifier, provider.runNow)
+	}
+}
+
+func TestCreateIssueAndEpicRequireProject(t *testing.T) {
+	_, srv := setupDashboardServerTest(t, testProvider{})
+
+	createIssue := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues", map[string]interface{}{
+		"title": "Missing project",
+	})
+	if createIssue.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create issue without project expected 400, got %d", createIssue.StatusCode)
+	}
+
+	createEpic := requestJSON(t, srv, http.MethodPost, "/api/v1/app/epics", map[string]interface{}{
+		"name": "Missing project",
+	})
+	if createEpic.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create epic without project expected 400, got %d", createEpic.StatusCode)
+	}
+}
+
 func TestIssueStateEndpointRejectsBlockedInProgress(t *testing.T) {
 	store, srv := setupDashboardServerTest(t, testProvider{})
 
@@ -572,8 +662,12 @@ func TestIssueStateEndpointRejectsBlockedInProgress(t *testing.T) {
 
 func TestCreateIssueRejectsBlockedInProgressWithConflict(t *testing.T) {
 	store, srv := setupDashboardServerTest(t, testProvider{})
+	project, err := store.CreateProject("Project", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
 
-	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue blocker: %v", err)
 	}
@@ -582,6 +676,7 @@ func TestCreateIssueRejectsBlockedInProgressWithConflict(t *testing.T) {
 	}
 
 	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues", map[string]interface{}{
+		"project_id": project.ID,
 		"title":      "Blocked create",
 		"state":      "in_progress",
 		"blocked_by": []string{blocker.Identifier},

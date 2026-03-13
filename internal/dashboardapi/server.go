@@ -26,6 +26,7 @@ type Provider interface {
 	observability.EventProvider
 	observability.RefreshProvider
 	RetryIssueNow(identifier string) map[string]interface{}
+	RunRecurringIssueNow(identifier string) map[string]interface{}
 	RequestProjectRefresh(projectID string) map[string]interface{}
 	StopProjectRuns(projectID string) map[string]interface{}
 }
@@ -400,7 +401,7 @@ func (s *Server) handleEpics(w http.ResponseWriter, r *http.Request) {
 		}
 		epic, err := s.service.CreateEpic(strings.TrimSpace(body.ProjectID), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description))
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSONStatus(w, http.StatusCreated, epic)
@@ -477,7 +478,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.service.UpdateEpic(id, strings.TrimSpace(body.ProjectID), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description)); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, appErrorStatus(err), err)
 			return
 		}
 		epic, err := s.store.GetEpic(id)
@@ -504,6 +505,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			ProjectID: r.URL.Query().Get("project_id"),
 			EpicID:    r.URL.Query().Get("epic_id"),
 			State:     r.URL.Query().Get("state"),
+			IssueType: r.URL.Query().Get("issue_type"),
 			Search:    r.URL.Query().Get("search"),
 			Sort:      r.URL.Query().Get("sort"),
 			Limit:     queryInt(r, "limit", 200),
@@ -526,6 +528,9 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			EpicID      string   `json:"epic_id"`
 			Title       string   `json:"title"`
 			Description string   `json:"description"`
+			IssueType   string   `json:"issue_type"`
+			Cron        string   `json:"cron"`
+			Enabled     *bool    `json:"enabled"`
 			Priority    int      `json:"priority"`
 			Labels      []string `json:"labels"`
 			State       string   `json:"state"`
@@ -542,6 +547,9 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			EpicID:      body.EpicID,
 			Title:       strings.TrimSpace(body.Title),
 			Description: strings.TrimSpace(body.Description),
+			IssueType:   kanban.IssueType(strings.TrimSpace(body.IssueType)),
+			Cron:        strings.TrimSpace(body.Cron),
+			Enabled:     body.Enabled,
 			Priority:    body.Priority,
 			Labels:      body.Labels,
 			State:       body.State,
@@ -588,6 +596,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				EpicID      string   `json:"epic_id"`
 				Title       string   `json:"title"`
 				Description string   `json:"description"`
+				IssueType   *string  `json:"issue_type"`
+				Cron        *string  `json:"cron"`
+				Enabled     *bool    `json:"enabled"`
 				Priority    int      `json:"priority"`
 				Labels      []string `json:"labels"`
 				BlockedBy   []string `json:"blocked_by"`
@@ -609,6 +620,15 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				"branch_name": body.BranchName,
 				"pr_number":   body.PRNumber,
 				"pr_url":      body.PRURL,
+			}
+			if body.IssueType != nil {
+				updates["issue_type"] = strings.TrimSpace(*body.IssueType)
+			}
+			if body.Cron != nil {
+				updates["cron"] = strings.TrimSpace(*body.Cron)
+			}
+			if body.Enabled != nil {
+				updates["enabled"] = *body.Enabled
 			}
 			detail, err := s.service.UpdateIssue(r.Context(), identifier, updates)
 			if err != nil {
@@ -686,6 +706,8 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "blocked_by": body.BlockedBy})
 	case "retry":
 		writeJSON(w, s.provider.RetryIssueNow(identifier))
+	case "run-now":
+		writeJSON(w, s.provider.RunRecurringIssueNow(identifier))
 	case "commands":
 		var body struct {
 			Command string `json:"command"`

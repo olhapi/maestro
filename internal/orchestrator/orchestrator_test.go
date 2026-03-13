@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1700,6 +1701,198 @@ func TestRetryNowAndRefreshHandleAdditionalControlPaths(t *testing.T) {
 	}
 }
 
+func TestRunRecurringIssueNowQueuesIdleRecurringIssue(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssueWithOptions("", "", "Scan GitHub ready-to-work", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "*/15 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+
+	result := orch.RunRecurringIssueNow(issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now, got %#v", result)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.State != kanban.StateReady || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
+		t.Fatalf("expected ready implementation after run-now, got state=%s phase=%s", updated.State, updated.WorkflowPhase)
+	}
+	if updated.LastEnqueuedAt == nil || updated.NextRunAt == nil || !updated.NextRunAt.After(*updated.LastEnqueuedAt) {
+		t.Fatalf("expected recurring schedule metadata after run-now, got %+v", updated)
+	}
+
+	events, err := store.ListRuntimeEvents(0, 20)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "recurring_manual_run_now_enqueued" && event.Identifier == issue.Identifier {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected recurring_manual_run_now_enqueued event, got %#v", events)
+	}
+}
+
+func TestRunRecurringIssueNowCoalescesOccupiedRecurringIssue(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssueWithOptions("", "", "Occupied recurring", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	result := orch.RunRecurringIssueNow(issue.Identifier)
+	if result["status"] != "pending_rerun_recorded" {
+		t.Fatalf("expected pending_rerun_recorded, got %#v", result)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !updated.PendingRerun {
+		t.Fatalf("expected pending rerun to be recorded, got %+v", updated)
+	}
+
+	result = orch.RunRecurringIssueNow(issue.Identifier)
+	if result["status"] != "pending_rerun_already_set" {
+		t.Fatalf("expected pending_rerun_already_set, got %#v", result)
+	}
+}
+
+func TestProcessDueRecurringIssuesEnqueuesCatchUpAndCoalescesBusyRuns(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
+	project, err := store.CreateProject("Recurring", "", filepath.Dir(manager.Path()), manager.Path())
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState recurring project: %v", err)
+	}
+
+	idleIssue, err := store.CreateIssueWithOptions(project.ID, "", "Idle recurring", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "*/10 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions idle: %v", err)
+	}
+	busyIssue, err := store.CreateIssueWithOptions(project.ID, "", "Busy recurring", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "*/10 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions busy: %v", err)
+	}
+	if err := store.UpdateIssueState(busyIssue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState busy: %v", err)
+	}
+
+	past := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
+	db, err := sql.Open("sqlite3", store.DBPath())
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, pending_rerun = 0 WHERE issue_id = ?`, past, idleIssue.ID); err != nil {
+		t.Fatalf("update idle recurrence: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, pending_rerun = 0 WHERE issue_id = ?`, past, busyIssue.ID); err != nil {
+		t.Fatalf("update busy recurrence: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close recurrence db: %v", err)
+	}
+
+	orch.processDueRecurringIssues(context.Background())
+
+	idleUpdated, err := store.GetIssue(idleIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue idle: %v", err)
+	}
+	if idleUpdated.State != kanban.StateReady || idleUpdated.LastEnqueuedAt == nil {
+		t.Fatalf("expected idle recurring issue to be enqueued, got %+v", idleUpdated)
+	}
+
+	busyUpdated, err := store.GetIssue(busyIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue busy: %v", err)
+	}
+	if !busyUpdated.PendingRerun {
+		t.Fatalf("expected busy recurring issue to record pending rerun, got %+v", busyUpdated)
+	}
+
+	events, err := store.ListRuntimeEvents(0, 20)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	var foundCatchUp bool
+	var foundPending bool
+	for _, event := range events {
+		if event.Kind == "recurring_catch_up_enqueued" && event.Identifier == idleIssue.Identifier {
+			foundCatchUp = true
+		}
+		if event.Kind == "recurring_pending_rerun_recorded" && event.Identifier == busyIssue.Identifier {
+			foundPending = true
+		}
+	}
+	if !foundCatchUp || !foundPending {
+		t.Fatalf("expected catch-up and pending-rerun events, got %#v", events)
+	}
+}
+
+func TestProcessPendingRecurringRerunEnqueuesWhenIssueBecomesIdle(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssueWithOptions("", "", "Pending recurring", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "*/20 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+	if err := store.MarkRecurringPendingRerun(issue.ID, true); err != nil {
+		t.Fatalf("MarkRecurringPendingRerun: %v", err)
+	}
+
+	pending, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue pending: %v", err)
+	}
+	if !pending.PendingRerun {
+		t.Fatalf("expected pending rerun before processing, got %+v", pending)
+	}
+
+	if !orch.processPendingRecurringRerun(pending) {
+		t.Fatal("expected pending recurring rerun to be enqueued")
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue updated: %v", err)
+	}
+	if updated.State != kanban.StateReady || updated.PendingRerun {
+		t.Fatalf("expected ready recurring issue with cleared pending rerun, got %+v", updated)
+	}
+}
+
 func TestSharedDispatchUsesScopedRuntimeForProjectlessIssue(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -1847,6 +2040,9 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		project, err := adminStore.CreateProject(name, "", repoPath, workflowPath)
 		if err != nil {
 			t.Fatalf("CreateProject %s: %v", name, err)
+		}
+		if err := adminStore.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+			t.Fatalf("UpdateProjectState %s: %v", name, err)
 		}
 		issue, err := adminStore.CreateIssue(project.ID, "", name+" issue", "", 0, nil)
 		if err != nil {
@@ -2235,6 +2431,9 @@ func createDependencyGraph(t *testing.T, store *kanban.Store) map[string]*kanban
 	if err != nil {
 		t.Fatalf("CreateProject failed: %v", err)
 	}
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState failed: %v", err)
+	}
 	makeIssue := func(title string, priority int) *kanban.Issue {
 		issue, err := store.CreateIssue(project.ID, "", title, "", priority, nil)
 		if err != nil {
@@ -2370,6 +2569,9 @@ func TestDispatchPerProjectSerialStartsOneIssueAtATimePerProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject failed: %v", err)
 	}
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState project failed: %v", err)
+	}
 	first, err := store.CreateIssue(project.ID, "", "First", "", 1, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue first failed: %v", err)
@@ -2427,6 +2629,9 @@ func TestPerProjectSerialDispatchPrefersHigherPriorityOverDueRetry(t *testing.T)
 	project, err := store.CreateProject("Priority", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateProject failed: %v", err)
+	}
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState project failed: %v", err)
 	}
 	high, err := store.CreateIssue(project.ID, "", "High", "", 1, nil)
 	if err != nil {

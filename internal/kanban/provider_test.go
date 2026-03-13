@@ -89,6 +89,9 @@ func TestProviderProjectHelpersAndCounts(t *testing.T) {
 	if project.ProviderKind != ProviderKindLinear || project.ProviderProjectRef != "LIN-PROJ" {
 		t.Fatalf("unexpected provider project fields: %#v", project)
 	}
+	if project.State != ProjectStateStopped {
+		t.Fatalf("expected provider project state stopped, got %#v", project.State)
+	}
 	if !project.OrchestrationReady || !project.DispatchReady {
 		t.Fatalf("expected provider project to be runnable, got %#v", project)
 	}

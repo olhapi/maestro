@@ -314,6 +314,7 @@ func (a *cliApp) newIssueCmd() *cobra.Command {
 		a.newIssueDeleteCmd(),
 		a.newIssueExecutionCmd(),
 		a.newIssueRetryCmd(),
+		a.newIssueRunNowCmd(),
 		a.newIssueUnblockCmd(),
 		a.newIssueBlockCmd(),
 		a.newIssueBlockersCmd(),
@@ -326,6 +327,9 @@ func (a *cliApp) newIssueCreateCmd() *cobra.Command {
 	var projectID string
 	var epicID string
 	var labels string
+	var issueType string
+	var cronSpec string
+	var enabled bool
 	var priority int
 	cmd := &cobra.Command{
 		Use:   "create <title>",
@@ -337,11 +341,18 @@ func (a *cliApp) newIssueCreateCmd() *cobra.Command {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
+			var enabledPtr *bool
+			if cmd.Flags().Changed("enabled") {
+				enabledPtr = &enabled
+			}
 			detail, err := svc.CreateIssue(context.Background(), providers.IssueCreateInput{
 				ProjectID:   projectID,
 				EpicID:      epicID,
 				Title:       args[0],
 				Description: description,
+				IssueType:   kanban.IssueType(strings.TrimSpace(issueType)),
+				Cron:        cronSpec,
+				Enabled:     enabledPtr,
 				Priority:    priority,
 				Labels:      parseCSV(labels),
 			})
@@ -363,12 +374,16 @@ func (a *cliApp) newIssueCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
 	cmd.Flags().StringVar(&epicID, "epic", "", "Epic ID")
 	cmd.Flags().StringVar(&labels, "labels", "", "Comma-separated labels")
+	cmd.Flags().StringVar(&issueType, "type", string(kanban.IssueTypeStandard), "Issue type: standard or recurring")
+	cmd.Flags().StringVar(&cronSpec, "cron", "", "Cron schedule for recurring issues (5-field local-time spec)")
+	cmd.Flags().BoolVar(&enabled, "enabled", true, "Enable recurring scheduling for recurring issues")
 	cmd.Flags().IntVar(&priority, "priority", 0, "Issue priority (lower is higher)")
 	return cmd
 }
 
 func (a *cliApp) newIssueListCmd() *cobra.Command {
 	var state string
+	var issueType string
 	var projectID string
 	var projectName string
 	var epicID string
@@ -392,6 +407,7 @@ func (a *cliApp) newIssueListCmd() *cobra.Command {
 				ProjectName: projectName,
 				EpicID:      epicID,
 				State:       state,
+				IssueType:   issueType,
 				Search:      search,
 				Sort:        sortBy,
 				Limit:       limit,
@@ -418,6 +434,7 @@ func (a *cliApp) newIssueListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&state, "state", "", "Filter by state")
+	cmd.Flags().StringVar(&issueType, "type", "", "Filter by issue type: standard or recurring")
 	cmd.Flags().StringVar(&projectID, "project", "", "Filter by project ID")
 	cmd.Flags().StringVar(&projectName, "project-name", "", "Filter by exact project name")
 	cmd.Flags().StringVar(&epicID, "epic", "", "Filter by epic ID")
@@ -495,6 +512,9 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	var description string
 	var projectID string
 	var epicID string
+	var issueType string
+	var cronSpec string
+	var enabled bool
 	var labels string
 	var priority int
 	var branch string
@@ -524,6 +544,15 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("desc") {
 				updates["description"] = description
+			}
+			if cmd.Flags().Changed("type") {
+				updates["issue_type"] = strings.TrimSpace(issueType)
+			}
+			if cmd.Flags().Changed("cron") {
+				updates["cron"] = cronSpec
+			}
+			if cmd.Flags().Changed("enabled") {
+				updates["enabled"] = enabled
 			}
 			if cmd.Flags().Changed("labels") {
 				updates["labels"] = parseCSV(labels)
@@ -585,6 +614,9 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&description, "desc", "", "New description")
+	cmd.Flags().StringVar(&issueType, "type", "", "Issue type: standard or recurring")
+	cmd.Flags().StringVar(&cronSpec, "cron", "", "Cron schedule for recurring issues")
+	cmd.Flags().BoolVar(&enabled, "enabled", true, "Enable recurring scheduling")
 	cmd.Flags().StringVar(&labels, "labels", "", "Comma-separated labels")
 	cmd.Flags().IntVar(&priority, "priority", 0, "New priority")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
@@ -686,6 +718,34 @@ func (a *cliApp) newIssueRetryCmd() *cobra.Command {
 				return nil
 			}
 			_, _ = fmt.Fprintf(a.stdout, "Retry status for %s: %v\n", args[0], payload["status"])
+			return nil
+		},
+	}
+	return cmd
+}
+
+func (a *cliApp) newIssueRunNowCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "run-now <identifier>",
+		Short: "Trigger a recurring issue immediately",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newAPIClient(a.opts.apiURL)
+			if err != nil {
+				return err
+			}
+			var payload map[string]interface{}
+			if err := client.post("/api/v1/app/issues/"+url.PathEscape(args[0])+"/run-now", map[string]interface{}{}, &payload); err != nil {
+				return err
+			}
+			if a.opts.mode.json {
+				return writeJSON(a.stdout, payload)
+			}
+			if a.opts.mode.quiet {
+				_, _ = fmt.Fprintln(a.stdout, args[0])
+				return nil
+			}
+			_, _ = fmt.Fprintf(a.stdout, "Run-now status for %s: %v\n", args[0], payload["status"])
 			return nil
 		},
 	}
@@ -813,6 +873,8 @@ func (a *cliApp) newProjectCmd() *cobra.Command {
 		a.newProjectCreateCmd(),
 		a.newProjectListCmd(),
 		a.newProjectShowCmd(),
+		a.newProjectStartCmd(),
+		a.newProjectStopCmd(),
 		a.newProjectUpdateCmd(),
 		a.newProjectDeleteCmd(),
 	)
@@ -916,6 +978,7 @@ func (a *cliApp) newProjectShowCmd() *cobra.Command {
 				return writeJSON(a.stdout, payload)
 			}
 			_, _ = fmt.Fprintf(a.stdout, "Project:\t%s (%s)\n", project.Name, project.ID)
+			_, _ = fmt.Fprintf(a.stdout, "State:\t%s\n", project.State)
 			_, _ = fmt.Fprintf(a.stdout, "Provider:\t%s\n", project.ProviderKind)
 			if project.ProviderProjectRef != "" {
 				_, _ = fmt.Fprintf(a.stdout, "Provider Ref:\t%s\n", project.ProviderProjectRef)
@@ -928,6 +991,70 @@ func (a *cliApp) newProjectShowCmd() *cobra.Command {
 			}
 			_, _ = fmt.Fprintln(a.stdout)
 			printIssueTable(a.stdout, issues, a.opts.mode)
+			return nil
+		},
+	}
+	return cmd
+}
+
+func (a *cliApp) newProjectStartCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "start <id>",
+		Short: "Request live orchestration for a project",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newAPIClient(a.opts.apiURL)
+			if err != nil {
+				return err
+			}
+			var payload map[string]interface{}
+			if err := client.post("/api/v1/app/projects/"+url.PathEscape(args[0])+"/run", map[string]interface{}{}, &payload); err != nil {
+				return err
+			}
+			if a.opts.mode.json {
+				return writeJSON(a.stdout, payload)
+			}
+			if a.opts.mode.quiet {
+				_, _ = fmt.Fprintln(a.stdout, args[0])
+				return nil
+			}
+			if state, ok := payload["state"]; ok {
+				_, _ = fmt.Fprintf(a.stdout, "Start status for %s: %v (%v)\n", args[0], payload["status"], state)
+			} else {
+				_, _ = fmt.Fprintf(a.stdout, "Start status for %s: %v\n", args[0], payload["status"])
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+func (a *cliApp) newProjectStopCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stop <id>",
+		Short: "Stop live runs for a project",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newAPIClient(a.opts.apiURL)
+			if err != nil {
+				return err
+			}
+			var payload map[string]interface{}
+			if err := client.post("/api/v1/app/projects/"+url.PathEscape(args[0])+"/stop", map[string]interface{}{}, &payload); err != nil {
+				return err
+			}
+			if a.opts.mode.json {
+				return writeJSON(a.stdout, payload)
+			}
+			if a.opts.mode.quiet {
+				_, _ = fmt.Fprintln(a.stdout, args[0])
+				return nil
+			}
+			if state, ok := payload["state"]; ok {
+				_, _ = fmt.Fprintf(a.stdout, "Stop status for %s: %v (%v)\n", args[0], payload["status"], state)
+			} else {
+				_, _ = fmt.Fprintf(a.stdout, "Stop status for %s: %v\n", args[0], payload["status"])
+			}
 			return nil
 		},
 	}

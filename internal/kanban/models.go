@@ -7,6 +7,7 @@ import (
 
 // State represents the workflow state of an issue
 type State string
+type ProjectState string
 
 const (
 	StateBacklog    State = "backlog"
@@ -15,9 +16,13 @@ const (
 	StateInReview   State = "in_review"
 	StateDone       State = "done"
 	StateCancelled  State = "cancelled"
+
+	ProjectStateStopped ProjectState = "stopped"
+	ProjectStateRunning ProjectState = "running"
 )
 
 type WorkflowPhase string
+type IssueType string
 
 const (
 	ProviderKindKanban = "kanban"
@@ -27,12 +32,24 @@ const (
 	WorkflowPhaseReview         WorkflowPhase = "review"
 	WorkflowPhaseDone           WorkflowPhase = "done"
 	WorkflowPhaseComplete       WorkflowPhase = "complete"
+
+	IssueTypeStandard  IssueType = "standard"
+	IssueTypeRecurring IssueType = "recurring"
 )
 
 // IsValid checks if a state is valid
 func (s State) IsValid() bool {
 	switch s {
 	case StateBacklog, StateReady, StateInProgress, StateInReview, StateDone, StateCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s ProjectState) IsValid() bool {
+	switch s {
+	case ProjectStateStopped, ProjectStateRunning:
 		return true
 	default:
 		return false
@@ -48,12 +65,54 @@ func (p WorkflowPhase) IsValid() bool {
 	}
 }
 
+func (t IssueType) IsValid() bool {
+	switch t {
+	case IssueTypeStandard, IssueTypeRecurring:
+		return true
+	default:
+		return false
+	}
+}
+
 func DefaultWorkflowPhaseForState(state State) WorkflowPhase {
 	switch state {
 	case StateDone, StateCancelled:
 		return WorkflowPhaseComplete
 	default:
 		return WorkflowPhaseImplementation
+	}
+}
+
+func DefaultIssueType() IssueType {
+	return IssueTypeStandard
+}
+
+func NormalizeProjectState(raw string) ProjectState {
+	switch ProjectState(strings.ToLower(strings.TrimSpace(raw))) {
+	case ProjectStateRunning:
+		return ProjectStateRunning
+	default:
+		return ProjectStateStopped
+	}
+}
+
+func ParseIssueType(raw string) (IssueType, error) {
+	issueType := IssueType(strings.ToLower(strings.TrimSpace(raw)))
+	if issueType == "" {
+		return IssueTypeStandard, nil
+	}
+	if !issueType.IsValid() {
+		return "", invalidIssueTypeError(issueType)
+	}
+	return issueType, nil
+}
+
+func NormalizeIssueType(raw string) IssueType {
+	switch IssueType(strings.ToLower(strings.TrimSpace(raw))) {
+	case IssueTypeRecurring:
+		return IssueTypeRecurring
+	default:
+		return IssueTypeStandard
 	}
 }
 
@@ -72,6 +131,7 @@ type Project struct {
 	ID                 string                 `json:"id"`
 	Name               string                 `json:"name"`
 	Description        string                 `json:"description,omitempty"`
+	State              ProjectState           `json:"state"`
 	RepoPath           string                 `json:"repo_path,omitempty"`
 	WorkflowPath       string                 `json:"workflow_path,omitempty"`
 	ProviderKind       string                 `json:"provider_kind,omitempty"`
@@ -101,6 +161,7 @@ type Issue struct {
 	ProjectID        string        `json:"project_id,omitempty"`
 	EpicID           string        `json:"epic_id,omitempty"`
 	Identifier       string        `json:"identifier"` // Human-readable: PROJ-123
+	IssueType        IssueType     `json:"issue_type"`
 	ProviderKind     string        `json:"provider_kind,omitempty"`
 	ProviderIssueRef string        `json:"provider_issue_ref,omitempty"`
 	ProviderShadow   bool          `json:"provider_shadow,omitempty"`
@@ -120,7 +181,27 @@ type Issue struct {
 	StartedAt        *time.Time    `json:"started_at,omitempty"`
 	CompletedAt      *time.Time    `json:"completed_at,omitempty"`
 	LastSyncedAt     *time.Time    `json:"last_synced_at,omitempty"`
+	Cron             string        `json:"cron,omitempty"`
+	Enabled          bool          `json:"enabled"`
+	NextRunAt        *time.Time    `json:"next_run_at,omitempty"`
+	LastEnqueuedAt   *time.Time    `json:"last_enqueued_at,omitempty"`
+	PendingRerun     bool          `json:"pending_rerun"`
 	ResumeThreadID   string        `json:"-"`
+}
+
+func (i Issue) IsRecurring() bool {
+	return NormalizeIssueType(string(i.IssueType)) == IssueTypeRecurring
+}
+
+type IssueRecurrence struct {
+	IssueID        string     `json:"issue_id,omitempty"`
+	Cron           string     `json:"cron"`
+	Enabled        bool       `json:"enabled"`
+	NextRunAt      *time.Time `json:"next_run_at,omitempty"`
+	LastEnqueuedAt *time.Time `json:"last_enqueued_at,omitempty"`
+	PendingRerun   bool       `json:"pending_rerun"`
+	CreatedAt      time.Time  `json:"created_at,omitempty"`
+	UpdatedAt      time.Time  `json:"updated_at,omitempty"`
 }
 
 // Workspace represents an isolated working directory for an issue

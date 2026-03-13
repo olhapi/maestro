@@ -442,6 +442,95 @@ func TestCompletionCommand(t *testing.T) {
 	}
 }
 
+func TestTextModeRecurringIssueCommands(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := setupRepo(t)
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "project", "create", "Automation", "--repo", repoPath, "--quiet")
+	if code != 0 {
+		t.Fatalf("project create failed: %d stderr=%s", code, stderr)
+	}
+	projectID := strings.TrimSpace(stdout)
+	if projectID == "" {
+		t.Fatal("expected quiet project id")
+	}
+
+	code, stdout, stderr = runCLI(
+		t,
+		"--db", dbPath,
+		"issue", "create", "Scan GitHub ready-to-work",
+		"--project", projectID,
+		"--type", "recurring",
+		"--cron", "*/15 * * * *",
+		"--enabled=false",
+		"--quiet",
+	)
+	if code != 0 {
+		t.Fatalf("recurring issue create failed: %d stderr=%s", code, stderr)
+	}
+	identifier := strings.TrimSpace(stdout)
+	if identifier == "" {
+		t.Fatal("expected quiet issue identifier")
+	}
+
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	issue, err := store.GetIssueByIdentifier(identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier: %v", err)
+	}
+	if issue.IssueType != kanban.IssueTypeRecurring || issue.Cron != "*/15 * * * *" || issue.Enabled {
+		t.Fatalf("unexpected recurring issue after create: %+v", issue)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "list", "--type", "recurring", "--wide")
+	if code != 0 {
+		t.Fatalf("issue list recurring failed: %d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{"TYPE", identifier, "recurring"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected %q in recurring list output %q", want, stdout)
+		}
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "show", identifier)
+	if code != 0 {
+		t.Fatalf("issue show recurring failed: %d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{"Type:\trecurring", "Cron:\t*/15 * * * *", "Schedule:\tdisabled"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected %q in recurring show output %q", want, stdout)
+		}
+	}
+
+	code, stdout, stderr = runCLI(
+		t,
+		"--db", dbPath,
+		"issue", "update", identifier,
+		"--cron", "0 * * * *",
+		"--enabled=true",
+		"--quiet",
+	)
+	if code != 0 {
+		t.Fatalf("issue update recurring failed: %d stderr=%s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != identifier {
+		t.Fatalf("unexpected quiet issue update output %q", stdout)
+	}
+
+	updated, err := store.GetIssueByIdentifier(identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier updated: %v", err)
+	}
+	if updated.Cron != "0 * * * *" || !updated.Enabled {
+		t.Fatalf("unexpected recurring issue after update: %+v", updated)
+	}
+}
+
 func TestLiveCommandsUseAPI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -482,7 +571,13 @@ func TestLiveCommandsUseAPI(t *testing.T) {
 				"failure_class":  "approval_required",
 				"current_error":  "approval_required",
 			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/projects/proj-1/run":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "refresh_requested", "state": "running"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/projects/proj-1/stop":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "stopped", "state": "stopped"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/issues/ISS-1/retry":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "queued_now"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/issues/ISS-1/run-now":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "queued_now"})
 		default:
 			http.NotFound(w, r)
@@ -500,6 +595,9 @@ func TestLiveCommandsUseAPI(t *testing.T) {
 		{args: []string{"runtime-series", "--api-url", server.URL}, want: "12:00"},
 		{args: []string{"issue", "execution", "ISS-1", "--api-url", server.URL}, want: "approval_required"},
 		{args: []string{"issue", "retry", "ISS-1", "--api-url", server.URL}, want: "queued_now"},
+		{args: []string{"issue", "run-now", "ISS-1", "--api-url", server.URL}, want: "queued_now"},
+		{args: []string{"project", "start", "proj-1", "--api-url", server.URL}, want: "refresh_requested"},
+		{args: []string{"project", "stop", "proj-1", "--api-url", server.URL}, want: "stopped"},
 	}
 	for _, tc := range tests {
 		code, stdout, stderr := runCLI(t, tc.args...)

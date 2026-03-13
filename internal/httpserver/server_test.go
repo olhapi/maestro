@@ -50,6 +50,10 @@ func (testProvider) RetryIssueNow(identifier string) map[string]interface{} {
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
+func (testProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
+	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+}
+
 func TestNewHandlerRedirectsDashboardRoutes(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

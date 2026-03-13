@@ -15,6 +15,9 @@ type IssueCreateInput struct {
 	EpicID      string
 	Title       string
 	Description string
+	IssueType   kanban.IssueType
+	Cron        string
+	Enabled     *bool
 	Priority    int
 	Labels      []string
 	State       string

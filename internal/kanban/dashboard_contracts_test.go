@@ -123,6 +123,9 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	if len(projectSummaries) != 1 || projectSummaries[0].Counts.Ready != 1 || projectSummaries[0].Counts.Done != 1 {
 		t.Fatalf("unexpected project summaries: %#v", projectSummaries)
 	}
+	if projectSummaries[0].State != ProjectStateStopped {
+		t.Fatalf("expected stopped project state in summary, got %#v", projectSummaries[0].State)
+	}
 	if projectSummaries[0].TotalTokensSpent != 18 {
 		t.Fatalf("expected project token spend 18, got %#v", projectSummaries[0])
 	}

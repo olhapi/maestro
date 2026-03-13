@@ -127,6 +127,7 @@ func (s *Store) migrate() error {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			description TEXT,
+			state TEXT NOT NULL DEFAULT 'stopped',
 			repo_path TEXT NOT NULL DEFAULT '',
 			workflow_path TEXT NOT NULL DEFAULT '',
 			provider_kind TEXT NOT NULL DEFAULT 'kanban',
@@ -149,6 +150,7 @@ func (s *Store) migrate() error {
 			project_id TEXT,
 			epic_id TEXT,
 			identifier TEXT UNIQUE NOT NULL,
+			issue_type TEXT NOT NULL DEFAULT 'standard',
 			provider_kind TEXT NOT NULL DEFAULT 'kanban',
 			provider_issue_ref TEXT NOT NULL DEFAULT '',
 			provider_shadow INTEGER NOT NULL DEFAULT 0,
@@ -168,6 +170,17 @@ func (s *Store) migrate() error {
 			last_synced_at DATETIME,
 			FOREIGN KEY (project_id) REFERENCES projects(id),
 			FOREIGN KEY (epic_id) REFERENCES epics(id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS issue_recurrences (
+			issue_id TEXT PRIMARY KEY,
+			cron TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			next_run_at DATETIME,
+			last_enqueued_at DATETIME,
+			pending_rerun INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS issue_labels (
 			issue_id TEXT NOT NULL,
@@ -300,6 +313,9 @@ func (s *Store) migrate() error {
 	if err := s.ensureIssueColumns(); err != nil {
 		return err
 	}
+	if err := s.ensureIssueRecurrenceTables(); err != nil {
+		return err
+	}
 	if err := s.ensureIssueExecutionSessionColumns(); err != nil {
 		return err
 	}
@@ -314,6 +330,7 @@ func (s *Store) migrate() error {
 
 func (s *Store) ensureProjectColumns() error {
 	for _, stmt := range []string{
+		`ALTER TABLE projects ADD COLUMN state TEXT NOT NULL DEFAULT 'stopped'`,
 		`ALTER TABLE projects ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN workflow_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'kanban'`,
@@ -330,6 +347,7 @@ func (s *Store) ensureProjectColumns() error {
 func (s *Store) ensureIssueColumns() error {
 	for _, stmt := range []string{
 		`ALTER TABLE issues ADD COLUMN workflow_phase TEXT NOT NULL DEFAULT 'implementation'`,
+		`ALTER TABLE issues ADD COLUMN issue_type TEXT NOT NULL DEFAULT 'standard'`,
 		`ALTER TABLE issues ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'kanban'`,
 		`ALTER TABLE issues ADD COLUMN provider_issue_ref TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE issues ADD COLUMN provider_shadow INTEGER NOT NULL DEFAULT 0`,
@@ -343,7 +361,40 @@ func (s *Store) ensureIssueColumns() error {
 	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_provider_ref_unique ON issues(provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_issues_issue_type ON issues(issue_type)`); err != nil {
+		return err
+	}
+	if err := s.backfillIssueTypes(); err != nil {
+		return err
+	}
 	return s.backfillWorkflowPhases()
+}
+
+func (s *Store) ensureIssueRecurrenceTables() error {
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS issue_recurrences (
+			issue_id TEXT PRIMARY KEY,
+			cron TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			next_run_at DATETIME,
+			last_enqueued_at DATETIME,
+			pending_rerun INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
+		`ALTER TABLE issue_recurrences ADD COLUMN next_run_at DATETIME`,
+		`ALTER TABLE issue_recurrences ADD COLUMN last_enqueued_at DATETIME`,
+		`ALTER TABLE issue_recurrences ADD COLUMN pending_rerun INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_issue_recurrences_enabled_next_run ON issue_recurrences(enabled, next_run_at)`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) ensureIssueExecutionSessionColumns() error {
@@ -354,6 +405,27 @@ func (s *Store) ensureIssueExecutionSessionColumns() error {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *Store) backfillIssueTypes() error {
+	var applied string
+	err := s.db.QueryRow(`SELECT value FROM store_metadata WHERE key = 'issue_type_backfill_v1'`).Scan(&applied)
+	switch {
+	case err == nil && applied == "done":
+		return nil
+	case err != nil && err != sql.ErrNoRows:
+		return err
+	}
+	if _, err := s.db.Exec(`
+		UPDATE issues
+		SET issue_type = 'standard'
+		WHERE issue_type IS NULL OR issue_type = ''`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO store_metadata (key, value) VALUES ('issue_type_backfill_v1', 'done')`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -531,6 +603,7 @@ func hydrateProject(project *Project) {
 	if project == nil {
 		return
 	}
+	project.State = NormalizeProjectState(string(project.State))
 	project.RepoPath = strings.TrimSpace(project.RepoPath)
 	project.WorkflowPath = strings.TrimSpace(project.WorkflowPath)
 	project.ProviderKind = normalizeProviderKind(project.ProviderKind)
@@ -575,9 +648,9 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 	providerConfigJSON := encodeProviderConfig(providerConfig)
 
 	_, err = s.db.Exec(`
-		INSERT INTO projects (id, name, description, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
+		INSERT INTO projects (id, name, description, state, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, name, description, ProjectStateStopped, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -586,6 +659,7 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 		ID:                 id,
 		Name:               name,
 		Description:        description,
+		State:              ProjectStateStopped,
 		RepoPath:           repoPath,
 		WorkflowPath:       workflowPath,
 		ProviderKind:       providerKind,
@@ -605,9 +679,9 @@ func (s *Store) GetProject(id string) (*Project, error) {
 	p := &Project{}
 	var providerConfigJSON string
 	err := s.db.QueryRow(`
-		SELECT id, name, description, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at
+		SELECT id, name, description, state, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at
 		FROM projects WHERE id = ?`, id,
-	).Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.Description, &p.State, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +691,7 @@ func (s *Store) GetProject(id string) (*Project, error) {
 }
 
 func (s *Store) ListProjects() ([]Project, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at FROM projects ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, description, state, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +701,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 	for rows.Next() {
 		p := Project{}
 		var providerConfigJSON string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.State, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
@@ -660,6 +734,22 @@ func (s *Store) UpdateProjectWithProvider(id, name, description, repoPath, workf
 		return notFoundError("project", id)
 	}
 	return s.appendChange("project", id, "updated", map[string]interface{}{"name": name, "repo_path": repoPath, "provider_kind": providerKind, "provider_project_ref": providerProjectRef})
+}
+
+func (s *Store) UpdateProjectState(id string, state ProjectState) error {
+	state = NormalizeProjectState(string(state))
+	res, err := s.db.Exec(`
+		UPDATE projects SET state = ?, updated_at = ?
+		WHERE id = ?`,
+		state, time.Now().UTC(), id,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("project", id)
+	}
+	return s.appendChange("project", id, "state_changed", map[string]interface{}{"state": state})
 }
 
 func (s *Store) DeleteProject(id string) error {
@@ -952,7 +1042,15 @@ func (s *Store) resolveIssueUpdateAssociations(issue *Issue, updates map[string]
 }
 
 func (s *Store) CreateIssue(projectID, epicID, title, description string, priority int, labels []string) (*Issue, error) {
+	return s.CreateIssueWithOptions(projectID, epicID, title, description, priority, labels, IssueCreateOptions{})
+}
+
+func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description string, priority int, labels []string, opts IssueCreateOptions) (*Issue, error) {
 	projectID, epicID, err := s.resolveIssueAssociations(projectID, epicID)
+	if err != nil {
+		return nil, err
+	}
+	issueType, err := ParseIssueType(string(opts.IssueType))
 	if err != nil {
 		return nil, err
 	}
@@ -960,7 +1058,7 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	id := generateID("iss")
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -977,19 +1075,45 @@ func (s *Store) CreateIssue(projectID, epicID, title, description string, priori
 	}
 
 	_, err = tx.Exec(`
-		INSERT INTO issues (id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
+		INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if issueType == IssueTypeRecurring {
+		recurrence, err := buildIssueRecurrence(id, opts.Cron, defaultRecurringEnabled(opts.Enabled), nil, nil, now)
+		if err != nil {
+			return nil, err
+		}
+		if recurrence.Enabled {
+			nextRunAt, err := NextRecurringRun(recurrence.Cron, now, time.Local)
+			if err != nil {
+				return nil, err
+			}
+			recurrence.NextRunAt = &nextRunAt
+		}
+		if err := saveIssueRecurrenceTx(tx, recurrence); err != nil {
+			return nil, err
+		}
 	}
 
 	// Insert labels
 	for _, label := range labels {
 		_, _ = tx.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
 	}
-	if err := s.appendChangeTx(tx, "issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": identifier, "title": title}); err != nil {
+	payload := map[string]interface{}{
+		"project_id": projectID,
+		"identifier": identifier,
+		"title":      title,
+		"issue_type": issueType,
+	}
+	if issueType == IssueTypeRecurring {
+		payload["cron"] = normalizeCronSpec(opts.Cron)
+		payload["enabled"] = defaultRecurringEnabled(opts.Enabled)
+	}
+	if err := s.appendChangeTx(tx, "issue", id, "created", payload); err != nil {
 		return nil, err
 	}
 	if err := s.commitTx(tx, true); err != nil {
@@ -1008,14 +1132,15 @@ func (s *Store) GetIssue(id string) (*Issue, error) {
 	var providerShadow int
 
 	err := s.db.QueryRow(`
-		SELECT id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
+		SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
 		       branch_name, pr_number, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 		FROM issues WHERE id = ?`, id,
-	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.ProviderKind, &providerIssueRef, &providerShadow, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
+	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.IssueType, &i.ProviderKind, &providerIssueRef, &providerShadow, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
 		&branchName, &prNumber, &prURL, &i.CreatedAt, &i.UpdatedAt, &i.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt)
 	if err != nil {
 		return nil, err
 	}
+	i.IssueType = NormalizeIssueType(string(i.IssueType))
 	if !i.WorkflowPhase.IsValid() {
 		i.WorkflowPhase = DefaultWorkflowPhaseForState(i.State)
 	}
@@ -1049,6 +1174,11 @@ func (s *Store) GetIssue(id string) (*Issue, error) {
 	if lastSyncedAt.Valid {
 		i.LastSyncedAt = &lastSyncedAt.Time
 	}
+	recurrence, err := s.GetIssueRecurrence(i.ID)
+	if err != nil {
+		return nil, err
+	}
+	applyRecurrenceToIssue(i, recurrence)
 
 	// Load labels
 	rows, err := s.db.Query(`SELECT label FROM issue_labels WHERE issue_id = ?`, id)
@@ -1136,9 +1266,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
 		_, err = tx.Exec(`
-			INSERT INTO issues (id, project_id, epic_id, identifier, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at, last_synced_at)
-			VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, nil, incoming.Identifier, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, createdAt, updatedAt, lastSyncedAt,
+			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at, last_synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, createdAt, updatedAt, lastSyncedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -1147,6 +1277,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 			return nil, err
 		}
 		if err := replaceIssueBlockersRawTx(tx, id, incoming.BlockedBy); err != nil {
+			return nil, err
+		}
+		if err := deleteIssueRecurrenceTx(tx, id); err != nil {
 			return nil, err
 		}
 		if err := s.appendChangeTx(tx, "issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
@@ -1166,9 +1299,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		}
 		res, err := tx.Exec(`
 			UPDATE issues
-			SET project_id = ?, identifier = ?, title = ?, description = ?, state = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
+			SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
 			WHERE id = ?`,
-			projectID, incoming.Identifier, incoming.Title, incoming.Description, incoming.State, incoming.Priority, providerKind, providerIssueRef, incoming.UpdatedAt, lastSyncedAt, currentID,
+			projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, incoming.Priority, providerKind, providerIssueRef, incoming.UpdatedAt, lastSyncedAt, currentID,
 		)
 		if err != nil {
 			return nil, err
@@ -1180,6 +1313,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 			return nil, err
 		}
 		if err := replaceIssueBlockersRawTx(tx, currentID, incoming.BlockedBy); err != nil {
+			return nil, err
+		}
+		if err := deleteIssueRecurrenceTx(tx, currentID); err != nil {
 			return nil, err
 		}
 		if err := s.appendChangeTx(tx, "issue", currentID, "updated", map[string]interface{}{"identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
@@ -1278,6 +1414,10 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 	if providerKind, ok := filter["provider_kind"].(string); ok && providerKind != "" {
 		query += " AND provider_kind = ?"
 		args = append(args, normalizeProviderKind(providerKind))
+	}
+	if issueType, ok := filter["issue_type"].(string); ok && strings.TrimSpace(issueType) != "" {
+		query += " AND issue_type = ?"
+		args = append(args, NormalizeIssueType(issueType))
 	}
 	if epicID, ok := filter["epic_id"].(string); ok && epicID != "" {
 		query += " AND epic_id = ?"
@@ -1384,7 +1524,7 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 			return blockedInProgressError(unresolved)
 		}
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	var startedAt, completedAt interface{}
 	if !phase.IsValid() {
 		phase = DefaultWorkflowPhaseForState(state)
@@ -1397,7 +1537,17 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 		completedAt = now
 	}
 
-	res, err := s.db.Exec(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.Exec(`
 		UPDATE issues
 		SET state = ?, workflow_phase = ?, updated_at = ?, started_at = COALESCE(?, started_at), completed_at = COALESCE(?, completed_at)
 		WHERE id = ?`,
@@ -1409,9 +1559,18 @@ func (s *Store) UpdateIssueStateAndPhase(id string, state State, phase WorkflowP
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("issue", id)
 	}
-	if err := s.appendChange("issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase}); err != nil {
+	if state == StateCancelled {
+		if err := disableIssueRecurrenceTx(tx, id, now); err != nil {
+			return err
+		}
+	}
+	if err := s.appendChangeTx(tx, "issue", id, "state_changed", map[string]interface{}{"state": state, "workflow_phase": phase}); err != nil {
 		return err
 	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
 	return s.ActivateIssueAgentCommandsIfDispatchable(id)
 }
 
@@ -1474,7 +1633,46 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	if err := s.resolveIssueUpdateAssociations(current, updates); err != nil {
 		return err
 	}
-	now := time.Now()
+	currentType := NormalizeIssueType(string(current.IssueType))
+	nextType := currentType
+	issueTypeSpecified := false
+	if raw, ok := updates["issue_type"]; ok {
+		issueTypeSpecified = true
+		nextType, err = ParseIssueType(fmt.Sprint(raw))
+		if err != nil {
+			return err
+		}
+		updates["issue_type"] = nextType
+	}
+	cronValue := current.Cron
+	cronSpecified := false
+	if raw, ok := updates["cron"]; ok {
+		cronSpecified = true
+		cronValue = normalizeCronSpec(fmt.Sprint(raw))
+		updates["cron"] = cronValue
+	}
+	enabledValue := current.Enabled
+	enabledSpecified := false
+	if currentType != IssueTypeRecurring && nextType == IssueTypeRecurring {
+		enabledValue = defaultRecurringEnabled(nil)
+	}
+	if raw, ok := updates["enabled"]; ok {
+		parsed, ok := boolFromValue(raw)
+		if !ok {
+			return validationErrorf("enabled must be a boolean")
+		}
+		enabledSpecified = true
+		enabledValue = parsed
+		updates["enabled"] = enabledValue
+	}
+	if currentType != IssueTypeRecurring && nextType != IssueTypeRecurring && (cronSpecified || enabledSpecified) {
+		return validationErrorf("cron and enabled are only valid for recurring issues")
+	}
+	if nextType == IssueTypeRecurring && strings.TrimSpace(cronValue) == "" {
+		return validationErrorf("cron is required for recurring issues")
+	}
+
+	now := time.Now().UTC()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -1521,6 +1719,10 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 		query += ", pr_url = ?"
 		args = append(args, prURL)
 	}
+	if issueTypeSpecified {
+		query += ", issue_type = ?"
+		args = append(args, nextType)
+	}
 
 	query += " WHERE id = ?"
 	args = append(args, id)
@@ -1552,6 +1754,47 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 			return err
 		}
 		updates["blocked_by"] = persisted
+	}
+	recurrenceChanged := false
+	switch {
+	case nextType == IssueTypeRecurring && (currentType != IssueTypeRecurring || issueTypeSpecified || cronSpecified || enabledSpecified):
+		recurrenceChanged = true
+		var currentRecurrence *IssueRecurrence
+		if currentType == IssueTypeRecurring {
+			currentRecurrence = &IssueRecurrence{
+				IssueID:        current.ID,
+				Cron:           current.Cron,
+				Enabled:        current.Enabled,
+				NextRunAt:      current.NextRunAt,
+				LastEnqueuedAt: current.LastEnqueuedAt,
+				PendingRerun:   current.PendingRerun,
+				CreatedAt:      current.CreatedAt,
+				UpdatedAt:      current.UpdatedAt,
+			}
+		}
+		nextRunAt := current.NextRunAt
+		if currentType != IssueTypeRecurring || cronSpecified || nextRunAt == nil || (enabledSpecified && enabledValue && !nextRunAt.After(now)) {
+			computed, err := NextRecurringRun(cronValue, now, time.Local)
+			if err != nil {
+				return err
+			}
+			nextRunAt = &computed
+		}
+		recurrence, err := buildIssueRecurrence(id, cronValue, enabledValue, nextRunAt, currentRecurrence, now)
+		if err != nil {
+			return err
+		}
+		if err := saveIssueRecurrenceTx(tx, recurrence); err != nil {
+			return err
+		}
+	case currentType == IssueTypeRecurring && nextType != IssueTypeRecurring:
+		recurrenceChanged = true
+		if err := deleteIssueRecurrenceTx(tx, id); err != nil {
+			return err
+		}
+	}
+	if recurrenceChanged {
+		updates["issue_type"] = nextType
 	}
 	if err := s.appendChangeTx(tx, "issue", id, "updated", updates); err != nil {
 		return err
@@ -1613,6 +1856,9 @@ func (s *Store) DeleteIssue(id string) error {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_recurrences WHERE issue_id = ?`, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id); err != nil {
@@ -1876,6 +2122,10 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		where = append(where, "i.state = ?")
 		args = append(args, query.State)
 	}
+	if strings.TrimSpace(query.IssueType) != "" {
+		where = append(where, "i.issue_type = ?")
+		args = append(args, NormalizeIssueType(query.IssueType))
+	}
 	if query.Search != "" {
 		where = append(where, "(i.identifier LIKE ? OR i.title LIKE ? OR i.description LIKE ?)")
 		needle := "%" + query.Search + "%"
@@ -1908,7 +2158,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	}
 
 	rows, err := s.db.Query(`
-		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.priority,
+		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.priority,
 		       i.branch_name, i.pr_number, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
 		       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
@@ -1934,12 +2184,13 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		var providerShadow int
 		var projectDesc, epicDesc string
 		if err := rows.Scan(
-			&item.ID, &projectID, &epicID, &item.Identifier, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
+			&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
 			&branchName, &prNumber, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
 			return nil, 0, err
 		}
+		item.IssueType = NormalizeIssueType(string(item.IssueType))
 		if !item.WorkflowPhase.IsValid() {
 			item.WorkflowPhase = DefaultWorkflowPhaseForState(item.State)
 		}
@@ -1983,10 +2234,17 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	if err != nil {
 		return nil, 0, err
 	}
+	recurrenceMap, err := s.issueRecurrenceMap(issueIDs)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range out {
 		out[i].Labels = labelMap[out[i].ID]
 		out[i].BlockedBy = blockerMap[out[i].ID]
 		out[i].IsBlocked = unresolvedBlockerMap[out[i].ID]
+		if recurrence, ok := recurrenceMap[out[i].ID]; ok {
+			applyRecurrenceToIssue(&out[i].Issue, &recurrence)
+		}
 	}
 	return out, total, nil
 }
@@ -2585,6 +2843,15 @@ func (s *Store) ActivateIssueAgentCommandsIfDispatchable(issueID string) error {
 	}
 	if issue.State != StateReady && issue.State != StateInProgress && issue.State != StateInReview {
 		return nil
+	}
+	if strings.TrimSpace(issue.ProjectID) != "" {
+		project, err := s.GetProject(issue.ProjectID)
+		if err != nil {
+			return err
+		}
+		if project.State != ProjectStateRunning {
+			return nil
+		}
 	}
 	unresolved, err := s.unresolvedBlockersForIssue(issueID)
 	if err != nil {

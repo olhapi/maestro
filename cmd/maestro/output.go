@@ -32,10 +32,18 @@ func printIssueTable(out io.Writer, issues []kanban.IssueSummary, mode outputMod
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	if mode.wide {
-		fmt.Fprintln(tw, "IDENTIFIER\tSTATE\tPRIORITY\tPROJECT\tEPIC\tBLOCKED\tTITLE")
+		fmt.Fprintln(tw, "IDENTIFIER\tTYPE\tSTATE\tPRIORITY\tPROJECT\tEPIC\tBLOCKED\tTITLE")
 		for _, issue := range issues {
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%t\t%s\n",
-				issue.Identifier, issue.State, issue.Priority, issue.ProjectName, issue.EpicName, issue.IsBlocked, issue.Title)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%t\t%s\n",
+				issue.Identifier,
+				kanban.NormalizeIssueType(string(issue.IssueType)),
+				issue.State,
+				issue.Priority,
+				issue.ProjectName,
+				issue.EpicName,
+				issue.IsBlocked,
+				issue.Title,
+			)
 		}
 	} else {
 		fmt.Fprintln(tw, "IDENTIFIER\tSTATE\tPRIORITY\tTITLE")
@@ -55,16 +63,16 @@ func printProjectTable(out io.Writer, projects []kanban.ProjectSummary, mode out
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	if mode.wide {
-		fmt.Fprintln(tw, "ID\tNAME\tREADY\tREPO\tWORKFLOW\tTOTAL\tACTIVE\tDESCRIPTION")
+		fmt.Fprintln(tw, "ID\tNAME\tSTATE\tREADY\tREPO\tWORKFLOW\tTOTAL\tACTIVE\tDESCRIPTION")
 		for _, project := range projects {
-			fmt.Fprintf(tw, "%s\t%s\t%t\t%s\t%s\t%d\t%d\t%s\n",
-				project.ID, project.Name, project.OrchestrationReady, project.RepoPath, project.WorkflowPath, project.Counts.Total(), project.Counts.Active(), project.Description)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\t%d\t%d\t%s\n",
+				project.ID, project.Name, project.State, project.OrchestrationReady, project.RepoPath, project.WorkflowPath, project.Counts.Total(), project.Counts.Active(), project.Description)
 		}
 	} else {
-		fmt.Fprintln(tw, "ID\tNAME\tTOTAL\tACTIVE\tREPO")
+		fmt.Fprintln(tw, "ID\tNAME\tSTATE\tTOTAL\tACTIVE\tREPO")
 		for _, project := range projects {
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n",
-				project.ID, project.Name, project.Counts.Total(), project.Counts.Active(), project.RepoPath)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\n",
+				project.ID, project.Name, project.State, project.Counts.Total(), project.Counts.Active(), project.RepoPath)
 		}
 	}
 	_ = tw.Flush()
@@ -95,9 +103,11 @@ func printEpicTable(out io.Writer, epics []kanban.EpicSummary, mode outputMode) 
 }
 
 func printIssueDetail(out io.Writer, issue *kanban.IssueDetail) {
+	issueType := kanban.NormalizeIssueType(string(issue.IssueType))
 	fmt.Fprintf(out, "Identifier:\t%s\n", issue.Identifier)
 	fmt.Fprintf(out, "ID:\t%s\n", issue.ID)
 	fmt.Fprintf(out, "Title:\t%s\n", issue.Title)
+	fmt.Fprintf(out, "Type:\t%s\n", issueType)
 	fmt.Fprintf(out, "State:\t%s\n", issue.State)
 	fmt.Fprintf(out, "Phase:\t%s\n", issue.WorkflowPhase)
 	fmt.Fprintf(out, "Priority:\t%d\n", issue.Priority)
@@ -121,6 +131,21 @@ func printIssueDetail(out io.Writer, issue *kanban.IssueDetail) {
 	}
 	if len(issue.BlockedBy) > 0 {
 		fmt.Fprintf(out, "Blocked By:\t%s\n", strings.Join(issue.BlockedBy, ", "))
+	}
+	if issueType == kanban.IssueTypeRecurring {
+		fmt.Fprintf(out, "Cron:\t%s\n", issue.Cron)
+		if issue.Enabled {
+			fmt.Fprintf(out, "Schedule:\tenabled\n")
+		} else {
+			fmt.Fprintf(out, "Schedule:\tdisabled\n")
+		}
+		if issue.NextRunAt != nil {
+			fmt.Fprintf(out, "Next Run:\t%s\n", issue.NextRunAt.UTC().Format(time.RFC3339))
+		}
+		if issue.LastEnqueuedAt != nil {
+			fmt.Fprintf(out, "Last Enqueued:\t%s\n", issue.LastEnqueuedAt.UTC().Format(time.RFC3339))
+		}
+		fmt.Fprintf(out, "Pending Rerun:\t%t\n", issue.PendingRerun)
 	}
 }
 

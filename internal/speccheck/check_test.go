@@ -31,6 +31,11 @@ tracker:
   kind: kanban
 ---
 {{ issue.identifier }}
+{{ issue.title }}
+{{ issue.description }}
+{{ issue.state }}
+{{ phase }}
+{{ attempt }}
 `
 	if err := os.WriteFile(filepath.Join(tmpDir, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatal(err)

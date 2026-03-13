@@ -221,6 +221,35 @@ func (o *Orchestrator) refreshIssue(ctx context.Context, issueID string) (*kanba
 	return o.store.GetIssue(issueID)
 }
 
+func (o *Orchestrator) recurrenceScopeRepoPath() string {
+	if o.isSharedMode() {
+		return o.scopedRepoPath
+	}
+	if o.workflows == nil {
+		return ""
+	}
+	return filepath.Dir(o.workflows.Path())
+}
+
+func (o *Orchestrator) nextWakeDelay(base time.Duration) time.Duration {
+	nextDue, err := o.store.NextRecurringDueAt(o.recurrenceScopeRepoPath())
+	if err != nil {
+		slog.Warn("Failed to compute next recurring due time", "error", err)
+		return base
+	}
+	if nextDue == nil {
+		return base
+	}
+	dueIn := time.Until(nextDue.UTC())
+	if dueIn < 0 {
+		dueIn = 0
+	}
+	if dueIn < base {
+		return dueIn
+	}
+	return base
+}
+
 func (o *Orchestrator) runtimeForProject(project *kanban.Project) (*projectRuntime, error) {
 	if !o.isSharedMode() {
 		return &projectRuntime{
@@ -380,6 +409,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				wait = 30 * time.Second
 			}
 		}
+		wait = o.nextWakeDelay(wait)
 
 		timer := time.NewTimer(wait)
 		select {
@@ -406,6 +436,8 @@ func (o *Orchestrator) tick(ctx context.Context) error {
 
 	o.reconcile(ctx)
 	o.processRetries(ctx)
+	o.processPendingRecurringReruns(ctx)
+	o.processDueRecurringIssues(ctx)
 	return o.dispatch(ctx)
 }
 
@@ -958,6 +990,184 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 	}
 }
 
+func recurringScheduleEventKind(issue *kanban.Issue, now time.Time) string {
+	if issue == nil || issue.NextRunAt == nil {
+		return "recurring_enqueued"
+	}
+	if now.Sub(issue.NextRunAt.UTC()) >= time.Minute {
+		return "recurring_catch_up_enqueued"
+	}
+	return "recurring_enqueued"
+}
+
+func (o *Orchestrator) recurringIssueOccupied(workflow *config.Workflow, issue *kanban.Issue) bool {
+	if issue == nil {
+		return false
+	}
+	o.mu.RLock()
+	_, running := o.running[issue.ID]
+	_, retrying := o.retries[issue.ID]
+	_, paused := o.paused[issue.ID]
+	o.mu.RUnlock()
+	if running || retrying || paused {
+		return true
+	}
+	switch issue.State {
+	case kanban.StateReady, kanban.StateInProgress, kanban.StateInReview:
+		return true
+	}
+	return o.executionPhase(workflow, issue) == kanban.WorkflowPhaseDone
+}
+
+func (o *Orchestrator) appendRecurringRuntimeEvent(kind string, issue *kanban.Issue, fields map[string]interface{}) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	payload := map[string]interface{}{}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	if issue != nil {
+		payload["issue_id"] = issue.ID
+		payload["identifier"] = issue.Identifier
+	}
+	o.appendEventLocked(kind, payload)
+}
+
+func (o *Orchestrator) recordRecurringPendingRerun(issue *kanban.Issue, reason string) bool {
+	if issue == nil || !issue.IsRecurring() {
+		return false
+	}
+	if issue.PendingRerun {
+		return false
+	}
+	if err := o.store.MarkRecurringPendingRerun(issue.ID, true); err != nil {
+		slog.Warn("Failed to record recurring pending rerun",
+			issueLogAttrs(issue, 0, "reason", reason, "error", err)...,
+		)
+		return false
+	}
+	issue.PendingRerun = true
+	o.appendRecurringRuntimeEvent("recurring_pending_rerun_recorded", issue, map[string]interface{}{
+		"reason": reason,
+	})
+	return true
+}
+
+func (o *Orchestrator) enqueueRecurringIssue(issue *kanban.Issue, eventKind string, keepCurrentNextRun bool) bool {
+	if issue == nil || !issue.IsRecurring() {
+		return false
+	}
+	enqueuedAt := time.Now().UTC()
+	nextRunAt := issue.NextRunAt
+	if !keepCurrentNextRun || nextRunAt == nil || !nextRunAt.After(enqueuedAt) {
+		if issue.Enabled {
+			computed, err := kanban.NextRecurringRun(issue.Cron, enqueuedAt, time.Local)
+			if err != nil {
+				slog.Warn("Failed to compute next recurring run",
+					issueLogAttrs(issue, 0, "error", err)...,
+				)
+				return false
+			}
+			nextRunAt = &computed
+		} else {
+			nextRunAt = nil
+		}
+	}
+	if err := o.store.RearmRecurringIssue(issue.ID, enqueuedAt, nextRunAt); err != nil {
+		slog.Warn("Failed to enqueue recurring issue",
+			issueLogAttrs(issue, 0, "error", err)...,
+		)
+		return false
+	}
+	issue.State = kanban.StateReady
+	issue.WorkflowPhase = kanban.WorkflowPhaseImplementation
+	issue.LastEnqueuedAt = &enqueuedAt
+	issue.NextRunAt = nextRunAt
+	issue.PendingRerun = false
+	o.appendRecurringRuntimeEvent(eventKind, issue, map[string]interface{}{
+		"cron":             issue.Cron,
+		"enabled":          issue.Enabled,
+		"last_enqueued_at": enqueuedAt.Format(time.RFC3339),
+		"next_run_at": func() interface{} {
+			if nextRunAt == nil {
+				return nil
+			}
+			return nextRunAt.UTC().Format(time.RFC3339)
+		}(),
+	})
+	return true
+}
+
+func (o *Orchestrator) processPendingRecurringRerun(issue *kanban.Issue) bool {
+	if issue == nil || !issue.IsRecurring() || !issue.PendingRerun {
+		return false
+	}
+	if !issue.Enabled {
+		if err := o.store.MarkRecurringPendingRerun(issue.ID, false); err != nil {
+			slog.Warn("Failed to clear disabled recurring pending rerun",
+				issueLogAttrs(issue, 0, "error", err)...,
+			)
+			return false
+		}
+		issue.PendingRerun = false
+		o.appendRecurringRuntimeEvent("recurring_pending_rerun_cleared", issue, map[string]interface{}{
+			"reason": "disabled",
+		})
+		return false
+	}
+	_, workflow, err := o.runtimeForIssue(issue)
+	if err != nil {
+		slog.Warn("Skipping recurring pending rerun because runtime resolution failed",
+			issueLogAttrs(issue, 0, "error", err)...,
+		)
+		return false
+	}
+	if o.recurringIssueOccupied(workflow, issue) {
+		return false
+	}
+	return o.enqueueRecurringIssue(issue, "recurring_pending_rerun_enqueued", true)
+}
+
+func (o *Orchestrator) processPendingRecurringReruns(ctx context.Context) {
+	_ = ctx
+	issues, err := o.store.ListPendingRecurringIssues(o.recurrenceScopeRepoPath(), 200)
+	if err != nil {
+		slog.Warn("Skipping recurring pending reruns because issue listing failed", "error", err)
+		return
+	}
+	for i := range issues {
+		o.processPendingRecurringRerun(&issues[i])
+	}
+}
+
+func (o *Orchestrator) processDueRecurringIssues(ctx context.Context) {
+	_ = ctx
+	now := time.Now().UTC()
+	issues, err := o.store.ListDueRecurringIssues(now, o.recurrenceScopeRepoPath(), 200)
+	if err != nil {
+		slog.Warn("Skipping due recurring issues because listing failed", "error", err)
+		return
+	}
+	for i := range issues {
+		issue := &issues[i]
+		if !issue.IsRecurring() || !issue.Enabled {
+			continue
+		}
+		_, workflow, err := o.runtimeForIssue(issue)
+		if err != nil {
+			slog.Warn("Skipping due recurring issue because runtime resolution failed",
+				issueLogAttrs(issue, 0, "error", err)...,
+			)
+			continue
+		}
+		if o.recurringIssueOccupied(workflow, issue) {
+			o.recordRecurringPendingRerun(issue, "schedule_due")
+			continue
+		}
+		o.enqueueRecurringIssue(issue, recurringScheduleEventKind(issue, now), false)
+	}
+}
+
 func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, runner runnerExecutor, issue *kanban.Issue, attempt int) {
 	phase := o.executionPhase(workflow, issue)
 	runIssue := *issue
@@ -1067,6 +1277,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 			issueLogAttrs(current, attempt, extra...)...,
 		)
 	}
+	o.processPendingRecurringRerun(current)
 	o.flushIssueTokenSpend(issue.ID)
 
 	o.mu.Lock()
@@ -1488,6 +1699,9 @@ func (o *Orchestrator) shouldCleanupTerminalIssue(workflow *config.Workflow, iss
 
 func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.Issue) (bool, string, kanban.WorkflowPhase) {
 	phase := o.executionPhase(workflow, issue)
+	if allowed, reason := o.projectAllowsDispatch(issue); !allowed {
+		return false, reason, phase
+	}
 	o.mu.RLock()
 	_, paused := o.paused[issue.ID]
 	o.mu.RUnlock()
@@ -1517,6 +1731,20 @@ func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.I
 		}
 		return true, "", phase
 	}
+}
+
+func (o *Orchestrator) projectAllowsDispatch(issue *kanban.Issue) (bool, string) {
+	if issue == nil || strings.TrimSpace(issue.ProjectID) == "" {
+		return true, ""
+	}
+	project, err := o.store.GetProject(issue.ProjectID)
+	if err != nil {
+		return false, "project_missing"
+	}
+	if project.State != kanban.ProjectStateRunning {
+		return false, "project_stopped"
+	}
+	return true, ""
 }
 
 func failureRetryDelay(attempt, maxBackoffMs int) time.Duration {
@@ -2348,16 +2576,27 @@ func (o *Orchestrator) RequestProjectRefresh(projectID string) map[string]interf
 			"project_id": projectID,
 		}
 	}
+	if err := o.store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		return map[string]interface{}{
+			"status":       "error",
+			"project_id":   project.ID,
+			"project_name": project.Name,
+			"error":        err.Error(),
+		}
+	}
+	project.State = kanban.ProjectStateRunning
 	o.mu.Lock()
 	o.appendEventLocked("project_refresh_requested", map[string]interface{}{
 		"project_id":   project.ID,
 		"project_name": project.Name,
+		"state":        string(project.State),
 	})
 	o.mu.Unlock()
 	return map[string]interface{}{
 		"status":       "accepted",
 		"project_id":   project.ID,
 		"project_name": project.Name,
+		"state":        string(project.State),
 		"requested_at": time.Now().UTC().Format(time.RFC3339),
 	}
 }
@@ -2370,6 +2609,15 @@ func (o *Orchestrator) StopProjectRuns(projectID string) map[string]interface{} 
 			"project_id": projectID,
 		}
 	}
+	if err := o.store.UpdateProjectState(project.ID, kanban.ProjectStateStopped); err != nil {
+		return map[string]interface{}{
+			"status":       "error",
+			"project_id":   project.ID,
+			"project_name": project.Name,
+			"error":        err.Error(),
+		}
+	}
+	project.State = kanban.ProjectStateStopped
 
 	stopped := 0
 	identifiers := make([]string, 0)
@@ -2391,6 +2639,7 @@ func (o *Orchestrator) StopProjectRuns(projectID string) map[string]interface{} 
 	o.appendEventLocked("project_stop_requested", map[string]interface{}{
 		"project_id":   projectID,
 		"project_name": project.Name,
+		"state":        string(project.State),
 		"stopped_runs": stopped,
 		"identifiers":  identifiers,
 	})
@@ -2400,6 +2649,7 @@ func (o *Orchestrator) StopProjectRuns(projectID string) map[string]interface{} 
 		"status":       "stopped",
 		"project_id":   projectID,
 		"project_name": project.Name,
+		"state":        string(project.State),
 		"stopped_runs": stopped,
 		"identifiers":  identifiers,
 		"requested_at": time.Now().UTC().Format(time.RFC3339),
@@ -2496,6 +2746,64 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 	return map[string]interface{}{
 		"status": "refresh_requested",
 		"issue":  identifier,
+	}
+}
+
+func (o *Orchestrator) RunRecurringIssueNow(identifier string) map[string]interface{} {
+	issue, err := o.service.GetIssueByIdentifier(context.Background(), identifier)
+	if err != nil {
+		return map[string]interface{}{
+			"status": "not_found",
+			"issue":  identifier,
+		}
+	}
+	if !issue.IsRecurring() {
+		return map[string]interface{}{
+			"status": "not_recurring",
+			"issue":  identifier,
+		}
+	}
+
+	_, workflow, err := o.runtimeForIssue(issue)
+	if err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"issue":  identifier,
+			"error":  err.Error(),
+		}
+	}
+
+	if o.recurringIssueOccupied(workflow, issue) {
+		if issue.PendingRerun {
+			return map[string]interface{}{
+				"status": "pending_rerun_already_set",
+				"issue":  identifier,
+			}
+		}
+		if !o.recordRecurringPendingRerun(issue, "manual_run_now") {
+			return map[string]interface{}{
+				"status": "error",
+				"issue":  identifier,
+				"error":  "failed to record pending rerun",
+			}
+		}
+		return map[string]interface{}{
+			"status": "pending_rerun_recorded",
+			"issue":  identifier,
+		}
+	}
+
+	if !o.enqueueRecurringIssue(issue, "recurring_manual_run_now_enqueued", true) {
+		return map[string]interface{}{
+			"status": "error",
+			"issue":  identifier,
+			"error":  "failed to enqueue recurring issue",
+		}
+	}
+	return map[string]interface{}{
+		"status":      "queued_now",
+		"issue":       identifier,
+		"enqueued_at": time.Now().UTC().Format(time.RFC3339),
 	}
 }
 

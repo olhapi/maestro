@@ -158,7 +158,7 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("project show failed: %d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "Project:\tPlatform") || !strings.Contains(stdout, issue.Identifier) {
+	if !strings.Contains(stdout, "Project:\tPlatform") || !strings.Contains(stdout, "State:\tstopped") || !strings.Contains(stdout, issue.Identifier) {
 		t.Fatalf("unexpected project show output %q", stdout)
 	}
 
@@ -225,7 +225,7 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 		t.Fatalf("unexpected issue move quiet output %q", stdout)
 	}
 
-	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", issue.Identifier, "--clear-labels", "--clear-priority", "--clear-project", "--clear-epic", "--clear-branch", "--clear-pr")
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", issue.Identifier, "--clear-labels", "--clear-priority", "--clear-epic", "--clear-branch", "--clear-pr")
 	if code != 0 {
 		t.Fatalf("issue clear update failed: %d stderr=%s", code, stderr)
 	}
@@ -236,8 +236,16 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueDetailByIdentifier failed: %v", err)
 	}
-	if detail.ProjectID != "" || detail.EpicID != "" || detail.Priority != 0 || len(detail.Labels) != 0 || detail.BranchName != "" || detail.PRNumber != 0 || detail.PRURL != "" {
+	if detail.ProjectID != issue.ProjectID || detail.EpicID != "" || detail.Priority != 0 || len(detail.Labels) != 0 || detail.BranchName != "" || detail.PRNumber != 0 || detail.PRURL != "" {
 		t.Fatalf("expected cleared issue fields, got %+v", detail)
+	}
+
+	code, _, stderr = runCLI(t, "--db", dbPath, "issue", "update", issue.Identifier, "--clear-project")
+	if code == 0 {
+		t.Fatal("expected clear-project to be rejected")
+	}
+	if !strings.Contains(stderr, "project_id is required") {
+		t.Fatalf("unexpected clear-project error %q", stderr)
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "delete", issue.Identifier)
@@ -376,10 +384,10 @@ func TestStatusSpecCheckAndBlockAliasTextModes(t *testing.T) {
 	}
 
 	code, stdout, stderr = runCLI(t, "spec-check", "--repo", repoRootFromCaller(t))
-	if code != exitCodeRuntime {
-		t.Fatalf("expected failing spec-check exit code, got %d stderr=%s", code, stderr)
+	if code != 0 {
+		t.Fatalf("expected passing spec-check exit code, got %d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "Spec Check") || !strings.Contains(stdout, "workflow_prompt_render: invalid") {
+	if !strings.Contains(stdout, "Spec Check") || !strings.Contains(stdout, "workflow_prompt_render: ok") {
 		t.Fatalf("unexpected spec-check output %q", stdout)
 	}
 }

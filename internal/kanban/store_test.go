@@ -29,6 +29,24 @@ func setupTestStore(t *testing.T) *Store {
 	return store
 }
 
+func issueListContainsIdentifier(issues []Issue, identifier string) bool {
+	for _, issue := range issues {
+		if issue.Identifier == identifier {
+			return true
+		}
+	}
+	return false
+}
+
+func issueSummaryListContainsIdentifier(issues []IssueSummary, identifier string) bool {
+	for _, issue := range issues {
+		if issue.Identifier == identifier {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDefaultDBPathUsesHomeDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -310,6 +328,9 @@ func TestCreateProject(t *testing.T) {
 	if project.ID == "" {
 		t.Error("Expected non-empty ID")
 	}
+	if project.State != ProjectStateStopped {
+		t.Fatalf("expected default project state stopped, got %q", project.State)
+	}
 }
 
 func TestGetProject(t *testing.T) {
@@ -328,6 +349,9 @@ func TestGetProject(t *testing.T) {
 	if project.Name != "Test" {
 		t.Errorf("Expected name 'Test', got %s", project.Name)
 	}
+	if project.State != ProjectStateStopped {
+		t.Fatalf("expected persisted project state stopped, got %q", project.State)
+	}
 }
 
 func TestListProjects(t *testing.T) {
@@ -343,6 +367,11 @@ func TestListProjects(t *testing.T) {
 
 	if len(projects) != 2 {
 		t.Errorf("Expected 2 projects, got %d", len(projects))
+	}
+	for _, project := range projects {
+		if project.State != ProjectStateStopped {
+			t.Fatalf("expected listed project state stopped, got %q", project.State)
+		}
 	}
 }
 
@@ -461,6 +490,131 @@ func TestCreateIssue(t *testing.T) {
 	}
 }
 
+func TestNewStoreBackfillsLegacyIssueTypesAndCreatesRecurrenceTable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	now := time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC)
+	for _, stmt := range []string{
+		`CREATE TABLE store_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			project_id TEXT,
+			epic_id TEXT,
+			identifier TEXT UNIQUE NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT,
+			state TEXT NOT NULL DEFAULT 'backlog',
+			workflow_phase TEXT,
+			priority INTEGER DEFAULT 0,
+			branch_name TEXT,
+			pr_number INTEGER,
+			pr_url TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			started_at DATETIME,
+			completed_at DATETIME
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("Exec legacy schema: %v", err)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO issues (id, identifier, title, description, state, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"iss-legacy", "ISS-1", "Legacy issue", "migrated", StateBacklog, 2, now, now,
+	); err != nil {
+		t.Fatalf("insert legacy issue: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.GetIssue("iss-legacy")
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if issue.IssueType != IssueTypeStandard {
+		t.Fatalf("expected standard issue type after backfill, got %s", issue.IssueType)
+	}
+
+	var backfill string
+	if err := store.db.QueryRow(`SELECT value FROM store_metadata WHERE key = 'issue_type_backfill_v1'`).Scan(&backfill); err != nil {
+		t.Fatalf("query issue_type_backfill_v1: %v", err)
+	}
+	if backfill != "done" {
+		t.Fatalf("expected issue_type_backfill_v1=done, got %q", backfill)
+	}
+
+	var recurrenceTableCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'issue_recurrences'`).Scan(&recurrenceTableCount); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if recurrenceTableCount != 1 {
+		t.Fatalf("expected issue_recurrences table to exist, got count=%d", recurrenceTableCount)
+	}
+}
+
+func TestCreateRecurringIssueWithOptions(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssueWithOptions("", "", "Check GitHub ready-to-work", "Create Maestro issues from labeled GitHub issues.", 1, []string{"automation"}, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "  */30   * * * *  ",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+
+	if issue.IssueType != IssueTypeRecurring {
+		t.Fatalf("expected recurring type, got %s", issue.IssueType)
+	}
+	if issue.Cron != "*/30 * * * *" {
+		t.Fatalf("expected normalized cron, got %q", issue.Cron)
+	}
+	if !issue.Enabled {
+		t.Fatal("expected recurring issue to default enabled")
+	}
+	if issue.NextRunAt == nil || !issue.NextRunAt.After(issue.CreatedAt) {
+		t.Fatalf("expected future next_run_at, got %+v", issue.NextRunAt)
+	}
+
+	recurrence, err := store.GetIssueRecurrence(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueRecurrence: %v", err)
+	}
+	if recurrence == nil {
+		t.Fatal("expected recurrence row")
+	}
+	if recurrence.Cron != "*/30 * * * *" || !recurrence.Enabled {
+		t.Fatalf("unexpected recurrence payload: %+v", recurrence)
+	}
+}
+
+func TestCreateIssueWithOptionsRejectsInvalidIssueType(t *testing.T) {
+	store := setupTestStore(t)
+
+	_, err := store.CreateIssueWithOptions("", "", "Invalid", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueType("recurirng"),
+		Cron:      "*/15 * * * *",
+	})
+	if err == nil {
+		t.Fatal("expected invalid issue type error")
+	}
+	if !IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
 func TestGetIssueByIdentifier(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -531,6 +685,41 @@ func TestListIssues(t *testing.T) {
 	}
 	if len(projectIssues) != 2 {
 		t.Errorf("Expected 2 project issues, got %d", len(projectIssues))
+	}
+}
+
+func TestListIssuesAndSummariesSupportIssueTypeFilter(t *testing.T) {
+	store := setupTestStore(t)
+
+	recurring, err := store.CreateIssueWithOptions("", "", "Recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	standard, err := store.CreateIssue("", "", "Standard", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue standard: %v", err)
+	}
+
+	issues, err := store.ListIssues(map[string]interface{}{"issue_type": "recurring"})
+	if err != nil {
+		t.Fatalf("ListIssues recurring: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Identifier != recurring.Identifier {
+		t.Fatalf("expected only recurring issue, got %#v", issues)
+	}
+
+	summaries, total, err := store.ListIssueSummaries(IssueQuery{IssueType: "recurring", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries recurring: %v", err)
+	}
+	if total != 1 || len(summaries) != 1 || summaries[0].Identifier != recurring.Identifier {
+		t.Fatalf("expected recurring summary only, got total=%d items=%#v", total, summaries)
+	}
+	if !issueSummaryListContainsIdentifier(summaries, recurring.Identifier) || issueSummaryListContainsIdentifier(summaries, standard.Identifier) {
+		t.Fatalf("unexpected recurring summary filter result: %#v", summaries)
 	}
 }
 
@@ -697,6 +886,249 @@ func TestUpdateIssue(t *testing.T) {
 	}
 	if len(updated.Labels) != 1 || updated.Labels[0] != "new-label" {
 		t.Errorf("Expected labels ['new-label'], got %v", updated.Labels)
+	}
+}
+
+func TestUpdateIssueRecurringFields(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Original Title", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"issue_type": IssueTypeRecurring,
+		"cron":       "*/15 * * * *",
+		"enabled":    false,
+	}); err != nil {
+		t.Fatalf("UpdateIssue recurring: %v", err)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue recurring: %v", err)
+	}
+	if updated.IssueType != IssueTypeRecurring {
+		t.Fatalf("expected recurring issue type, got %s", updated.IssueType)
+	}
+	if updated.Cron != "*/15 * * * *" {
+		t.Fatalf("expected cron to persist, got %q", updated.Cron)
+	}
+	if updated.Enabled {
+		t.Fatal("expected recurring issue to be disabled")
+	}
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"issue_type": IssueTypeStandard}); err != nil {
+		t.Fatalf("UpdateIssue standard: %v", err)
+	}
+
+	reverted, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue reverted: %v", err)
+	}
+	if reverted.IssueType != IssueTypeStandard {
+		t.Fatalf("expected standard issue type, got %s", reverted.IssueType)
+	}
+	if reverted.Cron != "" || reverted.NextRunAt != nil || reverted.LastEnqueuedAt != nil || reverted.PendingRerun {
+		t.Fatalf("expected recurrence fields cleared, got %+v", reverted)
+	}
+	recurrence, err := store.GetIssueRecurrence(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueRecurrence reverted: %v", err)
+	}
+	if recurrence != nil {
+		t.Fatalf("expected recurrence row to be removed, got %+v", recurrence)
+	}
+}
+
+func TestUpdateIssueRecurringConversionDefaultsEnabled(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Recurring conversion", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"issue_type": "recurring",
+		"cron":       "*/15 * * * *",
+	}); err != nil {
+		t.Fatalf("UpdateIssue recurring conversion: %v", err)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.IssueType != IssueTypeRecurring {
+		t.Fatalf("expected recurring type, got %s", updated.IssueType)
+	}
+	if !updated.Enabled {
+		t.Fatal("expected converted recurring issue to default enabled")
+	}
+	if updated.NextRunAt == nil {
+		t.Fatal("expected converted recurring issue to compute next_run_at")
+	}
+}
+
+func TestUpdateIssueRejectsInvalidIssueTypeWithoutDroppingRecurrence(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssueWithOptions("", "", "Recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/15 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+
+	err = store.UpdateIssue(issue.ID, map[string]interface{}{"issue_type": "recurirng"})
+	if err == nil {
+		t.Fatal("expected invalid issue type error")
+	}
+	if !IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.IssueType != IssueTypeRecurring || updated.Cron != "*/15 * * * *" {
+		t.Fatalf("expected recurring issue to remain unchanged, got %+v", updated)
+	}
+}
+
+func TestUpdateIssueStateCancelledDisablesRecurring(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssueWithOptions("", "", "Recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+
+	if err := store.UpdateIssueState(issue.ID, StateCancelled); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	recurrence, err := store.GetIssueRecurrence(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueRecurrence: %v", err)
+	}
+	if recurrence == nil {
+		t.Fatal("expected recurrence row to remain")
+	}
+	if recurrence.Enabled {
+		t.Fatalf("expected cancelled recurring issue to be disabled, got %+v", recurrence)
+	}
+}
+
+func TestRecurringStoreQueriesAndRearmLifecycle(t *testing.T) {
+	store := setupTestStore(t)
+
+	dueIssue, err := store.CreateIssueWithOptions("", "", "Due recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/10 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions due: %v", err)
+	}
+	pendingIssue, err := store.CreateIssueWithOptions("", "", "Pending recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/20 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions pending: %v", err)
+	}
+	cancelledIssue, err := store.CreateIssueWithOptions("", "", "Cancelled recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/30 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions cancelled: %v", err)
+	}
+	standardIssue, err := store.CreateIssue("", "", "Standard", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue standard: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-2 * time.Minute)
+	future := now.Add(45 * time.Minute)
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ? WHERE issue_id = ?`, past, dueIssue.ID); err != nil {
+		t.Fatalf("update due recurrence: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, pending_rerun = 1 WHERE issue_id = ?`, future, pendingIssue.ID); err != nil {
+		t.Fatalf("update pending recurrence: %v", err)
+	}
+	if err := store.UpdateIssueState(cancelledIssue.ID, StateCancelled); err != nil {
+		t.Fatalf("UpdateIssueState cancelled recurring: %v", err)
+	}
+
+	due, err := store.ListDueRecurringIssues(now, "", 20)
+	if err != nil {
+		t.Fatalf("ListDueRecurringIssues: %v", err)
+	}
+	if len(due) != 1 || due[0].Identifier != dueIssue.Identifier {
+		t.Fatalf("expected only due recurring issue, got %#v", due)
+	}
+	if issueListContainsIdentifier(due, standardIssue.Identifier) {
+		t.Fatalf("did not expect standard issue in due recurring list: %#v", due)
+	}
+
+	pending, err := store.ListPendingRecurringIssues("", 20)
+	if err != nil {
+		t.Fatalf("ListPendingRecurringIssues: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Identifier != pendingIssue.Identifier {
+		t.Fatalf("expected only pending recurring issue, got %#v", pending)
+	}
+
+	nextDue, err := store.NextRecurringDueAt("")
+	if err != nil {
+		t.Fatalf("NextRecurringDueAt: %v", err)
+	}
+	if nextDue == nil || !nextDue.UTC().Equal(past) {
+		t.Fatalf("expected next recurring due at %s, got %+v", past.Format(time.RFC3339), nextDue)
+	}
+
+	if err := store.UpdateIssueState(dueIssue.ID, StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState in_progress: %v", err)
+	}
+	if err := store.UpdateIssueState(dueIssue.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+	if err := store.MarkRecurringPendingRerun(dueIssue.ID, true); err != nil {
+		t.Fatalf("MarkRecurringPendingRerun: %v", err)
+	}
+	enqueuedAt := now.Add(5 * time.Minute)
+	nextRunAt := now.Add(35 * time.Minute)
+	if err := store.RearmRecurringIssue(dueIssue.ID, enqueuedAt, &nextRunAt); err != nil {
+		t.Fatalf("RearmRecurringIssue: %v", err)
+	}
+
+	rearmed, err := store.GetIssue(dueIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue rearmed: %v", err)
+	}
+	if rearmed.State != StateReady || rearmed.WorkflowPhase != WorkflowPhaseImplementation {
+		t.Fatalf("expected ready/implementation after rearm, got state=%s phase=%s", rearmed.State, rearmed.WorkflowPhase)
+	}
+	if rearmed.StartedAt != nil || rearmed.CompletedAt != nil {
+		t.Fatalf("expected lifecycle timestamps cleared after rearm, got %+v", rearmed)
+	}
+	if rearmed.LastEnqueuedAt == nil || !rearmed.LastEnqueuedAt.UTC().Equal(enqueuedAt.UTC()) {
+		t.Fatalf("expected last_enqueued_at %s, got %+v", enqueuedAt.Format(time.RFC3339), rearmed.LastEnqueuedAt)
+	}
+	if rearmed.NextRunAt == nil || !rearmed.NextRunAt.UTC().Equal(nextRunAt.UTC()) {
+		t.Fatalf("expected next_run_at %s, got %+v", nextRunAt.Format(time.RFC3339), rearmed.NextRunAt)
+	}
+	if rearmed.PendingRerun {
+		t.Fatalf("expected pending rerun to be cleared after rearm, got %+v", rearmed)
 	}
 }
 
@@ -1168,6 +1600,57 @@ func TestCreateProjectNormalizesPathsAndReadiness(t *testing.T) {
 	}
 	if !project.OrchestrationReady {
 		t.Fatal("expected project to be orchestration ready")
+	}
+	if project.State != ProjectStateStopped {
+		t.Fatalf("expected stopped project state, got %q", project.State)
+	}
+}
+
+func TestExistingProjectsMigrateToStoppedState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT,
+			repo_path TEXT NOT NULL DEFAULT '',
+			workflow_path TEXT NOT NULL DEFAULT '',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_project_ref TEXT NOT NULL DEFAULT '',
+			provider_config_json TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`); err != nil {
+		t.Fatalf("create legacy projects table: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO projects (id, name, description, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"proj-legacy", "Legacy", "", "", "", ProviderKindKanban, "", "{}", now, now,
+	); err != nil {
+		t.Fatalf("insert legacy project: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.GetProject("proj-legacy")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if project.State != ProjectStateStopped {
+		t.Fatalf("expected migrated project state stopped, got %q", project.State)
 	}
 }
 

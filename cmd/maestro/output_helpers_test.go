@@ -27,8 +27,15 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 		Issue: kanban.Issue{
 			Identifier: "ISS-1",
 			Title:      "Ship CLI coverage",
+			IssueType:  kanban.IssueTypeRecurring,
 			State:      kanban.StateReady,
 			Priority:   2,
+			Cron:       "*/15 * * * *",
+			Enabled:    true,
+			NextRunAt: func() *time.Time {
+				next := now.Add(30 * time.Minute)
+				return &next
+			}(),
 		},
 		ProjectName: "Platform",
 		EpicName:    "CLI",
@@ -39,6 +46,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 			ID:                 "PRJ-1",
 			Name:               "Platform",
 			Description:        "Core workflows",
+			State:              kanban.ProjectStateStopped,
 			RepoPath:           "/repo/platform",
 			WorkflowPath:       "/repo/platform/WORKFLOW.md",
 			OrchestrationReady: true,
@@ -61,6 +69,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 				ID:            "issue-1",
 				Identifier:    "ISS-1",
 				Title:         "Ship CLI coverage",
+				IssueType:     kanban.IssueTypeRecurring,
 				Description:   "Raise coverage in cmd/maestro",
 				State:         kanban.StateInProgress,
 				WorkflowPhase: kanban.WorkflowPhaseImplementation,
@@ -70,6 +79,16 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 				PRNumber:      17,
 				PRURL:         "https://example.com/pr/17",
 				BlockedBy:     []string{"ISS-2"},
+				Cron:          "*/15 * * * *",
+				Enabled:       true,
+				NextRunAt: func() *time.Time {
+					next := now.Add(time.Hour)
+					return &next
+				}(),
+				LastEnqueuedAt: func() *time.Time {
+					enqueued := now.Add(-15 * time.Minute)
+					return &enqueued
+				}(),
 			},
 			ProjectName: "Platform",
 			EpicName:    "CLI",
@@ -86,7 +105,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 		var wide bytes.Buffer
 		printIssueTable(&wide, []kanban.IssueSummary{issue}, outputMode{wide: true})
 		text := wide.String()
-		for _, want := range []string{"IDENTIFIER", "PROJECT", "Ship CLI coverage"} {
+		for _, want := range []string{"IDENTIFIER", "TYPE", "recurring", "PROJECT", "Ship CLI coverage"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("expected %q in issue table %q", want, text)
 			}
@@ -96,7 +115,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 	t.Run("project and epic tables", func(t *testing.T) {
 		var projectWide bytes.Buffer
 		printProjectTable(&projectWide, []kanban.ProjectSummary{project}, outputMode{wide: true})
-		if text := projectWide.String(); !strings.Contains(text, "WORKFLOW") || !strings.Contains(text, "Core workflows") {
+		if text := projectWide.String(); !strings.Contains(text, "STATE") || !strings.Contains(text, "stopped") || !strings.Contains(text, "Core workflows") {
 			t.Fatalf("unexpected project table %q", text)
 		}
 
@@ -123,7 +142,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 		var out bytes.Buffer
 		printIssueDetail(&out, detail)
 		text := out.String()
-		for _, want := range []string{"Description:", "Labels:", "Branch:", "PR:", "Blocked By:"} {
+		for _, want := range []string{"Type:", "Description:", "Labels:", "Branch:", "PR:", "Blocked By:", "Cron:", "Schedule:", "Next Run:", "Last Enqueued:", "Pending Rerun:"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("expected %q in issue detail %q", want, text)
 			}

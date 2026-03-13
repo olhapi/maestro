@@ -84,7 +84,40 @@ func (p testRuntimeProvider) LiveSessions() map[string]interface{} {
 	}
 }
 
+func (p testRuntimeProvider) RequestProjectRefresh(projectID string) map[string]interface{} {
+	project, err := p.store.GetProject(projectID)
+	if err != nil {
+		return map[string]interface{}{"status": "not_found", "project_id": projectID}
+	}
+	_ = p.store.UpdateProjectState(projectID, kanban.ProjectStateRunning)
+	return map[string]interface{}{
+		"status":       "accepted",
+		"project_id":   projectID,
+		"project_name": project.Name,
+		"state":        string(kanban.ProjectStateRunning),
+	}
+}
+
+func (p testRuntimeProvider) StopProjectRuns(projectID string) map[string]interface{} {
+	project, err := p.store.GetProject(projectID)
+	if err != nil {
+		return map[string]interface{}{"status": "not_found", "project_id": projectID}
+	}
+	_ = p.store.UpdateProjectState(projectID, kanban.ProjectStateStopped)
+	return map[string]interface{}{
+		"status":       "stopped",
+		"project_id":   projectID,
+		"project_name": project.Name,
+		"state":        string(kanban.ProjectStateStopped),
+		"stopped_runs": 0,
+	}
+}
+
 func (p testRuntimeProvider) RetryIssueNow(identifier string) map[string]interface{} {
+	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+}
+
+func (p testRuntimeProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
@@ -333,8 +366,11 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 		"set_issue_state",
 		"set_issue_workflow_phase",
 		"delete_issue",
+		"run_project",
+		"stop_project",
 		"get_issue_execution",
 		"retry_issue",
+		"run_issue_now",
 		"board_overview",
 		"set_blockers",
 		"list_runtime_events",
@@ -353,13 +389,16 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	if !strings.Contains(serverInfo.Description, "Maestro") || strings.Contains(strings.ToLower(serverInfo.Description), "symphony") {
 		t.Fatalf("unexpected server_info description: %q", serverInfo.Description)
 	}
-	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "limit", "offset", "project_id", "search", "sort", "state")
+	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_number", "pr_url", "priority", "project_id", "state", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_number", "pr_url", "priority", "project_id", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_epic"), "description", "id", "name", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_issue_execution"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_runtime_snapshot"))
 	assertToolProperties(t, findTool(t, tools.Tools, "list_sessions"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "retry_issue"), "identifier")
+	assertToolProperties(t, findTool(t, tools.Tools, "run_issue_now"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_schema"), "mode", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_fallback"), "args")
 }
@@ -784,6 +823,107 @@ func TestStdioRuntimeToolsWithProvider(t *testing.T) {
 	if got := decodeEnvelope(t, retryIssueRes)["data"].(map[string]interface{})["status"]; got != "queued_now" {
 		t.Fatalf("unexpected retry_issue payload: %#v", got)
 	}
+
+	repoPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoPath, "WORKFLOW.md"), []byte("---\ntracker:\n  kind: kanban\n---\n"), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Runtime project",
+		"repo_path": repoPath,
+	})
+	if err != nil {
+		t.Fatalf("create_project failed: %v", err)
+	}
+	projectID := asString(decodeEnvelope(t, projectRes)["data"].(map[string]interface{})["id"])
+
+	runProjectRes, err := client.CallTool(context.Background(), "run_project", map[string]interface{}{
+		"id": projectID,
+	})
+	if err != nil {
+		t.Fatalf("run_project failed: %v", err)
+	}
+	if got := decodeEnvelope(t, runProjectRes)["data"].(map[string]interface{})["state"]; got != "running" {
+		t.Fatalf("unexpected run_project payload: %#v", got)
+	}
+
+	stopProjectRes, err := client.CallTool(context.Background(), "stop_project", map[string]interface{}{
+		"id": projectID,
+	})
+	if err != nil {
+		t.Fatalf("stop_project failed: %v", err)
+	}
+	if got := decodeEnvelope(t, stopProjectRes)["data"].(map[string]interface{})["state"]; got != "stopped" {
+		t.Fatalf("unexpected stop_project payload: %#v", got)
+	}
+}
+
+func TestStdioRecurringIssueTools(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	client := newTestMCPClient(t, dbPath, testClientOptions{provider: true})
+	defer client.Close()
+
+	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Automation",
+		"repo_path": t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("create_project failed: %v", err)
+	}
+	projectID := asString(decodeEnvelope(t, projectRes)["data"].(map[string]interface{})["id"])
+
+	createIssueRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
+		"project_id": projectID,
+		"title":      "Scan GitHub ready-to-work",
+		"issue_type": "recurring",
+		"cron":       "*/15 * * * *",
+		"enabled":    true,
+	})
+	if err != nil {
+		t.Fatalf("create_issue recurring failed: %v", err)
+	}
+	created := decodeEnvelope(t, createIssueRes)["data"].(map[string]interface{})
+	identifier := asString(created["identifier"])
+	if created["issue_type"] != "recurring" || created["cron"] != "*/15 * * * *" || created["enabled"] != true {
+		t.Fatalf("unexpected recurring create payload: %#v", created)
+	}
+
+	listIssuesRes, err := client.CallTool(context.Background(), "list_issues", map[string]interface{}{
+		"issue_type": "recurring",
+		"limit":      10,
+		"offset":     0,
+	})
+	if err != nil {
+		t.Fatalf("list_issues recurring failed: %v", err)
+	}
+	listIssues := decodeEnvelope(t, listIssuesRes)["data"].(map[string]interface{})
+	items := listIssues["items"].([]interface{})
+	if len(items) != 1 || items[0].(map[string]interface{})["identifier"] != identifier {
+		t.Fatalf("unexpected recurring list payload: %#v", listIssues)
+	}
+
+	updateIssueRes, err := client.CallTool(context.Background(), "update_issue", map[string]interface{}{
+		"identifier": identifier,
+		"cron":       "0 * * * *",
+		"enabled":    false,
+	})
+	if err != nil {
+		t.Fatalf("update_issue recurring failed: %v", err)
+	}
+	updated := decodeEnvelope(t, updateIssueRes)["data"].(map[string]interface{})
+	if updated["cron"] != "0 * * * *" || updated["enabled"] != false {
+		t.Fatalf("unexpected recurring update payload: %#v", updated)
+	}
+
+	runNowRes, err := client.CallTool(context.Background(), "run_issue_now", map[string]interface{}{
+		"identifier": identifier,
+	})
+	if err != nil {
+		t.Fatalf("run_issue_now failed: %v", err)
+	}
+	if got := decodeEnvelope(t, runNowRes)["data"].(map[string]interface{})["status"]; got != "queued_now" {
+		t.Fatalf("unexpected run_issue_now payload: %#v", got)
+	}
 }
 
 func TestSetIssueStateRejectsBlockedInProgress(t *testing.T) {
@@ -825,7 +965,11 @@ func TestSetIssueStateRejectsBlockedInProgress(t *testing.T) {
 
 func TestCreateIssueRejectsBlockedInitialInProgress(t *testing.T) {
 	store := testStore(t, "")
-	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	project, err := store.CreateProject("Project", "", t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue blocker: %v", err)
 	}
@@ -837,6 +981,7 @@ func TestCreateIssueRejectsBlockedInitialInProgress(t *testing.T) {
 	defer client.Close()
 
 	res, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
+		"project_id": project.ID,
 		"title":      "Blocked create",
 		"state":      "in_progress",
 		"blocked_by": []interface{}{blocker.Identifier},
@@ -936,6 +1081,20 @@ func TestScopedProjectMutationsAndProjectPayloads(t *testing.T) {
 	if !sawOutOfScope || !sawInScope {
 		t.Fatalf("expected both seeded projects in list_projects payload, got %#v", items)
 	}
+
+	runProjectRes, err := client.CallTool(context.Background(), "run_project", map[string]interface{}{
+		"id": outOfScopeProject.ID,
+	})
+	if err != nil {
+		t.Fatalf("run_project failed: %v", err)
+	}
+	if !runProjectRes.IsError {
+		t.Fatalf("expected scoped run_project error, got %#v", runProjectRes)
+	}
+	runProjectMessage := asString(decodeEnvelope(t, runProjectRes)["error"].(map[string]interface{})["message"])
+	if !strings.Contains(runProjectMessage, "Project repo is outside the current server scope ("+scopedRepoPath+")") {
+		t.Fatalf("unexpected run_project message: %q", runProjectMessage)
+	}
 }
 
 func TestStdioRuntimeToolsWithoutProviderReturnExplicitErrors(t *testing.T) {
@@ -947,7 +1106,7 @@ func TestStdioRuntimeToolsWithoutProviderReturnExplicitErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
 	}
-	for _, name := range []string{"get_runtime_snapshot", "list_sessions", "retry_issue"} {
+	for _, name := range []string{"get_runtime_snapshot", "list_sessions", "retry_issue", "run_project", "stop_project"} {
 		findTool(t, tools.Tools, name)
 	}
 
@@ -958,6 +1117,8 @@ func TestStdioRuntimeToolsWithoutProviderReturnExplicitErrors(t *testing.T) {
 		{name: "get_runtime_snapshot", args: map[string]interface{}{}},
 		{name: "list_sessions", args: map[string]interface{}{}},
 		{name: "retry_issue", args: map[string]interface{}{"identifier": "ISS-1"}},
+		{name: "run_project", args: map[string]interface{}{"id": "proj-1"}},
+		{name: "stop_project", args: map[string]interface{}{"id": "proj-1"}},
 	} {
 		res, err := client.CallTool(context.Background(), tc.name, tc.args)
 		if err != nil {

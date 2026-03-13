@@ -24,7 +24,10 @@ type RuntimeProvider interface {
 	observability.StatusProvider
 	observability.SnapshotProvider
 	observability.SessionProvider
+	RequestProjectRefresh(projectID string) map[string]interface{}
+	StopProjectRuns(projectID string) map[string]interface{}
 	RetryIssueNow(identifier string) map[string]interface{}
+	RunRecurringIssueNow(identifier string) map[string]interface{}
 }
 
 // Server implements the MCP server for the kanban board
@@ -123,6 +126,9 @@ func (s *Server) registerTools() {
 			"description": stringProperty("Issue description"),
 			"project_id":  stringProperty("Project ID"),
 			"epic_id":     stringProperty("Epic ID"),
+			"issue_type":  stringProperty("Issue type: standard or recurring"),
+			"cron":        stringProperty("Cron schedule for recurring issues"),
+			"enabled":     booleanProperty("Enable recurring scheduling"),
 			"priority":    numberProperty("Priority (lower = higher)"),
 			"labels":      stringArrayProperty("Issue labels"),
 			"state":       stringProperty("Initial state: backlog, ready, in_progress, in_review, done, cancelled"),
@@ -138,6 +144,7 @@ func (s *Server) registerTools() {
 			"project_id": stringProperty("Filter by project ID"),
 			"epic_id":    stringProperty("Filter by epic ID"),
 			"state":      stringProperty("Filter by state: backlog, ready, in_progress, in_review, done, cancelled"),
+			"issue_type": stringProperty("Filter by issue type: standard or recurring"),
 			"search":     stringProperty("Search identifier, title, or description"),
 			"sort":       stringProperty("Sort order: updated_desc, created_asc, priority_asc, identifier_asc, state_asc"),
 			"limit":      numberProperty("Maximum issues to return"),
@@ -149,6 +156,9 @@ func (s *Server) registerTools() {
 			"epic_id":     stringProperty("Epic ID"),
 			"title":       stringProperty("New title"),
 			"description": stringProperty("New description"),
+			"issue_type":  stringProperty("Issue type: standard or recurring"),
+			"cron":        stringProperty("Cron schedule for recurring issues"),
+			"enabled":     booleanProperty("Enable recurring scheduling"),
 			"priority":    numberProperty("New priority"),
 			"labels":      stringArrayProperty("New labels"),
 			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
@@ -167,11 +177,20 @@ func (s *Server) registerTools() {
 		objectTool("delete_issue", "Delete an issue", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 		}),
+		objectTool("run_project", "Request live orchestration for a project", map[string]interface{}{
+			"id": stringProperty("Project ID"),
+		}),
+		objectTool("stop_project", "Stop live runs for a project", map[string]interface{}{
+			"id": stringProperty("Project ID"),
+		}),
 		objectTool("get_issue_execution", "Get execution details for a single issue", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 		}),
 		objectTool("retry_issue", "Request an immediate retry for an issue", map[string]interface{}{
 			"identifier": stringProperty("Issue identifier"),
+		}),
+		objectTool("run_issue_now", "Trigger a recurring issue immediately", map[string]interface{}{
+			"identifier": stringProperty("Recurring issue identifier"),
 		}),
 		objectTool("board_overview", "Get a kanban board overview showing issue counts by state", map[string]interface{}{
 			"project_id": stringProperty("Filter by project ID"),
@@ -254,10 +273,16 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 		return s.handleSetIssueWorkflowPhase(ctx, args)
 	case "delete_issue":
 		return s.handleDeleteIssue(ctx, args)
+	case "run_project":
+		return s.handleRunProject(ctx, args)
+	case "stop_project":
+		return s.handleStopProject(ctx, args)
 	case "get_issue_execution":
 		return s.handleGetIssueExecution(ctx, args)
 	case "retry_issue":
 		return s.handleRetryIssue(ctx, args)
+	case "run_issue_now":
+		return s.handleRunIssueNow(ctx, args)
 	case "board_overview":
 		return s.handleBoardOverview(ctx, args)
 	case "set_blockers":
@@ -417,11 +442,15 @@ func (s *Server) handleDeleteEpic(ctx context.Context, args map[string]interface
 }
 
 func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	enabled, _ := boolPointerArg(args, "enabled")
 	detail, err := s.service.CreateIssue(ctx, providers.IssueCreateInput{
 		ProjectID:   asString(args["project_id"]),
 		EpicID:      asString(args["epic_id"]),
 		Title:       asString(args["title"]),
 		Description: asString(args["description"]),
+		IssueType:   kanban.IssueType(asString(args["issue_type"])),
+		Cron:        asString(args["cron"]),
+		Enabled:     enabled,
 		Priority:    intArg(args, "priority", 0),
 		Labels:      stringListArg(args, "labels"),
 		State:       asString(args["state"]),
@@ -453,6 +482,7 @@ func (s *Server) handleListIssues(ctx context.Context, args map[string]interface
 		ProjectID: asString(args["project_id"]),
 		EpicID:    asString(args["epic_id"]),
 		State:     asString(args["state"]),
+		IssueType: asString(args["issue_type"]),
 		Search:    asString(args["search"]),
 		Sort:      asString(args["sort"]),
 		Limit:     intArg(args, "limit", 200),
@@ -539,6 +569,36 @@ func (s *Server) handleDeleteIssue(ctx context.Context, args map[string]interfac
 	return s.toolResult("delete_issue", map[string]interface{}{"identifier": issue.Identifier, "id": issue.ID}), nil
 }
 
+func (s *Server) handleRunProject(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	if s.provider == nil {
+		return s.runtimeUnavailable("run_project"), nil
+	}
+	project, err := s.store.GetProject(asString(args["id"]))
+	if err != nil {
+		return s.toolError("run_project", fmt.Sprintf("Failed to load project: %v", err)), nil
+	}
+	s.decorateProject(project)
+	if !project.DispatchReady {
+		errText := strings.TrimSpace(project.DispatchError)
+		if errText == "" {
+			errText = "project is not dispatchable"
+		}
+		return s.toolError("run_project", errText), nil
+	}
+	return s.toolResult("run_project", s.provider.RequestProjectRefresh(project.ID)), nil
+}
+
+func (s *Server) handleStopProject(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	if s.provider == nil {
+		return s.runtimeUnavailable("stop_project"), nil
+	}
+	project, err := s.store.GetProject(asString(args["id"]))
+	if err != nil {
+		return s.toolError("stop_project", fmt.Sprintf("Failed to load project: %v", err)), nil
+	}
+	return s.toolResult("stop_project", s.provider.StopProjectRuns(project.ID)), nil
+}
+
 func (s *Server) handleGetIssueExecution(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	issue, err := s.lookupIssue(asString(args["identifier"]))
 	if err != nil {
@@ -556,6 +616,13 @@ func (s *Server) handleRetryIssue(ctx context.Context, args map[string]interface
 		return s.runtimeUnavailable("retry_issue"), nil
 	}
 	return s.toolResult("retry_issue", s.provider.RetryIssueNow(asString(args["identifier"]))), nil
+}
+
+func (s *Server) handleRunIssueNow(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	if s.provider == nil {
+		return s.runtimeUnavailable("run_issue_now"), nil
+	}
+	return s.toolResult("run_issue_now", s.provider.RunRecurringIssueNow(asString(args["identifier"]))), nil
 }
 
 func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -827,6 +894,15 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	if value, ok := args["description"]; ok {
 		updates["description"] = asString(value)
 	}
+	if value, ok := args["issue_type"]; ok {
+		updates["issue_type"] = asString(value)
+	}
+	if value, ok := args["cron"]; ok {
+		updates["cron"] = asString(value)
+	}
+	if value, ok := boolPointerArg(args, "enabled"); value != nil && ok {
+		updates["enabled"] = *value
+	}
 	if _, ok := args["priority"]; ok {
 		updates["priority"] = intArg(args, "priority", 0)
 	}
@@ -884,6 +960,10 @@ func objectProperty(description string) map[string]interface{} {
 	return map[string]interface{}{"type": "object", "description": description}
 }
 
+func booleanProperty(description string) map[string]interface{} {
+	return map[string]interface{}{"type": "boolean", "description": description}
+}
+
 func stringArrayProperty(description string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":        "array",
@@ -929,6 +1009,19 @@ func stringListArg(args map[string]interface{}, key string) []string {
 		return out
 	default:
 		return nil
+	}
+}
+
+func boolPointerArg(args map[string]interface{}, key string) (*bool, bool) {
+	raw, ok := args[key]
+	if !ok {
+		return nil, false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return &value, true
+	default:
+		return nil, false
 	}
 }
 

@@ -37,6 +37,9 @@ func (p *KanbanProvider) ListIssues(_ context.Context, project *kanban.Project, 
 	if query.State != "" {
 		filter["state"] = query.State
 	}
+	if query.IssueType != "" {
+		filter["issue_type"] = query.IssueType
+	}
 	return p.store.ListIssues(filter)
 }
 
@@ -49,7 +52,11 @@ func (p *KanbanProvider) CreateIssue(_ context.Context, project *kanban.Project,
 	if project != nil && project.ID != "" {
 		projectID = project.ID
 	}
-	issue, err := p.store.CreateIssue(projectID, input.EpicID, input.Title, input.Description, input.Priority, input.Labels)
+	issue, err := p.store.CreateIssueWithOptions(projectID, input.EpicID, input.Title, input.Description, input.Priority, input.Labels, kanban.IssueCreateOptions{
+		IssueType: input.IssueType,
+		Cron:      input.Cron,
+		Enabled:   input.Enabled,
+	})
 	if err != nil {
 		return nil, err
 	}

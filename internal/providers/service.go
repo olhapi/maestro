@@ -68,12 +68,17 @@ func (s *Service) resolveIssueProvider(issue *kanban.Issue) (*kanban.Project, Pr
 	if issue == nil {
 		return nil, nil, fmt.Errorf("issue is required")
 	}
+	issueProviderKind := normalizeKind(issue.ProviderKind)
 	if strings.TrimSpace(issue.ProjectID) == "" {
-		return nil, s.providerForKind(issue.ProviderKind), nil
+		return nil, s.providerForKind(issueProviderKind), nil
 	}
 	project, err := s.store.GetProject(issue.ProjectID)
 	if err != nil {
 		return nil, nil, err
+	}
+	projectProviderKind := normalizeKind(project.ProviderKind)
+	if issueProviderKind != "" && issueProviderKind != projectProviderKind {
+		return project, s.providerForKind(issueProviderKind), nil
 	}
 	return project, s.ProviderForProject(project), nil
 }
@@ -105,6 +110,9 @@ func (s *Service) ListProjectSummaries() ([]kanban.ProjectSummary, error) {
 }
 
 func (s *Service) CreateEpic(projectID, name, description string) (*kanban.Epic, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
+	}
 	project, err := s.store.GetProject(projectID)
 	if err != nil {
 		return nil, err
@@ -116,6 +124,9 @@ func (s *Service) CreateEpic(projectID, name, description string) (*kanban.Epic,
 }
 
 func (s *Service) UpdateEpic(id, projectID, name, description string) error {
+	if strings.TrimSpace(projectID) == "" {
+		return fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
+	}
 	project, err := s.store.GetProject(projectID)
 	if err != nil {
 		return err
@@ -392,11 +403,22 @@ func (s *Service) ListIssueSummaries(ctx context.Context, query kanban.IssueQuer
 }
 
 func (s *Service) CreateIssue(ctx context.Context, input IssueCreateInput) (*kanban.IssueDetail, error) {
+	input.ProjectID = strings.TrimSpace(input.ProjectID)
+	if input.ProjectID == "" {
+		return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
+	}
 	project, provider, err := s.resolveProjectProvider(input.ProjectID)
 	if err != nil {
 		return nil, err
 	}
+	projectProvider := provider
+	if input.IssueType == kanban.IssueTypeRecurring {
+		provider = s.providers[kanban.ProviderKindKanban]
+	}
 	if input.EpicID != "" && !provider.Capabilities().Epics {
+		return nil, ErrUnsupportedCapability
+	}
+	if input.EpicID != "" && input.IssueType == kanban.IssueTypeRecurring && !projectProvider.Capabilities().Epics {
 		return nil, ErrUnsupportedCapability
 	}
 	issue, err := provider.CreateIssue(ctx, project, input)
@@ -427,6 +449,32 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
 		return nil, err
+	}
+	targetProjectID := strings.TrimSpace(issue.ProjectID)
+	if raw, ok := updates["project_id"]; ok {
+		targetProjectID = strings.TrimSpace(fmt.Sprint(raw))
+	}
+	if targetProjectID == "" {
+		return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
+	}
+	targetIssueType := issue.IssueType
+	if raw, ok := updates["issue_type"]; ok {
+		targetIssueType, err = kanban.ParseIssueType(fmt.Sprint(raw))
+		if err != nil {
+			return nil, err
+		}
+		updates["issue_type"] = targetIssueType
+	}
+	if issue.ProviderKind != kanban.ProviderKindKanban {
+		if _, ok := updates["cron"]; ok {
+			return nil, fmt.Errorf("%w: recurring schedule updates are not supported for provider-backed issues", ErrUnsupportedCapability)
+		}
+		if _, ok := updates["enabled"]; ok {
+			return nil, fmt.Errorf("%w: recurring schedule updates are not supported for provider-backed issues", ErrUnsupportedCapability)
+		}
+		if targetIssueType == kanban.IssueTypeRecurring {
+			return nil, fmt.Errorf("%w: recurring issues must be created as local kanban issues", ErrUnsupportedCapability)
+		}
 	}
 	project, provider, err := s.resolveIssueProvider(issue)
 	if err != nil {

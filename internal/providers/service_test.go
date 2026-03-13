@@ -21,6 +21,8 @@ type stubProvider struct {
 	getErr    error
 	getGate   <-chan struct{}
 	getFunc   func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
+	createFunc func(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error)
+	updateFunc func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
 }
 
 func (p *stubProvider) Kind() string {
@@ -85,11 +87,17 @@ func withProviderReadTimeout(t *testing.T, timeout time.Duration) {
 	})
 }
 
-func (p *stubProvider) CreateIssue(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error) {
+func (p *stubProvider) CreateIssue(ctx context.Context, project *kanban.Project, input IssueCreateInput) (*kanban.Issue, error) {
+	if p.createFunc != nil {
+		return p.createFunc(ctx, project, input)
+	}
 	return nil, ErrUnsupportedCapability
 }
 
-func (p *stubProvider) UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+func (p *stubProvider) UpdateIssue(ctx context.Context, project *kanban.Project, issue *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
+	if p.updateFunc != nil {
+		return p.updateFunc(ctx, project, issue, updates)
+	}
 	return nil, ErrUnsupportedCapability
 }
 
@@ -399,6 +407,120 @@ func TestServiceGetIssueByIdentifierPropagatesParentDeadlineExceeded(t *testing.
 	_, err = svc.GetIssueByIdentifier(ctx, cached.Identifier)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected parent deadline to be propagated, got %v", err)
+	}
+}
+
+func TestServiceCreateEpicRequiresProject(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	svc := NewService(store)
+	_, err = svc.CreateEpic("", "Epic", "")
+	if err == nil {
+		t.Fatal("expected project_id validation error")
+	}
+	if !kanban.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestServiceCreateIssueRequiresProject(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	svc := NewService(store)
+	_, err = svc.CreateIssue(context.Background(), IssueCreateInput{
+		Title: "Missing project",
+	})
+	if err == nil {
+		t.Fatal("expected project_id validation error")
+	}
+	if !kanban.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestServiceUpdateIssueRequiresProject(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Projectless", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	svc := NewService(store)
+	_, err = svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{"title": "Renamed"})
+	if err == nil {
+		t.Fatal("expected project_id validation error")
+	}
+	if !kanban.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     kanban.ProviderKindLinear,
+		ProviderIssueRef: "linear-1",
+		Identifier:       "LIN-1",
+		Title:            "Provider issue",
+		State:            kanban.StateBacklog,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	var updateCalled bool
+	svc := NewService(store)
+	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+		kind:    kanban.ProviderKindLinear,
+		getIssue: issue,
+		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+			updateCalled = true
+			return nil, nil
+		},
+	}
+
+	_, err = svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"issue_type": "recurring",
+		"cron":       "*/15 * * * *",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported recurring conversion error")
+	}
+	if !IsUnsupported(err) {
+		t.Fatalf("expected unsupported capability error, got %v", err)
+	}
+	if updateCalled {
+		t.Fatal("expected provider update to be skipped for recurring conversion")
 	}
 }
 
