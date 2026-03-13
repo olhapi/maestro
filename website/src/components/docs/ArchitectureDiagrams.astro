@@ -7,7 +7,7 @@ const isHome = context === "home";
 
 const runtimePathDiagram = `
 flowchart TB
-    MCPClient["Codex / ChatGPT<br>(via MCP)"] --> MCPBridge["maestro mcp<br>(stdio bridge)"]
+    MCPClient["MCP client<br>(via MCP)"] --> MCPBridge["maestro mcp<br>(stdio bridge)"]
     MCPBridge --> MCPDaemon["private MCP daemon"]
 
     BrowserCLI["Browser / live CLI helpers"] --> HTTP["public HTTP server (:port)"]

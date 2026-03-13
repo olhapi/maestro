@@ -7,15 +7,18 @@ export const xUrl = "https://x.com/ollhapi";
 export const durableSurfaces = [
   {
     title: "Local tracker",
-    description: "Keep projects, epics, and issues in a durable SQLite-backed Kanban surface without needing Linear to get started.",
+    description:
+      "Keep projects, blockers, and issue state visible in a durable SQLite-backed board without depending on a hosted tracker.",
   },
   {
     title: "MCP bridge",
-    description: "Expose that tracker to Codex or ChatGPT through a single `maestro mcp` attach point that mirrors the live daemon.",
+    description:
+      "Expose that same live tracker through `maestro mcp` so your coding agent sees the state the daemon is actually supervising.",
   },
   {
     title: "Orchestrator",
-    description: "Route ready issues into workspaces, launch the agent command you configure, and keep retries, logs, and runtime state visible.",
+    description:
+      "Keep workspaces, retries, logs, and runtime state in view while Maestro routes ready issues into the next execution loop.",
   },
 ] as const;
 
@@ -23,17 +26,20 @@ export const quickstartSteps = [
   {
     title: "Install",
     command: "npm install -g @olhapi/maestro",
-    detail: "Preferred global install for macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.",
+    detail:
+      "Preferred global install for macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.",
   },
   {
     title: "Bootstrap workflow",
     command: "maestro workflow init .",
-    detail: "Write a repo-local WORKFLOW.md with the default Kanban + Codex settings.",
+    detail:
+      "Write a repo-local WORKFLOW.md with the default Kanban + Codex settings.",
   },
   {
     title: "Start orchestration",
     command: "maestro run",
-    detail: "Run the daemon, default HTTP API on 8787, and embedded control center.",
+    detail:
+      "Run the daemon, default HTTP API on 8787, and embedded control center.",
   },
 ] as const;
 
@@ -41,17 +47,20 @@ export const docsPreview = [
   {
     title: "Install and quickstart",
     href: "/docs/quickstart",
-    description: "Move from npm install to a running daemon and local dashboard in a few commands.",
+    description:
+      "Move from npm install to a running daemon and local dashboard in a few commands.",
   },
   {
     title: "Workflow configuration",
     href: "/docs/workflow-config",
-    description: "Tune agent mode, sandboxing, retries, dispatch, and phase prompts from WORKFLOW.md.",
+    description:
+      "Tune agent mode, sandboxing, retries, dispatch, and phase prompts from WORKFLOW.md.",
   },
   {
     title: "Operations and observability",
     href: "/docs/operations",
-    description: "Use the HTTP runtime endpoints, validation commands, extensions file, and logs without guesswork.",
+    description:
+      "Use the HTTP runtime endpoints, validation commands, extensions file, and logs without guesswork.",
   },
 ] as const;
 
@@ -90,7 +99,7 @@ export const tourChapters = [
       "The transcript shows command progress and agent messages together.",
       "Live controls stay available without leaving the issue.",
     ],
-    image: "/images/screens/issue-detail.png",
+    image: "/images/screens/issue-detail.webp",
   },
   {
     id: "sessions",

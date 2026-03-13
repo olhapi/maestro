@@ -2,17 +2,63 @@
 
 Maestro is a local-first orchestration runtime for agent-driven software work.
 
-In the current codebase, the runtime is built from five connected layers:
-
-- a SQLite-backed local store for projects, issues, workspaces, sessions, commands, and runtime events
-- a provider service that supports local `kanban` projects and limited `linear` project sync
-- an orchestrator plus agent runner that read `WORKFLOW.md`, claim runnable issues, and dispatch Codex work
-- a private MCP daemon that `maestro mcp` bridges over stdio
-- a public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs on the default port unless you override `--port`
+It combines a SQLite-backed tracker, an orchestrator that reads `WORKFLOW.md`, a private MCP daemon bridged by `maestro mcp`, and an HTTP server that serves the embedded dashboard plus JSON/WebSocket APIs.
 
 Maestro stays local-first even when a project syncs issues from Linear. Provider-backed issues are synchronized into the local store, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces as local kanban issues.
 
-## Build
+## Install
+
+### npm
+
+Preferred install on supported platforms:
+
+```bash
+npm install -g @olhapi/maestro
+```
+
+Update an existing install:
+
+```bash
+npm update -g @olhapi/maestro
+```
+
+The installed command name is still `maestro`.
+
+Official npm builds currently cover:
+
+| Platform | Arch | Notes |
+| --- | --- | --- |
+| macOS | arm64 | native package |
+| macOS | x64 | native package |
+| Linux | x64 | glibc only |
+| Linux | arm64 | glibc only |
+| Windows | x64 | native package |
+
+Linux npm packages currently target glibc only. Alpine and other musl-based distros should build from source or use Docker.
+
+### Docker
+
+Published image:
+
+```bash
+docker pull ghcr.io/olhapi/maestro:latest
+```
+
+The image entrypoint is `maestro`. Its default command is `run --db /data/maestro.db`, so this starts the shared daemon with container defaults:
+
+```bash
+docker run --rm -v ./data:/data ghcr.io/olhapi/maestro:latest
+```
+
+To run against a mounted repo explicitly:
+
+```bash
+docker run --rm -v ./repo:/repo -v ./data:/data ghcr.io/olhapi/maestro:latest run --db /data/maestro.db /repo --port 8787
+```
+
+### Build From Source
+
+For local development or unsupported platforms:
 
 ```bash
 go build -o maestro ./cmd/maestro
@@ -24,52 +70,6 @@ Local contributor Docker build:
 docker build -t maestro-local .
 ```
 
-## Install
-
-Preferred global install on supported platforms:
-
-```bash
-npm install -g @olhapi/maestro
-```
-
-Update an existing global install:
-
-```bash
-npm update -g @olhapi/maestro
-```
-
-The installed command name is still `maestro`. Official npm builds currently cover:
-
-- macOS arm64
-- macOS x64
-- Linux x64 (glibc)
-- Linux arm64 (glibc)
-- Windows x64
-
-Linux npm packages target glibc only. Alpine and other musl-based distros should build from source or use Docker.
-
-Published Docker image:
-
-```bash
-docker pull ghcr.io/olhapi/maestro:latest
-```
-
-The container entrypoint is `maestro`. The default command is `run --db /data/maestro.db`, so mounting only `./data:/data` starts the shared daemon with the container defaults.
-
-For local development or unsupported platforms, build from source with Go:
-
-```bash
-go build -o maestro ./cmd/maestro
-```
-
-For local contributor tooling, install the repo-root dev dependency once:
-
-```bash
-npm install
-```
-
-This installs the repo-managed Git hooks with Husky and bootstraps the frontend dev dependencies used by the hooks.
-
 ## Quick Start
 
 ### 1. Initialize a workflow file
@@ -78,29 +78,34 @@ This installs the repo-managed Git hooks with Husky and bootstraps the frontend 
 maestro workflow init .
 ```
 
-This writes a repo-local `WORKFLOW.md` with the default orchestration workflow, Codex command, and prompt template.
+This writes a repo-local `WORKFLOW.md` with the default orchestration settings and prompt template.
 
-### 2. Create a project and some issues
+### 2. Create a project and queue some work
 
 ```bash
 maestro project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
 maestro issue create "Add login page" --project <project_id> --labels feature,ui
-maestro issue create "Fix auth bug" --priority 1 --labels bug
-maestro issue list
-maestro board
-```
-
-Move an issue into the ready queue when you want the orchestrator to pick it up:
-
-```bash
+maestro issue create "Fix auth bug" --project <project_id> --priority 1 --labels bug
 maestro issue move ISS-1 ready
 ```
 
-Projects default to the local `kanban` provider. You can also register a project with limited Linear-backed issue sync by passing `--provider linear --provider-project-ref <slug>` and, if needed, `--provider-endpoint` or `--provider-assignee`.
+Projects default to the local `kanban` provider. You can also register a project with limited Linear-backed sync by passing `--provider linear --provider-project-ref <slug>` and, if needed, `--provider-endpoint` or `--provider-assignee`.
 
-### 3. Expose the tracker to MCP clients
+### 3. Start the daemon
 
-Add the built binary to your MCP client config:
+```bash
+maestro run
+```
+
+When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. When `--port` is omitted, Maestro serves HTTP on `http://127.0.0.1:8787`.
+
+Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
+
+The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
+
+### 4. Expose the tracker to MCP clients
+
+Add the built or installed binary to your MCP client config:
 
 ```json
 {
@@ -113,135 +118,117 @@ Add the built binary to your MCP client config:
 }
 ```
 
-`maestro mcp` is now a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let your MCP client invoke `maestro mcp`.
+`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let your MCP client invoke `maestro mcp`.
 
-For a shared multi-project setup, point both `maestro mcp` and `maestro run` at the same central DB.
-
-### 4. Start the orchestrator
-
-```bash
-maestro run
-```
-
-When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. When `--port` is omitted, Maestro serves HTTP on `http://127.0.0.1:8787`.
-
-Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
-
-The orchestrator:
-
-1. loads `WORKFLOW.md`
-2. polls for issues in the `ready` state
-3. creates per-issue workspaces
-4. dispatches work to the configured agent command
-5. tracks retries, logs, runtime status, provider-backed issue refresh, the private MCP transport used by `maestro mcp`, and the public dashboard/API server
-
-`run` prints a preview warning because the default workflow can launch Codex without extra guardrails. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when that is intentional for your environment.
+### 5. Open the dashboard or use live CLI helpers
 
 By default, `maestro run` serves:
 
 - the embedded dashboard on `/`
 - the live observability API on `/api/v1/*`
-- the richer dashboard application API on `/api/v1/app/*`
+- the dashboard application API on `/api/v1/app/*`
 - the dashboard invalidation stream on `/api/v1/ws`
 
-CLI helpers that talk to the live daemon require `--api-url`, for example:
+Useful live helpers:
 
 ```bash
 maestro status --dashboard --api-url http://127.0.0.1:8787
 maestro sessions --api-url http://127.0.0.1:8787
+maestro events --api-url http://127.0.0.1:8787 --limit 20
+maestro runtime-series --api-url http://127.0.0.1:8787 --hours 24
+maestro project start <project_id> --api-url http://127.0.0.1:8787
+maestro project stop <project_id> --api-url http://127.0.0.1:8787
 ```
 
-For local UI development against another repo:
+## MCP, Run, and Dashboard Model
+
+`maestro run` is the long-lived process for a given database. It starts:
+
+- the provider service and local SQLite-backed store
+- the orchestrator and agent runner
+- a private MCP daemon used by `maestro mcp`
+- the public HTTP server when `--port` is set or left at its default
+
+`maestro mcp` does not start a separate orchestration server. It discovers the live daemon for the same `--db` and bridges that session over stdio for MCP clients.
+
+Operationally:
+
+- start `maestro run` first
+- point `maestro mcp` at the same `--db`
+- use `--api-url` for CLI helpers and live control commands that talk to the daemon over HTTP
+
+## Common Operator Commands
+
+Queue inspection and filtering:
 
 ```bash
-REPO_PATH=/path/to/repo make dev
+maestro issue list --state backlog --project <project_id>
+maestro issue list --blocked --search auth --sort priority_asc
+maestro board --project <project_id>
 ```
 
-## Core Commands
+Issue updates:
 
 ```bash
-# Projects
-maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
-maestro project list
-maestro project show <id>
-maestro project update <id> [--name <name>] [--desc <description>] [--repo <repo_path>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
-maestro project delete <id>
-
-# Epics
-maestro epic create <name> --project <project_id> [--desc <description>]
-maestro epic list [--project <project_id>]
-maestro epic show <id>
-maestro epic update <id> [--name <name>] [--project <project_id>] [--desc <description>]
-maestro epic delete <id>
-
-# Issues
-maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
-maestro issue list [--state <state>] [--project <id>]
-maestro issue show <identifier>
-maestro issue move <identifier> <state>
-maestro issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
-maestro issue execution <identifier> --api-url <url>
-maestro issue retry <identifier> --api-url <url>
-maestro issue unblock <identifier> <blocker_identifier...>
-maestro issue blockers set <identifier> [blocker_identifier...]
-maestro issue blockers clear <identifier>
-maestro issue delete <identifier>
-maestro issue block <identifier> <blocker_identifier...>
-
-# Orchestration
-maestro --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
-maestro --log-level <debug|info|warn|error> mcp [--db <path>]
-maestro --log-level <debug|info|warn|error> status [--json]
-maestro --log-level <debug|info|warn|error> status --dashboard --api-url <url>
-maestro --log-level <debug|info|warn|error> sessions --api-url <url>
-maestro --log-level <debug|info|warn|error> events --api-url <url> [--since <seq>] [--limit <n>]
-maestro --log-level <debug|info|warn|error> runtime-series --api-url <url> [--hours <n>]
-maestro --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
-maestro --log-level <debug|info|warn|error> doctor [--repo <path>] [--db <path>] [--json]
-maestro --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
-maestro --log-level <debug|info|warn|error> workflow init [repo_path]
+maestro issue update ISS-1 --labels bug,urgent --priority 1
+maestro issue update ISS-1 --branch codex/ISS-1 --pr 123 --pr-url https://example.com/pull/123
+maestro issue blockers set ISS-1 ISS-2 ISS-3
+maestro issue unblock ISS-1 ISS-2
 ```
 
-`--log-level` defaults to `info`. Use `debug` to include raw app-server stream output and session churn in the structured logs.
+Recurring automation:
 
-Live runtime helpers require `--api-url` because they talk to a running daemon over HTTP.
+```bash
+maestro issue create "Sync GitHub ready-to-work" \
+  --project <project_id> \
+  --type recurring \
+  --cron "*/15 * * * *" \
+  --desc "Check the GitHub project for issues labeled ready-to-work and create corresponding Maestro issues when they do not already exist."
+maestro issue list --type recurring --wide
+maestro issue run-now ISS-42 --api-url http://127.0.0.1:8787
+```
 
-## Git Hooks
+Recurring issues are Maestro-native issues with a cron schedule in the daemon host's local timezone. The orchestrator will enqueue at most one catch-up run after downtime, will not overlap active runs, and coalesces extra schedule hits into a single pending rerun.
 
-Repo-managed Git hooks are installed by running `npm install` at the repo root.
+Readiness checks:
 
-- `pre-commit` stays fast and only runs checks relevant to staged files.
-- staged Go changes run `go test` for the impacted package directories under `./cmd`, `./internal`, and `./pkg`.
-- staged changes to `go.mod`, `go.sum`, `Makefile`, or `scripts/check_coverage.sh` run `make test`.
-- staged frontend changes run `npm --prefix frontend run lint` and `npm --prefix frontend run test:ci`.
-- `pre-push` runs `make test-cover`, `make test-race`, `npm --prefix frontend run lint`, and `npm --prefix frontend run test:ci`.
+```bash
+maestro verify --repo /absolute/path/to/my-app
+maestro doctor --repo /absolute/path/to/my-app
+maestro spec-check --repo /absolute/path/to/my-app
+```
 
-Use standard Git `--no-verify` only when you intentionally need to bypass hooks.
+## Workflow Basics
 
-## Issue States
-
-| State | Meaning |
-| --- | --- |
-| `backlog` | Not yet prioritized |
-| `ready` | Available for the orchestrator |
-| `in_progress` | Actively being worked |
-| `in_review` | Waiting for human review |
-| `done` | Completed |
-| `cancelled` | Closed without completion |
-
-## Workflow Configuration
-
-`WORKFLOW.md` is the repo-local source of truth for:
+`WORKFLOW.md` is the repo-local source of truth for orchestration behavior. It covers:
 
 - tracker settings
 - workspace root
 - hook commands and timeout
-- agent concurrency, mode, and dispatch behavior
-- optional review/done phase prompts
+- agent concurrency, mode, retry limits, and dispatch behavior
+- optional review and done phase prompts
 - Codex command and sandbox settings
 - the prompt template rendered for each issue
 
-The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported template variables are:
+Fresh `maestro workflow init --defaults` output currently defaults to:
+
+- `tracker.kind: kanban`
+- `polling.interval_ms: 10000`
+- `workspace.root: ./workspaces`
+- `agent.max_concurrent_agents: 3`
+- `agent.max_turns: 4`
+- `agent.max_retry_backoff_ms: 60000`
+- `agent.max_automatic_retries: 8`
+- `agent.mode: app_server`
+- `agent.dispatch_mode: parallel`
+- `codex.command: codex app-server`
+- `codex.expected_version: 0.111.0`
+- `codex.approval_policy: never`
+- `codex.thread_sandbox: workspace-write`
+- `codex.turn_sandbox_policy.type: workspaceWrite`
+- `codex.turn_sandbox_policy.networkAccess: true`
+
+Supported prompt-template variables are:
 
 - `{{ issue.identifier }}`
 - `{{ issue.title }}`
@@ -250,109 +237,51 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 - `{{ phase }}`
 - `{{ attempt }}`
 
-`maestro workflow init` now generates that file with inline comments for every supported key, and the checked-in example uses the same documented structure. The main knobs are:
+The checked-in [`WORKFLOW.md`](WORKFLOW.md) is this repository's own workflow example. It is not guaranteed to match fresh `workflow init` defaults exactly.
 
-- `tracker.kind`: orchestration tracker kind. This remains `kanban`.
-- `tracker.active_states` and `tracker.terminal_states`: state names Maestro should treat as active work or terminal work.
-- `polling.interval_ms`: how often Maestro scans the tracker for runnable issues.
-- `workspace.root`: where per-issue workspaces are created. Relative paths resolve from the repo root; absolute paths, `$ENV_VAR` paths, and `~/` paths are also supported.
-- `hooks.after_create`, `hooks.before_run`, `hooks.after_run`, `hooks.before_remove`, `hooks.timeout_ms`: optional shell hooks that run inside the issue workspace, plus the per-hook timeout.
-- `phases.review.enabled`, `phases.review.prompt`, `phases.done.enabled`, `phases.done.prompt`: optional extra prompts for review and done passes after implementation.
-- `agent.max_concurrent_agents`: maximum simultaneous issues per project when `dispatch_mode` is `parallel`.
-- `agent.max_turns`: maximum turns Maestro gives Codex before ending a run attempt.
-- `agent.max_retry_backoff_ms`: upper bound for automatic retry backoff delays.
-- `agent.max_automatic_retries`: maximum automatic retry attempts for the same issue.
-- `agent.mode`: `app_server` for the Codex app-server protocol, or `stdio` for `codex exec` style runners.
-- `agent.dispatch_mode`: `parallel` (default) uses `agent.max_concurrent_agents` per project; `per_project_serial` runs one issue at a time per project while still allowing different projects to run in parallel.
-- `codex.command`: exact command Maestro launches for the agent.
-- `codex.expected_version`: version Maestro expects from `codex --version`. Mismatches warn but do not hard-fail.
-- `codex.approval_policy`: should stay `never` for unattended runs so Codex does not stop waiting for interactive approvals. Other string options are `on-request`, `on-failure`, and `untrusted`; the structured `reject` object from the Codex schema is also supported.
-- `codex.thread_sandbox`: thread-level sandbox. Supported options are `read-only`, `workspace-write`, and `danger-full-access`.
-- `codex.turn_sandbox_policy`: per-turn sandbox policy object. `type` can be `workspaceWrite`, `readOnly`, `externalSandbox`, or `dangerFullAccess`. For `workspaceWrite`, the schema also supports `writableRoots`, `readOnlyAccess`, `excludeTmpdirEnvVar`, and `excludeSlashTmp`. If you omit those extras, Maestro fills in safe defaults for writable roots and read-only access.
-- `codex.turn_timeout_ms`, `codex.read_timeout_ms`, `codex.stall_timeout_ms`: run budget, stream-read timeout, and inactivity timeout.
+Missing-file behavior differs by command:
 
-Project-level provider selection is separate from `WORKFLOW.md`. Projects can use `kanban` or limited `linear` support, but orchestration still runs through the same local store and workflow file.
-
-### Codex Access Requirements
-
-For `maestro run` to work reliably, Codex needs both the right workflow settings and the right local credentials:
-
-- Codex must already be installed and logged in before Maestro launches it.
-- The configured `codex.command` must be available on `PATH`, or you should use an absolute path.
-- Unattended orchestration should use `approval_policy: never`. Any approval mode that expects human interaction can stall the queue.
-- The default `thread_sandbox: workspace-write` is intentional. It lets Codex edit files in the issue workspace without giving it unrestricted filesystem write access.
-- By default, Maestro expands `turn_sandbox_policy` so Codex can write to the issue workspace, the configured workspace root, and the repo root when needed for normal Git worktree flows.
-- The default turn sandbox also sets `readOnlyAccess: fullAccess`, so Codex can inspect the wider machine state while still limiting where it writes.
-- `networkAccess: true` is enabled by default. Keep it on if your tasks need package installs, remote Git operations, API calls, or other external fetches.
-
-If you tighten the sandbox further, make sure Codex can still:
-
-- read the target repository
-- write inside the per-issue workspace created under `workspace.root`
-- reach the network when the task depends on external package registries, Git remotes, or APIs
-- run non-interactively without waiting for approval prompts
-
-Codex app-server compatibility is versioned:
-
-- the supported Codex CLI version is `0.111.0`
-- `WORKFLOW.md` now records this as `codex.expected_version`
-- Maestro warns when the detected `codex --version` does not match, but it does not hard-fail
-
-The official Codex JSON Schemas are checked into [`schemas/codex/0.111.0/json`](schemas/codex/0.111.0/json), and the generated Go protocol models live under [`internal/appserver/protocol/gen`](internal/appserver/protocol/gen).
-
-Regenerate both after a deliberate Codex upgrade with:
-
-```bash
-./scripts/update_codex_schemas.sh
-```
-
-Normal builds and tests do not require Codex schema regeneration because the artifacts are committed.
-
-Bootstrap behavior matters:
-
-- `maestro workflow init` creates the file explicitly
+- `maestro workflow init` creates `WORKFLOW.md` explicitly
 - `maestro run` bootstraps a missing file automatically
 - `maestro verify` checks readiness and returns remediation guidance
-- `maestro doctor` runs the same readiness checks with a different presentation
-- `maestro spec-check` does not mutate the repo and fails if the workflow file is missing or invalid
+- `maestro doctor` runs the same readiness checks with different presentation
+- `maestro spec-check` is non-mutating and fails if the workflow file is missing or invalid
 
-## Operations and Advanced Usage
+## More Documentation
 
-- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) covers observability endpoints, `verify` and `spec-check`, extension tool files, logs, and current non-goals.
-- [`docs/E2E_REAL_CODEX.md`](docs/E2E_REAL_CODEX.md) documents the end-to-end harness that runs the real Codex CLI against simple deterministic issues.
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md): runtime surfaces, HTTP endpoints, extension tools, logs, and operational details
+- [`docs/E2E_REAL_CODEX.md`](docs/E2E_REAL_CODEX.md): end-to-end harness that runs the real Codex CLI against deterministic issues
+- [`WORKFLOW.md`](WORKFLOW.md): the workflow configuration used by this repository
 
-## Architecture
+## Contributor Setup
 
-```text
-Codex or ChatGPT (via MCP)      Browser / CLI helpers
-            |                           |
-            v                           v
-   maestro mcp (stdio bridge)   public HTTP server (:port)
-            |                           |
-            v                           v
-       private MCP daemon ----> /api/v1/*, /api/v1/app/*, /api/v1/ws
-                    \\                  /
-                     v                v
-                  maestro run daemon
-                           |
-                           v
-        provider service <-> local SQLite store
-                           |
-                           v
-          orchestrator -> workspace lifecycle -> agent runner
-                           ^
-                           |
-                      WORKFLOW.md
-```
-
-## Docker
+If you are contributing from a repo checkout, run the root install once:
 
 ```bash
-docker pull ghcr.io/olhapi/maestro:latest
-docker run --rm -v ./repo:/repo -v ./data:/data ghcr.io/olhapi/maestro:latest run --db /data/maestro.db /repo --port 8787
+npm install
 ```
 
-If you run `maestro mcp` in a separate environment from `maestro run`, both processes must share the same database path and daemon registry location.
+That single install:
+
+- installs the repo-managed Git hooks through Husky
+- bootstraps both the nested `frontend` and `website` dependencies
+- makes the root helper scripts available for common local tasks
+
+Common contributor commands:
+
+```bash
+make build
+make test
+npm run website:dev
+npm run website:check
+```
+
+Repo-managed Git hooks stay targeted:
+
+- staged Go changes run package-scoped Go tests
+- staged frontend changes run frontend lint and tests
+- staged website changes run Astro checks and website tests
+- `pre-push` adds website build validation alongside the broader Go and frontend gates
 
 ## License
 

@@ -14,11 +14,15 @@ import DocsCommandField from "./_components/DocsCommandField.astro";
   command={`maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
 maestro project list
 maestro project show <id>
+maestro project start <id> --api-url <url>
+maestro project stop <id> --api-url <url>
 maestro project update <id> [--name <name>] [--desc <description>] [--repo <repo_path>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
 maestro project delete <id>`}
 />
 
 Use project commands to register a repo, inspect the local tracker, configure project-level providers, and remove stale projects from the store.
+
+`start` and `stop` are live control commands. They require `--api-url` because they talk to a running Maestro daemon over HTTP.
 
 `kanban` is the default provider. `linear` support exists, but it is intentionally limited and does not support epics.
 
@@ -35,13 +39,14 @@ maestro epic delete <id>`}
 ## Issues
 
 <DocsCommandField
-  command={`maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
-maestro issue list [--state <state>] [--project <id>]
+  command={`maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>] [--type <standard|recurring>] [--cron "<spec>"] [--enabled=<true|false>]
+maestro issue list [--state <state>] [--project <id>] [--type <standard|recurring>]
 maestro issue show <identifier>
 maestro issue move <identifier> <state>
-maestro issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
+maestro issue update <identifier> [--title <title>] [--desc <description>] [--type <standard|recurring>] [--cron "<spec>"] [--enabled=<true|false>] [--pr <number> <url>]
 maestro issue execution <identifier> --api-url <url>
 maestro issue retry <identifier> --api-url <url>
+maestro issue run-now <identifier> --api-url <url>
 maestro issue unblock <identifier> <blocker_identifier...>
 maestro issue blockers set <identifier> [blocker_identifier...]
 maestro issue blockers clear <identifier>
@@ -50,6 +55,8 @@ maestro issue block <identifier> <blocker_identifier...>`}
 />
 
 Issue commands are the local queue manipulation layer. Most day-to-day supervision boils down to create, list, move, show, execution inspection, and blocker management.
+
+Recurring issues use `--type recurring` with a 5-field cron expression in the daemon host's local timezone. `run-now` triggers an immediate recurring execution without waiting for the next scheduled slot.
 
 ## Orchestration
 

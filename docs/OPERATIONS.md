@@ -57,6 +57,7 @@ These endpoints back the embedded UI and expose the broader local control plane:
 - `POST /api/v1/app/issues/:identifier/blockers`
 - `POST /api/v1/app/issues/:identifier/commands`
 - `POST /api/v1/app/issues/:identifier/retry`
+- `POST /api/v1/app/issues/:identifier/run-now`
 - `GET /api/v1/app/runtime/events`
 - `GET /api/v1/app/runtime/series`
 - `GET /api/v1/app/sessions`
@@ -67,16 +68,49 @@ These endpoints back the embedded UI and expose the broader local control plane:
 
 ## CLI and API usage
 
-Commands that read the live runtime over HTTP require `--api-url`:
+Commands that talk to a running daemon over HTTP require `--api-url`:
 
 - `maestro status --dashboard --api-url http://127.0.0.1:8787`
 - `maestro sessions --api-url http://127.0.0.1:8787`
 - `maestro events --api-url http://127.0.0.1:8787`
 - `maestro runtime-series --api-url http://127.0.0.1:8787`
+- `maestro project start PRJ-1 --api-url http://127.0.0.1:8787`
+- `maestro project stop PRJ-1 --api-url http://127.0.0.1:8787`
 - `maestro issue execution ISS-1 --api-url http://127.0.0.1:8787`
 - `maestro issue retry ISS-1 --api-url http://127.0.0.1:8787`
+- `maestro issue run-now ISS-1 --api-url http://127.0.0.1:8787`
 
 The embedded dashboard does not need `--api-url` because it is served by the same HTTP server it talks to.
+
+## Recurring issues
+
+Recurring issues are first-class Maestro issues with `issue_type=recurring` plus recurrence metadata:
+
+- `cron`
+- `enabled`
+- `next_run_at`
+- `last_enqueued_at`
+- `pending_rerun`
+
+Cron expressions use the daemon host's local timezone and standard 5-field minute granularity.
+
+Example:
+
+```bash
+maestro issue create "Sync GitHub ready-to-work" \
+  --project <project_id> \
+  --type recurring \
+  --cron "*/15 * * * *" \
+  --desc "Check GitHub project issues with the ready-to-work label and create matching Maestro issues when missing."
+```
+
+Operational behavior:
+
+- recurring issues reuse the same orchestration flow, retries, MCP tools, and dashboard surfaces as any other issue
+- the scheduler enqueues at most one catch-up run if the daemon was down
+- active recurring work never overlaps; extra schedule hits are coalesced into one pending rerun
+- `cancelled` or `enabled=false` suppresses future scheduled runs without deleting the issue
+- `run-now` triggers an immediate execution for an idle recurring issue, or records a pending rerun when the issue is already occupied
 
 ## MCP attach model
 

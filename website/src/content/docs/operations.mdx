@@ -50,6 +50,7 @@ These endpoints back the embedded UI:
 | `/api/v1/app/issues/:identifier/blockers` | Blocker updates |
 | `/api/v1/app/issues/:identifier/commands` | Agent follow-up commands |
 | `/api/v1/app/issues/:identifier/retry` | Immediate retry request |
+| `/api/v1/app/issues/:identifier/run-now` | Immediate recurring trigger |
 | `/api/v1/app/runtime/events` | Persisted runtime event feed |
 | `/api/v1/app/runtime/series` | Runtime series charts |
 | `/api/v1/app/sessions` | Session list for the embedded dashboard |
@@ -60,7 +61,33 @@ These endpoints back the embedded UI:
 | --- | --- |
 | `GET /api/v1/ws` | Dashboard invalidate stream used to refetch live data |
 
-CLI helpers such as `status --dashboard`, `sessions`, and `events` require `--api-url`. The embedded dashboard does not because it talks to the colocated server directly.
+Commands that talk to a running daemon over HTTP require `--api-url`, including `status --dashboard`, `sessions`, `events`, `project start`, and `project stop`. The embedded dashboard does not because it talks to the colocated server directly.
+
+## Recurring issues
+
+Recurring issues are first-class local issues with `issue_type=recurring`. They add:
+
+- `cron`
+- `enabled`
+- `next_run_at`
+- `last_enqueued_at`
+- `pending_rerun`
+
+Cron schedules use the daemon host's local timezone with 5-field minute granularity.
+
+Example:
+
+<DocsCommandField
+  command={`maestro issue create "Sync GitHub ready-to-work" --project <project_id> --type recurring --cron "*/15 * * * *" --desc "Check GitHub issues labeled ready-to-work and create corresponding Maestro issues when missing."
+maestro issue run-now ISS-42 --api-url http://127.0.0.1:8787` }
+/>
+
+Behavior guarantees:
+
+- the scheduler reuses the same queue, retries, runtime events, MCP tools, and dashboard surfaces as normal issues
+- a daemon restart or outage produces at most one catch-up enqueue
+- recurring work never overlaps; extra schedule hits become a single pending rerun
+- `cancelled` and `enabled=false` suppress future scheduling without deleting the issue
 
 ## Repo scope
 

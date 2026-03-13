@@ -66,7 +66,9 @@ If you want CLI helpers to talk to that live daemon, pass `--api-url`:
 
 <DocsCommandField
   command={`maestro status --dashboard --api-url http://127.0.0.1:8787
-maestro sessions --api-url http://127.0.0.1:8787`}
+maestro sessions --api-url http://127.0.0.1:8787
+maestro project start PRJ-1 --api-url http://127.0.0.1:8787
+maestro project stop PRJ-1 --api-url http://127.0.0.1:8787`}
 />
 
 The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.

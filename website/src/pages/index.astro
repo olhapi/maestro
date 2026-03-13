@@ -12,39 +12,38 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
 
 <BaseLayout
   activeNav="/"
-  description="Maestro is a local-first orchestration control plane for Codex and ChatGPT with an embedded dashboard, MCP bridge, and durable SQLite-backed tracker."
+  description="Maestro is a local-first orchestration control plane for coding agents with an embedded dashboard, MCP bridge, and durable SQLite-backed tracker."
   path="/"
   title="Maestro"
 >
   <section class="section-shell grid gap-10 pb-18 pt-10 md:pb-24 md:pt-16 lg:grid-cols-[1.05fr_minmax(0,0.95fr)] lg:items-center">
     <div>
-      <h1 class="max-w-4xl font-display text-[clamp(3.2rem,8vw,5.6rem)] font-semibold leading-[0.96] tracking-tight text-white">
-        Local-first orchestration for Codex and ChatGPT.
+      <h1 class="max-w-4xl font-display text-[clamp(2rem,4.4vw,3.45rem)] font-semibold leading-[0.96] tracking-tight text-white">
+        Local-first orchestration for coding agents
       </h1>
       <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--muted)] md:text-xl">
         Maestro combines a durable SQLite-backed tracker, an MCP attach point, and a live control center so you can move from workflow bootstrap to active orchestration without leaving your own machine.
       </p>
       <div class="mt-8 flex flex-wrap gap-3">
-        <a class="button-primary" href="/docs/quickstart">Start with quickstart</a>
+        <a class="button-primary" href="/docs/quickstart">Quickstart</a>
         <a class="button-secondary" href="/docs">Open documentation</a>
       </div>
-      <div class="mt-8 grid gap-3 sm:grid-cols-3">
-        <div class="panel-soft min-w-0 p-4">
-          <p class="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Install</p>
-          <CopyCodeField client:load className="mt-3" command={quickstartSteps[0].command} />
-        </div>
-        <div class="panel-soft p-4">
-          <p class="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Workflow</p>
-          <p class="mt-2 text-sm text-white">Bootstrap a repo-local WORKFLOW.md and keep the loop visible.</p>
-        </div>
-        <div class="panel-soft p-4">
-          <p class="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Control Center</p>
-          <p class="mt-2 text-sm text-white">Monitor runs, retries, and token burn in one surface.</p>
-        </div>
+      <div class="mt-8 space-y-4">
+        {quickstartSteps.slice(0, 2).map((step, index) => (
+          <div class="min-w-0 rounded-[1.2rem] border border-white/8 bg-black/20 p-4">
+            <div class="flex items-center gap-3">
+              <div class="flex size-8 items-center justify-center rounded-full border border-[rgba(196,255,87,0.25)] bg-[rgba(196,255,87,0.1)] text-sm font-semibold text-[var(--accent-strong)]">
+                {index + 1}
+              </div>
+              <p class="font-medium text-white">{step.title}</p>
+            </div>
+            <CopyCodeField client:load className="mt-3" command={step.command} />
+          </div>
+        ))}
       </div>
     </div>
 
-    <HeroShowcase client:visible quickstartSteps={quickstartSteps} surfaces={durableSurfaces} />
+    <HeroShowcase client:visible />
   </section>
 
   <section class="section-shell pb-18 md:pb-24">
@@ -101,7 +100,7 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
     <div class="panel grid gap-6 p-8 md:grid-cols-[1fr_auto] md:items-end md:p-10">
       <div class="max-w-2xl">
         <h2 class="font-display text-3xl font-semibold tracking-tight text-white md:text-5xl">
-          Start with quickstart, then stay in the docs until the loop feels boring.
+          Begin with quickstart, then stay in the docs until the loop feels boring.
         </h2>
         <p class="mt-4 text-base leading-7 text-[var(--muted)] md:text-lg">
           The goal is not a flashy landing page disconnected from the product. It is an engaging front door that turns directly into durable docs and the live product walkthrough on this page.
