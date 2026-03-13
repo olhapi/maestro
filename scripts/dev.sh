@@ -12,25 +12,53 @@ STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-20}"
 
 backend_pid=""
 frontend_pid=""
-reuse_frontend=false
+requested_exit_code=""
+
+stop_process_group() {
+  local pid="${1:-}"
+  local elapsed=0
+
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  kill -TERM -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( elapsed >= 5 )); then
+      kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      break
+    fi
+
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  wait "$pid" 2>/dev/null || true
+}
 
 cleanup() {
   local exit_code=$?
+  trap - EXIT INT TERM
 
-  if [[ -n "$frontend_pid" ]] && kill -0 "$frontend_pid" 2>/dev/null; then
-    kill "$frontend_pid" 2>/dev/null || true
-    wait "$frontend_pid" 2>/dev/null || true
-  fi
+  stop_process_group "$frontend_pid"
+  stop_process_group "$backend_pid"
 
-  if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
-    kill "$backend_pid" 2>/dev/null || true
-    wait "$backend_pid" 2>/dev/null || true
+  if [[ -n "$requested_exit_code" ]]; then
+    exit "$requested_exit_code"
   fi
 
   exit "$exit_code"
 }
 
-trap cleanup EXIT INT TERM
+handle_signal() {
+  requested_exit_code="$1"
+  exit "$requested_exit_code"
+}
+
+trap cleanup EXIT
+trap 'handle_signal 0' INT
+trap 'handle_signal 143' TERM
 
 if [[ -n "$REPO_PATH" ]]; then
   if [[ ! -d "$REPO_PATH" ]]; then
@@ -58,6 +86,25 @@ wait_for_backend() {
     sleep 1
     elapsed=$((elapsed + 1))
   done
+}
+
+start_process_group() {
+  local output_var="$1"
+  local workdir="$2"
+  shift 2
+
+  (
+    cd "$workdir"
+    exec /usr/bin/python3 - "$@" <<'PY'
+import os
+import sys
+
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+PY
+  ) &
+
+  printf -v "$output_var" '%s' "$!"
 }
 
 listener_pid() {
@@ -119,59 +166,18 @@ wait_for_port_release() {
   done
 }
 
-frontend_listener_is_reusable() {
-  local pid="$1"
-  local cmd
-  local cwd
-
-  cmd="$(listener_command "$pid" || true)"
-  cwd="$(listener_cwd "$pid" || true)"
-
-  [[ "$cwd" == "$ROOT_DIR/apps/frontend" ]] || return 1
-  [[ "$cmd" == *"vite"* ]] || return 1
-  [[ "$cmd" == *"--port ${FRONTEND_PORT}"* || "$cmd" == *"--port=${FRONTEND_PORT}"* ]] || return 1
-
-  return 0
-}
-
-ensure_frontend_ready() {
-  local pid
-
-  pid="$(listener_pid "$FRONTEND_PORT" || true)"
-  if [[ -z "$pid" ]]; then
-    return 0
-  fi
-
-  if frontend_listener_is_reusable "$pid"; then
-    reuse_frontend=true
-    return 0
-  fi
-
-  echo "Frontend port ${FRONTEND_PORT} is already in use by a non-reusable process." >&2
-  describe_listener "$FRONTEND_PORT" "frontend"
-  return 1
-}
-
 wait_for_port_release "$BACKEND_PORT" "backend"
-ensure_frontend_ready
+wait_for_port_release "$FRONTEND_PORT" "frontend"
 
-cd "$ROOT_DIR"
 backend_cmd=(go run ./cmd/maestro run --db "$DB_PATH" --port "$BACKEND_PORT")
 if [[ -n "$REPO_PATH" ]]; then
   backend_cmd+=( "$REPO_PATH" )
 fi
-"${backend_cmd[@]}" &
-backend_pid=$!
+start_process_group backend_pid "$ROOT_DIR" "${backend_cmd[@]}"
 
 wait_for_backend
 
-if [[ "$reuse_frontend" == true ]]; then
-  echo "Frontend: reusing existing Vite dev server on http://${FRONTEND_HOST}:${FRONTEND_PORT}"
-else
-  cd "$ROOT_DIR/apps/frontend"
-  pnpm dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort &
-  frontend_pid=$!
-fi
+start_process_group frontend_pid "$ROOT_DIR/apps/frontend" pnpm exec vite --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort
 
 if [[ -n "$REPO_PATH" ]]; then
   echo "Repo:     ${REPO_PATH}"
@@ -180,11 +186,7 @@ else
 fi
 echo "DB:       ${DB_PATH}"
 echo "Backend:  http://127.0.0.1:${BACKEND_PORT}"
-if [[ "$reuse_frontend" == true ]]; then
-  echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT} (reused)"
-else
-  echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"
-fi
+echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT} (HMR)"
 echo "Press Ctrl+C to stop both."
 
 wait_targets=()

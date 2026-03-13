@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ProjectsPage } from "@/routes/projects";
@@ -119,11 +119,19 @@ describe("ProjectsPage", () => {
       expect(screen.getByText("Out of scope")).toBeInTheDocument();
     });
 
-    expect(
-      screen.getByText(
-        "Project repo is outside the current server scope (/repo/current)",
-      ),
-    ).toBeInTheDocument();
+    const badge = screen.getByText("Out of scope");
+    await act(async () => {
+      fireEvent.pointerEnter(badge, { pointerType: "mouse" });
+      fireEvent.mouseEnter(badge);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Bring the repo into this server scope")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Project repo is outside the current server scope (/repo/current)")).toBeInTheDocument();
+    expect(screen.getByText("Move the project's repo path under /repo/current, or restart Maestro scoped to /repo/other.")).toBeInTheDocument();
+    expect(screen.getByText("Project repo: /repo/other")).toBeInTheDocument();
+    expect(screen.getByText("Server scope: /repo/current")).toBeInTheDocument();
     expect(screen.getByText("Tokens")).toBeInTheDocument();
   });
 

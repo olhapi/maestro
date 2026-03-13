@@ -67,6 +67,7 @@ describe('AppShell', () => {
       expect(screen.getAllByText('Maestro').length).toBeGreaterThan(0)
     })
 
+    expect(screen.getAllByRole('link', { name: 'Maestro' })[0]).toHaveAttribute('href', '/')
     const workLink = screen.getAllByRole('link', { name: 'Work' })[0]
     expect(workLink).toHaveAttribute('aria-label', 'Work')
     expect(screen.getAllByRole('link', { name: 'Sessions' }).length).toBeGreaterThan(0)
@@ -117,6 +118,7 @@ describe('AppShell', () => {
 
     expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument()
     expect(screen.getByText(/Updated .*ago/)).toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: 'Maestro' })[0]).toHaveAttribute('href', '/')
     expect(screen.getAllByRole('link', { name: 'Overview' }).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('link', { name: 'Projects' }).length).toBeGreaterThan(0)
   })

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Play, Plus, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { EpicDialog, IssueDialog, ProjectDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
@@ -14,8 +15,6 @@ import { api } from "@/lib/api";
 import {
   isProjectDispatchReady,
   isProjectRunning,
-  projectDispatchBadgeClass,
-  projectDispatchLabel,
   summaryActiveCount,
   summaryDoneCount,
   summaryTokenSpend,
@@ -178,9 +177,7 @@ export function ProjectsPage() {
                 </div>
                 <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
                   {!dispatchReady ? (
-                    <Badge className={projectDispatchBadgeClass(project)}>
-                      {projectDispatchLabel(project)}
-                    </Badge>
+                    <ProjectDispatchBadge project={project} />
                   ) : null}
                   <div className="flex flex-nowrap items-center gap-1.5 self-start lg:self-end">
                     <Button

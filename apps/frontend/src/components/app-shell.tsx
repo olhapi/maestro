@@ -21,6 +21,7 @@ const nav = [
 
 const APP_TITLE = 'Maestro Control Center'
 const SIDEBAR_TITLE = 'Maestro'
+const brandLinkClass = 'rounded-[calc(var(--panel-radius)-0.125rem)] outline-none transition hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60'
 
 function getPageTitle(pathname: string) {
   if (pathname === appRoutes.overview) return 'Overview'
@@ -74,14 +75,17 @@ export function AppShell() {
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(196,255,87,.12),transparent_24%),radial-gradient(circle_at_top_right,rgba(83,217,255,.1),transparent_26%),linear-gradient(180deg,rgba(255,255,255,.05),transparent_40%)]" />
       <div className="relative min-h-screen lg:grid lg:grid-cols-[var(--shell-sidebar-width)_1fr]">
         <aside className="hidden border-b border-white/8 bg-black/25 p-[var(--shell-padding)] backdrop-blur-2xl lg:flex lg:min-h-screen lg:flex-col lg:border-b-0 lg:border-r">
-          <div className="flex items-center gap-3 lg:max-[1440px]:justify-center">
+          <Link
+            to={appRoutes.overview}
+            className={cn('flex items-center gap-3 text-white lg:max-[1440px]:justify-center', brandLinkClass)}
+          >
             <div className="hidden size-11 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-white/5 font-display text-sm font-semibold tracking-[0.24em] text-[var(--accent)] lg:max-[1440px]:flex">
               MC
             </div>
             <div className="lg:max-[1440px]:hidden">
               <h1 className="font-display text-[1.65rem] font-semibold leading-none">{SIDEBAR_TITLE}</h1>
             </div>
-          </div>
+          </Link>
 
           <div className="mt-6 grid gap-2">
             {nav.map((item) => {
@@ -139,7 +143,9 @@ export function AppShell() {
           <header className="sticky top-0 z-30 border-b border-white/8 bg-black/30 backdrop-blur-xl lg:hidden">
             <div className="flex items-start justify-between gap-3 px-[var(--shell-padding)] py-3">
               <div className="min-w-0">
-                <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{SIDEBAR_TITLE}</p>
+                <Link to={appRoutes.overview} className={cn('inline-flex text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]', brandLinkClass)}>
+                  {SIDEBAR_TITLE}
+                </Link>
                 <h1 className="mt-1 truncate font-display text-lg font-semibold leading-none text-white">{pageTitle}</h1>
               </div>
               <div className="flex items-center gap-2">

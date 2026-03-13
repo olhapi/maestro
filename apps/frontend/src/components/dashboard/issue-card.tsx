@@ -34,8 +34,9 @@ import {
   getStateMeta,
   issueStatesFor,
 } from "@/lib/dashboard";
+import { describeFailureRuns, failureStatusLabel } from "@/lib/execution";
 import { appRoutes } from "@/lib/routes";
-import { cn, formatCompactNumber, formatRelativeTime } from "@/lib/utils";
+import { cn, formatCompactNumber, formatRelativeTime, toTitleCase } from "@/lib/utils";
 
 export function IssueCard({
   issue,
@@ -57,10 +58,15 @@ export function IssueCard({
   const session = getSessionForIssue(bootstrap, issue.id, issue.identifier);
   const retry = getRetryForIssue(bootstrap, issue.id, issue.identifier);
   const paused = getPausedForIssue(bootstrap, issue.id, issue.identifier);
-  const meta = getStateMeta(issue.state);
   const availableStates = issueStatesFor([issue]);
   const cardBadgeClass = "px-1.75 py-0.5 text-[9px] tracking-[0.14em]";
   const blockedBy = issue.blocked_by?.filter(Boolean).join(", ");
+  const labels = issue.labels?.filter(Boolean) ?? [];
+  const retryReason = retry?.error
+    ? failureStatusLabel(retry.error) ?? toTitleCase(retry.error)
+    : null;
+  const liveSummary = session?.last_message
+    || (session?.last_event ? toTitleCase(session.last_event.replaceAll(".", "_")) : null);
 
   const content = (
     <Link
@@ -162,84 +168,56 @@ export function IssueCard({
 
   const hoverPreview = (
     <HoverCardContent align="start" className="space-y-3.5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
-            {issue.identifier}
-          </p>
-          <p className="mt-2 text-sm font-semibold leading-5 text-white">
-            {issue.title}
-          </p>
-        </div>
-        <Badge className="shrink-0 border-white/12 bg-white/5 text-white">
-          {meta.label}
-        </Badge>
-      </div>
+      {compact ? (
+        <p className="line-clamp-5 text-sm leading-6 text-[var(--muted-foreground)]">
+          {issue.description || "No additional context yet."}
+        </p>
+      ) : null}
 
-      {issue.project_name || issue.epic_name ? (
+      {labels.length > 0 ? (
         <div className="flex flex-wrap gap-1.5">
-          {issue.project_name ? (
-            <Badge className="border-white/12 bg-white/5 text-white">
-              {issue.project_name}
+          {labels.slice(0, 4).map((label) => (
+            <Badge key={label} className="border-white/12 bg-white/5 text-white">
+              {label}
             </Badge>
-          ) : null}
-          {issue.epic_name ? (
-            <Badge className="border-white/12 bg-white/5 text-white">
-              {issue.epic_name}
+          ))}
+          {labels.length > 4 ? (
+            <Badge className="border-white/12 bg-white/5 text-[var(--muted-foreground)]">
+              +{labels.length - 4} more
             </Badge>
           ) : null}
         </div>
       ) : null}
 
-      <p className="line-clamp-4 text-sm leading-6 text-[var(--muted-foreground)]">
-        {issue.description || "No description available."}
-      </p>
-
       <div className="grid gap-2 text-xs text-[var(--muted-foreground)]">
-        <div className="inline-flex items-center gap-2">
-          <Clock3 className="size-3.5" />
-          Updated {formatRelativeTime(issue.updated_at)}
-        </div>
-        <div className="inline-flex items-center gap-2">
-          <Coins className="size-3.5" />
-          {formatCompactNumber(issue.total_tokens_spent)} lifetime tokens
-        </div>
         {session ? (
           <div className="inline-flex items-center gap-2">
             <Workflow className="size-3.5 text-lime-300" />
-            Live session in progress
+            {liveSummary ? `Live session · ${liveSummary}` : "Live session in progress"}
           </div>
         ) : null}
         {retry ? (
-          <div className="inline-flex items-center gap-2">
-            <RotateCcw className="size-3.5 text-amber-300" />
-            Retry scheduled {formatRelativeTime(retry.due_at)}
+          <div className="grid gap-0.5">
+            <div className="inline-flex items-center gap-2">
+              <RotateCcw className="size-3.5 text-amber-300" />
+              Retry scheduled {formatRelativeTime(retry.due_at)}
+            </div>
+            {retryReason ? (
+              <div className="pl-[1.375rem] text-[11px] text-[var(--muted-foreground)]">
+                Reason: {retryReason}
+              </div>
+            ) : null}
           </div>
         ) : null}
         {paused ? (
-          <div className="inline-flex items-center gap-2">
-            <AlertTriangle className="size-3.5 text-rose-300" />
-            Auto-retries paused
-          </div>
-        ) : null}
-        {issue.workspace_run_count > 0 ? (
-          <div className="inline-flex items-center gap-2">
-            <PlayCircle className="size-3.5 text-lime-300" />
-            {issue.workspace_run_count} runs
-          </div>
-        ) : null}
-        {issue.issue_type === "recurring" ? (
-          <div className="inline-flex items-center gap-2">
-            <RotateCcw className="size-3.5 text-cyan-300" />
-            {issue.next_run_at
-              ? `Next run ${formatRelativeTime(issue.next_run_at)}`
-              : "Recurring schedule configured"}
-          </div>
-        ) : null}
-        {issue.branch_name ? (
-          <div className="inline-flex items-center gap-2">
-            <GitBranch className="size-3.5" />
-            Branch {issue.branch_name}
+          <div className="grid gap-0.5">
+            <div className="inline-flex items-center gap-2">
+              <AlertTriangle className="size-3.5 text-rose-300" />
+              Auto-retries paused
+            </div>
+            <div className="pl-[1.375rem] text-[11px] text-[var(--muted-foreground)]">
+              {describeFailureRuns(paused.consecutive_failures, paused.error)}
+            </div>
           </div>
         ) : null}
         {issue.is_blocked ? (
@@ -247,6 +225,39 @@ export function IssueCard({
             <AlertTriangle className="size-3.5 text-red-300" />
             {blockedBy ? `Blocked by ${blockedBy}` : "Blocked by another issue"}
           </div>
+        ) : null}
+        {issue.workspace_path ? (
+          <div className="grid gap-0.5">
+            <div className="inline-flex items-center gap-2">
+              <PlayCircle className="size-3.5 text-lime-300" />
+              Workspace ready
+            </div>
+            <div className="break-all pl-[1.375rem] text-[11px] text-[var(--muted-foreground)]">
+              {issue.workspace_path}
+            </div>
+            {issue.workspace_last_run ? (
+              <div className="pl-[1.375rem] text-[11px] text-[var(--muted-foreground)]">
+                Last run {formatRelativeTime(issue.workspace_last_run)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {issue.issue_type === "recurring" && !issue.next_run_at ? (
+          <div className="inline-flex items-center gap-2">
+            <RotateCcw className="size-3.5 text-cyan-300" />
+            {issue.enabled === false ? "Recurring schedule disabled" : "Recurring schedule ready"}
+          </div>
+        ) : null}
+        {issue.pr_url ? (
+          <a
+            className="inline-flex items-center gap-2 text-[var(--accent)] transition hover:text-[var(--accent-strong)]"
+            href={issue.pr_url}
+            rel="noreferrer"
+            target="_blank"
+          >
+            <Link2 className="size-3.5" />
+            Open linked PR
+          </a>
         ) : null}
       </div>
     </HoverCardContent>

@@ -526,18 +526,18 @@ export function IssueDialog({
                       setIssueType(value as IssueType);
                     }
                   }}
-                  className="grid h-11 grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-1"
+                  className="grid h-11 grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-[3px]"
                   aria-labelledby={labelId}
                   disabled={!canChangeIssueType}
                 >
                   <ToggleGroupItem
-                    className="h-full rounded-[0.85rem] text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
+                    className="h-full rounded-lg text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
                     value="standard"
                   >
                     Standard
                   </ToggleGroupItem>
                   <ToggleGroupItem
-                    className="h-full rounded-[0.85rem] text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
+                    className="h-full rounded-lg text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
                     value="recurring"
                   >
                     Recurring

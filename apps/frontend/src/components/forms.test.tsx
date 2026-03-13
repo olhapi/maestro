@@ -94,6 +94,35 @@ describe('IssueDialog', () => {
     })
   })
 
+  it('keeps the issue type toggle inset and radius aligned with the field container', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 200,
+      offset: 0,
+    })
+
+    renderWithQueryClient(
+      <IssueDialog
+        open
+        onOpenChange={vi.fn()}
+        projects={bootstrap.projects}
+        epics={bootstrap.epics}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    const standard = await screen.findByRole('radio', { name: /standard/i })
+    const recurring = screen.getByRole('radio', { name: /recurring/i })
+
+    expect(standard).toHaveClass('rounded-lg')
+    expect(recurring).toHaveClass('rounded-lg')
+    expect(standard.parentElement).toHaveClass('rounded-xl')
+    expect(standard.parentElement).toHaveClass('gap-1')
+    expect(standard.parentElement).toHaveClass('p-[3px]')
+  })
+
   it('limits blocker suggestions to the selected project and excludes the edited issue', async () => {
     const bootstrap = makeBootstrapResponse()
     vi.mocked(api.listIssues).mockResolvedValue({

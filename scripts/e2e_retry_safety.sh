@@ -15,6 +15,7 @@ FAKE_APPSERVER_BIN="$BIN_DIR/maestro-fake-appserver"
 TIMEOUT_SEC="${E2E_TIMEOUT_SEC:-180}"
 POLL_SEC="${E2E_POLL_SEC:-1}"
 KEEP_HARNESS="${E2E_KEEP_HARNESS:-1}"
+HTTP_PORT="${E2E_HTTP_PORT:-0}"
 ORCH_PID=""
 
 cd "$ROOT_DIR"
@@ -191,6 +192,13 @@ EOF
     --quiet
 }
 
+start_project() {
+  local id="$1"
+  # Projects are created stopped by default; mark them running so the shared
+  # orchestrator can dispatch the harness issues.
+  sqlite3 "$DB_PATH" "UPDATE projects SET state = 'running', updated_at = datetime('now') WHERE id = '$id';"
+}
+
 require_cmd go
 require_cmd sqlite3
 
@@ -205,6 +213,10 @@ INPUT_PROJECT_ID="$(create_project_workflow "input-project" "input" "false" "8" 
 NO_TRANSITION_PROJECT_ID="$(create_project_workflow "no-transition-project" "complete" "false" "8" "1500" "1500")"
 STALL_PROJECT_ID="$(create_project_workflow "stall-project" "stall" "false" "8" "1500" "250")"
 
+start_project "$INPUT_PROJECT_ID"
+start_project "$NO_TRANSITION_PROJECT_ID"
+start_project "$STALL_PROJECT_ID"
+
 INPUT_ISSUE="$("$MAESTRO_BIN" issue create "Input required retry safety" --project "$INPUT_PROJECT_ID" --db "$DB_PATH" --quiet)"
 NO_TRANSITION_ISSUE="$("$MAESTRO_BIN" issue create "No transition retry safety" --project "$NO_TRANSITION_PROJECT_ID" --db "$DB_PATH" --quiet)"
 STALL_ISSUE="$("$MAESTRO_BIN" issue create "Stall retry safety" --project "$STALL_PROJECT_ID" --db "$DB_PATH" --quiet)"
@@ -217,6 +229,7 @@ echo "Starting shared orchestrator"
 "$MAESTRO_BIN" run \
   --db "$DB_PATH" \
   --logs-root "$LOGS_DIR" \
+  --port "$HTTP_PORT" \
   --i-understand-that-this-will-be-running-without-the-usual-guardrails \
   >"$ORCH_LOG" 2>&1 &
 ORCH_PID="$!"

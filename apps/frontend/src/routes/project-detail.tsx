@@ -6,9 +6,9 @@ import { toast } from "sonner";
 
 import { KanbanBoard } from "@/components/dashboard/kanban-board";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
 import { IssuePreviewSheet } from "@/components/dashboard/issue-preview-sheet";
 import { EpicDialog, IssueDialog } from "@/components/forms";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
@@ -17,8 +17,6 @@ import { getStateMeta } from "@/lib/dashboard";
 import {
   isProjectDispatchReady,
   isProjectRunning,
-  projectDispatchBadgeClass,
-  projectDispatchLabel,
   summaryActiveCount,
   summaryDoneCount,
   summaryTokenSpend,
@@ -225,9 +223,7 @@ export function ProjectDetailPage() {
             ) : null}
           </div>
           {!dispatchReady ? (
-            <Badge className={projectDispatchBadgeClass(project.data.project)}>
-              {projectDispatchLabel(project.data.project)}
-            </Badge>
+            <ProjectDispatchBadge project={project.data.project} />
           ) : null}
         </CardContent>
       </Card>

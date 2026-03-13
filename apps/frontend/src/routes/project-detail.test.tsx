@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
@@ -102,5 +102,44 @@ describe("ProjectDetailPage", () => {
     await waitFor(() => {
       expect(api.stopProject).toHaveBeenCalledWith("project-1");
     });
+  });
+
+  it("shows repo setup guidance when dispatch is not ready", async () => {
+    const bootstrap = makeBootstrapResponse({
+      projects: [
+        {
+          ...makeBootstrapResponse().projects[0],
+          repo_path: "",
+          workflow_path: "",
+          orchestration_ready: false,
+          dispatch_ready: false,
+        },
+      ],
+    });
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getProject).mockResolvedValue({
+      project: bootstrap.projects[0],
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+    });
+
+    renderWithQueryClient(<ProjectDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Needs repo setup")).toBeInTheDocument();
+    });
+
+    const badge = screen.getByText("Needs repo setup");
+    await act(async () => {
+      fireEvent.pointerEnter(badge, { pointerType: "mouse" });
+      fireEvent.mouseEnter(badge);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Attach this project to a local repository")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Open the project settings and set Repo path to the local checkout for this project.")).toBeInTheDocument();
+    expect(screen.getByText("Leave Workflow path empty to use WORKFLOW.md at the repo root, or set an explicit workflow file.")).toBeInTheDocument();
   });
 });

@@ -113,9 +113,11 @@ describe('IssueCard', () => {
     const issue = makeIssueSummary({
       issue_type: 'recurring',
       next_run_at: '2026-03-09T12:30:00Z',
-      branch_name: 'feature/retries',
+      labels: ['api', 'automation'],
       is_blocked: true,
       blocked_by: ['ISS-9'],
+      workspace_last_run: '2026-03-09T11:45:00Z',
+      pr_url: 'https://example.com/pr/7',
     })
 
     renderWithQueryClient(<IssueCard issue={issue} bootstrap={makeBootstrapResponse()} onOpen={vi.fn()} />)
@@ -128,7 +130,12 @@ describe('IssueCard', () => {
     })
 
     expect(screen.getByText('Retry scheduled in 5 minutes')).toBeInTheDocument()
+    expect(screen.getByText('Reason: Approval Required')).toBeInTheDocument()
     expect(screen.getByText('Blocked by ISS-9')).toBeInTheDocument()
-    expect(screen.getByText('Branch feature/retries')).toBeInTheDocument()
+    expect(screen.getByText('Live session · Turn Started')).toBeInTheDocument()
+    expect(screen.getByText('/tmp/workspaces/ISS-1')).toBeInTheDocument()
+    expect(screen.getByText('Last run 15 minutes ago')).toBeInTheDocument()
+    expect(screen.getByText('api')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open linked PR' })).toHaveAttribute('href', 'https://example.com/pr/7')
   })
 })
