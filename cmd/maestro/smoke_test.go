@@ -95,7 +95,9 @@ Test prompt for {{ issue.identifier }}
 		}
 	})
 
-	deadline := time.Now().Add(3 * time.Second)
+	// The race-enabled package suite can be CPU constrained on hook runners, so
+	// give the subprocess enough time to bind its health endpoint.
+	deadline := time.Now().Add(10 * time.Second)
 	var runErr error
 	for time.Now().Before(deadline) {
 		resp, err := http.Get("http://" + addr + "/health")
