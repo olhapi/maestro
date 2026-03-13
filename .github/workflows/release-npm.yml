@@ -122,10 +122,52 @@ jobs:
           path: dist/npm/olhapi-maestro-*.tgz
           if-no-files-found: error
 
+  registry-install-smoke:
+    needs:
+      - build-leaf-packages
+      - build-root-package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+          - target: win32-x64
+            runner: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/npm
+          pattern: npm-*
+          merge-multiple: true
+
+      - name: Smoke test root-only npm install through local registry
+        run: ./scripts/smoke_npm_registry_install.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
+
   publish-npm:
     needs:
       - build-leaf-packages
       - build-root-package
+      - registry-install-smoke
     runs-on: ubuntu-24.04
     permissions:
       contents: read

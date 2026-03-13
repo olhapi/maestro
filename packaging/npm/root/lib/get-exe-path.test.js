@@ -82,6 +82,21 @@ test("resolveExePath explains glibc-only linux support when the leaf package is 
   );
 });
 
+test("resolveExePath mentions Alpine and musl for unsupported musl installs", () => {
+  assert.throws(
+    () =>
+      resolveExePath({
+        platform: "linux",
+        arch: "arm64",
+        resolvePackageJson() {
+          throw new Error("not installed");
+        },
+        report: { header: { musl: "1.2.5" } },
+      }),
+    /Alpine and other musl-based distros should build from source or use Docker/,
+  );
+});
+
 test("buildInstallError lists the supported matrix for unsupported hosts", () => {
   const message = buildInstallError("linux", "arm", null, { header: { glibcVersionRuntime: "2.39" } });
 

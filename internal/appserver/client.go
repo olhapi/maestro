@@ -490,7 +490,7 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 				}
 				continue
 			}
-			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit() {
+			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(100*time.Millisecond) {
 				c.logger.Info("Codex turn completed after clean app-server exit",
 					"session_id", c.session.SessionID,
 					"thread_id", c.session.ThreadID,
@@ -546,18 +546,31 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 	}
 }
 
-func (c *Client) turnFinishedByCleanProcessExit() bool {
+func (c *Client) turnFinishedByCleanProcessExit(wait time.Duration) bool {
 	if c.session == nil || strings.TrimSpace(c.session.ThreadID) == "" || strings.TrimSpace(c.session.TurnID) == "" {
 		return false
 	}
-	select {
-	case err := <-c.waitCh:
+	readWaitResult := func(err error) bool {
 		select {
 		case c.waitCh <- err:
 		default:
 		}
 		return err == nil
+	}
+	select {
+	case err := <-c.waitCh:
+		return readWaitResult(err)
 	default:
+	}
+	if wait <= 0 {
+		return false
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case err := <-c.waitCh:
+		return readWaitResult(err)
+	case <-timer.C:
 		return false
 	}
 }
