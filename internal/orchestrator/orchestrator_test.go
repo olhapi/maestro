@@ -1402,8 +1402,11 @@ func TestCompletedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 3*time.Second)
 	waitForNoRunning(t, orch, 3*time.Second)
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
 
 	if snapshot.RunKind != "retry_paused" || snapshot.Error != "no_state_transition" {
 		t.Fatalf("unexpected completion snapshot: %+v", snapshot)
