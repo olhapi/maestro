@@ -125,7 +125,7 @@ export default function SearchOverlay({ entries }: { entries: SearchEntry[] }) {
           >
             <div className="border-b border-white/8 px-5 py-4">
               <div className="flex items-center gap-3">
-                <div className="rounded-full border border-[rgba(196,255,87,0.2)] bg-[rgba(196,255,87,0.08)] px-3 py-1 text-xs uppercase tracking-[0.16em] text-[var(--accent-strong)]">
+                <div className="hidden rounded-full border border-[rgba(196,255,87,0.2)] bg-[rgba(196,255,87,0.08)] px-3 py-1 text-xs uppercase tracking-[0.16em] text-[var(--accent-strong)] sm:inline-flex">
                   Search
                 </div>
                 <span className="text-sm text-[var(--muted)]">Jump across docs, quickstart, and the tour with Ctrl/Cmd + K.</span>

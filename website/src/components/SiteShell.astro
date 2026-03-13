@@ -1,12 +1,12 @@
 ---
 import SearchOverlay from "./react/SearchOverlay";
-import { repoUrl } from "../site.config";
+import { patreonUrl, repoUrl, xUrl } from "../site.config";
 
 const { searchEntries = [] } = Astro.props;
 ---
 
 <div class="relative min-h-screen overflow-x-clip">
-  <header class="sticky top-0 z-40 border-b border-white/8 bg-[rgba(0,0,0,0.35)] backdrop-blur-xl">
+  <header class="sticky top-0 z-40 border-b border-white/8 bg-[rgb(10,11,14)] md:bg-[rgba(0,0,0,0.35)] md:backdrop-blur-xl">
     <div class="section-shell flex items-center justify-between gap-4 py-4">
       <a class="flex items-center gap-3" href="/">
         <span class="flex size-11 items-center justify-center rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.06)] font-display text-sm font-semibold tracking-[0.24em] text-[var(--accent)]">
@@ -38,20 +38,20 @@ const { searchEntries = [] } = Astro.props;
       </div>
 
       <details class="md:hidden">
-        <summary class="list-none rounded-full border border-white/10 bg-[rgba(255,255,255,0.06)] px-4 py-2 text-sm text-white">
+        <summary class="list-none rounded-full border border-white/10 bg-[rgb(23,24,28)] px-4 py-2 text-sm text-white">
           Menu
         </summary>
-        <div class="panel absolute right-4 top-[calc(100%+0.75rem)] z-50 w-72 space-y-2 p-3">
-          <button class="block w-full rounded-2xl border border-white/8 bg-[rgba(255,255,255,0.04)] px-4 py-3 text-left text-sm text-white" data-search-trigger type="button">
+        <div class="absolute right-4 top-[calc(100%+0.75rem)] z-50 w-72 space-y-2 rounded-[1.75rem] border border-white/10 bg-[rgb(16,17,20)] p-3 shadow-[0_24px_64px_rgba(0,0,0,0.52)]">
+          <button class="block w-full rounded-2xl border border-white/8 bg-[rgb(24,25,29)] px-4 py-3 text-left text-sm text-white" data-search-trigger type="button">
             Search
           </button>
-          <a class="block rounded-2xl border border-white/8 bg-[rgba(255,255,255,0.04)] px-4 py-3 text-sm text-white" href={repoUrl} rel="noreferrer" target="_blank">
+          <a class="block rounded-2xl border border-white/8 bg-[rgb(24,25,29)] px-4 py-3 text-sm text-white" href={repoUrl} rel="noreferrer" target="_blank">
             GitHub
           </a>
-          <a class="block rounded-2xl border border-[rgba(196,255,87,0.25)] bg-[rgba(196,255,87,0.1)] px-4 py-3 text-sm text-white" href="/docs/quickstart">
+          <a class="block rounded-2xl border border-[rgba(196,255,87,0.28)] bg-[rgb(43,58,19)] px-4 py-3 text-sm text-white" href="/docs/quickstart">
             Quickstart
           </a>
-          <a class="block rounded-2xl border border-white/8 bg-[rgba(255,255,255,0.04)] px-4 py-3 text-sm text-white" href="/docs">
+          <a class="block rounded-2xl border border-white/8 bg-[rgb(24,25,29)] px-4 py-3 text-sm text-white" href="/docs">
             Docs
           </a>
         </div>
@@ -74,7 +74,47 @@ const { searchEntries = [] } = Astro.props;
           The website stays separate from the embedded dashboard, but the visual language and quickstart path stay intentionally aligned.
         </p>
       </div>
-      <a class="button-primary" href="/docs">Read the docs</a>
+      <div class="flex items-center gap-3">
+        <a
+          aria-label="GitHub repository"
+          class="flex size-13 items-center justify-center rounded-2xl border border-white/10 bg-[rgb(24,25,29)] text-white transition hover:border-white/18 hover:bg-[rgb(31,32,37)]"
+          href={repoUrl}
+          rel="noreferrer"
+          target="_blank"
+          title="GitHub repository"
+        >
+          <svg aria-hidden="true" class="size-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 .5a12 12 0 0 0-3.79 23.39c.6.12.82-.26.82-.58v-2.23c-3.34.73-4.04-1.42-4.04-1.42-.54-1.4-1.33-1.77-1.33-1.77-1.08-.76.08-.74.08-.74 1.2.09 1.82 1.24 1.82 1.24 1.06 1.85 2.79 1.31 3.47 1 .11-.79.42-1.31.76-1.61-2.67-.31-5.48-1.37-5.48-6.08 0-1.34.47-2.44 1.24-3.3-.12-.31-.54-1.56.12-3.25 0 0 1.01-.33 3.3 1.26a11.37 11.37 0 0 1 6 0c2.28-1.59 3.29-1.26 3.29-1.26.66 1.69.24 2.94.12 3.25.77.86 1.23 1.96 1.23 3.3 0 4.72-2.81 5.77-5.49 6.08.43.38.82 1.1.82 2.22v3.3c0 .32.21.7.82.58A12 12 0 0 0 12 .5Z" />
+          </svg>
+          <span class="sr-only">GitHub repository</span>
+        </a>
+        <a
+          aria-label="X account"
+          class="flex size-13 items-center justify-center rounded-2xl border border-white/10 bg-[rgb(24,25,29)] text-white transition hover:border-white/18 hover:bg-[rgb(31,32,37)]"
+          href={xUrl}
+          rel="noreferrer"
+          target="_blank"
+          title="X account"
+        >
+          <svg aria-hidden="true" class="size-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M18.244 2H21.5l-7.111 8.128L22.75 22h-6.547l-5.129-6.708L5.206 22H1.948l7.607-8.695L1.5 2h6.713l4.637 6.118L18.244 2Zm-1.142 18h1.804L7.228 3.896H5.291L17.102 20Z" />
+          </svg>
+          <span class="sr-only">X account</span>
+        </a>
+        <a
+          aria-label="Patreon page"
+          class="flex size-13 items-center justify-center rounded-2xl border border-[rgba(196,255,87,0.24)] bg-[rgb(43,58,19)] text-[var(--accent-strong)] transition hover:border-[rgba(196,255,87,0.34)] hover:bg-[rgb(52,70,24)]"
+          href={patreonUrl}
+          rel="noreferrer"
+          target="_blank"
+          title="Patreon page"
+        >
+          <svg aria-hidden="true" class="size-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M14.07 3.16c-3.58 0-6.48 2.9-6.48 6.48 0 3.58 2.9 6.48 6.48 6.48 3.58 0 6.48-2.9 6.48-6.48 0-3.58-2.9-6.48-6.48-6.48Zm-11.23.35H6.2V20.5H2.84V3.51Z" />
+          </svg>
+          <span class="sr-only">Patreon page</span>
+        </a>
+      </div>
     </div>
   </footer>
 

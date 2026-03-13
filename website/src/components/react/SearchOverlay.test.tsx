@@ -60,6 +60,26 @@ describe("SearchOverlay", () => {
     await screen.findByRole("searchbox", { name: "Search docs" });
   });
 
+  it("keeps the search badge hidden on mobile widths", async () => {
+    render(
+      <SearchOverlay
+        entries={[
+          {
+            title: "Quickstart",
+            href: "/docs/quickstart",
+            description: "Start the daemon and open the control center.",
+            section: "Getting Started",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: "k" });
+
+    await screen.findByRole("searchbox", { name: "Search docs" });
+    expect(screen.getByText("Search")).toHaveClass("hidden", "sm:inline-flex");
+  });
+
   it("resets the highlighted result when the query changes", async () => {
     render(
       <SearchOverlay

@@ -31,8 +31,8 @@ const groups = groupDocs(await getCollection("docs"));
           <button class="button-secondary" data-search-trigger type="button">Search docs</button>
         </div>
       </div>
-      <div class="panel p-6">
-        <div class="grid gap-4">
+      <div class="panel min-w-0 p-6">
+        <div class="grid min-w-0 gap-4">
           {quickstartSteps.map((step) => <CommandBlock client:load command={step.command} detail={step.detail} title={step.title} />)}
         </div>
       </div>

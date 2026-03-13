@@ -6,30 +6,61 @@ order: 1
 navLabel: Operations
 ---
 
-## Observability endpoints
+import DocsCommandField from "./_components/DocsCommandField.astro";
+
+## HTTP surfaces
 
 Start the daemon with an HTTP port:
 
-```bash
-./maestro run /path/to/repo --port 8787
-```
+<DocsCommandField command={`./maestro run /path/to/repo --port 8787`} />
 
-If `--db` is omitted, `run` uses the current Maestro workspace's `.maestro/maestro.db`.
+If `--db` is omitted, `run` uses `~/.maestro/maestro.db`.
 
-Available endpoints:
+Maestro serves the embedded dashboard plus two related API surfaces.
+
+### Live observability API
+
+These endpoints power the CLI helpers that talk to a running daemon over `--api-url`:
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Process health and timestamp |
-| `GET /api/v1/state` | Orchestrator status payload |
-| `GET /api/v1/<issue_identifier>` | Single running or retrying issue payload |
+| `GET /api/v1/state` | Live orchestrator status payload |
+| `GET /api/v1/<issue_identifier>` | Single issue status payload |
 | `GET /api/v1/sessions` | All live app-server sessions |
 | `GET /api/v1/sessions?issue=ISS-1` | Single session lookup by issue identifier |
 | `GET /api/v1/events?since=0&limit=100` | In-memory event feed |
 | `POST /api/v1/refresh` | Request a refresh event |
 | `GET /api/v1/dashboard` | Combined snapshot of state, sessions, and recent events |
 
-`maestro status --dashboard` is a local CLI rendering helper. It is not the same thing as the live HTTP observability API.
+`maestro status --dashboard` is a CLI formatter over this live API. It is not the same thing as the dashboard application API.
+
+### Dashboard application API
+
+These endpoints back the embedded UI:
+
+| Endpoint family | Purpose |
+| --- | --- |
+| `GET /api/v1/app/bootstrap` | Combined dashboard bootstrap payload |
+| `/api/v1/app/projects` | Project list, create, update, delete, run, and stop actions |
+| `/api/v1/app/epics` | Epic list and CRUD flows |
+| `/api/v1/app/issues` | Issue list and CRUD flows |
+| `/api/v1/app/issues/:identifier/execution` | Per-issue execution detail |
+| `/api/v1/app/issues/:identifier/state` | Issue state changes |
+| `/api/v1/app/issues/:identifier/blockers` | Blocker updates |
+| `/api/v1/app/issues/:identifier/commands` | Agent follow-up commands |
+| `/api/v1/app/issues/:identifier/retry` | Immediate retry request |
+| `/api/v1/app/runtime/events` | Persisted runtime event feed |
+| `/api/v1/app/runtime/series` | Runtime series charts |
+| `/api/v1/app/sessions` | Session list for the embedded dashboard |
+
+### WebSocket invalidation
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/v1/ws` | Dashboard invalidate stream used to refetch live data |
+
+CLI helpers such as `status --dashboard`, `sessions`, and `events` require `--api-url`. The embedded dashboard does not because it talks to the colocated server directly.
 
 ## Workflow bootstrap and checks
 
@@ -37,7 +68,8 @@ Use these commands differently:
 
 - `maestro workflow init [repo_path]` creates `WORKFLOW.md` explicitly
 - `maestro run [repo_path]` bootstraps a missing file automatically
-- `maestro verify [--repo <path>] [--db <path>] [--json]` bootstraps a missing file, verifies it loads, and checks database initialization
+- `maestro verify [--repo <path>] [--db <path>] [--json]` checks readiness and returns remediation guidance; it does not bootstrap
+- `maestro doctor [--repo <path>] [--db <path>] [--json]` runs the same readiness checks with a different presentation
 - `maestro spec-check [--repo <path>] [--json]` is non-mutating and fails if the workflow file is missing or invalid
 
 `verify` is the readiness check. `spec-check` is the lightweight conformance check.
@@ -79,10 +111,10 @@ At runtime, Maestro passes `MAESTRO_TOOL_NAME` and `MAESTRO_ARGS_JSON` into the 
 
 Write structured JSON logs to both stdout and a rotating file sink:
 
-```bash
-./maestro --log-level info run /path/to/repo --logs-root ./log
-./maestro --log-level debug run /path/to/repo --logs-root ./log --log-max-bytes 1048576 --log-max-files 5
-```
+<DocsCommandField
+  command={`./maestro --log-level info run /path/to/repo --logs-root ./log
+./maestro --log-level debug run /path/to/repo --logs-root ./log --log-max-bytes 1048576 --log-max-files 5`}
+/>
 
 Important behavior:
 
@@ -93,17 +125,17 @@ Important behavior:
 
 ## Docker
 
-```bash
-docker build -t maestro .
-docker run --rm -v ./repo:/repo -v ./data:/data maestro run /repo --db /data/maestro.db
-```
+<DocsCommandField
+  command={`docker build -t maestro .
+docker run --rm -v ./repo:/repo -v ./data:/data maestro run /repo --db /data/maestro.db`}
+/>
 
 If `maestro mcp` runs in a different environment from `maestro run`, both processes must share the same database path and daemon registry location.
 
 ## Deliberate scope
 
-Current non-goals:
+Current scope boundaries:
 
-- no Linear-backed tracker
+- Maestro stays local-first even when a project syncs issues from Linear
 - no Phoenix-style live observability layer
 - no separate plugin runtime for extensions

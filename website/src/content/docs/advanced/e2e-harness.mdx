@@ -6,6 +6,8 @@ order: 0
 navLabel: Real Codex E2E
 ---
 
+import DocsCommandField from "../_components/DocsCommandField.astro";
+
 ## What the harness does
 
 The real Codex harness exercises the full Maestro loop:
@@ -20,10 +22,10 @@ The real Codex harness exercises the full Maestro loop:
 
 ## Entry points
 
-```bash
-make e2e-real-codex
-make e2e-real-codex-phases
-```
+<DocsCommandField
+  command={`make e2e-real-codex
+make e2e-real-codex-phases`}
+/>
 
 Those targets run:
 

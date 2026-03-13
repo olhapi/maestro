@@ -1,5 +1,7 @@
 export const siteOrigin = process.env.SITE_URL ?? "https://maestro.olhapi.dev";
 export const repoUrl = "https://github.com/olhapi/maestro";
+export const patreonUrl = "https://patreon.com/olhapi";
+export const xUrl = "https://x.com/ollhapi";
 
 export const durableSurfaces = [
   {

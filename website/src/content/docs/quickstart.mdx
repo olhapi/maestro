@@ -6,13 +6,13 @@ order: 1
 navLabel: Quickstart
 ---
 
+import DocsCommandField from "./_components/DocsCommandField.astro";
+
 ## 1. Initialize a workflow file
 
 Start in the repo you want Maestro to orchestrate:
 
-```bash
-maestro workflow init .
-```
+<DocsCommandField command={`maestro workflow init .`} />
 
 This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template.
 
@@ -20,19 +20,19 @@ This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings,
 
 Create a project and a few issues so the queue has something to schedule:
 
-```bash
-maestro project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
+<DocsCommandField
+  command={`maestro project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
 maestro issue create "Add login page" --project <project_id> --labels feature,ui
 maestro issue create "Fix auth bug" --priority 1 --labels bug
 maestro issue list
-maestro board
-```
+maestro board`}
+/>
 
 Move an issue into `ready` when you want Maestro to pick it up:
 
-```bash
-maestro issue move ISS-1 ready
-```
+<DocsCommandField command={`maestro issue move ISS-1 ready`} />
+
+Projects default to the local `kanban` provider. You can also register a project with limited `linear` provider support through `maestro project create --provider linear --provider-project-ref <slug>`.
 
 ## 3. Expose the tracker to MCP clients
 
@@ -53,11 +53,9 @@ Point your MCP client at the built binary:
 
 ## 4. Start the orchestrator
 
-Run the daemon against the target repo and expose the observability API:
+Run the daemon against the target repo and expose the dashboard plus HTTP APIs:
 
-```bash
-maestro run /path/to/repo --port 8787
-```
+<DocsCommandField command={`maestro run /path/to/repo --port 8787`} />
 
 If `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default.
 
@@ -71,10 +69,18 @@ The loop is straightforward:
 
 ## 5. Open the control center
 
-When you run with `--port`, Maestro serves the embedded dashboard and the observability API on the same HTTP server.
+When you run with `--port`, Maestro serves the embedded dashboard, the live observability API, and the richer dashboard application API on the same HTTP server.
 
 - Dashboard: `http://127.0.0.1:8787/`
-- API root: `http://127.0.0.1:8787/api/v1/`
+- Live API root: `http://127.0.0.1:8787/api/v1/`
+- Dashboard API root: `http://127.0.0.1:8787/api/v1/app/`
+
+If you want CLI helpers to talk to that live daemon, pass `--api-url`:
+
+<DocsCommandField
+  command={`maestro status --dashboard --api-url http://127.0.0.1:8787
+maestro sessions --api-url http://127.0.0.1:8787`}
+/>
 
 The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
 
@@ -82,9 +88,7 @@ The preview warning on `run` is intentional. Pass `--i-understand-that-this-will
 
 If you want to work on the embedded dashboard against another repo:
 
-```bash
-REPO_PATH=/path/to/repo make dev
-```
+<DocsCommandField command={`REPO_PATH=/path/to/repo make dev`} />
 
 ## Next step
 

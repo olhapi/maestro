@@ -21,6 +21,18 @@ describe("CommandBlock", () => {
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
+  it("renders the copy action as a compact icon button with pointer cursor", async () => {
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    render(<CommandBlock command="maestro workflow init ." detail="Bootstrap a workflow file." title="Bootstrap" />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy" })).toHaveClass("cursor-pointer"));
+  });
+
   it("disables the copy button when clipboard access is unavailable", () => {
     Object.assign(navigator, {
       clipboard: undefined,

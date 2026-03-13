@@ -6,19 +6,17 @@ order: 0
 navLabel: Install
 ---
 
+import DocsCommandField from "./_components/DocsCommandField.astro";
+
 ## Preferred install path
 
 If you are on a supported platform, the fastest path is the published npm package:
 
-```bash
-npm install -g @olhapi/maestro
-```
+<DocsCommandField command={`npm install -g @olhapi/maestro`} />
 
 Update an existing global install with:
 
-```bash
-npm update -g @olhapi/maestro
-```
+<DocsCommandField command={`npm update -g @olhapi/maestro`} />
 
 The installed command name is still `maestro`.
 
@@ -36,23 +34,17 @@ Linux npm packages target glibc only. Alpine and other musl-based distros should
 
 For local development or unsupported platforms, build the binary directly from the repo:
 
-```bash
-go build -o maestro ./cmd/maestro
-```
+<DocsCommandField command={`go build -o maestro ./cmd/maestro`} />
 
 Optional Docker build:
 
-```bash
-docker build -t maestro .
-```
+<DocsCommandField command={`docker build -t maestro .`} />
 
 ## Contributor tooling
 
 If you are working in the repo itself, install the root development dependency once:
 
-```bash
-npm install
-```
+<DocsCommandField command={`npm install`} />
 
 That installs the repo-managed Git hooks and bootstraps the nested frontend and website dependencies used by those hooks.
 

@@ -2,6 +2,7 @@ import React from "react";
 import { motion, useReducedMotion } from "motion/react";
 
 import { createRevealMotion } from "../../lib/motion";
+import CopyCodeField from "./CopyCodeField";
 
 interface Surface {
   title: string;
@@ -39,14 +40,14 @@ export default function HeroShowcase({
         <p className="kicker !mb-3 !text-[0.72rem]">Quickstart path</p>
         <div className="space-y-4">
           {quickstartSteps.slice(0, 2).map((step, index) => (
-            <div key={step.title} className="rounded-[1.2rem] border border-white/8 bg-black/20 p-4">
+            <div key={step.title} className="min-w-0 rounded-[1.2rem] border border-white/8 bg-black/20 p-4">
               <div className="flex items-center gap-3">
                 <div className="flex size-8 items-center justify-center rounded-full border border-[rgba(196,255,87,0.25)] bg-[rgba(196,255,87,0.1)] text-sm font-semibold text-[var(--accent-strong)]">
                   {index + 1}
                 </div>
                 <p className="font-medium text-white">{step.title}</p>
               </div>
-              <p className="mt-3 font-mono text-xs leading-6 text-[var(--muted-strong)]">{step.command}</p>
+              <CopyCodeField className="mt-3" command={step.command} />
             </div>
           ))}
         </div>

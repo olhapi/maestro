@@ -6,43 +6,70 @@ order: 0
 navLabel: CLI reference
 ---
 
+import DocsCommandField from "./_components/DocsCommandField.astro";
+
 ## Projects
 
-```bash
-maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
+<DocsCommandField
+  command={`maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
 maestro project list
-maestro project delete <id>
-```
+maestro project show <id>
+maestro project update <id> [--name <name>] [--desc <description>] [--repo <repo_path>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
+maestro project delete <id>`}
+/>
 
-Use project commands to register a repo, inspect the local tracker, and remove stale projects from the store.
+Use project commands to register a repo, inspect the local tracker, configure project-level providers, and remove stale projects from the store.
+
+`kanban` is the default provider. `linear` support exists, but it is intentionally limited and does not support epics.
+
+## Epics
+
+<DocsCommandField
+  command={`maestro epic create <name> --project <project_id> [--desc <description>]
+maestro epic list [--project <project_id>]
+maestro epic show <id>
+maestro epic update <id> [--name <name>] [--project <project_id>] [--desc <description>]
+maestro epic delete <id>`}
+/>
 
 ## Issues
 
-```bash
-maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
+<DocsCommandField
+  command={`maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
 maestro issue list [--state <state>] [--project <id>]
 maestro issue show <identifier>
 maestro issue move <identifier> <state>
 maestro issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
+maestro issue execution <identifier> --api-url <url>
+maestro issue retry <identifier> --api-url <url>
+maestro issue unblock <identifier> <blocker_identifier...>
+maestro issue blockers set <identifier> [blocker_identifier...]
+maestro issue blockers clear <identifier>
 maestro issue delete <identifier>
-maestro issue block <identifier> <blocker_identifier...>
-```
+maestro issue block <identifier> <blocker_identifier...>`}
+/>
 
-Issue commands are the local queue manipulation layer. Most day-to-day supervision boils down to create, list, move, show, and block/unblock flows.
+Issue commands are the local queue manipulation layer. Most day-to-day supervision boils down to create, list, move, show, execution inspection, and blocker management.
 
 ## Orchestration
 
-```bash
-maestro --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
+<DocsCommandField
+  command={`maestro --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
 maestro --log-level <debug|info|warn|error> mcp [--db <path>]
 maestro --log-level <debug|info|warn|error> status [--json]
-maestro --log-level <debug|info|warn|error> status --dashboard [--dashboard-url <url>]
+maestro --log-level <debug|info|warn|error> status --dashboard --api-url <url>
+maestro --log-level <debug|info|warn|error> sessions --api-url <url>
+maestro --log-level <debug|info|warn|error> events --api-url <url> [--since <seq>] [--limit <n>]
+maestro --log-level <debug|info|warn|error> runtime-series --api-url <url> [--hours <n>]
 maestro --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
+maestro --log-level <debug|info|warn|error> doctor [--repo <path>] [--db <path>] [--json]
 maestro --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
-maestro --log-level <debug|info|warn|error> workflow init [repo_path]
-```
+maestro --log-level <debug|info|warn|error> workflow init [repo_path]`}
+/>
 
 `--log-level` defaults to `info`. Use `debug` when you need raw app-server stream output and session churn in the structured logs.
+
+Live runtime helpers require `--api-url` because they talk to a running daemon over HTTP.
 
 ## Issue states
 
@@ -59,21 +86,24 @@ maestro --log-level <debug|info|warn|error> workflow init [repo_path]
 
 ### Put a single issue into execution
 
-```bash
-maestro issue list --state backlog
+<DocsCommandField
+  command={`maestro issue list --state backlog
 maestro issue move ISS-1 ready
-maestro run /path/to/repo --port 8787
-```
+maestro run /path/to/repo --port 8787`}
+/>
 
 ### Verify a repo before launching the loop
 
-```bash
-maestro verify --repo /path/to/repo --json
-maestro spec-check --repo /path/to/repo --json
-```
+<DocsCommandField
+  command={`maestro verify --repo /path/to/repo --json
+maestro doctor --repo /path/to/repo --json
+maestro spec-check --repo /path/to/repo --json`}
+/>
 
 ### Inspect live status without opening the dashboard
 
-```bash
-maestro status --dashboard --dashboard-url http://127.0.0.1:8787
-```
+<DocsCommandField
+  command={`maestro status --dashboard --api-url http://127.0.0.1:8787
+maestro sessions --api-url http://127.0.0.1:8787
+maestro events --api-url http://127.0.0.1:8787`}
+/>

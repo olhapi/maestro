@@ -1,0 +1,13 @@
+---
+import CopyCodeField from "../../../components/react/CopyCodeField";
+
+const { command, className = "" } = Astro.props as {
+  command: string;
+  className?: string;
+};
+const wrapperClassName = className ? `mb-[1.1rem] ${className}` : "mb-[1.1rem]";
+---
+
+<div class={wrapperClassName}>
+  <CopyCodeField client:load command={command} />
+</div>
