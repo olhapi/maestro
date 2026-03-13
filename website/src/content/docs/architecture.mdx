@@ -19,25 +19,28 @@ The current codebase is organized around five connected runtime layers:
 ## Runtime path
 
 ```text
-Codex or ChatGPT (via MCP)      Browser / CLI helpers
-            |                           |
-            v                           v
-   maestro mcp (stdio bridge)   public HTTP server (:port)
-            |                           |
-            v                           v
-       private MCP daemon ----> /api/v1/*, /api/v1/app/*, /api/v1/ws
-                    \                  /
-                     v                v
-                  maestro run daemon
-                           |
-                           v
-        provider service <-> local SQLite store
-                           |
-                           v
-          orchestrator -> workspace lifecycle -> agent runner
-                           ^
-                           |
-                      WORKFLOW.md
+Codex or ChatGPT (via MCP)        Browser / live CLI helpers
+            |                               |
+            v                               v
+   maestro mcp (stdio bridge)      public HTTP server (:port)
+            |                               |
+            v                               v
+    private MCP daemon              /api/v1/*, /api/v1/app/*, /api/v1/ws, /
+             \                              /
+              \                            /
+               v                          v
+                    maestro run daemon
+                            |
+            +---------------+---------------+
+            |                               |
+            v                               v
+ provider service <-> local SQLite store    orchestrator
+            |                               |
+            |                               v
+            |                   workspace lifecycle -> agent runner -> Codex CLI
+            |                               ^
+            v                               |
+      Linear API (optional)            WORKFLOW.md
 ```
 
 ## Local store first
