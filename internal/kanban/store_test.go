@@ -555,12 +555,247 @@ func TestNewStoreBackfillsLegacyIssueTypesAndCreatesRecurrenceTable(t *testing.T
 		t.Fatalf("expected issue_type_backfill_v1=done, got %q", backfill)
 	}
 
+	var prNumberColumnCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('issues') WHERE name = 'pr_number'`).Scan(&prNumberColumnCount); err != nil {
+		t.Fatalf("query pragma_table_info: %v", err)
+	}
+	if prNumberColumnCount != 0 {
+		t.Fatalf("expected pr_number column to be removed, got count %d", prNumberColumnCount)
+	}
+
 	var recurrenceTableCount int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'issue_recurrences'`).Scan(&recurrenceTableCount); err != nil {
 		t.Fatalf("query sqlite_master: %v", err)
 	}
 	if recurrenceTableCount != 1 {
 		t.Fatalf("expected issue_recurrences table to exist, got count=%d", recurrenceTableCount)
+	}
+}
+
+func TestNewStoreNormalizesLegacyIssueAssociationsDuringPRNumberMigration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-associations.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	now := time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC)
+	for _, stmt := range []string{
+		`CREATE TABLE store_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT,
+			state TEXT NOT NULL DEFAULT 'stopped',
+			repo_path TEXT NOT NULL DEFAULT '',
+			workflow_path TEXT NOT NULL DEFAULT '',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_project_ref TEXT NOT NULL DEFAULT '',
+			provider_config_json TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE TABLE epics (
+			id TEXT PRIMARY KEY,
+			project_id TEXT,
+			name TEXT NOT NULL,
+			description TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			project_id TEXT,
+			epic_id TEXT,
+			identifier TEXT UNIQUE NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT,
+			state TEXT NOT NULL DEFAULT 'backlog',
+			workflow_phase TEXT,
+			priority INTEGER DEFAULT 0,
+			branch_name TEXT,
+			pr_number INTEGER,
+			pr_url TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			started_at DATETIME,
+			completed_at DATETIME
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("Exec legacy schema: %v", err)
+		}
+	}
+	if _, err := db.Exec(
+		`INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"project-1", "Platform", now, now,
+	); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO epics (id, project_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		"epic-1", "project-1", "Automation", now, now,
+	); err != nil {
+		t.Fatalf("insert epic: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO issues (id, project_id, epic_id, identifier, title, description, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"iss-orphan-epic", "project-1", "epic-missing", "ISS-1", "Clear bad epic", "", StateBacklog, now, now,
+	); err != nil {
+		t.Fatalf("insert issue with orphaned epic: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO issues (id, project_id, epic_id, identifier, title, description, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"iss-derived-project", "missing-project", "epic-1", "ISS-2", "Recover project from epic", "", StateBacklog, now, now,
+	); err != nil {
+		t.Fatalf("insert issue with stale project: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	orphanedEpicIssue, err := store.GetIssue("iss-orphan-epic")
+	if err != nil {
+		t.Fatalf("GetIssue orphaned epic: %v", err)
+	}
+	if orphanedEpicIssue.ProjectID != "project-1" {
+		t.Fatalf("expected project-1 to be preserved, got %q", orphanedEpicIssue.ProjectID)
+	}
+	if orphanedEpicIssue.EpicID != "" {
+		t.Fatalf("expected orphaned epic reference to be cleared, got %q", orphanedEpicIssue.EpicID)
+	}
+
+	derivedProjectIssue, err := store.GetIssue("iss-derived-project")
+	if err != nil {
+		t.Fatalf("GetIssue derived project: %v", err)
+	}
+	if derivedProjectIssue.ProjectID != "project-1" {
+		t.Fatalf("expected project_id to be recovered from the epic, got %q", derivedProjectIssue.ProjectID)
+	}
+	if derivedProjectIssue.EpicID != "epic-1" {
+		t.Fatalf("expected valid epic_id to be preserved, got %q", derivedProjectIssue.EpicID)
+	}
+
+	var normalization string
+	if err := store.db.QueryRow(`SELECT value FROM store_metadata WHERE key = 'issue_foreign_key_normalization_v1'`).Scan(&normalization); err != nil {
+		t.Fatalf("query issue_foreign_key_normalization_v1: %v", err)
+	}
+	if normalization != "done" {
+		t.Fatalf("expected issue_foreign_key_normalization_v1=done, got %q", normalization)
+	}
+}
+
+func TestNewStoreRepairsIssueAssociationsAfterInterruptedPRNumberMigration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "interrupted-pr-number-migration.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	now := time.Date(2026, 3, 13, 12, 30, 0, 0, time.UTC)
+	for _, stmt := range []string{
+		`CREATE TABLE store_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT,
+			state TEXT NOT NULL DEFAULT 'stopped',
+			repo_path TEXT NOT NULL DEFAULT '',
+			workflow_path TEXT NOT NULL DEFAULT '',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_project_ref TEXT NOT NULL DEFAULT '',
+			provider_config_json TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE TABLE epics (
+			id TEXT PRIMARY KEY,
+			project_id TEXT,
+			name TEXT NOT NULL,
+			description TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (project_id) REFERENCES projects(id)
+		)`,
+		`CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			project_id TEXT,
+			epic_id TEXT,
+			identifier TEXT UNIQUE NOT NULL,
+			issue_type TEXT NOT NULL DEFAULT 'standard',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_issue_ref TEXT NOT NULL DEFAULT '',
+			provider_shadow INTEGER NOT NULL DEFAULT 0,
+			title TEXT NOT NULL,
+			description TEXT,
+			state TEXT NOT NULL DEFAULT 'backlog',
+			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
+			priority INTEGER DEFAULT 0,
+			branch_name TEXT,
+			pr_url TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			total_tokens_spent INTEGER NOT NULL DEFAULT 0,
+			started_at DATETIME,
+			completed_at DATETIME,
+			last_synced_at DATETIME,
+			FOREIGN KEY (project_id) REFERENCES projects(id),
+			FOREIGN KEY (epic_id) REFERENCES epics(id)
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("Exec interrupted schema: %v", err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO store_metadata (key, value) VALUES (?, ?)`, "issue_pr_number_drop_v1", "done"); err != nil {
+		t.Fatalf("insert stale migration marker: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"project-1", "Platform", now, now,
+	); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO issues (id, project_id, epic_id, identifier, title, description, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"iss-interrupted", "project-1", "epic-missing", "ISS-1", "Interrupted migration", "", StateBacklog, now, now,
+	); err != nil {
+		t.Fatalf("insert issue with orphaned epic: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close interrupted db: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.GetIssue("iss-interrupted")
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if issue.ProjectID != "project-1" {
+		t.Fatalf("expected project_id to remain intact, got %q", issue.ProjectID)
+	}
+	if issue.EpicID != "" {
+		t.Fatalf("expected stale epic_id to be cleared after recovery, got %q", issue.EpicID)
+	}
+
+	var normalization string
+	if err := store.db.QueryRow(`SELECT value FROM store_metadata WHERE key = 'issue_foreign_key_normalization_v1'`).Scan(&normalization); err != nil {
+		t.Fatalf("query issue_foreign_key_normalization_v1: %v", err)
+	}
+	if normalization != "done" {
+		t.Fatalf("expected issue_foreign_key_normalization_v1=done, got %q", normalization)
 	}
 }
 

@@ -172,7 +172,6 @@ type Issue struct {
 	Priority         int           `json:"priority,omitempty"` // Lower = higher priority
 	Labels           []string      `json:"labels,omitempty"`
 	BranchName       string        `json:"branch_name,omitempty"`
-	PRNumber         int           `json:"pr_number,omitempty"`
 	PRURL            string        `json:"pr_url,omitempty"`
 	BlockedBy        []string      `json:"blocked_by,omitempty"` // Issue identifiers
 	CreatedAt        time.Time     `json:"created_at"`

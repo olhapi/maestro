@@ -35,7 +35,6 @@ export function makeIssueDetail(
     project_description: "Platform work",
     epic_description: "Observability improvements",
     branch_name: "feature/retries",
-    pr_number: 7,
     pr_url: "https://example.com/pr/7",
     ...overrides,
   };

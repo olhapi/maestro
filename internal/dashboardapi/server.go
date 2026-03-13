@@ -536,7 +536,6 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			State       string   `json:"state"`
 			BlockedBy   []string `json:"blocked_by"`
 			BranchName  string   `json:"branch_name"`
-			PRNumber    int      `json:"pr_number"`
 			PRURL       string   `json:"pr_url"`
 		}
 		if !decodeJSON(w, r, &body) {
@@ -555,7 +554,6 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			State:       body.State,
 			BlockedBy:   body.BlockedBy,
 			BranchName:  body.BranchName,
-			PRNumber:    body.PRNumber,
 			PRURL:       body.PRURL,
 		})
 		if err != nil {
@@ -603,7 +601,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				Labels      []string `json:"labels"`
 				BlockedBy   []string `json:"blocked_by"`
 				BranchName  string   `json:"branch_name"`
-				PRNumber    int      `json:"pr_number"`
 				PRURL       string   `json:"pr_url"`
 			}
 			if !decodeJSON(w, r, &body) {
@@ -618,7 +615,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				"labels":      body.Labels,
 				"blocked_by":  body.BlockedBy,
 				"branch_name": body.BranchName,
-				"pr_number":   body.PRNumber,
 				"pr_url":      body.PRURL,
 			}
 			if body.IssueType != nil {

@@ -4,7 +4,7 @@ import { vi } from 'vitest'
 
 import { WorkPage } from '@/routes/work'
 import { makeBootstrapResponse, makeIssueDetail, makeIssueSummary } from '@/test/fixtures'
-import { renderWithQueryClient } from '@/test/test-utils'
+import { renderWithQueryClient, selectOption } from '@/test/test-utils'
 
 const initialInnerWidth = window.innerWidth
 
@@ -99,7 +99,7 @@ describe('WorkPage', () => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
-    fireEvent.change(screen.getByLabelText(/filter by project/i), { target: { value: 'project-1' } })
+    await selectOption(/filter by project/i, /platform/i)
 
     await waitFor(() => {
       expect(api.listIssues).toHaveBeenLastCalledWith({
@@ -143,7 +143,7 @@ describe('WorkPage', () => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
-    fireEvent.change(screen.getByLabelText(/filter by issue type/i), { target: { value: 'recurring' } })
+    await selectOption(/filter by issue type/i, /recurring/i)
 
     await waitFor(() => {
       expect(api.listIssues).toHaveBeenLastCalledWith({

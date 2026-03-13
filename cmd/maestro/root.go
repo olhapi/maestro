@@ -518,7 +518,6 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	var labels string
 	var priority int
 	var branch string
-	var prNumber int
 	var prURL string
 	var clearLabels bool
 	var clearPriority bool
@@ -584,14 +583,10 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 			if clearBranch {
 				updates["branch_name"] = ""
 			}
-			if cmd.Flags().Changed("pr") {
-				updates["pr_number"] = prNumber
-			}
 			if cmd.Flags().Changed("pr-url") {
 				updates["pr_url"] = prURL
 			}
 			if clearPR {
-				updates["pr_number"] = 0
 				updates["pr_url"] = ""
 			}
 			if len(updates) == 0 {
@@ -622,14 +617,13 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
 	cmd.Flags().StringVar(&epicID, "epic", "", "Epic ID")
 	cmd.Flags().StringVar(&branch, "branch", "", "Branch name")
-	cmd.Flags().IntVar(&prNumber, "pr", 0, "Pull request number")
 	cmd.Flags().StringVar(&prURL, "pr-url", "", "Pull request URL")
 	cmd.Flags().BoolVar(&clearLabels, "clear-labels", false, "Clear all labels")
 	cmd.Flags().BoolVar(&clearPriority, "clear-priority", false, "Clear the priority")
 	cmd.Flags().BoolVar(&clearProject, "clear-project", false, "Clear the project")
 	cmd.Flags().BoolVar(&clearEpic, "clear-epic", false, "Clear the epic")
 	cmd.Flags().BoolVar(&clearBranch, "clear-branch", false, "Clear the branch name")
-	cmd.Flags().BoolVar(&clearPR, "clear-pr", false, "Clear the pull request number and URL")
+	cmd.Flags().BoolVar(&clearPR, "clear-pr", false, "Clear the pull request URL")
 	return cmd
 }
 

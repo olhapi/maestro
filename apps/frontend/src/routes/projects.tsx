@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { EpicDialog, IssueDialog, ProjectDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import {
@@ -104,7 +105,10 @@ export function ProjectsPage() {
         title="Projects are now entry points, not dead-end rollups"
         description="Open a project or epic to see execution health, linked work, and recent movement. This page stays focused on choosing the right delivery stream."
         actions={
-          <>
+          <ButtonGroup
+            aria-label="Create work items"
+            className="w-full sm:w-fit [&>button]:flex-1 sm:[&>button]:flex-none"
+          >
             <Button
               variant="secondary"
               onClick={() => {
@@ -130,7 +134,7 @@ export function ProjectsPage() {
               <Plus className="size-4" />
               Issue
             </Button>
-          </>
+          </ButtonGroup>
         }
       />
 

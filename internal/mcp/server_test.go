@@ -389,9 +389,9 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	if !strings.Contains(serverInfo.Description, "Maestro") || strings.Contains(strings.ToLower(serverInfo.Description), "symphony") {
 		t.Fatalf("unexpected server_info description: %q", serverInfo.Description)
 	}
-	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_number", "pr_url", "priority", "project_id", "state", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
-	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_number", "pr_url", "priority", "project_id", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_epic"), "description", "id", "name", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_issue_execution"), "identifier")
@@ -523,7 +523,6 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 		"state":       "ready",
 		"blocked_by":  []interface{}{issueA["identifier"]},
 		"branch_name": "feat/mcp",
-		"pr_number":   17,
 		"pr_url":      "https://example.com/pr/17",
 	})
 	if err != nil {
@@ -589,7 +588,6 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 		"labels":      []interface{}{"go", "mcp"},
 		"blocked_by":  []interface{}{},
 		"branch_name": "feat/mcp-v2",
-		"pr_number":   23,
 		"pr_url":      "https://example.com/pr/23",
 	})
 	if err != nil {

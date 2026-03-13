@@ -316,7 +316,7 @@ func TestDashboardAPIAdditionalSuccessPaths(t *testing.T) {
 	}
 	epicID := createdEpic["id"].(string)
 
-	issueBody := bytes.NewBufferString(`{"project_id":"` + project.ID + `","epic_id":"` + epicID + `","title":"Issue","description":"desc","priority":2,"labels":["api"],"state":"backlog","blocked_by":[],"branch_name":"feature/api","pr_number":3,"pr_url":"https://example.com/pr/3"}`)
+	issueBody := bytes.NewBufferString(`{"project_id":"` + project.ID + `","epic_id":"` + epicID + `","title":"Issue","description":"desc","priority":2,"labels":["api"],"state":"backlog","blocked_by":[],"branch_name":"feature/api","pr_url":"https://example.com/pr/3"}`)
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/app/issues", issueBody)
 	req.Header.Set("Content-Type", "application/json")

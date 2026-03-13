@@ -160,7 +160,6 @@ func (s *Store) migrate() error {
 			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
 			priority INTEGER DEFAULT 0,
 			branch_name TEXT,
-			pr_number INTEGER,
 			pr_url TEXT,
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL,
@@ -367,7 +366,13 @@ func (s *Store) ensureIssueColumns() error {
 	if err := s.backfillIssueTypes(); err != nil {
 		return err
 	}
-	return s.backfillWorkflowPhases()
+	if err := s.backfillWorkflowPhases(); err != nil {
+		return err
+	}
+	if err := s.removeIssuePRNumberColumn(); err != nil {
+		return err
+	}
+	return s.normalizeIssueForeignKeys()
 }
 
 func (s *Store) ensureIssueRecurrenceTables() error {
@@ -456,6 +461,236 @@ func (s *Store) backfillWorkflowPhases() error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) removeIssuePRNumberColumn() (err error) {
+	const migrationKey = "issue_pr_number_drop_v1"
+
+	var applied string
+	switch err := s.db.QueryRow(`SELECT value FROM store_metadata WHERE key = ?`, migrationKey).Scan(&applied); {
+	case err == nil && applied == "done":
+		return nil
+	case err != nil && err != sql.ErrNoRows:
+		return err
+	}
+
+	hasColumn, err := s.tableHasColumn("issues", "pr_number")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		_, err := s.db.Exec(`INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, 'done')`, migrationKey)
+		return err
+	}
+
+	if _, err := s.db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		if _, pragmaErr := s.db.Exec(`PRAGMA foreign_keys=ON`); err == nil && pragmaErr != nil {
+			err = pragmaErr
+		}
+	}()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for _, stmt := range []string{
+		`CREATE TABLE issues_new (
+			id TEXT PRIMARY KEY,
+			project_id TEXT,
+			epic_id TEXT,
+			identifier TEXT UNIQUE NOT NULL,
+			issue_type TEXT NOT NULL DEFAULT 'standard',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_issue_ref TEXT NOT NULL DEFAULT '',
+			provider_shadow INTEGER NOT NULL DEFAULT 0,
+			title TEXT NOT NULL,
+			description TEXT,
+			state TEXT NOT NULL DEFAULT 'backlog',
+			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
+			priority INTEGER DEFAULT 0,
+			branch_name TEXT,
+			pr_url TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			total_tokens_spent INTEGER NOT NULL DEFAULT 0,
+			started_at DATETIME,
+			completed_at DATETIME,
+			last_synced_at DATETIME,
+			FOREIGN KEY (project_id) REFERENCES projects(id),
+			FOREIGN KEY (epic_id) REFERENCES epics(id)
+		)`,
+		`INSERT INTO issues_new (
+			id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description,
+			state, workflow_phase, priority, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+		)
+		SELECT
+			legacy.id,
+			CASE
+				WHEN legacy.project_id IS NOT NULL
+					AND TRIM(legacy.project_id) <> ''
+					AND EXISTS (SELECT 1 FROM projects WHERE id = TRIM(legacy.project_id))
+				THEN TRIM(legacy.project_id)
+				WHEN legacy.epic_id IS NOT NULL
+					AND TRIM(legacy.epic_id) <> ''
+					AND EXISTS (SELECT 1 FROM epics WHERE id = TRIM(legacy.epic_id))
+				THEN (SELECT project_id FROM epics WHERE id = TRIM(legacy.epic_id))
+				ELSE NULL
+			END,
+			CASE
+				WHEN legacy.epic_id IS NOT NULL
+					AND TRIM(legacy.epic_id) <> ''
+					AND EXISTS (SELECT 1 FROM epics WHERE id = TRIM(legacy.epic_id))
+				THEN TRIM(legacy.epic_id)
+				ELSE NULL
+			END,
+			legacy.identifier, legacy.issue_type, legacy.provider_kind, legacy.provider_issue_ref, legacy.provider_shadow, legacy.title, legacy.description,
+			legacy.state, legacy.workflow_phase, legacy.priority, legacy.branch_name, legacy.pr_url, legacy.created_at, legacy.updated_at, legacy.total_tokens_spent, legacy.started_at, legacy.completed_at, legacy.last_synced_at
+		FROM issues AS legacy`,
+		`DROP TABLE issues`,
+		`ALTER TABLE issues_new RENAME TO issues`,
+		`CREATE INDEX idx_issues_state ON issues(state)`,
+		`CREATE INDEX idx_issues_project ON issues(project_id)`,
+		`CREATE INDEX idx_issues_epic ON issues(epic_id)`,
+		`CREATE UNIQUE INDEX idx_issues_provider_ref_unique ON issues(provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`,
+		`CREATE INDEX idx_issues_issue_type ON issues(issue_type)`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	tx = nil
+
+	if err := s.verifyForeignKeys(migrationKey); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, 'done')`, migrationKey)
+	return err
+}
+
+func (s *Store) normalizeIssueForeignKeys() error {
+	const migrationKey = "issue_foreign_key_normalization_v1"
+
+	var applied string
+	switch err := s.db.QueryRow(`SELECT value FROM store_metadata WHERE key = ?`, migrationKey).Scan(&applied); {
+	case err == nil && applied == "done":
+		return nil
+	case err != nil && err != sql.ErrNoRows:
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for _, stmt := range []string{
+		`UPDATE issues
+		SET epic_id = CASE
+			WHEN epic_id IS NOT NULL
+				AND TRIM(epic_id) <> ''
+				AND EXISTS (SELECT 1 FROM epics WHERE epics.id = TRIM(issues.epic_id))
+			THEN TRIM(epic_id)
+			ELSE NULL
+		END
+		WHERE epic_id IS NOT NULL
+			AND (
+				epic_id <> TRIM(epic_id)
+				OR TRIM(epic_id) = ''
+				OR NOT EXISTS (SELECT 1 FROM epics WHERE epics.id = TRIM(issues.epic_id))
+			)`,
+		`UPDATE issues
+		SET project_id = CASE
+			WHEN project_id IS NOT NULL
+				AND TRIM(project_id) <> ''
+				AND EXISTS (SELECT 1 FROM projects WHERE projects.id = TRIM(issues.project_id))
+			THEN TRIM(project_id)
+			WHEN epic_id IS NOT NULL
+				AND EXISTS (SELECT 1 FROM epics WHERE epics.id = issues.epic_id)
+			THEN (SELECT project_id FROM epics WHERE epics.id = issues.epic_id)
+			ELSE NULL
+		END
+		WHERE project_id IS NULL
+			OR project_id <> TRIM(project_id)
+			OR TRIM(project_id) = ''
+			OR NOT EXISTS (SELECT 1 FROM projects WHERE projects.id = TRIM(issues.project_id))`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	tx = nil
+
+	if err := s.verifyForeignKeys(migrationKey); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, 'done')`, migrationKey)
+	return err
+}
+
+func (s *Store) verifyForeignKeys(migrationKey string) error {
+	rows, err := s.db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table string
+		var rowid int64
+		var parent string
+		var fkIndex int
+		if scanErr := rows.Scan(&table, &rowid, &parent, &fkIndex); scanErr != nil {
+			return scanErr
+		}
+		return fmt.Errorf("foreign key check failed after %s for table %s row %d referencing %s (%d)", migrationKey, table, rowid, parent, fkIndex)
+	}
+
+	return rows.Err()
+}
+
+func (s *Store) tableHasColumn(tableName, columnName string) (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(` + tableName + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(name, columnName) {
+			return true, nil
+		}
+	}
+
+	return false, rows.Err()
 }
 
 func (s *Store) ensureStoreID() error {
@@ -1126,17 +1361,16 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 
 func (s *Store) GetIssue(id string) (*Issue, error) {
 	i := &Issue{}
-	var prNumber sql.NullInt32
 	var startedAt, completedAt, lastSyncedAt sql.NullTime
 	var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
 	var providerShadow int
 
 	err := s.db.QueryRow(`
 		SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
-		       branch_name, pr_number, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+		       branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 		FROM issues WHERE id = ?`, id,
 	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.IssueType, &i.ProviderKind, &providerIssueRef, &providerShadow, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
-		&branchName, &prNumber, &prURL, &i.CreatedAt, &i.UpdatedAt, &i.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt)
+		&branchName, &prURL, &i.CreatedAt, &i.UpdatedAt, &i.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1161,9 +1395,6 @@ func (s *Store) GetIssue(id string) (*Issue, error) {
 	}
 	if prURL.Valid {
 		i.PRURL = prURL.String
-	}
-	if prNumber.Valid {
-		i.PRNumber = int(prNumber.Int32)
 	}
 	if startedAt.Valid {
 		i.StartedAt = &startedAt.Time
@@ -1711,10 +1942,6 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 		query += ", epic_id = ?"
 		args = append(args, nullableStringValue(epicID))
 	}
-	if prNum, ok := updates["pr_number"].(int); ok {
-		query += ", pr_number = ?"
-		args = append(args, prNum)
-	}
 	if prURL, ok := updates["pr_url"].(string); ok {
 		query += ", pr_url = ?"
 		args = append(args, prURL)
@@ -2159,7 +2386,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 
 	rows, err := s.db.Query(`
 		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.priority,
-		       i.branch_name, i.pr_number, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
+		       i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
 		       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
 		FROM issues i
@@ -2178,14 +2405,13 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	issueIDs := make([]string, 0, query.Limit)
 	for rows.Next() {
 		var item IssueSummary
-		var prNumber sql.NullInt32
 		var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
 		var startedAt, completedAt, lastRun, lastSyncedAt sql.NullTime
 		var providerShadow int
 		var projectDesc, epicDesc string
 		if err := rows.Scan(
 			&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
-			&branchName, &prNumber, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+			&branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
 			return nil, 0, err
@@ -2210,9 +2436,6 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		}
 		if prURL.Valid {
 			item.PRURL = prURL.String
-		}
-		if prNumber.Valid {
-			item.PRNumber = int(prNumber.Int32)
 		}
 		if startedAt.Valid {
 			item.StartedAt = &startedAt.Time

@@ -126,8 +126,8 @@ func printIssueDetail(out io.Writer, issue *kanban.IssueDetail) {
 	if issue.BranchName != "" {
 		fmt.Fprintf(out, "Branch:\t%s\n", issue.BranchName)
 	}
-	if issue.PRNumber != 0 || issue.PRURL != "" {
-		fmt.Fprintf(out, "PR:\t#%d %s\n", issue.PRNumber, issue.PRURL)
+	if issue.PRURL != "" {
+		fmt.Fprintf(out, "PR:\t%s\n", issue.PRURL)
 	}
 	if len(issue.BlockedBy) > 0 {
 		fmt.Fprintf(out, "Blocked By:\t%s\n", strings.Join(issue.BlockedBy, ", "))

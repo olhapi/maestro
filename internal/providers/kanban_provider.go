@@ -63,7 +63,6 @@ func (p *KanbanProvider) CreateIssue(_ context.Context, project *kanban.Project,
 	updates := map[string]interface{}{
 		"blocked_by":  input.BlockedBy,
 		"branch_name": input.BranchName,
-		"pr_number":   input.PRNumber,
 		"pr_url":      input.PRURL,
 	}
 	if err := p.store.UpdateIssue(issue.ID, updates); err != nil {

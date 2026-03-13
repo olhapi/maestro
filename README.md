@@ -171,7 +171,7 @@ Issue updates:
 
 ```bash
 maestro issue update ISS-1 --labels bug,urgent --priority 1
-maestro issue update ISS-1 --branch codex/ISS-1 --pr 123 --pr-url https://example.com/pull/123
+maestro issue update ISS-1 --branch codex/ISS-1 --pr-url https://example.com/pull/123
 maestro issue blockers set ISS-1 ISS-2 ISS-3
 maestro issue unblock ISS-1 ISS-2
 ```

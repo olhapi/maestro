@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { screen } from '@testing-library/react'
+import { forwardRef, type ComponentPropsWithoutRef } from 'react'
+import { act, fireEvent, screen } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { IssueCard } from '@/components/dashboard/issue-card'
@@ -7,22 +7,28 @@ import { makeBootstrapResponse, makeIssueSummary } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({
-    children,
-    className,
-    params,
-  }: {
-    children: ReactNode
-    className?: string
-    params?: { identifier?: string }
-  }) => (
-    <a className={className} href={params?.identifier ? `/issues/${params.identifier}` : '#'}>
+  Link: forwardRef<
+    HTMLAnchorElement,
+    ComponentPropsWithoutRef<'a'> & {
+      params?: { identifier?: string }
+    }
+  >(({ children, className, params, ...props }, ref) => (
+    <a
+      ref={ref}
+      className={className}
+      href={params?.identifier ? `/issues/${params.identifier}` : '#'}
+      {...props}
+    >
       {children}
     </a>
-  ),
+  )),
 }))
 
 describe('IssueCard', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('renders a live badge when bootstrap sessions are keyed by issue identifier', () => {
     const issue = makeIssueSummary()
 
@@ -98,5 +104,31 @@ describe('IssueCard', () => {
 
     expect(screen.getByText('Recurring')).toBeInTheDocument()
     expect(screen.getByText(/next/i)).toBeInTheDocument()
+  })
+
+  it('shows the hover card preview when the issue is hovered', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-09T12:00:00Z'))
+
+    const issue = makeIssueSummary({
+      issue_type: 'recurring',
+      next_run_at: '2026-03-09T12:30:00Z',
+      branch_name: 'feature/retries',
+      is_blocked: true,
+      blocked_by: ['ISS-9'],
+    })
+
+    renderWithQueryClient(<IssueCard issue={issue} bootstrap={makeBootstrapResponse()} onOpen={vi.fn()} />)
+
+    const link = screen.getByRole('link', { name: /investigate retries/i })
+    await act(async () => {
+      fireEvent.pointerEnter(link, { pointerType: 'mouse' })
+      fireEvent.mouseEnter(link)
+      await vi.advanceTimersByTimeAsync(150)
+    })
+
+    expect(screen.getByText('Retry scheduled in 5 minutes')).toBeInTheDocument()
+    expect(screen.getByText('Blocked by ISS-9')).toBeInTheDocument()
+    expect(screen.getByText('Branch feature/retries')).toBeInTheDocument()
   })
 })

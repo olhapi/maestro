@@ -396,7 +396,6 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 		"state":       "ready",
 		"blocked_by":  []string{},
 		"branch_name": "feature/track",
-		"pr_number":   12,
 		"pr_url":      "https://example.com/pr/12",
 	})
 	if createIssue.StatusCode != http.StatusCreated {
@@ -415,7 +414,6 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 		"labels":      []string{"updated"},
 		"blocked_by":  []string{},
 		"branch_name": "feature/updated",
-		"pr_number":   99,
 		"pr_url":      "https://example.com/pr/99",
 	})
 	if patchIssue.StatusCode != http.StatusOK {

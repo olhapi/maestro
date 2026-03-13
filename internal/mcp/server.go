@@ -134,7 +134,6 @@ func (s *Server) registerTools() {
 			"state":       stringProperty("Initial state: backlog, ready, in_progress, in_review, done, cancelled"),
 			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
 			"branch_name": stringProperty("Branch name"),
-			"pr_number":   numberProperty("Pull request number"),
 			"pr_url":      stringProperty("Pull request URL"),
 		}),
 		objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
@@ -163,7 +162,6 @@ func (s *Server) registerTools() {
 			"labels":      stringArrayProperty("New labels"),
 			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
 			"branch_name": stringProperty("Branch name"),
-			"pr_number":   numberProperty("Pull request number"),
 			"pr_url":      stringProperty("Pull request URL"),
 		}),
 		objectTool("set_issue_state", "Change an issue state", map[string]interface{}{
@@ -456,7 +454,6 @@ func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interfac
 		State:       asString(args["state"]),
 		BlockedBy:   stringListArg(args, "blocked_by"),
 		BranchName:  asString(args["branch_name"]),
-		PRNumber:    intArg(args, "pr_number", 0),
 		PRURL:       asString(args["pr_url"]),
 	})
 	if err != nil {
@@ -914,9 +911,6 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	}
 	if value, ok := args["branch_name"]; ok {
 		updates["branch_name"] = asString(value)
-	}
-	if _, ok := args["pr_number"]; ok {
-		updates["pr_number"] = intArg(args, "pr_number", 0)
 	}
 	if value, ok := args["pr_url"]; ok {
 		updates["pr_url"] = asString(value)

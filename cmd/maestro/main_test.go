@@ -319,7 +319,7 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 		t.Fatalf("decode issue create: %v\n%s", err, stdout)
 	}
 
-	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", created.Identifier, "--labels", "go,cli", "--priority", "5", "--branch", "feat/cli", "--pr", "17", "--pr-url", "https://example.com/pr/17", "--json")
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", created.Identifier, "--labels", "go,cli", "--priority", "5", "--branch", "feat/cli", "--pr-url", "https://example.com/pr/17", "--json")
 	if code != 0 {
 		t.Fatalf("issue update failed: %d stderr=%s", code, stderr)
 	}
@@ -327,7 +327,7 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
 		t.Fatalf("decode issue update: %v\n%s", err, stdout)
 	}
-	if updated.Priority != 5 || updated.BranchName != "feat/cli" || updated.PRNumber != 17 {
+	if updated.Priority != 5 || updated.BranchName != "feat/cli" || updated.PRURL != "https://example.com/pr/17" {
 		t.Fatalf("unexpected issue update payload: %+v", updated)
 	}
 

@@ -53,7 +53,6 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	if err := store.UpdateIssue(readyIssue.ID, map[string]interface{}{
 		"blocked_by":  []string{doneIssue.Identifier},
 		"branch_name": "feature/runtime",
-		"pr_number":   42,
 		"pr_url":      "https://example.com/pr/42",
 	}); err != nil {
 		t.Fatalf("UpdateIssue: %v", err)
@@ -156,7 +155,7 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	if detail.ProjectDescription != project.Description || detail.EpicDescription != epic.Description {
 		t.Fatalf("unexpected issue detail: %#v", detail)
 	}
-	if detail.BranchName != "feature/runtime" || detail.PRNumber != 42 {
+	if detail.BranchName != "feature/runtime" || detail.PRURL != "https://example.com/pr/42" {
 		t.Fatalf("expected branch/pr metadata in detail: %#v", detail)
 	}
 

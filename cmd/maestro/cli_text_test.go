@@ -236,7 +236,7 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueDetailByIdentifier failed: %v", err)
 	}
-	if detail.ProjectID != issue.ProjectID || detail.EpicID != "" || detail.Priority != 0 || len(detail.Labels) != 0 || detail.BranchName != "" || detail.PRNumber != 0 || detail.PRURL != "" {
+	if detail.ProjectID != issue.ProjectID || detail.EpicID != "" || detail.Priority != 0 || len(detail.Labels) != 0 || detail.BranchName != "" || detail.PRURL != "" {
 		t.Fatalf("expected cleared issue fields, got %+v", detail)
 	}
 

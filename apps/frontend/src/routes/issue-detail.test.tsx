@@ -4,7 +4,7 @@ import { vi } from "vitest";
 
 import { IssueDetailPage } from "@/routes/issue-detail";
 import { makeBootstrapResponse, makeIssueDetail } from "@/test/fixtures";
-import { renderWithQueryClient } from "@/test/test-utils";
+import { renderWithQueryClient, selectOption } from "@/test/test-utils";
 import { formatDateTime } from "@/lib/utils";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -399,9 +399,7 @@ describe("IssueDetailPage", () => {
     expect(within(controlRail).queryByText("Live adjustments")).not.toBeInTheDocument();
     expect(within(controlRail).queryByText("Blockers")).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole("combobox", { name: /issue state/i }), {
-      target: { value: "ready" },
-    });
+    await selectOption(/issue state/i, /ready/i);
 
     await waitFor(() => {
       expect(api.setIssueState).toHaveBeenCalledWith(

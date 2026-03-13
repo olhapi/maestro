@@ -10,7 +10,13 @@ import { IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { appRoutes } from "@/lib/routes";
@@ -312,22 +318,26 @@ export function IssueDetailPage() {
             </CardHeader>
             <CardContent className="grid gap-2.5">
               <Select
-                aria-label="Issue state"
                 value={issue.data.state}
-                onChange={async (event) => {
+                onValueChange={async (value) => {
                   await api.setIssueState(
                     identifier,
-                    event.target.value as IssueState,
+                    value as IssueState,
                   );
                   toast.success("State updated");
                   await invalidate();
                 }}
               >
-                {availableStates.map((value) => (
-                  <option key={value} value={value}>
-                    {getStateMeta(value).label}
-                  </option>
-                ))}
+                <SelectTrigger aria-label="Issue state">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableStates.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {getStateMeta(value).label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
               <Button variant="secondary" onClick={() => setEditOpen(true)}>
                 Edit issue

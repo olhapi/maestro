@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ProjectsPage } from "@/routes/projects";
@@ -54,9 +54,17 @@ describe("ProjectsPage", () => {
     });
 
     expect(screen.queryByText("Portfolio surface")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^\+?\s*project$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^\+?\s*epic$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^\+?\s*issue$/i })).toBeInTheDocument();
+
+    const createGroup = screen.getByRole("group", { name: /create work items/i });
+    expect(
+      within(createGroup).getByRole("button", { name: /^\+?\s*project$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(createGroup).getByRole("button", { name: /^\+?\s*epic$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(createGroup).getByRole("button", { name: /^\+?\s*issue$/i }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new project/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new epic/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new issue/i })).not.toBeInTheDocument();

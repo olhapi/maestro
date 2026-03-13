@@ -23,7 +23,6 @@ type IssueCreateInput struct {
 	State       string
 	BlockedBy   []string
 	BranchName  string
-	PRNumber    int
 	PRURL       string
 }
 

@@ -414,7 +414,6 @@ Continuation guidance:
 			"priority":    issue.Priority,
 			"labels":      issue.Labels,
 			"branch_name": issue.BranchName,
-			"pr_number":   issue.PRNumber,
 			"pr_url":      issue.PRURL,
 			"blocked_by":  issue.BlockedBy,
 			"created_at":  issue.CreatedAt.Format(time.RFC3339),

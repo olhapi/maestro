@@ -14,7 +14,13 @@ import { toast } from "sonner";
 import { IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Sheet,
   SheetContent,
@@ -202,21 +208,26 @@ export function IssuePreviewSheet({
                 </span>
                 <Select
                   value={activeIssue.state}
-                  onChange={async (event) => {
+                  onValueChange={async (value) => {
                     if (!onStateChange) return;
                     await onStateChange(
                       activeIssue.identifier,
-                      event.target.value as IssueState,
+                      value as IssueState,
                     );
                     const next = await api.getIssue(activeIssue.identifier);
                     setDetail(next);
                   }}
                 >
-                  {availableStates.map((state) => (
-                    <option key={state} value={state}>
-                      {getStateMeta(state).label}
-                    </option>
-                  ))}
+                  <SelectTrigger aria-label="State">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableStates.map((state) => (
+                      <SelectItem key={state} value={state}>
+                        {getStateMeta(state).label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </div>
 

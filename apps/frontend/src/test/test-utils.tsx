@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -21,4 +21,13 @@ export function renderWithQueryClient(ui: ReactNode) {
       </QueryClientProvider>,
     ),
   }
+}
+
+export async function selectOption(name: string | RegExp, option: string | RegExp) {
+  fireEvent.pointerDown(screen.getByRole('combobox', { name }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse',
+  })
+  fireEvent.click(await screen.findByRole('option', { name: option }))
 }

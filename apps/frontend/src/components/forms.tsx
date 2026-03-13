@@ -1,20 +1,60 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
 
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
-import { getStateMeta, issueStates } from '@/lib/dashboard'
-import type { EpicSummary, IssueDetail, IssueType, ProjectSummary } from '@/lib/types'
+import { MultiCombobox, type MultiComboboxOption } from "@/components/ui/multi-combobox";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { api } from "@/lib/api";
+import { getStateMeta, issueStates } from "@/lib/dashboard";
+import type { EpicSummary, IssueDetail, IssueSummary, IssueType, ProjectSummary } from "@/lib/types";
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+const noEpicValue = "__no-epic__";
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode | ((props: { labelId: string }) => ReactNode);
+}) {
+  const labelId = useId();
+
   return (
-    <label className="grid gap-2">
-      <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</span>
-      {children}
-    </label>
-  )
+    <div className="grid gap-2">
+      <Label id={labelId}>{label}</Label>
+      {typeof children === "function" ? children({ labelId }) : children}
+    </div>
+  );
+}
+
+function issueOptionLabel(issue: IssueSummary) {
+  return issue.title ? `${issue.identifier} · ${issue.title}` : issue.identifier;
+}
+
+async function loadProjectIssues(projectID: string) {
+  if (!projectID) return [];
+
+  const items: IssueSummary[] = [];
+  let offset = 0;
+
+  for (;;) {
+    const page = await api.listIssues({
+      project_id: projectID,
+      limit: 200,
+      offset,
+      sort: "identifier_asc",
+    });
+    items.push(...page.items);
+    offset += page.items.length;
+    if (items.length >= page.total || page.items.length === 0) {
+      return items;
+    }
+  }
 }
 
 export function ProjectDialog({
@@ -23,85 +63,131 @@ export function ProjectDialog({
   initial,
   onSubmit,
 }: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  initial?: Partial<ProjectSummary>
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initial?: Partial<ProjectSummary>;
   onSubmit: (body: {
-    name: string
-    description?: string
-    repo_path: string
-    workflow_path?: string
-    provider_kind?: string
-    provider_project_ref?: string
-    provider_config?: Record<string, unknown>
-  }) => Promise<void>
+    name: string;
+    description?: string;
+    repo_path: string;
+    workflow_path?: string;
+    provider_kind?: string;
+    provider_project_ref?: string;
+    provider_config?: Record<string, unknown>;
+  }) => Promise<void>;
 }) {
-  const [name, setName] = useState(initial?.name ?? '')
-  const [description, setDescription] = useState(initial?.description ?? '')
-  const [repoPath, setRepoPath] = useState(initial?.repo_path ?? '')
-  const [workflowPath, setWorkflowPath] = useState(initial?.workflow_path ?? '')
-  const [providerKind, setProviderKind] = useState(initial?.provider_kind ?? 'kanban')
-  const [providerProjectRef, setProviderProjectRef] = useState(initial?.provider_project_ref ?? '')
-  const [providerEndpoint, setProviderEndpoint] = useState(String(initial?.provider_config?.endpoint ?? ''))
-  const [providerAssignee, setProviderAssignee] = useState(String(initial?.provider_config?.assignee ?? ''))
-  const [pending, setPending] = useState(false)
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [repoPath, setRepoPath] = useState(initial?.repo_path ?? "");
+  const [workflowPath, setWorkflowPath] = useState(initial?.workflow_path ?? "");
+  const [providerKind, setProviderKind] = useState(initial?.provider_kind ?? "kanban");
+  const [providerProjectRef, setProviderProjectRef] = useState(initial?.provider_project_ref ?? "");
+  const [providerEndpoint, setProviderEndpoint] = useState(String(initial?.provider_config?.endpoint ?? ""));
+  const [providerAssignee, setProviderAssignee] = useState(String(initial?.provider_config?.assignee ?? ""));
+  const [pending, setPending] = useState(false);
 
   useEffect(() => {
-    setName(initial?.name ?? '')
-    setDescription(initial?.description ?? '')
-    setRepoPath(initial?.repo_path ?? '')
-    setWorkflowPath(initial?.workflow_path ?? '')
-    setProviderKind(initial?.provider_kind ?? 'kanban')
-    setProviderProjectRef(initial?.provider_project_ref ?? '')
-    setProviderEndpoint(String(initial?.provider_config?.endpoint ?? ''))
-    setProviderAssignee(String(initial?.provider_config?.assignee ?? ''))
-  }, [initial, open])
+    setName(initial?.name ?? "");
+    setDescription(initial?.description ?? "");
+    setRepoPath(initial?.repo_path ?? "");
+    setWorkflowPath(initial?.workflow_path ?? "");
+    setProviderKind(initial?.provider_kind ?? "kanban");
+    setProviderProjectRef(initial?.provider_project_ref ?? "");
+    setProviderEndpoint(String(initial?.provider_config?.endpoint ?? ""));
+    setProviderAssignee(String(initial?.provider_config?.assignee ?? ""));
+  }, [initial, open]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto">
         <div className="space-y-6">
           <div>
-            <DialogTitle className="text-xl font-semibold text-white">{initial ? 'Edit project' : 'Create project'}</DialogTitle>
+            <DialogTitle className="text-xl font-semibold text-white">
+              {initial ? "Edit project" : "Create project"}
+            </DialogTitle>
             <DialogDescription className="mt-2 text-sm text-[var(--muted-foreground)]">
               Manage the top-level portfolio containers for Maestro work.
             </DialogDescription>
           </div>
           <div className="grid gap-4">
             <Field label="Project name">
-              <Input value={name} onChange={(event) => setName(event.target.value)} />
+              {({ labelId }) => (
+                <Input aria-labelledby={labelId} value={name} onChange={(event) => setName(event.target.value)} />
+              )}
             </Field>
             <Field label="Description">
-              <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
+              {({ labelId }) => (
+                <Textarea
+                  aria-labelledby={labelId}
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              )}
             </Field>
             <Field label="Repo path">
-              <Input value={repoPath} onChange={(event) => setRepoPath(event.target.value)} placeholder="/absolute/path/to/repo" />
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={repoPath}
+                  onChange={(event) => setRepoPath(event.target.value)}
+                  placeholder="/absolute/path/to/repo"
+                />
+              )}
             </Field>
             <Field label="Workflow path override">
-              <Input value={workflowPath} onChange={(event) => setWorkflowPath(event.target.value)} placeholder="Optional; defaults to <repo>/WORKFLOW.md" />
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={workflowPath}
+                  onChange={(event) => setWorkflowPath(event.target.value)}
+                  placeholder="Optional; defaults to <repo>/WORKFLOW.md"
+                />
+              )}
             </Field>
             <Field label="Provider">
-              <Select value={providerKind} onChange={(event) => setProviderKind(event.target.value)}>
-                <option value="kanban">kanban</option>
-                <option value="linear">linear</option>
-              </Select>
+              {({ labelId }) => (
+                <Select value={providerKind} onValueChange={setProviderKind}>
+                  <SelectTrigger aria-labelledby={labelId}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="kanban">kanban</SelectItem>
+                    <SelectItem value="linear">linear</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
             </Field>
             <Field label="Provider project ref">
-              <Input
-                value={providerProjectRef}
-                onChange={(event) => setProviderProjectRef(event.target.value)}
-                placeholder={providerKind === 'linear' ? 'Linear project slug' : 'Optional provider project ref'}
-              />
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={providerProjectRef}
+                  onChange={(event) => setProviderProjectRef(event.target.value)}
+                  placeholder={providerKind === "linear" ? "Linear project slug" : "Optional provider project ref"}
+                />
+              )}
             </Field>
             <Field label="Provider endpoint">
-              <Input value={providerEndpoint} onChange={(event) => setProviderEndpoint(event.target.value)} placeholder="Optional API endpoint override" />
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={providerEndpoint}
+                  onChange={(event) => setProviderEndpoint(event.target.value)}
+                  placeholder="Optional API endpoint override"
+                />
+              )}
             </Field>
             <Field label="Provider assignee">
-              <Input
-                value={providerAssignee}
-                onChange={(event) => setProviderAssignee(event.target.value)}
-                placeholder={providerKind === 'linear' ? "Optional assignee ID or 'me'" : 'Optional provider assignee filter'}
-              />
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={providerAssignee}
+                  onChange={(event) => setProviderAssignee(event.target.value)}
+                  placeholder={
+                    providerKind === "linear" ? "Optional assignee ID or 'me'" : "Optional provider assignee filter"
+                  }
+                />
+              )}
             </Field>
           </div>
           <div className="flex justify-end gap-3">
@@ -111,18 +197,18 @@ export function ProjectDialog({
             <Button
               disabled={!name.trim() || !repoPath.trim() || pending}
               onClick={async () => {
-                setPending(true)
+                setPending(true);
                 try {
-                  const providerConfig: Record<string, unknown> = { ...(initial?.provider_config ?? {}) }
+                  const providerConfig: Record<string, unknown> = { ...(initial?.provider_config ?? {}) };
                   if (providerEndpoint) {
-                    providerConfig.endpoint = providerEndpoint
+                    providerConfig.endpoint = providerEndpoint;
                   } else {
-                    delete providerConfig.endpoint
+                    delete providerConfig.endpoint;
                   }
                   if (providerAssignee) {
-                    providerConfig.assignee = providerAssignee
+                    providerConfig.assignee = providerAssignee;
                   } else {
-                    delete providerConfig.assignee
+                    delete providerConfig.assignee;
                   }
                   await onSubmit({
                     name,
@@ -132,20 +218,20 @@ export function ProjectDialog({
                     provider_kind: providerKind,
                     provider_project_ref: providerProjectRef || undefined,
                     provider_config: Object.keys(providerConfig).length > 0 ? providerConfig : undefined,
-                  })
-                  onOpenChange(false)
+                  });
+                  onOpenChange(false);
                 } finally {
-                  setPending(false)
+                  setPending(false);
                 }
               }}
             >
-              {pending ? 'Saving…' : initial ? 'Update project' : 'Create project'}
+              {pending ? "Saving…" : initial ? "Update project" : "Create project"}
             </Button>
           </div>
         </div>
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 export function EpicDialog({
@@ -155,49 +241,65 @@ export function EpicDialog({
   projects,
   onSubmit,
 }: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  initial?: Partial<EpicSummary>
-  projects: ProjectSummary[]
-  onSubmit: (body: { project_id: string; name: string; description?: string }) => Promise<void>
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initial?: Partial<EpicSummary>;
+  projects: ProjectSummary[];
+  onSubmit: (body: { project_id: string; name: string; description?: string }) => Promise<void>;
 }) {
-  const [projectID, setProjectID] = useState(initial?.project_id ?? '')
-  const [name, setName] = useState(initial?.name ?? '')
-  const [description, setDescription] = useState(initial?.description ?? '')
-  const [pending, setPending] = useState(false)
+  const [projectID, setProjectID] = useState(initial?.project_id ?? "");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [pending, setPending] = useState(false);
 
   useEffect(() => {
-    setProjectID(initial?.project_id ?? projects[0]?.id ?? '')
-    setName(initial?.name ?? '')
-    setDescription(initial?.description ?? '')
-  }, [initial, open, projects])
+    setProjectID(initial?.project_id ?? projects[0]?.id ?? "");
+    setName(initial?.name ?? "");
+    setDescription(initial?.description ?? "");
+  }, [initial, open, projects]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <div className="space-y-6">
           <div>
-            <DialogTitle className="text-xl font-semibold text-white">{initial ? 'Edit epic' : 'Create epic'}</DialogTitle>
+            <DialogTitle className="text-xl font-semibold text-white">
+              {initial ? "Edit epic" : "Create epic"}
+            </DialogTitle>
             <DialogDescription className="mt-2 text-sm text-[var(--muted-foreground)]">
               Group related issues under a focused delivery arc.
             </DialogDescription>
           </div>
           <div className="grid gap-4">
             <Field label="Project">
-              <Select value={projectID} onChange={(event) => setProjectID(event.target.value)}>
-                <option value="">Select project</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </Select>
+              {({ labelId }) => (
+                <Select value={projectID || undefined} onValueChange={setProjectID}>
+                  <SelectTrigger aria-labelledby={labelId}>
+                    <SelectValue placeholder="Select project" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </Field>
             <Field label="Epic name">
-              <Input value={name} onChange={(event) => setName(event.target.value)} />
+              {({ labelId }) => (
+                <Input aria-labelledby={labelId} value={name} onChange={(event) => setName(event.target.value)} />
+              )}
             </Field>
             <Field label="Description">
-              <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
+              {({ labelId }) => (
+                <Textarea
+                  aria-labelledby={labelId}
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              )}
             </Field>
           </div>
           <div className="flex justify-end gap-3">
@@ -207,22 +309,22 @@ export function EpicDialog({
             <Button
               disabled={!name.trim() || !projectID || pending}
               onClick={async () => {
-                setPending(true)
+                setPending(true);
                 try {
-                  await onSubmit({ project_id: projectID, name, description })
-                  onOpenChange(false)
+                  await onSubmit({ project_id: projectID, name, description });
+                  onOpenChange(false);
                 } finally {
-                  setPending(false)
+                  setPending(false);
                 }
               }}
             >
-              {pending ? 'Saving…' : initial ? 'Update epic' : 'Create epic'}
+              {pending ? "Saving…" : initial ? "Update epic" : "Create epic"}
             </Button>
           </div>
         </div>
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 export function IssueDialog({
@@ -233,163 +335,331 @@ export function IssueDialog({
   epics,
   onSubmit,
 }: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  initial?: Partial<IssueDetail>
-  projects: ProjectSummary[]
-  epics: EpicSummary[]
-  onSubmit: (body: Record<string, unknown>) => Promise<void>
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initial?: Partial<IssueDetail>;
+  projects: ProjectSummary[];
+  epics: EpicSummary[];
+  onSubmit: (body: Record<string, unknown>) => Promise<void>;
 }) {
-  const isEditing = Boolean(initial?.identifier)
-  const defaultProjectID = initial?.project_id ?? projects[0]?.id ?? ''
-  const [projectID, setProjectID] = useState(defaultProjectID)
-  const [epicID, setEpicID] = useState(initial?.epic_id ?? '')
-  const [title, setTitle] = useState(initial?.title ?? '')
-  const [description, setDescription] = useState(initial?.description ?? '')
-  const [issueType, setIssueType] = useState<IssueType>(initial?.issue_type ?? 'standard')
-  const [cron, setCron] = useState(initial?.cron ?? '')
-  const [enabled, setEnabled] = useState(String(initial?.enabled ?? true))
-  const [state, setState] = useState<string>(initial?.state ?? 'backlog')
-  const [priority, setPriority] = useState(String(initial?.priority ?? 0))
-  const [labels, setLabels] = useState(initial?.labels?.join(', ') ?? '')
-  const [blockedBy, setBlockedBy] = useState(initial?.blocked_by?.join(', ') ?? '')
-  const [branchName, setBranchName] = useState(initial?.branch_name ?? '')
-  const [prNumber, setPrNumber] = useState(String(initial?.pr_number ?? 0))
-  const [prURL, setPrURL] = useState(initial?.pr_url ?? '')
-  const [pending, setPending] = useState(false)
-  const selectedProject = projects.find((project) => project.id === projectID)
-  const supportsEpics = selectedProject?.capabilities?.epics ?? true
-  const canChangeIssueType = !isEditing || initial?.provider_kind === 'kanban'
+  const isEditing = Boolean(initial?.identifier);
+  const defaultProjectID = initial?.project_id ?? projects[0]?.id ?? "";
+  const [projectID, setProjectID] = useState(defaultProjectID);
+  const [epicID, setEpicID] = useState(initial?.epic_id ?? "");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [issueType, setIssueType] = useState<IssueType>(initial?.issue_type ?? "standard");
+  const [cron, setCron] = useState(initial?.cron ?? "");
+  const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [state, setState] = useState<string>(initial?.state ?? "backlog");
+  const [priority, setPriority] = useState(String(initial?.priority ?? 0));
+  const [labels, setLabels] = useState(initial?.labels ?? []);
+  const [blockedBy, setBlockedBy] = useState(initial?.blocked_by ?? []);
+  const [branchName, setBranchName] = useState(initial?.branch_name ?? "");
+  const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
+  const [projectIssues, setProjectIssues] = useState<IssueSummary[]>([]);
+  const [loadingProjectIssues, setLoadingProjectIssues] = useState(false);
+  const [pending, setPending] = useState(false);
+  const selectedProject = projects.find((project) => project.id === projectID);
+  const supportsEpics = selectedProject?.capabilities?.epics ?? true;
+  const canChangeIssueType = !isEditing || initial?.provider_kind === "kanban";
 
   useEffect(() => {
-    setProjectID(initial?.project_id ?? projects[0]?.id ?? '')
-    setEpicID(initial?.epic_id ?? '')
-    setTitle(initial?.title ?? '')
-    setDescription(initial?.description ?? '')
-    setIssueType(initial?.issue_type ?? 'standard')
-    setCron(initial?.cron ?? '')
-    setEnabled(String(initial?.enabled ?? true))
-    setState(initial?.state ?? 'backlog')
-    setPriority(String(initial?.priority ?? 0))
-    setLabels(initial?.labels?.join(', ') ?? '')
-    setBlockedBy(initial?.blocked_by?.join(', ') ?? '')
-    setBranchName(initial?.branch_name ?? '')
-    setPrNumber(String(initial?.pr_number ?? 0))
-    setPrURL(initial?.pr_url ?? '')
-  }, [initial, open, projects])
-
-  const filteredEpics = epics.filter((epic) => projectID !== '' && epic.project_id === projectID)
+    setProjectID(initial?.project_id ?? projects[0]?.id ?? "");
+    setEpicID(initial?.epic_id ?? "");
+    setTitle(initial?.title ?? "");
+    setDescription(initial?.description ?? "");
+    setIssueType(initial?.issue_type ?? "standard");
+    setCron(initial?.cron ?? "");
+    setEnabled(initial?.enabled ?? true);
+    setState(initial?.state ?? "backlog");
+    setPriority(String(initial?.priority ?? 0));
+    setLabels(initial?.labels ?? []);
+    setBlockedBy(initial?.blocked_by ?? []);
+    setBranchName(initial?.branch_name ?? "");
+    setPrURL(initial?.pr_url ?? "");
+  }, [initial, open, projects]);
 
   useEffect(() => {
-    if (!epicID) return
-    if (!filteredEpics.some((epic) => epic.id === epicID)) {
-      setEpicID('')
+    if (!open || !projectID) {
+      setProjectIssues([]);
+      setLoadingProjectIssues(false);
+      return;
     }
-  }, [epicID, filteredEpics])
+
+    let active = true;
+
+    setLoadingProjectIssues(true);
+    loadProjectIssues(projectID)
+      .then((items) => {
+        if (!active) return;
+        setProjectIssues(items);
+      })
+      .catch(() => {
+        if (!active) return;
+        setProjectIssues([]);
+      })
+      .finally(() => {
+        if (active) {
+          setLoadingProjectIssues(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [open, projectID]);
+
+  const filteredEpics = epics.filter((epic) => projectID !== "" && epic.project_id === projectID);
+
+  useEffect(() => {
+    if (!epicID) return;
+    if (!filteredEpics.some((epic) => epic.id === epicID)) {
+      setEpicID("");
+    }
+  }, [epicID, filteredEpics]);
 
   useEffect(() => {
     if (canChangeIssueType) {
-      return
+      return;
     }
-    setIssueType(initial?.issue_type ?? 'standard')
-    setCron(initial?.cron ?? '')
-    setEnabled(String(initial?.enabled ?? true))
-  }, [canChangeIssueType, initial?.cron, initial?.enabled, initial?.issue_type])
+    setIssueType(initial?.issue_type ?? "standard");
+    setCron(initial?.cron ?? "");
+    setEnabled(initial?.enabled ?? true);
+  }, [canChangeIssueType, initial?.cron, initial?.enabled, initial?.issue_type]);
+
+  const labelOptions = useMemo<MultiComboboxOption[]>(() => {
+    const unique = new Set<string>();
+    for (const issue of projectIssues) {
+      for (const label of issue.labels ?? []) {
+        const trimmed = label.trim();
+        if (trimmed) {
+          unique.add(trimmed);
+        }
+      }
+    }
+    return [...unique].sort((left, right) => left.localeCompare(right)).map((label) => ({ value: label, label }));
+  }, [projectIssues]);
+
+  const blockerOptions = useMemo<MultiComboboxOption[]>(
+    () =>
+      projectIssues
+        .filter((issue) => issue.identifier !== initial?.identifier)
+        .map((issue) => ({
+          value: issue.identifier,
+          label: issueOptionLabel(issue),
+          keywords: [issue.identifier, issue.title],
+        })),
+    [initial?.identifier, projectIssues],
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(96vw,920px)]">
+      <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(96vw,920px)] overflow-y-auto">
         <div className="space-y-6">
           <div>
-            <DialogTitle className="text-xl font-semibold text-white">{isEditing ? `Edit ${initial?.identifier}` : 'Create issue'}</DialogTitle>
+            <DialogTitle className="text-xl font-semibold text-white">
+              {isEditing ? `Edit ${initial?.identifier}` : "Create issue"}
+            </DialogTitle>
             <DialogDescription className="mt-2 text-sm text-[var(--muted-foreground)]">
               Shape the issue, set operational metadata, and make it immediately actionable.
             </DialogDescription>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Project">
-              <Select value={projectID} onChange={(event) => setProjectID(event.target.value)}>
-                <option value="" disabled>
-                  {projects.length > 0 ? 'Select project' : 'Create a project first'}
-                </option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </Select>
+              {({ labelId }) => (
+                <Select
+                  value={projectID || undefined}
+                  onValueChange={(nextProjectID) => {
+                    setProjectID(nextProjectID);
+                    if (nextProjectID !== projectID) {
+                      setBlockedBy([]);
+                    }
+                  }}
+                >
+                  <SelectTrigger aria-labelledby={labelId}>
+                    <SelectValue placeholder={projects.length > 0 ? "Select project" : "Create a project first"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </Field>
             <Field label="Epic">
-              <Select disabled={!supportsEpics} value={epicID} onChange={(event) => setEpicID(event.target.value)}>
-                <option value="">No epic</option>
-                {filteredEpics.map((epic) => (
-                  <option key={epic.id} value={epic.id}>
-                    {epic.name}
-                  </option>
-                ))}
-              </Select>
+              {({ labelId }) => (
+                <Select
+                  disabled={!supportsEpics}
+                  value={epicID || noEpicValue}
+                  onValueChange={(value) => setEpicID(value === noEpicValue ? "" : value)}
+                >
+                  <SelectTrigger aria-labelledby={labelId}>
+                    <SelectValue placeholder="No epic" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={noEpicValue}>No epic</SelectItem>
+                    {filteredEpics.map((epic) => (
+                      <SelectItem key={epic.id} value={epic.id}>
+                        {epic.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </Field>
             <Field label="Title">
-              <Input value={title} onChange={(event) => setTitle(event.target.value)} />
+              {({ labelId }) => (
+                <Input aria-labelledby={labelId} value={title} onChange={(event) => setTitle(event.target.value)} />
+              )}
             </Field>
             <Field label="Type">
-              <Select disabled={!canChangeIssueType} value={issueType} onChange={(event) => setIssueType(event.target.value as IssueType)}>
-                <option value="standard">Standard</option>
-                <option value="recurring">Recurring</option>
-              </Select>
+              {({ labelId }) => (
+                <ToggleGroup
+                  type="single"
+                  value={issueType}
+                  onValueChange={(value) => {
+                    if (value) {
+                      setIssueType(value as IssueType);
+                    }
+                  }}
+                  className="grid h-11 grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-1"
+                  aria-labelledby={labelId}
+                  disabled={!canChangeIssueType}
+                >
+                  <ToggleGroupItem
+                    className="h-full rounded-[0.85rem] text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
+                    value="standard"
+                  >
+                    Standard
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    className="h-full rounded-[0.85rem] text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
+                    value="recurring"
+                  >
+                    Recurring
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              )}
             </Field>
             <Field label="State">
-              <Select value={state} onChange={(event) => setState(event.target.value)}>
-                {[...new Set([state, ...issueStates])].map((value) => (
-                  <option key={value} value={value}>
-                    {getStateMeta(value).label}
-                  </option>
-                ))}
-              </Select>
+              {({ labelId }) => (
+                <Select value={state} onValueChange={setState}>
+                  <SelectTrigger aria-labelledby={labelId}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[...new Set([state, ...issueStates])].map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {getStateMeta(value).label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </Field>
             <Field label="Priority">
-              <Input type="number" min={0} value={priority} onChange={(event) => setPriority(event.target.value)} />
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  type="number"
+                  min={0}
+                  value={priority}
+                  onChange={(event) => setPriority(event.target.value)}
+                />
+              )}
             </Field>
-            {issueType === 'recurring' ? (
+            {issueType === "recurring" ? (
               <>
                 <Field label="Cron">
-                  <Input value={cron} onChange={(event) => setCron(event.target.value)} placeholder="*/30 * * * *" />
+                  {({ labelId }) => (
+                    <Input
+                      aria-labelledby={labelId}
+                      value={cron}
+                      onChange={(event) => setCron(event.target.value)}
+                      placeholder="*/30 * * * *"
+                    />
+                  )}
                 </Field>
                 <Field label="Schedule">
-                  <Select value={enabled} onChange={(event) => setEnabled(event.target.value)}>
-                    <option value="true">Enabled</option>
-                    <option value="false">Disabled</option>
-                  </Select>
+                  {({ labelId }) => (
+                    <div
+                      aria-labelledby={labelId}
+                      className="flex min-h-11 items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-2"
+                    >
+                      <div>
+                        <p className="text-xs text-[var(--muted-foreground)]">Turn recurring runs on or off.</p>
+                      </div>
+                      <Switch aria-labelledby={labelId} checked={enabled} onCheckedChange={setEnabled} />
+                    </div>
+                  )}
                 </Field>
               </>
             ) : null}
             <Field label="Labels">
-              <Input value={labels} onChange={(event) => setLabels(event.target.value)} placeholder="bug, api, urgent" />
+              {({ labelId }) => (
+                <MultiCombobox
+                  labelledBy={labelId}
+                  value={labels}
+                  onChange={setLabels}
+                  options={labelOptions}
+                  loading={loadingProjectIssues}
+                  allowCreate
+                  placeholder="Select or create labels"
+                  emptyText="No labels found."
+                  createLabel={(value) => `Create label "${value}"`}
+                />
+              )}
             </Field>
             <Field label="Blockers">
-              <Input value={blockedBy} onChange={(event) => setBlockedBy(event.target.value)} placeholder="ISS-1, ISS-2" />
+              {({ labelId }) => (
+                <MultiCombobox
+                  labelledBy={labelId}
+                  value={blockedBy}
+                  onChange={setBlockedBy}
+                  options={blockerOptions}
+                  loading={loadingProjectIssues}
+                  placeholder="Select blocker issues"
+                  emptyText={projectID ? "No blockers available in this project." : "Select a project first."}
+                />
+              )}
             </Field>
             <Field label="Branch">
-              <Input value={branchName} onChange={(event) => setBranchName(event.target.value)} />
-            </Field>
-            <Field label="PR number">
-              <Input type="number" min={0} value={prNumber} onChange={(event) => setPrNumber(event.target.value)} />
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={branchName}
+                  onChange={(event) => setBranchName(event.target.value)}
+                />
+              )}
             </Field>
             <Field label="PR URL">
-              <Input value={prURL} onChange={(event) => setPrURL(event.target.value)} />
+              {({ labelId }) => (
+                <Input aria-labelledby={labelId} value={prURL} onChange={(event) => setPrURL(event.target.value)} />
+              )}
             </Field>
           </div>
           <Field label="Description">
-            <Textarea value={description} onChange={(event) => setDescription(event.target.value)} className="min-h-[180px]" />
+            {({ labelId }) => (
+              <Textarea
+                aria-labelledby={labelId}
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                className="min-h-[180px]"
+              />
+            )}
           </Field>
           <div className="flex justify-end gap-3">
             <Button variant="secondary" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button
-              disabled={!projectID || !title.trim() || pending || (issueType === 'recurring' && !cron.trim())}
+              disabled={!projectID || !title.trim() || pending || (issueType === "recurring" && !cron.trim())}
               onClick={async () => {
-                setPending(true)
+                setPending(true);
                 try {
                   const body: Record<string, unknown> = {
                     project_id: projectID,
@@ -399,36 +669,27 @@ export function IssueDialog({
                     state,
                     issue_type: issueType,
                     priority: Number(priority),
-                    labels: labels
-                      .split(',')
-                      .map((value) => value.trim())
-                      .filter(Boolean),
-                    blocked_by: blockedBy
-                      .split(',')
-                      .map((value) => value.trim())
-                      .filter(Boolean),
+                    labels,
+                    blocked_by: blockedBy,
                     branch_name: branchName,
-                    pr_number: Number(prNumber),
                     pr_url: prURL,
+                  };
+                  if (issueType === "recurring") {
+                    body.cron = cron;
+                    body.enabled = enabled;
                   }
-                  if (issueType === 'recurring') {
-                    body.cron = cron
-                    body.enabled = enabled === 'true'
-                  }
-                  await onSubmit({
-                    ...body,
-                  })
-                  onOpenChange(false)
+                  await onSubmit(body);
+                  onOpenChange(false);
                 } finally {
-                  setPending(false)
+                  setPending(false);
                 }
               }}
             >
-              {pending ? 'Saving…' : isEditing ? 'Update issue' : 'Create issue'}
+              {pending ? "Saving…" : isEditing ? "Update issue" : "Create issue"}
             </Button>
           </div>
         </div>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

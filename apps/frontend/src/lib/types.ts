@@ -112,7 +112,6 @@ export interface Issue {
   priority: number;
   labels?: string[];
   branch_name?: string;
-  pr_number?: number;
   pr_url?: string;
   blocked_by?: string[];
   created_at: string;

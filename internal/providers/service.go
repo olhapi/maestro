@@ -435,7 +435,6 @@ func (s *Service) CreateIssue(ctx context.Context, input IssueCreateInput) (*kan
 		}
 		localUpdates := map[string]interface{}{
 			"branch_name": input.BranchName,
-			"pr_number":   input.PRNumber,
 			"pr_url":      input.PRURL,
 		}
 		if err := s.store.UpdateIssue(synced.ID, localUpdates); err != nil {
@@ -489,7 +488,7 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 			return nil, err
 		}
 		localUpdates := map[string]interface{}{}
-		for _, key := range []string{"branch_name", "pr_number", "pr_url"} {
+		for _, key := range []string{"branch_name", "pr_url"} {
 			if value, ok := updates[key]; ok {
 				localUpdates[key] = value
 			}

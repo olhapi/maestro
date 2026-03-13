@@ -22,10 +22,10 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import type { BootstrapResponse, IssueState, IssueSummary } from "@/lib/types";
 import {
   getPausedForIssue,
@@ -60,6 +60,7 @@ export function IssueCard({
   const meta = getStateMeta(issue.state);
   const availableStates = issueStatesFor([issue]);
   const cardBadgeClass = "px-1.75 py-0.5 text-[9px] tracking-[0.14em]";
+  const blockedBy = issue.blocked_by?.filter(Boolean).join(", ");
 
   const content = (
     <Link
@@ -159,56 +160,106 @@ export function IssueCard({
     </Link>
   );
 
+  const hoverPreview = (
+    <HoverCardContent align="start" className="space-y-3.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
+            {issue.identifier}
+          </p>
+          <p className="mt-2 text-sm font-semibold leading-5 text-white">
+            {issue.title}
+          </p>
+        </div>
+        <Badge className="shrink-0 border-white/12 bg-white/5 text-white">
+          {meta.label}
+        </Badge>
+      </div>
+
+      {issue.project_name || issue.epic_name ? (
+        <div className="flex flex-wrap gap-1.5">
+          {issue.project_name ? (
+            <Badge className="border-white/12 bg-white/5 text-white">
+              {issue.project_name}
+            </Badge>
+          ) : null}
+          {issue.epic_name ? (
+            <Badge className="border-white/12 bg-white/5 text-white">
+              {issue.epic_name}
+            </Badge>
+          ) : null}
+        </div>
+      ) : null}
+
+      <p className="line-clamp-4 text-sm leading-6 text-[var(--muted-foreground)]">
+        {issue.description || "No description available."}
+      </p>
+
+      <div className="grid gap-2 text-xs text-[var(--muted-foreground)]">
+        <div className="inline-flex items-center gap-2">
+          <Clock3 className="size-3.5" />
+          Updated {formatRelativeTime(issue.updated_at)}
+        </div>
+        <div className="inline-flex items-center gap-2">
+          <Coins className="size-3.5" />
+          {formatCompactNumber(issue.total_tokens_spent)} lifetime tokens
+        </div>
+        {session ? (
+          <div className="inline-flex items-center gap-2">
+            <Workflow className="size-3.5 text-lime-300" />
+            Live session in progress
+          </div>
+        ) : null}
+        {retry ? (
+          <div className="inline-flex items-center gap-2">
+            <RotateCcw className="size-3.5 text-amber-300" />
+            Retry scheduled {formatRelativeTime(retry.due_at)}
+          </div>
+        ) : null}
+        {paused ? (
+          <div className="inline-flex items-center gap-2">
+            <AlertTriangle className="size-3.5 text-rose-300" />
+            Auto-retries paused
+          </div>
+        ) : null}
+        {issue.workspace_run_count > 0 ? (
+          <div className="inline-flex items-center gap-2">
+            <PlayCircle className="size-3.5 text-lime-300" />
+            {issue.workspace_run_count} runs
+          </div>
+        ) : null}
+        {issue.issue_type === "recurring" ? (
+          <div className="inline-flex items-center gap-2">
+            <RotateCcw className="size-3.5 text-cyan-300" />
+            {issue.next_run_at
+              ? `Next run ${formatRelativeTime(issue.next_run_at)}`
+              : "Recurring schedule configured"}
+          </div>
+        ) : null}
+        {issue.branch_name ? (
+          <div className="inline-flex items-center gap-2">
+            <GitBranch className="size-3.5" />
+            Branch {issue.branch_name}
+          </div>
+        ) : null}
+        {issue.is_blocked ? (
+          <div className="inline-flex items-center gap-2">
+            <AlertTriangle className="size-3.5 text-red-300" />
+            {blockedBy ? `Blocked by ${blockedBy}` : "Blocked by another issue"}
+          </div>
+        ) : null}
+      </div>
+    </HoverCardContent>
+  );
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div>
-          <Tooltip>
-            <TooltipTrigger asChild>{content}</TooltipTrigger>
-            <TooltipContent align="start" className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="font-medium text-white">{issue.identifier}</p>
-                <Badge className="border-white/12 bg-white/5 text-white">
-                  {meta.label}
-                </Badge>
-              </div>
-              <p className="line-clamp-3 text-sm leading-6 text-[var(--muted-foreground)]">
-                {issue.description || "No description available."}
-              </p>
-              <div className="grid gap-2 text-xs text-[var(--muted-foreground)]">
-                {session ? (
-                  <div className="inline-flex items-center gap-2">
-                    <Workflow className="size-3.5 text-lime-300" />
-                    Live session in progress
-                  </div>
-                ) : null}
-                {retry ? (
-                  <div className="inline-flex items-center gap-2">
-                    <RotateCcw className="size-3.5 text-amber-300" />
-                    Retry pending
-                  </div>
-                ) : null}
-                {paused ? (
-                  <div className="inline-flex items-center gap-2">
-                    <AlertTriangle className="size-3.5 text-rose-300" />
-                    Auto-retries paused
-                  </div>
-                ) : null}
-                {issue.issue_type === "recurring" ? (
-                  <div className="inline-flex items-center gap-2">
-                    <RotateCcw className="size-3.5 text-cyan-300" />
-                    {issue.next_run_at ? `Next run ${formatRelativeTime(issue.next_run_at)}` : "Recurring schedule configured"}
-                  </div>
-                ) : null}
-                {issue.is_blocked ? (
-                  <div className="inline-flex items-center gap-2">
-                    <AlertTriangle className="size-3.5 text-red-300" />
-                    Blocked by {issue.blocked_by?.join(", ")}
-                  </div>
-                ) : null}
-              </div>
-            </TooltipContent>
-          </Tooltip>
+          <HoverCard openDelay={120} closeDelay={160}>
+            <HoverCardTrigger asChild>{content}</HoverCardTrigger>
+            {hoverPreview}
+          </HoverCard>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>

@@ -12,6 +12,7 @@ STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-20}"
 
 backend_pid=""
 frontend_pid=""
+reuse_frontend=false
 
 cleanup() {
   local exit_code=$?
@@ -59,14 +60,57 @@ wait_for_backend() {
   done
 }
 
+listener_pid() {
+  local port="$1"
+
+  lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1
+}
+
+listener_command() {
+  local pid="$1"
+
+  ps -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//'
+}
+
+listener_cwd() {
+  local pid="$1"
+
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+describe_listener() {
+  local port="$1"
+  local label="$2"
+  local pid
+  local cmd
+  local cwd
+
+  pid="$(listener_pid "$port" || true)"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+
+  cmd="$(listener_command "$pid" || true)"
+  cwd="$(listener_cwd "$pid" || true)"
+
+  echo "${label} port ${port} is currently in use by PID ${pid}." >&2
+  if [[ -n "$cwd" ]]; then
+    echo "  cwd: ${cwd}" >&2
+  fi
+  if [[ -n "$cmd" ]]; then
+    echo "  cmd: ${cmd}" >&2
+  fi
+}
+
 wait_for_port_release() {
   local port="$1"
   local label="$2"
   local elapsed=0
 
-  while lsof -tiTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; do
+  while listener_pid "$port" >/dev/null; do
     if (( elapsed >= STARTUP_TIMEOUT_SEC )); then
       echo "Timed out waiting for ${label} port ${port} to become available." >&2
+      describe_listener "$port" "$label"
       return 1
     fi
 
@@ -75,8 +119,41 @@ wait_for_port_release() {
   done
 }
 
+frontend_listener_is_reusable() {
+  local pid="$1"
+  local cmd
+  local cwd
+
+  cmd="$(listener_command "$pid" || true)"
+  cwd="$(listener_cwd "$pid" || true)"
+
+  [[ "$cwd" == "$ROOT_DIR/apps/frontend" ]] || return 1
+  [[ "$cmd" == *"vite"* ]] || return 1
+  [[ "$cmd" == *"--port ${FRONTEND_PORT}"* || "$cmd" == *"--port=${FRONTEND_PORT}"* ]] || return 1
+
+  return 0
+}
+
+ensure_frontend_ready() {
+  local pid
+
+  pid="$(listener_pid "$FRONTEND_PORT" || true)"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+
+  if frontend_listener_is_reusable "$pid"; then
+    reuse_frontend=true
+    return 0
+  fi
+
+  echo "Frontend port ${FRONTEND_PORT} is already in use by a non-reusable process." >&2
+  describe_listener "$FRONTEND_PORT" "frontend"
+  return 1
+}
+
 wait_for_port_release "$BACKEND_PORT" "backend"
-wait_for_port_release "$FRONTEND_PORT" "frontend"
+ensure_frontend_ready
 
 cd "$ROOT_DIR"
 backend_cmd=(go run ./cmd/maestro run --db "$DB_PATH" --port "$BACKEND_PORT")
@@ -88,9 +165,13 @@ backend_pid=$!
 
 wait_for_backend
 
-cd "$ROOT_DIR/apps/frontend"
-pnpm dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort &
-frontend_pid=$!
+if [[ "$reuse_frontend" == true ]]; then
+  echo "Frontend: reusing existing Vite dev server on http://${FRONTEND_HOST}:${FRONTEND_PORT}"
+else
+  cd "$ROOT_DIR/apps/frontend"
+  pnpm dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort &
+  frontend_pid=$!
+fi
 
 if [[ -n "$REPO_PATH" ]]; then
   echo "Repo:     ${REPO_PATH}"
@@ -99,7 +180,19 @@ else
 fi
 echo "DB:       ${DB_PATH}"
 echo "Backend:  http://127.0.0.1:${BACKEND_PORT}"
-echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"
+if [[ "$reuse_frontend" == true ]]; then
+  echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT} (reused)"
+else
+  echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"
+fi
 echo "Press Ctrl+C to stop both."
 
-wait "$backend_pid" "$frontend_pid"
+wait_targets=()
+if [[ -n "$backend_pid" ]]; then
+  wait_targets+=( "$backend_pid" )
+fi
+if [[ -n "$frontend_pid" ]]; then
+  wait_targets+=( "$frontend_pid" )
+fi
+
+wait "${wait_targets[@]}"

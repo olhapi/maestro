@@ -76,7 +76,6 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 				Priority:      3,
 				Labels:        []string{"cli", "coverage"},
 				BranchName:    "feat/coverage",
-				PRNumber:      17,
 				PRURL:         "https://example.com/pr/17",
 				BlockedBy:     []string{"ISS-2"},
 				Cron:          "*/15 * * * *",

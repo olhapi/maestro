@@ -12,7 +12,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
@@ -20,6 +26,10 @@ import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
 import { appRoutes } from "@/lib/routes";
 import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
+
+const allProjectsValue = "__all-projects__";
+const allStatesValue = "__all-states__";
+const allTypesValue = "__all-types__";
 
 function StatCard({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
@@ -174,30 +184,41 @@ export function WorkPage() {
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by identifier, title, or description"
             />
-            <Select
-              aria-label="Filter by project"
-              value={projectID}
-              onChange={(event) => setProjectID(event.target.value)}
-            >
-              <option value="">All projects</option>
-              {bootstrap.data.projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
+            <Select value={projectID || allProjectsValue} onValueChange={(value) => setProjectID(value === allProjectsValue ? "" : value)}>
+              <SelectTrigger aria-label="Filter by project">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={allProjectsValue}>All projects</SelectItem>
+                {bootstrap.data.projects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
-            <Select value={state} onChange={(event) => setState(event.target.value)}>
-              <option value="">All states</option>
-              {availableStates.map((value) => (
-                <option key={value} value={value}>
-                  {getStateMeta(value).label}
-                </option>
-              ))}
+            <Select value={state || allStatesValue} onValueChange={(value) => setState(value === allStatesValue ? "" : value)}>
+              <SelectTrigger aria-label="Filter by state">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={allStatesValue}>All states</SelectItem>
+                {availableStates.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {getStateMeta(value).label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
-            <Select aria-label="Filter by issue type" value={issueType} onChange={(event) => setIssueType(event.target.value)}>
-              <option value="">All types</option>
-              <option value="standard">Standard</option>
-              <option value="recurring">Recurring</option>
+            <Select value={issueType || allTypesValue} onValueChange={(value) => setIssueType(value === allTypesValue ? "" : value)}>
+              <SelectTrigger aria-label="Filter by issue type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={allTypesValue}>All types</SelectItem>
+                <SelectItem value="standard">Standard</SelectItem>
+                <SelectItem value="recurring">Recurring</SelectItem>
+              </SelectContent>
             </Select>
           </div>
         </CardHeader>
@@ -209,16 +230,19 @@ export function WorkPage() {
             {isMobileLayout ? "Review work state by state" : "Triage, route, and monitor work in one surface"}
           </h2>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Select
-              aria-label="Sort issues"
-              className={isMobileLayout ? "h-9 w-full text-xs" : "h-9 w-[176px] text-xs"}
-              value={sort}
-              onChange={(event) => setSort(event.target.value)}
-            >
-              <option value="updated_desc">Recently updated</option>
-              <option value="priority_asc">Highest priority</option>
-              <option value="identifier_asc">Identifier A-Z</option>
-              <option value="state_asc">State grouping</option>
+            <Select value={sort} onValueChange={setSort}>
+              <SelectTrigger
+                aria-label="Sort issues"
+                className={isMobileLayout ? "h-9 w-full text-xs" : "h-9 w-[176px] text-xs"}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="updated_desc">Recently updated</SelectItem>
+                <SelectItem value="priority_asc">Highest priority</SelectItem>
+                <SelectItem value="identifier_asc">Identifier A-Z</SelectItem>
+                <SelectItem value="state_asc">State grouping</SelectItem>
+              </SelectContent>
             </Select>
             {!isMobileLayout ? (
               <ToggleGroup
