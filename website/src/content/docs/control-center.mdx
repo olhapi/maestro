@@ -49,9 +49,17 @@ When `maestro run` starts with `--port`, the HTTP server serves:
 
 - the embedded dashboard on `/`
 - the health endpoint on `/health`
-- the observability API on `/api/v1/...`
+- the live observability API on `/api/v1/...`
+- the dashboard application API on `/api/v1/app/...`
+- the dashboard invalidation stream on `/api/v1/ws`
 
 The UI and API are intentionally colocated because they describe the same live daemon.
+
+The split matters:
+
+- the dashboard UI reads the richer local control-plane API under `/api/v1/app/*`
+- the CLI helpers such as `status --dashboard`, `sessions`, and `events` use the older live runtime endpoints under `/api/v1/*`
+- the browser refreshes dashboard data when `/api/v1/ws` sends an invalidate event
 
 ## Practical reading order
 

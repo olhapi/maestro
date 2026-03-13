@@ -1,12 +1,16 @@
 # Maestro
 
-Maestro is a Go implementation of the Maestro orchestration loop with a local SQLite-backed Kanban tracker instead of Linear.
+Maestro is a local-first orchestration runtime for agent-driven software work.
 
-It gives you three durable surfaces:
+In the current codebase, the runtime is built from five connected layers:
 
-- a local tracker for projects and issues
-- an MCP server so Codex or ChatGPT can manage that tracker
-- an orchestrator that reads `WORKFLOW.md`, picks up `ready` issues, and dispatches them to an agent
+- a SQLite-backed local store for projects, issues, workspaces, sessions, commands, and runtime events
+- a provider service that supports local `kanban` projects and limited `linear` project sync
+- an orchestrator plus agent runner that read `WORKFLOW.md`, claim runnable issues, and dispatch Codex work
+- a private MCP daemon that `maestro mcp` bridges over stdio
+- an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
+
+Maestro stays local-first even when a project syncs issues from Linear. Provider-backed issues are synchronized into the local store, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces as local kanban issues.
 
 ## Build
 
@@ -66,7 +70,7 @@ This installs the repo-managed Git hooks with Husky and bootstraps the frontend 
 maestro workflow init .
 ```
 
-This writes a repo-local `WORKFLOW.md` with the default Kanban workflow, Codex command, and prompt template.
+This writes a repo-local `WORKFLOW.md` with the default orchestration workflow, Codex command, and prompt template.
 
 ### 2. Create a project and some issues
 
@@ -83,6 +87,8 @@ Move an issue into the ready queue when you want the orchestrator to pick it up:
 ```bash
 maestro issue move ISS-1 ready
 ```
+
+Projects default to the local `kanban` provider. You can also register a project with limited Linear-backed issue sync by passing `--provider linear --provider-project-ref <slug>` and, if needed, `--provider-endpoint` or `--provider-assignee`.
 
 ### 3. Expose the tracker to MCP clients
 
@@ -106,7 +112,7 @@ For a shared multi-project setup, point both `maestro mcp` and `maestro run` at 
 ### 4. Start the orchestrator
 
 ```bash
-maestro run /path/to/repo
+maestro run /path/to/repo --port 8787
 ```
 
 When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default.
@@ -117,9 +123,23 @@ The orchestrator:
 2. polls for issues in the `ready` state
 3. creates per-issue workspaces
 4. dispatches work to the configured agent command
-5. tracks retries, logs, runtime status, and the private MCP transport used by `maestro mcp`
+5. tracks retries, logs, runtime status, provider-backed issue refresh, the private MCP transport used by `maestro mcp`, and the public dashboard/API server when `--port` is set
 
 `run` prints a preview warning because the default workflow can launch Codex without extra guardrails. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when that is intentional for your environment.
+
+When you run with `--port`, Maestro serves:
+
+- the embedded dashboard on `/`
+- the live observability API on `/api/v1/*`
+- the richer dashboard application API on `/api/v1/app/*`
+- the dashboard invalidation stream on `/api/v1/ws`
+
+CLI helpers that talk to the live daemon require `--api-url`, for example:
+
+```bash
+maestro status --dashboard --api-url http://127.0.0.1:8787
+maestro sessions --api-url http://127.0.0.1:8787
+```
 
 For local UI development against another repo:
 
@@ -131,9 +151,18 @@ REPO_PATH=/path/to/repo make dev
 
 ```bash
 # Projects
-maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
+maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
 maestro project list
+maestro project show <id>
+maestro project update <id> [--name <name>] [--desc <description>] [--repo <repo_path>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
 maestro project delete <id>
+
+# Epics
+maestro epic create <name> --project <project_id> [--desc <description>]
+maestro epic list [--project <project_id>]
+maestro epic show <id>
+maestro epic update <id> [--name <name>] [--project <project_id>] [--desc <description>]
+maestro epic delete <id>
 
 # Issues
 maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>]
@@ -141,6 +170,11 @@ maestro issue list [--state <state>] [--project <id>]
 maestro issue show <identifier>
 maestro issue move <identifier> <state>
 maestro issue update <identifier> [--title <title>] [--desc <description>] [--pr <number> <url>]
+maestro issue execution <identifier> --api-url <url>
+maestro issue retry <identifier> --api-url <url>
+maestro issue unblock <identifier> <blocker_identifier...>
+maestro issue blockers set <identifier> [blocker_identifier...]
+maestro issue blockers clear <identifier>
 maestro issue delete <identifier>
 maestro issue block <identifier> <blocker_identifier...>
 
@@ -148,13 +182,19 @@ maestro issue block <identifier> <blocker_identifier...>
 maestro --log-level <debug|info|warn|error> run [repo_path] [--workflow <path>] [--extensions <json-file>] [--db <path>] [--logs-root <path>] [--log-max-bytes <n>] [--log-max-files <n>] [--port <port>]
 maestro --log-level <debug|info|warn|error> mcp [--db <path>]
 maestro --log-level <debug|info|warn|error> status [--json]
-maestro --log-level <debug|info|warn|error> status --dashboard [--dashboard-url <url>]
+maestro --log-level <debug|info|warn|error> status --dashboard --api-url <url>
+maestro --log-level <debug|info|warn|error> sessions --api-url <url>
+maestro --log-level <debug|info|warn|error> events --api-url <url> [--since <seq>] [--limit <n>]
+maestro --log-level <debug|info|warn|error> runtime-series --api-url <url> [--hours <n>]
 maestro --log-level <debug|info|warn|error> verify [--repo <path>] [--db <path>] [--json]
+maestro --log-level <debug|info|warn|error> doctor [--repo <path>] [--db <path>] [--json]
 maestro --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
 maestro --log-level <debug|info|warn|error> workflow init [repo_path]
 ```
 
 `--log-level` defaults to `info`. Use `debug` to include raw app-server stream output and session churn in the structured logs.
+
+Live runtime helpers require `--api-url` because they talk to a running daemon over HTTP.
 
 ## Git Hooks
 
@@ -202,7 +242,7 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 
 `maestro workflow init` now generates that file with inline comments for every supported key, and the checked-in example uses the same documented structure. The main knobs are:
 
-- `tracker.kind`: tracker backend. Only `kanban` is supported today.
+- `tracker.kind`: orchestration tracker kind. This remains `kanban`.
 - `tracker.active_states` and `tracker.terminal_states`: state names Maestro should treat as active work or terminal work.
 - `polling.interval_ms`: how often Maestro scans the tracker for runnable issues.
 - `workspace.root`: where per-issue workspaces are created. Relative paths resolve from the repo root; absolute paths, `$ENV_VAR` paths, and `~/` paths are also supported.
@@ -220,6 +260,8 @@ The current canonical example lives in [`WORKFLOW.md`](WORKFLOW.md). Supported t
 - `codex.thread_sandbox`: thread-level sandbox. Supported options are `read-only`, `workspace-write`, and `danger-full-access`.
 - `codex.turn_sandbox_policy`: per-turn sandbox policy object. `type` can be `workspaceWrite`, `readOnly`, `externalSandbox`, or `dangerFullAccess`. For `workspaceWrite`, the schema also supports `writableRoots`, `readOnlyAccess`, `excludeTmpdirEnvVar`, and `excludeSlashTmp`. If you omit those extras, Maestro fills in safe defaults for writable roots and read-only access.
 - `codex.turn_timeout_ms`, `codex.read_timeout_ms`, `codex.stall_timeout_ms`: run budget, stream-read timeout, and inactivity timeout.
+
+Project-level provider selection is separate from `WORKFLOW.md`. Projects can use `kanban` or limited `linear` support, but orchestration still runs through the same local store and workflow file.
 
 ### Codex Access Requirements
 
@@ -260,7 +302,8 @@ Bootstrap behavior matters:
 
 - `maestro workflow init` creates the file explicitly
 - `maestro run` bootstraps a missing file automatically
-- `maestro verify` also bootstraps a missing file
+- `maestro verify` checks readiness and returns remediation guidance
+- `maestro doctor` runs the same readiness checks with a different presentation
 - `maestro spec-check` does not mutate the repo and fails if the workflow file is missing or invalid
 
 ## Operations and Advanced Usage
@@ -271,19 +314,25 @@ Bootstrap behavior matters:
 ## Architecture
 
 ```text
-Codex or ChatGPT (via MCP)
-        |
-        v
-maestro mcp (stdio bridge)
-        |
-        v
-maestro run daemon <-> SQLite Kanban store
-        |
-        v
-Orchestrator -> workspace lifecycle -> agent runner
-        ^
-        |
-   WORKFLOW.md
+Codex or ChatGPT (via MCP)      Browser / CLI helpers
+            |                           |
+            v                           v
+   maestro mcp (stdio bridge)   public HTTP server (:port)
+            |                           |
+            v                           v
+       private MCP daemon ----> /api/v1/*, /api/v1/app/*, /api/v1/ws
+                    \\                  /
+                     v                v
+                  maestro run daemon
+                           |
+                           v
+        provider service <-> local SQLite store
+                           |
+                           v
+          orchestrator -> workspace lifecycle -> agent runner
+                           ^
+                           |
+                      WORKFLOW.md
 ```
 
 ## Docker

@@ -18,6 +18,8 @@ navLabel: Workflow config
 - Codex command and sandbox settings
 - the prompt template rendered for each issue
 
+Project-level provider selection is separate from this file. `WORKFLOW.md` still controls orchestration for every project, while `tracker.kind` remains `kanban` even if a project is configured to sync issues from Linear.
+
 ## Typical Codex-backed section
 
 ```yaml
@@ -43,6 +45,7 @@ codex:
 
 ## Main knobs
 
+- `tracker.kind`: orchestration tracker kind. This remains `kanban`.
 - `agent.mode`: use `app_server` for the Codex app-server protocol or `stdio` for `codex exec` style runners.
 - `agent.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
 - `agent.max_turns`: limit how many turns Maestro gives the agent before ending an attempt.
@@ -70,7 +73,8 @@ The workflow file is required for orchestration, but different commands treat a 
 
 - `maestro workflow init` creates it explicitly
 - `maestro run` bootstraps a missing file automatically
-- `maestro verify` also bootstraps a missing file
+- `maestro verify` checks readiness and returns remediation guidance
+- `maestro doctor` runs the same readiness checks with a different presentation
 - `maestro spec-check` is non-mutating and fails if the file is missing or invalid
 
 ## Codex access requirements

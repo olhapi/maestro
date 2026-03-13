@@ -1,61 +1,125 @@
 # Operations and Reference
 
-This document collects the durable operational details for Maestro: runtime endpoints, validation commands, extension tool files, logging, and deliberate non-goals.
+This document collects the durable operational details for Maestro: runtime surfaces, HTTP endpoints, validation commands, extension tool files, logging, and current scope boundaries.
 
-## Observability
+## Runtime surfaces
 
-Start the orchestrator with an HTTP port to expose runtime state:
+`maestro run` is the long-lived process for a given database. In code, it owns five connected layers:
+
+- the SQLite-backed local store and runtime persistence
+- the provider service that reads local `kanban` projects and syncs limited `linear` projects into the local store
+- the orchestrator and agent runner that turn queued issues into per-issue workspaces and Codex runs
+- a private loopback-only MCP daemon used by `maestro mcp`
+- an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
+
+`WORKFLOW.md` still governs orchestration behavior. Its `tracker.kind` remains `kanban`, even when a project itself is configured to sync issues from a provider such as Linear.
+
+## HTTP surfaces
+
+Start the daemon with an HTTP port:
 
 ```bash
 ./maestro run /path/to/repo --port 8787
 ```
 
-If `--db` is omitted, `run` uses the current Maestro workspace's `.maestro/maestro.db`.
+If `--db` is omitted, `run` uses `~/.maestro/maestro.db`.
 
-Available endpoints:
+The public server exposes two related API surfaces plus the embedded dashboard:
+
+### Live observability API
+
+These endpoints power CLI helpers such as `status --dashboard`, `sessions`, and `events`:
 
 - `GET /health`: process health and timestamp
-- `GET /api/v1/state`: orchestrator status payload
-- `GET /api/v1/<issue_identifier>`: single running or retrying issue payload
+- `GET /api/v1/state`: live orchestrator status payload
+- `GET /api/v1/<issue_identifier>`: single issue status payload from the live runtime view
 - `GET /api/v1/sessions`: all live app-server sessions
 - `GET /api/v1/sessions?issue=ISS-1`: single session lookup by issue identifier
-- `GET /api/v1/events?since=0&limit=100`: in-memory event feed
+- `GET /api/v1/events?since=0&limit=100`: live in-memory event feed
 - `POST /api/v1/refresh`: request a refresh event
-- `GET /api/v1/dashboard`: combined snapshot of state, sessions, and recent events
+- `GET /api/v1/dashboard`: combined live snapshot of state, sessions, and recent events
 
-`maestro status --dashboard` is a local CLI rendering helper. It is not the same thing as the live HTTP observability API and should not be treated as a remote status feed.
+`maestro status --dashboard` is a CLI formatter over this live API. It is not the same thing as the richer dashboard application API.
 
-Session payloads include both `issue_id` and `issue_identifier`, and the `sessions` map is keyed by issue identifier.
+### Dashboard application API
 
-## MCP Attach Model
+These endpoints back the embedded UI and expose the broader local control plane:
 
-`maestro run` is the only long-lived daemon for a given database. It owns:
+- `GET /api/v1/app/bootstrap`
+- `GET|POST /api/v1/app/projects`
+- `GET|PATCH|DELETE|POST /api/v1/app/projects/:id` and project actions such as `/run` and `/stop`
+- `GET|POST /api/v1/app/epics`
+- `GET|PATCH|DELETE /api/v1/app/epics/:id`
+- `GET|POST /api/v1/app/issues`
+- `GET|PATCH|DELETE /api/v1/app/issues/:identifier`
+- `GET /api/v1/app/issues/:identifier/execution`
+- `POST /api/v1/app/issues/:identifier/state`
+- `POST /api/v1/app/issues/:identifier/blockers`
+- `POST /api/v1/app/issues/:identifier/commands`
+- `POST /api/v1/app/issues/:identifier/retry`
+- `GET /api/v1/app/runtime/events`
+- `GET /api/v1/app/runtime/series`
+- `GET /api/v1/app/sessions`
 
-- the SQLite store
-- the orchestrator runtime
-- the public observability API
-- a private loopback-only MCP transport endpoint
+### WebSocket invalidation
 
-`maestro mcp` no longer starts a standalone MCP server. It attaches to the live `maestro run` daemon for the same store and bridges that daemon over stdio for MCP clients.
+- `GET /api/v1/ws`: dashboard invalidation stream used by the embedded UI to refetch live data
+
+## CLI and API usage
+
+Commands that read the live runtime over HTTP require `--api-url`:
+
+- `maestro status --dashboard --api-url http://127.0.0.1:8787`
+- `maestro sessions --api-url http://127.0.0.1:8787`
+- `maestro events --api-url http://127.0.0.1:8787`
+- `maestro runtime-series --api-url http://127.0.0.1:8787`
+- `maestro issue execution ISS-1 --api-url http://127.0.0.1:8787`
+- `maestro issue retry ISS-1 --api-url http://127.0.0.1:8787`
+
+The embedded dashboard does not need `--api-url` because it is served by the same HTTP server it talks to.
+
+## MCP attach model
+
+`maestro run` is the only daemon for a given database. It starts a private MCP endpoint bound to loopback and records the daemon metadata for that database.
+
+`maestro mcp` does not start a separate server. It discovers the live daemon for the same `--db`, authenticates to the private MCP endpoint, and bridges that session over stdio for MCP clients.
 
 Operationally:
 
 - start `maestro run` first
 - point `maestro mcp` at the same `--db`
-- if `maestro mcp` cannot find a live daemon for that store, it exits with an error instead of falling back to DB-only mode
+- expect an error if no live daemon exists for that store
 
-## Workflow Bootstrap and Checks
+## Provider model
+
+Projects can use one of two provider kinds:
+
+- `kanban`: fully local project and issue lifecycle backed by the SQLite store
+- `linear`: limited project-backed issue sync and issue mutation through Linear's GraphQL API
+
+Current Linear support is intentionally limited:
+
+- project provider support is available
+- issue sync and issue state updates are supported
+- assignee filtering is supported through project provider config
+- epics are not supported
+- some create and update flows reject labels, blockers, or project reassignment
+
+Regardless of provider, Maestro supervises work through the same local store, orchestration loop, runtime events, and dashboard surfaces.
+
+## Workflow bootstrap and checks
 
 `WORKFLOW.md` is required for orchestration. The commands treat it differently:
 
-- `maestro workflow init [repo_path]` creates the file explicitly.
-- `maestro run [repo_path]` bootstraps a missing file automatically before starting.
-- `maestro verify [--repo <path>] [--db <path>] [--json]` bootstraps a missing file, verifies it loads, and checks database initialization.
-- `maestro spec-check [--repo <path>] [--json]` is non-mutating and fails if the workflow file is missing or invalid.
+- `maestro workflow init [repo_path]` creates the file explicitly
+- `maestro run [repo_path]` bootstraps a missing file automatically before starting
+- `maestro verify [--repo <path>] [--db <path>] [--json]` checks readiness and returns remediation guidance; it does not create the file
+- `maestro doctor [--repo <path>] [--db <path>] [--json]` runs the same readiness checks with a different presentation
+- `maestro spec-check [--repo <path>] [--json]` is non-mutating and fails if the workflow file is missing or invalid
 
-`verify` is intended for local readiness checks. `spec-check` is intended for lightweight conformance checks against the repo layout and workflow surface.
+`verify` and `doctor` are readiness checks. `spec-check` is the lightweight conformance check.
 
-## Extensions File
+## Extensions file
 
 Only `maestro run` loads extension tools via `--extensions`.
 
@@ -107,15 +171,16 @@ Behavior:
 - the main log file is `maestro.log`
 - rotation is size-based
 - `--log-level` is global and applies to every CLI command
-- `debug` includes raw app-server stream output; `info` keeps logs focused on lifecycle and status transitions
+- `debug` includes raw app-server stream output
+- `info` keeps logs focused on lifecycle and status transitions
 - `--log-max-bytes` controls the rotation threshold
 - `--log-max-files` controls how many rotated files are retained
 
-## Deliberate Scope
+## Deliberate scope
 
-Current non-goals and differences from the original Maestro project:
+Current scope boundaries and differences from the original Maestro project:
 
-- the tracker is local Kanban backed by SQLite, not Linear
-- the observability surface is HTTP JSON, not a Phoenix dashboard or pubsub transport
-- `status --dashboard` is a local snapshot formatter, not live orchestrator introspection
-- extension tools are intentionally simple shell commands, not a separate plugin runtime
+- Maestro stays local-first even when a project syncs issues from Linear
+- the public observability surface is HTTP plus an embedded dashboard, not Phoenix-style pubsub
+- `status --dashboard` is a live CLI formatter, not a second control plane
+- extension tools remain local shell commands, not a separate plugin runtime
