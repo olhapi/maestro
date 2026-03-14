@@ -8,7 +8,7 @@ export const durableSurfaces = [
   {
     title: "Local tracker",
     description:
-      "Keep projects, blockers, and issue state visible in a durable SQLite-backed board without depending on a hosted tracker.",
+      "Keep projects, blockers, issue state, and local screenshots visible in a durable SQLite-backed board without depending on a hosted tracker.",
   },
   {
     title: "MCP bridge",
@@ -81,9 +81,10 @@ export const tourChapters = [
     id: "work",
     title: "Route work without losing the shape of the queue.",
     description:
-      "The board keeps priority, blockers, live sessions, and token burn visible directly on the cards so planning and active execution share one surface.",
+      "The board keeps priority, blockers, live sessions, token burn, and the shared issue composer close together so planning and active execution share one surface.",
     bullets: [
       "Drag issues between lanes or inspect them in place.",
+      "Open the shared composer and dictate issue descriptions with browser speech input.",
       "Filter by project, state, and search without flattening the board.",
       "Spot blocked or live issues before they become blind spots.",
     ],
@@ -93,11 +94,11 @@ export const tourChapters = [
     id: "issue-detail",
     title: "See the execution transcript where the work actually happens.",
     description:
-      "When you need context, the issue page keeps blockers, branch state, token spend, and the activity feed in one dense but readable control panel.",
+      "When you need context, the issue page keeps blockers, screenshots, branch state, token spend, and the activity feed in one dense but readable control panel.",
     bullets: [
-      "Execution state, blockers, and commands stay adjacent.",
+      "Execution state, screenshots, blockers, and commands stay adjacent.",
       "The transcript shows command progress and agent messages together.",
-      "Live controls stay available without leaving the issue.",
+      "Attach or remove local images without leaving the issue.",
     ],
     image: "/images/screens/issue-detail.webp",
   },

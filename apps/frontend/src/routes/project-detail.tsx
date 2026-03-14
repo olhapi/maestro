@@ -15,6 +15,10 @@ import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
 import {
+  applyIssueImageChanges,
+  summarizeIssueImageFailures,
+} from "@/lib/issue-images";
+import {
   isProjectDispatchReady,
   isProjectRunning,
   summaryActiveCount,
@@ -351,9 +355,19 @@ export function ProjectDetailPage() {
         epics={bootstrap.data.epics.filter(
           (epic) => epic.project_id === projectId,
         )}
-        onSubmit={async (body) => {
-          await api.createIssue(body);
-          toast.success("Issue created");
+        onSubmit={async (body, imageChanges) => {
+          const issue = await api.createIssue(body);
+          const result = await applyIssueImageChanges(
+            issue.identifier,
+            imageChanges,
+          );
+          if (result.failures.length > 0) {
+            toast.error(
+              `Issue created, but ${summarizeIssueImageFailures(result)}`,
+            );
+          } else {
+            toast.success("Issue created");
+          }
           await invalidate();
         }}
       />

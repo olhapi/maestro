@@ -136,9 +136,20 @@ export interface IssueSummary extends Issue {
   is_blocked: boolean;
 }
 
+export interface IssueImage {
+  id: string;
+  issue_id: string;
+  filename: string;
+  content_type: string;
+  byte_size: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface IssueDetail extends IssueSummary {
   project_description?: string;
   epic_description?: string;
+  images: IssueImage[];
 }
 
 export interface TokenTotals {

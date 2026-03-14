@@ -3,6 +3,8 @@ import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
 import { MultiCombobox, type MultiComboboxOption } from "@/components/ui/multi-combobox";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { IssueDescriptionField } from "@/components/issue-description-field";
+import { FilePicker } from "@/components/ui/file-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,6 +13,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { getStateMeta, issueStates } from "@/lib/dashboard";
+import {
+  formatIssueImageSize,
+  issueImageInputAccept,
+  type IssueImageChangeSet,
+} from "@/lib/issue-images";
 import type { EpicSummary, IssueDetail, IssueSummary, IssueType, ProjectSummary } from "@/lib/types";
 
 const noEpicValue = "__no-epic__";
@@ -340,7 +347,7 @@ export function IssueDialog({
   initial?: Partial<IssueDetail>;
   projects: ProjectSummary[];
   epics: EpicSummary[];
-  onSubmit: (body: Record<string, unknown>) => Promise<void>;
+  onSubmit: (body: Record<string, unknown>, images: IssueImageChangeSet) => Promise<void>;
 }) {
   const isEditing = Boolean(initial?.identifier);
   const defaultProjectID = initial?.project_id ?? projects[0]?.id ?? "";
@@ -357,6 +364,8 @@ export function IssueDialog({
   const [blockedBy, setBlockedBy] = useState(initial?.blocked_by ?? []);
   const [branchName, setBranchName] = useState(initial?.branch_name ?? "");
   const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
+  const [newImages, setNewImages] = useState<File[]>([]);
+  const [removedImageIDs, setRemovedImageIDs] = useState<string[]>([]);
   const [projectIssues, setProjectIssues] = useState<IssueSummary[]>([]);
   const [loadingProjectIssues, setLoadingProjectIssues] = useState(false);
   const [pending, setPending] = useState(false);
@@ -378,6 +387,8 @@ export function IssueDialog({
     setBlockedBy(initial?.blocked_by ?? []);
     setBranchName(initial?.branch_name ?? "");
     setPrURL(initial?.pr_url ?? "");
+    setNewImages([]);
+    setRemovedImageIDs([]);
   }, [initial, open, projects]);
 
   useEffect(() => {
@@ -451,6 +462,10 @@ export function IssueDialog({
           keywords: [issue.identifier, issue.title],
         })),
     [initial?.identifier, projectIssues],
+  );
+
+  const visibleExistingImages = (initial?.images ?? []).filter(
+    (image) => !removedImageIDs.includes(image.id),
   );
 
   return (
@@ -644,12 +659,129 @@ export function IssueDialog({
           </div>
           <Field label="Description">
             {({ labelId }) => (
-              <Textarea
-                aria-labelledby={labelId}
+              <IssueDescriptionField
+                labelledBy={labelId}
                 value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                className="min-h-[180px]"
+                onChange={setDescription}
               />
+            )}
+          </Field>
+          <Field label="Images">
+            {({ labelId }) => (
+              <div aria-labelledby={labelId} className="grid gap-3">
+                <FilePicker
+                  accept={issueImageInputAccept}
+                  ariaLabel="Images"
+                  buttonLabel="Choose files"
+                  summary={
+                    newImages.length === 0
+                      ? "Choose screenshots or mocks to upload after save."
+                      : newImages.length === 1
+                        ? newImages[0].name
+                        : `${newImages.length} images queued for upload`
+                  }
+                  multiple
+                  onFilesSelected={(files) => {
+                    setNewImages((current) => [...current, ...files]);
+                  }}
+                />
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  PNG, JPEG, WEBP, and GIF up to 10 MiB each. Images stay local to this Maestro database.
+                </p>
+                {visibleExistingImages.length > 0 ? (
+                  <div className="grid gap-2">
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                      Attached now
+                    </p>
+                    {visibleExistingImages.map((image) => (
+                      <div
+                        key={image.id}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-white">{image.filename}</p>
+                          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                            {formatIssueImageSize(image.byte_size)} · {image.content_type}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() =>
+                            setRemovedImageIDs((current) => [...current, image.id])
+                          }
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {removedImageIDs.length > 0 ? (
+                  <div className="grid gap-2">
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                      Removing on save
+                    </p>
+                    {(initial?.images ?? [])
+                      .filter((image) => removedImageIDs.includes(image.id))
+                      .map((image) => (
+                        <div
+                          key={image.id}
+                          className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm text-white">{image.filename}</p>
+                            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                              Will be deleted after save
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() =>
+                              setRemovedImageIDs((current) =>
+                                current.filter((value) => value !== image.id),
+                              )
+                            }
+                          >
+                            Undo
+                          </Button>
+                        </div>
+                      ))}
+                  </div>
+                ) : null}
+                {newImages.length > 0 ? (
+                  <div className="grid gap-2">
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                      Queued uploads
+                    </p>
+                    {newImages.map((file, index) => (
+                      <div
+                        key={`${file.name}-${file.size}-${index}`}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-white">{file.name}</p>
+                          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                            {formatIssueImageSize(file.size)} · {file.type || "Detected on upload"}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() =>
+                            setNewImages((current) =>
+                              current.filter((_, currentIndex) => currentIndex !== index),
+                            )
+                          }
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             )}
           </Field>
           <div className="flex justify-end gap-3">
@@ -678,7 +810,10 @@ export function IssueDialog({
                     body.cron = cron;
                     body.enabled = enabled;
                   }
-                  await onSubmit(body);
+                  await onSubmit(body, {
+                    newImages,
+                    removeImageIDs: removedImageIDs,
+                  });
                   onOpenChange(false);
                 } finally {
                   setPending(false);

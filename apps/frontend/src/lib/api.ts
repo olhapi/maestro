@@ -4,6 +4,7 @@ import type {
   EpicDetailResponse,
   EpicSummary,
   IssueDetail,
+  IssueImage,
   IssueExecutionDetail,
   IssueSummary,
   Project,
@@ -15,18 +16,26 @@ import type {
 } from "@/lib/types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(path, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
     ...init,
+    headers,
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as {
       error?: string;
     };
     throw new Error(payload.error ?? `Request failed: ${response.status}`);
+  }
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return undefined as T;
   }
   return response.json() as Promise<T>;
 }
@@ -134,6 +143,21 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  uploadIssueImage: (identifier: string, file: File) => {
+    const formData = new FormData();
+    formData.set("file", file);
+    return request<IssueImage>(`/api/v1/app/issues/${identifier}/images`, {
+      method: "POST",
+      body: formData,
+    });
+  },
+  deleteIssueImage: (identifier: string, imageID: string) =>
+    request<{ deleted: boolean; identifier: string; image_id: string }>(
+      `/api/v1/app/issues/${identifier}/images/${imageID}`,
+      {
+        method: "DELETE",
+      },
+    ),
   deleteIssue: (identifier: string) =>
     request<{ deleted: boolean }>(`/api/v1/app/issues/${identifier}`, {
       method: "DELETE",

@@ -13,6 +13,10 @@ import { ButtonGroup } from "@/components/ui/button-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import {
+  applyIssueImageChanges,
+  summarizeIssueImageFailures,
+} from "@/lib/issue-images";
+import {
   isProjectDispatchReady,
   isProjectRunning,
   summaryActiveCount,
@@ -287,9 +291,14 @@ export function ProjectsPage() {
         onOpenChange={setIssueDialogOpen}
         projects={projects.data.items}
         epics={epics.data.items}
-        onSubmit={async (body) => {
-          await api.createIssue(body);
-          toast.success("Issue created");
+        onSubmit={async (body, imageChanges) => {
+          const issue = await api.createIssue(body);
+          const result = await applyIssueImageChanges(issue.identifier, imageChanges);
+          if (result.failures.length > 0) {
+            toast.error(`Issue created, but ${summarizeIssueImageFailures(result)}`);
+          } else {
+            toast.success("Issue created");
+          }
           await invalidate();
         }}
       />
