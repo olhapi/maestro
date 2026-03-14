@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 20
     env:
       E2E_KEEP_HARNESS: '0'
-      E2E_ROOT: ${{ runner.temp }}/real-codex-e2e/retry-safety
+      E2E_ROOT: /tmp/real-codex-e2e/retry-safety
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -54,7 +54,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       E2E_KEEP_HARNESS: '0'
       E2E_TIMEOUT_SEC: '900'
-      E2E_ROOT: ${{ runner.temp }}/real-codex-e2e/${{ matrix.name }}
+      E2E_ROOT: /tmp/real-codex-e2e/${{ matrix.name }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
