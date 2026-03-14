@@ -690,6 +690,93 @@ func TestImplementationSuccessWithoutStateTransitionPausesAutomaticRetry(t *test
 	}
 }
 
+func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runner := &countingPhaseRunner{
+		store:    store,
+		runCalls: make(chan string, 4),
+	}
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Finish run bookkeeping", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	releaseFinish := make(chan struct{})
+	finishBlocked := make(chan struct{})
+	var finishHookOnce sync.Once
+	orch.testHooks.beforeFinishRunRelease = func(issueID string) {
+		if issueID != issue.ID {
+			return
+		}
+		finishHookOnce.Do(func() { close(finishBlocked) })
+		<-releaseFinish
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := waitForRunCall(t, runner.runCalls, time.Second); got != issue.Identifier {
+		t.Fatalf("expected first run for %s, got %s", issue.Identifier, got)
+	}
+
+	select {
+	case <-finishBlocked:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for finish bookkeeping hook")
+	}
+
+	orch.mu.RLock()
+	_, running := orch.running[issue.ID]
+	orch.mu.RUnlock()
+	if !running {
+		t.Fatal("expected issue to remain marked running while finish bookkeeping is blocked")
+	}
+
+	for i := 0; i < 5; i++ {
+		orch.reconcile(context.Background())
+		if err := orch.dispatch(context.Background()); err != nil {
+			t.Fatalf("dispatch during finish bookkeeping: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls := runner.runCount(issue.Identifier); calls != 1 {
+		t.Fatalf("expected a single run while finish bookkeeping is blocked, got %d", calls)
+	}
+
+	close(releaseFinish)
+	waitForNoRunning(t, orch, time.Second)
+	orch.reconcile(context.Background())
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	orch.mu.RUnlock()
+	if !pausedOK {
+		t.Fatal("expected retry pause after finish bookkeeping completed")
+	}
+	if paused.Error != "no_state_transition" || paused.Attempt != 1 {
+		t.Fatalf("unexpected paused payload after finish bookkeeping: %+v", paused)
+	}
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected runtime events after finish bookkeeping")
+	}
+	latest := events[len(events)-1]
+	if latest.Kind != "retry_paused" || latest.Error != "no_state_transition" || latest.Attempt != 1 {
+		t.Fatalf("unexpected latest runtime event after finish bookkeeping: %+v", latest)
+	}
+	if calls := runner.runCount(issue.Identifier); calls != 1 {
+		t.Fatalf("expected finish bookkeeping regression test to keep run count at 1, got %d", calls)
+	}
+}
+
 func TestImplementationSuccessCanSkipReviewAndQueueDonePhase(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)
@@ -2193,6 +2280,41 @@ type phaseRunHandler func(issue *kanban.Issue) (*agent.RunResult, error)
 type phaseScriptRunner struct {
 	store    *kanban.Store
 	handlers map[kanban.WorkflowPhase]phaseRunHandler
+}
+
+type countingPhaseRunner struct {
+	store    *kanban.Store
+	runCalls chan string
+	mu       sync.Mutex
+	counts   map[string]int
+}
+
+func (r *countingPhaseRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
+	if issue.State == kanban.StateReady {
+		if err := r.store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+			return nil, err
+		}
+	}
+	if r.runCalls != nil {
+		r.runCalls <- issue.Identifier
+	}
+	r.mu.Lock()
+	if r.counts == nil {
+		r.counts = make(map[string]int)
+	}
+	r.counts[issue.Identifier]++
+	r.mu.Unlock()
+	return &agent.RunResult{Success: true}, nil
+}
+
+func (r *countingPhaseRunner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
+	return nil
+}
+
+func (r *countingPhaseRunner) runCount(identifier string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counts[identifier]
 }
 
 func (r *phaseScriptRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {

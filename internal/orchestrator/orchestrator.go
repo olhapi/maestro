@@ -73,6 +73,10 @@ type issueTokenSpendState struct {
 	LastFlushedAt time.Time
 }
 
+type orchestratorTestHooks struct {
+	beforeFinishRunRelease func(issueID string)
+}
+
 const scopedRuntimeKey = "__scoped__"
 
 type projectRuntime struct {
@@ -123,6 +127,7 @@ type Orchestrator struct {
 	events         []map[string]interface{}
 	maxEvents      int
 	runWG          sync.WaitGroup
+	testHooks      orchestratorTestHooks
 }
 
 func New(store *kanban.Store, workflows *config.Manager) *Orchestrator {
@@ -1211,8 +1216,19 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 }
 
 func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, result *agent.RunResult, err error) {
+	defer func() {
+		if hook := o.testHooks.beforeFinishRunRelease; hook != nil {
+			hook(issue.ID)
+		}
+		o.mu.Lock()
+		delete(o.running, issue.ID)
+		delete(o.liveSessions, issue.ID)
+		o.mu.Unlock()
+		o.clearSessionWriteState(issue.ID)
+		o.clearIssueTokenSpendState(issue.ID)
+	}()
+
 	o.mu.Lock()
-	delete(o.running, issue.ID)
 	o.totalRuns++
 	o.mu.Unlock()
 
@@ -1230,22 +1246,12 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	if isCancelledRunCompletion(err, result) {
 		if snapshot, snapshotErr := o.store.GetIssueExecutionSession(issue.ID); snapshotErr == nil && snapshot != nil && snapshot.StopReason == gracefulShutdownStopReason {
 			o.flushIssueTokenSpend(issue.ID)
-			o.mu.Lock()
-			delete(o.liveSessions, issue.ID)
-			o.mu.Unlock()
-			o.clearSessionWriteState(issue.ID)
-			o.clearIssueTokenSpendState(issue.ID)
 			return
 		}
 		slog.Info("Agent run cancelled",
 			issueLogAttrs(current, attempt, "phase", phase)...,
 		)
 		o.flushIssueTokenSpend(issue.ID)
-		o.mu.Lock()
-		delete(o.liveSessions, issue.ID)
-		o.mu.Unlock()
-		o.clearSessionWriteState(issue.ID)
-		o.clearIssueTokenSpendState(issue.ID)
 		return
 	}
 
@@ -1279,12 +1285,6 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	}
 	o.processPendingRecurringRerun(current)
 	o.flushIssueTokenSpend(issue.ID)
-
-	o.mu.Lock()
-	delete(o.liveSessions, issue.ID)
-	o.mu.Unlock()
-	o.clearSessionWriteState(issue.ID)
-	o.clearIssueTokenSpendState(issue.ID)
 }
 
 func isCancelledRunCompletion(err error, result *agent.RunResult) bool {
