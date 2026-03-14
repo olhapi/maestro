@@ -527,7 +527,6 @@ func (o *Orchestrator) reconcilePausedRuns(ctx context.Context) {
 		_, retrying := o.retries[issue.ID]
 		o.mu.RUnlock()
 		if running || retrying {
-			o.clearPausedState(issue.ID)
 			continue
 		}
 

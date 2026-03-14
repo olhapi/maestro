@@ -750,6 +750,15 @@ func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) 
 
 	close(releaseFinish)
 	waitForNoRunning(t, orch, time.Second)
+	for i := 0; i < 5; i++ {
+		if err := orch.dispatch(context.Background()); err != nil {
+			t.Fatalf("dispatch after finish bookkeeping: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls := runner.runCount(issue.Identifier); calls != 1 {
+		t.Fatalf("expected pause state to survive finish bookkeeping release, got %d runs", calls)
+	}
 	orch.reconcile(context.Background())
 
 	orch.mu.RLock()
