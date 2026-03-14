@@ -13,6 +13,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { api } from '@/lib/api'
 import { getStateMeta, groupIssuesByState, issueStatesFor } from '@/lib/dashboard'
+import {
+  applyIssueImageChanges,
+  summarizeIssueImageFailures,
+} from '@/lib/issue-images'
 import { summaryActiveCount, summaryDoneCount } from '@/lib/projects'
 import { appRoutes } from '@/lib/routes'
 import type { IssueDetail, IssueState, IssueSummary } from '@/lib/types'
@@ -191,9 +195,14 @@ export function EpicDetailPage() {
         initial={{ epic_id: epicId, project_id: epic.data.project?.id } as Partial<IssueDetail>}
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics.filter((candidate) => candidate.project_id === epic.data.project?.id)}
-        onSubmit={async (body) => {
-          await api.createIssue(body)
-          toast.success('Issue created')
+        onSubmit={async (body, imageChanges) => {
+          const issue = await api.createIssue(body)
+          const result = await applyIssueImageChanges(issue.identifier, imageChanges)
+          if (result.failures.length > 0) {
+            toast.error(`Issue created, but ${summarizeIssueImageFailures(result)}`)
+          } else {
+            toast.success('Issue created')
+          }
           await invalidate()
         }}
       />

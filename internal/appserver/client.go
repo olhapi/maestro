@@ -91,8 +91,9 @@ type Client struct {
 	lineErr chan error
 	waitCh  chan error
 
-	outputMu sync.Mutex
-	output   bytes.Buffer
+	outputMu      sync.Mutex
+	output        bytes.Buffer
+	threadResumed bool
 
 	requestMu sync.Mutex
 	nextID    int
@@ -221,6 +222,10 @@ func (c *Client) Output() string {
 	return strings.TrimSpace(c.output.String())
 }
 
+func (c *Client) ThreadResumed() bool {
+	return c.threadResumed
+}
+
 func (c *Client) Wait() error {
 	select {
 	case err := <-c.waitCh:
@@ -267,8 +272,16 @@ func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
 }
 
 func (c *Client) RunTurnWithStartCallback(ctx context.Context, prompt, title string, onStarted func(*Session)) error {
+	return c.RunTurnWithInputsAndStartCallback(ctx, []gen.UserInputElement{protocol.TextInput(prompt)}, title, onStarted)
+}
+
+func (c *Client) RunTurnWithInputs(ctx context.Context, input []gen.UserInputElement, title string) error {
+	return c.RunTurnWithInputsAndStartCallback(ctx, input, title, nil)
+}
+
+func (c *Client) RunTurnWithInputsAndStartCallback(ctx context.Context, input []gen.UserInputElement, title string, onStarted func(*Session)) error {
 	requestID := c.nextRequestID()
-	req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, prompt, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.TurnSandboxPolicy)
+	req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, input, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.TurnSandboxPolicy)
 	if err != nil {
 		return err
 	}
@@ -330,6 +343,7 @@ func (c *Client) initialize(ctx context.Context) error {
 func (c *Client) initializeThread(ctx context.Context) error {
 	if threadID, resumed := c.tryResumeThread(ctx); resumed {
 		c.session.ThreadID = threadID
+		c.threadResumed = true
 		c.logger.Info("Codex thread resumed", "thread_id", threadID, "source", strings.TrimSpace(c.cfg.ResumeSource))
 		return nil
 	}
@@ -339,6 +353,7 @@ func (c *Client) initializeThread(ctx context.Context) error {
 		return err
 	}
 	c.session.ThreadID = threadID
+	c.threadResumed = false
 	c.logger.Info("Codex thread started", "thread_id", threadID)
 	return nil
 }

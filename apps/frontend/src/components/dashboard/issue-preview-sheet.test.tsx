@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { IssuePreviewSheet } from '@/components/dashboard/issue-preview-sheet'
@@ -145,5 +145,43 @@ describe('IssuePreviewSheet', () => {
       expect(api.runIssueNow).toHaveBeenCalledWith(summary.identifier)
       expect(onInvalidate).toHaveBeenCalled()
     })
+  })
+
+  it('renders edit, retry, and delete in a single icon action row', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const summary = makeIssueSummary()
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={vi.fn().mockResolvedValue(undefined)}
+        onDelete={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Investigate retries')).toBeInTheDocument()
+    })
+
+    const actionRow = screen.getByTestId('issue-preview-actions-row')
+    const editButton = within(actionRow).getByRole('button', {
+      name: /edit issue/i,
+    })
+    const retryButton = within(actionRow).getByRole('button', {
+      name: /retry now/i,
+    })
+    const deleteButton = within(actionRow).getByRole('button', {
+      name: /delete/i,
+    })
+
+    expect(actionRow).toHaveClass('grid-cols-3')
+    expect(within(actionRow).getAllByRole('button')).toHaveLength(3)
+    expect(editButton.querySelector('svg')).not.toBeNull()
+    expect(retryButton.querySelector('svg')).not.toBeNull()
+    expect(deleteButton.querySelector('svg')).not.toBeNull()
   })
 })

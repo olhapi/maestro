@@ -23,6 +23,10 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
+import {
+  applyIssueImageChanges,
+  summarizeIssueImageFailures,
+} from "@/lib/issue-images";
 import { appRoutes } from "@/lib/routes";
 import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
@@ -370,13 +374,23 @@ export function WorkPage() {
         initial={editing ?? composerDefaults}
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics}
-        onSubmit={async (body) => {
+        onSubmit={async (body, imageChanges) => {
           if (editing) {
-            await api.updateIssue(editing.identifier, body);
-            toast.success("Issue updated");
+            const issue = await api.updateIssue(editing.identifier, body);
+            const result = await applyIssueImageChanges(issue.identifier, imageChanges);
+            if (result.failures.length > 0) {
+              toast.error(`Issue updated, but ${summarizeIssueImageFailures(result)}`);
+            } else {
+              toast.success("Issue updated");
+            }
           } else {
-            await api.createIssue(body);
-            toast.success("Issue created");
+            const issue = await api.createIssue(body);
+            const result = await applyIssueImageChanges(issue.identifier, imageChanges);
+            if (result.failures.length > 0) {
+              toast.error(`Issue created, but ${summarizeIssueImageFailures(result)}`);
+            } else {
+              toast.success("Issue created");
+            }
           }
           await invalidate();
         }}

@@ -35,9 +35,23 @@ The work board keeps routing decisions spatial:
 - keep blockers, live sessions, and token spend visible on the card
 - inspect an issue quickly without losing board context
 
+### Issue composer
+
+The shared issue composer is available from the work board, projects, epic detail, issue detail, and preview flows. It is designed for fast updates when you already know the work shape:
+
+- dictate issue descriptions with browser speech input in supported Chromium-based browsers
+- watch live interim text land inline while typing stays locked during dictation
+- keep the same create and edit workflow everywhere because the composer is shared
+
 ### Issue detail
 
-Issue pages are intentionally dense. They keep the execution transcript, live state, blockers, branch and PR state, token usage, and agent controls close together so you do not have to context-switch during supervision.
+Issue pages are intentionally dense. They keep the execution transcript, live state, blockers, branch and PR state, token usage, image attachments, and agent controls close together so you do not have to context-switch during supervision.
+
+The image card on the issue page is where screenshots and bug captures live:
+
+- thumbnails stay visible next to the transcript and controls
+- uploads and deletions happen directly on the issue page
+- the same local images also appear when you edit the issue through the composer dialog
 
 ### Sessions
 
@@ -67,5 +81,5 @@ If you are debugging live behavior:
 
 1. Start on overview.
 2. Move to the work board to isolate the affected issue.
-3. Open the issue detail page for transcript and control data.
+3. Open the issue detail page for transcript, screenshots, and control data.
 4. Use sessions when the problem is broader than one issue.

@@ -115,3 +115,51 @@ a {
   background: rgba(196, 255, 87, 0.3);
   color: white;
 }
+
+@keyframes issue-speech-bars {
+  0%,
+  100% {
+    transform: scaleY(var(--speech-bar-rest));
+    opacity: 0.45;
+  }
+
+  50% {
+    transform: scaleY(var(--speech-bar-peak));
+    opacity: 1;
+  }
+}
+
+.issue-speech-visualizer {
+  --speech-bar-rest: 0.38;
+  --speech-bar-peak: 0.72;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 0.16rem;
+  height: 0.85rem;
+}
+
+.issue-speech-visualizer[data-speaking='true'] {
+  --speech-bar-rest: 0.55;
+  --speech-bar-peak: 1.08;
+}
+
+.issue-speech-visualizer span {
+  width: 0.18rem;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(217, 255, 135, 1), rgba(83, 217, 255, 0.8));
+  animation: issue-speech-bars 0.95s ease-in-out infinite;
+  transform-origin: center bottom;
+}
+
+.issue-speech-visualizer span:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.issue-speech-visualizer span:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.issue-speech-visualizer span:nth-child(4) {
+  animation-delay: 0.36s;
+}

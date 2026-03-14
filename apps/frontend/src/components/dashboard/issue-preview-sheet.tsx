@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ExternalLink,
   GitBranch,
+  Pencil,
   RotateCcw,
   Save,
   Trash2,
@@ -39,6 +40,10 @@ import {
   issueStatesFor,
 } from "@/lib/dashboard";
 import { describeFailureRuns } from "@/lib/execution";
+import {
+  applyIssueImageChanges,
+  summarizeIssueImageFailures,
+} from "@/lib/issue-images";
 import { appRoutes } from "@/lib/routes";
 import type {
   BootstrapResponse,
@@ -285,13 +290,22 @@ export function IssuePreviewSheet({
             </div>
           </div>
 
-          <SheetFooter className="flex flex-wrap items-center justify-between gap-3">
-            <Button variant="secondary" onClick={() => setEditOpen(true)}>
-              Edit issue
-            </Button>
-            <div className="flex flex-wrap gap-3">
+          <SheetFooter className="grid gap-3">
+            <div
+              className={onDelete ? "grid grid-cols-3 gap-3" : "grid grid-cols-2 gap-3"}
+              data-testid="issue-preview-actions-row"
+            >
               <Button
                 variant="secondary"
+                className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                onClick={() => setEditOpen(true)}
+              >
+                <Pencil className="size-4" />
+                Edit issue
+              </Button>
+              <Button
+                variant="secondary"
+                className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
                 onClick={() =>
                   void api.retryIssue(activeIssue.identifier).then(onInvalidate)
                 }
@@ -299,6 +313,21 @@ export function IssuePreviewSheet({
                 <RotateCcw className="size-4" />
                 Retry now
               </Button>
+              {onDelete ? (
+                <Button
+                  variant="destructive"
+                  className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                  onClick={async () => {
+                    await onDelete(activeIssue.identifier);
+                    onOpenChange(false);
+                  }}
+                >
+                  <Trash2 className="size-4" />
+                  Delete
+                </Button>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap justify-end gap-3">
               {activeIssue.issue_type === "recurring" ? (
                 <Button
                   variant="secondary"
@@ -308,18 +337,6 @@ export function IssuePreviewSheet({
                 >
                   <RotateCcw className="size-4" />
                   Run now
-                </Button>
-              ) : null}
-              {onDelete ? (
-                <Button
-                  variant="destructive"
-                  onClick={async () => {
-                    await onDelete(activeIssue.identifier);
-                    onOpenChange(false);
-                  }}
-                >
-                  <Trash2 className="size-4" />
-                  Delete
                 </Button>
               ) : null}
               <Button
@@ -346,9 +363,19 @@ export function IssuePreviewSheet({
           initial={detail}
           projects={bootstrap.projects}
           epics={bootstrap.epics}
-          onSubmit={async (body) => {
-            await api.updateIssue(activeIssue.identifier, body);
-            toast.success("Issue updated");
+          onSubmit={async (body, imageChanges) => {
+            const issue = await api.updateIssue(activeIssue.identifier, body);
+            const result = await applyIssueImageChanges(
+              issue.identifier,
+              imageChanges,
+            );
+            if (result.failures.length > 0) {
+              toast.error(
+                `Issue updated, but ${summarizeIssueImageFailures(result)}`,
+              );
+            } else {
+              toast.success("Issue updated");
+            }
             await onInvalidate();
             const next = await api.getIssue(activeIssue.identifier);
             setDetail(next);

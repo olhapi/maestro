@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"path/filepath"
@@ -11,18 +12,32 @@ import (
 )
 
 type stubProvider struct {
-	kind      string
-	issues    []kanban.Issue
-	lastQuery kanban.IssueQuery
-	listErr   error
-	listGate  <-chan struct{}
-	listFunc  func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
-	getIssue  *kanban.Issue
-	getErr    error
-	getGate   <-chan struct{}
-	getFunc   func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
+	kind       string
+	issues     []kanban.Issue
+	lastQuery  kanban.IssueQuery
+	listErr    error
+	listGate   <-chan struct{}
+	listFunc   func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
+	getIssue   *kanban.Issue
+	getErr     error
+	getGate    <-chan struct{}
+	getFunc    func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
 	createFunc func(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error)
 	updateFunc func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
+}
+
+func sampleProviderPNGBytes() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
 }
 
 func (p *stubProvider) Kind() string {
@@ -410,6 +425,63 @@ func TestServiceGetIssueByIdentifierPropagatesParentDeadlineExceeded(t *testing.
 	}
 }
 
+func TestServiceProviderIssueImagesStayLocalAcrossRefresh(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     kanban.ProviderKindLinear,
+		ProviderIssueRef: "linear-1",
+		Identifier:       "LIN-1",
+		Title:            "Cached issue",
+		State:            kanban.StateReady,
+	}); err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	svc := NewService(store)
+	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+		kind: kanban.ProviderKindLinear,
+		getIssue: &kanban.Issue{
+			ProviderKind:     kanban.ProviderKindLinear,
+			ProviderIssueRef: "linear-1",
+			Identifier:       "LIN-1",
+			Title:            "Fresh upstream issue",
+			State:            kanban.StateReady,
+		},
+	}
+
+	image, err := svc.AttachIssueImage(context.Background(), "LIN-1", "provider.png", bytes.NewReader(sampleProviderPNGBytes()))
+	if err != nil {
+		t.Fatalf("AttachIssueImage: %v", err)
+	}
+	detail, err := svc.GetIssueDetailByIdentifier(context.Background(), "LIN-1")
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier: %v", err)
+	}
+	if len(detail.Images) != 1 || detail.Images[0].ID != image.ID {
+		t.Fatalf("expected local image to persist across refresh, got %#v", detail.Images)
+	}
+	if detail.Title != "Fresh upstream issue" {
+		t.Fatalf("expected provider refresh to still apply, got %q", detail.Title)
+	}
+}
+
 func TestServiceCreateEpicRequiresProject(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -501,7 +573,7 @@ func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *t
 	var updateCalled bool
 	svc := NewService(store)
 	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:    kanban.ProviderKindLinear,
+		kind:     kanban.ProviderKindLinear,
 		getIssue: issue,
 		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
 			updateCalled = true
