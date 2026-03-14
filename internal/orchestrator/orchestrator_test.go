@@ -750,6 +750,16 @@ func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) 
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	orch.mu.RLock()
+	_, running = orch.running[issue.ID]
+	_, claimed := orch.claimed[issue.ID]
+	orch.mu.RUnlock()
+	if !running {
+		t.Fatal("expected reconcile to keep the issue marked running while pause bookkeeping is blocked")
+	}
+	if !claimed {
+		t.Fatal("expected reconcile to keep the issue claim while pause bookkeeping is blocked")
+	}
 	if calls := runner.runCount(issue.Identifier); calls != 1 {
 		t.Fatalf("expected a single run while finish bookkeeping is blocked, got %d", calls)
 	}

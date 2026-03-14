@@ -495,6 +495,9 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 		}
 		dispatchable, reason, _ := o.isDispatchable(workflow, issue)
 		if !dispatchable {
+			if reason == "paused" {
+				continue
+			}
 			slog.Info("Stopping run during reconciliation",
 				issueLogAttrs(issue, -1, "reason", reason)...,
 			)
