@@ -203,6 +203,17 @@ type IssueRecurrence struct {
 	UpdatedAt      time.Time  `json:"updated_at,omitempty"`
 }
 
+type IssueImage struct {
+	ID          string    `json:"id"`
+	IssueID     string    `json:"issue_id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	ByteSize    int64     `json:"byte_size"`
+	StoragePath string    `json:"-"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // Workspace represents an isolated working directory for an issue
 type Workspace struct {
 	IssueID   string     `json:"issue_id"`

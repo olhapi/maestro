@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -579,6 +580,11 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) >= 2 && parts[1] == "images" {
+		s.handleIssueImages(w, r, identifier, parts[2:])
+		return
+	}
+
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
@@ -754,6 +760,63 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleIssueImages(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
+	if len(rest) == 0 {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, kanban.MaxIssueImageBytes+(1<<20))
+		if err := r.ParseMultipartForm(kanban.MaxIssueImageBytes + (1 << 20)); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("file is required"))
+			return
+		}
+		defer file.Close()
+
+		image, err := s.service.AttachIssueImage(r.Context(), identifier, header.Filename, file)
+		if err != nil {
+			writeError(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSONStatus(w, http.StatusCreated, image)
+		return
+	}
+
+	if len(rest) == 2 && rest[1] == "content" && r.Method == http.MethodGet {
+		image, path, err := s.service.GetIssueImageContent(r.Context(), identifier, rest[0])
+		if err != nil {
+			writeError(w, appErrorStatus(err), err)
+			return
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", image.ContentType)
+		w.Header().Set("Content-Length", strconv.FormatInt(image.ByteSize, 10))
+		http.ServeContent(w, r, image.Filename, image.UpdatedAt, file)
+		return
+	}
+
+	if len(rest) == 1 && r.Method == http.MethodDelete {
+		if err := s.service.DeleteIssueImage(r.Context(), identifier, rest[0]); err != nil {
+			writeError(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"deleted": true, "identifier": identifier, "image_id": rest[0]})
+		return
+	}
+
+	methodNotAllowed(w)
 }
 
 func (s *Server) handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {

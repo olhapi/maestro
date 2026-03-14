@@ -102,7 +102,10 @@ func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 		t.Fatalf("unexpected dynamic tools: %+v", dynamicTools)
 	}
 
-	turnReq, err := TurnStartRequest(3, "thread-1", "fix it", "/tmp/work", "on-request", map[string]interface{}{
+	turnReq, err := TurnStartRequest(3, "thread-1", []gen.UserInputElement{
+		TextInput("fix it"),
+		LocalImageInput(".maestro/issue-images/img-1-screen.png", "screen.png"),
+	}, "/tmp/work", "on-request", map[string]interface{}{
 		"type":          "workspaceWrite",
 		"networkAccess": true,
 		"writableRoots": []string{"/tmp/work"},
@@ -122,9 +125,16 @@ func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 		t.Fatalf("unexpected thread id: %+v", turnParams["threadId"])
 	}
 	input := turnParams["input"].([]interface{})
+	if len(input) != 2 {
+		t.Fatalf("unexpected turn input count: %+v", input)
+	}
 	firstInput := input[0].(map[string]interface{})
 	if firstInput["type"] != string(gen.Text) || firstInput["text"] != "fix it" {
-		t.Fatalf("unexpected turn input: %+v", firstInput)
+		t.Fatalf("unexpected first turn input: %+v", firstInput)
+	}
+	secondInput := input[1].(map[string]interface{})
+	if secondInput["type"] != string(gen.LocalImage) || secondInput["path"] != ".maestro/issue-images/img-1-screen.png" || secondInput["name"] != "screen.png" {
+		t.Fatalf("unexpected second turn input: %+v", secondInput)
 	}
 	sandboxPolicy := turnParams["sandboxPolicy"].(map[string]interface{})
 	if sandboxPolicy["type"] != "workspaceWrite" {

@@ -167,6 +167,20 @@ func testStore(t *testing.T, dbPath string) *kanban.Store {
 	return s
 }
 
+func sampleMCPPNGBytes() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
 func TestNewServerWithExtensionsFailsOnBadExtensionFiles(t *testing.T) {
 	store := testStore(t, "")
 
@@ -363,6 +377,8 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 		"get_issue",
 		"list_issues",
 		"update_issue",
+		"attach_issue_image",
+		"delete_issue_image",
 		"set_issue_state",
 		"set_issue_workflow_phase",
 		"delete_issue",
@@ -392,6 +408,8 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_image"), "identifier", "path")
+	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_image"), "identifier", "image_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_epic"), "description", "id", "name", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_issue_execution"), "identifier")
@@ -598,6 +616,28 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 		t.Fatalf("unexpected update_issue payload: %#v", updateIssue)
 	}
 
+	imagePath := filepath.Join(t.TempDir(), "mcp.png")
+	if err := os.WriteFile(imagePath, sampleMCPPNGBytes(), 0o644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+	attachIssueImageRes, err := client.CallTool(context.Background(), "attach_issue_image", map[string]interface{}{
+		"identifier": issueBIdentifier,
+		"path":       imagePath,
+	})
+	if err != nil {
+		t.Fatalf("attach_issue_image failed: %v", err)
+	}
+	attachIssueImage := decodeEnvelope(t, attachIssueImageRes)["data"].(map[string]interface{})
+	image := attachIssueImage["image"].(map[string]interface{})
+	if image["content_type"] != "image/png" {
+		t.Fatalf("unexpected attach_issue_image payload: %#v", attachIssueImage)
+	}
+	attachedImageID := asString(image["id"])
+	attachedIssue := attachIssueImage["issue"].(map[string]interface{})
+	if images, _ := attachedIssue["images"].([]interface{}); len(images) != 1 {
+		t.Fatalf("expected attached issue to expose image metadata, got %#v", attachedIssue["images"])
+	}
+
 	issueCRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
 		"title":      "Issue C",
 		"project_id": secondProjectID,
@@ -648,6 +688,21 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	blockedBy := decodeEnvelope(t, setBlockersRes)["data"].(map[string]interface{})["blocked_by"].([]interface{})
 	if len(blockedBy) != 1 || asString(blockedBy[0]) != issueCIdentifier {
 		t.Fatalf("unexpected set_blockers payload: %#v", blockedBy)
+	}
+
+	deleteIssueImageRes, err := client.CallTool(context.Background(), "delete_issue_image", map[string]interface{}{
+		"identifier": issueBIdentifier,
+		"image_id":   attachedImageID,
+	})
+	if err != nil {
+		t.Fatalf("delete_issue_image failed: %v", err)
+	}
+	deleteIssueImage := decodeEnvelope(t, deleteIssueImageRes)["data"].(map[string]interface{})
+	if deleteIssueImage["deleted"] != true {
+		t.Fatalf("unexpected delete_issue_image payload: %#v", deleteIssueImage)
+	}
+	if issueDetail, _ := deleteIssueImage["issue"].(map[string]interface{}); len(issueDetail["images"].([]interface{})) != 0 {
+		t.Fatalf("expected issue image list to be empty after delete, got %#v", issueDetail["images"])
 	}
 
 	issueBStore, err := store.GetIssueByIdentifier(issueBIdentifier)

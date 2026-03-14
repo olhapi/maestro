@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -65,6 +67,48 @@ Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt 
 	})
 
 	return runner, store, manager, workspaceRoot, tmpDir
+}
+
+func sampleRunnerPNGBytes() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
+func baseRunnerAppServerScenario(threadID, turnID string, afterTurnStart ...fakeappserver.Output) fakeappserver.Scenario {
+	return fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": threadID}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: append([]fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": turnID}}},
+				}}, afterTurnStart...),
+			},
+		},
+	}
+}
+
+func TestFakeAppServerHelperProcess(t *testing.T) {
+	fakeappserver.MaybeRun()
 }
 
 func TestGetOrCreateWorkspace(t *testing.T) {
@@ -631,6 +675,323 @@ done
 	}
 }
 
+func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+
+	command, _ := fakeappserver.CommandString(t, baseRunnerAppServerScenario("thread-images", "turn-images",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{
+					"threadId": "thread-images",
+					"turn":     map[string]interface{}{"id": "turn-images"},
+				},
+			},
+		},
+	))
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
+	issue, _ := store.CreateIssue("", "", "Issue images", "", 0, nil)
+
+	imageOne, err := store.CreateIssueImage(issue.ID, "screen-one.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	if err != nil {
+		t.Fatalf("CreateIssueImage imageOne: %v", err)
+	}
+	imageTwo, err := store.CreateIssueImage(issue.ID, "screen-two.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	if err != nil {
+		t.Fatalf("CreateIssueImage imageTwo: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run, got %+v", result)
+	}
+
+	workspace, err := store.GetWorkspace(issue.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	for _, image := range []kanban.IssueImage{*imageOne, *imageTwo} {
+		stagedPath := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueImageStageDir), image.ID+"-"+image.Filename)
+		stagedBytes, err := os.ReadFile(stagedPath)
+		if err != nil {
+			t.Fatalf("expected staged image %s: %v", stagedPath, err)
+		}
+		if !bytes.Equal(stagedBytes, sampleRunnerPNGBytes()) {
+			t.Fatalf("unexpected staged image bytes for %s", stagedPath)
+		}
+	}
+
+	turnStarts := turnStartPayloads(readTraceLines(t, traceFile))
+	if len(turnStarts) != 1 {
+		t.Fatalf("expected one turn/start request, got %#v", turnStarts)
+	}
+	params, _ := turnStarts[0]["params"].(map[string]interface{})
+	input, _ := params["input"].([]interface{})
+	if len(input) != 3 {
+		t.Fatalf("expected text plus two local images, got %#v", input)
+	}
+	firstInput, _ := input[0].(map[string]interface{})
+	if firstInput["type"] != "text" {
+		t.Fatalf("unexpected first input: %#v", firstInput)
+	}
+	for idx, image := range []kanban.IssueImage{*imageOne, *imageTwo} {
+		item, _ := input[idx+1].(map[string]interface{})
+		expectedPath := filepath.ToSlash(filepath.Join(".maestro", "issue-images", image.ID+"-"+image.Filename))
+		if item["type"] != "localImage" || item["path"] != expectedPath || item["name"] != image.Filename {
+			t.Fatalf("unexpected image input %d: %#v", idx, item)
+		}
+		if path, _ := item["path"].(string); filepath.IsAbs(path) {
+			t.Fatalf("expected workspace-relative image path, got %q", path)
+		}
+	}
+}
+
+func TestRunAgentAppServerWithoutIssueImagesSendsTextOnly(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+
+	command, _ := fakeappserver.CommandString(t, baseRunnerAppServerScenario("thread-text", "turn-text",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{
+					"threadId": "thread-text",
+					"turn":     map[string]interface{}{"id": "turn-text"},
+				},
+			},
+		},
+	))
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
+	issue, _ := store.CreateIssue("", "", "No images", "", 0, nil)
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run, got %+v", result)
+	}
+
+	turnStarts := turnStartPayloads(readTraceLines(t, traceFile))
+	if len(turnStarts) != 1 {
+		t.Fatalf("expected one turn/start request, got %#v", turnStarts)
+	}
+	params, _ := turnStarts[0]["params"].(map[string]interface{})
+	input, _ := params["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("expected text-only turn input, got %#v", input)
+	}
+	firstInput, _ := input[0].(map[string]interface{})
+	if firstInput["type"] != "text" {
+		t.Fatalf("unexpected text-only input payload: %#v", firstInput)
+	}
+}
+
+func TestRunAgentAppServerFailsWhenIssueImageStagingFails(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-stage-fail"}}},
+				}},
+			},
+		},
+	})
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
+	issue, _ := store.CreateIssue("", "", "Missing image asset", "", 0, nil)
+
+	image, err := store.CreateIssueImage(issue.ID, "broken.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	if err != nil {
+		t.Fatalf("CreateIssueImage: %v", err)
+	}
+	_, imagePath, err := store.GetIssueImageContent(issue.ID, image.ID)
+	if err != nil {
+		t.Fatalf("GetIssueImageContent: %v", err)
+	}
+	if err := os.Remove(imagePath); err != nil {
+		t.Fatalf("remove image asset: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Success || result.Error == nil {
+		t.Fatalf("expected staging failure result, got %+v", result)
+	}
+	if !strings.Contains(result.Error.Error(), image.ID) || !strings.Contains(result.Error.Error(), issue.Identifier) {
+		t.Fatalf("expected error to mention issue and image, got %v", result.Error)
+	}
+	if turns := turnStartPayloads(readTraceLines(t, traceFile)); len(turns) != 0 {
+		t.Fatalf("expected staging failure before turn/start, got %#v", turns)
+	}
+}
+
+func TestRunAgentAppServerDoesNotResendIssueImagesOnContinuationTurn(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-continue"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-one"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-continue", "turn": map[string]interface{}{"id": "turn-one"}}}},
+				},
+			},
+			{
+				Match:          fakeappserver.Match{Method: "turn/start"},
+				WaitForRelease: "finish-second-turn",
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-two"}}}},
+				},
+				EmitAfterRelease: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-continue", "turn": map[string]interface{}{"id": "turn-two"}}}},
+				},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	command, release := fakeappserver.CommandString(t, scenario)
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
+	issue, _ := store.CreateIssue("", "", "Continuation images", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
+	if _, err := store.CreateIssueImage(issue.ID, "continue.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
+		t.Fatalf("CreateIssueImage: %v", err)
+	}
+
+	done := make(chan struct{})
+	resultCh := make(chan *RunResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		result, runErr := runner.Run(context.Background(), issue)
+		resultCh <- result
+		errCh <- runErr
+	}()
+
+	waitForTurnStartCount(t, traceFile, 2)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+	release("finish-second-turn")
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for continuation run")
+	}
+	result := <-resultCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful continuation run, got %+v", result)
+	}
+
+	turnStarts := turnStartPayloads(readTraceLines(t, traceFile))
+	if len(turnStarts) != 2 {
+		t.Fatalf("expected two turn/start requests, got %#v", turnStarts)
+	}
+	firstInput, _ := turnStarts[0]["params"].(map[string]interface{})["input"].([]interface{})
+	if len(firstInput) != 2 {
+		t.Fatalf("expected first turn to include one local image, got %#v", firstInput)
+	}
+	secondInput, _ := turnStarts[1]["params"].(map[string]interface{})["input"].([]interface{})
+	if len(secondInput) != 1 {
+		t.Fatalf("expected continuation turn to stay text-only, got %#v", secondInput)
+	}
+}
+
+func TestRunAgentAppServerResumedThreadSkipsIssueImageInputs(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/resume"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-resumed"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-resumed"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-resumed", "turn": map[string]interface{}{"id": "turn-resumed"}}}},
+				},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	command, _ := fakeappserver.CommandString(t, scenario)
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
+	issue, _ := store.CreateIssue("", "", "Resumed images", "", 0, nil)
+	if _, err := store.CreateIssueImage(issue.ID, "resume.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
+		t.Fatalf("CreateIssueImage: %v", err)
+	}
+	issue.ResumeThreadID = "thread-stale"
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful resumed run, got %+v", result)
+	}
+
+	workspace, err := store.GetWorkspace(issue.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueImageStageDir))); !os.IsNotExist(err) {
+		t.Fatalf("expected resumed run not to stage issue images, got err=%v", err)
+	}
+
+	turnStarts := turnStartPayloads(readTraceLines(t, traceFile))
+	if len(turnStarts) != 1 {
+		t.Fatalf("expected one turn/start request, got %#v", turnStarts)
+	}
+	input, _ := turnStarts[0]["params"].(map[string]interface{})["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("expected resumed thread to send text-only input, got %#v", input)
+	}
+}
+
 func TestRunAgentAppServerModeAdvertisesAndExecutesDynamicTools(t *testing.T) {
 	tmpDir := t.TempDir()
 	traceFile := filepath.Join(tmpDir, "trace.log")
@@ -842,4 +1203,53 @@ func asInt(v interface{}) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func turnStartPayloads(payloads []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(payloads))
+	for _, payload := range payloads {
+		if method, _ := payload["method"].(string); method == "turn/start" {
+			out = append(out, payload)
+		}
+	}
+	return out
+}
+
+func waitForTurnStartCount(t *testing.T, tracePath string, want int) []map[string]interface{} {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		payloads := turnStartPayloads(readTraceLinesIfPresent(t, tracePath))
+		if len(payloads) >= want {
+			return payloads
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	payloads := turnStartPayloads(readTraceLinesIfPresent(t, tracePath))
+	t.Fatalf("timed out waiting for %d turn/start payloads, got %#v", want, payloads)
+	return nil
+}
+
+func readTraceLinesIfPresent(t *testing.T, path string) []map[string]interface{} {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	var out []map[string]interface{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "JSON:") {
+			continue
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "JSON:")), &payload); err != nil {
+			t.Fatalf("decode trace line %q: %v", line, err)
+		}
+		out = append(out, payload)
+	}
+	return out
 }

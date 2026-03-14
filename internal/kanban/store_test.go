@@ -1,6 +1,7 @@
 package kanban
 
 import (
+	"bytes"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -47,6 +48,20 @@ func issueSummaryListContainsIdentifier(issues []IssueSummary, identifier string
 	return false
 }
 
+func samplePNGBytes() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
 func TestDefaultDBPathUsesHomeDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -73,6 +88,20 @@ func TestResolveDBPathPreservesExplicitPath(t *testing.T) {
 	want := filepath.Join(t.TempDir(), "custom.db")
 	if got := ResolveDBPath(want); got != want {
 		t.Fatalf("ResolveDBPath(%q) = %q", want, got)
+	}
+}
+
+func TestIssueImageAssetRootUsesDBLocation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if got, want := IssueImageAssetRoot(""), filepath.Join(home, ".maestro", "assets", "images"); got != want {
+		t.Fatalf("IssueImageAssetRoot(\"\") = %q, want %q", got, want)
+	}
+
+	explicit := filepath.Join(t.TempDir(), "nested", "maestro.db")
+	if got, want := IssueImageAssetRoot(explicit), filepath.Join(filepath.Dir(explicit), "assets", "images"); got != want {
+		t.Fatalf("IssueImageAssetRoot(%q) = %q, want %q", explicit, got, want)
 	}
 }
 
@@ -108,6 +137,107 @@ func TestNewStoreConfiguresSQLitePragmas(t *testing.T) {
 	stats := store.db.Stats()
 	if stats.MaxOpenConnections != sqliteMaxOpenConns {
 		t.Fatalf("MaxOpenConnections = %d, want %d", stats.MaxOpenConnections, sqliteMaxOpenConns)
+	}
+
+	var table string
+	if err := store.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'issue_images'`).Scan(&table); err != nil {
+		t.Fatalf("expected issue_images migration to run: %v", err)
+	}
+	if table != "issue_images" {
+		t.Fatalf("unexpected issue_images table result %q", table)
+	}
+}
+
+func TestIssueImageLifecyclePersistsMetadataAndCleansFiles(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Attach screenshots", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	image, err := store.CreateIssueImage(issue.ID, "screen.png", bytes.NewReader(samplePNGBytes()))
+	if err != nil {
+		t.Fatalf("CreateIssueImage: %v", err)
+	}
+	if image.ContentType != "image/png" {
+		t.Fatalf("expected image/png, got %q", image.ContentType)
+	}
+	if image.ByteSize <= 0 {
+		t.Fatalf("expected non-zero byte size, got %d", image.ByteSize)
+	}
+
+	images, err := store.ListIssueImages(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueImages: %v", err)
+	}
+	if len(images) != 1 || images[0].ID != image.ID {
+		t.Fatalf("unexpected issue images: %#v", images)
+	}
+
+	detail, err := store.GetIssueDetailByIdentifier(issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier: %v", err)
+	}
+	if len(detail.Images) != 1 || detail.Images[0].ID != image.ID {
+		t.Fatalf("expected issue detail images, got %#v", detail.Images)
+	}
+
+	_, path, err := store.GetIssueImageContent(issue.ID, image.ID)
+	if err != nil {
+		t.Fatalf("GetIssueImageContent: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected image file at %s: %v", path, err)
+	}
+
+	if err := store.DeleteIssueImage(issue.ID, image.ID); err != nil {
+		t.Fatalf("DeleteIssueImage: %v", err)
+	}
+	if _, err := store.GetIssueImage(issue.ID, image.ID); !IsNotFound(err) {
+		t.Fatalf("expected deleted image to be missing, got %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected image file cleanup, got err=%v", err)
+	}
+}
+
+func TestIssueImagesRejectInvalidContentAndOversize(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Validate uploads", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if _, err := store.CreateIssueImage(issue.ID, "notes.txt", strings.NewReader("not an image")); !IsValidation(err) {
+		t.Fatalf("expected invalid content validation error, got %v", err)
+	}
+
+	oversized := bytes.NewReader(append(samplePNGBytes(), bytes.Repeat([]byte{0}, int(MaxIssueImageBytes))...))
+	if _, err := store.CreateIssueImage(issue.ID, "too-large.png", oversized); !IsValidation(err) {
+		t.Fatalf("expected oversize validation error, got %v", err)
+	}
+}
+
+func TestDeleteIssueRemovesAttachedImageAssets(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Clean assets", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	image, err := store.CreateIssueImage(issue.ID, "clean.png", bytes.NewReader(samplePNGBytes()))
+	if err != nil {
+		t.Fatalf("CreateIssueImage: %v", err)
+	}
+	_, path, err := store.GetIssueImageContent(issue.ID, image.ID)
+	if err != nil {
+		t.Fatalf("GetIssueImageContent: %v", err)
+	}
+
+	if err := store.DeleteIssue(issue.ID); err != nil {
+		t.Fatalf("DeleteIssue: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected issue image asset to be removed, got %v", err)
 	}
 }
 

@@ -92,19 +92,34 @@ func ThreadResumeRequest(id int, threadID, workspace string, approvalPolicy inte
 	}, nil
 }
 
-func TurnStartRequest(id int, threadID, prompt, workspace string, approvalPolicy interface{}, sandboxPolicy map[string]interface{}) (Request[TurnStartParams], error) {
+func TextInput(prompt string) gen.UserInputElement {
+	return gen.UserInputElement{
+		Type: gen.Text,
+		Text: StringPtr(prompt),
+	}
+}
+
+func LocalImageInput(path, name string) gen.UserInputElement {
+	input := gen.UserInputElement{
+		Type: gen.LocalImage,
+		Path: StringPtr(path),
+	}
+	if strings.TrimSpace(name) != "" {
+		input.Name = StringPtr(name)
+	}
+	return input
+}
+
+func TurnStartRequest(id int, threadID string, input []gen.UserInputElement, workspace string, approvalPolicy interface{}, sandboxPolicy map[string]interface{}) (Request[TurnStartParams], error) {
 	return Request[TurnStartParams]{
 		ID:     id,
 		Method: MethodTurnStart,
 		Params: TurnStartParams{
 			ApprovalPolicy: approvalPolicy,
 			Cwd:            StringPtr(workspace),
-			Input: []gen.UserInputElement{{
-				Type: gen.Text,
-				Text: StringPtr(prompt),
-			}},
-			SandboxPolicy: sandboxPolicy,
-			ThreadID:      threadID,
+			Input:          input,
+			SandboxPolicy:  sandboxPolicy,
+			ThreadID:       threadID,
 		},
 	}, nil
 }
