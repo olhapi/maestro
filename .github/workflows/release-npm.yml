@@ -165,6 +165,7 @@ jobs:
         run: ./scripts/smoke_npm_registry_install.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
   publish-npm:
+    if: vars.NPM_PUBLISH_ENABLED == 'true'
     needs:
       - build-leaf-packages
       - build-root-package
@@ -172,6 +173,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      id-token: write
     defaults:
       run:
         shell: bash
@@ -189,9 +191,16 @@ jobs:
           pattern: npm-*
           merge-multiple: true
 
+      - name: Select npm dist-tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "NPM_DIST_TAG=next" >>"$GITHUB_ENV"
+          else
+            echo "NPM_DIST_TAG=latest" >>"$GITHUB_ENV"
+          fi
+
       - name: Publish npm packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           for tarball in \
@@ -201,5 +210,5 @@ jobs:
             "dist/npm/olhapi-maestro-linux-arm64-gnu-${VERSION}.tgz" \
             "dist/npm/olhapi-maestro-win32-x64-${VERSION}.tgz" \
             "dist/npm/olhapi-maestro-${VERSION}.tgz"; do
-            npm publish --access public "$tarball"
+            npm publish --access public --provenance --tag "$NPM_DIST_TAG" "$tarball"
           done

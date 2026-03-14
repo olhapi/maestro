@@ -8,17 +8,19 @@ navLabel: Install
 
 import DocsCommandField from "./_components/DocsCommandField.astro";
 
-## Preferred install path
+## Current prerelease install path
 
-If you are on a supported platform, the fastest path is the published npm package:
+If you are on a supported platform, the current public prerelease is the fastest path:
 
-<DocsCommandField command={`npm install -g @olhapi/maestro`} />
+<DocsCommandField command={`npm install -g @olhapi/maestro@next`} />
 
-Update an existing global install with:
+Refresh an existing prerelease install with:
 
-<DocsCommandField command={`npm update -g @olhapi/maestro`} />
+<DocsCommandField command={`npm install -g @olhapi/maestro@next`} />
 
 The installed command name is still `maestro`.
+
+Until `v0.1.0` ships, the npm release channel is `next`. After the first stable release, `npm install -g @olhapi/maestro` will follow the stable `latest` channel.
 
 Official npm builds currently cover:
 
