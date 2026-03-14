@@ -10,19 +10,21 @@ Maestro stays local-first even when a project syncs issues from Linear. Provider
 
 ### npm
 
-Preferred install on supported platforms:
+Current public prerelease install on supported platforms:
 
 ```bash
-npm install -g @olhapi/maestro
+npm install -g @olhapi/maestro@next
 ```
 
-Update an existing install:
+Refresh an existing prerelease install:
 
 ```bash
-npm update -g @olhapi/maestro
+npm install -g @olhapi/maestro@next
 ```
 
 The installed command name is still `maestro`.
+
+Until the first stable release ships, the npm prerelease channel is published on `next`. After `v0.1.0`, `npm install -g @olhapi/maestro` will follow the stable `latest` channel.
 
 Official npm builds currently cover:
 
@@ -264,6 +266,7 @@ Missing-file behavior differs by command:
 ## More Documentation
 
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md): runtime surfaces, HTTP endpoints, extension tools, logs, and operational details
+- [`docs/NPM_RELEASE.md`](docs/NPM_RELEASE.md): first npm prerelease bootstrap and the trusted-publishing release flow
 - [`docs/E2E_REAL_CODEX.md`](docs/E2E_REAL_CODEX.md): end-to-end harness that runs the real Codex CLI against deterministic issues
 - [`WORKFLOW.md`](WORKFLOW.md): the workflow configuration used by this repository
 
