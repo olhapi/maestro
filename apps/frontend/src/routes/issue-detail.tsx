@@ -474,6 +474,7 @@ export function IssueDetailPage() {
         initial={issue.data}
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics}
+        availableIssues={bootstrap.data.issues.items}
         onSubmit={async (body, imageChanges) => {
           const updated = await api.updateIssue(identifier, body);
           const result = await applyIssueImageChanges(updated.identifier, imageChanges);

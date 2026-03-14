@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { IssuePreviewSheet } from '@/components/dashboard/issue-preview-sheet'
@@ -28,6 +28,15 @@ vi.mock('@/lib/api', () => ({
 }))
 
 const { api } = await import('@/lib/api')
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+
+  return { promise, resolve }
+}
 
 describe('IssuePreviewSheet', () => {
   beforeEach(() => {
@@ -183,5 +192,83 @@ describe('IssuePreviewSheet', () => {
     expect(editButton.querySelector('svg')).not.toBeNull()
     expect(retryButton.querySelector('svg')).not.toBeNull()
     expect(deleteButton.querySelector('svg')).not.toBeNull()
+  })
+
+  it('keeps actions scoped to the currently selected issue while detail loads', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const firstSummary = makeIssueSummary({
+      id: 'issue-1',
+      identifier: 'ISS-1',
+      title: 'First issue',
+    })
+    const secondSummary = makeIssueSummary({
+      id: 'issue-2',
+      identifier: 'ISS-2',
+      title: 'Second issue',
+    })
+    const firstLoad = deferred<ReturnType<typeof makeIssueDetail>>()
+    const secondLoad = deferred<ReturnType<typeof makeIssueDetail>>()
+    vi.mocked(api.getIssue)
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockReturnValueOnce(secondLoad.promise)
+    vi.mocked(api.retryIssue).mockResolvedValue({ status: 'queued_now' })
+
+    const onInvalidate = vi.fn().mockResolvedValue(undefined)
+    const { rerender } = renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={firstSummary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={onInvalidate}
+      />,
+    )
+
+    rerender(
+      <IssuePreviewSheet
+        issue={secondSummary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={onInvalidate}
+      />,
+    )
+
+    expect(screen.getByText('Second issue')).toBeInTheDocument()
+
+    await act(async () => {
+      firstLoad.resolve(
+        makeIssueDetail({
+          id: firstSummary.id,
+          identifier: firstSummary.identifier,
+          title: 'First issue detail',
+        }),
+      )
+      await firstLoad.promise
+    })
+
+    expect(screen.queryByText('First issue detail')).not.toBeInTheDocument()
+    expect(screen.getByText('Second issue')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Retry now'))
+
+    await waitFor(() => {
+      expect(api.retryIssue).toHaveBeenCalledWith(secondSummary.identifier)
+    })
+
+    await act(async () => {
+      secondLoad.resolve(
+        makeIssueDetail({
+          id: secondSummary.id,
+          identifier: secondSummary.identifier,
+          title: 'Second issue detail',
+        }),
+      )
+      await secondLoad.promise
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('Second issue detail')).toBeInTheDocument()
+    })
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -71,19 +71,49 @@ export function IssuePreviewSheet({
   onStateChange?: (identifier: string, state: IssueState) => Promise<void>;
 }) {
   const [detail, setDetail] = useState<IssueDetail>();
-  const [blockersValue, setBlockersValue] = useState("");
+  const [blockersDraft, setBlockersDraft] = useState<{
+    identifier?: string;
+    value: string;
+  }>({ value: "" });
   const [editOpen, setEditOpen] = useState(false);
   const navigate = useNavigate();
+  const issueIdentifier = issue?.identifier;
+  const currentIssueIdentifierRef = useRef<string | undefined>(issueIdentifier);
 
   useEffect(() => {
-    if (!issue || !open) return;
-    void api.getIssue(issue.identifier).then((next) => {
-      setDetail(next);
-      setBlockersValue(next.blocked_by?.join(", ") ?? "");
-    });
-  }, [issue, open]);
+    currentIssueIdentifierRef.current = issueIdentifier;
+  }, [issueIdentifier]);
 
-  const activeIssue = detail ?? issue;
+  useEffect(() => {
+    if (!issueIdentifier || !open) {
+      return;
+    }
+
+    let active = true;
+    void api.getIssue(issueIdentifier)
+      .then((next) => {
+        if (!active || currentIssueIdentifierRef.current !== next.identifier) {
+          return;
+        }
+        setDetail(next);
+        setBlockersDraft({
+          identifier: next.identifier,
+          value: next.blocked_by?.join(", ") ?? "",
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [issueIdentifier, open]);
+
+  const activeDetail = detail && detail.identifier === issueIdentifier ? detail : undefined;
+  const activeIssue = activeDetail ?? issue;
+  const blockersValue =
+    blockersDraft.identifier === activeIssue?.identifier
+      ? blockersDraft.value
+      : activeIssue?.blocked_by?.join(", ") ?? "";
   const session = activeIssue
     ? getSessionForIssue(bootstrap, activeIssue.id, activeIssue.identifier)
     : undefined;
@@ -220,7 +250,13 @@ export function IssuePreviewSheet({
                       value as IssueState,
                     );
                     const next = await api.getIssue(activeIssue.identifier);
-                    setDetail(next);
+                    if (currentIssueIdentifierRef.current === next.identifier) {
+                      setDetail(next);
+                      setBlockersDraft({
+                        identifier: next.identifier,
+                        value: next.blocked_by?.join(", ") ?? "",
+                      });
+                    }
                   }}
                 >
                   <SelectTrigger aria-label="State">
@@ -242,7 +278,12 @@ export function IssuePreviewSheet({
                 </span>
                 <Textarea
                   value={blockersValue}
-                  onChange={(event) => setBlockersValue(event.target.value)}
+                  onChange={(event) =>
+                    setBlockersDraft({
+                      identifier: activeIssue.identifier,
+                      value: event.target.value,
+                    })
+                  }
                   className="min-h-[96px]"
                 />
                 <Button
@@ -259,7 +300,13 @@ export function IssuePreviewSheet({
                     toast.success("Blockers updated");
                     await onInvalidate();
                     const next = await api.getIssue(activeIssue.identifier);
-                    setDetail(next);
+                    if (currentIssueIdentifierRef.current === next.identifier) {
+                      setDetail(next);
+                      setBlockersDraft({
+                        identifier: next.identifier,
+                        value: next.blocked_by?.join(", ") ?? "",
+                      });
+                    }
                   }}
                 >
                   <Save className="size-4" />
@@ -360,9 +407,10 @@ export function IssuePreviewSheet({
         <IssueDialog
           open={editOpen}
           onOpenChange={setEditOpen}
-          initial={detail}
+          initial={activeDetail ?? activeIssue}
           projects={bootstrap.projects}
           epics={bootstrap.epics}
+          availableIssues={bootstrap.issues.items}
           onSubmit={async (body, imageChanges) => {
             const issue = await api.updateIssue(activeIssue.identifier, body);
             const result = await applyIssueImageChanges(
@@ -378,7 +426,13 @@ export function IssuePreviewSheet({
             }
             await onInvalidate();
             const next = await api.getIssue(activeIssue.identifier);
-            setDetail(next);
+            if (currentIssueIdentifierRef.current === next.identifier) {
+              setDetail(next);
+              setBlockersDraft({
+                identifier: next.identifier,
+                value: next.blocked_by?.join(", ") ?? "",
+              });
+            }
           }}
         />
       ) : null}

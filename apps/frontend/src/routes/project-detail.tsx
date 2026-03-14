@@ -355,6 +355,7 @@ export function ProjectDetailPage() {
         epics={bootstrap.data.epics.filter(
           (epic) => epic.project_id === projectId,
         )}
+        availableIssues={project.data.issues.items}
         onSubmit={async (body, imageChanges) => {
           const issue = await api.createIssue(body);
           const result = await applyIssueImageChanges(
