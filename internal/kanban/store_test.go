@@ -91,6 +91,29 @@ func TestResolveDBPathPreservesExplicitPath(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectStateNormalizesAndPersists(t *testing.T) {
+	store := setupTestStore(t)
+	project, err := store.CreateProject("Demo", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	if err := store.UpdateProjectState(project.ID, ProjectState("RUNNING")); err != nil {
+		t.Fatalf("UpdateProjectState: %v", err)
+	}
+	updated, err := store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if updated.State != ProjectStateRunning {
+		t.Fatalf("expected running state, got %q", updated.State)
+	}
+
+	if err := store.UpdateProjectState("proj-missing", ProjectStateRunning); !IsNotFound(err) {
+		t.Fatalf("expected missing project error, got %v", err)
+	}
+}
+
 func TestIssueImageAssetRootUsesDBLocation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -102,6 +125,24 @@ func TestIssueImageAssetRootUsesDBLocation(t *testing.T) {
 	explicit := filepath.Join(t.TempDir(), "nested", "maestro.db")
 	if got, want := IssueImageAssetRoot(explicit), filepath.Join(filepath.Dir(explicit), "assets", "images"); got != want {
 		t.Fatalf("IssueImageAssetRoot(%q) = %q, want %q", explicit, got, want)
+	}
+}
+
+func TestProjectStateAndIssueTypeHelpers(t *testing.T) {
+	if !ProjectStateRunning.IsValid() {
+		t.Fatal("expected running project state to be valid")
+	}
+	if ProjectState("paused").IsValid() {
+		t.Fatal("expected unknown project state to be invalid")
+	}
+	if got := DefaultIssueType(); got != IssueTypeStandard {
+		t.Fatalf("DefaultIssueType() = %q", got)
+	}
+	if !(Issue{IssueType: IssueTypeRecurring}).IsRecurring() {
+		t.Fatal("expected recurring issue to report recurring")
+	}
+	if (Issue{IssueType: IssueTypeStandard}).IsRecurring() {
+		t.Fatal("expected standard issue to report non-recurring")
 	}
 }
 
@@ -215,6 +256,102 @@ func TestIssueImagesRejectInvalidContentAndOversize(t *testing.T) {
 	oversized := bytes.NewReader(append(samplePNGBytes(), bytes.Repeat([]byte{0}, int(MaxIssueImageBytes))...))
 	if _, err := store.CreateIssueImage(issue.ID, "too-large.png", oversized); !IsValidation(err) {
 		t.Fatalf("expected oversize validation error, got %v", err)
+	}
+}
+
+func TestIssueImageHelpersNormalizeAndGuardPaths(t *testing.T) {
+	store := setupTestStore(t)
+
+	if got := normalizeIssueImageFilename("", "image/png"); got != "image.png" {
+		t.Fatalf("normalizeIssueImageFilename empty = %q", got)
+	}
+	if got := normalizeIssueImageFilename("nested/mock", "image/jpeg"); got != "mock.jpg" {
+		t.Fatalf("normalizeIssueImageFilename missing ext = %q", got)
+	}
+	if got := normalizeIssueImageFilename("screen.webp", "image/webp"); got != "screen.webp" {
+		t.Fatalf("normalizeIssueImageFilename existing ext = %q", got)
+	}
+
+	validPath, err := store.issueImagePath("issue-1/image.png")
+	if err != nil {
+		t.Fatalf("issueImagePath valid: %v", err)
+	}
+	if want := filepath.Join(store.IssueImageAssetRoot(), "issue-1", "image.png"); validPath != want {
+		t.Fatalf("issueImagePath valid = %q, want %q", validPath, want)
+	}
+
+	if _, err := store.issueImagePath("../escape.png"); !IsValidation(err) {
+		t.Fatalf("expected invalid stored image path validation error, got %v", err)
+	}
+}
+
+func TestIssueImageContentMissingFileReturnsNotFoundAndCleanupHelpersAreSafe(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Missing image file", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	image, err := store.CreateIssueImage(issue.ID, "missing.png", bytes.NewReader(samplePNGBytes()))
+	if err != nil {
+		t.Fatalf("CreateIssueImage: %v", err)
+	}
+	_, path, err := store.GetIssueImageContent(issue.ID, image.ID)
+	if err != nil {
+		t.Fatalf("GetIssueImageContent: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove image asset: %v", err)
+	}
+
+	if _, _, err := store.GetIssueImageContent(issue.ID, image.ID); !IsNotFound(err) {
+		t.Fatalf("expected missing image asset to report not found, got %v", err)
+	}
+
+	removeIssueImageFile("")
+	removeIssueImageFile(path)
+
+	dir := filepath.Join(t.TempDir(), "empty-dir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll empty dir: %v", err)
+	}
+	removeIfEmpty(dir)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("expected empty dir removal, got %v", err)
+	}
+
+	nonEmptyDir := filepath.Join(t.TempDir(), "non-empty-dir")
+	if err := os.MkdirAll(nonEmptyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll non-empty dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nonEmptyDir, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatalf("WriteFile keep.txt: %v", err)
+	}
+	removeIfEmpty(nonEmptyDir)
+	if _, err := os.Stat(nonEmptyDir); err != nil {
+		t.Fatalf("expected non-empty dir to remain, got %v", err)
+	}
+}
+
+func TestWriteIssueImageTempFileAcceptsValidImagesAndRejectsEmptyInput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "issue-images")
+
+	path, contentType, byteSize, err := writeIssueImageTempFile(root, bytes.NewReader(samplePNGBytes()))
+	if err != nil {
+		t.Fatalf("writeIssueImageTempFile valid: %v", err)
+	}
+	if contentType != "image/png" {
+		t.Fatalf("expected image/png, got %q", contentType)
+	}
+	if byteSize != int64(len(samplePNGBytes())) {
+		t.Fatalf("expected %d bytes, got %d", len(samplePNGBytes()), byteSize)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected temp file to exist: %v", err)
+	}
+	removeIssueImageFile(path)
+
+	if _, _, _, err := writeIssueImageTempFile(root, bytes.NewReader(nil)); !IsValidation(err) {
+		t.Fatalf("expected empty image validation error, got %v", err)
 	}
 }
 

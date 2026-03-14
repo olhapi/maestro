@@ -183,7 +183,11 @@ export function IssueDetailPage() {
 
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state]);
   const previewImage = issue.data.images.find((image) => image.id === previewImageID) ?? null;
-  const crumbs = [
+  const crumbs: Array<{
+    label: string;
+    to?: string;
+    params?: Record<string, string>;
+  }> = [
     { label: "Work", to: appRoutes.work },
     issue.data.project_id && issue.data.project_name
       ? {
