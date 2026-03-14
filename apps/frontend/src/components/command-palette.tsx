@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RefreshCw } from 'lucide-react'
 
 import {
@@ -17,6 +17,7 @@ import {
 import { DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
+import { refreshDashboardQueries } from '@/lib/query-refresh'
 
 const navigationItems = [
   { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard },
@@ -27,6 +28,7 @@ const navigationItems = [
 
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const navigate = useNavigate()
+  const { location } = useRouterState()
   const queryClient = useQueryClient()
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
   const inputRef = useRef<HTMLInputElement>(null)
@@ -77,7 +79,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
             <CommandItem
               onSelect={() => {
                 onOpenChange(false)
-                void queryClient.invalidateQueries()
+                void refreshDashboardQueries(queryClient, location.pathname || appRoutes.overview)
               }}
             >
               <RefreshCw className="size-4 text-[var(--accent)]" />

@@ -7,9 +7,55 @@ export interface SearchEntry {
   href: string;
   description: string;
   section: string;
+  searchText?: string;
 }
 
 const TRIGGER_SELECTOR = "[data-search-trigger]";
+
+function normalizeQuery(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function getEntrySearchText(entry: SearchEntry) {
+  return normalizeQuery(entry.searchText ?? `${entry.title}\n${entry.description}\n${entry.section}`);
+}
+
+function scoreEntry(entry: SearchEntry, query: string) {
+  const title = normalizeQuery(entry.title);
+  const description = normalizeQuery(entry.description);
+  const section = normalizeQuery(entry.section);
+  const searchText = getEntrySearchText(entry);
+  const terms = query.split(/\s+/u).filter(Boolean);
+
+  if (!query) return 0;
+
+  const hasWholeQuery =
+    title.includes(query) || description.includes(query) || section.includes(query) || searchText.includes(query);
+  const allTermsMatch = terms.every((term) => searchText.includes(term));
+
+  if (!hasWholeQuery && !allTermsMatch) {
+    return 0;
+  }
+
+  let score = 0;
+
+  if (title === query) score += 1_000;
+  if (title.startsWith(query)) score += 700;
+  if (title.includes(query)) score += 450;
+  if (description.includes(query)) score += 220;
+  if (section.includes(query)) score += 120;
+  if (searchText.includes(query)) score += 80;
+  if (terms.length > 1 && terms.every((term) => title.includes(term))) score += 180;
+
+  for (const term of terms) {
+    if (title.includes(term)) score += 90;
+    if (description.includes(term)) score += 30;
+    if (section.includes(term)) score += 20;
+    if (searchText.includes(term)) score += 15;
+  }
+
+  return score;
+}
 
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -25,11 +71,17 @@ export default function SearchOverlay({ entries }: { entries: SearchEntry[] }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const filteredEntries = useMemo(() => {
-    const value = query.trim().toLowerCase();
+    const value = normalizeQuery(query);
     if (!value) return entries;
-    return entries.filter((entry) =>
-      [entry.title, entry.description, entry.section].some((field) => field.toLowerCase().includes(value)),
-    );
+    return entries
+      .map((entry, index) => ({
+        entry,
+        index,
+        score: scoreEntry(entry, value),
+      }))
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score || left.index - right.index)
+      .map((candidate) => candidate.entry);
   }, [entries, query]);
 
   useEffect(() => {

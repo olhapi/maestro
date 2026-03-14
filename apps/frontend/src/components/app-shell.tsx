@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useState } from 'react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RotateCcw, Search } from 'lucide-react'
@@ -10,6 +10,7 @@ import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
 import { api } from '@/lib/api'
 import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
+import { refreshDashboardQueries } from '@/lib/query-refresh'
 import { cn, formatRelativeTimeCompact } from '@/lib/utils'
 
 const nav = [
@@ -41,13 +42,16 @@ export function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
+
+  const handleSocketInvalidate = useEffectEvent(() => {
+    setLastRefresh(new Date().toISOString())
+    void refreshDashboardQueries(queryClient, activePath)
+  })
 
   useEffect(() => {
-    return connectDashboardSocket(() => {
-      setLastRefresh(new Date().toISOString())
-      void queryClient.invalidateQueries()
-    })
-  }, [queryClient])
+    return connectDashboardSocket(handleSocketInvalidate)
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -60,7 +64,6 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
   const pageTitle = getPageTitle(activePath) || SIDEBAR_TITLE
   const runningCount = bootstrap.data?.overview.snapshot.running.length ?? 0
   const retryCount = bootstrap.data?.overview.snapshot.retrying.length ?? 0

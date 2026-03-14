@@ -260,15 +260,7 @@ func (s *Store) ListDueRecurringIssues(now time.Time, repoPath string, limit int
 	if err != nil {
 		return nil, err
 	}
-	issues := make([]Issue, 0, len(ids))
-	for _, issueID := range ids {
-		issue, err := s.GetIssue(issueID)
-		if err != nil {
-			return nil, err
-		}
-		issues = append(issues, *issue)
-	}
-	return issues, nil
+	return s.loadIssuesByIDs(ids)
 }
 
 func (s *Store) ListPendingRecurringIssues(repoPath string, limit int) ([]Issue, error) {
@@ -295,15 +287,7 @@ func (s *Store) ListPendingRecurringIssues(repoPath string, limit int) ([]Issue,
 	if err != nil {
 		return nil, err
 	}
-	issues := make([]Issue, 0, len(ids))
-	for _, issueID := range ids {
-		issue, err := s.GetIssue(issueID)
-		if err != nil {
-			return nil, err
-		}
-		issues = append(issues, *issue)
-	}
-	return issues, nil
+	return s.loadIssuesByIDs(ids)
 }
 
 func (s *Store) NextRecurringDueAt(repoPath string) (*time.Time, error) {

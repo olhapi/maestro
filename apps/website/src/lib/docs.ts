@@ -13,6 +13,21 @@ export type DocsGroup = {
   items: DocsEntry[];
 };
 
+const markdownHeadingPattern = /^#{1,6}\s+(.+)$/gmu;
+
+function normalizeSearchText(value: string) {
+  return value
+    .replace(/[`*_#[\]()<>{}|]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+export function extractSearchTextFromBody(body: string) {
+  return Array.from(body.matchAll(markdownHeadingPattern), ([, heading]) => normalizeSearchText(heading))
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function getDocSlug(entry: DocsEntry) {
   return entry.id.replace(/\.(md|mdx)$/u, "");
 }
@@ -67,12 +82,24 @@ export function groupDocs(entries: DocsEntry[]) {
 
 export function getSearchEntries(entries: DocsEntry[]) {
   return [
-    ...staticSearchEntries,
+    ...staticSearchEntries.map((entry) => ({
+      ...entry,
+      searchText: [entry.title, entry.description, entry.section].join("\n"),
+    })),
     ...sortDocs(entries).map((entry) => ({
       title: entry.data.title,
       href: getDocHref(entry),
       description: entry.data.description,
       section: sectionMeta[entry.data.section].title,
+      searchText: [
+        entry.data.title,
+        entry.data.navLabel,
+        entry.data.description,
+        sectionMeta[entry.data.section].title,
+        extractSearchTextFromBody(entry.body ?? ""),
+      ]
+        .filter(Boolean)
+        .join("\n"),
     })),
   ];
 }

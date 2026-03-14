@@ -116,7 +116,7 @@ export const api = {
     request<{ deleted: boolean }>(`/api/v1/app/epics/${id}`, {
       method: "DELETE",
     }),
-  listIssues: (filters: IssueFilters) => {
+  listIssues: (filters: IssueFilters, init?: RequestInit) => {
     const query = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => {
       if (value !== undefined && value !== "") query.set(key, String(value));
@@ -127,7 +127,7 @@ export const api = {
       total: number;
       limit: number;
       offset: number;
-    }>(`/api/v1/app/issues${suffix}`);
+    }>(`/api/v1/app/issues${suffix}`, init);
   },
   createIssue: (body: Record<string, unknown>) =>
     request<IssueDetail>("/api/v1/app/issues", {

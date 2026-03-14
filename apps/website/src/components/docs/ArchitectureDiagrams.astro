@@ -56,7 +56,18 @@ const sections = [
           <p class="architecture-diagram-description">{section.description}</p>
         </div>
       )}
-      <pre class="mermaid">{section.diagram}</pre>
+      {
+        isHome ? (
+          <img
+            alt="Architecture diagram showing the MCP client and HTTP server paths flowing into the Maestro daemon, which coordinates providers, orchestration, storage, and the agent runner."
+            class="mt-4 w-full rounded-[1rem] border border-white/8 bg-[rgb(10,11,14)]"
+            loading="lazy"
+            src="/images/screens/architecture-runtime.svg"
+          />
+        ) : (
+          <pre class="mermaid">{section.diagram}</pre>
+        )
+      }
     </section>
   ))}
 </div>

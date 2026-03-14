@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -769,18 +771,14 @@ func (s *Server) handleIssueImages(w http.ResponseWriter, r *http.Request, ident
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, kanban.MaxIssueImageBytes+(1<<20))
-		if err := r.ParseMultipartForm(kanban.MaxIssueImageBytes + (1 << 20)); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		file, header, err := r.FormFile("file")
+		file, filename, err := readIssueImageUpload(r)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("file is required"))
+			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		defer file.Close()
 
-		image, err := s.service.AttachIssueImage(r.Context(), identifier, header.Filename, file)
+		image, err := s.service.AttachIssueImage(r.Context(), identifier, filename, file)
 		if err != nil {
 			writeError(w, appErrorStatus(err), err)
 			return
@@ -817,6 +815,34 @@ func (s *Server) handleIssueImages(w http.ResponseWriter, r *http.Request, ident
 	}
 
 	methodNotAllowed(w)
+}
+
+func readIssueImageUpload(r *http.Request) (io.ReadCloser, string, error) {
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return nil, "", err
+	}
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if part.FormName() != "file" {
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+		filename := strings.TrimSpace(part.FileName())
+		if filename == "" {
+			_ = part.Close()
+			return nil, "", fmt.Errorf("file is required")
+		}
+		return part, filename, nil
+	}
+	return nil, "", fmt.Errorf("file is required")
 }
 
 func (s *Server) handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {
@@ -965,6 +991,10 @@ func writeError(w http.ResponseWriter, status int, err error) {
 }
 
 func appErrorStatus(err error) int {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return http.StatusBadRequest
+	}
 	if kanban.IsNotFound(err) {
 		return http.StatusNotFound
 	}

@@ -291,6 +291,7 @@ export function ProjectsPage() {
         onOpenChange={setIssueDialogOpen}
         projects={projects.data.items}
         epics={epics.data.items}
+        availableIssues={bootstrap.data.issues.items}
         onSubmit={async (body, imageChanges) => {
           const issue = await api.createIssue(body);
           const result = await applyIssueImageChanges(issue.identifier, imageChanges);

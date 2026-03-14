@@ -28,6 +28,7 @@ export function MultiCombobox({
   emptyText,
   loading = false,
   onChange,
+  onSearchChange,
   options,
   placeholder,
   value,
@@ -40,6 +41,7 @@ export function MultiCombobox({
   emptyText: string
   loading?: boolean
   onChange: (next: string[]) => void
+  onSearchChange?: (query: string) => void
   options: MultiComboboxOption[]
   placeholder: string
   value: string[]
@@ -77,6 +79,7 @@ export function MultiCombobox({
       }}
       onInputValueChange={(nextValue) => {
         setInputValue(nextValue)
+        onSearchChange?.(nextValue)
         if (ignoreNextEmptyOpenRef.current && nextValue === '') {
           ignoreNextEmptyOpenRef.current = false
           setOpen(false)
@@ -93,6 +96,7 @@ export function MultiCombobox({
         onChange(nextValue ?? [])
         ignoreNextEmptyOpenRef.current = true
         setInputValue('')
+        onSearchChange?.('')
         setOpen(false)
         inputRef.current?.blur()
       }}
@@ -186,6 +190,7 @@ export function MultiCombobox({
                     onChange([...value, trimmedInput])
                     ignoreNextEmptyOpenRef.current = true
                     setInputValue('')
+                    onSearchChange?.('')
                     setOpen(false)
                     inputRef.current?.blur()
                   }}
