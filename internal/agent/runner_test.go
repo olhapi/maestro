@@ -638,29 +638,26 @@ func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
 }
 
 func TestRunAgentAppServerModeTracksSession(t *testing.T) {
-	tmpDir := t.TempDir()
-	traceFile := filepath.Join(tmpDir, "trace.log")
-	scriptPath := filepath.Join(tmpDir, "fake-codex.sh")
-	script := `#!/bin/sh
-trace_file="$TRACE_FILE"
-count=0
-while IFS= read -r line; do
-  count=$((count + 1))
-  printf 'JSON:%s\n' "$line" >> "$trace_file"
-  case "$count" in
-    1) printf '%s\n' '{"id":1,"result":{}}' ;;
-    2) ;;
-    3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"th1"}}}' ;;
-    4) printf '%s\n' '{"id":3,"result":{"turn":{"id":"tu1"}}}'; printf '%s\n' '{"method":"turn/completed","params":{"threadId":"th1","turnId":"tu1","usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}}'; exit 0 ;;
-  esac
-done
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
 
-	runner, store, _, _, _ := setupTestRunner(t, "sh "+scriptPath, config.AgentModeAppServer)
+	command, _ := fakeappserver.CommandString(t, baseRunnerAppServerScenario("th1", "tu1",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{
+					"threadId": "th1",
+					"turn":     map[string]interface{}{"id": "tu1"},
+					"usage": map[string]interface{}{
+						"prompt_tokens":     5,
+						"completion_tokens": 2,
+						"total_tokens":      7,
+					},
+				},
+			},
+		},
+	))
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
 	issue, _ := store.CreateIssue("", "", "AppServer", "", 0, nil)
 
 	res, err := runner.Run(context.Background(), issue)
