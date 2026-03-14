@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -393,6 +396,47 @@ func (s *Service) GetIssueDetailByIdentifier(ctx context.Context, identifier str
 		return nil, err
 	}
 	return s.store.GetIssueDetailByIdentifier(issue.Identifier)
+}
+
+func (s *Service) ListIssueImages(ctx context.Context, identifier string) ([]kanban.IssueImage, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.ListIssueImages(issue.ID)
+}
+
+func (s *Service) AttachIssueImage(ctx context.Context, identifier, filename string, src io.Reader) (*kanban.IssueImage, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.CreateIssueImage(issue.ID, filename, src)
+}
+
+func (s *Service) AttachIssueImagePath(ctx context.Context, identifier, path string) (*kanban.IssueImage, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return s.AttachIssueImage(ctx, identifier, filepath.Base(path), file)
+}
+
+func (s *Service) GetIssueImageContent(ctx context.Context, identifier, imageID string) (*kanban.IssueImage, string, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.store.GetIssueImageContent(issue.ID, imageID)
+}
+
+func (s *Service) DeleteIssueImage(ctx context.Context, identifier, imageID string) error {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	return s.store.DeleteIssueImage(issue.ID, imageID)
 }
 
 func (s *Service) ListIssueSummaries(ctx context.Context, query kanban.IssueQuery) ([]kanban.IssueSummary, int, error) {

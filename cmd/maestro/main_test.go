@@ -32,6 +32,20 @@ func setupRepo(t *testing.T) string {
 	return repo
 }
 
+func sampleMainPNGBytes() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
 func setupProjectAndIssue(t *testing.T) (dbPath string, repoPath string, project *kanban.Project, issue *kanban.Issue) {
 	t.Helper()
 	dbPath = filepath.Join(t.TempDir(), "maestro.db")
@@ -329,6 +343,53 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 	}
 	if updated.Priority != 5 || updated.BranchName != "feat/cli" || updated.PRURL != "https://example.com/pr/17" {
 		t.Fatalf("unexpected issue update payload: %+v", updated)
+	}
+
+	imagePath := filepath.Join(t.TempDir(), "coverage.png")
+	if err := os.WriteFile(imagePath, sampleMainPNGBytes(), 0o644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "add", created.Identifier, imagePath, "--json")
+	if code != 0 {
+		t.Fatalf("issue image add failed: %d stderr=%s", code, stderr)
+	}
+	var image kanban.IssueImage
+	if err := json.Unmarshal([]byte(stdout), &image); err != nil {
+		t.Fatalf("decode issue image add: %v\n%s", err, stdout)
+	}
+	if image.ContentType != "image/png" {
+		t.Fatalf("unexpected issue image payload: %+v", image)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "list", created.Identifier, "--json")
+	if code != 0 {
+		t.Fatalf("issue image list failed: %d stderr=%s", code, stderr)
+	}
+	var imageList struct {
+		Items []kanban.IssueImage `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &imageList); err != nil {
+		t.Fatalf("decode issue image list: %v\n%s", err, stdout)
+	}
+	if len(imageList.Items) != 1 || imageList.Items[0].ID != image.ID {
+		t.Fatalf("unexpected issue image list payload: %+v", imageList)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "show", created.Identifier)
+	if code != 0 {
+		t.Fatalf("issue show with images failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Images:") || !strings.Contains(stdout, image.ID) {
+		t.Fatalf("expected image metadata in issue show output, got %q", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "remove", created.Identifier, image.ID, "--json")
+	if code != 0 {
+		t.Fatalf("issue image remove failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\"deleted\":true") {
+		t.Fatalf("unexpected issue image remove payload: %s", stdout)
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "list", "--project", project.ID, "--json")

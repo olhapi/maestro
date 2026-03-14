@@ -82,6 +82,8 @@ Commands that talk to a running daemon over HTTP require `--api-url`:
 
 The embedded dashboard does not need `--api-url` because it is served by the same HTTP server it talks to.
 
+The shared issue composer in the embedded dashboard also supports browser-native speech dictation for issue descriptions. It uses the browser's built-in speech recognition in supported Chromium-based browsers, shows live interim text while you speak, and falls back to a disabled control elsewhere. This is a UI-only feature and does not add new HTTP endpoints.
+
 ## Recurring issues
 
 Recurring issues are first-class Maestro issues with `issue_type=recurring` plus recurrence metadata:

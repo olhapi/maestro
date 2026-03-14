@@ -3,6 +3,8 @@ package dashboardapi
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -53,6 +55,46 @@ func requestJSON(t *testing.T, srv *httptest.Server, method, path string, body i
 		t.Fatalf("do request %s %s: %v", method, path, err)
 	}
 	return resp
+}
+
+func requestMultipart(t *testing.T, srv *httptest.Server, method, path, fieldName, filename string, content []byte) *http.Response {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile(fieldName, filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write multipart content: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req, err := http.NewRequest(method, srv.URL+path, &body)
+	if err != nil {
+		t.Fatalf("new multipart request %s %s: %v", method, path, err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do multipart request %s %s: %v", method, path, err)
+	}
+	return resp
+}
+
+func contractSamplePNGBytes() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
 }
 
 func decodeResponse(t *testing.T, resp *http.Response) map[string]interface{} {
@@ -487,6 +529,56 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 		t.Fatal("expected issue detail payload")
 	}
 
+	uploadImage := requestMultipart(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/images", "file", "runtime.png", contractSamplePNGBytes())
+	if uploadImage.StatusCode != http.StatusCreated {
+		t.Fatalf("upload image expected 201, got %d", uploadImage.StatusCode)
+	}
+	imagePayload := decodeResponse(t, uploadImage)
+	imageID := imagePayload["id"].(string)
+	if imagePayload["content_type"].(string) != "image/png" {
+		t.Fatalf("unexpected uploaded image payload: %#v", imagePayload)
+	}
+
+	getIssueWithImage := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
+	if getIssueWithImage.StatusCode != http.StatusOK {
+		t.Fatalf("get issue with image expected 200, got %d", getIssueWithImage.StatusCode)
+	}
+	issueWithImage := decodeResponse(t, getIssueWithImage)
+	images := issueWithImage["images"].([]interface{})
+	if len(images) != 1 {
+		t.Fatalf("expected one image in issue detail, got %#v", issueWithImage["images"])
+	}
+
+	getImageContent := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier+"/images/"+imageID+"/content", nil)
+	if getImageContent.StatusCode != http.StatusOK {
+		t.Fatalf("image content expected 200, got %d", getImageContent.StatusCode)
+	}
+	imageBytes, err := io.ReadAll(getImageContent.Body)
+	if err != nil {
+		t.Fatalf("read image content: %v", err)
+	}
+	_ = getImageContent.Body.Close()
+	if !bytes.Equal(imageBytes, contractSamplePNGBytes()) {
+		t.Fatalf("unexpected image content: got %d bytes", len(imageBytes))
+	}
+	if contentType := getImageContent.Header.Get("Content-Type"); contentType != "image/png" {
+		t.Fatalf("unexpected image content type %q", contentType)
+	}
+
+	deleteImage := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+identifier+"/images/"+imageID, nil)
+	if deleteImage.StatusCode != http.StatusOK {
+		t.Fatalf("delete image expected 200, got %d", deleteImage.StatusCode)
+	}
+	_ = decodeResponse(t, deleteImage)
+
+	getIssueAfterDelete := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
+	if getIssueAfterDelete.StatusCode != http.StatusOK {
+		t.Fatalf("get issue after image delete expected 200, got %d", getIssueAfterDelete.StatusCode)
+	}
+	if images := decodeResponse(t, getIssueAfterDelete)["images"].([]interface{}); len(images) != 0 {
+		t.Fatalf("expected no images after delete, got %#v", images)
+	}
+
 	getExecution := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier+"/execution", nil)
 	if getExecution.StatusCode != http.StatusOK {
 		t.Fatalf("issue execution expected 200, got %d", getExecution.StatusCode)
@@ -566,8 +658,8 @@ func TestRecurringIssueContractsExposeRecurringFieldsAndRunNow(t *testing.T) {
 
 	patchIssue := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/issues/"+identifier, map[string]interface{}{
 		"project_id": project.ID,
-		"cron":    "0 * * * *",
-		"enabled": true,
+		"cron":       "0 * * * *",
+		"enabled":    true,
 	})
 	if patchIssue.StatusCode != http.StatusOK {
 		t.Fatalf("patch recurring issue expected 200, got %d", patchIssue.StatusCode)

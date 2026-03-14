@@ -3,7 +3,11 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { IssueDetailPage } from "@/routes/issue-detail";
-import { makeBootstrapResponse, makeIssueDetail } from "@/test/fixtures";
+import {
+  makeBootstrapResponse,
+  makeIssueDetail,
+  makeIssueImage,
+} from "@/test/fixtures";
 import { renderWithQueryClient, selectOption } from "@/test/test-utils";
 import { formatDateTime } from "@/lib/utils";
 
@@ -32,6 +36,8 @@ vi.mock("@/lib/api", () => ({
     setIssueState: vi.fn(),
     setIssueBlockers: vi.fn(),
     sendIssueCommand: vi.fn(),
+    uploadIssueImage: vi.fn(),
+    deleteIssueImage: vi.fn(),
   },
 }));
 
@@ -146,6 +152,41 @@ describe("IssueDetailPage", () => {
     expect(
       screen.getByText(/stopped retrying after 3 stalled runs/i),
     ).toBeInTheDocument();
+  });
+
+  it("renders the issue identifier only once in breadcrumbs when no epic is attached", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      identifier: "TEST-3",
+      epic_id: undefined,
+      epic_name: undefined,
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("navigation", { name: /breadcrumb/i })).toBeInTheDocument();
+    });
+
+    const breadcrumb = screen.getByRole("navigation", { name: /breadcrumb/i });
+    expect(within(breadcrumb).getAllByText(issue.identifier)).toHaveLength(1);
+    expect(within(breadcrumb).getByText(issue.project_name!)).toBeInTheDocument();
+    expect(within(breadcrumb).queryByText("Observability")).not.toBeInTheDocument();
   });
 
   it("renders the shared progress-first activity feed for issue execution details", async () => {
@@ -282,6 +323,76 @@ describe("IssueDetailPage", () => {
     });
   });
 
+  it("renders issue images and supports direct upload and removal", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      images: [makeIssueImage()],
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.uploadIssueImage).mockResolvedValue(makeIssueImage({ id: "img-2" }));
+    vi.mocked(api.deleteIssueImage).mockResolvedValue({
+      deleted: true,
+      identifier: issue.identifier,
+      image_id: "img-1",
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("issue-images-card")).toBeInTheDocument();
+    });
+
+    const imagesCard = screen.getByTestId("issue-images-card");
+    expect(
+      within(imagesCard).getByRole("button", { name: /attach images/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(imagesCard).queryByText(/drop files here/i),
+    ).not.toBeInTheDocument();
+    expect(
+      within(imagesCard).getByRole("button", { name: /open runtime\.png/i }),
+    ).toBeInTheDocument();
+
+    const file = new File(["png"], "capture.png", { type: "image/png" });
+    fireEvent.change(within(imagesCard).getByLabelText(/attach images/i, { selector: "input" }), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() => {
+      expect(api.uploadIssueImage).toHaveBeenCalledWith(issue.identifier, file);
+    });
+
+    fireEvent.click(
+      within(imagesCard).getByRole("button", { name: /open runtime\.png/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+    expect(screen.getByText("runtime.png")).toBeInTheDocument();
+    expect(screen.getByText("image/png")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /remove image/i }));
+
+    await waitFor(() => {
+      expect(api.deleteIssueImage).toHaveBeenCalledWith(issue.identifier, "img-1");
+    });
+  });
+
   it("keeps the composer in the rail and renders command history in the main column", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({ state: "done" });
@@ -329,21 +440,22 @@ describe("IssueDetailPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Agent commands")).toBeInTheDocument();
     });
-    expect(screen.getByText("Command history")).toBeInTheDocument();
 
     const mainColumn = screen.getByTestId("issue-main-column");
     const controlRail = screen.getByTestId("issue-control-rail");
 
     expect(within(mainColumn).getByText("Execution triage")).toBeInTheDocument();
-    expect(within(mainColumn).getByText("Command history")).toBeInTheDocument();
+    expect(within(mainColumn).queryByText("Command history")).not.toBeInTheDocument();
     expect(within(controlRail).getByText("Issue actions")).toBeInTheDocument();
     expect(within(controlRail).getByText("Agent commands")).toBeInTheDocument();
-    expect(within(controlRail).getByText("Latest command")).toBeInTheDocument();
-    expect(within(controlRail).queryByText("Command history")).not.toBeInTheDocument();
+    expect(screen.queryByText("Command history")).not.toBeInTheDocument();
+    expect(within(controlRail).queryByText("Latest command")).not.toBeInTheDocument();
+    expect(within(controlRail).queryByText("Follow-up command")).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/tell the agent/i), {
       target: { value: "Merge the branch to master." },
     });
+    expect(screen.queryByText("Send to agent")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /send to agent/i }));
 
     await waitFor(() => {
@@ -355,12 +467,10 @@ describe("IssueDetailPage", () => {
 
     await waitFor(() => {
       expect(
-        within(mainColumn).getByText("Waiting for unblock"),
+        within(controlRail).getByText("Waiting for unblock"),
       ).toBeInTheDocument();
     });
-    expect(
-      within(mainColumn).getByText("Merge the branch to master."),
-    ).toBeInTheDocument();
+    expect(within(mainColumn).queryByText("Merge the branch to master.")).not.toBeInTheDocument();
     expect(
       within(controlRail).getByText("Merge the branch to master."),
     ).toBeInTheDocument();
@@ -407,5 +517,51 @@ describe("IssueDetailPage", () => {
         "ready",
       );
     });
+  });
+
+  it("renders edit, retry, and delete in a single icon action row", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "backlog" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Issue actions")).toBeInTheDocument();
+    });
+
+    const actionRow = screen.getByTestId("issue-actions-row");
+    const editButton = within(actionRow).getByRole("button", {
+      name: /edit issue/i,
+    });
+    const retryButton = within(actionRow).getByRole("button", {
+      name: /retry now/i,
+    });
+    const deleteButton = within(actionRow).getByRole("button", {
+      name: /delete/i,
+    });
+
+    expect(actionRow).toHaveClass("grid-cols-3");
+    expect(within(actionRow).getAllByRole("button")).toHaveLength(3);
+    expect(editButton.querySelector("svg")).not.toBeNull();
+    expect(retryButton.querySelector("svg")).not.toBeNull();
+    expect(deleteButton.querySelector("svg")).not.toBeNull();
+    expect(within(actionRow).queryByText("Edit issue")).not.toBeInTheDocument();
+    expect(within(actionRow).queryByText("Retry now")).not.toBeInTheDocument();
+    expect(within(actionRow).queryByText("Delete")).not.toBeInTheDocument();
   });
 });

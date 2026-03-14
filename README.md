@@ -101,6 +101,8 @@ When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. When `-
 
 Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
 
+Issue images are stored next to the active database under `assets/images`. With the default database path, that means `~/.maestro/assets/images`. If you run with `--db /custom/path/maestro.db`, image assets move to `/custom/path/assets/images`.
+
 The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
 
 ### 4. Expose the tracker to MCP clients
@@ -128,6 +130,8 @@ By default, `maestro run` serves:
 - the live observability API on `/api/v1/*`
 - the dashboard application API on `/api/v1/app/*`
 - the dashboard invalidation stream on `/api/v1/ws`
+
+The shared issue composer in the embedded dashboard also supports browser speech-to-text for issue descriptions. In supported Chromium-based browsers it shows live interim text while you speak; elsewhere it degrades to a disabled control without changing the API surface.
 
 Useful live helpers:
 
@@ -175,6 +179,16 @@ maestro issue update ISS-1 --branch codex/ISS-1 --pr-url https://example.com/pul
 maestro issue blockers set ISS-1 ISS-2 ISS-3
 maestro issue unblock ISS-1 ISS-2
 ```
+
+Issue images:
+
+```bash
+maestro issue images add ISS-1 ./screenshots/failing-checkout.png
+maestro issue images list ISS-1
+maestro issue images remove ISS-1 <image_id>
+```
+
+Image attachments are local-only, including for Linear-backed issues. Maestro accepts PNG, JPEG, WEBP, and GIF files up to 10 MiB each and serves them back through the local HTTP API and dashboard.
 
 Recurring automation:
 

@@ -193,6 +193,17 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (issue_id, blocked_by),
 			FOREIGN KEY (issue_id) REFERENCES issues(id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS issue_images (
+			id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			filename TEXT NOT NULL,
+			content_type TEXT NOT NULL,
+			byte_size INTEGER NOT NULL,
+			storage_path TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS workspaces (
 			issue_id TEXT PRIMARY KEY,
 			path TEXT NOT NULL,
@@ -318,6 +329,9 @@ func (s *Store) migrate() error {
 	if err := s.ensureIssueExecutionSessionColumns(); err != nil {
 		return err
 	}
+	if err := s.ensureIssueImageTables(); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_projects_repo_path_unique`); err != nil {
 		return err
 	}
@@ -408,6 +422,28 @@ func (s *Store) ensureIssueExecutionSessionColumns() error {
 		`ALTER TABLE issue_execution_sessions ADD COLUMN stop_reason TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureIssueImageTables() error {
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS issue_images (
+			id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			filename TEXT NOT NULL,
+			content_type TEXT NOT NULL,
+			byte_size INTEGER NOT NULL,
+			storage_path TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_images_issue_created ON issue_images(issue_id, created_at ASC)`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
 			return err
 		}
 	}
@@ -2065,6 +2101,7 @@ func (s *Store) DeleteIssue(id string) error {
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
+	issueImageDir := filepath.Join(s.IssueImageAssetRoot(), id)
 	if workspace != nil {
 		if err := os.RemoveAll(workspace.Path); err != nil {
 			return err
@@ -2083,6 +2120,10 @@ func (s *Store) DeleteIssue(id string) error {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	imagePaths, err := s.deleteIssueImagesTx(tx, id)
+	if err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_recurrences WHERE issue_id = ?`, id); err != nil {
@@ -2116,6 +2157,8 @@ func (s *Store) DeleteIssue(id string) error {
 		return err
 	}
 	tx = nil
+	s.cleanupIssueImagePaths(imagePaths)
+	_ = os.Remove(issueImageDir)
 	return nil
 }
 
@@ -2490,6 +2533,11 @@ func (s *Store) GetIssueDetailByIdentifier(identifier string) (*IssueDetail, err
 					detail.EpicDescription = epic.Description
 				}
 			}
+			images, err := s.ListIssueImages(item.ID)
+			if err != nil {
+				return nil, err
+			}
+			detail.Images = images
 			return detail, nil
 		}
 	}

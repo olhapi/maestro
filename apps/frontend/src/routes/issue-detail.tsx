@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, Send, Trash2 } from "lucide-react";
+import { Pencil, RotateCcw, Send, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -10,16 +10,18 @@ import { IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { appRoutes } from "@/lib/routes";
+import {
+  applyIssueImageChanges,
+  formatIssueImageSize,
+  issueImageContentURL,
+  issueImageInputAccept,
+  summarizeIssueImageFailures,
+} from "@/lib/issue-images";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
 import type { AgentCommand, IssueState } from "@/lib/types";
 import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
@@ -51,16 +53,10 @@ function AgentCommandEntry({ command }: { command: AgentCommand }) {
     <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3">
       <div className="flex items-start justify-between gap-3">
         <Badge className={status.className}>{status.label}</Badge>
-        <span className="text-xs text-[var(--muted-foreground)]">
-          {formatRelativeTime(command.created_at)}
-        </span>
+        <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(command.created_at)}</span>
       </div>
-      <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">
-        {command.command}
-      </p>
-      <p className="mt-3 text-xs text-[var(--muted-foreground)]">
-        Sent {formatDateTime(command.created_at)}
-      </p>
+      <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">{command.command}</p>
+      <p className="mt-3 text-xs text-[var(--muted-foreground)]">Sent {formatDateTime(command.created_at)}</p>
       {command.delivered_at ? (
         <p className="mt-1 text-xs text-[var(--muted-foreground)]">
           Delivered {formatDateTime(command.delivered_at)}
@@ -78,6 +74,8 @@ export function IssueDetailPage() {
   const queryClient = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
   const [commandDraft, setCommandDraft] = useState("");
+  const [previewImageID, setPreviewImageID] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -147,66 +145,92 @@ export function IssueDetailPage() {
       void navigate({ to: appRoutes.work });
     },
   });
+  const uploadImagesMutation = useMutation({
+    mutationFn: (files: File[]) =>
+      applyIssueImageChanges(identifier, {
+        newImages: files,
+        removeImageIDs: [],
+      }),
+    onSuccess: async (result, files) => {
+      if (result.failures.length > 0) {
+        toast.error(`Upload finished with errors: ${summarizeIssueImageFailures(result)}`);
+      } else {
+        toast.success(files.length === 1 ? "Image attached" : `${files.length} images attached`);
+      }
+      await invalidate();
+    },
+  });
+  const deleteImageMutation = useMutation({
+    mutationFn: (imageID: string) =>
+      applyIssueImageChanges(identifier, {
+        newImages: [],
+        removeImageIDs: [imageID],
+      }),
+    onSuccess: async (result) => {
+      if (result.failures.length > 0) {
+        toast.error(`Unable to remove image: ${summarizeIssueImageFailures(result)}`);
+      } else {
+        setPreviewImageID(null);
+        toast.success("Image removed");
+      }
+      await invalidate();
+    },
+  });
 
   if (!bootstrap.data || !issue.data || !execution.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
-  const availableStates = issueStatesFor(bootstrap.data.issues.items, [
-    issue.data.state,
-  ]);
-  const latestCommand = execution.data.agent_commands[0] ?? null;
+  const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state]);
+  const previewImage = issue.data.images.find((image) => image.id === previewImageID) ?? null;
+  const crumbs: Array<{
+    label: string;
+    to?: string;
+    params?: Record<string, string>;
+  }> = [
+    { label: "Work", to: appRoutes.work },
+    issue.data.project_id && issue.data.project_name
+      ? {
+          label: issue.data.project_name,
+          to: appRoutes.projectDetail,
+          params: { projectId: issue.data.project_id },
+        }
+      : { label: "Issue" },
+    ...(issue.data.epic_id && issue.data.epic_name
+      ? [
+          {
+            label: issue.data.epic_name,
+            to: appRoutes.epicDetail,
+            params: { epicId: issue.data.epic_id },
+          },
+        ]
+      : []),
+    { label: issue.data.identifier },
+  ];
 
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         title={issue.data.title}
-        crumbs={[
-          { label: "Work", to: appRoutes.work },
-          issue.data.project_id && issue.data.project_name
-            ? {
-                label: issue.data.project_name,
-                to: appRoutes.projectDetail,
-                params: { projectId: issue.data.project_id },
-              }
-            : { label: "Issue" },
-          issue.data.epic_id && issue.data.epic_name
-            ? {
-                label: issue.data.epic_name,
-                to: appRoutes.epicDetail,
-                params: { epicId: issue.data.epic_id },
-              }
-            : { label: issue.data.identifier },
-          { label: issue.data.identifier },
-        ]}
+        crumbs={crumbs}
       />
 
       <div className="flex flex-wrap gap-2">
         <Badge>{issue.data.identifier}</Badge>
-        <Badge className="border-white/10 bg-white/5 text-white">
-          {getStateMeta(issue.data.state).label}
-        </Badge>
+        <Badge className="border-white/10 bg-white/5 text-white">{getStateMeta(issue.data.state).label}</Badge>
         {issue.data.issue_type === "recurring" ? (
-          <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">
-            Recurring
-          </Badge>
+          <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">Recurring</Badge>
         ) : null}
         {issue.data.project_name ? (
           <Badge className="border-white/10 bg-white/5 text-white">
-            <Link
-              params={{ projectId: issue.data.project_id! }}
-              to={appRoutes.projectDetail}
-            >
+            <Link params={{ projectId: issue.data.project_id! }} to={appRoutes.projectDetail}>
               {issue.data.project_name}
             </Link>
           </Badge>
         ) : null}
         {issue.data.epic_name ? (
           <Badge className="border-white/10 bg-white/5 text-white">
-            <Link
-              params={{ epicId: issue.data.epic_id! }}
-              to={appRoutes.epicDetail}
-            >
+            <Link params={{ epicId: issue.data.epic_id! }} to={appRoutes.epicDetail}>
               {issue.data.epic_name}
             </Link>
           </Badge>
@@ -214,50 +238,31 @@ export function IssueDetailPage() {
       </div>
 
       <div className="grid items-start gap-[var(--section-gap)] xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div
-          className="grid min-w-0 gap-[var(--section-gap)]"
-          data-testid="issue-main-column"
-        >
+        <div className="grid min-w-0 gap-[var(--section-gap)]" data-testid="issue-main-column">
           <Card>
             <CardContent className="grid gap-3 pt-[var(--panel-padding)] sm:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                  Updated
-                </p>
-                <p className="mt-3 text-white">
-                  {formatRelativeTime(issue.data.updated_at)}
-                </p>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                  {formatDateTime(issue.data.updated_at)}
-                </p>
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Updated</p>
+                <p className="mt-3 text-white">{formatRelativeTime(issue.data.updated_at)}</p>
+                <p className="mt-2 text-sm text-[var(--muted-foreground)]">{formatDateTime(issue.data.updated_at)}</p>
               </div>
               <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                  Workspace
-                </p>
-                <p className="mt-3 break-all text-white">
-                  {issue.data.workspace_path || "Not created yet"}
-                </p>
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Workspace</p>
+                <p className="mt-3 break-all text-white">{issue.data.workspace_path || "Not created yet"}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">
                   Runs: {formatNumber(issue.data.workspace_run_count)}
                 </p>
               </div>
               <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                  Branch / PR
-                </p>
-                <p className="mt-3 text-white">
-                  {issue.data.branch_name || "No branch linked"}
-                </p>
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Branch / PR</p>
+                <p className="mt-3 text-white">{issue.data.branch_name || "No branch linked"}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">
                   {issue.data.pr_url || "No pull request linked"}
                 </p>
               </div>
               {issue.data.issue_type === "recurring" ? (
                 <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-cyan-400/10 bg-cyan-400/[0.04] px-3.5 py-3">
-                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                    Schedule
-                  </p>
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Schedule</p>
                   <p className="mt-3 text-white">
                     {issue.data.enabled === false ? "Disabled" : issue.data.cron || "Recurring"}
                   </p>
@@ -280,38 +285,79 @@ export function IssueDetailPage() {
             </CardContent>
           </Card>
 
-          <SessionExecutionCard
-            execution={execution.data}
-            issueTotalTokens={issue.data.total_tokens_spent}
-          />
-
-          <Card>
-            <CardHeader className="pb-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle>Command history</CardTitle>
-                <span className="text-xs text-[var(--muted-foreground)]">
-                  {execution.data.agent_commands.length} total
-                </span>
+          <Card data-testid="issue-images-card">
+            <CardHeader className="flex-col gap-3 pb-2.5 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <CardTitle>Images</CardTitle>
+                <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                  Screenshots stay local to this Maestro database and are served through the issue API.
+                </p>
+              </div>
+              <div className="flex w-full shrink-0 sm:w-auto sm:justify-end">
+                <input
+                  ref={imageInputRef}
+                  aria-label="Attach images"
+                  className="sr-only"
+                  accept={issueImageInputAccept}
+                  disabled={uploadImagesMutation.isPending}
+                  multiple
+                  type="file"
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    if (files.length > 0) {
+                      uploadImagesMutation.mutate(files);
+                    }
+                    event.currentTarget.value = "";
+                  }}
+                />
+                <Button
+                  type="button"
+                  className="w-full sm:w-auto"
+                  aria-label="Attach images"
+                  disabled={uploadImagesMutation.isPending}
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  <Upload className="size-4" />
+                  {uploadImagesMutation.isPending ? "Uploading..." : "Attach"}
+                </Button>
               </div>
             </CardHeader>
-            <CardContent className="space-y-2.5 pt-0">
-              {execution.data.agent_commands.length === 0 ? (
-                <p className="text-sm text-[var(--muted-foreground)]">
-                  No follow-up commands sent yet.
-                </p>
+            <CardContent className="grid gap-4 pt-0">
+              {issue.data.images.length === 0 ? (
+                <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 px-4 py-4">
+                  <p className="text-sm font-medium text-white">No images attached yet</p>
+                  <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                    Add screenshots, mocks, or bug captures here without storing them outside the local Maestro asset
+                    root.
+                  </p>
+                </div>
               ) : (
-                execution.data.agent_commands.map((command) => (
-                  <AgentCommandEntry key={command.id} command={command} />
-                ))
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {issue.data.images.map((image) => (
+                    <button
+                      key={image.id}
+                      type="button"
+                      aria-label={`Open ${image.filename}`}
+                      className="group overflow-hidden rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 text-left transition hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                      onClick={() => setPreviewImageID(image.id)}
+                    >
+                      <img
+                        alt={image.filename}
+                        className="aspect-square w-full bg-black object-cover transition duration-300 group-hover:scale-[1.02]"
+                        loading="lazy"
+                        src={issueImageContentURL(identifier, image.id)}
+                      />
+                    </button>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>
+
+          <SessionExecutionCard execution={execution.data} issueTotalTokens={issue.data.total_tokens_spent} />
         </div>
 
-        <div
-          className="grid content-start gap-[var(--section-gap)]"
-          data-testid="issue-control-rail"
-        >
+        <div className="grid content-start gap-[var(--section-gap)]" data-testid="issue-control-rail">
           <Card>
             <CardHeader>
               <CardTitle>Issue actions</CardTitle>
@@ -320,10 +366,7 @@ export function IssueDetailPage() {
               <Select
                 value={issue.data.state}
                 onValueChange={async (value) => {
-                  await api.setIssueState(
-                    identifier,
-                    value as IssueState,
-                  );
+                  await api.setIssueState(identifier, value as IssueState);
                   toast.success("State updated");
                   await invalidate();
                 }}
@@ -339,96 +382,85 @@ export function IssueDetailPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Button variant="secondary" onClick={() => setEditOpen(true)}>
-                Edit issue
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => retryMutation.mutate()}
-                disabled={retryMutation.isPending}
-              >
-                <RotateCcw className="size-4" />
-                Retry now
-              </Button>
-              {issue.data.issue_type === "recurring" ? (
+              <div className="grid grid-cols-3 gap-2.5" data-testid="issue-actions-row">
                 <Button
                   variant="secondary"
-                  onClick={() => runNowMutation.mutate()}
-                  disabled={runNowMutation.isPending}
+                  size="icon"
+                  className="h-12 w-full"
+                  onClick={() => setEditOpen(true)}
+                  aria-label="Edit issue"
+                  title="Edit issue"
                 >
+                  <Pencil className="size-4" />
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  className="h-12 w-full"
+                  onClick={() => retryMutation.mutate()}
+                  disabled={retryMutation.isPending}
+                  aria-label="Retry now"
+                  title="Retry now"
+                >
+                  <RotateCcw className="size-4" />
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="icon"
+                  className="h-12 w-full"
+                  onClick={() => deleteMutation.mutate()}
+                  disabled={deleteMutation.isPending}
+                  aria-label="Delete"
+                  title="Delete"
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+              {issue.data.issue_type === "recurring" ? (
+                <Button variant="secondary" onClick={() => runNowMutation.mutate()} disabled={runNowMutation.isPending}>
                   <RotateCcw className="size-4" />
                   Run now
                 </Button>
               ) : null}
-              <Button
-                variant="destructive"
-                onClick={() => deleteMutation.mutate()}
-                disabled={deleteMutation.isPending}
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle>Agent commands</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3.5">
-              <div className="grid gap-2">
-                <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                  Follow-up command
+            <CardHeader className="pb-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle>Agent commands</CardTitle>
+                <span className="text-xs text-[var(--muted-foreground)]">
+                  {execution.data.agent_commands.length} total
                 </span>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-0">
+              <div className="relative">
                 <Textarea
                   value={commandDraft}
                   onChange={(event) => setCommandDraft(event.target.value)}
-                  className="min-h-[120px]"
+                  className="min-h-[140px] resize-none pb-16 pr-16"
                   placeholder="Tell the agent what it missed or what it should do next."
                 />
                 <Button
+                  type="button"
+                  size="icon"
+                  className="absolute bottom-4 right-3"
                   onClick={() => commandMutation.mutate()}
                   disabled={!commandDraft.trim() || commandMutation.isPending}
+                  aria-label="Send to agent"
+                  title="Send to agent"
                 >
-                  <Send className="size-4" />
-                  Send to agent
+                  <Send className="size-4 shrink-0" />
                 </Button>
               </div>
-
-              <div className="space-y-2.5 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                    Latest command
-                  </span>
-                  <span className="text-xs text-[var(--muted-foreground)]">
-                    {execution.data.agent_commands.length} total
-                  </span>
-                </div>
-                {latestCommand ? (
-                  <>
-                    <div className="flex items-center justify-between gap-3">
-                      <Badge
-                        className={
-                          commandStatusMeta(latestCommand.status).className
-                        }
-                      >
-                        {commandStatusMeta(latestCommand.status).label}
-                      </Badge>
-                      <span className="text-xs text-[var(--muted-foreground)]">
-                        {formatRelativeTime(latestCommand.created_at)}
-                      </span>
-                    </div>
-                    <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-white">
-                      {latestCommand.command}
-                    </p>
-                    <p className="text-xs text-[var(--muted-foreground)]">
-                      Sent {formatDateTime(latestCommand.created_at)}
-                    </p>
-                  </>
+              <div className="space-y-2.5 border-t border-white/8 pt-4">
+                {execution.data.agent_commands.length === 0 ? (
+                  <p className="text-sm text-[var(--muted-foreground)]">No follow-up commands sent yet.</p>
                 ) : (
-                  <p className="text-sm text-[var(--muted-foreground)]">
-                    No follow-up commands sent yet.
-                  </p>
+                  execution.data.agent_commands.map((command) => (
+                    <AgentCommandEntry key={command.id} command={command} />
+                  ))
                 )}
               </div>
             </CardContent>
@@ -442,12 +474,75 @@ export function IssueDetailPage() {
         initial={issue.data}
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics}
-        onSubmit={async (body) => {
-          await api.updateIssue(identifier, body);
-          toast.success("Issue updated");
+        onSubmit={async (body, imageChanges) => {
+          const updated = await api.updateIssue(identifier, body);
+          const result = await applyIssueImageChanges(updated.identifier, imageChanges);
+          if (result.failures.length > 0) {
+            toast.error(`Issue updated, but ${summarizeIssueImageFailures(result)}`);
+          } else {
+            toast.success("Issue updated");
+          }
           await invalidate();
         }}
       />
+
+      <Dialog
+        open={previewImage !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setPreviewImageID(null);
+          }
+        }}
+      >
+        {previewImage ? (
+          <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(96vw,1100px)] overflow-y-auto p-0">
+            <div className="grid lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="flex min-h-[320px] items-center justify-center bg-black p-4">
+                <img
+                  alt={previewImage.filename}
+                  className="max-h-[78vh] w-full rounded-[calc(var(--panel-radius)-0.25rem)] object-contain"
+                  src={issueImageContentURL(identifier, previewImage.id)}
+                />
+              </div>
+              <div className="grid content-start gap-5 p-6">
+                <div>
+                  <DialogTitle className="pr-10 text-xl font-semibold text-white">{previewImage.filename}</DialogTitle>
+                  <DialogDescription className="mt-2 pr-10 text-sm text-[var(--muted-foreground)]">
+                    Stored locally for this issue and served by the Maestro dashboard API.
+                  </DialogDescription>
+                </div>
+                <div className="grid gap-3 text-sm">
+                  <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Size</p>
+                    <p className="mt-2 text-white">{formatIssueImageSize(previewImage.byte_size)}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Type</p>
+                    <p className="mt-2 text-white">{previewImage.content_type}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Uploaded</p>
+                    <p className="mt-2 text-white">{formatRelativeTime(previewImage.created_at)}</p>
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                      {formatDateTime(previewImage.created_at)}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    variant="destructive"
+                    disabled={deleteImageMutation.isPending}
+                    onClick={() => deleteImageMutation.mutate(previewImage.id)}
+                  >
+                    <Trash2 className="size-4" />
+                    Remove image
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        ) : null}
+      </Dialog>
     </div>
   );
 }

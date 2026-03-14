@@ -1,0 +1,86 @@
+name: Real Codex E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-codex-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  retry-safety-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      E2E_KEEP_HARNESS: '0'
+      E2E_ROOT: /tmp/real-codex-e2e/retry-safety
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Run retry safety end-to-end harness
+        run: make e2e-retry-safety
+      - name: Upload retry safety harness
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: retry-safety-e2e-harness
+          path: ${{ env.E2E_ROOT }}
+          if-no-files-found: ignore
+
+  real-codex-e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: basic
+            target: e2e-real-codex
+            timeout_minutes: 25
+          - name: phases
+            target: e2e-real-codex-phases
+            timeout_minutes: 35
+          - name: issue-images
+            target: e2e-real-codex-issue-images
+            timeout_minutes: 25
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      E2E_KEEP_HARNESS: '0'
+      E2E_TIMEOUT_SEC: '900'
+      E2E_ROOT: /tmp/real-codex-e2e/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install Codex CLI
+        run: npm install --global @openai/codex
+      - name: Authenticate Codex CLI
+        shell: bash
+        run: |
+          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+            echo "OPENAI_API_KEY secret is required for real Codex e2e jobs." >&2
+            exit 1
+          fi
+          printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
+      - name: Show Codex CLI version
+        run: codex --version
+      - name: Run ${{ matrix.name }} harness
+        run: make ${{ matrix.target }}
+      - name: Upload ${{ matrix.name }} harness
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: real-codex-e2e-${{ matrix.name }}-harness
+          path: ${{ env.E2E_ROOT }}
+          if-no-files-found: ignore

@@ -7,6 +7,7 @@ REPO_PATH="${REPO_PATH:-}"
 BACKEND_PORT="${BACKEND_PORT:-8787}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-4173}"
+FRONTEND_PROXY_HOST="${FRONTEND_PROXY_HOST:-$FRONTEND_HOST}"
 BACKEND_HEALTH_URL="${BACKEND_HEALTH_URL:-http://127.0.0.1:${BACKEND_PORT}/health}"
 STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-20}"
 
@@ -67,7 +68,15 @@ if [[ -n "$REPO_PATH" ]]; then
   fi
   REPO_PATH="$(cd "$REPO_PATH" && pwd)"
 fi
+
+case "$FRONTEND_PROXY_HOST" in
+  0.0.0.0|::|[::])
+    FRONTEND_PROXY_HOST="127.0.0.1"
+    ;;
+esac
+
 DB_PATH="${DB_PATH:-$ROOT_DIR/.maestro/maestro.db}"
+FRONTEND_DEV_PROXY_URL="http://${FRONTEND_PROXY_HOST}:${FRONTEND_PORT}"
 
 wait_for_backend() {
   local elapsed=0
@@ -173,7 +182,7 @@ backend_cmd=(go run ./cmd/maestro run --db "$DB_PATH" --port "$BACKEND_PORT")
 if [[ -n "$REPO_PATH" ]]; then
   backend_cmd+=( "$REPO_PATH" )
 fi
-start_process_group backend_pid "$ROOT_DIR" "${backend_cmd[@]}"
+start_process_group backend_pid "$ROOT_DIR" env MAESTRO_UI_DEV_PROXY_URL="$FRONTEND_DEV_PROXY_URL" "${backend_cmd[@]}"
 
 wait_for_backend
 
@@ -185,8 +194,8 @@ else
   echo "Repo:     all shared projects"
 fi
 echo "DB:       ${DB_PATH}"
-echo "Backend:  http://127.0.0.1:${BACKEND_PORT}"
-echo "Frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT} (HMR)"
+echo "Dashboard: http://127.0.0.1:${BACKEND_PORT} (API + HMR proxy)"
+echo "Vite:      http://${FRONTEND_HOST}:${FRONTEND_PORT} (direct)"
 echo "Press Ctrl+C to stop both."
 
 wait_targets=()

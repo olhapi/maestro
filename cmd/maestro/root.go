@@ -318,6 +318,7 @@ func (a *cliApp) newIssueCmd() *cobra.Command {
 		a.newIssueUnblockCmd(),
 		a.newIssueBlockCmd(),
 		a.newIssueBlockersCmd(),
+		a.newIssueImagesCmd(),
 	)
 	return cmd
 }
@@ -822,6 +823,90 @@ func (a *cliApp) newIssueBlockersCmd() *cobra.Command {
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				return a.runIssueBlockersSet(args[0], nil)
+			},
+		},
+	)
+	return cmd
+}
+
+func (a *cliApp) newIssueImagesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "images",
+		Short: "Manage issue images",
+	}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "add <identifier> <path>",
+			Short: "Attach an image to an issue",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, svc, err := openProviderService(a.opts.dbPath)
+				if err != nil {
+					return wrapRuntime(err, "failed to open database")
+				}
+				defer store.Close()
+
+				image, err := svc.AttachIssueImagePath(context.Background(), args[0], args[1])
+				if err != nil {
+					return err
+				}
+				if a.opts.mode.json {
+					return writeJSON(a.stdout, image)
+				}
+				if a.opts.mode.quiet {
+					_, _ = fmt.Fprintln(a.stdout, image.ID)
+					return nil
+				}
+				_, _ = fmt.Fprintf(a.stdout, "Attached image %s to %s\n", image.ID, args[0])
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "list <identifier>",
+			Short: "List images attached to an issue",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, svc, err := openProviderService(a.opts.dbPath)
+				if err != nil {
+					return wrapRuntime(err, "failed to open database")
+				}
+				defer store.Close()
+
+				images, err := svc.ListIssueImages(context.Background(), args[0])
+				if err != nil {
+					return err
+				}
+				if a.opts.mode.json {
+					return writeJSON(a.stdout, map[string]interface{}{"items": images})
+				}
+				printIssueImageTable(a.stdout, images, a.opts.mode)
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "remove <identifier> <image_id>",
+			Short: "Remove an image attached to an issue",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, svc, err := openProviderService(a.opts.dbPath)
+				if err != nil {
+					return wrapRuntime(err, "failed to open database")
+				}
+				defer store.Close()
+
+				if err := svc.DeleteIssueImage(context.Background(), args[0], args[1]); err != nil {
+					return err
+				}
+				payload := map[string]interface{}{"deleted": true, "identifier": args[0], "image_id": args[1]}
+				if a.opts.mode.json {
+					return writeJSON(a.stdout, payload)
+				}
+				if a.opts.mode.quiet {
+					_, _ = fmt.Fprintln(a.stdout, args[1])
+					return nil
+				}
+				_, _ = fmt.Fprintf(a.stdout, "Removed image %s from %s\n", args[1], args[0])
+				return nil
 			},
 		},
 	)

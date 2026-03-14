@@ -1,8 +1,14 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { IssueDialog, ProjectDialog } from '@/components/forms'
-import { makeBootstrapResponse, makeIssueSummary } from '@/test/fixtures'
+import { MockSpeechRecognition } from '@/test/mock-speech-recognition'
+import {
+  makeBootstrapResponse,
+  makeIssueDetail,
+  makeIssueImage,
+  makeIssueSummary,
+} from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 vi.mock('@/lib/api', () => ({
@@ -16,6 +22,8 @@ const { api } = await import('@/lib/api')
 describe('IssueDialog', () => {
   beforeEach(() => {
     vi.mocked(api.listIssues).mockReset()
+    MockSpeechRecognition.reset()
+    vi.unstubAllGlobals()
   })
 
   it('serializes recurring issue fields on submit', async () => {
@@ -90,6 +98,60 @@ describe('IssueDialog', () => {
           labels: ['api', 'github'],
           blocked_by: ['ISS-2'],
         }),
+        {
+          newImages: [],
+          removeImageIDs: [],
+        },
+      )
+    })
+  })
+
+  it('returns queued uploads and removals with the issue payload', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 200,
+      offset: 0,
+    })
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const file = new File(['png'], 'bug.png', { type: 'image/png' })
+
+    renderWithQueryClient(
+      <IssueDialog
+        open
+        onOpenChange={vi.fn()}
+        initial={makeIssueDetail({ images: [makeIssueImage()] })}
+        projects={bootstrap.projects}
+        epics={bootstrap.epics}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: 'Capture failing layout' },
+    })
+    fireEvent.change(screen.getByLabelText(/images/i, { selector: 'input' }), {
+      target: { files: [file] },
+    })
+    await waitFor(() => {
+      expect(screen.getAllByText('bug.png').length).toBeGreaterThan(0)
+    })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0])
+    await waitFor(() => {
+      expect(screen.getByText(/will be deleted after save/i)).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /update issue/i }))
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Capture failing layout',
+        }),
+        {
+          newImages: [file],
+          removeImageIDs: ['img-1'],
+        },
       )
     })
   })
@@ -181,6 +243,59 @@ describe('IssueDialog', () => {
     fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Missing project' } })
 
     expect(screen.getByRole('button', { name: /create issue/i })).toBeDisabled()
+  })
+
+  it('submits dictated description text after speech recognition finishes', async () => {
+    vi.stubGlobal('SpeechRecognition', MockSpeechRecognition)
+
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 200,
+      offset: 0,
+    })
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+
+    renderWithQueryClient(
+      <IssueDialog
+        open
+        onOpenChange={vi.fn()}
+        projects={bootstrap.projects}
+        epics={bootstrap.epics}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Document voice control' } })
+    fireEvent.change(screen.getByLabelText(/description/i), { target: { value: 'Initial note' } })
+    fireEvent.click(screen.getByRole('button', { name: /start speech to text/i }))
+
+    const recognition = MockSpeechRecognition.instances[0]
+    await act(async () => {
+      recognition.emitResult([{ transcript: ' dictated detail', isFinal: true }])
+    })
+    await waitFor(() => {
+      expect(screen.getByLabelText(/description/i)).toHaveValue('Initial note dictated detail')
+    })
+    await act(async () => {
+      recognition.stop()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /create issue/i }))
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Document voice control',
+          description: 'Initial note dictated detail',
+        }),
+        {
+          newImages: [],
+          removeImageIDs: [],
+        },
+      )
+    })
   })
 })
 

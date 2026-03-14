@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/appserver/protocol"
+	"github.com/olhapi/maestro/internal/appserver/protocol/gen"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/providers"
@@ -56,6 +59,7 @@ Execution guidance:
 `
 
 const activeThreadCommandPollWindow = 250 * time.Millisecond
+const appServerIssueImageStageDir = ".maestro/issue-images"
 
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
 	return NewRunnerWithExtensions(provider, store, nil)
@@ -320,12 +324,21 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		if err != nil {
 			return nil, err
 		}
+		input, err := r.prepareAppServerTurnInput(workspacePath, issue, prepared.Prompt, turn == 1 && !client.ThreadResumed())
+		if err != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
 		title := strings.TrimSpace(fmt.Sprintf("%s: %s", issue.Identifier, issue.Title))
 		if title == ":" {
 			title = "Maestro turn"
 		}
 		var deliverErr error
-		if err := client.RunTurnWithStartCallback(ctx, prepared.Prompt, title, func(session *appserver.Session) {
+		if err := client.RunTurnWithInputsAndStartCallback(ctx, input, title, func(session *appserver.Session) {
 			deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
 		}); err != nil {
 			return &RunResult{
@@ -367,6 +380,103 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		issue = refreshed
 	}
 	return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+}
+
+func (r *Runner) prepareAppServerTurnInput(workspacePath string, issue *kanban.Issue, prompt string, includeImages bool) ([]gen.UserInputElement, error) {
+	input := []gen.UserInputElement{protocol.TextInput(prompt)}
+	if !includeImages || issue == nil {
+		return input, nil
+	}
+
+	imageInput, err := r.stageIssueImagesForAppServer(workspacePath, issue)
+	if err != nil {
+		return nil, err
+	}
+	return append(input, imageInput...), nil
+}
+
+func (r *Runner) stageIssueImagesForAppServer(workspacePath string, issue *kanban.Issue) ([]gen.UserInputElement, error) {
+	images, err := r.store.ListIssueImages(issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load issue images for %s: %w", issue.Identifier, err)
+	}
+	if len(images) == 0 {
+		return nil, nil
+	}
+
+	stageDir := filepath.Join(workspacePath, filepath.FromSlash(appServerIssueImageStageDir))
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create issue image staging directory for %s: %w", issue.Identifier, err)
+	}
+
+	input := make([]gen.UserInputElement, 0, len(images))
+	for _, image := range images {
+		_, srcPath, err := r.store.GetIssueImageContent(issue.ID, image.ID)
+		if err != nil {
+			return nil, fmt.Errorf("stage issue image %s for %s: %w", image.ID, issue.Identifier, err)
+		}
+
+		stagedName := stagedIssueImageFilename(image)
+		stagedPath := filepath.Join(stageDir, stagedName)
+		if err := copyIssueImageToWorkspace(srcPath, stagedPath, image.ID); err != nil {
+			return nil, fmt.Errorf("stage issue image %s for %s: %w", image.ID, issue.Identifier, err)
+		}
+
+		relPath, err := filepath.Rel(workspacePath, stagedPath)
+		if err != nil {
+			return nil, fmt.Errorf("stage issue image %s for %s: %w", image.ID, issue.Identifier, err)
+		}
+		if relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+			return nil, fmt.Errorf("stage issue image %s for %s: staged path escaped workspace", image.ID, issue.Identifier)
+		}
+		input = append(input, protocol.LocalImageInput(filepath.ToSlash(relPath), image.Filename))
+	}
+	return input, nil
+}
+
+func stagedIssueImageFilename(image kanban.IssueImage) string {
+	name := strings.TrimSpace(filepath.Base(image.Filename))
+	name = strings.NewReplacer("/", "_", "\\", "_").Replace(name)
+	if name == "" || name == "." {
+		name = "image"
+	}
+	return image.ID + "-" + name
+}
+
+func copyIssueImageToWorkspace(srcPath, dstPath, imageID string) error {
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(dstPath), imageID+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		_ = tmpFile.Close()
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := io.Copy(tmpFile, srcFile); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(dstPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID string) (*kanban.Issue, bool) {

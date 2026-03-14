@@ -46,6 +46,9 @@ These endpoints back the embedded UI:
 | `/api/v1/app/epics` | Epic list and CRUD flows |
 | `/api/v1/app/issues` | Issue list and CRUD flows |
 | `/api/v1/app/issues/:identifier/execution` | Per-issue execution detail |
+| `/api/v1/app/issues/:identifier/images` | Multipart image upload |
+| `/api/v1/app/issues/:identifier/images/:imageID` | Image delete |
+| `/api/v1/app/issues/:identifier/images/:imageID/content` | Stream a stored image |
 | `/api/v1/app/issues/:identifier/state` | Issue state changes |
 | `/api/v1/app/issues/:identifier/blockers` | Blocker updates |
 | `/api/v1/app/issues/:identifier/commands` | Agent follow-up commands |
@@ -62,6 +65,28 @@ These endpoints back the embedded UI:
 | `GET /api/v1/ws` | Dashboard invalidate stream used to refetch live data |
 
 Commands that talk to a running daemon over HTTP require `--api-url`, including `status --dashboard`, `sessions`, `events`, `project start`, and `project stop`. The embedded dashboard does not because it talks to the colocated server directly.
+
+## Local issue images
+
+Issue attachments are local-first storage, not provider attachments. Maestro stores them under an asset root derived from the active database directory:
+
+- default DB path `~/.maestro/maestro.db` stores images in `~/.maestro/assets/images`
+- custom DB path `/path/to/maestro.db` stores images in `/path/to/assets/images`
+- files are served back through the HTTP API; the dashboard never exposes raw filesystem paths
+
+Operational limits:
+
+- local-only for both kanban and Linear-backed issues
+- supported types: PNG, JPEG, WEBP, GIF
+- maximum size: 10 MiB per image
+
+CLI flow:
+
+<DocsCommandField
+  command={`maestro issue images add ISS-1 ./screenshots/failing-checkout.png
+maestro issue images list ISS-1
+maestro issue images remove ISS-1 <image_id>`}
+/>
 
 ## Recurring issues
 
@@ -175,5 +200,6 @@ If `maestro mcp` runs in a different environment from `maestro run`, both proces
 Current scope boundaries:
 
 - Maestro stays local-first even when a project syncs issues from Linear
+- issue images stay local and are never pushed back to Linear or another upstream tracker
 - no Phoenix-style live observability layer
 - no separate plugin runtime for extensions

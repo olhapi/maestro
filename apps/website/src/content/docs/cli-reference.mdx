@@ -42,6 +42,9 @@ maestro epic delete <id>`}
   command={`maestro issue create <title> [--desc <description>] [--project <id>] [--priority <n>] [--labels <label1,label2>] [--type <standard|recurring>] [--cron "<spec>"] [--enabled=<true|false>]
 maestro issue list [--state <state>] [--project <id>] [--type <standard|recurring>]
 maestro issue show <identifier>
+maestro issue images add <identifier> <path>
+maestro issue images list <identifier>
+maestro issue images remove <identifier> <image_id>
 maestro issue move <identifier> <state>
 maestro issue update <identifier> [--title <title>] [--desc <description>] [--type <standard|recurring>] [--cron "<spec>"] [--enabled=<true|false>] [--pr-url <url>]
 maestro issue execution <identifier> --api-url <url>
@@ -54,9 +57,11 @@ maestro issue delete <identifier>
 maestro issue block <identifier> <blocker_identifier...>`}
 />
 
-Issue commands are the local queue manipulation layer. Most day-to-day supervision boils down to create, list, move, show, execution inspection, and blocker management.
+Issue commands are the local queue manipulation layer. Most day-to-day supervision boils down to create, list, move, show, execution inspection, blocker management, and attaching local screenshots to the issue record.
 
 Recurring issues use `--type recurring` with a 5-field cron expression in the daemon host's local timezone. `run-now` triggers an immediate recurring execution without waiting for the next scheduled slot.
+
+`issue images` stores files locally beside the active database. The current implementation accepts PNG, JPEG, WEBP, and GIF files up to 10 MiB each.
 
 ## Orchestration
 

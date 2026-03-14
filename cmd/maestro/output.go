@@ -132,6 +132,12 @@ func printIssueDetail(out io.Writer, issue *kanban.IssueDetail) {
 	if len(issue.BlockedBy) > 0 {
 		fmt.Fprintf(out, "Blocked By:\t%s\n", strings.Join(issue.BlockedBy, ", "))
 	}
+	if len(issue.Images) > 0 {
+		fmt.Fprintf(out, "Images:\t%d attached\n", len(issue.Images))
+		for _, image := range issue.Images {
+			fmt.Fprintf(out, "Image:\t%s %s (%d bytes, %s)\n", image.ID, image.Filename, image.ByteSize, image.ContentType)
+		}
+	}
 	if issueType == kanban.IssueTypeRecurring {
 		fmt.Fprintf(out, "Cron:\t%s\n", issue.Cron)
 		if issue.Enabled {
@@ -147,6 +153,28 @@ func printIssueDetail(out io.Writer, issue *kanban.IssueDetail) {
 		}
 		fmt.Fprintf(out, "Pending Rerun:\t%t\n", issue.PendingRerun)
 	}
+}
+
+func printIssueImageTable(out io.Writer, images []kanban.IssueImage, mode outputMode) {
+	if mode.quiet {
+		for _, image := range images {
+			fmt.Fprintln(out, image.ID)
+		}
+		return
+	}
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	if mode.wide {
+		fmt.Fprintln(tw, "ID\tFILENAME\tCONTENT TYPE\tSIZE\tCREATED")
+		for _, image := range images {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", image.ID, image.Filename, image.ContentType, image.ByteSize, image.CreatedAt.UTC().Format(time.RFC3339))
+		}
+	} else {
+		fmt.Fprintln(tw, "ID\tFILENAME\tSIZE")
+		for _, image := range images {
+			fmt.Fprintf(tw, "%s\t%s\t%d\n", image.ID, image.Filename, image.ByteSize)
+		}
+	}
+	_ = tw.Flush()
 }
 
 func printBoard(out io.Writer, columns map[string][]kanban.IssueSummary, counts kanban.IssueStateCounts, mode outputMode) {

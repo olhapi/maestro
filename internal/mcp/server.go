@@ -164,6 +164,14 @@ func (s *Server) registerTools() {
 			"branch_name": stringProperty("Branch name"),
 			"pr_url":      stringProperty("Pull request URL"),
 		}),
+		objectTool("attach_issue_image", "Attach an image to an issue from a local file path", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+			"path":       stringProperty("Absolute or relative local file path"),
+		}),
+		objectTool("delete_issue_image", "Delete an attached issue image", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+			"image_id":   stringProperty("Issue image ID"),
+		}),
 		objectTool("set_issue_state", "Change an issue state", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"state":      stringProperty("New state: backlog, ready, in_progress, in_review, done, cancelled"),
@@ -265,6 +273,10 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 		return s.handleListIssues(ctx, args)
 	case "update_issue":
 		return s.handleUpdateIssue(ctx, args)
+	case "attach_issue_image":
+		return s.handleAttachIssueImage(ctx, args)
+	case "delete_issue_image":
+		return s.handleDeleteIssueImage(ctx, args)
 	case "set_issue_state":
 		return s.handleSetIssueState(ctx, args)
 	case "set_issue_workflow_phase":
@@ -522,6 +534,45 @@ func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interfac
 		return s.toolError("update_issue", fmt.Sprintf("Failed to update issue: %v", err)), nil
 	}
 	return s.toolResult("update_issue", detail), nil
+}
+
+func (s *Server) handleAttachIssueImage(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("attach_issue_image", err.Error()), nil
+	}
+	image, err := s.service.AttachIssueImagePath(ctx, issue.Identifier, asString(args["path"]))
+	if err != nil {
+		return s.toolError("attach_issue_image", fmt.Sprintf("Failed to attach issue image: %v", err)), nil
+	}
+	detail, err := s.service.GetIssueDetailByIdentifier(ctx, issue.Identifier)
+	if err != nil {
+		return s.toolError("attach_issue_image", fmt.Sprintf("Failed to reload issue detail: %v", err)), nil
+	}
+	return s.toolResult("attach_issue_image", map[string]interface{}{
+		"image": image,
+		"issue": detail,
+	}), nil
+}
+
+func (s *Server) handleDeleteIssueImage(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("delete_issue_image", err.Error()), nil
+	}
+	imageID := asString(args["image_id"])
+	if err := s.service.DeleteIssueImage(ctx, issue.Identifier, imageID); err != nil {
+		return s.toolError("delete_issue_image", fmt.Sprintf("Failed to delete issue image: %v", err)), nil
+	}
+	detail, err := s.service.GetIssueDetailByIdentifier(ctx, issue.Identifier)
+	if err != nil {
+		return s.toolError("delete_issue_image", fmt.Sprintf("Failed to reload issue detail: %v", err)), nil
+	}
+	return s.toolResult("delete_issue_image", map[string]interface{}{
+		"deleted":  true,
+		"image_id": imageID,
+		"issue":    detail,
+	}), nil
 }
 
 func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {

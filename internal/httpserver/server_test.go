@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -105,6 +106,44 @@ func TestNewHandlerServesAPIAndSPAContent(t *testing.T) {
 	}
 	if contentType := spaRec.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
 		t.Fatalf("spa route: expected html content type, got %q", contentType)
+	}
+}
+
+func TestNewHandlerProxiesDashboardToDevServerWhenConfigured(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	devServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "vite-dev:"+r.URL.Path)
+	}))
+	defer devServer.Close()
+
+	t.Setenv(uiDevProxyEnv, devServer.URL)
+
+	handler := newHandler(store, testProvider{})
+
+	spaReq := httptest.NewRequest(http.MethodGet, "/projects/demo", nil)
+	spaRec := httptest.NewRecorder()
+	handler.ServeHTTP(spaRec, spaReq)
+	if spaRec.Code != http.StatusOK {
+		t.Fatalf("spa route: expected 200, got %d", spaRec.Code)
+	}
+	if got := spaRec.Body.String(); got != "vite-dev:/projects/demo" {
+		t.Fatalf("spa route: expected proxied dev body, got %q", got)
+	}
+
+	apiReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	apiRec := httptest.NewRecorder()
+	handler.ServeHTTP(apiRec, apiReq)
+	if apiRec.Code != http.StatusOK {
+		t.Fatalf("health: expected 200, got %d", apiRec.Code)
+	}
+	if strings.Contains(apiRec.Body.String(), "vite-dev:") {
+		t.Fatalf("health: expected backend response, got proxied body %q", apiRec.Body.String())
 	}
 }
 

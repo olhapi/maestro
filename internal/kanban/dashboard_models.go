@@ -80,8 +80,9 @@ type IssueSummary struct {
 
 type IssueDetail struct {
 	IssueSummary
-	ProjectDescription string `json:"project_description,omitempty"`
-	EpicDescription    string `json:"epic_description,omitempty"`
+	ProjectDescription string       `json:"project_description,omitempty"`
+	EpicDescription    string       `json:"epic_description,omitempty"`
+	Images             []IssueImage `json:"images"`
 }
 
 type IssueQuery struct {
