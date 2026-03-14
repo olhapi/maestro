@@ -708,6 +708,12 @@ func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) 
 
 	releaseFinish := make(chan struct{})
 	finishBlocked := make(chan struct{})
+	releasedFinish := false
+	defer func() {
+		if !releasedFinish {
+			close(releaseFinish)
+		}
+	}()
 	var finishHookOnce sync.Once
 	orch.testHooks.beforeFinishRunRelease = func(issueID string) {
 		if issueID != issue.ID {
@@ -749,6 +755,7 @@ func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) 
 	}
 
 	close(releaseFinish)
+	releasedFinish = true
 	waitForNoRunning(t, orch, time.Second)
 	for i := 0; i < 5; i++ {
 		if err := orch.dispatch(context.Background()); err != nil {
@@ -784,6 +791,111 @@ func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) 
 	if calls := runner.runCount(issue.Identifier); calls != 1 {
 		t.Fatalf("expected finish bookkeeping regression test to keep run count at 1, got %d", calls)
 	}
+}
+
+func TestFinishRunImmediatelyRearmsPendingRecurringIssue(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseImplementation: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				if err := store.MarkRecurringPendingRerun(issue.ID, true); err != nil {
+					return nil, err
+				}
+				if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+					return nil, err
+				}
+				return &agent.RunResult{Success: true}, nil
+			},
+		},
+	}
+
+	issue, err := store.CreateIssueWithOptions("", "", "Recurring finish bookkeeping", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "*/20 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	releaseFinish := make(chan struct{})
+	finishBlocked := make(chan struct{})
+	releasedFinish := false
+	defer func() {
+		if !releasedFinish {
+			close(releaseFinish)
+		}
+	}()
+	var finishHookOnce sync.Once
+	orch.testHooks.beforeFinishRunRelease = func(issueID string) {
+		if issueID != issue.ID {
+			return
+		}
+		finishHookOnce.Do(func() { close(finishBlocked) })
+		<-releaseFinish
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	select {
+	case <-finishBlocked:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for recurring finish bookkeeping hook")
+	}
+
+	orch.mu.RLock()
+	_, running := orch.running[issue.ID]
+	orch.mu.RUnlock()
+	if !running {
+		t.Fatal("expected recurring issue to remain marked running while finish bookkeeping is blocked")
+	}
+
+	var updated *kanban.Issue
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		updated, err = store.GetIssue(issue.ID)
+		if err == nil &&
+			updated.State == kanban.StateReady &&
+			updated.WorkflowPhase == kanban.WorkflowPhaseImplementation &&
+			!updated.PendingRerun &&
+			updated.LastEnqueuedAt != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if updated == nil || err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.State != kanban.StateReady ||
+		updated.WorkflowPhase != kanban.WorkflowPhaseImplementation ||
+		updated.PendingRerun ||
+		updated.LastEnqueuedAt == nil {
+		t.Fatalf("expected recurring issue to be rearmed before running state is released, got %+v", updated)
+	}
+
+	events, err := store.ListRuntimeEvents(0, 20)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Identifier == issue.Identifier && event.Kind == "recurring_pending_rerun_enqueued" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected immediate recurring rerun enqueue event, got %#v", events)
+	}
+
+	close(releaseFinish)
+	releasedFinish = true
+	waitForNoRunning(t, orch, time.Second)
 }
 
 func TestImplementationSuccessCanSkipReviewAndQueueDonePhase(t *testing.T) {

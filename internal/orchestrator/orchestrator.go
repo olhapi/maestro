@@ -1005,6 +1005,10 @@ func recurringScheduleEventKind(issue *kanban.Issue, now time.Time) string {
 }
 
 func (o *Orchestrator) recurringIssueOccupied(workflow *config.Workflow, issue *kanban.Issue) bool {
+	return o.recurringIssueOccupiedIgnoringRunning(workflow, issue, "")
+}
+
+func (o *Orchestrator) recurringIssueOccupiedIgnoringRunning(workflow *config.Workflow, issue *kanban.Issue, ignoreRunningIssueID string) bool {
 	if issue == nil {
 		return false
 	}
@@ -1013,7 +1017,7 @@ func (o *Orchestrator) recurringIssueOccupied(workflow *config.Workflow, issue *
 	_, retrying := o.retries[issue.ID]
 	_, paused := o.paused[issue.ID]
 	o.mu.RUnlock()
-	if running || retrying || paused {
+	if (running && issue.ID != ignoreRunningIssueID) || retrying || paused {
 		return true
 	}
 	switch issue.State {
@@ -1103,6 +1107,10 @@ func (o *Orchestrator) enqueueRecurringIssue(issue *kanban.Issue, eventKind stri
 }
 
 func (o *Orchestrator) processPendingRecurringRerun(issue *kanban.Issue) bool {
+	return o.processPendingRecurringRerunIgnoringRunning(issue, "")
+}
+
+func (o *Orchestrator) processPendingRecurringRerunIgnoringRunning(issue *kanban.Issue, ignoreRunningIssueID string) bool {
 	if issue == nil || !issue.IsRecurring() || !issue.PendingRerun {
 		return false
 	}
@@ -1126,7 +1134,7 @@ func (o *Orchestrator) processPendingRecurringRerun(issue *kanban.Issue) bool {
 		)
 		return false
 	}
-	if o.recurringIssueOccupied(workflow, issue) {
+	if o.recurringIssueOccupiedIgnoringRunning(workflow, issue, ignoreRunningIssueID) {
 		return false
 	}
 	return o.enqueueRecurringIssue(issue, "recurring_pending_rerun_enqueued", true)
@@ -1282,7 +1290,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 			issueLogAttrs(current, attempt, extra...)...,
 		)
 	}
-	o.processPendingRecurringRerun(current)
+	o.processPendingRecurringRerunIgnoringRunning(current, issue.ID)
 	o.flushIssueTokenSpend(issue.ID)
 }
 
