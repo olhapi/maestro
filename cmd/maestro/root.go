@@ -55,7 +55,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		stdout: stdout,
 		stderr: stderr,
 		opts: rootOptions{
-			logLevel: "info",
+			logLevel: "warn",
 		},
 	}
 
@@ -81,7 +81,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	rootCmd.SetErr(stderr)
 	rootCmd.PersistentFlags().StringVar(&app.opts.dbPath, "db", "", "Path to the Maestro SQLite database")
 	rootCmd.PersistentFlags().StringVar(&app.opts.apiURL, "api-url", "", "Base URL for the live Maestro API")
-	rootCmd.PersistentFlags().StringVar(&app.opts.logLevel, "log-level", "info", "Log level: debug, info, warn, error")
+	rootCmd.PersistentFlags().StringVar(&app.opts.logLevel, "log-level", "warn", "Log level: debug, info, warn, error")
 	rootCmd.PersistentFlags().BoolVar(&app.opts.mode.json, "json", false, "Emit machine-readable JSON")
 	rootCmd.PersistentFlags().BoolVar(&app.opts.mode.wide, "wide", false, "Expand text output with extra columns")
 	rootCmd.PersistentFlags().BoolVar(&app.opts.mode.quiet, "quiet", false, "Emit identifiers only in text mode")

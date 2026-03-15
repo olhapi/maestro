@@ -14,6 +14,7 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/package_npm_release.sh <version>
+  scripts/package_npm_release.sh print-current-target
   scripts/package_npm_release.sh pack-current <version>
   scripts/package_npm_release.sh pack-root <version>
   scripts/package_npm_release.sh pack-leaf <version> <target>
@@ -22,6 +23,7 @@ Builds and packs Maestro npm artifacts into dist/npm-package and dist/npm.
 The default form packs the root package plus the current host leaf package.
 
 Examples:
+  scripts/package_npm_release.sh print-current-target
   scripts/package_npm_release.sh v1.2.3
   scripts/package_npm_release.sh pack-root v1.2.3
   scripts/package_npm_release.sh pack-leaf v1.2.3 linux-x64-gnu
@@ -285,6 +287,11 @@ pack_leaf_package() {
   filename="$(pack_package_dir "$stage_dir" "$PACKAGE_NAME" "$version")"
   echo "Packed leaf package: $PACK_DIR/$filename"
 }
+
+if [[ $# -eq 1 && "$1" == "print-current-target" ]]; then
+  detect_host_target
+  exit 0
+fi
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
   usage >&2
