@@ -20,11 +20,11 @@ This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings,
 
 ## 2. Expose the tracker to MCP clients
 
-If you installed Maestro from npm, add the shipped `maestro` command to Codex once:
+If `maestro` is already on your `PATH`, add it to Codex once:
 
 <DocsCommandField command={`codex mcp add maestro -- maestro mcp`} />
 
-That uses the npm-installed `maestro` binary already on your `PATH`; you do not need to point Codex at a manually built executable.
+If you built Maestro from source and did not add it to your `PATH`, replace `maestro` with the absolute path to the binary.
 
 `maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Save the entry first, then start the daemon and let Codex attach through it so the agent sees the same queue you will supervise later.
 

@@ -2,6 +2,9 @@
 
 Maestro is a local-first orchestration runtime for agent-driven software work.
 
+Website: [maestro.olhapi.com](https://maestro.olhapi.com/)
+Repository: [github.com/olhapi/maestro](https://github.com/olhapi/maestro)
+
 It combines a SQLite-backed tracker, an orchestrator that reads `WORKFLOW.md`, a private MCP daemon bridged by `maestro mcp`, and an HTTP server that serves the embedded dashboard plus JSON/WebSocket APIs.
 
 Maestro stays local-first even when a project syncs issues from Linear. Provider-backed issues are synchronized into the local store, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces as local kanban issues.
@@ -107,22 +110,17 @@ Issue images are stored next to the active database under `assets/images`. With 
 
 The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
 
-### 4. Expose the tracker to MCP clients
+### 4. Add the Maestro MCP server to Codex
 
-Add the built or installed binary to your MCP client config:
+If `maestro` is already on your `PATH`, save the MCP entry in Codex once:
 
-```json
-{
-  "mcpServers": {
-    "maestro": {
-      "command": "/absolute/path/to/maestro",
-      "args": ["mcp"]
-    }
-  }
-}
+```bash
+codex mcp add maestro -- maestro mcp
 ```
 
-`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let your MCP client invoke `maestro mcp`.
+If you built Maestro from source and did not add it to your `PATH`, replace `maestro` with the absolute path to the binary.
+
+`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let Codex invoke `maestro mcp`.
 
 ### 5. Open the dashboard or use live CLI helpers
 
