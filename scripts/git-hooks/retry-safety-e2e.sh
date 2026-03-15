@@ -8,4 +8,6 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(repo_root)
 cd "$ROOT"
 
-run_step pnpm verify:pre-push
+export E2E_KEEP_HARNESS=0
+
+run_step make e2e-retry-safety
