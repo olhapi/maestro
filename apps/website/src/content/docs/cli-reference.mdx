@@ -79,7 +79,7 @@ maestro --log-level <debug|info|warn|error> spec-check [--repo <path>] [--json]
 maestro --log-level <debug|info|warn|error> workflow init [repo_path]`}
 />
 
-`--log-level` defaults to `info`. Use `debug` when you need raw app-server stream output and session churn in the structured logs.
+`--log-level` defaults to `warn`. Use `info` when you want lifecycle and status transition logs, and `debug` when you need raw app-server stream output and session churn in the structured logs.
 
 `maestro run` serves HTTP on port `8787` by default. Pass `--port` only when you want a different port.
 

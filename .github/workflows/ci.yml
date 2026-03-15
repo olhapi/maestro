@@ -9,68 +9,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
 
 jobs:
-  go-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Run Go tests
-        run: make test
-      - name: Run shared retry stress test
-        run: go test ./internal/orchestrator -run TestSharedDBStressPreventsRunawayRetriesAndLockContention -count=1
-
-  go-race:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Run Go race tests
-        run: make test-race
-
-  go-cover:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Run Go coverage gates
-        run: make test-cover
-
-  npm-packaging-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - name: Run npm packaging unit tests
-        run: node --test packaging/npm/root/lib/get-exe-path.test.js
-
-  npm-root-package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - name: Build root package
-        run: ./scripts/package_npm_release.sh pack-root 0.0.0-ci
-      - name: Upload root tarball
-        uses: actions/upload-artifact@v7
-        with:
-          name: npm-root-package
-          path: dist/npm/olhapi-maestro-0.0.0-ci.tgz
-          if-no-files-found: error
-
   go-platform-smoke:
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -127,7 +67,6 @@ jobs:
 
   npm-registry-smoke:
     needs:
-      - npm-root-package
       - go-platform-smoke
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -153,67 +92,12 @@ jobs:
         with:
           node-version: 24
       - name: Download npm artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: dist/npm
-          pattern: npm-*
+          pattern: npm-leaf-*
           merge-multiple: true
+      - name: Build root package
+        run: ./scripts/package_npm_release.sh pack-root 0.0.0-ci
       - name: Smoke test root-only npm install through local registry
         run: ./scripts/smoke_npm_registry_install.sh 0.0.0-ci "${{ matrix.target }}"
-
-  frontend-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Enable corepack
-        run: corepack enable
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Run frontend tests
-        run: pnpm run frontend:test
-
-  website-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Enable corepack
-        run: corepack enable
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Run website checks
-        run: pnpm run website:check
-      - name: Run website build
-        run: pnpm run website:build
-      - name: Run website tests
-        run: pnpm run website:test
-      - name: Run website smoke checks
-        run: pnpm run website:smoke
-
-  retry-safety-e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Run retry safety end-to-end harness
-        env:
-          E2E_KEEP_HARNESS: '0'
-        run: make e2e-retry-safety

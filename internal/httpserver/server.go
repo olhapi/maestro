@@ -48,22 +48,23 @@ func newHandler(store *kanban.Store, provider dashboardapi.Provider) http.Handle
 }
 
 func dashboardHandler() http.Handler {
+	embedded := dashboardui.Handler()
 	rawURL := strings.TrimSpace(os.Getenv(uiDevProxyEnv))
 	if rawURL == "" {
-		return dashboardui.Handler()
+		return embedded
 	}
 
-	handler, err := newDashboardDevProxy(rawURL)
+	handler, err := newDashboardDevProxy(rawURL, embedded)
 	if err != nil {
 		slog.Warn("Dashboard dev proxy disabled; falling back to embedded UI", "env", uiDevProxyEnv, "value", rawURL, "error", err)
-		return dashboardui.Handler()
+		return embedded
 	}
 
 	slog.Info("Dashboard UI proxy enabled", "target", rawURL)
 	return handler
 }
 
-func newDashboardDevProxy(rawURL string) (http.Handler, error) {
+func newDashboardDevProxy(rawURL string, fallback http.Handler) (http.Handler, error) {
 	target, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
@@ -79,8 +80,8 @@ func newDashboardDevProxy(rawURL string) (http.Handler, error) {
 		r.Host = target.Host
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		slog.Warn("Dashboard dev proxy request failed", "target", target.String(), "path", r.URL.Path, "error", err)
-		http.Error(w, "Maestro dashboard dev server is unavailable.", http.StatusBadGateway)
+		slog.Warn("Dashboard dev proxy request failed; falling back to embedded UI", "target", target.String(), "path", r.URL.Path, "error", err)
+		fallback.ServeHTTP(w, r)
 	}
 	return proxy, nil
 }
