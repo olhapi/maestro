@@ -20,4 +20,18 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    files: [
+      'src/components/ui/context-menu.tsx',
+      'src/components/ui/dialog.tsx',
+      'src/components/ui/popover.tsx',
+      'src/components/ui/select.tsx',
+      'src/components/ui/sheet.tsx',
+      'src/components/ui/tabs.tsx',
+      'src/components/ui/toggle-group.tsx',
+    ],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])
