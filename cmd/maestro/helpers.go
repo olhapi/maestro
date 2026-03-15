@@ -19,7 +19,9 @@ const guardrailsAcknowledgementFlag = "--i-understand-that-this-will-be-running-
 
 func parseLogLevel(raw string) (slog.Level, string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(raw)); normalized {
-	case "", "info":
+	case "":
+		return slog.LevelWarn, "warn", nil
+	case "info":
 		return slog.LevelInfo, "info", nil
 	case "debug":
 		return slog.LevelDebug, "debug", nil

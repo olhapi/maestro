@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -72,7 +73,7 @@ func TestParseLogLevelVariants(t *testing.T) {
 		level slog.Level
 		name  string
 	}{
-		{raw: "", level: slog.LevelInfo, name: "info"},
+		{raw: "", level: slog.LevelWarn, name: "warn"},
 		{raw: "info", level: slog.LevelInfo, name: "info"},
 		{raw: "warning", level: slog.LevelWarn, name: "warn"},
 		{raw: "error", level: slog.LevelError, name: "error"},
@@ -85,6 +86,17 @@ func TestParseLogLevelVariants(t *testing.T) {
 		if level != tc.level || name != tc.name {
 			t.Fatalf("parseLogLevel(%q) = (%v, %q), want (%v, %q)", tc.raw, level, name, tc.level, tc.name)
 		}
+	}
+}
+
+func TestRootCommandLogLevelDefaultsToWarn(t *testing.T) {
+	cmd := newRootCmd(io.Discard, io.Discard)
+	flag := cmd.PersistentFlags().Lookup("log-level")
+	if flag == nil {
+		t.Fatal("expected --log-level flag")
+	}
+	if flag.DefValue != "warn" {
+		t.Fatalf("expected --log-level default warn, got %q", flag.DefValue)
 	}
 }
 
