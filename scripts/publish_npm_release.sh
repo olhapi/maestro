@@ -176,21 +176,28 @@ find_release_run() {
       gh run list \
         --repo "$REPO" \
         --workflow "$WORKFLOW_FILE" \
-        --commit "$RELEASE_HEAD_SHA" \
+        --branch "$TAG" \
         --event push \
-        --limit 1 \
-        --json databaseId,status,conclusion,url
+        --limit 5 \
+        --json databaseId,status,conclusion,url,headBranch
     )"
-    if RELEASE_RUN_ID="$(
+    local run_json
+    if run_json="$(
       node_query '
         const runs = JSON.parse(process.argv[1]);
+        const tag = process.argv[2];
         if (!Array.isArray(runs) || runs.length === 0) {
           process.exit(1);
         }
-        process.stdout.write(String(runs[0].databaseId));
-      ' "$run_list_json" 2>/dev/null
+        const match = runs.find((run) => run.headBranch === tag);
+        if (!match) {
+          process.exit(1);
+        }
+        process.stdout.write(JSON.stringify(match));
+      ' "$run_list_json" "$TAG" 2>/dev/null
     )"; then
-      RELEASE_RUN_URL="$(node_query 'const runs = JSON.parse(process.argv[1]); process.stdout.write(String(runs[0].url));' "$run_list_json")"
+      RELEASE_RUN_ID="$(version_from_json "$run_json" "databaseId")"
+      RELEASE_RUN_URL="$(version_from_json "$run_json" "url")"
       return 0
     fi
     sleep "$POLL_SEC"
