@@ -43,25 +43,16 @@ function issueOptionLabel(issue: IssueSummary) {
   return issue.title ? `${issue.identifier} · ${issue.title}` : issue.identifier;
 }
 
-async function loadProjectIssues(projectID: string) {
-  if (!projectID) return [];
+function dedupeIssues(issues: IssueSummary[]) {
+  const unique = new Map<string, IssueSummary>();
 
-  const items: IssueSummary[] = [];
-  let offset = 0;
-
-  for (;;) {
-    const page = await api.listIssues({
-      project_id: projectID,
-      limit: 200,
-      offset,
-      sort: "identifier_asc",
-    });
-    items.push(...page.items);
-    offset += page.items.length;
-    if (items.length >= page.total || page.items.length === 0) {
-      return items;
+  for (const issue of issues) {
+    if (!unique.has(issue.identifier)) {
+      unique.set(issue.identifier, issue);
     }
   }
+
+  return [...unique.values()];
 }
 
 export function ProjectDialog({
@@ -340,6 +331,7 @@ export function IssueDialog({
   initial,
   projects,
   epics,
+  availableIssues = [],
   onSubmit,
 }: {
   open: boolean;
@@ -347,6 +339,7 @@ export function IssueDialog({
   initial?: Partial<IssueDetail>;
   projects: ProjectSummary[];
   epics: EpicSummary[];
+  availableIssues?: IssueSummary[];
   onSubmit: (body: Record<string, unknown>, images: IssueImageChangeSet) => Promise<void>;
 }) {
   const isEditing = Boolean(initial?.identifier);
@@ -366,8 +359,9 @@ export function IssueDialog({
   const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
   const [newImages, setNewImages] = useState<File[]>([]);
   const [removedImageIDs, setRemovedImageIDs] = useState<string[]>([]);
-  const [projectIssues, setProjectIssues] = useState<IssueSummary[]>([]);
-  const [loadingProjectIssues, setLoadingProjectIssues] = useState(false);
+  const [blockerSearch, setBlockerSearch] = useState("");
+  const [remoteBlockerIssues, setRemoteBlockerIssues] = useState<IssueSummary[]>([]);
+  const [loadingBlockerIssues, setLoadingBlockerIssues] = useState(false);
   const [pending, setPending] = useState(false);
   const selectedProject = projects.find((project) => project.id === projectID);
   const supportsEpics = selectedProject?.capabilities?.epics ?? true;
@@ -389,37 +383,54 @@ export function IssueDialog({
     setPrURL(initial?.pr_url ?? "");
     setNewImages([]);
     setRemovedImageIDs([]);
+    setBlockerSearch("");
+    setRemoteBlockerIssues([]);
   }, [initial, open, projects]);
 
   useEffect(() => {
-    if (!open || !projectID) {
-      setProjectIssues([]);
-      setLoadingProjectIssues(false);
+    if (!open || !projectID || blockerSearch.trim().length < 2) {
+      setRemoteBlockerIssues([]);
+      setLoadingBlockerIssues(false);
       return;
     }
 
-    let active = true;
+    const controller = new AbortController();
 
-    setLoadingProjectIssues(true);
-    loadProjectIssues(projectID)
-      .then((items) => {
-        if (!active) return;
-        setProjectIssues(items);
+    setLoadingBlockerIssues(true);
+    api.listIssues(
+      {
+        project_id: projectID,
+        search: blockerSearch.trim(),
+        limit: 25,
+        sort: "updated_desc",
+      },
+      { signal: controller.signal },
+    )
+      .then((page) => {
+        if (controller.signal.aborted) return;
+        setRemoteBlockerIssues(page.items);
       })
-      .catch(() => {
-        if (!active) return;
-        setProjectIssues([]);
+      .catch((error: unknown) => {
+        if ((error as Error).name === "AbortError") {
+          return;
+        }
+        setRemoteBlockerIssues([]);
       })
       .finally(() => {
-        if (active) {
-          setLoadingProjectIssues(false);
+        if (!controller.signal.aborted) {
+          setLoadingBlockerIssues(false);
         }
       });
 
     return () => {
-      active = false;
+      controller.abort();
     };
-  }, [open, projectID]);
+  }, [blockerSearch, open, projectID]);
+
+  const localProjectIssues = useMemo(
+    () => dedupeIssues(availableIssues.filter((issue) => issue.project_id === projectID)),
+    [availableIssues, projectID],
+  );
 
   const filteredEpics = epics.filter((epic) => projectID !== "" && epic.project_id === projectID);
 
@@ -441,7 +452,7 @@ export function IssueDialog({
 
   const labelOptions = useMemo<MultiComboboxOption[]>(() => {
     const unique = new Set<string>();
-    for (const issue of projectIssues) {
+    for (const issue of localProjectIssues) {
       for (const label of issue.labels ?? []) {
         const trimmed = label.trim();
         if (trimmed) {
@@ -450,18 +461,18 @@ export function IssueDialog({
       }
     }
     return [...unique].sort((left, right) => left.localeCompare(right)).map((label) => ({ value: label, label }));
-  }, [projectIssues]);
+  }, [localProjectIssues]);
 
   const blockerOptions = useMemo<MultiComboboxOption[]>(
     () =>
-      projectIssues
+      dedupeIssues([...localProjectIssues, ...remoteBlockerIssues])
         .filter((issue) => issue.identifier !== initial?.identifier)
         .map((issue) => ({
           value: issue.identifier,
           label: issueOptionLabel(issue),
           keywords: [issue.identifier, issue.title],
         })),
-    [initial?.identifier, projectIssues],
+    [initial?.identifier, localProjectIssues, remoteBlockerIssues],
   );
 
   const visibleExistingImages = (initial?.images ?? []).filter(
@@ -489,6 +500,8 @@ export function IssueDialog({
                     setProjectID(nextProjectID);
                     if (nextProjectID !== projectID) {
                       setBlockedBy([]);
+                      setBlockerSearch("");
+                      setRemoteBlockerIssues([]);
                     }
                   }}
                 >
@@ -617,11 +630,11 @@ export function IssueDialog({
             <Field label="Labels">
               {({ labelId }) => (
                 <MultiCombobox
+                  key={`labels-${projectID || "none"}`}
                   labelledBy={labelId}
                   value={labels}
                   onChange={setLabels}
                   options={labelOptions}
-                  loading={loadingProjectIssues}
                   allowCreate
                   placeholder="Select or create labels"
                   emptyText="No labels found."
@@ -632,13 +645,21 @@ export function IssueDialog({
             <Field label="Blockers">
               {({ labelId }) => (
                 <MultiCombobox
+                  key={`blockers-${projectID || "none"}-${initial?.identifier ?? "new"}`}
                   labelledBy={labelId}
                   value={blockedBy}
                   onChange={setBlockedBy}
+                  onSearchChange={setBlockerSearch}
                   options={blockerOptions}
-                  loading={loadingProjectIssues}
+                  loading={loadingBlockerIssues}
                   placeholder="Select blocker issues"
-                  emptyText={projectID ? "No blockers available in this project." : "Select a project first."}
+                  emptyText={
+                    projectID
+                      ? blockerSearch.trim().length >= 2
+                        ? "No blockers found in this project."
+                        : "Type at least 2 characters to search all project issues."
+                      : "Select a project first."
+                  }
                 />
               )}
             </Field>

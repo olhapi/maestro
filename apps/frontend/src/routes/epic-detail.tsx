@@ -195,6 +195,7 @@ export function EpicDetailPage() {
         initial={{ epic_id: epicId, project_id: epic.data.project?.id } as Partial<IssueDetail>}
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics.filter((candidate) => candidate.project_id === epic.data.project?.id)}
+        availableIssues={epic.data.issues.items}
         onSubmit={async (body, imageChanges) => {
           const issue = await api.createIssue(body)
           const result = await applyIssueImageChanges(issue.identifier, imageChanges)

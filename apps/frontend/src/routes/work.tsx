@@ -374,6 +374,7 @@ export function WorkPage() {
         initial={editing ?? composerDefaults}
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics}
+        availableIssues={[...bootstrap.data.issues.items, ...issues.data.items]}
         onSubmit={async (body, imageChanges) => {
           if (editing) {
             const issue = await api.updateIssue(editing.identifier, body);

@@ -28,24 +28,19 @@ describe('IssueDialog', () => {
 
   it('serializes recurring issue fields on submit', async () => {
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.listIssues).mockResolvedValue({
-      items: [
-        makeIssueSummary({
-          identifier: 'ISS-1',
-          title: 'Current issue',
-          labels: ['api'],
-        }),
-        makeIssueSummary({
-          id: 'issue-2',
-          identifier: 'ISS-2',
-          title: 'Unblock scheduler',
-          labels: ['automation'],
-        }),
-      ],
-      total: 2,
-      limit: 200,
-      offset: 0,
-    })
+    const availableIssues = [
+      makeIssueSummary({
+        identifier: 'ISS-1',
+        title: 'Current issue',
+        labels: ['api'],
+      }),
+      makeIssueSummary({
+        id: 'issue-2',
+        identifier: 'ISS-2',
+        title: 'Unblock scheduler',
+        labels: ['automation'],
+      }),
+    ]
     const onSubmit = vi.fn().mockResolvedValue(undefined)
 
     renderWithQueryClient(
@@ -54,18 +49,10 @@ describe('IssueDialog', () => {
         onOpenChange={vi.fn()}
         projects={bootstrap.projects}
         epics={bootstrap.epics}
+        availableIssues={availableIssues}
         onSubmit={onSubmit}
       />,
     )
-
-    await waitFor(() => {
-      expect(api.listIssues).toHaveBeenCalledWith({
-        project_id: 'project-1',
-        limit: 200,
-        offset: 0,
-        sort: 'identifier_asc',
-      })
-    })
 
     fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Scan GitHub ready-to-work' } })
     fireEvent.click(screen.getByRole('radio', { name: /recurring/i }))
@@ -81,7 +68,6 @@ describe('IssueDialog', () => {
 
     const blockersInput = screen.getByLabelText(/blockers/i)
     fireEvent.focus(blockersInput)
-    fireEvent.change(blockersInput, { target: { value: 'ISS-2' } })
     fireEvent.click(await screen.findByRole('option', { name: /ISS-2 · Unblock scheduler/i }))
 
     fireEvent.click(screen.getByRole('button', { name: /create issue/i }))
@@ -108,12 +94,6 @@ describe('IssueDialog', () => {
 
   it('returns queued uploads and removals with the issue payload', async () => {
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.listIssues).mockResolvedValue({
-      items: [],
-      total: 0,
-      limit: 200,
-      offset: 0,
-    })
     const onSubmit = vi.fn().mockResolvedValue(undefined)
     const file = new File(['png'], 'bug.png', { type: 'image/png' })
 
@@ -124,6 +104,7 @@ describe('IssueDialog', () => {
         initial={makeIssueDetail({ images: [makeIssueImage()] })}
         projects={bootstrap.projects}
         epics={bootstrap.epics}
+        availableIssues={bootstrap.issues.items}
         onSubmit={onSubmit}
       />,
     )
@@ -158,12 +139,6 @@ describe('IssueDialog', () => {
 
   it('keeps the issue type toggle inset and radius aligned with the field container', async () => {
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.listIssues).mockResolvedValue({
-      items: [],
-      total: 0,
-      limit: 200,
-      offset: 0,
-    })
 
     renderWithQueryClient(
       <IssueDialog
@@ -171,6 +146,7 @@ describe('IssueDialog', () => {
         onOpenChange={vi.fn()}
         projects={bootstrap.projects}
         epics={bootstrap.epics}
+        availableIssues={bootstrap.issues.items}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
       />,
     )
@@ -187,22 +163,17 @@ describe('IssueDialog', () => {
 
   it('limits blocker suggestions to the selected project and excludes the edited issue', async () => {
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.listIssues).mockResolvedValue({
-      items: [
-        makeIssueSummary({
-          identifier: 'ISS-1',
-          title: 'Current issue',
-        }),
-        makeIssueSummary({
-          id: 'issue-2',
-          identifier: 'ISS-2',
-          title: 'Project issue',
-        }),
-      ],
-      total: 2,
-      limit: 200,
-      offset: 0,
-    })
+    const availableIssues = [
+      makeIssueSummary({
+        identifier: 'ISS-1',
+        title: 'Current issue',
+      }),
+      makeIssueSummary({
+        id: 'issue-2',
+        identifier: 'ISS-2',
+        title: 'Project issue',
+      }),
+    ]
 
     renderWithQueryClient(
       <IssueDialog
@@ -211,20 +182,64 @@ describe('IssueDialog', () => {
         initial={{ identifier: 'ISS-1', project_id: 'project-1' }}
         projects={bootstrap.projects}
         epics={bootstrap.epics}
+        availableIssues={availableIssues}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
       />,
     )
 
-    await waitFor(() => {
-      expect(api.listIssues).toHaveBeenCalled()
+    const blockersInput = screen.getByLabelText(/blockers/i)
+    fireEvent.focus(blockersInput)
+
+    expect(await screen.findByRole('option', { name: /ISS-2 · Project issue/i })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /ISS-1 · Current issue/i })).not.toBeInTheDocument()
+  })
+
+  it('searches blockers on demand instead of loading every project issue on open', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: [
+        makeIssueSummary({
+          id: 'issue-2',
+          identifier: 'ISS-2',
+          title: 'Remote blocker',
+        }),
+      ],
+      total: 1,
+      limit: 25,
+      offset: 0,
     })
+
+    renderWithQueryClient(
+      <IssueDialog
+        open
+        onOpenChange={vi.fn()}
+        projects={bootstrap.projects}
+        epics={bootstrap.epics}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    expect(api.listIssues).not.toHaveBeenCalled()
 
     const blockersInput = screen.getByLabelText(/blockers/i)
     fireEvent.focus(blockersInput)
     fireEvent.change(blockersInput, { target: { value: 'ISS' } })
 
-    expect(await screen.findByRole('option', { name: /ISS-2 · Project issue/i })).toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: /ISS-1 · Current issue/i })).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenCalledWith(
+        {
+          project_id: 'project-1',
+          search: 'ISS',
+          limit: 25,
+          sort: 'updated_desc',
+        },
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        }),
+      )
+    })
+
+    expect(await screen.findByRole('option', { name: /ISS-2 · Remote blocker/i })).toBeInTheDocument()
   })
 
   it('requires a project before submitting', async () => {
@@ -249,12 +264,6 @@ describe('IssueDialog', () => {
     vi.stubGlobal('SpeechRecognition', MockSpeechRecognition)
 
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.listIssues).mockResolvedValue({
-      items: [],
-      total: 0,
-      limit: 200,
-      offset: 0,
-    })
     const onSubmit = vi.fn().mockResolvedValue(undefined)
 
     renderWithQueryClient(
@@ -263,6 +272,7 @@ describe('IssueDialog', () => {
         onOpenChange={vi.fn()}
         projects={bootstrap.projects}
         epics={bootstrap.epics}
+        availableIssues={bootstrap.issues.items}
         onSubmit={onSubmit}
       />,
     )

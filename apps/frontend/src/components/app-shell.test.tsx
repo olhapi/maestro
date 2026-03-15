@@ -61,7 +61,8 @@ describe('AppShell', () => {
   it('renders navigation and reacts to live updates', async () => {
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
 
-    renderWithQueryClient(<AppShell />)
+    const { queryClient } = renderWithQueryClient(<AppShell />)
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
 
     await waitFor(() => {
       expect(screen.getAllByText('Maestro').length).toBeGreaterThan(0)
@@ -79,10 +80,20 @@ describe('AppShell', () => {
     expect(screen.getByTestId('command-palette')).toHaveTextContent('open')
 
     await act(async () => {
-      invalidateSocket()
+      await invalidateSocket()
     })
     await waitFor(() => {
       expect(screen.getAllByText('1 running').length).toBeGreaterThan(0)
+    })
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(2)
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['bootstrap'],
+      refetchType: 'active',
+    })
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['issues'],
+      refetchType: 'active',
     })
   })
 

@@ -66,23 +66,19 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Install Windows GCC toolchain
+      - name: Set up MSYS2
+        if: matrix.needs_msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+      - name: Configure Windows C compiler
         if: matrix.needs_msys2
         shell: pwsh
-        run: |
-          choco install msys2 --no-progress -y
-          $msys2Root = 'C:\tools\msys64'
-          if (-not (Test-Path $msys2Root)) {
-            throw "MSYS2 install not found at $msys2Root"
-          }
-
-          $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
-          & $bash -lc 'pacman --noconfirm -Syuu'
-          & $bash -lc 'pacman --noconfirm -S --needed mingw-w64-ucrt-x86_64-gcc'
-
-          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $msys2Root 'ucrt64\bin')
-          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $msys2Root 'usr\bin')
-          Add-Content -Path $env:GITHUB_ENV -Value 'CC=gcc'
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'CC=gcc'
 
       - name: Build leaf package
         run: ./scripts/package_npm_release.sh pack-leaf "${GITHUB_REF_NAME}" "${{ matrix.target }}"
@@ -169,6 +165,7 @@ jobs:
         run: ./scripts/smoke_npm_registry_install.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
   publish-npm:
+    if: vars.NPM_PUBLISH_ENABLED == 'true'
     needs:
       - build-leaf-packages
       - build-root-package
@@ -176,6 +173,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      id-token: write
     defaults:
       run:
         shell: bash
@@ -193,9 +191,16 @@ jobs:
           pattern: npm-*
           merge-multiple: true
 
+      - name: Select npm dist-tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "NPM_DIST_TAG=next" >>"$GITHUB_ENV"
+          else
+            echo "NPM_DIST_TAG=latest" >>"$GITHUB_ENV"
+          fi
+
       - name: Publish npm packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           for tarball in \
@@ -205,5 +210,5 @@ jobs:
             "dist/npm/olhapi-maestro-linux-arm64-gnu-${VERSION}.tgz" \
             "dist/npm/olhapi-maestro-win32-x64-${VERSION}.tgz" \
             "dist/npm/olhapi-maestro-${VERSION}.tgz"; do
-            npm publish --access public "$tarball"
+            npm publish --access public --provenance --tag "$NPM_DIST_TAG" "$tarball"
           done

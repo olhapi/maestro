@@ -73,6 +73,10 @@ type issueTokenSpendState struct {
 	LastFlushedAt time.Time
 }
 
+type orchestratorTestHooks struct {
+	beforeFinishRunRelease func(issueID string)
+}
+
 const scopedRuntimeKey = "__scoped__"
 
 type projectRuntime struct {
@@ -123,6 +127,7 @@ type Orchestrator struct {
 	events         []map[string]interface{}
 	maxEvents      int
 	runWG          sync.WaitGroup
+	testHooks      orchestratorTestHooks
 }
 
 func New(store *kanban.Store, workflows *config.Manager) *Orchestrator {
@@ -490,6 +495,9 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 		}
 		dispatchable, reason, _ := o.isDispatchable(workflow, issue)
 		if !dispatchable {
+			if reason == "paused" {
+				continue
+			}
 			slog.Info("Stopping run during reconciliation",
 				issueLogAttrs(issue, -1, "reason", reason)...,
 			)
@@ -522,7 +530,6 @@ func (o *Orchestrator) reconcilePausedRuns(ctx context.Context) {
 		_, retrying := o.retries[issue.ID]
 		o.mu.RUnlock()
 		if running || retrying {
-			o.clearPausedState(issue.ID)
 			continue
 		}
 
@@ -1001,6 +1008,10 @@ func recurringScheduleEventKind(issue *kanban.Issue, now time.Time) string {
 }
 
 func (o *Orchestrator) recurringIssueOccupied(workflow *config.Workflow, issue *kanban.Issue) bool {
+	return o.recurringIssueOccupiedIgnoringRunning(workflow, issue, "")
+}
+
+func (o *Orchestrator) recurringIssueOccupiedIgnoringRunning(workflow *config.Workflow, issue *kanban.Issue, ignoreRunningIssueID string) bool {
 	if issue == nil {
 		return false
 	}
@@ -1009,7 +1020,7 @@ func (o *Orchestrator) recurringIssueOccupied(workflow *config.Workflow, issue *
 	_, retrying := o.retries[issue.ID]
 	_, paused := o.paused[issue.ID]
 	o.mu.RUnlock()
-	if running || retrying || paused {
+	if (running && issue.ID != ignoreRunningIssueID) || retrying || paused {
 		return true
 	}
 	switch issue.State {
@@ -1099,6 +1110,10 @@ func (o *Orchestrator) enqueueRecurringIssue(issue *kanban.Issue, eventKind stri
 }
 
 func (o *Orchestrator) processPendingRecurringRerun(issue *kanban.Issue) bool {
+	return o.processPendingRecurringRerunIgnoringRunning(issue, "")
+}
+
+func (o *Orchestrator) processPendingRecurringRerunIgnoringRunning(issue *kanban.Issue, ignoreRunningIssueID string) bool {
 	if issue == nil || !issue.IsRecurring() || !issue.PendingRerun {
 		return false
 	}
@@ -1122,7 +1137,7 @@ func (o *Orchestrator) processPendingRecurringRerun(issue *kanban.Issue) bool {
 		)
 		return false
 	}
-	if o.recurringIssueOccupied(workflow, issue) {
+	if o.recurringIssueOccupiedIgnoringRunning(workflow, issue, ignoreRunningIssueID) {
 		return false
 	}
 	return o.enqueueRecurringIssue(issue, "recurring_pending_rerun_enqueued", true)
@@ -1211,8 +1226,19 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 }
 
 func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, result *agent.RunResult, err error) {
+	defer func() {
+		if hook := o.testHooks.beforeFinishRunRelease; hook != nil {
+			hook(issue.ID)
+		}
+		o.mu.Lock()
+		delete(o.running, issue.ID)
+		delete(o.liveSessions, issue.ID)
+		o.mu.Unlock()
+		o.clearSessionWriteState(issue.ID)
+		o.clearIssueTokenSpendState(issue.ID)
+	}()
+
 	o.mu.Lock()
-	delete(o.running, issue.ID)
 	o.totalRuns++
 	o.mu.Unlock()
 
@@ -1230,22 +1256,12 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	if isCancelledRunCompletion(err, result) {
 		if snapshot, snapshotErr := o.store.GetIssueExecutionSession(issue.ID); snapshotErr == nil && snapshot != nil && snapshot.StopReason == gracefulShutdownStopReason {
 			o.flushIssueTokenSpend(issue.ID)
-			o.mu.Lock()
-			delete(o.liveSessions, issue.ID)
-			o.mu.Unlock()
-			o.clearSessionWriteState(issue.ID)
-			o.clearIssueTokenSpendState(issue.ID)
 			return
 		}
 		slog.Info("Agent run cancelled",
 			issueLogAttrs(current, attempt, "phase", phase)...,
 		)
 		o.flushIssueTokenSpend(issue.ID)
-		o.mu.Lock()
-		delete(o.liveSessions, issue.ID)
-		o.mu.Unlock()
-		o.clearSessionWriteState(issue.ID)
-		o.clearIssueTokenSpendState(issue.ID)
 		return
 	}
 
@@ -1277,14 +1293,8 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 			issueLogAttrs(current, attempt, extra...)...,
 		)
 	}
-	o.processPendingRecurringRerun(current)
+	o.processPendingRecurringRerunIgnoringRunning(current, issue.ID)
 	o.flushIssueTokenSpend(issue.ID)
-
-	o.mu.Lock()
-	delete(o.liveSessions, issue.ID)
-	o.mu.Unlock()
-	o.clearSessionWriteState(issue.ID)
-	o.clearIssueTokenSpendState(issue.ID)
 }
 
 func isCancelledRunCompletion(err error, result *agent.RunResult) bool {

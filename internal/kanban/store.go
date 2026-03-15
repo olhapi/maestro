@@ -72,10 +72,19 @@ func ResolveDBPath(dbPath string) string {
 
 // NewStore creates a new store with the given database path
 func NewStore(dbPath string) (*Store, error) {
+	return newStoreWithMigrator(dbPath, nil)
+}
+
+func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, error) {
 	dbPath = ResolveDBPath(dbPath)
 	absDBPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve database path: %w", err)
+	}
+	if migrateFn == nil {
+		migrateFn = func(store *Store) error {
+			return store.migrate()
+		}
 	}
 	dsn := absDBPath + "?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on&_txlock=immediate"
 	db, err := sql.Open("sqlite3", dsn)
@@ -90,7 +99,8 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to configure sqlite connection: %w", err)
 	}
-	if err := store.migrate(); err != nil {
+	if err := migrateFn(store); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 
@@ -1395,83 +1405,133 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 	return s.GetIssue(id)
 }
 
-func (s *Store) GetIssue(id string) (*Issue, error) {
-	i := &Issue{}
+type issueScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanIssueRecord(scanner issueScanner) (*Issue, error) {
+	issue := &Issue{}
 	var startedAt, completedAt, lastSyncedAt sql.NullTime
 	var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
 	var providerShadow int
 
-	err := s.db.QueryRow(`
-		SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
-		       branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
-		FROM issues WHERE id = ?`, id,
-	).Scan(&i.ID, &projectID, &epicID, &i.Identifier, &i.IssueType, &i.ProviderKind, &providerIssueRef, &providerShadow, &i.Title, &i.Description, &i.State, &i.WorkflowPhase, &i.Priority,
-		&branchName, &prURL, &i.CreatedAt, &i.UpdatedAt, &i.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt)
-	if err != nil {
+	if err := scanner.Scan(
+		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &issue.Priority,
+		&branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+	); err != nil {
 		return nil, err
 	}
-	i.IssueType = NormalizeIssueType(string(i.IssueType))
-	if !i.WorkflowPhase.IsValid() {
-		i.WorkflowPhase = DefaultWorkflowPhaseForState(i.State)
-	}
-	i.ProviderKind = normalizeProviderKind(i.ProviderKind)
 
+	issue.IssueType = NormalizeIssueType(string(issue.IssueType))
+	if !issue.WorkflowPhase.IsValid() {
+		issue.WorkflowPhase = DefaultWorkflowPhaseForState(issue.State)
+	}
+	issue.ProviderKind = normalizeProviderKind(issue.ProviderKind)
 	if projectID.Valid {
-		i.ProjectID = projectID.String
+		issue.ProjectID = projectID.String
 	}
 	if epicID.Valid {
-		i.EpicID = epicID.String
+		issue.EpicID = epicID.String
 	}
 	if providerIssueRef.Valid {
-		i.ProviderIssueRef = providerIssueRef.String
+		issue.ProviderIssueRef = providerIssueRef.String
 	}
-	i.ProviderShadow = providerShadow != 0
+	issue.ProviderShadow = providerShadow != 0
 	if branchName.Valid {
-		i.BranchName = branchName.String
+		issue.BranchName = branchName.String
 	}
 	if prURL.Valid {
-		i.PRURL = prURL.String
+		issue.PRURL = prURL.String
 	}
 	if startedAt.Valid {
-		i.StartedAt = &startedAt.Time
+		issue.StartedAt = &startedAt.Time
 	}
 	if completedAt.Valid {
-		i.CompletedAt = &completedAt.Time
+		issue.CompletedAt = &completedAt.Time
 	}
 	if lastSyncedAt.Valid {
-		i.LastSyncedAt = &lastSyncedAt.Time
+		issue.LastSyncedAt = &lastSyncedAt.Time
 	}
-	recurrence, err := s.GetIssueRecurrence(i.ID)
+	return issue, nil
+}
+
+func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
+	order := make([]string, 0, len(issueIDs))
+	seen := make(map[string]struct{}, len(issueIDs))
+	args := make([]interface{}, 0, len(issueIDs))
+	for _, issueID := range issueIDs {
+		issueID = strings.TrimSpace(issueID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		seen[issueID] = struct{}{}
+		order = append(order, issueID)
+		args = append(args, issueID)
+	}
+	if len(order) == 0 {
+		return []Issue{}, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(order)), ",")
+	rows, err := s.db.Query(`
+		SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
+		       branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+		FROM issues
+		WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
-	applyRecurrenceToIssue(i, recurrence)
+	defer rows.Close()
 
-	// Load labels
-	rows, err := s.db.Query(`SELECT label FROM issue_labels WHERE issue_id = ?`, id)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var label string
-			if err := rows.Scan(&label); err == nil {
-				i.Labels = append(i.Labels, label)
-			}
+	issuesByID := make(map[string]*Issue, len(order))
+	for rows.Next() {
+		issue, err := scanIssueRecord(rows)
+		if err != nil {
+			return nil, err
 		}
+		issuesByID[issue.ID] = issue
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	// Load blockers
-	rows, err = s.db.Query(`SELECT blocked_by FROM issue_blockers WHERE issue_id = ?`, id)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var blocker string
-			if err := rows.Scan(&blocker); err == nil {
-				i.BlockedBy = append(i.BlockedBy, blocker)
-			}
-		}
+	labelMap, blockerMap, _, err := s.issueRelations(order)
+	if err != nil {
+		return nil, err
+	}
+	recurrenceMap, err := s.issueRecurrenceMap(order)
+	if err != nil {
+		return nil, err
 	}
 
-	return i, nil
+	out := make([]Issue, 0, len(order))
+	for _, issueID := range order {
+		issue, ok := issuesByID[issueID]
+		if !ok {
+			return nil, sql.ErrNoRows
+		}
+		issue.Labels = labelMap[issueID]
+		issue.BlockedBy = blockerMap[issueID]
+		if recurrence, ok := recurrenceMap[issueID]; ok {
+			applyRecurrenceToIssue(issue, &recurrence)
+		}
+		out = append(out, *issue)
+	}
+	return out, nil
+}
+
+func (s *Store) GetIssue(id string) (*Issue, error) {
+	issues, err := s.loadIssuesByIDs([]string{id})
+	if err != nil {
+		return nil, err
+	}
+	if len(issues) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &issues[0], nil
 }
 
 func (s *Store) GetIssueByIdentifier(identifier string) (*Issue, error) {
@@ -1723,16 +1783,7 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	issues := make([]Issue, 0, len(ids))
-	for _, id := range ids {
-		issue, err := s.GetIssue(id)
-		if err != nil {
-			return nil, err
-		}
-		issues = append(issues, *issue)
-	}
-	return issues, nil
+	return s.loadIssuesByIDs(ids)
 }
 
 func (s *Store) UpdateIssueState(id string, state State) error {
@@ -2516,32 +2567,53 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 }
 
 func (s *Store) GetIssueDetailByIdentifier(identifier string) (*IssueDetail, error) {
-	items, _, err := s.ListIssueSummaries(IssueQuery{Search: identifier, Limit: 50})
+	issue, err := s.GetIssueByIdentifier(identifier)
 	if err != nil {
 		return nil, err
 	}
-	for _, item := range items {
-		if item.Identifier == identifier {
-			detail := &IssueDetail{IssueSummary: item}
-			if item.ProjectID != "" {
-				if project, err := s.GetProject(item.ProjectID); err == nil && project != nil {
-					detail.ProjectDescription = project.Description
-				}
-			}
-			if item.EpicID != "" {
-				if epic, err := s.GetEpic(item.EpicID); err == nil && epic != nil {
-					detail.EpicDescription = epic.Description
-				}
-			}
-			images, err := s.ListIssueImages(item.ID)
-			if err != nil {
-				return nil, err
-			}
-			detail.Images = images
-			return detail, nil
+	detail := &IssueDetail{
+		IssueSummary: IssueSummary{
+			Issue: *issue,
+		},
+	}
+	if issue.ProjectID != "" {
+		project, err := s.GetProject(issue.ProjectID)
+		switch {
+		case err == nil && project != nil:
+			detail.ProjectName = project.Name
+			detail.ProjectDescription = project.Description
+		case err != nil && err != sql.ErrNoRows:
+			return nil, err
 		}
 	}
-	return nil, sql.ErrNoRows
+	if issue.EpicID != "" {
+		epic, err := s.GetEpic(issue.EpicID)
+		switch {
+		case err == nil && epic != nil:
+			detail.EpicName = epic.Name
+			detail.EpicDescription = epic.Description
+		case err != nil && err != sql.ErrNoRows:
+			return nil, err
+		}
+	}
+	workspace, err := s.GetWorkspace(issue.ID)
+	switch {
+	case err == nil && workspace != nil:
+		detail.WorkspacePath = workspace.Path
+		detail.WorkspaceRunCount = workspace.RunCount
+		detail.WorkspaceLastRun = workspace.LastRunAt
+	case err != nil && err != sql.ErrNoRows:
+		return nil, err
+	}
+	if detail.IsBlocked, err = s.isIssueBlocked(issue.ID); err != nil {
+		return nil, err
+	}
+	images, err := s.ListIssueImages(issue.ID)
+	if err != nil {
+		return nil, err
+	}
+	detail.Images = images
+	return detail, nil
 }
 
 func (s *Store) AddIssueTokenSpend(issueID string, delta int) error {
@@ -2587,6 +2659,9 @@ func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[stri
 		}
 		labels[issueID] = append(labels[issueID], label)
 	}
+	if err := labelRows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 
 	blockRows, err := s.db.Query(`
 		SELECT b.issue_id, b.blocked_by, blocker.state
@@ -2609,7 +2684,23 @@ func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[stri
 			unresolved[issueID] = true
 		}
 	}
+	if err := blockRows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	return labels, blockers, unresolved, nil
+}
+
+func (s *Store) isIssueBlocked(issueID string) (bool, error) {
+	var blocked int
+	err := s.db.QueryRow(`
+		SELECT CASE WHEN `+unresolvedBlockerExistsClause("i")+` THEN 1 ELSE 0 END
+		FROM issues i
+		WHERE i.id = ?`, issueID,
+	).Scan(&blocked)
+	if err != nil {
+		return false, err
+	}
+	return blocked != 0, nil
 }
 
 func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) error {

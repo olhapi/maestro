@@ -324,7 +324,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		if err != nil {
 			return nil, err
 		}
-		input, err := r.prepareAppServerTurnInput(workspacePath, issue, prepared.Prompt, turn == 1 && !client.ThreadResumed())
+		input, err := r.prepareAppServerTurnInput(workspacePath, issue, prepared.Prompt, turn == 1)
 		if err != nil {
 			return &RunResult{
 				Success:    false,

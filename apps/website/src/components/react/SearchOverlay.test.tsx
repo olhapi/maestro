@@ -111,4 +111,59 @@ describe("SearchOverlay", () => {
       "bg-[rgba(196,255,87,0.1)]",
     );
   });
+
+  it("prefers exact title matches over incidental description matches", async () => {
+    render(
+      <SearchOverlay
+        entries={[
+          {
+            title: "Quickstart",
+            href: "/docs/quickstart",
+            description: "Start the daemon and open the control center.",
+            section: "Getting Started",
+          },
+          {
+            title: "Control center",
+            href: "/docs/control-center",
+            description: "Read the embedded dashboard as the live supervision surface.",
+            section: "Core Concepts",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: "k" });
+
+    const input = await screen.findByRole("searchbox", { name: "Search docs" });
+    fireEvent.change(input, { target: { value: "control center" } });
+
+    await waitFor(() => expect(screen.getByText("Control center")).toBeInTheDocument());
+
+    const resultButtons = screen.getAllByRole("button");
+    expect(resultButtons[0]).toHaveTextContent("Control center");
+    expect(resultButtons[1]).toHaveTextContent("Quickstart");
+  });
+
+  it("matches hidden search text from doc headings", async () => {
+    render(
+      <SearchOverlay
+        entries={[
+          {
+            title: "Control center",
+            href: "/docs/control-center",
+            description: "Read the embedded dashboard as the live supervision surface.",
+            section: "Core Concepts",
+            searchText: "Control center Work board Issue detail Sessions",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: "k" });
+
+    const input = await screen.findByRole("searchbox", { name: "Search docs" });
+    fireEvent.change(input, { target: { value: "work board" } });
+
+    await waitFor(() => expect(screen.getByText("Control center")).toBeInTheDocument());
+  });
 });

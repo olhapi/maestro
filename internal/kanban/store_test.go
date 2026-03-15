@@ -2,7 +2,10 @@ package kanban
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -186,6 +189,29 @@ func TestNewStoreConfiguresSQLitePragmas(t *testing.T) {
 	}
 	if table != "issue_images" {
 		t.Fatalf("unexpected issue_images table result %q", table)
+	}
+}
+
+func TestNewStoreClosesDBOnMigrationFailure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "broken.db")
+	expected := errors.New("boom")
+	var capturedDB *sql.DB
+
+	store, err := newStoreWithMigrator(dbPath, func(store *Store) error {
+		capturedDB = store.db
+		return expected
+	})
+	if store != nil {
+		t.Fatalf("expected nil store on migration failure, got %#v", store)
+	}
+	if !errors.Is(err, expected) {
+		t.Fatalf("expected wrapped migration error %v, got %v", expected, err)
+	}
+	if capturedDB == nil {
+		t.Fatal("expected migration hook to observe the opened database")
+	}
+	if pingErr := capturedDB.Ping(); pingErr == nil || !strings.Contains(pingErr.Error(), "closed") {
+		t.Fatalf("expected closed database after migration failure, got %v", pingErr)
 	}
 }
 
@@ -1132,6 +1158,206 @@ func TestGetIssueByIdentifier(t *testing.T) {
 	}
 }
 
+func TestGetIssueReturnsRelationQueryErrors(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Strict issue read", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE issue_labels RENAME TO issue_labels_missing`); err != nil {
+		t.Fatalf("rename issue_labels: %v", err)
+	}
+
+	_, err = store.GetIssue(issue.ID)
+	if err == nil || !strings.Contains(err.Error(), "issue_labels") {
+		t.Fatalf("expected relation query error mentioning issue_labels, got %v", err)
+	}
+}
+
+func TestGetIssueDetailByIdentifierUsesExactLookup(t *testing.T) {
+	store := setupTestStore(t)
+
+	target, err := store.CreateIssue("", "", "Target", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue target: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		if _, err := store.CreateIssue("", "", fmt.Sprintf("Distractor %02d", i), "references "+target.Identifier, 0, nil); err != nil {
+			t.Fatalf("CreateIssue distractor %d: %v", i, err)
+		}
+	}
+
+	detail, err := store.GetIssueDetailByIdentifier(target.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier: %v", err)
+	}
+	if detail.ID != target.ID || detail.Identifier != target.Identifier {
+		t.Fatalf("expected exact issue detail for %s, got %#v", target.Identifier, detail)
+	}
+}
+
+func TestGetIssueDetailByIdentifierIncludesRelatedMetadata(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProject("Project", "Project description", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	epic, err := store.CreateEpic(project.ID, "Epic", "Epic description")
+	if err != nil {
+		t.Fatalf("CreateEpic: %v", err)
+	}
+	blocker, err := store.CreateIssue(project.ID, epic.ID, "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, epic.ID, "Target", "", 0, []string{"ops"})
+	if err != nil {
+		t.Fatalf("CreateIssue target: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, filepath.Join(t.TempDir(), "workspace")); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	image, err := store.CreateIssueImage(issue.ID, "detail.png", bytes.NewReader(samplePNGBytes()))
+	if err != nil {
+		t.Fatalf("CreateIssueImage: %v", err)
+	}
+
+	detail, err := store.GetIssueDetailByIdentifier(issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier: %v", err)
+	}
+	if detail.ProjectName != project.Name || detail.ProjectDescription != project.Description {
+		t.Fatalf("unexpected project metadata: %#v", detail)
+	}
+	if detail.EpicName != epic.Name || detail.EpicDescription != epic.Description {
+		t.Fatalf("unexpected epic metadata: %#v", detail)
+	}
+	if detail.WorkspacePath == "" || detail.WorkspaceRunCount != 0 {
+		t.Fatalf("unexpected workspace metadata: %#v", detail)
+	}
+	if !detail.IsBlocked {
+		t.Fatalf("expected issue detail to report unresolved blockers: %#v", detail)
+	}
+	if len(detail.Images) != 1 || detail.Images[0].ID != image.ID {
+		t.Fatalf("unexpected issue images: %#v", detail.Images)
+	}
+}
+
+func TestGetIssueDetailByIdentifierSkipsMissingRelatedRecords(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProject("Project", "Project description", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	epic, err := store.CreateEpic(project.ID, "Epic", "Epic description")
+	if err != nil {
+		t.Fatalf("CreateEpic: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, epic.ID, "Target", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	ctx := context.Background()
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+			t.Fatalf("restore foreign keys: %v", err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatalf("close conn: %v", err)
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatalf("disable foreign keys: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `UPDATE issues SET project_id = ?, epic_id = ? WHERE id = ?`, "missing-project", "missing-epic", issue.ID); err != nil {
+		t.Fatalf("UPDATE issues: %v", err)
+	}
+
+	detail, err := store.GetIssueDetailByIdentifier(issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier: %v", err)
+	}
+	if detail.ProjectName != "" || detail.ProjectDescription != "" {
+		t.Fatalf("expected missing project metadata to be ignored, got %#v", detail)
+	}
+	if detail.EpicName != "" || detail.EpicDescription != "" {
+		t.Fatalf("expected missing epic metadata to be ignored, got %#v", detail)
+	}
+}
+
+func TestLoadIssuesByIDsDeduplicatesAndHydratesRelations(t *testing.T) {
+	store := setupTestStore(t)
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, []string{"blocker"})
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	recurring, err := store.CreateIssueWithOptions("", "", "Recurring", "", 0, []string{"docs"}, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/15 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(recurring.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	issues, err := store.loadIssuesByIDs([]string{"", recurring.ID, recurring.ID, "   ", blocker.ID})
+	if err != nil {
+		t.Fatalf("loadIssuesByIDs: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected deduplicated issue list, got %#v", issues)
+	}
+	if issues[0].ID != recurring.ID || issues[1].ID != blocker.ID {
+		t.Fatalf("expected stable issue ordering, got %#v", issues)
+	}
+	if !issues[0].Enabled || issues[0].Cron != "*/15 * * * *" {
+		t.Fatalf("expected recurrence metadata on first issue, got %#v", issues[0])
+	}
+	if len(issues[0].Labels) != 1 || issues[0].Labels[0] != "docs" {
+		t.Fatalf("expected recurring issue labels, got %#v", issues[0].Labels)
+	}
+	if len(issues[0].BlockedBy) != 1 || issues[0].BlockedBy[0] != blocker.Identifier {
+		t.Fatalf("expected recurring issue blockers, got %#v", issues[0].BlockedBy)
+	}
+	if len(issues[1].Labels) != 1 || issues[1].Labels[0] != "blocker" {
+		t.Fatalf("expected blocker labels, got %#v", issues[1].Labels)
+	}
+}
+
+func TestLoadIssuesByIDsReturnsNotFoundForMissingIssue(t *testing.T) {
+	store := setupTestStore(t)
+
+	if _, err := store.loadIssuesByIDs([]string{"missing-id"}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestLoadIssuesByIDsReturnsEmptyForBlankInputs(t *testing.T) {
+	store := setupTestStore(t)
+
+	issues, err := store.loadIssuesByIDs([]string{"", "   "})
+	if err != nil {
+		t.Fatalf("loadIssuesByIDs: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("expected no issues for blank inputs, got %#v", issues)
+	}
+}
+
 func TestAddIssueTokenSpendIncrementsWithoutTouchingUpdatedAt(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -1546,12 +1772,26 @@ func TestRecurringStoreQueriesAndRearmLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssueWithOptions pending: %v", err)
 	}
+	secondPendingIssue, err := store.CreateIssueWithOptions("", "", "Pending recurring 2", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/25 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions second pending: %v", err)
+	}
 	cancelledIssue, err := store.CreateIssueWithOptions("", "", "Cancelled recurring", "", 0, nil, IssueCreateOptions{
 		IssueType: IssueTypeRecurring,
 		Cron:      "*/30 * * * *",
 	})
 	if err != nil {
 		t.Fatalf("CreateIssueWithOptions cancelled: %v", err)
+	}
+	secondDueIssue, err := store.CreateIssueWithOptions("", "", "Due recurring 2", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/5 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions second due: %v", err)
 	}
 	standardIssue, err := store.CreateIssue("", "", "Standard", "", 0, nil)
 	if err != nil {
@@ -1560,12 +1800,20 @@ func TestRecurringStoreQueriesAndRearmLifecycle(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	past := now.Add(-2 * time.Minute)
+	olderPast := now.Add(-4 * time.Minute)
 	future := now.Add(45 * time.Minute)
+	earlierFuture := now.Add(15 * time.Minute)
 	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ? WHERE issue_id = ?`, past, dueIssue.ID); err != nil {
 		t.Fatalf("update due recurrence: %v", err)
 	}
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ? WHERE issue_id = ?`, olderPast, secondDueIssue.ID); err != nil {
+		t.Fatalf("update second due recurrence: %v", err)
+	}
 	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, pending_rerun = 1 WHERE issue_id = ?`, future, pendingIssue.ID); err != nil {
 		t.Fatalf("update pending recurrence: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, pending_rerun = 1 WHERE issue_id = ?`, earlierFuture, secondPendingIssue.ID); err != nil {
+		t.Fatalf("update second pending recurrence: %v", err)
 	}
 	if err := store.UpdateIssueState(cancelledIssue.ID, StateCancelled); err != nil {
 		t.Fatalf("UpdateIssueState cancelled recurring: %v", err)
@@ -1575,8 +1823,11 @@ func TestRecurringStoreQueriesAndRearmLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDueRecurringIssues: %v", err)
 	}
-	if len(due) != 1 || due[0].Identifier != dueIssue.Identifier {
-		t.Fatalf("expected only due recurring issue, got %#v", due)
+	if len(due) != 2 {
+		t.Fatalf("expected two due recurring issues, got %#v", due)
+	}
+	if due[0].Identifier != secondDueIssue.Identifier || due[1].Identifier != dueIssue.Identifier {
+		t.Fatalf("expected due issues ordered by next_run_at, got %#v", due)
 	}
 	if issueListContainsIdentifier(due, standardIssue.Identifier) {
 		t.Fatalf("did not expect standard issue in due recurring list: %#v", due)
@@ -1586,16 +1837,19 @@ func TestRecurringStoreQueriesAndRearmLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPendingRecurringIssues: %v", err)
 	}
-	if len(pending) != 1 || pending[0].Identifier != pendingIssue.Identifier {
-		t.Fatalf("expected only pending recurring issue, got %#v", pending)
+	if len(pending) != 2 {
+		t.Fatalf("expected two pending recurring issues, got %#v", pending)
+	}
+	if pending[0].Identifier != pendingIssue.Identifier || pending[1].Identifier != secondPendingIssue.Identifier {
+		t.Fatalf("expected pending issues ordered by updated_at, got %#v", pending)
 	}
 
 	nextDue, err := store.NextRecurringDueAt("")
 	if err != nil {
 		t.Fatalf("NextRecurringDueAt: %v", err)
 	}
-	if nextDue == nil || !nextDue.UTC().Equal(past) {
-		t.Fatalf("expected next recurring due at %s, got %+v", past.Format(time.RFC3339), nextDue)
+	if nextDue == nil || !nextDue.UTC().Equal(olderPast) {
+		t.Fatalf("expected next recurring due at %s, got %+v", olderPast.Format(time.RFC3339), nextDue)
 	}
 
 	if err := store.UpdateIssueState(dueIssue.ID, StateInProgress); err != nil {
@@ -1631,6 +1885,152 @@ func TestRecurringStoreQueriesAndRearmLifecycle(t *testing.T) {
 	}
 	if rearmed.PendingRerun {
 		t.Fatalf("expected pending rerun to be cleared after rearm, got %+v", rearmed)
+	}
+}
+
+func TestRecurringQueriesRespectRepoFilterAndDefaultLimit(t *testing.T) {
+	store := setupTestStore(t)
+
+	repoA, err := store.CreateProject("Repo A", "", "/repo/a", "")
+	if err != nil {
+		t.Fatalf("CreateProject repoA: %v", err)
+	}
+	repoB, err := store.CreateProject("Repo B", "", "/repo/b", "")
+	if err != nil {
+		t.Fatalf("CreateProject repoB: %v", err)
+	}
+	blocker, err := store.CreateIssue(repoA.ID, "", "Blocker", "", 0, []string{"blocker"})
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	dueA, err := store.CreateIssueWithOptions(repoA.ID, "", "Due A", "", 0, []string{"ops"}, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/10 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions dueA: %v", err)
+	}
+	dueB, err := store.CreateIssueWithOptions(repoB.ID, "", "Due B", "", 0, []string{"infra"}, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/12 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions dueB: %v", err)
+	}
+	pendingA, err := store.CreateIssueWithOptions(repoA.ID, "", "Pending A", "", 0, []string{"docs"}, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/15 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions pendingA: %v", err)
+	}
+	pendingB, err := store.CreateIssueWithOptions(repoB.ID, "", "Pending B", "", 0, []string{"ops"}, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/20 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions pendingB: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(dueA.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers dueA: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(pendingA.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers pendingA: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ? WHERE issue_id = ?`, now.Add(-1*time.Minute), dueA.ID); err != nil {
+		t.Fatalf("update dueA recurrence: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ? WHERE issue_id = ?`, now.Add(-2*time.Minute), dueB.ID); err != nil {
+		t.Fatalf("update dueB recurrence: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, pending_rerun = 1 WHERE issue_id = ?`, now.Add(30*time.Minute), pendingA.ID); err != nil {
+		t.Fatalf("update pendingA recurrence: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, pending_rerun = 1 WHERE issue_id = ?`, now.Add(45*time.Minute), pendingB.ID); err != nil {
+		t.Fatalf("update pendingB recurrence: %v", err)
+	}
+
+	due, err := store.ListDueRecurringIssues(now, "  /repo/a  ", 0)
+	if err != nil {
+		t.Fatalf("ListDueRecurringIssues: %v", err)
+	}
+	if len(due) != 1 || due[0].ID != dueA.ID {
+		t.Fatalf("expected only repoA due issue, got %#v", due)
+	}
+	if due[0].Cron != "*/10 * * * *" || !due[0].Enabled {
+		t.Fatalf("expected hydrated recurrence metadata, got %#v", due[0])
+	}
+	if len(due[0].Labels) != 1 || due[0].Labels[0] != "ops" {
+		t.Fatalf("expected hydrated labels, got %#v", due[0].Labels)
+	}
+	if len(due[0].BlockedBy) != 1 || due[0].BlockedBy[0] != blocker.Identifier {
+		t.Fatalf("expected hydrated blockers, got %#v", due[0].BlockedBy)
+	}
+
+	pending, err := store.ListPendingRecurringIssues(" /repo/a ", 0)
+	if err != nil {
+		t.Fatalf("ListPendingRecurringIssues: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != pendingA.ID {
+		t.Fatalf("expected only repoA pending issue, got %#v", pending)
+	}
+	if pending[0].Cron != "*/15 * * * *" || !pending[0].PendingRerun {
+		t.Fatalf("expected hydrated pending recurrence metadata, got %#v", pending[0])
+	}
+	if len(pending[0].Labels) != 1 || pending[0].Labels[0] != "docs" {
+		t.Fatalf("expected hydrated labels, got %#v", pending[0].Labels)
+	}
+	if len(pending[0].BlockedBy) != 1 || pending[0].BlockedBy[0] != blocker.Identifier {
+		t.Fatalf("expected hydrated blockers, got %#v", pending[0].BlockedBy)
+	}
+}
+
+func TestIssueRecurrenceMapHandlesEmptyAndBlankInputs(t *testing.T) {
+	store := setupTestStore(t)
+
+	recurrenceMap, err := store.issueRecurrenceMap(nil)
+	if err != nil {
+		t.Fatalf("issueRecurrenceMap nil: %v", err)
+	}
+	if len(recurrenceMap) != 0 {
+		t.Fatalf("expected no recurrences for nil input, got %#v", recurrenceMap)
+	}
+
+	issue, err := store.CreateIssueWithOptions("", "", "Recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/15 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET last_enqueued_at = ?, pending_rerun = 1 WHERE issue_id = ?`, now, issue.ID); err != nil {
+		t.Fatalf("update recurrence: %v", err)
+	}
+
+	recurrenceMap, err = store.issueRecurrenceMap([]string{"", "   ", issue.ID})
+	if err != nil {
+		t.Fatalf("issueRecurrenceMap populated: %v", err)
+	}
+	recurrence, ok := recurrenceMap[issue.ID]
+	if !ok {
+		t.Fatalf("expected recurrence entry for %s, got %#v", issue.ID, recurrenceMap)
+	}
+	if recurrence.Cron != "*/15 * * * *" || !recurrence.Enabled || !recurrence.PendingRerun {
+		t.Fatalf("unexpected recurrence payload: %#v", recurrence)
+	}
+	if recurrence.LastEnqueuedAt == nil || !recurrence.LastEnqueuedAt.UTC().Equal(now) {
+		t.Fatalf("expected last enqueued time %s, got %+v", now.Format(time.RFC3339), recurrence.LastEnqueuedAt)
+	}
+
+	recurrenceMap, err = store.issueRecurrenceMap([]string{"", "   "})
+	if err != nil {
+		t.Fatalf("issueRecurrenceMap blank-only: %v", err)
+	}
+	if len(recurrenceMap) != 0 {
+		t.Fatalf("expected no recurrences for blank-only input, got %#v", recurrenceMap)
 	}
 }
 

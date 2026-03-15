@@ -928,7 +928,7 @@ func TestRunAgentAppServerDoesNotResendIssueImagesOnContinuationTurn(t *testing.
 	}
 }
 
-func TestRunAgentAppServerResumedThreadSkipsIssueImageInputs(t *testing.T) {
+func TestRunAgentAppServerResumedThreadIncludesIssueImageInputsOnFirstTurn(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
 
@@ -958,7 +958,8 @@ func TestRunAgentAppServerResumedThreadSkipsIssueImageInputs(t *testing.T) {
 	command, _ := fakeappserver.CommandString(t, scenario)
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
 	issue, _ := store.CreateIssue("", "", "Resumed images", "", 0, nil)
-	if _, err := store.CreateIssueImage(issue.ID, "resume.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
+	image, err := store.CreateIssueImage(issue.ID, "resume.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	if err != nil {
 		t.Fatalf("CreateIssueImage: %v", err)
 	}
 	issue.ResumeThreadID = "thread-stale"
@@ -975,8 +976,13 @@ func TestRunAgentAppServerResumedThreadSkipsIssueImageInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkspace: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueImageStageDir))); !os.IsNotExist(err) {
-		t.Fatalf("expected resumed run not to stage issue images, got err=%v", err)
+	stagedPath := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueImageStageDir), image.ID+"-"+image.Filename)
+	stagedBytes, err := os.ReadFile(stagedPath)
+	if err != nil {
+		t.Fatalf("expected resumed run to stage issue image %s: %v", stagedPath, err)
+	}
+	if !bytes.Equal(stagedBytes, sampleRunnerPNGBytes()) {
+		t.Fatalf("unexpected staged image bytes for resumed run: %s", stagedPath)
 	}
 
 	turnStarts := turnStartPayloads(readTraceLines(t, traceFile))
@@ -984,8 +990,13 @@ func TestRunAgentAppServerResumedThreadSkipsIssueImageInputs(t *testing.T) {
 		t.Fatalf("expected one turn/start request, got %#v", turnStarts)
 	}
 	input, _ := turnStarts[0]["params"].(map[string]interface{})["input"].([]interface{})
-	if len(input) != 1 {
-		t.Fatalf("expected resumed thread to send text-only input, got %#v", input)
+	if len(input) != 2 {
+		t.Fatalf("expected resumed thread to send text plus image input, got %#v", input)
+	}
+	imageInput, _ := input[1].(map[string]interface{})
+	expectedPath := filepath.ToSlash(filepath.Join(".maestro", "issue-images", image.ID+"-"+image.Filename))
+	if imageInput["type"] != "localImage" || imageInput["path"] != expectedPath || imageInput["name"] != image.Filename {
+		t.Fatalf("unexpected resumed image input: %#v", imageInput)
 	}
 }
 

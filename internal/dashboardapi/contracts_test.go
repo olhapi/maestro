@@ -217,6 +217,34 @@ func TestBootstrapContractsExposePortfolioAndRuntimeOverview(t *testing.T) {
 	}
 }
 
+func TestIssueImageUploadRejectsOversizedMultipartBodies(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Oversized image", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewServer(store, testProvider{}).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	oversized := append(contractSamplePNGBytes(), bytes.Repeat([]byte{0}, int(kanban.MaxIssueImageBytes))...)
+	resp := requestMultipart(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/images", "file", "too-large.png", oversized)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized upload, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	if !strings.Contains(body["error"].(string), "too large") && !strings.Contains(body["error"].(string), "exceeds") {
+		t.Fatalf("expected size validation error, got %#v", body)
+	}
+}
+
 func TestBootstrapContractsMarkProjectsOutOfScopeForScopedServer(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
