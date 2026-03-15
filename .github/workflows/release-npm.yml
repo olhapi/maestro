@@ -155,7 +155,7 @@ jobs:
           node-version: 24
 
       - name: Download npm artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: dist/npm
           pattern: npm-*
@@ -185,7 +185,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Download npm artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: dist/npm
           pattern: npm-*
