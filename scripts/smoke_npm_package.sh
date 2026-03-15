@@ -11,7 +11,8 @@ usage() {
 Usage: scripts/smoke_npm_package.sh <version> <target>
 
 Installs the packed root package and the selected leaf package into a temporary
-project, then verifies the npm-installed CLI launches and preserves exit codes.
+project, then verifies the npm-installed CLI launches, serves the dashboard,
+and preserves exit codes.
 
 Examples:
   scripts/smoke_npm_package.sh v1.2.3 darwin-arm64
@@ -88,6 +89,8 @@ echo "Smoke testing $ROOT_PACKAGE_NAME with $LEAF_PACKAGE_NAME"
     echo "expected npm-installed maestro to preserve a non-zero exit code" >&2
     exit 1
   fi
+
+  node "$ROOT_DIR/scripts/smoke_installed_dashboard.mjs" "$TMP_DIR"
 )
 
 echo "Smoke test passed for $TARGET"
