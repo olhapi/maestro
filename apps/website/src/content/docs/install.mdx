@@ -72,17 +72,16 @@ If you contribute regularly across multiple machines or rely on CI often, you ca
 
 <DocsCommandField command={`pnpm exec turbo login && pnpm exec turbo link`} />
 
-The repository CI workflow will use `TURBO_TEAM` and `TURBO_TOKEN` automatically when those are configured in GitHub.
-
 For website work, the most useful root commands are:
 
 - `pnpm verify` for the full local verification suite before pushing
+- `pnpm run verify:pre-push` for the exact pre-push hook suite, including current-host npm smoke and retry-safety coverage
 - `pnpm run website:dev` for the local Astro docs server
 - `pnpm run website:check` for type and content validation
 - `pnpm run website:test` for the website test suite
 - `pnpm run website:build` for a production build check
 
-The hooks stay targeted. Frontend changes run frontend lint and tests, website changes run Astro checks and website tests, workspace and hook changes run the full `pnpm verify` suite, and `pre-push` runs that same full verifier before the push proceeds.
+The hooks stay targeted. Frontend changes run frontend lint and tests, website changes run Astro checks and website tests, workspace and hook changes run the full `pnpm verify` suite, and `pre-push` runs `pnpm run verify:pre-push` before the push proceeds with current-host npm smoke and the retry-safety harness included.
 
 ## Next step
 
