@@ -29,8 +29,12 @@ func TestOpenDashboardWhenReadyLaunchesBrowser(t *testing.T) {
 	})
 
 	var openedURL string
+	var launcherCanceled bool
+	var launcherHasDeadline bool
 	dashboardBrowserLauncher = func(ctx context.Context, rawURL string) error {
 		openedURL = rawURL
+		_, launcherHasDeadline = ctx.Deadline()
+		launcherCanceled = ctx.Err() != nil
 		return nil
 	}
 	dashboardHTTPClient = server.Client()
@@ -42,6 +46,12 @@ func TestOpenDashboardWhenReadyLaunchesBrowser(t *testing.T) {
 	}
 	if openedURL != server.URL {
 		t.Fatalf("expected browser launch %q, got %q", server.URL, openedURL)
+	}
+	if launcherHasDeadline {
+		t.Fatal("expected browser launch context without readiness deadline")
+	}
+	if launcherCanceled {
+		t.Fatal("expected browser launch context to remain active")
 	}
 }
 

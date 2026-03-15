@@ -60,7 +60,7 @@ func openDashboardWhenReady(ctx context.Context, baseURL string) error {
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return dashboardBrowserLauncher(readyCtx, baseURL)
+				return dashboardBrowserLauncher(context.WithoutCancel(ctx), baseURL)
 			}
 		}
 

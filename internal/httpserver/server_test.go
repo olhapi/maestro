@@ -255,6 +255,17 @@ func TestBaseURLForAddrUsesLoopbackForWildcardHosts(t *testing.T) {
 	}
 }
 
+func TestBaseURLForAddrUsesIPv6LoopbackForWildcardIPv6Hosts(t *testing.T) {
+	addr := &net.TCPAddr{
+		IP:   net.IPv6zero,
+		Port: 8787,
+	}
+
+	if got := baseURLForAddr(addr); got != "http://[::1]:8787" {
+		t.Fatalf("baseURLForAddr(%v) = %q, want %q", addr, got, "http://[::1]:8787")
+	}
+}
+
 func TestServerBaseURLUsesListenerAddr(t *testing.T) {
 	server := &Server{
 		listenerAddr: &net.TCPAddr{
@@ -274,7 +285,7 @@ func TestBaseURLForAddrHandlesSplitHostPortAddresses(t *testing.T) {
 		want string
 	}{
 		{addr: nil, want: ""},
-		{addr: staticAddr("[::]:8787"), want: "http://127.0.0.1:8787"},
+		{addr: staticAddr("[::]:8787"), want: "http://[::1]:8787"},
 		{addr: staticAddr("example.com:8787"), want: "http://example.com:8787"},
 		{addr: staticAddr("not-a-host-port"), want: ""},
 	}

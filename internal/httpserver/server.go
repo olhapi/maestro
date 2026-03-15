@@ -144,6 +144,9 @@ func normalizeBaseURLHost(host string) string {
 
 	ip := net.ParseIP(host)
 	if ip != nil && ip.IsUnspecified() {
+		if ip.To4() == nil {
+			return "::1"
+		}
 		return "127.0.0.1"
 	}
 	return host
