@@ -49,8 +49,16 @@ body {
   color: white;
   font-family: var(--font-sans);
   background:
-    radial-gradient(circle at top left, rgba(196, 255, 87, 0.1), transparent 24%),
-    radial-gradient(circle at top right, rgba(83, 217, 255, 0.08), transparent 28%),
+    radial-gradient(
+      circle at top left,
+      rgba(196, 255, 87, 0.1),
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at top right,
+      rgba(83, 217, 255, 0.08),
+      transparent 28%
+    ),
     linear-gradient(180deg, #0b0d10 0%, #07080a 100%);
 }
 
@@ -63,7 +71,11 @@ body::before {
     linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
   background-size: 4rem 4rem;
-  mask-image: linear-gradient(180deg, rgba(255, 255, 255, 0.55), transparent 85%);
+  mask-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.55),
+    transparent 85%
+  );
   opacity: 0.26;
 }
 
@@ -99,7 +111,11 @@ input {
 .panel {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.07),
+    rgba(255, 255, 255, 0.03)
+  );
   box-shadow: var(--shadow-panel);
   backdrop-filter: blur(20px);
 }
@@ -149,7 +165,11 @@ input {
 
 .button-primary {
   border: 1px solid rgba(196, 255, 87, 0.35);
-  background: linear-gradient(135deg, rgba(196, 255, 87, 0.22), rgba(255, 255, 255, 0.08));
+  background: linear-gradient(
+    135deg,
+    rgba(196, 255, 87, 0.22),
+    rgba(255, 255, 255, 0.08)
+  );
   color: white;
 }
 
@@ -320,101 +340,16 @@ input {
   min-width: 0;
 }
 
-.architecture-diagram-card {
-  position: relative;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.architecture-diagram-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at top left, rgba(196, 255, 87, 0.16), transparent 34%),
-    radial-gradient(circle at top right, rgba(83, 217, 255, 0.14), transparent 38%),
-    linear-gradient(90deg, rgba(196, 255, 87, 0.08) 0%, rgba(196, 255, 87, 0) 30%, rgba(83, 217, 255, 0) 68%, rgba(83, 217, 255, 0.08) 100%);
-  opacity: 0.95;
-}
-
-.architecture-diagram-header {
+.architecture-diagram-image {
   position: relative;
   z-index: 1;
-}
-
-.architecture-diagram-header .kicker {
-  margin-bottom: 0.65rem;
-}
-
-.architecture-diagram-title {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: clamp(1.35rem, 2vw, 1.7rem);
-  font-weight: 600;
-  line-height: 1.04;
-  letter-spacing: -0.03em;
-  color: white;
-}
-
-.architecture-diagram-description {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.7;
-}
-
-.architecture-diagrams pre.mermaid,
-.docs-copy .architecture-diagrams pre.mermaid {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  justify-content: flex-start;
-  margin: 1.1rem 0 0;
-  min-height: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
-  overflow: auto;
-}
-
-.architecture-diagrams pre.mermaid:not([data-processed]),
-.docs-copy .architecture-diagrams pre.mermaid:not([data-processed]) {
-  background: transparent;
-}
-
-.architecture-diagrams pre.mermaid[data-processed],
-.docs-copy .architecture-diagrams pre.mermaid[data-processed] {
-  min-height: 0;
-  background: transparent;
-}
-
-.architecture-diagrams pre.mermaid svg,
-.docs-copy .architecture-diagrams pre.mermaid svg {
   display: block;
-  width: auto;
-  max-width: none;
-  height: auto;
-  margin-inline: auto;
-}
-
-.architecture-diagrams :is(.label, .cluster-label, .edgeLabel) {
-  font-family: var(--font-sans);
-}
-
-.architecture-diagrams .nodeLabel,
-.architecture-diagrams .edgeLabel {
-  letter-spacing: -0.01em;
-}
-
-.architecture-diagrams--docs {
-  margin-top: 1.5rem;
-}
-
-.architecture-diagrams--home .architecture-diagram-card {
-  height: 100%;
   width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 1rem;
+  max-width: 572px;
 }
 
 @media (max-width: 768px) {
@@ -428,19 +363,6 @@ input {
     max-width: 100%;
     overflow-x: auto;
     white-space: nowrap;
-  }
-
-  .architecture-diagram-card {
-    padding: 1.15rem;
-  }
-
-  .architecture-diagram-title {
-    font-size: 1.25rem;
-  }
-
-  .architecture-diagrams pre.mermaid,
-  .docs-copy .architecture-diagrams pre.mermaid {
-    margin-top: 0.95rem;
   }
 }
 

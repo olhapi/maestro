@@ -157,12 +157,14 @@ func (a *cliApp) newRunCmd() *cobra.Command {
 					_, _ = fmt.Fprintf(a.stderr, "failed to stop private MCP daemon: %v\n", closeErr)
 				}
 			}()
+			var publicServer *httpserver.Server
 			if port != "" {
 				addr := port
 				if !strings.Contains(addr, ":") {
 					addr = ":" + addr
 				}
-				if _, err := httpserver.Start(ctx, addr, store, orch); err != nil {
+				publicServer, err = httpserver.Start(ctx, addr, store, orch)
+				if err != nil {
 					return wrapRuntime(err, "failed to start HTTP API")
 				}
 			}
@@ -172,6 +174,9 @@ func (a *cliApp) newRunCmd() *cobra.Command {
 				<-sigChan
 				cancel()
 			}()
+			if publicServer != nil {
+				maybeOpenDashboard(ctx, publicServer.BaseURL())
+			}
 			if err := orch.Run(ctx); err != nil && err != context.Canceled {
 				return wrapRuntime(err, "orchestrator error")
 			}

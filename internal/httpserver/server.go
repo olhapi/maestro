@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +20,8 @@ import (
 )
 
 type Server struct {
-	http *http.Server
+	http         *http.Server
+	listenerAddr net.Addr
 }
 
 const uiDevProxyEnv = "MAESTRO_UI_DEV_PROXY_URL"
@@ -107,5 +109,45 @@ func Start(ctx context.Context, addr string, store *kanban.Store, provider dashb
 		}
 	}()
 
-	return &Server{http: srv}, nil
+	return &Server{http: srv, listenerAddr: ln.Addr()}, nil
+}
+
+func (s *Server) BaseURL() string {
+	return baseURLForAddr(s.listenerAddr)
+}
+
+func baseURLForAddr(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+
+	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		host := normalizeBaseURLHost("")
+		if tcpAddr.IP != nil && len(tcpAddr.IP) > 0 {
+			host = normalizeBaseURLHost(tcpAddr.IP.String())
+		}
+		return "http://" + net.JoinHostPort(host, strconv.Itoa(tcpAddr.Port))
+	}
+
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(normalizeBaseURLHost(host), port)
+}
+
+func normalizeBaseURLHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "127.0.0.1"
+	}
+
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsUnspecified() {
+		if ip.To4() == nil {
+			return "::1"
+		}
+		return "127.0.0.1"
+	}
+	return host
 }

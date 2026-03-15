@@ -6,19 +6,19 @@ export const xUrl = "https://x.com/ollhapi";
 
 export const durableSurfaces = [
   {
-    title: "Local tracker",
+    title: "Shared local state",
     description:
-      "Keep projects, blockers, issue state, and local screenshots visible in a durable SQLite-backed board without depending on a hosted tracker.",
+      "Keep projects, blockers, screenshots, and run history in one local tracker so you can leave the loop and return without rebuilding context.",
   },
   {
-    title: "MCP bridge",
+    title: "Live MCP handoff",
     description:
-      "Expose that same live tracker through `maestro mcp` so your coding agent sees the state the daemon is actually supervising.",
+      "Expose that same queue through `maestro mcp` so your agent sees the work and state the daemon is actually supervising.",
   },
   {
-    title: "Orchestrator",
+    title: "Visible runtime",
     description:
-      "Keep workspaces, retries, logs, and runtime state in view while Maestro routes ready issues into the next execution loop.",
+      "Let Maestro keep routing ready issues while you watch retries, sessions, logs, and live state from the control center.",
   },
 ] as const;
 
@@ -27,19 +27,19 @@ export const quickstartSteps = [
     title: "Install",
     command: "npm install -g @olhapi/maestro",
     detail:
-      "Global install for macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.",
+      "Install the local runtime once, then use the same command in every repo you want to supervise.",
   },
   {
     title: "Bootstrap workflow",
     command: "maestro workflow init .",
     detail:
-      "Write a repo-local WORKFLOW.md with the default Kanban + Codex settings.",
+      "Setup repo contract once so Maestro can keep making the same handoff decisions while you are elsewhere.",
   },
   {
     title: "Start orchestration",
     command: "maestro run",
     detail:
-      "Run the daemon, default HTTP API on 8787, and embedded control center.",
+      "Start the daemon and embedded control center so the queue keeps moving while status, retries, and sessions stay visible.",
   },
 ] as const;
 
@@ -48,30 +48,30 @@ export const docsPreview = [
     title: "Install and quickstart",
     href: "/docs/quickstart",
     description:
-      "Move from npm install to a running daemon and local dashboard in a few commands.",
+      "Get from install to a live local loop, then learn what keeps running after the initial handoff.",
   },
   {
     title: "Workflow configuration",
     href: "/docs/workflow-config",
     description:
-      "Tune agent mode, sandboxing, retries, dispatch, and phase prompts from WORKFLOW.md.",
+      "Tune how much autonomy Maestro gets, how it retries, and which guardrails stay in place.",
   },
   {
     title: "Operations and observability",
     href: "/docs/operations",
     description:
-      "Use the HTTP runtime endpoints, validation commands, extensions file, and logs without guesswork.",
+      "Check queue health, inspect live runs, and debug the daemon without guessing what happened.",
   },
 ] as const;
 
 export const tourChapters = [
   {
     id: "overview",
-    title: "Read system pressure before you dive into a single issue.",
+    title: "See whether the loop is healthy before you interrupt it",
     description:
-      "The overview surface keeps running agents, retry pressure, throughput, and board load visible so you can triage before the queue gets noisy.",
+      "Overview keeps running agents, retries, throughput, and board pressure visible so you can decide whether to step in or let the queue keep moving.",
     bullets: [
-      "24h throughput and retry trends stay in view.",
+      "Retry trends tell you whether the loop is drifting.",
       "State totals make backlog pressure obvious.",
       "Live runs and pending retries are one click away.",
     ],
@@ -79,9 +79,9 @@ export const tourChapters = [
   },
   {
     id: "work",
-    title: "Route work without losing the shape of the queue.",
+    title: "Adjust the queue without stopping the rest of the work",
     description:
-      "The board keeps priority, blockers, live sessions, token burn, and the shared issue composer close together so planning and active execution share one surface.",
+      "The board keeps blockers, live sessions, token burn, and the shared composer together so you can reroute work and get back out quickly.",
     bullets: [
       "Drag issues between lanes or inspect them in place.",
       "Open the shared composer and dictate issue descriptions with browser speech input.",
@@ -92,11 +92,11 @@ export const tourChapters = [
   },
   {
     id: "issue-detail",
-    title: "See the execution transcript where the work actually happens.",
+    title: "Step back into one issue with the full trail intact",
     description:
-      "When you need context, the issue page keeps blockers, screenshots, branch state, token spend, and the activity feed in one dense but readable control panel.",
+      "When one run needs attention, the issue page keeps transcript, blockers, screenshots, branch state, and commands in one dense control panel.",
     bullets: [
-      "Execution state, screenshots, blockers, and commands stay adjacent.",
+      "Execution state, screenshots, blockers, and follow-up commands stay adjacent.",
       "The transcript shows command progress and agent messages together.",
       "Attach or remove local images without leaving the issue.",
     ],
@@ -104,9 +104,9 @@ export const tourChapters = [
   },
   {
     id: "sessions",
-    title: "Follow live workspaces and retries without opening every issue.",
+    title: "Watch parallel work without opening every issue",
     description:
-      "The sessions surface is built for active supervision when multiple repos or issues are moving at once.",
+      "Sessions is the fast path when multiple repos or issues are moving and you only want to intervene where the loop is actually stuck.",
     bullets: [
       "See session identifiers, runtime churn, and last activity.",
       "Track retries and investigate stalled runs quickly.",
@@ -120,13 +120,13 @@ export const staticSearchEntries = [
   {
     title: "Home",
     href: "/",
-    description: "Product overview and launch quickstart.",
+    description: "Product overview for handing work off and checking back in.",
     section: "site",
   },
   {
     title: "Docs",
     href: "/docs",
-    description: "Documentation landing page.",
+    description: "Docs for starting, supervising, and tuning the loop.",
     section: "site",
   },
 ] as const;

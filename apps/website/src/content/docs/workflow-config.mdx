@@ -1,12 +1,16 @@
 ---
 title: Workflow config
-description: Tune agent mode, dispatch behavior, retries, sandboxing, and prompt rendering through the repo-local WORKFLOW.md file.
+description: Tune how much work Maestro can offload, how aggressively it retries, and which guardrails stay in place through WORKFLOW.md.
 section: concepts
 order: 2
 navLabel: Workflow config
 ---
 
+import DocsCommandField from "./_components/DocsCommandField.astro";
+
 ## What `WORKFLOW.md` controls
+
+When the default handoff is close but not quite right, `WORKFLOW.md` is where you tighten it. This file decides how much autonomy the loop gets and what guardrails stay in place when you are not actively driving.
 
 `WORKFLOW.md` is the repo-local source of truth for orchestration. It covers:
 
@@ -76,6 +80,60 @@ The workflow file is required for orchestration, but different commands treat a 
 - `maestro verify` checks readiness and returns remediation guidance
 - `maestro doctor` runs the same readiness checks with a different presentation
 - `maestro spec-check` is non-mutating and fails if the file is missing or invalid
+
+## Workflow init guide
+
+`maestro workflow init [repo_path]` writes a fresh `WORKFLOW.md` and then immediately runs the same readiness verification used by `maestro verify`. If `repo_path` is omitted, Maestro resolves it to your current working directory.
+
+Start with the non-interactive baseline when you want a predictable scaffold:
+
+<DocsCommandField command={`maestro workflow init . --defaults`} />
+
+That scaffold currently includes:
+
+- the local `kanban` tracker with `ready`, `in_progress`, and `in_review` as active states
+- `workspace.root: ./workspaces`
+- hook stubs with a `timeout_ms` budget
+- disabled `review` and `done` phases with starter prompt text already filled in
+- `agent.max_concurrent_agents: 3`, `max_turns: 4`, `max_automatic_retries: 8`, and `dispatch_mode: parallel`
+- `codex.command: codex app-server`, `agent.mode: app_server`, and `approval_policy: never`
+- a careful sandbox by default: `thread_sandbox: workspace-write` with `turn_sandbox_policy.type: workspaceWrite` and `networkAccess: true`
+- the default issue prompt template appended after the YAML front matter
+
+When `--defaults` is not set and both stdin and stdout are TTYs, `workflow init` becomes interactive. The current implementation prompts in this order:
+
+1. `Workspace root`
+2. Runtime selection: recommended Codex setup or `Custom / advanced`
+3. If you choose custom runtime, `Codex command` and `Agent mode (app_server|stdio)`
+4. `Sandbox profile`
+
+Use flags when you want to skip prompts but still override part of the scaffold:
+
+<DocsCommandField
+  command={`maestro workflow init . --defaults --workspace-root ./tmp/workspaces --codex-command "codex app-server" --agent-mode app_server --sandbox-profile secure`}
+/>
+
+- `--workspace-root` sets `workspace.root`
+- `--codex-command` sets the exact command Maestro launches
+- `--agent-mode` accepts `app_server` or `stdio`
+- `--sandbox-profile` accepts `careful`, `secure`, or `yolo`
+- `--force` overwrites an existing `WORKFLOW.md`
+
+The sandbox presets map directly onto the generated Codex settings:
+
+- `careful`: `workspace-write` with network access enabled
+- `secure`: `workspace-write` with network access disabled
+- `yolo`: `danger-full-access` with network access enabled
+
+Overwrite behavior is intentional. In non-interactive mode, an existing `WORKFLOW.md` is left alone unless you pass `--force`. In interactive mode, Maestro asks for confirmation before replacing the file.
+
+After the file is written, the CLI prints:
+
+- the initialized file path
+- a `Verification` block with readiness status and any warnings
+- `Next steps`
+
+If verification is clean, the suggested next steps are to register the repo, start the orchestrator, and re-run readiness checks later. If verification reports warnings, the next steps change to reviewing the warnings first, then re-running readiness checks before starting `maestro run`.
 
 ## Codex access requirements
 
