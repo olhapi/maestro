@@ -18,9 +18,9 @@ const groups = groupDocs(await getCollection("docs"));
   title="Documentation"
 >
   <section class="section-shell pb-12 pt-10 md:pb-16 md:pt-16">
-    <div class="grid gap-8 lg:grid-cols-[1.1fr_minmax(0,0.9fr)] lg:items-start">
+    <div class="grid gap-8">
       <div>
-        <h1 class="font-display text-[clamp(3rem,7vw,5.2rem)] font-semibold leading-[0.97] tracking-tight text-white">
+        <h1 class="font-display text-[clamp(2rem,4.4vw,3.45rem)] font-semibold leading-[0.96] tracking-tight text-white">
           Durable docs for a live orchestration loop.
         </h1>
         <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--muted)] md:text-xl">
@@ -32,7 +32,7 @@ const groups = groupDocs(await getCollection("docs"));
         </div>
       </div>
       <div class="panel min-w-0 p-6">
-        <div class="grid min-w-0 gap-4">
+        <div class="grid min-w-0 gap-4 lg:grid-cols-3">
           {quickstartSteps.map((step) => <CommandBlock client:load command={step.command} detail={step.detail} title={step.title} />)}
         </div>
       </div>

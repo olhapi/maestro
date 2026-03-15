@@ -25,9 +25,9 @@ export const durableSurfaces = [
 export const quickstartSteps = [
   {
     title: "Install",
-    command: "npm install -g @olhapi/maestro@next",
+    command: "npm install -g @olhapi/maestro",
     detail:
-      "Current prerelease global install for macOS arm64/x64, Linux glibc arm64/x64, and Windows x64 until v0.1.0 ships.",
+      "Global install for macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.",
   },
   {
     title: "Bootstrap workflow",
