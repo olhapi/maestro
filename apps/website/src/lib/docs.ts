@@ -35,19 +35,19 @@ export function getDocSlug(entry: DocsEntry) {
 export const sectionMeta: Record<DocsSectionKey, { title: string; description: string }> = {
   "getting-started": {
     title: "Getting Started",
-    description: "Install Maestro, bootstrap a workflow, and get the control center running.",
+    description: "Install Maestro, start a local loop, and make the first handoff.",
   },
   concepts: {
     title: "Core Concepts",
-    description: "Understand the runtime model, dashboard surface, and workflow file before you tune it.",
+    description: "Understand how Maestro keeps work moving and how to step back in without losing context.",
   },
   reference: {
     title: "Reference",
-    description: "Reach for commands, observability endpoints, extensions, and operational behavior quickly.",
+    description: "Look up the commands, APIs, and operations details that help you supervise or debug the loop.",
   },
   advanced: {
     title: "Advanced",
-    description: "Use the real Codex end-to-end harness when you need a deterministic full-loop verification.",
+    description: "Use deterministic end-to-end harnesses when you need to verify the full handoff and execution path.",
   },
 };
 

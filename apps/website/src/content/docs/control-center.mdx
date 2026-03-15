@@ -1,6 +1,6 @@
 ---
 title: Control center
-description: Read the embedded dashboard as the live supervision surface for queue state, retries, issue execution, and active sessions.
+description: Use the embedded dashboard to see whether the loop should keep running or whether a developer needs to step back in.
 section: concepts
 order: 1
 navLabel: Control center
@@ -8,17 +8,19 @@ navLabel: Control center
 
 ## What the dashboard is for
 
-The embedded dashboard is the live supervision surface for Maestro. It is designed to keep enough runtime state visible that you can answer three questions quickly:
+The embedded dashboard is where you re-enter the loop. It keeps enough runtime state visible that you can check progress, spot drift, and intervene only when the queue actually needs you.
 
-- What is the queue doing right now?
-- Which issue actually needs attention?
-- Are retries, sessions, or token burn drifting in the wrong direction?
+Three questions should be easy to answer from the dashboard:
+
+- Can I leave the loop alone for a while longer?
+- Which issue actually needs a developer right now?
+- Are retries, sessions, or token burn drifting in a way that needs intervention?
 
 ## Core surfaces
 
 ### Overview
 
-Use the overview page to read system pressure before opening a specific issue:
+Use the overview page before you open a specific issue. It tells you whether the loop is healthy enough to leave alone or whether it needs attention:
 
 - running agents
 - retry queue pressure
@@ -28,24 +30,17 @@ Use the overview page to read system pressure before opening a specific issue:
 
 ### Work board
 
-The work board keeps routing decisions spatial:
+The work board is where you reroute work without losing the rest of the queue:
 
 - drag issues between lanes
 - filter by project, state, and search
 - keep blockers, live sessions, and token spend visible on the card
 - inspect an issue quickly without losing board context
 
-### Issue composer
-
-The shared issue composer is available from the work board, projects, epic detail, issue detail, and preview flows. It is designed for fast updates when you already know the work shape:
-
-- dictate issue descriptions with browser speech input in supported Chromium-based browsers
-- watch live interim text land inline while typing stays locked during dictation
-- keep the same create and edit workflow everywhere because the composer is shared
 
 ### Issue detail
 
-Issue pages are intentionally dense. They keep the execution transcript, live state, blockers, branch and PR state, token usage, image attachments, and agent controls close together so you do not have to context-switch during supervision.
+Issue pages are intentionally dense because this is the main re-entry surface. They keep the execution transcript, live state, blockers, branch and PR state, token usage, image attachments, and agent controls close together so you do not have to context-switch during supervision.
 
 The image card on the issue page is where screenshots and bug captures live:
 

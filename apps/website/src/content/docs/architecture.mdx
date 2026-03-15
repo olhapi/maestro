@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Understand the local store, provider layer, daemon attach path, and HTTP surfaces before you start tuning behavior.
+description: Understand how the local store, MCP bridge, and daemon stay aligned so you can hand work off and still trust the loop.
 section: concepts
 order: 0
 navLabel: Architecture
@@ -22,7 +22,7 @@ The current codebase is organized around five connected runtime layers:
 
 The shortest operational view of the system: attach path, optional HTTP surface, local store, provider sync, and agent execution.
 
-These diagrams are derived from the current runtime shape in `cmd/maestro` and the internal runtime packages, then rendered directly in the docs site.
+This diagram is derived from the current runtime shape in `cmd/maestro` and the internal runtime packages, then captured as a static asset for the docs site.
 
 <ArchitectureDiagrams />
 

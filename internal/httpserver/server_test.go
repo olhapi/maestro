@@ -17,6 +17,11 @@ import (
 
 type testProvider struct{}
 
+type staticAddr string
+
+func (a staticAddr) Network() string { return "tcp" }
+func (a staticAddr) String() string  { return string(a) }
+
 func (testProvider) Status() map[string]interface{} {
 	return map[string]interface{}{"active_runs": 1}
 }
@@ -236,5 +241,47 @@ func TestStartFailsWhenPortIsOccupied(t *testing.T) {
 	defer cancel()
 	if _, err := Start(ctx, ln.Addr().String(), store, testProvider{}); err == nil {
 		t.Fatal("expected Start to fail on an occupied port")
+	}
+}
+
+func TestBaseURLForAddrUsesLoopbackForWildcardHosts(t *testing.T) {
+	addr := &net.TCPAddr{
+		IP:   net.IPv4zero,
+		Port: 8787,
+	}
+
+	if got := baseURLForAddr(addr); got != "http://127.0.0.1:8787" {
+		t.Fatalf("baseURLForAddr(%v) = %q, want %q", addr, got, "http://127.0.0.1:8787")
+	}
+}
+
+func TestServerBaseURLUsesListenerAddr(t *testing.T) {
+	server := &Server{
+		listenerAddr: &net.TCPAddr{
+			IP:   net.ParseIP("127.0.0.1"),
+			Port: 4321,
+		},
+	}
+
+	if got := server.BaseURL(); got != "http://127.0.0.1:4321" {
+		t.Fatalf("server.BaseURL() = %q, want %q", got, "http://127.0.0.1:4321")
+	}
+}
+
+func TestBaseURLForAddrHandlesSplitHostPortAddresses(t *testing.T) {
+	tests := []struct {
+		addr net.Addr
+		want string
+	}{
+		{addr: nil, want: ""},
+		{addr: staticAddr("[::]:8787"), want: "http://127.0.0.1:8787"},
+		{addr: staticAddr("example.com:8787"), want: "http://example.com:8787"},
+		{addr: staticAddr("not-a-host-port"), want: ""},
+	}
+
+	for _, tc := range tests {
+		if got := baseURLForAddr(tc.addr); got != tc.want {
+			t.Fatalf("baseURLForAddr(%v) = %q, want %q", tc.addr, got, tc.want)
+		}
 	}
 }

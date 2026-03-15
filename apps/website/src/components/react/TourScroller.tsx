@@ -45,18 +45,32 @@ export default function TourScroller({
     };
   }, [chapters.length]);
 
-  const activeChapter = useMemo(() => chapters[activeIndex] ?? chapters[0], [activeIndex, chapters]);
-  const desktopSectionHeight = mode === "tour" ? "min-h-[34rem]" : "min-h-[28rem]";
+  const activeChapter = useMemo(
+    () => chapters[activeIndex] ?? chapters[0],
+    [activeIndex, chapters],
+  );
+  const desktopSectionHeight =
+    mode === "tour" ? "min-h-[34rem]" : "min-h-[28rem]";
 
   return (
     <>
       <div className="grid gap-4 lg:hidden">
         {chapters.map((chapter) => (
           <div key={chapter.id} className="panel overflow-hidden p-5">
-            <img alt={chapter.title} className="rounded-[1.2rem] border border-white/8" src={chapter.image} />
-            {chapter.eyebrow ? <p className="eyebrow mt-5">{chapter.eyebrow}</p> : null}
-            <h3 className="font-display text-2xl font-semibold tracking-tight text-white">{chapter.title}</h3>
-            <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{chapter.description}</p>
+            <img
+              alt={chapter.title}
+              className="rounded-[1.2rem] border border-white/8"
+              src={chapter.image}
+            />
+            {chapter.eyebrow ? (
+              <p className="eyebrow mt-5">{chapter.eyebrow}</p>
+            ) : null}
+            <h3 className="font-display text-2xl font-semibold tracking-tight text-white">
+              {chapter.title}
+            </h3>
+            <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
+              {chapter.description}
+            </p>
             <ul className="mt-4 space-y-2 text-sm leading-6 text-[var(--muted-strong)]">
               {chapter.bullets.map((bullet) => (
                 <li key={bullet} className="flex gap-3">
@@ -81,14 +95,20 @@ export default function TourScroller({
             >
               <div
                 className={`panel w-full p-6 transition ${
-                  activeIndex === index ? "border-[rgba(196,255,87,0.24)]" : "opacity-75"
+                  activeIndex === index
+                    ? "border-[rgba(196,255,87,0.24)]"
+                    : "opacity-75"
                 }`}
               >
-                {chapter.eyebrow ? <p className="eyebrow">{chapter.eyebrow}</p> : null}
+                {chapter.eyebrow ? (
+                  <p className="eyebrow">{chapter.eyebrow}</p>
+                ) : null}
                 <h3 className="font-display text-[2rem] font-semibold leading-[1.02] tracking-tight text-white">
                   {chapter.title}
                 </h3>
-                <p className="mt-4 text-base leading-7 text-[var(--muted)]">{chapter.description}</p>
+                <p className="mt-4 text-base leading-7 text-[var(--muted)]">
+                  {chapter.description}
+                </p>
                 <ul className="mt-5 space-y-2.5 text-sm leading-6 text-[var(--muted-strong)]">
                   {chapter.bullets.map((bullet) => (
                     <li key={bullet} className="flex gap-3">
@@ -108,8 +128,14 @@ export default function TourScroller({
               <motion.div
                 key={activeChapter.id}
                 animate={{ opacity: 1, y: 0 }}
-                initial={reducedMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 18 }}
-                transition={reducedMotion ? { duration: 0 } : { duration: 0.38, ease: "easeOut" }}
+                initial={
+                  reducedMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 18 }
+                }
+                transition={
+                  reducedMotion
+                    ? { duration: 0 }
+                    : { duration: 0.38, ease: "easeOut" }
+                }
                 exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -12 }}
               >
                 <img
@@ -119,12 +145,14 @@ export default function TourScroller({
                 />
                 <div className="mt-5 flex items-center justify-between gap-4">
                   <div>
-                    {activeChapter.eyebrow ? <p className="eyebrow">{activeChapter.eyebrow}</p> : null}
+                    {activeChapter.eyebrow ? (
+                      <p className="eyebrow">{activeChapter.eyebrow}</p>
+                    ) : null}
                     <h4 className="font-display text-2xl font-semibold tracking-tight text-white">
                       {activeChapter.title}
                     </h4>
                   </div>
-                  <span className="rounded-full border border-white/10 px-3 py-1 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">
+                  <span className="rounded-full border border-white/10 px-3 py-1 text-xs uppercase tracking-[0.16em] text-[var(--muted)] shrink-0">
                     {activeIndex + 1} / {chapters.length}
                   </span>
                 </div>

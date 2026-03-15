@@ -66,7 +66,7 @@ const visibleHeadings = headings.filter((heading: MarkdownHeading) => heading.de
 
           {
             visibleHeadings.length > 0 ? (
-              <details class="panel overflow-hidden">
+              <details class="panel hidden overflow-hidden md:block">
                 <summary class="flex list-none items-start justify-between gap-3 px-5 py-4 text-left">
                   <div>
                     <p class="font-display text-lg font-semibold text-white">On this page</p>
@@ -95,8 +95,7 @@ const visibleHeadings = headings.filter((heading: MarkdownHeading) => heading.de
         </div>
 
         <article class="panel min-w-0 p-6 md:p-8">
-          <p class="badge-pill w-fit">{sectionTitle}</p>
-          <h1 class="mt-5 font-display text-4xl font-semibold leading-[1.02] tracking-tight text-white md:text-6xl">{title}</h1>
+          <h1 class="font-display text-4xl font-semibold leading-[1.02] tracking-tight text-white md:text-6xl">{title}</h1>
           <p class="mt-4 max-w-3xl text-base leading-7 text-[var(--muted)] md:text-lg">{description}</p>
           <div class="docs-copy mt-10 min-w-0">
             <slot />

@@ -1,6 +1,6 @@
 ---
 title: Install Maestro
-description: Install Maestro from npm on supported macOS, Linux, and Windows targets, or build it from source when you need an unsupported environment.
+description: Install Maestro, get the local runtime on your machine, and prepare a repo for a handoff you can supervise.
 section: getting-started
 order: 0
 navLabel: Install
@@ -10,11 +10,9 @@ import DocsCommandField from "./_components/DocsCommandField.astro";
 
 ## Install from npm
 
-If you are on a supported platform, the published npm package is the fastest path:
+Install is the one-time setup. Once `maestro` is on your `PATH`, you can start a local loop in any repo and come back to the same control surface when work is in flight.
 
-<DocsCommandField command={`npm install -g @olhapi/maestro`} />
-
-Refresh an existing install with:
+If you are on a supported platform, the published npm package is the fastest path to install or upgrade:
 
 <DocsCommandField command={`npm install -g @olhapi/maestro`} />
 
@@ -52,7 +50,7 @@ Contributor Docker build:
 
 - Install `go` if you need source builds or local development.
 - Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
-- Use the npm package when you want the shortest path to a working local install on a supported platform.
+- Use the npm package when you want the shortest path from machine setup to a loop you can start and leave running.
 
 ## Contributor tooling
 

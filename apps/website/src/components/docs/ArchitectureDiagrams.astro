@@ -5,69 +5,39 @@ const { context = "docs" } = Astro.props as {
 
 const isHome = context === "home";
 
-const runtimePathDiagram = `
-flowchart TB
-    MCPClient["MCP client<br>(via MCP)"] --> MCPBridge["maestro mcp<br>(stdio bridge)"]
-    MCPBridge --> MCPDaemon["private MCP daemon"]
-
-    BrowserCLI["Browser / live CLI helpers"] --> HTTP["public HTTP server (:port)"]
-    HTTP --> HTTPSurfaces["/, /api/v1/*,<br>/api/v1/app/*, /api/v1/ws"]
-
-    MCPDaemon --> Run["maestro run daemon"]
-    HTTPSurfaces --> Run
-
-    Run --> Provider["provider service"]
-    Run --> Orch["orchestrator"]
-
-    Provider <--> Store["local SQLite store"]
-    Provider --> Linear["Linear API (optional)"]
-
-    Orch --> Workspace["workspace lifecycle"]
-    Workspace --> Runner["agent runner"]
-    Runner --> Codex["Codex CLI"]
-
-    Workflow["WORKFLOW.md"] --> Orch
-    Workflow --> Runner
-
-    classDef accent fill:#17210c,stroke:#c4ff57,color:#ffffff,stroke-width:1.5px;
-    classDef cyan fill:#0e1a20,stroke:#53d9ff,color:#ffffff,stroke-width:1.5px;
-    classDef muted fill:#121418,stroke:#6b7485,color:#d9dee7,stroke-width:1px;
-
-    class MCPClient,MCPBridge,MCPDaemon accent;
-    class BrowserCLI,HTTP,HTTPSurfaces cyan;
-    class Run,Provider,Orch,Store,Linear,Workspace,Runner,Codex,Workflow muted;
-`.trim();
-
 const sections = [
   {
     description: isHome
       ? "Attach through MCP, keep the daemon in the middle, and let provider sync plus orchestration stay local."
       : "",
-    diagram: runtimePathDiagram,
+    image: isHome
+      ? {
+          alt: "Architecture diagram showing the MCP client and HTTP server paths flowing into the Maestro daemon, which coordinates providers, orchestration, storage, and the agent runner.",
+          height: 780,
+          src: "/images/screens/architecture-runtime.svg",
+          width: 1280,
+        }
+      : {
+          alt: "Screenshot of the live loop architecture diagram showing MCP and HTTP entry points flowing into the Maestro runtime, which then coordinates providers, orchestration, storage, and the agent runner.",
+          height: 606,
+          src: "/images/screens/architecture-live-loop.png",
+          width: 572,
+        },
   },
 ] as const;
 ---
 
-<div class:list={["architecture-diagrams", isHome ? "architecture-diagrams--home" : "architecture-diagrams--docs"]}>
+<div>
   {sections.map((section) => (
-    <section class="architecture-diagram-card panel p-5 md:p-6">
-      {section.description && (
-        <div class="architecture-diagram-header">
-          <p class="architecture-diagram-description">{section.description}</p>
-        </div>
-      )}
-      {
-        isHome ? (
-          <img
-            alt="Architecture diagram showing the MCP client and HTTP server paths flowing into the Maestro daemon, which coordinates providers, orchestration, storage, and the agent runner."
-            class="mt-4 w-full rounded-[1rem] border border-white/8 bg-[rgb(10,11,14)]"
-            loading="lazy"
-            src="/images/screens/architecture-runtime.svg"
-          />
-        ) : (
-          <pre class="mermaid">{section.diagram}</pre>
-        )
-      }
+    <section class="p-2">
+      <img
+        alt={section.image.alt}
+        class="architecture-diagram-image"
+        height={section.image.height}
+        loading="lazy"
+        src={section.image.src}
+        width={section.image.width}
+      />
     </section>
   ))}
 </div>

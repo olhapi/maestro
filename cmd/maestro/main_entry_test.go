@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +17,14 @@ import (
 func TestMainHelperProcess(t *testing.T) {
 	if os.Getenv("MAESTRO_MAIN_HELPER") != "1" {
 		return
+	}
+	if recordPath := os.Getenv("MAESTRO_RECORD_BROWSER_OPEN"); recordPath != "" {
+		dashboardInteractiveCheck = func() bool { return true }
+		dashboardOpenPollInterval = 10 * time.Millisecond
+		dashboardOpenTimeout = time.Second
+		dashboardBrowserLauncher = func(ctx context.Context, rawURL string) error {
+			return os.WriteFile(recordPath, []byte(rawURL), 0o644)
+		}
 	}
 	raw := os.Getenv("MAESTRO_MAIN_ARGS")
 	var args []string
@@ -121,9 +130,11 @@ Test prompt for {{ issue.identifier }}
 	}
 
 	addr := freeAddrForHelper(t)
+	recordPath := filepath.Join(t.TempDir(), "dashboard-url.txt")
 	cmd := exec.Command(os.Args[0], "-test.run=TestMainHelperProcess")
 	cmd.Env = append(os.Environ(),
 		"MAESTRO_MAIN_HELPER=1",
+		"MAESTRO_RECORD_BROWSER_OPEN="+recordPath,
 		"MAESTRO_MAIN_ARGS="+strings.Join([]string{
 			"run", "--workflow", workflowPath, "--db", dbPath, "--port", addr, "--" + strings.TrimPrefix(guardrailsAcknowledgementFlag, "--"), repoPath,
 		}, "\n"),
@@ -152,6 +163,23 @@ Test prompt for {{ issue.identifier }}
 		if err == nil {
 			resp.Body.Close()
 			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	expectedDashboardURL := "http://" + addr
+	for {
+		if ctx.Err() != nil {
+			t.Fatalf("run helper never opened dashboard: stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+		data, err := os.ReadFile(recordPath)
+		if err == nil {
+			if got := strings.TrimSpace(string(data)); got != expectedDashboardURL {
+				t.Fatalf("expected dashboard URL %q, got %q", expectedDashboardURL, got)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read dashboard record: %v", err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

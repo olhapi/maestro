@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Bootstrap a workflow file, register Maestro with Codex over MCP, start the orchestrator, and seed the tracker from a visible control center.
+description: Start a repo-local loop, hand work off to Maestro, and learn how to step back in through MCP and the control center.
 section: getting-started
 order: 1
 navLabel: Quickstart
@@ -8,13 +8,15 @@ navLabel: Quickstart
 
 import DocsCommandField from "./_components/DocsCommandField.astro";
 
+Quickstart is the shortest path to a safe handoff. You will write the repo contract, expose the live queue to Codex, start the daemon, and see where to check back in once the loop is running.
+
 ## 1. Initialize a workflow file
 
 Start in the repo you want Maestro to orchestrate:
 
 <DocsCommandField command={`maestro workflow init .`} />
 
-This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template.
+This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template. It is the contract Maestro will keep following while you are elsewhere.
 
 ## 2. Expose the tracker to MCP clients
 
@@ -24,9 +26,9 @@ If you installed Maestro from npm, add the shipped `maestro` command to Codex on
 
 That uses the npm-installed `maestro` binary already on your `PATH`; you do not need to point Codex at a manually built executable.
 
-`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Save the entry first, then start the daemon and let Codex attach through it.
+`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Save the entry first, then start the daemon and let Codex attach through it so the agent sees the same queue you will supervise later.
 
-## 3. Start the orchestrator
+## 3. Start the loop
 
 Start the daemon:
 
@@ -36,7 +38,7 @@ If `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. If `--por
 
 Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
 
-The loop is straightforward:
+This is the handoff point. Once the daemon is running, Maestro keeps doing the repetitive part while you move on to review, coding, or planning:
 
 1. Maestro loads `WORKFLOW.md`.
 2. It polls for issues in the `ready` state.
@@ -44,7 +46,11 @@ The loop is straightforward:
 4. It dispatches work to the configured agent command.
 5. It tracks retries, logs, runtime status, and the MCP transport used by `maestro mcp`.
 
+When you want to check progress, use the control center or the live CLI helpers instead of reconstructing state from scratch.
+
 ## 4. Create a first queue from Codex
+
+This seeds the same queue you will supervise from the dashboard once real work is in flight.
 
 With the daemon running, ask Codex to seed the tracker through the saved `maestro` MCP server:
 
@@ -54,9 +60,11 @@ With the daemon running, ask Codex to seed the tracker through the saved `maestr
 
 This example assumes the default local `kanban` provider, which supports epics, issue priorities, and blockers.
 
-## 5. Open the control center
+## 5. Open the control center when you want to step back in
 
 By default, `maestro run` serves the embedded dashboard, the live observability API, and the richer dashboard application API on the same HTTP server. Use `--port` to change the port.
+
+This is the fastest way to confirm the loop is still healthy before you interrupt it.
 
 - Dashboard: `http://127.0.0.1:8787/`
 - Live API root: `http://127.0.0.1:8787/api/v1/`

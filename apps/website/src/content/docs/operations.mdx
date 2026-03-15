@@ -1,6 +1,6 @@
 ---
 title: Operations and observability
-description: Use the HTTP runtime endpoints, workflow checks, extension file, logs, and Docker path without guesswork.
+description: Inspect the live daemon, verify the handoff path, and debug queue behavior without guessing what the loop is doing.
 section: reference
 order: 1
 navLabel: Operations
@@ -10,13 +10,15 @@ import DocsCommandField from "./_components/DocsCommandField.astro";
 
 ## HTTP surfaces
 
+This page is for the moments when the loop is already running and you need evidence fast. These commands and endpoints tell you what Maestro is doing without forcing you to reconstruct the state by hand.
+
 Start the daemon:
 
 <DocsCommandField command={`maestro run`} />
 
 If `--db` is omitted, `run` uses `~/.maestro/maestro.db`. If `--port` is omitted, `run` serves HTTP on `8787`.
 
-Maestro serves the embedded dashboard plus two related API surfaces.
+Maestro serves the embedded dashboard plus two related API surfaces. Together they give you a fast path to check whether work is moving normally or whether you need to step in.
 
 ### Live observability API
 

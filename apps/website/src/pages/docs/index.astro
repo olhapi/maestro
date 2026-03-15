@@ -13,7 +13,7 @@ const groups = groupDocs(await getCollection("docs"));
 
 <BaseLayout
   activeNav="/docs"
-  description="Read the Maestro docs from install and quickstart through workflow configuration, control-center concepts, and operational reference."
+  description="Read the Maestro docs to install the loop, hand off work safely, and step back in through the control center when you need control."
   path="/docs"
   title="Documentation"
 >
@@ -21,10 +21,10 @@ const groups = groupDocs(await getCollection("docs"));
     <div class="grid gap-8">
       <div>
         <h1 class="font-display text-[clamp(2rem,4.4vw,3.45rem)] font-semibold leading-[0.96] tracking-tight text-white">
-          Durable docs for a live orchestration loop.
+            Maestro documentation
         </h1>
-        <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--muted)] md:text-xl">
-          Start with install and quickstart, then move into the runtime model, workflow file, and operations reference when you need more control.
+        <p class="mt-6 text-lg leading-8 text-[var(--muted)] md:text-xl">
+          Start with install and quickstart, then learn how Maestro keeps the loop running, what the control center is telling you, and which knobs matter when you need to step back in.
         </p>
         <div class="mt-8 flex flex-wrap gap-3">
           <a class="button-primary" href="/docs/quickstart">Open quickstart</a>
@@ -41,8 +41,8 @@ const groups = groupDocs(await getCollection("docs"));
 
   <section class="section-shell pb-18 md:pb-24">
     <SectionHeading
-      description="The docs tree is intentionally compact. Each section maps to a real decision point in setup or operations instead of splitting the surface into thin pages."
-      title="Read in the order you actually hit the decisions."
+      description="Each section maps to a real operator moment: install, make the first handoff, understand what the loop is doing, then tune or debug it when needed."
+      title="Read by the moment you need to step back in"
     />
     <div class="mt-8 grid gap-4 lg:grid-cols-2">
       {groups.map((group) => (
@@ -64,22 +64,22 @@ const groups = groupDocs(await getCollection("docs"));
 
   <section class="section-shell pb-18">
     <SectionHeading
-      description="If you already know what you want, jump directly into the pages most likely to unblock setup, runtime supervision, or command lookup."
-      title="Three common entry points."
+      description="If you already know where the friction is, jump straight to the page that helps you start the loop, read its state, or change how it behaves."
+      title="Three common re-entry points"
     />
     <div class="mt-8 grid gap-4 md:grid-cols-3">
       <FeatureCard
-        description="Use this if you want the shortest path from install to a visible local run."
+        description="Use this when you want the shortest path from install to a loop that keeps working while you move on."
         href="/docs/quickstart"
         title="Install and quickstart"
       />
       <FeatureCard
-        description="Use this if you already have Maestro running and want to understand what the dashboard is telling you."
+        description="Use this when Maestro is already running and you need to decide whether to intervene or let it continue."
         href="/docs/control-center"
         title="Control center"
       />
       <FeatureCard
-        description="Use this if you are ready to tune retries, dispatch, sandboxing, or phase prompts."
+        description="Use this when the loop is running but you need tighter control over dispatch, retries, or guardrails."
         href="/docs/workflow-config"
         title="Workflow config"
       />
