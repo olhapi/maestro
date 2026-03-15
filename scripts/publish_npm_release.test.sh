@@ -89,10 +89,35 @@ case "$1" in
       exit 0
     fi
     if [[ "$2" == "-q" && "$3" == "--verify" ]]; then
+      if [[ "$4" == refs/tags/* && -n "${MOCK_LOCAL_TAG_SHA:-}" ]]; then
+        printf '%s\n' "$MOCK_LOCAL_TAG_SHA"
+        exit 0
+      fi
       exit 1
     fi
     ;;
+  rev-list)
+    if [[ "$2" == "-n" && "$3" == "1" && -n "${MOCK_LOCAL_TAG_SHA:-}" ]]; then
+      printf '%s\n' "$MOCK_LOCAL_TAG_SHA"
+      exit 0
+    fi
+    ;;
   ls-remote)
+    if [[ -n "${MOCK_REMOTE_TAG_SHA:-}" ]]; then
+      matched=0
+      for arg in "$@"; do
+        if [[ "$arg" == refs/tags/*^{} ]]; then
+          printf '%s\t%s\n' "$MOCK_REMOTE_TAG_SHA" "$arg"
+          matched=1
+        elif [[ "$arg" == refs/tags/* ]]; then
+          printf '%s\t%s\n' "${MOCK_REMOTE_TAG_OBJECT_SHA:-$MOCK_REMOTE_TAG_SHA}" "$arg"
+          matched=1
+        fi
+      done
+      if (( matched == 1 )); then
+        exit 0
+      fi
+    fi
     exit 2
     ;;
   fetch|pull|tag|push)
@@ -438,6 +463,108 @@ run_manual_fallback_test() {
     "olhapi-maestro-1.2.3.tgz"
 }
 
+run_existing_remote_tag_resume_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-resume.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  write_run_list_json "$tmp_dir/run-list.json" 404 failure "v1.2.3-rc.4"
+  write_manual_fallback_run_json "$tmp_dir/run-view.json"
+  create_artifacts "$tmp_dir/artifacts" "1.2.3-rc.4"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3-rc.1"
+
+  PATH="$tmp_dir/bin:$PATH" \
+  MOCK_LOG="$tmp_dir/log.txt" \
+  MOCK_HEAD_SHA="head999" \
+  MOCK_LOCAL_TAG_SHA="tag404" \
+  MOCK_REMOTE_TAG_SHA="tag404" \
+  MOCK_REMOTE_TAG_OBJECT_SHA="obj404" \
+  MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+  MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+  MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+  MOCK_FAIL_ON_REPUBLISH=1 \
+  MOCK_ARTIFACT_SOURCE="$tmp_dir/artifacts" \
+  MOCK_DIST_TAG="next" \
+  MOCK_VERSION="1.2.3-rc.4" \
+  RELEASE_POLL_SEC=0 \
+  RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+  RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+  "$SCRIPT_UNDER_TEST" "1.2.3-rc.4"
+
+  assert_not_contains "$tmp_dir/log.txt" "pnpm verify:pre-push"
+  assert_not_contains "$tmp_dir/log.txt" "git tag -a v1.2.3-rc.4 -m Release v1.2.3-rc.4"
+  assert_not_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.4"
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.4 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch"
+  assert_contains "$tmp_dir/log.txt" "gh run download 404 --repo olhapi/maestro --dir"
+}
+
+run_existing_local_tag_push_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-local-tag.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  write_run_list_json "$tmp_dir/run-list.json" 505 success "v1.2.3-rc.5"
+  write_success_run_json "$tmp_dir/run-view.json"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3-rc.5" \
+    "@olhapi/maestro-darwin-x64=1.2.3-rc.5" \
+    "@olhapi/maestro-linux-x64-gnu=1.2.3-rc.5" \
+    "@olhapi/maestro-linux-arm64-gnu=1.2.3-rc.5" \
+    "@olhapi/maestro-win32-x64=1.2.3-rc.5" \
+    "@olhapi/maestro=1.2.3-rc.5"
+
+  PATH="$tmp_dir/bin:$PATH" \
+  MOCK_LOG="$tmp_dir/log.txt" \
+  MOCK_HEAD_SHA="head505" \
+  MOCK_LOCAL_TAG_SHA="head505" \
+  MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+  MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+  MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+  MOCK_DIST_TAG="next" \
+  MOCK_VERSION="1.2.3-rc.5" \
+  RELEASE_POLL_SEC=0 \
+  RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+  RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+  "$SCRIPT_UNDER_TEST" "1.2.3-rc.5"
+
+  assert_contains "$tmp_dir/log.txt" "pnpm verify:pre-push"
+  assert_not_contains "$tmp_dir/log.txt" "git tag -a v1.2.3-rc.5 -m Release v1.2.3-rc.5"
+  assert_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.5"
+}
+
+run_stale_local_tag_guard_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-stale-tag.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  write_run_list_json "$tmp_dir/run-list.json" 606 success "v1.2.3-rc.6"
+  write_success_run_json "$tmp_dir/run-view.json"
+
+  if PATH="$tmp_dir/bin:$PATH" \
+    MOCK_LOG="$tmp_dir/log.txt" \
+    MOCK_HEAD_SHA="head606" \
+    MOCK_LOCAL_TAG_SHA="tag606" \
+    MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+    MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+    MOCK_DIST_TAG="next" \
+    MOCK_VERSION="1.2.3-rc.6" \
+    RELEASE_POLL_SEC=0 \
+    RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+    RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+    "$SCRIPT_UNDER_TEST" "1.2.3-rc.6"; then
+    fail "stale local tag test should have failed"
+  fi
+
+  assert_not_contains "$tmp_dir/log.txt" "pnpm verify:pre-push"
+  assert_not_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.6"
+}
+
 run_dirty_worktree_guard_test() {
   local tmp_dir
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-dirty.XXXXXX")"
@@ -469,4 +596,7 @@ run_success_path_test
 run_double_dash_passthrough_test
 run_tag_specific_run_selection_test
 run_manual_fallback_test
+run_existing_remote_tag_resume_test
+run_existing_local_tag_push_test
+run_stale_local_tag_guard_test
 run_dirty_worktree_guard_test
