@@ -19,6 +19,8 @@ The script will:
 - verify npm dist-tags when GitHub trusted publishing succeeds
 - fall back to downloading the workflow artifacts and running local `npm publish` in leaf-first order when the workflow build/smoke jobs succeed but `publish-npm` is skipped or fails
 
+If the tag already exists on `origin`, rerunning the helper will resume that release instead of trying to recreate the tag. This is intended for cases where the GitHub workflow finished but npm publish still needs the local artifact fallback.
+
 If the fallback path is used, npm may pause for browser-based account confirmation before it can publish the tarballs.
 
 ## First public prerelease bootstrap

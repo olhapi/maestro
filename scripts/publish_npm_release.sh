@@ -136,6 +136,37 @@ validate_version() {
   fi
 }
 
+local_tag_target_sha() {
+  git rev-list -n 1 "$TAG"
+}
+
+remote_tag_target_sha() {
+  local remote_refs fallback_sha=""
+  if ! remote_refs="$(git ls-remote --tags origin "refs/tags/$TAG^{}" "refs/tags/$TAG" 2>/dev/null)"; then
+    return 1
+  fi
+
+  local line sha ref
+  while IFS=$'\t' read -r sha ref; do
+    case "$ref" in
+      "refs/tags/$TAG^{}")
+        printf '%s\n' "$sha"
+        return 0
+        ;;
+      "refs/tags/$TAG")
+        fallback_sha="$sha"
+        ;;
+    esac
+  done <<<"$remote_refs"
+
+  if [[ -n "$fallback_sha" ]]; then
+    printf '%s\n' "$fallback_sha"
+    return 0
+  fi
+
+  return 1
+}
+
 ensure_release_branch_state() {
   local current_branch
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -158,14 +189,48 @@ ensure_release_branch_state() {
   if [[ "$local_head" != "$remote_head" ]]; then
     fail "local main is not aligned with origin/main after pull"
   fi
-  RELEASE_HEAD_SHA="$local_head"
+  CURRENT_HEAD_SHA="$local_head"
+
+  local local_tag_sha="" remote_tag_sha=""
+  local has_local_tag="0"
+  local has_remote_tag="0"
 
   if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
-    fail "tag already exists locally: $TAG"
+    has_local_tag="1"
+    local_tag_sha="$(local_tag_target_sha)"
   fi
-  if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-    fail "tag already exists on origin: $TAG"
+  if remote_tag_sha="$(remote_tag_target_sha)"; then
+    has_remote_tag="1"
   fi
+
+  if [[ "$has_local_tag" == "1" && "$has_remote_tag" == "1" ]]; then
+    if [[ "$local_tag_sha" != "$remote_tag_sha" ]]; then
+      fail "local tag $TAG points to $local_tag_sha but origin points to $remote_tag_sha"
+    fi
+    TAG_TARGET_SHA="$local_tag_sha"
+    CREATE_RELEASE_TAG="0"
+    PUSH_RELEASE_TAG="0"
+    RUN_RELEASE_VERIFICATION="0"
+    log "tag already exists on origin: $TAG (commit $TAG_TARGET_SHA); resuming release flow"
+    return 0
+  fi
+
+  if [[ "$has_local_tag" == "1" ]]; then
+    if [[ "$local_tag_sha" != "$CURRENT_HEAD_SHA" ]]; then
+      fail "local tag $TAG already exists at $local_tag_sha, but current HEAD is $CURRENT_HEAD_SHA"
+    fi
+    TAG_TARGET_SHA="$local_tag_sha"
+    CREATE_RELEASE_TAG="0"
+    PUSH_RELEASE_TAG="1"
+    RUN_RELEASE_VERIFICATION="1"
+    log "tag already exists locally at HEAD: $TAG; reusing it"
+    return 0
+  fi
+
+  TAG_TARGET_SHA="$CURRENT_HEAD_SHA"
+  CREATE_RELEASE_TAG="1"
+  PUSH_RELEASE_TAG="1"
+  RUN_RELEASE_VERIFICATION="1"
 }
 
 find_release_run() {
@@ -340,11 +405,15 @@ main() {
   validate_version "$raw_version"
   VERSION="${raw_version#v}"
   TAG="v$VERSION"
-  RELEASE_HEAD_SHA=""
+  CURRENT_HEAD_SHA=""
+  TAG_TARGET_SHA=""
   RELEASE_RUN_ID=""
   RELEASE_RUN_URL=""
   RELEASE_RUN_JSON_FILE=""
   RELEASE_ARTIFACT_DIR=""
+  CREATE_RELEASE_TAG="0"
+  PUSH_RELEASE_TAG="0"
+  RUN_RELEASE_VERIFICATION="0"
 
   local dist_tag="latest"
   if [[ "$VERSION" == *-* ]]; then
@@ -353,16 +422,22 @@ main() {
 
   ensure_release_branch_state
 
-  log "running release verification gate"
-  (
-    cd "$ROOT_DIR"
-    pnpm verify:pre-push
-  )
+  if [[ "$RUN_RELEASE_VERIFICATION" == "1" ]]; then
+    log "running release verification gate"
+    (
+      cd "$ROOT_DIR"
+      pnpm verify:pre-push
+    )
+  fi
 
-  log "creating release tag $TAG"
-  git tag -a "$TAG" -m "Release $TAG"
-  log "pushing release tag $TAG"
-  git push origin "refs/tags/$TAG"
+  if [[ "$CREATE_RELEASE_TAG" == "1" ]]; then
+    log "creating release tag $TAG"
+    git tag -a "$TAG" -m "Release $TAG"
+  fi
+  if [[ "$PUSH_RELEASE_TAG" == "1" ]]; then
+    log "pushing release tag $TAG"
+    git push origin "refs/tags/$TAG"
+  fi
 
   log "waiting for GitHub Actions run"
   find_release_run
