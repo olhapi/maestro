@@ -6,91 +6,102 @@ import net from "node:net";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
-const installDir = process.argv[2];
-
-if (!installDir) {
-  console.error("usage: smoke_installed_dashboard.mjs <install_dir>");
-  process.exit(1);
+if (isMainModule()) {
+  await main(process.argv[2]);
 }
 
-const resolvedInstallDir = path.resolve(installDir);
-const requireFromInstall = createRequire(path.join(resolvedInstallDir, "package.json"));
-const { getExePath } = requireFromInstall("@olhapi/maestro/lib/get-exe-path");
-const exePath = getExePath();
-const logPath = path.join(resolvedInstallDir, "maestro-run-smoke.log");
-const dbPath = path.join(resolvedInstallDir, "maestro-run-smoke.db");
+export { collectDashboardAssets, extractViteMappedAssets };
 
-const port = await freePort();
-const baseURL = `http://127.0.0.1:${port}`;
-const logFD = fs.openSync(logPath, "w");
-
-const child = spawn(
-  exePath,
-  [
-    "run",
-    "--db",
-    dbPath,
-    "--port",
-    String(port),
-    "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
-  ],
-  {
-    cwd: resolvedInstallDir,
-    detached: true,
-    stdio: ["ignore", logFD, logFD],
-  },
-);
-
-child.unref();
-fs.closeSync(logFD);
-
-try {
-  await waitForHealthy(`${baseURL}/health`);
-
-  const htmlResponse = await fetch(`${baseURL}/`);
-  if (!htmlResponse.ok) {
-    throw new Error(`dashboard root returned ${htmlResponse.status}`);
+async function main(installDir) {
+  if (!installDir) {
+    console.error("usage: smoke_installed_dashboard.mjs <install_dir>");
+    process.exit(1);
   }
 
-  const html = await htmlResponse.text();
-  if (!/<html/i.test(html) || !/<div id="root"><\/div>/i.test(html)) {
-    throw new Error("dashboard root did not return the embedded app shell");
-  }
+  const resolvedInstallDir = path.resolve(installDir);
+  const requireFromInstall = createRequire(path.join(resolvedInstallDir, "package.json"));
+  const { getExePath } = requireFromInstall("@olhapi/maestro/lib/get-exe-path");
+  const exePath = getExePath();
+  const logPath = path.join(resolvedInstallDir, "maestro-run-smoke.log");
+  const dbPath = path.join(resolvedInstallDir, "maestro-run-smoke.db");
 
-  const assets = collectDashboardAssets(baseURL, html);
-  if (assets.entryScripts.length === 0) {
-    throw new Error("dashboard root did not reference a frontend script bundle");
-  }
+  const port = await freePort();
+  const baseURL = `http://127.0.0.1:${port}`;
+  const logFD = fs.openSync(logPath, "w");
 
-  const fetchedAssets = new Map();
-  for (const entryURL of assets.entryScripts) {
-    const entryAsset = await validateServedAsset(entryURL, assets.byURL.get(entryURL));
-    fetchedAssets.set(entryURL, entryAsset);
-    for (const depPath of extractViteMappedAssets(entryAsset.body)) {
-      recordAsset(assets.byURL, depPath, baseURL, "vite-dependency");
+  const child = spawn(
+    exePath,
+    [
+      "run",
+      "--db",
+      dbPath,
+      "--port",
+      String(port),
+      "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
+    ],
+    {
+      cwd: resolvedInstallDir,
+      detached: true,
+      stdio: ["ignore", logFD, logFD],
+    },
+  );
+
+  child.unref();
+  fs.closeSync(logFD);
+
+  try {
+    await waitForHealthy(`${baseURL}/health`);
+
+    const htmlResponse = await fetch(`${baseURL}/`);
+    if (!htmlResponse.ok) {
+      throw new Error(`dashboard root returned ${htmlResponse.status}`);
     }
-  }
 
-  const failures = [];
-  for (const [assetURL, metadata] of assets.byURL.entries()) {
-    try {
-      if (!fetchedAssets.has(assetURL)) {
-        fetchedAssets.set(assetURL, await validateServedAsset(assetURL, metadata));
+    const html = await htmlResponse.text();
+    if (!/<html/i.test(html) || !/<div id="root"><\/div>/i.test(html)) {
+      throw new Error("dashboard root did not return the embedded app shell");
+    }
+
+    const assets = collectDashboardAssets(baseURL, html);
+    if (assets.entryScripts.length === 0) {
+      throw new Error("dashboard root did not reference a frontend script bundle");
+    }
+
+    const fetchedAssets = new Map();
+    for (const entryURL of assets.entryScripts) {
+      const entryAsset = await validateServedAsset(entryURL, assets.byURL.get(entryURL));
+      fetchedAssets.set(entryURL, entryAsset);
+      for (const depPath of extractViteMappedAssets(entryAsset.body)) {
+        recordAsset(assets.byURL, depPath, baseURL, "vite-dependency");
       }
-    } catch (error) {
-      failures.push(formatError(error));
     }
+
+    const failures = [];
+    for (const [assetURL, metadata] of assets.byURL.entries()) {
+      try {
+        if (!fetchedAssets.has(assetURL)) {
+          fetchedAssets.set(assetURL, await validateServedAsset(assetURL, metadata));
+        }
+      } catch (error) {
+        failures.push(formatError(error));
+      }
+    }
+    if (failures.length > 0) {
+      throw new Error(failures.join("\n"));
+    }
+  } catch (error) {
+    const details = buildFailureDetails(error, logPath);
+    console.error(details);
+    process.exitCode = 1;
+  } finally {
+    await terminateProcess(child.pid);
   }
-  if (failures.length > 0) {
-    throw new Error(failures.join("\n"));
-  }
-} catch (error) {
-  const details = buildFailureDetails(error, logPath);
-  console.error(details);
-  process.exitCode = 1;
-} finally {
-  await terminateProcess(child.pid);
+}
+
+function isMainModule() {
+  return Boolean(process.argv[1]) && pathToFileURL(process.argv[1]).href === import.meta.url;
 }
 
 async function freePort() {
@@ -229,7 +240,7 @@ function recordAsset(assets, rawURL, baseURL, source) {
 
 function extractViteMappedAssets(entryBody) {
   if (!entryBody.includes("__vite__mapDeps")) {
-    throw new Error("entry bundle did not expose __vite__mapDeps");
+    return [];
   }
   const depMatch = entryBody.match(/m\.f=(\[[^\]]*\])/);
   if (!depMatch) {
