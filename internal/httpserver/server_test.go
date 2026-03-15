@@ -147,6 +147,32 @@ func TestNewHandlerProxiesDashboardToDevServerWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestNewHandlerFallsBackToEmbeddedUIWhenDevServerIsUnavailable(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	t.Setenv(uiDevProxyEnv, "http://127.0.0.1:1")
+
+	handler := newHandler(store, testProvider{})
+
+	spaReq := httptest.NewRequest(http.MethodGet, "/projects/demo", nil)
+	spaRec := httptest.NewRecorder()
+	handler.ServeHTTP(spaRec, spaReq)
+
+	if spaRec.Code != http.StatusOK {
+		t.Fatalf("spa route: expected 200, got %d", spaRec.Code)
+	}
+	if contentType := spaRec.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
+		t.Fatalf("spa route: expected html content type, got %q", contentType)
+	}
+	if body := strings.ToLower(spaRec.Body.String()); !strings.Contains(body, "<!doctype html>") && !strings.Contains(body, "<html") {
+		t.Fatalf("spa route: expected embedded UI fallback, got %q", spaRec.Body.String())
+	}
+}
+
 func TestStartServesAndShutsDownWithContext(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
