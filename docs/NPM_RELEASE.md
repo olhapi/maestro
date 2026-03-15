@@ -2,6 +2,25 @@
 
 This runbook covers the first public npm publish for Maestro and the steady-state tag flow after trusted publishing is enabled.
 
+## One-command release
+
+Use the release helper when you want the repository to drive the full publish flow from a clean `main` checkout:
+
+```bash
+./scripts/publish_npm_release.sh v0.1.0-rc.2
+```
+
+The script will:
+
+- fetch tags and fast-forward `main` from `origin/main`
+- run `pnpm verify:pre-push`
+- create and push the annotated release tag
+- wait for `.github/workflows/release-npm.yml`
+- verify npm dist-tags when GitHub trusted publishing succeeds
+- fall back to downloading the workflow artifacts and running local `npm publish` in leaf-first order when the workflow build/smoke jobs succeed but `publish-npm` is skipped or fails
+
+If the fallback path is used, npm may pause for browser-based account confirmation before it can publish the tarballs.
+
 ## First public prerelease bootstrap
 
 Leave the GitHub repository variable `NPM_PUBLISH_ENABLED` unset or set to `false`. The release workflow will still build all five native tarballs, build the root package, and run both smoke-test stages, but the `publish-npm` job will stay skipped until trusted publishing is ready.
