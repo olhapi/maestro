@@ -1,5 +1,4 @@
 ---
-import ArchitectureDiagrams from "../components/docs/ArchitectureDiagrams.astro";
 import FeatureCard from "../components/FeatureCard.astro";
 import SectionHeading from "../components/SectionHeading.astro";
 import CommandBlock from "../components/react/CommandBlock";
@@ -78,16 +77,6 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
 
   <section class="section-shell pb-18 md:pb-24">
     <SectionHeading
-      description="The architecture stays compact. The attach path, daemon, tracker, and agent runner are close enough that you can explain the whole loop on one screen."
-      title="Keep the system shape legible even when the work itself gets messy."
-    />
-    <div class="mt-8">
-      <ArchitectureDiagrams context="home" />
-    </div>
-  </section>
-
-  <section class="section-shell pb-18 md:pb-24">
-    <SectionHeading
       description="The docs are organized around the path a new builder actually takes: install, quickstart, understand the runtime model, then tune workflow and operations details."
       title="Documentation stays one click from the product story."
     />
@@ -96,20 +85,4 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
     </div>
   </section>
 
-  <section class="section-shell pb-18">
-    <div class="panel grid gap-6 p-8 md:grid-cols-[1fr_auto] md:items-end md:p-10">
-      <div class="max-w-2xl">
-        <h2 class="font-display text-3xl font-semibold tracking-tight text-white md:text-5xl">
-          Begin with quickstart, then stay in the docs until the loop feels boring.
-        </h2>
-        <p class="mt-4 text-base leading-7 text-[var(--muted)] md:text-lg">
-          The goal is not a flashy landing page disconnected from the product. It is an engaging front door that turns directly into durable docs and the live product walkthrough on this page.
-        </p>
-      </div>
-      <div class="flex flex-wrap gap-3">
-        <a class="button-primary" href="/docs/quickstart">Read quickstart</a>
-        <a class="button-secondary" href="/docs">Browse docs</a>
-      </div>
-    </div>
-  </section>
 </BaseLayout>

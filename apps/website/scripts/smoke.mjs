@@ -4,9 +4,11 @@ import { join } from "node:path";
 const checks = [
   { file: "index.html", text: "Local-first orchestration for coding agents", mode: "include" },
   { file: "index.html", text: "Documentation stays one click from the product story.", mode: "include" },
-  { file: "index.html", text: "/images/screens/architecture-runtime.svg", mode: "include" },
+  { file: "index.html", text: "Keep the system shape legible even when the work itself gets messy.", mode: "omit" },
+  { file: "index.html", text: "Begin with quickstart, then stay in the docs until the loop feels boring.", mode: "omit" },
   { file: "index.html", text: "class=\"mermaid\"", mode: "omit" },
   { file: "docs/index.html", text: "Documentation", mode: "include" },
+  { file: "docs/index.html", text: "Durable docs for a live orchestration loop.", mode: "include" },
   { file: "docs/install/index.html", text: "Install Maestro", mode: "include" },
   { file: "docs/architecture/index.html", text: "The shortest operational view of the system:", mode: "include" },
   { file: "docs/architecture/index.html", text: "private MCP daemon", mode: "include" },

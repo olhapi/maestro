@@ -28,7 +28,7 @@ export default function HeroShowcase() {
         <img
           alt="Maestro work board control center view with the shared issue composer open"
           className="w-full object-contain"
-          src="/images/screens/work-control-center-speech.png"
+          src="/images/screens/work-control-center.webp"
         />
       </motion.div>
     </div>
