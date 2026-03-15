@@ -39,27 +39,41 @@ func TestHandlerServesEmbeddedAssetsWithoutSPAFallback(t *testing.T) {
 		t.Fatalf("read assets dir: %v", err)
 	}
 
-	var asset string
+	handler := Handler()
+	var checked int
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasSuffix(name, ".css") || strings.HasSuffix(name, ".js") {
-			asset = "/assets/" + name
-			break
+		if !strings.HasSuffix(name, ".css") && !strings.HasSuffix(name, ".js") {
+			continue
 		}
+
+		asset := "/assets/" + name
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, asset, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			contentType := rec.Header().Get("Content-Type")
+			if strings.HasSuffix(name, ".js") && !strings.Contains(contentType, "javascript") {
+				t.Fatalf("expected javascript content type, got %q", contentType)
+			}
+			if strings.HasSuffix(name, ".css") && !strings.Contains(contentType, "text/css") {
+				t.Fatalf("expected css content type, got %q", contentType)
+			}
+			body := rec.Body.String()
+			if body == "" {
+				t.Fatal("expected asset body")
+			}
+			if strings.Contains(strings.ToLower(body), "<html") {
+				t.Fatalf("expected asset body, got html fallback")
+			}
+		})
+		checked++
 	}
-	if asset == "" {
+	if checked == 0 {
 		t.Fatal("expected at least one embedded asset")
-	}
-
-	req := httptest.NewRequest(http.MethodGet, asset, nil)
-	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if strings.Contains(strings.ToLower(body), "<html") {
-		t.Fatalf("expected asset body, got html fallback")
 	}
 }

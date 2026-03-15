@@ -58,25 +58,32 @@ try {
     throw new Error("dashboard root did not return the embedded app shell");
   }
 
-  const scriptMatch = html.match(/<script[^>]+src="([^"]+)"/i);
-  if (!scriptMatch) {
+  const assets = collectDashboardAssets(baseURL, html);
+  if (assets.entryScripts.length === 0) {
     throw new Error("dashboard root did not reference a frontend script bundle");
   }
 
-  const assetURL = new URL(scriptMatch[1], baseURL).toString();
-  const assetResponse = await fetch(assetURL);
-  if (!assetResponse.ok) {
-    throw new Error(`dashboard asset returned ${assetResponse.status}`);
+  const fetchedAssets = new Map();
+  for (const entryURL of assets.entryScripts) {
+    const entryAsset = await validateServedAsset(entryURL, assets.byURL.get(entryURL));
+    fetchedAssets.set(entryURL, entryAsset);
+    for (const depPath of extractViteMappedAssets(entryAsset.body)) {
+      recordAsset(assets.byURL, depPath, baseURL, "vite-dependency");
+    }
   }
 
-  const contentType = assetResponse.headers.get("content-type") ?? "";
-  if (!/javascript|ecmascript/i.test(contentType)) {
-    throw new Error(`dashboard asset returned unexpected content type ${contentType}`);
+  const failures = [];
+  for (const [assetURL, metadata] of assets.byURL.entries()) {
+    try {
+      if (!fetchedAssets.has(assetURL)) {
+        fetchedAssets.set(assetURL, await validateServedAsset(assetURL, metadata));
+      }
+    } catch (error) {
+      failures.push(formatError(error));
+    }
   }
-
-  const assetBody = await assetResponse.text();
-  if (assetBody.trim() === "") {
-    throw new Error("dashboard asset body was empty");
+  if (failures.length > 0) {
+    throw new Error(failures.join("\n"));
   }
 } catch (error) {
   const details = buildFailureDetails(error, logPath);
@@ -165,6 +172,138 @@ function processExists(pid) {
     }
     throw error;
   }
+}
+
+function collectDashboardAssets(baseURL, html) {
+  const assets = new Map();
+
+  for (const tag of extractTags(html, "script")) {
+    if ((extractAttribute(tag, "type") ?? "").toLowerCase() !== "module") {
+      continue;
+    }
+    const src = extractAttribute(tag, "src");
+    if (src) {
+      recordAsset(assets, src, baseURL, "entry-script");
+    }
+  }
+
+  for (const tag of extractTags(html, "link")) {
+    const rel = (extractAttribute(tag, "rel") ?? "").toLowerCase();
+    const href = extractAttribute(tag, "href");
+    if (!href) {
+      continue;
+    }
+    if (rel === "modulepreload") {
+      recordAsset(assets, href, baseURL, "modulepreload");
+    } else if (rel === "stylesheet") {
+      recordAsset(assets, href, baseURL, "stylesheet");
+    }
+  }
+
+  return {
+    byURL: assets,
+    entryScripts: Array.from(assets.entries())
+      .filter(([, metadata]) => metadata.sources.has("entry-script"))
+      .map(([assetURL]) => assetURL),
+  };
+}
+
+function extractTags(html, tagName) {
+  return Array.from(html.matchAll(new RegExp(`<${tagName}\\b[^>]*>`, "gi")), (match) => match[0]);
+}
+
+function extractAttribute(tag, name) {
+  const match = tag.match(new RegExp(`\\b${name}=(["'])(.*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function recordAsset(assets, rawURL, baseURL, source) {
+  const resolvedURL = new URL(rawURL, baseURL).toString();
+  const entry = assets.get(resolvedURL) ?? { sourceOrder: [], sources: new Set() };
+  if (!entry.sources.has(source)) {
+    entry.sources.add(source);
+    entry.sourceOrder.push(source);
+  }
+  assets.set(resolvedURL, entry);
+}
+
+function extractViteMappedAssets(entryBody) {
+  if (!entryBody.includes("__vite__mapDeps")) {
+    throw new Error("entry bundle did not expose __vite__mapDeps");
+  }
+  const depMatch = entryBody.match(/m\.f=(\[[^\]]*\])/);
+  if (!depMatch) {
+    throw new Error("entry bundle did not expose a parsable Vite dependency list");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(depMatch[1]);
+  } catch (error) {
+    throw new Error(`failed to parse Vite dependency list: ${formatError(error)}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("Vite dependency list was not an array");
+  }
+  return parsed.filter(
+    (asset) => typeof asset === "string" && /\.(css|js)(?:$|[?#])/.test(asset),
+  );
+}
+
+async function validateServedAsset(assetURL, metadata) {
+  const response = await fetch(assetURL);
+  if (!response.ok) {
+    throw new Error(describeAssetFailure(assetURL, metadata, `returned ${response.status}`));
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = await response.text();
+  if (body.trim() === "") {
+    throw new Error(describeAssetFailure(assetURL, metadata, "body was empty"));
+  }
+  if (looksLikeHTML(body)) {
+    throw new Error(
+      describeAssetFailure(assetURL, metadata, `returned HTML: ${previewBody(body)}`),
+    );
+  }
+
+  const expectedPattern = expectedContentType(assetURL);
+  if (expectedPattern && !expectedPattern.test(contentType)) {
+    throw new Error(
+      describeAssetFailure(
+        assetURL,
+        metadata,
+        `returned unexpected content type ${contentType}`,
+      ),
+    );
+  }
+
+  return { body, contentType };
+}
+
+function describeAssetFailure(assetURL, metadata, message) {
+  const label = new URL(assetURL).pathname;
+  const sources = metadata?.sourceOrder?.join(", ") ?? "unknown";
+  return `asset ${label} (${sources}) ${message}`;
+}
+
+function expectedContentType(assetURL) {
+  const pathname = new URL(assetURL).pathname;
+  if (pathname.endsWith(".js")) {
+    return /javascript|ecmascript/i;
+  }
+  if (pathname.endsWith(".css")) {
+    return /text\/css/i;
+  }
+  return null;
+}
+
+function looksLikeHTML(body) {
+  return /<!doctype html|<html/i.test(body) || body.includes(`<div id="root"></div>`);
+}
+
+function previewBody(body) {
+  return body.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
 function buildFailureDetails(error, logPath) {
