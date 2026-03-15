@@ -17,7 +17,7 @@ Usage: scripts/smoke_npm_registry_install.sh <version> <target>
 
 Publishes the packed Maestro npm packages to a temporary local registry, then
 verifies that installing only @olhapi/maestro resolves the correct optional
-dependency for the current platform.
+dependency for the current platform and still serves the dashboard.
 
 Examples:
   scripts/smoke_npm_registry_install.sh v1.2.3 darwin-arm64
@@ -195,6 +195,8 @@ assert.equal(pkg.name, expected);
     echo "expected npm-installed maestro to preserve a non-zero exit code" >&2
     exit 1
   fi
+
+  node "$ROOT_DIR/scripts/smoke_installed_dashboard.mjs" "$TMP_DIR"
 )
 
 echo "Registry smoke test passed for $TARGET"
