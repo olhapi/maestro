@@ -210,8 +210,8 @@ ensure_dashboard_dist() {
 
   echo "Building embedded dashboard bundle"
   (
-    cd "$ROOT_DIR"
-    run_pnpm frontend:build
+    cd "$FRONTEND_APP_DIR"
+    run_pnpm build
   )
 
   if [[ ! -f "$FRONTEND_DIST_DIR/index.html" || ! -f "$FRONTEND_DIST_DIR/assets/index.js" ]]; then
