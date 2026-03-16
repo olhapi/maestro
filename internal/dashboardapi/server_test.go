@@ -16,11 +16,12 @@ import (
 )
 
 type testProvider struct {
-	snapshot         observability.Snapshot
-	sessions         map[string]interface{}
-	status           map[string]interface{}
-	projectRefreshes []string
-	projectStops     []string
+	snapshot                 observability.Snapshot
+	sessions                 map[string]interface{}
+	status                   map[string]interface{}
+	pendingInterruptsByIssue map[string]appserver.PendingInteraction
+	projectRefreshes         []string
+	projectStops             []string
 }
 
 type interruptProvider struct {
@@ -54,6 +55,12 @@ func (p testProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
 }
 
 func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+	for _, key := range []string{issueID, identifier} {
+		if interaction, ok := p.pendingInterruptsByIssue[key]; ok {
+			cloned := interaction.Clone()
+			return &cloned, true
+		}
+	}
 	return nil, false
 }
 
