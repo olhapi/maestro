@@ -11,15 +11,6 @@ OUT_ROOT="${OUT_ROOT:-$ROOT_DIR/dist}"
 STAGE_DIR="${STAGE_DIR:-$OUT_ROOT/npm-package}"
 PACK_DIR="${PACK_DIR:-$OUT_ROOT/npm}"
 ROOT_PACKAGE_NAME="@olhapi/maestro"
-GOCACHE="${GOCACHE:-$ROOT_DIR/.cache/go-build}"
-GOMODCACHE="${GOMODCACHE:-$ROOT_DIR/.cache/go-mod}"
-MAESTRO_DAEMON_REGISTRY_DIR="${MAESTRO_DAEMON_REGISTRY_DIR:-$ROOT_DIR/.cache/maestro-daemons}"
-NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$ROOT_DIR/.cache/npm}"
-
-export GOCACHE
-export GOMODCACHE
-export MAESTRO_DAEMON_REGISTRY_DIR
-export NPM_CONFIG_CACHE
 
 usage() {
   cat <<'EOF'
