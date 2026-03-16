@@ -302,6 +302,15 @@ func TestShouldContinueRunPhaseOnlyForSamePhaseWork(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:     "implementation continues for configured custom active state",
+			runPhase: kanban.WorkflowPhaseImplementation,
+			state:    kanban.State("qa"),
+			workflow: func(workflow *config.Workflow) {
+				workflow.Config.Tracker.ActiveStates = append(workflow.Config.Tracker.ActiveStates, "qa")
+			},
+			want: true,
+		},
+		{
 			name:     "review continues while review phase stays active",
 			runPhase: kanban.WorkflowPhaseReview,
 			state:    kanban.StateInReview,
