@@ -596,6 +596,63 @@ func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *t
 	}
 }
 
+func TestServiceUpdateIssueStoresLocalAgentMetadataForProviderBackedIssue(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     kanban.ProviderKindLinear,
+		ProviderIssueRef: "linear-1",
+		Identifier:       "LIN-1",
+		Title:            "Provider issue",
+		State:            kanban.StateBacklog,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	svc := NewService(store)
+	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+		kind:     kanban.ProviderKindLinear,
+		getIssue: issue,
+		updateFunc: func(_ context.Context, _ *kanban.Project, _ *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
+			if _, ok := updates["agent_name"]; ok {
+				t.Fatalf("expected local agent metadata to be excluded from provider update: %#v", updates)
+			}
+			if _, ok := updates["agent_prompt"]; ok {
+				t.Fatalf("expected local agent metadata to be excluded from provider update: %#v", updates)
+			}
+			return issue, nil
+		},
+	}
+
+	detail, err := svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"agent_name":   "marketing",
+		"agent_prompt": "Review homepage positioning.",
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if detail.AgentName != "marketing" || detail.AgentPrompt != "Review homepage positioning." {
+		t.Fatalf("expected local agent metadata to persist, got %#v", detail)
+	}
+}
+
 func TestServiceListIssueSummariesBestEffortContinuesAcrossProjects(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

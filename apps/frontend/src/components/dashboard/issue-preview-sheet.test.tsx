@@ -194,6 +194,34 @@ describe('IssuePreviewSheet', () => {
     expect(deleteButton.querySelector('svg')).not.toBeNull()
   })
 
+  it('shows assigned agent metadata when issue details load', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const summary = makeIssueSummary()
+    vi.mocked(api.getIssue).mockResolvedValue(
+      makeIssueDetail({
+        agent_name: 'marketing',
+        agent_prompt: 'Review the hero messaging before implementation.',
+      }),
+    )
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Assigned agent')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('marketing')).toBeInTheDocument()
+    expect(screen.getByText('Review the hero messaging before implementation.')).toBeInTheDocument()
+  })
+
   it('confirms deletion before calling the preview delete handler', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary()

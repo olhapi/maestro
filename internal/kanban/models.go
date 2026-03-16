@@ -171,6 +171,8 @@ type Issue struct {
 	WorkflowPhase    WorkflowPhase `json:"workflow_phase"`
 	Priority         int           `json:"priority,omitempty"` // Lower = higher priority
 	Labels           []string      `json:"labels,omitempty"`
+	AgentName        string        `json:"agent_name,omitempty"`
+	AgentPrompt      string        `json:"agent_prompt,omitempty"`
 	BranchName       string        `json:"branch_name,omitempty"`
 	PRURL            string        `json:"pr_url,omitempty"`
 	BlockedBy        []string      `json:"blocked_by,omitempty"` // Issue identifiers

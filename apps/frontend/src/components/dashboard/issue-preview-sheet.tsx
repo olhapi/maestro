@@ -326,6 +326,13 @@ export function IssuePreviewSheet({
             </div>
 
             <div className="grid gap-3 rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4 text-sm">
+              <div>
+                <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Assigned agent</div>
+                <div className="mt-2 text-white">{activeIssue.agent_name || "No agent assigned"}</div>
+                <div className="mt-1 text-[var(--muted-foreground)]">
+                  {activeIssue.agent_prompt || "No agent-specific prompt"}
+                </div>
+              </div>
               <div className="flex items-center gap-2 text-white">
                 <GitBranch className="size-4 text-[var(--accent)]" />
                 {activeIssue.branch_name || "No branch linked"}
