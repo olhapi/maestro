@@ -5,6 +5,13 @@ START_DB_PATH ?= $(HOME)/.maestro/maestro.db
 START_PORT ?= 8787
 START_REPO_PATH ?=
 MAESTRO_BIN ?= ./maestro
+GOCACHE ?= $(CURDIR)/.cache/go-build
+GOMODCACHE ?= $(CURDIR)/.cache/go-mod
+MAESTRO_DAEMON_REGISTRY_DIR ?= $(CURDIR)/.cache/maestro-daemons
+
+export GOCACHE
+export GOMODCACHE
+export MAESTRO_DAEMON_REGISTRY_DIR
 
 frontend-build:
 	pnpm run frontend:build
