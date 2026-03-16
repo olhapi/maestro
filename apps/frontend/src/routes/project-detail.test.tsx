@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
@@ -141,5 +141,46 @@ describe("ProjectDetailPage", () => {
     });
     expect(screen.getByText("Open the project settings and set Repo path to the local checkout for this project.")).toBeInTheDocument();
     expect(screen.getByText("Leave Workflow path empty to use WORKFLOW.md at the repo root, or set an explicit workflow file.")).toBeInTheDocument();
+  });
+
+  it("renders epic progress using terminal work counts", async () => {
+    const bootstrap = makeBootstrapResponse({
+      epics: [
+        {
+          ...makeBootstrapResponse().epics[0],
+          counts: {
+            backlog: 1,
+            ready: 0,
+            in_progress: 1,
+            in_review: 0,
+            done: 2,
+            cancelled: 1,
+          },
+        },
+      ],
+    });
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getProject).mockResolvedValue({
+      project: bootstrap.projects[0],
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+    });
+
+    renderWithQueryClient(<ProjectDetailPage />);
+
+    const progress = await screen.findByRole("progressbar", {
+      name: /observability completion/i,
+    });
+
+    expect(progress).toHaveAttribute("aria-valuetext", "3 of 5 issues closed");
+    expect(progress).toHaveAttribute("aria-valuenow", "3");
+    expect(progress).toHaveAttribute("aria-valuemax", "5");
+
+    const epicCard = progress.parentElement as HTMLElement;
+    expect(within(epicCard).getByText("Backlog 1")).toBeInTheDocument();
+    expect(within(epicCard).getByText("Ready 0")).toBeInTheDocument();
+    expect(within(epicCard).getByText("In progress 1")).toBeInTheDocument();
+    expect(within(epicCard).getByText("Review 0")).toBeInTheDocument();
   });
 });

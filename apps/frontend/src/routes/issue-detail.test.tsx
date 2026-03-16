@@ -387,9 +387,58 @@ describe("IssueDetailPage", () => {
     expect(screen.getByText("image/png")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /remove image/i }));
+    expect(api.deleteIssueImage).not.toHaveBeenCalled();
+
+    const confirmDialog = await screen.findByRole("dialog", {
+      name: /delete runtime\.png\?/i,
+    });
+    fireEvent.click(
+      within(confirmDialog).getByRole("button", { name: /delete image/i }),
+    );
 
     await waitFor(() => {
       expect(api.deleteIssueImage).toHaveBeenCalledWith(issue.identifier, "img-1");
+    });
+  });
+
+  it("confirms issue deletion before deleting the issue", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "backlog" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.deleteIssue).mockResolvedValue({ deleted: true });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Issue actions")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    expect(api.deleteIssue).not.toHaveBeenCalled();
+
+    const confirmDialog = await screen.findByRole("dialog", {
+      name: /delete iss-1\?/i,
+    });
+    fireEvent.click(
+      within(confirmDialog).getByRole("button", { name: /delete issue/i }),
+    );
+
+    await waitFor(() => {
+      expect(api.deleteIssue).toHaveBeenCalledWith("ISS-1");
     });
   });
 

@@ -79,7 +79,18 @@ function makeSessionsResponse() {
         issue_title: 'Alpha issue',
         source: 'live',
         active: true,
-        status: 'active',
+        status: 'waiting',
+        pending_interrupt: {
+          id: 'interrupt-1',
+          kind: 'approval',
+          requested_at: '2026-03-10T11:59:30Z',
+          last_activity_at: '2026-03-10T11:59:30Z',
+          last_activity: 'Applying migration changes after approval review',
+          collaboration_mode: 'plan',
+          approval: {
+            decisions: [{ value: 'approved', label: 'Approve once' }],
+          },
+        },
         phase: 'implementation',
         attempt: 2,
         run_kind: 'run_started',
@@ -160,6 +171,7 @@ describe('SessionsPage', () => {
     expect(screen.getByText('Alpha issue')).toBeInTheDocument()
     expect(screen.getByText('Zulu issue')).toBeInTheDocument()
     expect(screen.getByText('Bravo issue')).toBeInTheDocument()
+    expect(screen.getByText('Plan turn')).toBeInTheDocument()
     expect(screen.queryByText('Show details')).not.toBeInTheDocument()
     expect(screen.queryByText('Recent session history')).not.toBeInTheDocument()
 

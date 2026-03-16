@@ -38,6 +38,11 @@ type runningEntry struct {
 	startedAt time.Time
 }
 
+type pendingInteractionEntry struct {
+	interaction appserver.PendingInteraction
+	respond     appserver.InteractionResponder
+}
+
 type retryEntry struct {
 	Attempt        int       `json:"attempt"`
 	Phase          string    `json:"phase,omitempty"`
@@ -113,6 +118,8 @@ type Orchestrator struct {
 	claimed        map[string]struct{}
 	retries        map[string]retryEntry
 	paused         map[string]pausedEntry
+	pendingInteractions map[string]pendingInteractionEntry
+	pendingInteractionOrder []string
 	startedAt      time.Time
 	lastTickAt     time.Time
 	totalRuns      int
@@ -147,6 +154,7 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 		claimed:         make(map[string]struct{}),
 		retries:         make(map[string]retryEntry),
 		paused:          make(map[string]pausedEntry),
+		pendingInteractions: make(map[string]pendingInteractionEntry),
 		startedAt:       time.Now().UTC(),
 		liveSessions:    make(map[string]*appserver.Session),
 		sessionWrites:   make(map[string]sessionPersistenceState),
@@ -158,6 +166,8 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 		runner := agent.NewRunnerWithExtensions(manager, store, registry)
 		runner.SetSessionObserver(o.updateLiveSession)
 		runner.SetActivityObserver(o.updateIssueActivity)
+		runner.SetInteractionObserver(o.registerPendingInteraction)
+		runner.SetInteractionDoneObserver(o.clearPendingInteraction)
 		return runner
 	}
 	o.runner = o.runnerFactory(workflows)
@@ -189,6 +199,7 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 		claimed:            make(map[string]struct{}),
 		retries:            make(map[string]retryEntry),
 		paused:             make(map[string]pausedEntry),
+		pendingInteractions: make(map[string]pendingInteractionEntry),
 		startedAt:          time.Now().UTC(),
 		liveSessions:       make(map[string]*appserver.Session),
 		sessionWrites:      make(map[string]sessionPersistenceState),
@@ -199,6 +210,8 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 		runner := agent.NewRunnerWithExtensions(manager, store, registry)
 		runner.SetSessionObserver(o.updateLiveSession)
 		runner.SetActivityObserver(o.updateIssueActivity)
+		runner.SetInteractionObserver(o.registerPendingInteraction)
+		runner.SetInteractionDoneObserver(o.clearPendingInteraction)
 		return runner
 	}
 	return o
@@ -1198,6 +1211,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 	o.mu.Lock()
 	delete(o.liveSessions, runIssue.ID)
 	delete(o.paused, runIssue.ID)
+	o.clearPendingInteractionsForIssueLocked(runIssue.ID)
 	o.running[runIssue.ID] = entry
 	delete(o.retries, runIssue.ID)
 	o.appendEventLocked("run_started", map[string]interface{}{
@@ -1233,9 +1247,11 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		o.mu.Lock()
 		delete(o.running, issue.ID)
 		delete(o.liveSessions, issue.ID)
+		o.clearPendingInteractionsForIssueLocked(issue.ID)
 		o.mu.Unlock()
 		o.clearSessionWriteState(issue.ID)
 		o.clearIssueTokenSpendState(issue.ID)
+		observability.BroadcastUpdate()
 	}()
 
 	o.mu.Lock()
@@ -1368,6 +1384,7 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 	defer o.mu.Unlock()
 
 	o.successfulRuns++
+	previousState := issue.State
 	nextPhase, shouldContinue := o.advanceIssueAfterSuccess(workflow, issue, phase)
 	fields := map[string]interface{}{
 		"issue_id":   issue.ID,
@@ -1376,7 +1393,7 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 		"attempt":    attempt,
 	}
 	attachResultMetrics(fields, result)
-	if shouldContinue && shouldScheduleSuccessfulContinuation(phase, nextPhase) {
+	if shouldContinue && shouldScheduleSuccessfulContinuation(phase, nextPhase, previousState, issue.State) {
 		next := nextAttempt(attempt)
 		fields["next_retry"] = next
 		fields["next_phase"] = string(nextPhase)
@@ -1523,7 +1540,7 @@ func (o *Orchestrator) advanceIssueAfterSuccess(workflow *config.Workflow, issue
 				o.updateIssuePhase(issue, kanban.WorkflowPhaseReview)
 				return kanban.WorkflowPhaseReview, true
 			}
-			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			o.updateIssueStatePhase(issue, kanban.StateInProgress, kanban.WorkflowPhaseImplementation)
 			return kanban.WorkflowPhaseImplementation, true
 		case kanban.StateReady, kanban.StateInProgress:
 			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
@@ -1548,7 +1565,7 @@ func (o *Orchestrator) advanceIssueAfterSuccess(workflow *config.Workflow, issue
 				o.updateIssuePhase(issue, kanban.WorkflowPhaseReview)
 				return kanban.WorkflowPhaseReview, true
 			}
-			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			o.updateIssueStatePhase(issue, kanban.StateInProgress, kanban.WorkflowPhaseImplementation)
 			return kanban.WorkflowPhaseImplementation, true
 		case kanban.StateReady, kanban.StateInProgress:
 			if workflow.Config.Phases.Review.Enabled {
@@ -1790,17 +1807,11 @@ func pausesWithoutStateReset(errText string) bool {
 	}
 }
 
-func shouldScheduleSuccessfulContinuation(phase, nextPhase kanban.WorkflowPhase) bool {
-	switch {
-	case phase == kanban.WorkflowPhaseImplementation && nextPhase == kanban.WorkflowPhaseReview:
+func shouldScheduleSuccessfulContinuation(previousPhase, nextPhase kanban.WorkflowPhase, previousState, currentState kanban.State) bool {
+	if nextPhase != previousPhase {
 		return true
-	case phase == kanban.WorkflowPhaseImplementation && nextPhase == kanban.WorkflowPhaseDone:
-		return true
-	case phase == kanban.WorkflowPhaseReview && nextPhase == kanban.WorkflowPhaseDone:
-		return true
-	default:
-		return false
 	}
+	return previousState != currentState
 }
 
 func interruptedFailureStreak(events []kanban.RuntimeEvent) int {
@@ -2396,6 +2407,178 @@ func (o *Orchestrator) LiveSessions() map[string]interface{} {
 		out[entry.issue.Identifier] = cp
 	}
 	return map[string]interface{}{"sessions": out}
+}
+
+func (o *Orchestrator) PendingInterrupts() appserver.PendingInteractionSnapshot {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	current := o.currentPendingInteractionLocked()
+	snapshot := appserver.PendingInteractionSnapshot{
+		Count: len(o.pendingInteractions),
+	}
+	if current != nil {
+		cloned := current.Clone()
+		snapshot.Current = &cloned
+	}
+	return snapshot
+}
+
+func (o *Orchestrator) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+	issueID = strings.TrimSpace(issueID)
+	identifier = strings.TrimSpace(identifier)
+
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	for _, interactionID := range o.pendingInteractionOrder {
+		entry, ok := o.pendingInteractions[interactionID]
+		if !ok {
+			continue
+		}
+		interaction := entry.interaction
+		if interaction.IssueID == issueID || interaction.IssueIdentifier == identifier {
+			cloned := interaction.Clone()
+			return &cloned, true
+		}
+	}
+	return nil, false
+}
+
+func (o *Orchestrator) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+	o.mu.RLock()
+	entry, ok := o.pendingInteractions[strings.TrimSpace(interactionID)]
+	o.mu.RUnlock()
+	if !ok {
+		return appserver.ErrPendingInteractionNotFound
+	}
+	if entry.respond == nil {
+		return appserver.ErrPendingInteractionConflict
+	}
+	return entry.respond(ctx, interactionID, response)
+}
+
+func (o *Orchestrator) registerPendingInteraction(issueID string, interaction *appserver.PendingInteraction, responder appserver.InteractionResponder) {
+	if interaction == nil || strings.TrimSpace(issueID) == "" {
+		return
+	}
+
+	shouldBroadcast := false
+	o.mu.Lock()
+	entry, ok := o.running[issueID]
+	if ok {
+		enriched := interaction.Clone()
+		enriched.IssueID = issueID
+		enriched.IssueIdentifier = entry.issue.Identifier
+		enriched.IssueTitle = entry.issue.Title
+		enriched.Phase = string(entry.phase)
+		enriched.Attempt = entry.attempt
+		if strings.TrimSpace(enriched.LastActivity) == "" {
+			if session := o.liveSessions[issueID]; session != nil {
+				enriched.LastActivity = strings.TrimSpace(session.LastMessage)
+				if !session.LastTimestamp.IsZero() {
+					ts := session.LastTimestamp.UTC()
+					enriched.LastActivityAt = &ts
+				}
+			}
+		}
+		if _, exists := o.pendingInteractions[enriched.ID]; !exists {
+			o.pendingInteractionOrder = append(o.pendingInteractionOrder, enriched.ID)
+		}
+		o.pendingInteractions[enriched.ID] = pendingInteractionEntry{
+			interaction: enriched,
+			respond:     responder,
+		}
+		shouldBroadcast = true
+	}
+	o.mu.Unlock()
+
+	if shouldBroadcast {
+		observability.BroadcastUpdate()
+	}
+}
+
+func (o *Orchestrator) clearPendingInteraction(issueID string, interactionID string) {
+	if strings.TrimSpace(interactionID) == "" {
+		return
+	}
+
+	shouldBroadcast := false
+	o.mu.Lock()
+	if entry, ok := o.pendingInteractions[interactionID]; ok {
+		if issueID == "" || entry.interaction.IssueID == issueID {
+			delete(o.pendingInteractions, interactionID)
+			o.pendingInteractionOrder = filterPendingInteractionOrder(o.pendingInteractionOrder, interactionID)
+			shouldBroadcast = true
+		}
+	}
+	o.mu.Unlock()
+
+	if shouldBroadcast {
+		observability.BroadcastUpdate()
+	}
+}
+
+func (o *Orchestrator) clearPendingInteractionsForIssue(issueID string) {
+	if strings.TrimSpace(issueID) == "" {
+		return
+	}
+
+	shouldBroadcast := false
+	o.mu.Lock()
+	shouldBroadcast = o.clearPendingInteractionsForIssueLocked(issueID)
+	o.mu.Unlock()
+
+	if shouldBroadcast {
+		observability.BroadcastUpdate()
+	}
+}
+
+func (o *Orchestrator) clearPendingInteractionsForIssueLocked(issueID string) bool {
+	if len(o.pendingInteractions) == 0 {
+		return false
+	}
+	remainingOrder := make([]string, 0, len(o.pendingInteractionOrder))
+	removed := false
+	for _, interactionID := range o.pendingInteractionOrder {
+		entry, ok := o.pendingInteractions[interactionID]
+		if !ok {
+			continue
+		}
+		if entry.interaction.IssueID == issueID {
+			delete(o.pendingInteractions, interactionID)
+			removed = true
+			continue
+		}
+		remainingOrder = append(remainingOrder, interactionID)
+	}
+	o.pendingInteractionOrder = remainingOrder
+	return removed
+}
+
+func (o *Orchestrator) currentPendingInteractionLocked() *appserver.PendingInteraction {
+	for _, interactionID := range o.pendingInteractionOrder {
+		entry, ok := o.pendingInteractions[interactionID]
+		if !ok {
+			continue
+		}
+		interaction := entry.interaction.Clone()
+		return &interaction
+	}
+	return nil
+}
+
+func filterPendingInteractionOrder(order []string, removeID string) []string {
+	if len(order) == 0 {
+		return order
+	}
+	out := make([]string, 0, len(order))
+	for _, interactionID := range order {
+		if interactionID == removeID {
+			continue
+		}
+		out = append(out, interactionID)
+	}
+	return out
 }
 
 func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Session) {

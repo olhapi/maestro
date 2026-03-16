@@ -326,6 +326,57 @@ func TestApplyIssueActivityEventPersistsApprovalAndInputStatusRows(t *testing.T)
 	}
 }
 
+func TestApplyIssueActivityEventProjectsStructuredApprovalResolutionAsSuccess(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Structured approval timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 4, appserver.ActivityEvent{
+		Type:      "item.commandExecution.requestApproval",
+		RequestID: "req-structured",
+		ThreadID:  "thread-4",
+		TurnID:    "turn-4",
+		Command:   "curl https://api.github.com",
+		Raw: map[string]interface{}{
+			"params": map[string]interface{}{
+				"command": "curl https://api.github.com",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent approval request: %v", err)
+	}
+
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 4, appserver.ActivityEvent{
+		Type:      "item.commandExecution.approvalResolved",
+		RequestID: "req-structured",
+		ThreadID:  "thread-4",
+		TurnID:    "turn-4",
+		Status:    "accept_with_execpolicy_amendment",
+		Raw: map[string]interface{}{
+			"decision":       "accept_with_execpolicy_amendment",
+			"decision_label": "Approve and store rule",
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent approval resolved: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one merged approval row, got %#v", entries)
+	}
+	if entries[0].Status != "accept_with_execpolicy_amendment" || entries[0].Tone != "success" {
+		t.Fatalf("expected structured approval to resolve as success, got %#v", entries[0])
+	}
+	if entries[0].Summary != "Operator approved the request and stored the matching exec rule." {
+		t.Fatalf("unexpected structured approval summary: %#v", entries[0])
+	}
+}
+
 func TestApplyIssueActivityEventProjectsSecondaryAndFailureEntries(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Secondary activity timeline", "", 0, nil)

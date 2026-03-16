@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { api } from "@/lib/api";
 import { applyIssueImageChanges, summarizeIssueImageFailures } from "@/lib/issue-images";
 import {
@@ -55,6 +56,7 @@ export function ProjectsPage() {
   const [issueDialogOpen, setIssueDialogOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<ProjectSummary | undefined>();
   const [editingEpic, setEditingEpic] = useState<EpicSummary | undefined>();
+  const [projectPendingDelete, setProjectPendingDelete] = useState<ProjectSummary | null>(null);
 
   const invalidate = async () => {
     await Promise.all([
@@ -70,6 +72,11 @@ export function ProjectsPage() {
     onSuccess: async () => {
       toast.success("Project deleted");
       await invalidate();
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? `Unable to delete project: ${error.message}` : "Unable to delete project",
+      );
     },
   });
 
@@ -195,7 +202,8 @@ export function ProjectsPage() {
                       size="icon"
                       title="Delete"
                       variant="ghost"
-                      onClick={() => deleteProject.mutate(project.id)}
+                      disabled={deleteProject.isPending}
+                      onClick={() => setProjectPendingDelete(project)}
                     >
                       <Trash2 className="size-4" />
                     </Button>
@@ -215,6 +223,26 @@ export function ProjectsPage() {
           );
         })}
       </div>
+
+      <ConfirmationDialog
+        open={projectPendingDelete !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setProjectPendingDelete(null);
+          }
+        }}
+        title={projectPendingDelete ? `Delete ${projectPendingDelete.name}?` : "Delete project?"}
+        description="This permanently removes the project from Maestro, including its epics, issues, workspaces, images, and activity history."
+        confirmLabel="Delete project"
+        pendingLabel="Deleting project..."
+        isPending={deleteProject.isPending}
+        onConfirm={async () => {
+          if (!projectPendingDelete) {
+            return;
+          }
+          await deleteProject.mutateAsync(projectPendingDelete.id);
+        }}
+      />
 
       <ProjectDialog
         open={projectDialogOpen}

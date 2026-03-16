@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import {
   Select,
   SelectContent,
@@ -76,6 +77,7 @@ export function IssuePreviewSheet({
     value: string;
   }>({ value: "" });
   const [editOpen, setEditOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const navigate = useNavigate();
   const issueIdentifier = issue?.identifier;
   const currentIssueIdentifierRef = useRef<string | undefined>(issueIdentifier);
@@ -133,7 +135,15 @@ export function IssuePreviewSheet({
 
   return (
     <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
+      <Sheet
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setDeleteDialogOpen(false);
+          }
+          onOpenChange(nextOpen);
+        }}
+      >
         <SheetContent className="w-[min(580px,calc(100vw-24px))]">
           <SheetHeader>
             <div className="flex items-start justify-between gap-4 pr-10">
@@ -364,10 +374,7 @@ export function IssuePreviewSheet({
                 <Button
                   variant="destructive"
                   className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
-                  onClick={async () => {
-                    await onDelete(activeIssue.identifier);
-                    onOpenChange(false);
-                  }}
+                  onClick={() => setDeleteDialogOpen(true)}
                 >
                   <Trash2 className="size-4" />
                   Delete
@@ -433,6 +440,21 @@ export function IssuePreviewSheet({
                 value: next.blocked_by?.join(", ") ?? "",
               });
             }
+          }}
+        />
+      ) : null}
+
+      {onDelete ? (
+        <ConfirmationDialog
+          open={deleteDialogOpen}
+          onOpenChange={setDeleteDialogOpen}
+          title={`Delete ${activeIssue.identifier}?`}
+          description="This removes the issue from Maestro, including its local workspace, activity history, and attached images. Linked provider items may also be removed."
+          confirmLabel="Delete issue"
+          pendingLabel="Deleting issue..."
+          onConfirm={async () => {
+            await onDelete(activeIssue.identifier);
+            onOpenChange(false);
           }}
         />
       ) : null}

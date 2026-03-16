@@ -38,6 +38,7 @@ codex:
   command: codex app-server
   expected_version: 0.111.0
   approval_policy: never
+  initial_collaboration_mode: plan
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
@@ -56,9 +57,19 @@ codex:
 - `agent.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time.
 - `codex.command`: exact command Maestro launches.
 - `codex.expected_version`: version Maestro expects from `codex --version`.
-- `codex.approval_policy`: keep this at `never` for unattended runs.
+- `codex.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
+- `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `plan` by default or `default` to opt out. This does not affect `stdio` or resumed threads.
 - `codex.thread_sandbox` and `codex.turn_sandbox_policy`: define where Codex can write and whether network access stays on.
 - `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
+
+## Plan mode versus interrupts
+
+These two settings solve different problems:
+
+- `initial_collaboration_mode: plan` only changes how a fresh `app_server` thread starts its first turn.
+- The global interrupt queue only appears when a live `app_server` turn actually asks for approval or user input.
+- Resumed threads keep their existing thread state and do not reapply the startup collaboration mode.
+- `stdio` runs stay non-interactive for this feature.
 
 ## Template variables
 
@@ -101,7 +112,7 @@ That scaffold currently includes:
 - hook stubs with a `timeout_ms` budget
 - disabled `review` and `done` phases with starter prompt text already filled in
 - `agent.max_concurrent_agents: 3`, `max_turns: 4`, `max_automatic_retries: 8`, and `dispatch_mode: parallel`
-- `codex.command: codex app-server`, `agent.mode: app_server`, and `approval_policy: never`
+- `codex.command: codex app-server`, `agent.mode: app_server`, `approval_policy: never`, and `initial_collaboration_mode: plan`
 - a careful sandbox by default: `thread_sandbox: workspace-write` with `turn_sandbox_policy.type: workspaceWrite` and `networkAccess: true`
 - the default issue prompt template appended after the YAML front matter
 
