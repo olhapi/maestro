@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { MultiCombobox, type MultiComboboxOption } from "@/components/ui/multi-combobox";
 import { Button } from "@/components/ui/button";
@@ -55,6 +55,28 @@ function dedupeIssues(issues: IssueSummary[]) {
   return [...unique.values()];
 }
 
+function useDialogReset(open: boolean, resetKey: string, reset: () => void) {
+  const previousOpenRef = useRef(open);
+  const previousResetKeyRef = useRef(resetKey);
+  const resetRef = useRef(reset);
+
+  useEffect(() => {
+    resetRef.current = reset;
+  }, [reset]);
+
+  useEffect(() => {
+    const opened = open && !previousOpenRef.current;
+    const targetChanged = open && previousResetKeyRef.current !== resetKey;
+
+    if (opened || targetChanged) {
+      resetRef.current();
+    }
+
+    previousOpenRef.current = open;
+    previousResetKeyRef.current = resetKey;
+  }, [open, resetKey]);
+}
+
 export function ProjectDialog({
   open,
   onOpenChange,
@@ -84,7 +106,7 @@ export function ProjectDialog({
   const [providerAssignee, setProviderAssignee] = useState(String(initial?.provider_config?.assignee ?? ""));
   const [pending, setPending] = useState(false);
 
-  useEffect(() => {
+  useDialogReset(open, initial?.id ?? initial?.name ?? "__new__", () => {
     setName(initial?.name ?? "");
     setDescription(initial?.description ?? "");
     setRepoPath(initial?.repo_path ?? "");
@@ -93,7 +115,7 @@ export function ProjectDialog({
     setProviderProjectRef(initial?.provider_project_ref ?? "");
     setProviderEndpoint(String(initial?.provider_config?.endpoint ?? ""));
     setProviderAssignee(String(initial?.provider_config?.assignee ?? ""));
-  }, [initial, open]);
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -250,11 +272,11 @@ export function EpicDialog({
   const [description, setDescription] = useState(initial?.description ?? "");
   const [pending, setPending] = useState(false);
 
-  useEffect(() => {
+  useDialogReset(open, initial?.id ?? initial?.name ?? "__new__", () => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? "");
     setName(initial?.name ?? "");
     setDescription(initial?.description ?? "");
-  }, [initial, open, projects]);
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -354,6 +376,8 @@ export function IssueDialog({
   const [state, setState] = useState<string>(initial?.state ?? "backlog");
   const [priority, setPriority] = useState(String(initial?.priority ?? 0));
   const [labels, setLabels] = useState(initial?.labels ?? []);
+  const [agentName, setAgentName] = useState(initial?.agent_name ?? "");
+  const [agentPrompt, setAgentPrompt] = useState(initial?.agent_prompt ?? "");
   const [blockedBy, setBlockedBy] = useState(initial?.blocked_by ?? []);
   const [branchName, setBranchName] = useState(initial?.branch_name ?? "");
   const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
@@ -367,7 +391,7 @@ export function IssueDialog({
   const supportsEpics = selectedProject?.capabilities?.epics ?? true;
   const canChangeIssueType = !isEditing || initial?.provider_kind === "kanban";
 
-  useEffect(() => {
+  useDialogReset(open, initial?.identifier ?? "__new__", () => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? "");
     setEpicID(initial?.epic_id ?? "");
     setTitle(initial?.title ?? "");
@@ -378,6 +402,8 @@ export function IssueDialog({
     setState(initial?.state ?? "backlog");
     setPriority(String(initial?.priority ?? 0));
     setLabels(initial?.labels ?? []);
+    setAgentName(initial?.agent_name ?? "");
+    setAgentPrompt(initial?.agent_prompt ?? "");
     setBlockedBy(initial?.blocked_by ?? []);
     setBranchName(initial?.branch_name ?? "");
     setPrURL(initial?.pr_url ?? "");
@@ -385,7 +411,7 @@ export function IssueDialog({
     setRemovedImageIDs([]);
     setBlockerSearch("");
     setRemoteBlockerIssues([]);
-  }, [initial, open, projects]);
+  });
 
   useEffect(() => {
     if (!open || !projectID || blockerSearch.trim().length < 2) {
@@ -642,6 +668,16 @@ export function IssueDialog({
                 />
               )}
             </Field>
+            <Field label="Assigned agent">
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={agentName}
+                  onChange={(event) => setAgentName(event.target.value)}
+                  placeholder="marketing"
+                />
+              )}
+            </Field>
             <Field label="Blockers">
               {({ labelId }) => (
                 <MultiCombobox
@@ -678,6 +714,16 @@ export function IssueDialog({
               )}
             </Field>
           </div>
+          <Field label="Agent prompt">
+            {({ labelId }) => (
+              <Textarea
+                aria-labelledby={labelId}
+                value={agentPrompt}
+                onChange={(event) => setAgentPrompt(event.target.value)}
+                placeholder="Review the landing page copy and suggest stronger messaging."
+              />
+            )}
+          </Field>
           <Field label="Description">
             {({ labelId }) => (
               <IssueDescriptionField
@@ -823,6 +869,8 @@ export function IssueDialog({
                     issue_type: issueType,
                     priority: Number(priority),
                     labels,
+                    agent_name: agentName,
+                    agent_prompt: agentPrompt,
                     blocked_by: blockedBy,
                     branch_name: branchName,
                     pr_url: prURL,

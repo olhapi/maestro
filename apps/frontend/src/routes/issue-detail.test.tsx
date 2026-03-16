@@ -281,6 +281,38 @@ describe("IssueDetailPage", () => {
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
   });
 
+  it("shows assigned agent metadata in the issue overview cards", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      agent_name: "marketing",
+      agent_prompt: "Review homepage messaging before implementation.",
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Assigned agent")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("marketing")).toBeInTheDocument();
+    expect(screen.getByText("Review homepage messaging before implementation.")).toBeInTheDocument();
+  });
+
   it("shows recurring schedule details and triggers run-now", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({
