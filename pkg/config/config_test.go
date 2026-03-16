@@ -425,7 +425,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"timeout_ms: 60000",
 		"phases:",
 		"enabled: false",
-		"issue.*, phase, and attempt",
+		"issue.*, project.*, phase, and attempt",
 		"max_concurrent_agents: 3",
 		"max_turns: 4",
 		"max_retry_backoff_ms: 60000",

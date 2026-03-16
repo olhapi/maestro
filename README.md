@@ -88,13 +88,15 @@ This writes a repo-local `WORKFLOW.md` with the default orchestration settings a
 ### 2. Create a project and queue some work
 
 ```bash
-maestro project create "My App" --repo /absolute/path/to/my-app --desc "Example project"
+maestro project create "My App" --repo /absolute/path/to/my-app --desc "Repo-wide Codex guidance: use pnpm, keep changes scoped, and run focused validation for touched packages."
 maestro issue create "Add login page" --project <project_id> --labels feature,ui
 maestro issue create "Fix auth bug" --project <project_id> --priority 1 --labels bug
 maestro issue move ISS-1 ready
 ```
 
 Projects default to the local `kanban` provider. You can also register a project with limited Linear-backed sync by passing `--provider linear --provider-project-ref <slug>` and, if needed, `--provider-endpoint` or `--provider-assignee`.
+
+Project descriptions are not just dashboard notes. Maestro passes `project.description` into every implementation, review, and done prompt by default, so use it for standing requirements, conventions, and validation expectations Codex should keep in mind for every issue.
 
 ### 3. Start the daemon
 
@@ -270,8 +272,13 @@ Supported prompt-template variables are:
 - `{{ issue.title }}`
 - `{{ issue.description }}`
 - `{{ issue.state }}`
+- `{{ project.id }}`
+- `{{ project.name }}`
+- `{{ project.description }}`
 - `{{ phase }}`
 - `{{ attempt }}`
+
+When a project has a description, Maestro's default implementation, review, and done prompts include it automatically under a `Project context:` section. Custom workflows can place `{{ project.description }}` wherever they want.
 
 The checked-in [`WORKFLOW.md`](WORKFLOW.md) is this repository's own workflow example. It is not guaranteed to match fresh `workflow init` defaults exactly.
 

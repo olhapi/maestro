@@ -19,6 +19,8 @@ Start in the repo you want Maestro to orchestrate:
 
 This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template. It is the contract Maestro will keep following while you are elsewhere.
 
+When you create a project later, treat its description as durable agent guidance rather than a short label. Maestro passes that project description into every issue prompt by default.
+
 ## 2. Expose the tracker to MCP clients
 
 If `maestro` is already on your `PATH`, save it through the MCP flow your coding agent supports. Use the direct commands for Codex or Claude Code when they fit, or the generic server entry for other MCP-capable agents.
@@ -57,6 +59,8 @@ Use the maestro MCP server to create a project, epics, and issues for a new reac
 
 This example assumes the default local `kanban` provider, which supports epics, issue priorities, and blockers.
 The same prompt works in any connected coding agent once the `maestro` MCP server is saved there.
+
+Project descriptions are the right place for repo-wide instructions such as required test commands, package-manager expectations, or rules about keeping public APIs stable. That text becomes `{{ project.description }}` in the workflow template and is included in Maestro's default prompts automatically.
 
 ## 5. Open the control center when you want to step back in
 

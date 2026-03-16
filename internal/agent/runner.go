@@ -514,6 +514,10 @@ Continuation guidance:
 	if !phase.IsValid() {
 		phase = kanban.DefaultWorkflowPhaseForState(issue.State)
 	}
+	projectCtx, err := r.projectPromptContext(issue.ProjectID)
+	if err != nil {
+		return preparedTurnPrompt{}, err
+	}
 	ctx := map[string]interface{}{
 		"issue": map[string]interface{}{
 			"id":          issue.ID,
@@ -529,6 +533,7 @@ Continuation guidance:
 			"created_at":  issue.CreatedAt.Format(time.RFC3339),
 			"updated_at":  issue.UpdatedAt.Format(time.RFC3339),
 		},
+		"project": projectCtx,
 		"attempt": nil,
 		"phase":   string(phase),
 	}
@@ -555,6 +560,28 @@ Continuation guidance:
 		Prompt:   rendered + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance),
 		Commands: commands,
 	}, nil
+}
+
+func (r *Runner) projectPromptContext(projectID string) (map[string]interface{}, error) {
+	ctx := map[string]interface{}{
+		"id":          "",
+		"name":        "",
+		"description": "",
+	}
+	if strings.TrimSpace(projectID) == "" {
+		return ctx, nil
+	}
+	project, err := r.store.GetProject(projectID)
+	if err != nil {
+		if kanban.IsNotFound(err) {
+			return ctx, nil
+		}
+		return nil, err
+	}
+	ctx["id"] = project.ID
+	ctx["name"] = project.Name
+	ctx["description"] = project.Description
+	return ctx, nil
 }
 
 func promptTemplateForPhase(workflow *config.Workflow, phase kanban.WorkflowPhase) string {

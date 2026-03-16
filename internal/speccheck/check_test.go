@@ -34,6 +34,9 @@ tracker:
 {{ issue.title }}
 {{ issue.description }}
 {{ issue.state }}
+{{ project.id }}
+{{ project.name }}
+{{ project.description }}
 {{ phase }}
 {{ attempt }}
 `

@@ -375,7 +375,7 @@ phases:
     # Enable a dedicated review pass after implementation. Other option: false.
     enabled: false
     # Prompt rendered when the issue enters review. Uses the same template variables
-    # as the main prompt, such as issue.*, phase, and attempt.
+    # as the main prompt, such as issue.*, project.*, phase, and attempt.
     prompt: |
 %s
   done:
