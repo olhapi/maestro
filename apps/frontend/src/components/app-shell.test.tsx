@@ -23,9 +23,10 @@ class MockOscillatorNode {
   connect = vi.fn()
   start = vi.fn()
   stop = vi.fn()
+  emitEnded = vi.fn()
   addEventListener = vi.fn((event: string, listener: () => void) => {
     if (event === 'ended') {
-      listener()
+      this.emitEnded.mockImplementation(listener)
     }
   })
 }
@@ -36,13 +37,18 @@ class MockGainNode {
 }
 
 class MockAudioContext {
+  static nextResumeError: Error | null = null
   currentTime = 0
   destination = {}
   oscillator = new MockOscillatorNode()
   gainNode = new MockGainNode()
   createOscillator = vi.fn(() => this.oscillator)
   createGain = vi.fn(() => this.gainNode)
-  resume = vi.fn().mockResolvedValue(undefined)
+  resume = vi.fn(() => {
+    const error = MockAudioContext.nextResumeError
+    MockAudioContext.nextResumeError = null
+    return error ? Promise.reject(error) : Promise.resolve(undefined)
+  })
   close = vi.fn().mockResolvedValue(undefined)
 
   constructor() {
@@ -92,7 +98,9 @@ const { api } = await import('@/lib/api')
 describe('AppShell', () => {
   beforeEach(() => {
     pathname = '/work'
+    invalidateSocket.mockReset()
     audioContextInstances.length = 0
+    MockAudioContext.nextResumeError = null
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
       writable: true,
@@ -242,9 +250,7 @@ describe('AppShell', () => {
           last_activity: 'gh pr view',
           collaboration_mode: 'plan',
           approval: {
-            decisions: [
-              { value: 'approved', label: 'Approve once' },
-            ],
+            decisions: [{ value: 'approved', label: 'Approve once' }],
           },
         },
       })
@@ -286,9 +292,7 @@ describe('AppShell', () => {
         last_activity: 'gh pr view',
         collaboration_mode: 'plan',
         approval: {
-          decisions: [
-            { value: 'approved', label: 'Approve once' },
-          ],
+          decisions: [{ value: 'approved', label: 'Approve once' }],
         },
       },
     })
@@ -315,5 +319,53 @@ describe('AppShell', () => {
     })
 
     expect(audioContextInstances).toHaveLength(0)
+  })
+
+  it('closes the audio context when resume rejects before playback starts', async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts)
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValue({
+        count: 1,
+        current: {
+          id: 'interrupt-1',
+          kind: 'approval',
+          issue_identifier: 'ISS-1',
+          issue_title: 'Review migrations',
+          phase: 'implementation',
+          attempt: 1,
+          requested_at: '2026-03-16T10:00:00Z',
+          last_activity_at: '2026-03-16T10:00:00Z',
+          last_activity: 'gh pr view',
+          collaboration_mode: 'plan',
+          approval: {
+            decisions: [{ value: 'approved', label: 'Approve once' }],
+          },
+        },
+      })
+    MockAudioContext.nextResumeError = new Error('blocked')
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(vi.mocked(api.listInterrupts).mock.calls.length).toBeGreaterThan(0)
+    })
+    await waitFor(() => {
+      expect(invalidateSocket.getMockImplementation()).toBeTypeOf('function')
+    })
+
+    await act(async () => {
+      await invalidateSocket()
+    })
+
+    await waitFor(() => {
+      expect(audioContextInstances).toHaveLength(1)
+    })
+
+    const [context] = audioContextInstances
+
+    await waitFor(() => {
+      expect(context.close).toHaveBeenCalledTimes(1)
+    })
   })
 })
