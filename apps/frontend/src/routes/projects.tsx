@@ -12,10 +12,7 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import {
-  applyIssueImageChanges,
-  summarizeIssueImageFailures,
-} from "@/lib/issue-images";
+import { applyIssueImageChanges, summarizeIssueImageFailures } from "@/lib/issue-images";
 import {
   isProjectDispatchReady,
   isProjectRunning,
@@ -31,10 +28,10 @@ import { formatCompactNumber } from "@/lib/utils";
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
-      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-        {label}
+      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
+      <p className="mt-2.5 font-display text-[calc(var(--metric-value-size)-0.25rem)] leading-none text-white">
+        {value}
       </p>
-      <p className="mt-2.5 font-display text-[calc(var(--metric-value-size)-0.25rem)] leading-none text-white">{value}</p>
     </div>
   );
 }
@@ -56,9 +53,7 @@ export function ProjectsPage() {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [epicDialogOpen, setEpicDialogOpen] = useState(false);
   const [issueDialogOpen, setIssueDialogOpen] = useState(false);
-  const [editingProject, setEditingProject] = useState<
-    ProjectSummary | undefined
-  >();
+  const [editingProject, setEditingProject] = useState<ProjectSummary | undefined>();
   const [editingEpic, setEditingEpic] = useState<EpicSummary | undefined>();
 
   const invalidate = async () => {
@@ -98,14 +93,12 @@ export function ProjectsPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
-  const epicCapableProjects = projects.data.items.filter(
-    (project) => project.capabilities?.epics,
-  );
+  const epicCapableProjects = projects.data.items.filter((project) => project.capabilities?.epics);
 
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
-        title="Projects are now entry points, not dead-end rollups"
+        title="Projects"
         description="Open a project or epic to see execution health, linked work, and recent movement. This page stays focused on choosing the right delivery stream."
         actions={
           <ButtonGroup
@@ -153,10 +146,7 @@ export function ProjectsPage() {
                   <Badge>{summaryActiveCount(project)} active</Badge>
                   <div>
                     <CardTitle className="text-2xl">
-                      <Link
-                        params={{ projectId: project.id }}
-                        to={appRoutes.projectDetail}
-                      >
+                      <Link params={{ projectId: project.id }} to={appRoutes.projectDetail}>
                         {project.name}
                       </Link>
                     </CardTitle>
@@ -168,21 +158,15 @@ export function ProjectsPage() {
                     </p>
                     <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                       {project.provider_kind || "kanban"}
-                      {project.provider_project_ref
-                        ? ` · ${project.provider_project_ref}`
-                        : ""}
+                      {project.provider_project_ref ? ` · ${project.provider_project_ref}` : ""}
                     </p>
                     {project.dispatch_error ? (
-                      <p className="mt-2 text-xs text-rose-200">
-                        {project.dispatch_error}
-                      </p>
+                      <p className="mt-2 text-xs text-rose-200">{project.dispatch_error}</p>
                     ) : null}
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
-                  {!dispatchReady ? (
-                    <ProjectDispatchBadge project={project} />
-                  ) : null}
+                  {!dispatchReady ? <ProjectDispatchBadge project={project} /> : null}
                   <div className="flex flex-nowrap items-center gap-1.5 self-start lg:self-end">
                     <Button
                       aria-label={isRunning ? "Stop" : "Run"}
@@ -190,17 +174,9 @@ export function ProjectsPage() {
                       title={isRunning ? "Stop" : "Run"}
                       variant="ghost"
                       disabled={!dispatchReady || togglePending}
-                      onClick={() =>
-                        isRunning
-                          ? stopProject.mutate(project.id)
-                          : runProject.mutate(project.id)
-                      }
+                      onClick={() => (isRunning ? stopProject.mutate(project.id) : runProject.mutate(project.id))}
                     >
-                      {isRunning ? (
-                        <Square className="size-4" />
-                      ) : (
-                        <Play className="size-4" />
-                      )}
+                      {isRunning ? <Square className="size-4" /> : <Play className="size-4" />}
                     </Button>
                     <Button
                       aria-label="Edit"
@@ -229,24 +205,11 @@ export function ProjectsPage() {
 
               <CardContent className="grid gap-3">
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2.5">
-                  <StatCard
-                    label="Total"
-                    value={String(summaryTotalCount(project))}
-                  />
-                  <StatCard
-                    label="Done"
-                    value={String(summaryDoneCount(project))}
-                  />
-                  <StatCard
-                    label="Blocked/active"
-                    value={String(summaryActiveCount(project))}
-                  />
-                  <StatCard
-                    label="Tokens"
-                    value={formatCompactNumber(summaryTokenSpend(project))}
-                  />
+                  <StatCard label="Total" value={String(summaryTotalCount(project))} />
+                  <StatCard label="Done" value={String(summaryDoneCount(project))} />
+                  <StatCard label="Blocked/active" value={String(summaryActiveCount(project))} />
+                  <StatCard label="Tokens" value={formatCompactNumber(summaryTokenSpend(project))} />
                 </div>
-
               </CardContent>
             </Card>
           );
