@@ -7,6 +7,7 @@ navLabel: Install
 ---
 
 import DocsCommandField from "./_components/DocsCommandField.astro";
+import DocsMcpSetupAccordion from "./_components/DocsMcpSetupAccordion.astro";
 
 ## Install from npm
 
@@ -20,20 +21,9 @@ The installed command name is still `maestro`.
 
 ## Add the MCP server to your coding agent
 
-Once `maestro` is on your `PATH`, register the shipped MCP bridge with the MCP setup flow your coding agent provides. Most MCP-capable agents accept a config equivalent to:
+Once `maestro` is on your `PATH`, pick the setup path that matches your coding agent. Codex and Claude Code have direct `mcp add` commands, and the fallback section covers agents that want a manual MCP server entry.
 
-```json
-{
-  "mcpServers": {
-    "maestro": {
-      "command": "maestro",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-If you built Maestro from source and the binary is not on your `PATH`, replace `maestro` with the absolute path to the binary you built.
+<DocsMcpSetupAccordion />
 
 Official npm builds currently cover:
 
@@ -68,7 +58,7 @@ Contributor Docker build:
 - Install `go` if you need source builds or local development.
 - Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
 - Install an MCP-capable coding agent if you want to connect to the local queue interactively.
-- Use the npm package when you want the shortest path from machine setup to a local `maestro mcp` registration.
+- Use the npm package when you want the shortest path from machine setup to the `mcp add` command or config entry your coding agent expects.
 
 ## Contributor tooling
 
