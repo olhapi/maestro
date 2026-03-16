@@ -79,7 +79,7 @@ func TestInitializeRequestWireShape(t *testing.T) {
 func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 	threadReq, err := ThreadStartRequest(2, "/tmp/work", "never", "workspace-write", []map[string]interface{}{
 		{"name": "tool-a"},
-	})
+	}, map[string]interface{}{"initial_collaboration_mode": "plan"})
 	if err != nil {
 		t.Fatalf("thread start request: %v", err)
 	}
@@ -96,6 +96,10 @@ func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 	}
 	if threadParams["cwd"] != "/tmp/work" {
 		t.Fatalf("unexpected cwd: %+v", threadParams["cwd"])
+	}
+	config := threadParams["config"].(map[string]interface{})
+	if config["initial_collaboration_mode"] != "plan" {
+		t.Fatalf("unexpected thread/start config: %+v", config)
 	}
 	dynamicTools := threadParams["dynamicTools"].([]interface{})
 	if len(dynamicTools) != 1 {
@@ -153,6 +157,22 @@ func TestResponseBuildersWireShape(t *testing.T) {
 	}
 	if approvalResult["decision"] != "acceptForSession" {
 		t.Fatalf("unexpected approval result: %+v", approvalResult)
+	}
+
+	structuredApprovalMsg, ok := DecodeMessage(string(marshalJSON(t, CommandExecutionApprovalResultPayload(json.RawMessage("100"), map[string]interface{}{
+		"acceptWithExecpolicyAmendment": map[string]interface{}{
+			"execpolicy_amendment": []string{"allow command=curl https://api.github.com"},
+		},
+	}))))
+	if !ok {
+		t.Fatal("expected structured approval decode ok")
+	}
+	structuredDecision, ok := decodeJSONMap(t, structuredApprovalMsg)["result"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected structured decision result, got %#v", structuredApprovalMsg)
+	}
+	if _, ok := structuredDecision["decision"].(map[string]interface{}); !ok {
+		t.Fatalf("expected structured approval payload, got %+v", structuredDecision)
 	}
 
 	toolMsg, ok := DecodeMessage(string(marshalJSON(t, ToolRequestUserInputResult(json.RawMessage("101"), map[string]gen.ToolRequestUserInputAnswer{

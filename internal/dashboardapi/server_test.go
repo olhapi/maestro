@@ -1,6 +1,7 @@
 package dashboardapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,14 @@ type testProvider struct {
 	projectStops     []string
 }
 
+type interruptProvider struct {
+	testProvider
+	interrupts appserver.PendingInteractionSnapshot
+	responseID string
+	response   appserver.PendingInteractionResponse
+	respondErr error
+}
+
 func (p testProvider) Status() map[string]interface{} {
 	if p.status != nil {
 		return p.status
@@ -38,6 +47,28 @@ func (p testProvider) LiveSessions() map[string]interface{} {
 		return map[string]interface{}{"sessions": map[string]interface{}{}}
 	}
 	return map[string]interface{}{"sessions": p.sessions}
+}
+
+func (p testProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
+	return appserver.PendingInteractionSnapshot{}
+}
+
+func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+	return nil, false
+}
+
+func (p testProvider) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+	return nil
+}
+
+func (p *interruptProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
+	return p.interrupts
+}
+
+func (p *interruptProvider) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+	p.responseID = interactionID
+	p.response = response
+	return p.respondErr
 }
 
 func (p testProvider) Events(since int64, limit int) map[string]interface{} {
@@ -157,6 +188,72 @@ func TestIssueExecutionEndpointReturnsLiveSession(t *testing.T) {
 	}
 	if payload["attempt_number"].(float64) != 2 {
 		t.Fatalf("expected attempt 2, got %#v", payload["attempt_number"])
+	}
+}
+
+func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
+	provider := &interruptProvider{
+		interrupts: appserver.PendingInteractionSnapshot{
+			Count: 1,
+			Current: &appserver.PendingInteraction{
+				ID:              "interrupt-1",
+				Kind:            appserver.PendingInteractionKindApproval,
+				IssueIdentifier: "ISS-1",
+				IssueTitle:      "Review migrations",
+				RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
+				Approval: &appserver.PendingApproval{
+					Decisions: []appserver.PendingApprovalDecision{
+						{Value: "approved", Label: "Approve once"},
+					},
+				},
+			},
+		},
+	}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/interrupts", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	payload := decodeResponse(t, resp)
+	if payload["count"].(float64) != 1 {
+		t.Fatalf("unexpected interrupt count: %#v", payload)
+	}
+	current := payload["current"].(map[string]interface{})
+	if current["id"] != "interrupt-1" || current["issue_identifier"] != "ISS-1" {
+		t.Fatalf("unexpected current interrupt payload: %#v", current)
+	}
+
+	resp = requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-1/respond", map[string]interface{}{
+		"decision": "approved",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.responseID != "interrupt-1" || provider.response.Decision != "approved" {
+		t.Fatalf("expected provider response capture, got id=%q response=%+v", provider.responseID, provider.response)
+	}
+}
+
+func TestInterruptEndpointForwardsStructuredDecisionPayloads(t *testing.T) {
+	provider := &interruptProvider{}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-2/respond", map[string]interface{}{
+		"decision_payload": map[string]interface{}{
+			"acceptWithExecpolicyAmendment": map[string]interface{}{
+				"execpolicy_amendment": []string{"allow command=curl https://api.github.com"},
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.responseID != "interrupt-2" {
+		t.Fatalf("expected interaction id to be forwarded, got %q", provider.responseID)
+	}
+	if _, ok := provider.response.DecisionPayload["acceptWithExecpolicyAmendment"]; !ok {
+		t.Fatalf("expected structured decision payload, got %+v", provider.response)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 type ThreadStartParams struct {
 	ApprovalPolicy interface{}              `json:"approvalPolicy,omitempty"`
+	Config         map[string]interface{}   `json:"config,omitempty"`
 	Cwd            *string                  `json:"cwd,omitempty"`
 	DynamicTools   []map[string]interface{} `json:"dynamicTools,omitempty"`
 	Sandbox        string                   `json:"sandbox,omitempty"`
@@ -66,12 +67,13 @@ func InitializedNotification() Notification[struct{}] {
 	}
 }
 
-func ThreadStartRequest(id int, workspace string, approvalPolicy interface{}, sandbox string, dynamicTools []map[string]interface{}) (Request[ThreadStartParams], error) {
+func ThreadStartRequest(id int, workspace string, approvalPolicy interface{}, sandbox string, dynamicTools []map[string]interface{}, config map[string]interface{}) (Request[ThreadStartParams], error) {
 	return Request[ThreadStartParams]{
 		ID:     id,
 		Method: MethodThreadStart,
 		Params: ThreadStartParams{
 			ApprovalPolicy: approvalPolicy,
+			Config:         config,
 			Cwd:            StringPtr(workspace),
 			DynamicTools:   dynamicTools,
 			Sandbox:        sandbox,
@@ -142,6 +144,15 @@ func CommandExecutionApprovalResult(id RequestID, decision gen.FileChangeApprova
 	return SuccessResponse[decisionResponse]{
 		ID:     id,
 		Result: decisionResponse{Decision: string(decision)},
+	}
+}
+
+func CommandExecutionApprovalResultPayload(id RequestID, decision map[string]interface{}) SuccessResponse[map[string]interface{}] {
+	return SuccessResponse[map[string]interface{}]{
+		ID: id,
+		Result: map[string]interface{}{
+			"decision": decision,
+		},
 	}
 }
 

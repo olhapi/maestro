@@ -167,6 +167,7 @@ Test prompt for {{ issue.identifier }}
 		time.Sleep(25 * time.Millisecond)
 	}
 	expectedDashboardURL := "http://" + addr
+	expectedDashboardLine := "Dashboard: " + expectedDashboardURL
 	for {
 		if ctx.Err() != nil {
 			t.Fatalf("run helper never opened dashboard: stdout=%q stderr=%q", stdout.String(), stderr.String())
@@ -182,6 +183,9 @@ Test prompt for {{ issue.identifier }}
 			t.Fatalf("read dashboard record: %v", err)
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+	if !strings.Contains(stdout.String(), expectedDashboardLine) {
+		t.Fatalf("expected stdout to contain %q, got %q", expectedDashboardLine, stdout.String())
 	}
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("interrupt run helper: %v", err)

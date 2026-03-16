@@ -296,10 +296,14 @@ func projectIssueActivityEntry(issueID, identifier, logicalID string, attempt in
 		return projectTerminalInteraction(entry, event), true
 	case "turn.started", "turn.completed", "turn.failed", "turn.cancelled":
 		return projectTurnStatus(entry, now, event), true
-	case "item.commandExecution.requestApproval", "item.fileChange.requestApproval":
+	case "item.commandExecution.requestApproval", "item.fileChange.requestApproval", "execCommandApproval", "applyPatchApproval":
 		return projectApprovalStatus(entry, now, event), true
+	case "item.commandExecution.approvalResolved", "item.fileChange.approvalResolved", "execCommandApproval.resolved", "applyPatchApproval.resolved":
+		return projectApprovalResolved(entry, now, event), true
 	case "item.tool.requestUserInput":
 		return projectInputStatus(entry, now, event), true
+	case "item.tool.userInputSubmitted":
+		return projectInputResolved(entry, now, event), true
 	default:
 		return IssueActivityEntry{}, false
 	}
@@ -519,6 +523,41 @@ func projectInputStatus(entry IssueActivityEntry, now time.Time, event appserver
 	return entry
 }
 
+func projectApprovalResolved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "status"
+	entry.Tier = "primary"
+	decision := strings.TrimSpace(event.Status)
+	entry.Status = firstNonEmptyString(decision, "approval_resolved")
+	entry.Title = "Approval resolved"
+	entry.Summary = approvalDecisionSummary(decision)
+	entry.Detail = approvalResponseDetail(event.Raw)
+	entry.Tone = approvalDecisionTone(decision)
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	if entry.StartedAt == nil {
+		entry.StartedAt = &ts
+	}
+	entry.CompletedAt = &ts
+	return entry
+}
+
+func projectInputResolved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "status"
+	entry.Tier = "primary"
+	entry.Status = "input_submitted"
+	entry.Title = "User input submitted"
+	entry.Summary = inputResponseSummary(event.Raw)
+	entry.Detail = inputResponseDetail(event.Raw)
+	entry.Tone = "success"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	if entry.StartedAt == nil {
+		entry.StartedAt = &ts
+	}
+	entry.CompletedAt = &ts
+	return entry
+}
+
 func projectSecondaryItem(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent, status string) IssueActivityEntry {
 	entry.Kind = "secondary"
 	entry.Tier = "secondary"
@@ -556,12 +595,18 @@ func issueActivityLogicalID(attempt int, event appserver.ActivityEvent) (string,
 			return "", false
 		}
 		return fmt.Sprintf("attempt:%d:status:%s:%s:%s", attempt, threadID, turnID, event.Type), true
-	case "item.commandExecution.requestApproval", "item.fileChange.requestApproval", "item.tool.requestUserInput":
+	case "item.commandExecution.requestApproval", "item.fileChange.requestApproval", "execCommandApproval", "applyPatchApproval", "item.tool.requestUserInput":
 		suffix := firstNonEmptyString(strings.TrimSpace(event.RequestID), itemID)
 		if suffix == "" {
 			return "", false
 		}
-		return fmt.Sprintf("attempt:%d:status:%s:%s:%s:%s", attempt, threadID, turnID, event.Type, suffix), true
+		return fmt.Sprintf("attempt:%d:status:%s:%s:%s", attempt, threadID, turnID, suffix), true
+	case "item.commandExecution.approvalResolved", "item.fileChange.approvalResolved", "execCommandApproval.resolved", "applyPatchApproval.resolved", "item.tool.userInputSubmitted":
+		suffix := firstNonEmptyString(strings.TrimSpace(event.RequestID), itemID)
+		if suffix == "" {
+			return "", false
+		}
+		return fmt.Sprintf("attempt:%d:status:%s:%s:%s", attempt, threadID, turnID, suffix), true
 	default:
 		return "", false
 	}
@@ -807,6 +852,93 @@ func inputRequestDetail(raw map[string]interface{}) string {
 		return ""
 	}
 	body, err := json.MarshalIndent(params, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(body)
+}
+
+func approvalDecisionSummary(decision string) string {
+	decision = strings.TrimSpace(decision)
+	switch {
+	case decision == "accept":
+		return "Operator approved the request once."
+	case decision == "acceptForSession":
+		return "Operator approved the request for the rest of the session."
+	case decision == "approved":
+		return "Operator approved the request once."
+	case decision == "approved_for_session":
+		return "Operator approved the request for the rest of the session."
+	case decision == "accept_with_execpolicy_amendment":
+		return "Operator approved the request and stored the matching exec rule."
+	case strings.HasPrefix(decision, "network_policy_allow_"):
+		return "Operator approved the request and stored an allow network rule."
+	case strings.HasPrefix(decision, "network_policy_deny_"):
+		return "Operator denied the request and stored a deny network rule."
+	case decision == "decline":
+		return "Operator declined the request and allowed the turn to continue."
+	case decision == "denied":
+		return "Operator denied the request and allowed the turn to continue."
+	case decision == "cancel":
+		return "Operator cancelled the request and interrupted the turn."
+	case decision == "abort":
+		return "Operator aborted the request and interrupted the turn."
+	default:
+		return "Operator resolved the request."
+	}
+}
+
+func approvalDecisionTone(decision string) string {
+	decision = strings.TrimSpace(decision)
+	switch {
+	case decision == "accept",
+		decision == "acceptForSession",
+		decision == "approved",
+		decision == "approved_for_session",
+		decision == "accept_with_execpolicy_amendment",
+		strings.HasPrefix(decision, "network_policy_allow_"):
+		return "success"
+	default:
+		return "error"
+	}
+}
+
+func approvalResponseDetail(raw map[string]interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	body, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(body)
+}
+
+func inputResponseSummary(raw map[string]interface{}) string {
+	answers, _ := raw["answers"].(map[string]interface{})
+	if len(answers) == 0 {
+		return "Operator submitted input."
+	}
+	for _, value := range answers {
+		vals, _ := value.([]string)
+		if len(vals) > 0 {
+			return cleanActivityText(vals[0])
+		}
+		generic, _ := value.([]interface{})
+		if len(generic) > 0 {
+			if first, ok := generic[0].(string); ok {
+				return cleanActivityText(first)
+			}
+		}
+	}
+	return "Operator submitted input."
+}
+
+func inputResponseDetail(raw map[string]interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	body, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return ""
 	}

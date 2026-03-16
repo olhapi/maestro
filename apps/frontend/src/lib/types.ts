@@ -261,13 +261,73 @@ export interface Session {
   history?: SessionEvent[];
 }
 
+export interface PendingApprovalDecision {
+  value: string;
+  label: string;
+  description?: string;
+  decision_payload?: Record<string, unknown>;
+}
+
+export interface PendingApproval {
+  command?: string;
+  cwd?: string;
+  reason?: string;
+  decisions: PendingApprovalDecision[];
+}
+
+export interface PendingUserInputOption {
+  label: string;
+  description?: string;
+}
+
+export interface PendingUserInputQuestion {
+  header?: string;
+  id: string;
+  question?: string;
+  options?: PendingUserInputOption[];
+  is_other?: boolean;
+  is_secret?: boolean;
+}
+
+export interface PendingUserInput {
+  questions: PendingUserInputQuestion[];
+}
+
+export interface PendingInterrupt {
+  id: string;
+  request_id?: string;
+  kind: "approval" | "user_input";
+  method?: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  issue_title?: string;
+  phase?: string;
+  attempt?: number;
+  session_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  item_id?: string;
+  requested_at: string;
+  last_activity_at?: string;
+  last_activity?: string;
+  collaboration_mode?: "plan" | "default";
+  approval?: PendingApproval;
+  user_input?: PendingUserInput;
+}
+
+export interface PendingInterruptsResponse {
+  count: number;
+  current?: PendingInterrupt;
+}
+
 export interface SessionFeedEntry {
   issue_id: string;
   issue_identifier: string;
   issue_title?: string;
   source: "live" | "persisted";
   active: boolean;
-  status: "active" | "paused" | "completed" | "failed" | "interrupted";
+  status: "active" | "waiting" | "paused" | "completed" | "failed" | "interrupted";
+  pending_interrupt?: PendingInterrupt;
   phase?: string;
   attempt?: number;
   run_kind?: string;
@@ -344,6 +404,7 @@ export interface IssueExecutionDetail {
   activity_groups: ActivityGroup[];
   debug_activity_groups?: ActivityGroup[];
   agent_commands: AgentCommand[];
+  pending_interrupt?: PendingInterrupt;
 }
 
 export interface BootstrapResponse {

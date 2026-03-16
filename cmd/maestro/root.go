@@ -175,7 +175,9 @@ func (a *cliApp) newRunCmd() *cobra.Command {
 				cancel()
 			}()
 			if publicServer != nil {
-				maybeOpenDashboard(ctx, publicServer.BaseURL())
+				dashboardURL := publicServer.BaseURL()
+				_, _ = fmt.Fprintf(a.stdout, "Dashboard: %s\n", dashboardURL)
+				maybeOpenDashboard(ctx, dashboardURL)
 			}
 			if err := orch.Run(ctx); err != nil && err != context.Canceled {
 				return wrapRuntime(err, "orchestrator error")

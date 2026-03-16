@@ -34,6 +34,8 @@ type Runner struct {
 	extensions       *extensions.Registry
 	sessionObserver  func(issueID string, session *appserver.Session)
 	activityObserver func(issueID string, event appserver.ActivityEvent)
+	interactionObserver     func(issueID string, interaction *appserver.PendingInteraction, responder appserver.InteractionResponder)
+	interactionDoneObserver func(issueID string, interactionID string)
 }
 
 type RunResult struct {
@@ -78,6 +80,14 @@ func (r *Runner) SetSessionObserver(observer func(issueID string, session *appse
 
 func (r *Runner) SetActivityObserver(observer func(issueID string, event appserver.ActivityEvent)) {
 	r.activityObserver = observer
+}
+
+func (r *Runner) SetInteractionObserver(observer func(issueID string, interaction *appserver.PendingInteraction, responder appserver.InteractionResponder)) {
+	r.interactionObserver = observer
+}
+
+func (r *Runner) SetInteractionDoneObserver(observer func(issueID string, interactionID string)) {
+	r.interactionDoneObserver = observer
 }
 
 func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, error) {
@@ -289,26 +299,28 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 	if !runPhase.IsValid() {
 		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
 	}
-	client, err := appserver.Start(ctx, appserver.ClientConfig{
-		Executable:        "sh",
-		Args:              []string{"-lc", workflow.Config.Codex.Command},
-		Env:               os.Environ(),
-		Workspace:         workspacePath,
-		WorkspaceRoot:     workflow.Config.Workspace.Root,
-		IssueID:           issue.ID,
-		IssueIdentifier:   issue.Identifier,
-		CodexCommand:      workflow.Config.Codex.Command,
-		ExpectedVersion:   workflow.Config.Codex.ExpectedVersion,
-		ApprovalPolicy:    workflow.Config.Codex.ApprovalPolicy,
-		ThreadSandbox:     workflow.Config.Codex.ThreadSandbox,
-		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,
-		ReadTimeout:       time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
-		TurnTimeout:       time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
-		StallTimeout:      time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
-		DynamicTools:      r.extensions.Specs(),
-		ToolExecutor:      r.extensionToolExecutor(),
-		ResumeThreadID:    strings.TrimSpace(issue.ResumeThreadID),
-		ResumeSource:      "orphaned_run_recovery",
+	var client *appserver.Client
+	clientConfig := appserver.ClientConfig{
+		Executable:               "sh",
+		Args:                     []string{"-lc", workflow.Config.Codex.Command},
+		Env:                      os.Environ(),
+		Workspace:                workspacePath,
+		WorkspaceRoot:            workflow.Config.Workspace.Root,
+		IssueID:                  issue.ID,
+		IssueIdentifier:          issue.Identifier,
+		CodexCommand:             workflow.Config.Codex.Command,
+		ExpectedVersion:          workflow.Config.Codex.ExpectedVersion,
+		ApprovalPolicy:           workflow.Config.Codex.ApprovalPolicy,
+		InitialCollaborationMode: workflow.Config.Codex.InitialCollaborationMode,
+		ThreadSandbox:            workflow.Config.Codex.ThreadSandbox,
+		TurnSandboxPolicy:        workflow.Config.Codex.TurnSandboxPolicy,
+		ReadTimeout:              time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
+		TurnTimeout:              time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
+		StallTimeout:             time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
+		DynamicTools:             r.extensions.Specs(),
+		ToolExecutor:             r.extensionToolExecutor(),
+		ResumeThreadID:           strings.TrimSpace(issue.ResumeThreadID),
+		ResumeSource:             "orphaned_run_recovery",
 		OnSessionUpdate: func(session *appserver.Session) {
 			if r.sessionObserver == nil || issue == nil || session == nil {
 				return
@@ -321,7 +333,21 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			}
 			r.activityObserver(issue.ID, event)
 		},
-	})
+		OnPendingInteraction: func(interaction *appserver.PendingInteraction) {
+			if r.interactionObserver == nil || issue == nil || interaction == nil || client == nil {
+				return
+			}
+			r.interactionObserver(issue.ID, interaction, client.RespondToInteraction)
+		},
+		OnPendingInteractionDone: func(interactionID string) {
+			if r.interactionDoneObserver == nil || issue == nil {
+				return
+			}
+			r.interactionDoneObserver(issue.ID, interactionID)
+		},
+	}
+	var err error
+	client, err = appserver.Start(ctx, clientConfig)
 	if err != nil {
 		return &RunResult{Success: false, Error: err}, nil
 	}

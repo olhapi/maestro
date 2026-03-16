@@ -121,6 +121,10 @@ func (p testRuntimeProvider) RunRecurringIssueNow(identifier string) map[string]
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
+func (p testRuntimeProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+	return nil, false
+}
+
 func (p testRuntimeProvider) firstIssue() *kanban.Issue {
 	issues, err := p.store.ListIssues(nil)
 	if err != nil || len(issues) == 0 {
