@@ -783,6 +783,22 @@ func TestCreateIssue(t *testing.T) {
 	}
 }
 
+func TestCreateIssueWithAgentMetadata(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, _ := store.CreateProject("MyApp", "", "", "")
+	issue, err := store.CreateIssueWithOptions(project.ID, "", "Review homepage", "Copy refresh", 1, []string{"marketing"}, IssueCreateOptions{
+		AgentName:   "marketing",
+		AgentPrompt: "Review the homepage copy for clarity and conversion.",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+	if issue.AgentName != "marketing" || issue.AgentPrompt != "Review the homepage copy for clarity and conversion." {
+		t.Fatalf("expected agent metadata to persist, got %#v", issue)
+	}
+}
+
 func TestNewStoreBackfillsLegacyIssueTypesAndCreatesRecurrenceTable(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite3", dbPath)
@@ -1595,10 +1611,12 @@ func TestUpdateIssue(t *testing.T) {
 	issue, _ := store.CreateIssue("", "", "Original Title", "", 0, nil)
 
 	updates := map[string]interface{}{
-		"title":       "Updated Title",
-		"description": "New description",
-		"priority":    5,
-		"labels":      []string{"new-label"},
+		"title":        "Updated Title",
+		"description":  "New description",
+		"priority":     5,
+		"labels":       []string{"new-label"},
+		"agent_name":   "marketing",
+		"agent_prompt": "Tighten the messaging before implementation.",
 	}
 
 	if err := store.UpdateIssue(issue.ID, updates); err != nil {
@@ -1614,6 +1632,9 @@ func TestUpdateIssue(t *testing.T) {
 	}
 	if len(updated.Labels) != 1 || updated.Labels[0] != "new-label" {
 		t.Errorf("Expected labels ['new-label'], got %v", updated.Labels)
+	}
+	if updated.AgentName != "marketing" || updated.AgentPrompt != "Tighten the messaging before implementation." {
+		t.Fatalf("expected agent metadata to persist, got %#v", updated)
 	}
 }
 

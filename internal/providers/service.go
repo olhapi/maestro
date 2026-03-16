@@ -478,8 +478,10 @@ func (s *Service) CreateIssue(ctx context.Context, input IssueCreateInput) (*kan
 			return nil, err
 		}
 		localUpdates := map[string]interface{}{
-			"branch_name": input.BranchName,
-			"pr_url":      input.PRURL,
+			"agent_name":   input.AgentName,
+			"agent_prompt": input.AgentPrompt,
+			"branch_name":  input.BranchName,
+			"pr_url":       input.PRURL,
 		}
 		if err := s.store.UpdateIssue(synced.ID, localUpdates); err != nil {
 			return nil, err
@@ -523,7 +525,20 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 	if err != nil {
 		return nil, err
 	}
-	updated, err := provider.UpdateIssue(ctx, project, issue, updates)
+	providerUpdates := updates
+	localOnlyUpdates := map[string]interface{}{}
+	if provider.Kind() != kanban.ProviderKindKanban {
+		providerUpdates = map[string]interface{}{}
+		for key, value := range updates {
+			switch key {
+			case "agent_name", "agent_prompt":
+				localOnlyUpdates[key] = value
+			default:
+				providerUpdates[key] = value
+			}
+		}
+	}
+	updated, err := provider.UpdateIssue(ctx, project, issue, providerUpdates)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +546,7 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 		if updated, err = s.store.UpsertProviderIssue(project.ID, updated); err != nil {
 			return nil, err
 		}
-		localUpdates := map[string]interface{}{}
+		localUpdates := localOnlyUpdates
 		for _, key := range []string{"branch_name", "pr_url"} {
 			if value, ok := updates[key]; ok {
 				localUpdates[key] = value

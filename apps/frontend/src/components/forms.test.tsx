@@ -82,6 +82,8 @@ describe('IssueDialog', () => {
           cron: '*/15 * * * *',
           enabled: false,
           labels: ['api', 'github'],
+          agent_name: '',
+          agent_prompt: '',
           blocked_by: ['ISS-2'],
         }),
         {
@@ -132,6 +134,43 @@ describe('IssueDialog', () => {
         {
           newImages: [file],
           removeImageIDs: ['img-1'],
+        },
+      )
+    })
+  })
+
+  it('serializes assigned agent metadata on submit', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+
+    renderWithQueryClient(
+      <IssueDialog
+        open
+        onOpenChange={vi.fn()}
+        projects={bootstrap.projects}
+        epics={bootstrap.epics}
+        availableIssues={bootstrap.issues.items}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Refresh landing page copy' } })
+    fireEvent.change(screen.getByLabelText(/assigned agent/i), { target: { value: 'marketing' } })
+    fireEvent.change(screen.getByLabelText(/agent prompt/i), {
+      target: { value: 'Review the hero and CTA copy for clarity.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /create issue/i }))
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Refresh landing page copy',
+          agent_name: 'marketing',
+          agent_prompt: 'Review the hero and CTA copy for clarity.',
+        }),
+        {
+          newImages: [],
+          removeImageIDs: [],
         },
       )
     })
