@@ -42,6 +42,7 @@ type Server struct {
 	store    *kanban.Store
 	service  *providers.Service
 	provider Provider
+	webhook  webhookAuthConfig
 	upgrader websocket.Upgrader
 }
 
@@ -56,6 +57,7 @@ func NewServer(store *kanban.Store, provider Provider) *Server {
 		store:    store,
 		service:  providers.NewService(store),
 		provider: provider,
+		webhook:  loadWebhookAuthConfig(),
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
 }
@@ -114,6 +116,7 @@ func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/webhooks", s.handleWebhook)
 	mux.HandleFunc("/api/v1/app/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("/api/v1/app/projects", s.handleProjects)
 	mux.HandleFunc("/api/v1/app/projects/", s.handleProject)

@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,6 +34,34 @@ func (p *retryTrackingProvider) RunRecurringIssueNow(identifier string) map[stri
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
+type webhookTrackingProvider struct {
+	testProvider
+	retried          []string
+	runNow           []string
+	projectRefreshes []string
+	projectStops     []string
+}
+
+func (p *webhookTrackingProvider) RetryIssueNow(identifier string) map[string]interface{} {
+	p.retried = append(p.retried, identifier)
+	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+}
+
+func (p *webhookTrackingProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
+	p.runNow = append(p.runNow, identifier)
+	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+}
+
+func (p *webhookTrackingProvider) RequestProjectRefresh(projectID string) map[string]interface{} {
+	p.projectRefreshes = append(p.projectRefreshes, projectID)
+	return map[string]interface{}{"status": "accepted", "project_id": projectID, "state": "running"}
+}
+
+func (p *webhookTrackingProvider) StopProjectRuns(projectID string) map[string]interface{} {
+	p.projectStops = append(p.projectStops, projectID)
+	return map[string]interface{}{"status": "stopped", "project_id": projectID, "state": "stopped", "stopped_runs": 0}
+}
+
 func requestJSON(t *testing.T, srv *httptest.Server, method, path string, body interface{}) *http.Response {
 	t.Helper()
 	var reader *bytes.Reader
@@ -53,6 +82,33 @@ func requestJSON(t *testing.T, srv *httptest.Server, method, path string, body i
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do request %s %s: %v", method, path, err)
+	}
+	return resp
+}
+
+func requestWebhookJSON(t *testing.T, srv *httptest.Server, token string, body interface{}) *http.Response {
+	t.Helper()
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal webhook body: %v", err)
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/webhooks", reader)
+	if err != nil {
+		t.Fatalf("new webhook request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do webhook request: %v", err)
 	}
 	return resp
 }
@@ -794,6 +850,234 @@ func TestCreateIssueAndEpicRequireProject(t *testing.T) {
 	})
 	if createEpic.StatusCode != http.StatusBadRequest {
 		t.Fatalf("create epic without project expected 400, got %d", createEpic.StatusCode)
+	}
+}
+
+func TestWebhooksRequireBearerTokenConfigurationAndAuthorization(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	mux := http.NewServeMux()
+	NewServer(store, &webhookTrackingProvider{}).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	disabled := requestWebhookJSON(t, srv, "", map[string]interface{}{
+		"event":   "issue.retry",
+		"payload": map[string]interface{}{"issue_identifier": "ISS-1"},
+	})
+	if disabled.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("disabled webhooks expected 503, got %d", disabled.StatusCode)
+	}
+	disabledBody := decodeResponse(t, disabled)
+	if !strings.Contains(disabledBody["error"].(string), webhookBearerTokenEnv) {
+		t.Fatalf("expected disabled config guidance, got %#v", disabledBody)
+	}
+
+	t.Setenv(webhookBearerTokenEnv, "test-webhook-token")
+	mux = http.NewServeMux()
+	NewServer(store, &webhookTrackingProvider{}).Register(mux)
+	srvWithAuth := httptest.NewServer(mux)
+	t.Cleanup(srvWithAuth.Close)
+
+	unauthorized := requestWebhookJSON(t, srvWithAuth, "wrong-token", map[string]interface{}{
+		"event":   "issue.retry",
+		"payload": map[string]interface{}{"issue_identifier": "ISS-1"},
+	})
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized webhooks expected 401, got %d", unauthorized.StatusCode)
+	}
+	unauthorizedBody := decodeResponse(t, unauthorized)
+	if unauthorizedBody["error"] != "unauthorized" {
+		t.Fatalf("unexpected unauthorized response: %#v", unauthorizedBody)
+	}
+}
+
+func TestWebhooksDispatchSupportedEvents(t *testing.T) {
+	t.Setenv(webhookBearerTokenEnv, "test-webhook-token")
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repoDir := t.TempDir()
+	workflowPath := filepath.Join(repoDir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("agent:\n  command: codex app-server\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile WORKFLOW.md: %v", err)
+	}
+
+	project, err := store.CreateProject("Webhook project", "", repoDir, workflowPath)
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	recurring, err := store.CreateIssue(project.ID, "", "Recurring webhook issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue recurring: %v", err)
+	}
+	if err := store.UpdateIssue(recurring.ID, map[string]interface{}{
+		"issue_type": string(kanban.IssueTypeRecurring),
+		"cron":       "0 * * * *",
+		"enabled":    true,
+	}); err != nil {
+		t.Fatalf("UpdateIssue recurring: %v", err)
+	}
+
+	provider := &webhookTrackingProvider{}
+	mux := http.NewServeMux()
+	NewServer(store, provider).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	testCases := []struct {
+		name       string
+		body       map[string]interface{}
+		wantStatus int
+		check      func(t *testing.T)
+	}{
+		{
+			name: "issue retry",
+			body: map[string]interface{}{
+				"event":       "issue.retry",
+				"delivery_id": "retry-1",
+				"payload":     map[string]interface{}{"issue_identifier": recurring.Identifier},
+			},
+			wantStatus: http.StatusAccepted,
+			check: func(t *testing.T) {
+				if len(provider.retried) != 1 || provider.retried[0] != recurring.Identifier {
+					t.Fatalf("expected retry dispatch for %s, got %v", recurring.Identifier, provider.retried)
+				}
+			},
+		},
+		{
+			name: "issue run now",
+			body: map[string]interface{}{
+				"event":   "issue.run_now",
+				"payload": map[string]interface{}{"issue_identifier": recurring.Identifier},
+			},
+			wantStatus: http.StatusAccepted,
+			check: func(t *testing.T) {
+				if len(provider.runNow) != 1 || provider.runNow[0] != recurring.Identifier {
+					t.Fatalf("expected run-now dispatch for %s, got %v", recurring.Identifier, provider.runNow)
+				}
+			},
+		},
+		{
+			name: "project run",
+			body: map[string]interface{}{
+				"event":   "project.run",
+				"payload": map[string]interface{}{"project_id": project.ID},
+			},
+			wantStatus: http.StatusAccepted,
+			check: func(t *testing.T) {
+				if len(provider.projectRefreshes) != 1 || provider.projectRefreshes[0] != project.ID {
+					t.Fatalf("expected project refresh for %s, got %v", project.ID, provider.projectRefreshes)
+				}
+			},
+		},
+		{
+			name: "project stop",
+			body: map[string]interface{}{
+				"event":   "project.stop",
+				"payload": map[string]interface{}{"project_id": project.ID},
+			},
+			wantStatus: http.StatusAccepted,
+			check: func(t *testing.T) {
+				if len(provider.projectStops) != 1 || provider.projectStops[0] != project.ID {
+					t.Fatalf("expected project stop for %s, got %v", project.ID, provider.projectStops)
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := requestWebhookJSON(t, srv, "test-webhook-token", tc.body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("expected %d, got %d", tc.wantStatus, resp.StatusCode)
+			}
+			body := decodeResponse(t, resp)
+			if body["event"] != tc.body["event"] {
+				t.Fatalf("expected event echo %v, got %#v", tc.body["event"], body)
+			}
+			if _, ok := body["received_at"].(string); !ok {
+				t.Fatalf("expected received_at in response, got %#v", body)
+			}
+			result := body["result"].(map[string]interface{})
+			if result["status"] == nil {
+				t.Fatalf("expected result status, got %#v", result)
+			}
+			tc.check(t)
+		})
+	}
+}
+
+func TestWebhooksRejectInvalidPayloadsAndDispatchFailures(t *testing.T) {
+	t.Setenv(webhookBearerTokenEnv, "test-webhook-token")
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProject("Scoped project", "", "/repo/outside", "/repo/outside/WORKFLOW.md")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	provider := &webhookTrackingProvider{
+		testProvider: testProvider{
+			status: map[string]interface{}{"scoped_repo_path": "/repo/inside"},
+		},
+	}
+	mux := http.NewServeMux()
+	NewServer(store, provider).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	unsupported := requestWebhookJSON(t, srv, "test-webhook-token", map[string]interface{}{
+		"event":   "issue.unknown",
+		"payload": map[string]interface{}{"issue_identifier": "ISS-1"},
+	})
+	if unsupported.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unsupported event expected 400, got %d", unsupported.StatusCode)
+	}
+	unsupportedBody := decodeResponse(t, unsupported)
+	if !strings.Contains(unsupportedBody["error"].(string), "unsupported event") {
+		t.Fatalf("unexpected unsupported response: %#v", unsupportedBody)
+	}
+
+	missingIdentifier := requestWebhookJSON(t, srv, "test-webhook-token", map[string]interface{}{
+		"event":   "issue.retry",
+		"payload": map[string]interface{}{},
+	})
+	if missingIdentifier.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing issue identifier expected 400, got %d", missingIdentifier.StatusCode)
+	}
+
+	dispatchBlocked := requestWebhookJSON(t, srv, "test-webhook-token", map[string]interface{}{
+		"event":   "project.run",
+		"payload": map[string]interface{}{"project_id": project.ID},
+	})
+	if dispatchBlocked.StatusCode != http.StatusBadRequest {
+		t.Fatalf("blocked project dispatch expected 400, got %d", dispatchBlocked.StatusCode)
+	}
+	dispatchBlockedBody := decodeResponse(t, dispatchBlocked)
+	if !strings.Contains(dispatchBlockedBody["error"].(string), "outside the current server scope") {
+		t.Fatalf("unexpected blocked dispatch response: %#v", dispatchBlockedBody)
+	}
+
+	missingProjectStop := requestWebhookJSON(t, srv, "test-webhook-token", map[string]interface{}{
+		"event":   "project.stop",
+		"payload": map[string]interface{}{"project_id": "proj_missing"},
+	})
+	if missingProjectStop.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing project stop expected 404, got %d", missingProjectStop.StatusCode)
 	}
 }
 
