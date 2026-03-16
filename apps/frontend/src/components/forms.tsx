@@ -376,6 +376,8 @@ export function IssueDialog({
   const [state, setState] = useState<string>(initial?.state ?? "backlog");
   const [priority, setPriority] = useState(String(initial?.priority ?? 0));
   const [labels, setLabels] = useState(initial?.labels ?? []);
+  const [agentName, setAgentName] = useState(initial?.agent_name ?? "");
+  const [agentPrompt, setAgentPrompt] = useState(initial?.agent_prompt ?? "");
   const [blockedBy, setBlockedBy] = useState(initial?.blocked_by ?? []);
   const [branchName, setBranchName] = useState(initial?.branch_name ?? "");
   const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
@@ -400,6 +402,8 @@ export function IssueDialog({
     setState(initial?.state ?? "backlog");
     setPriority(String(initial?.priority ?? 0));
     setLabels(initial?.labels ?? []);
+    setAgentName(initial?.agent_name ?? "");
+    setAgentPrompt(initial?.agent_prompt ?? "");
     setBlockedBy(initial?.blocked_by ?? []);
     setBranchName(initial?.branch_name ?? "");
     setPrURL(initial?.pr_url ?? "");
@@ -664,6 +668,16 @@ export function IssueDialog({
                 />
               )}
             </Field>
+            <Field label="Assigned agent">
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={agentName}
+                  onChange={(event) => setAgentName(event.target.value)}
+                  placeholder="marketing"
+                />
+              )}
+            </Field>
             <Field label="Blockers">
               {({ labelId }) => (
                 <MultiCombobox
@@ -700,6 +714,16 @@ export function IssueDialog({
               )}
             </Field>
           </div>
+          <Field label="Agent prompt">
+            {({ labelId }) => (
+              <Textarea
+                aria-labelledby={labelId}
+                value={agentPrompt}
+                onChange={(event) => setAgentPrompt(event.target.value)}
+                placeholder="Review the landing page copy and suggest stronger messaging."
+              />
+            )}
+          </Field>
           <Field label="Description">
             {({ labelId }) => (
               <IssueDescriptionField
@@ -845,6 +869,8 @@ export function IssueDialog({
                     issue_type: issueType,
                     priority: Number(priority),
                     labels,
+                    agent_name: agentName,
+                    agent_prompt: agentPrompt,
                     blocked_by: blockedBy,
                     branch_name: branchName,
                     pr_url: prURL,
