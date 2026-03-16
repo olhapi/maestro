@@ -87,6 +87,11 @@ workspace:
   root: ` + workspaceRoot + `
 hooks:
   timeout_ms: 1000
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
 agent:
   max_concurrent_agents: ` + fmt.Sprintf("%d", maxConcurrent) + `
   max_turns: 2
@@ -192,6 +197,11 @@ workspace:
   root: ` + workspaceRoot + `
 hooks:
   timeout_ms: 1000
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
 agent:
   max_concurrent_agents: 1
   max_turns: 1
@@ -687,6 +697,48 @@ func TestImplementationSuccessWithoutStateTransitionPausesAutomaticRetry(t *test
 	latest := events[len(events)-1]
 	if latest.Kind != "retry_paused" || latest.Error != "no_state_transition" || latest.Attempt != 1 {
 		t.Fatalf("unexpected latest runtime event: %+v", latest)
+	}
+}
+
+func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseImplementation: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview); err != nil {
+					return nil, err
+				}
+				return &agent.RunResult{Success: true}, nil
+			},
+		},
+	}
+
+	issue, _ := store.CreateIssue("", "", "Review disabled continuation", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateInReview, kanban.WorkflowPhaseImplementation, time.Second)
+	if updated.State != kanban.StateInReview || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
+		t.Fatalf("expected in_review/implementation, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	retry, retryOK := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if pausedOK {
+		t.Fatalf("expected continuation retry instead of pause, got %+v", paused)
+	}
+	if !retryOK {
+		t.Fatal("expected continuation retry after in_review normalization")
+	}
+	if retry.Phase != string(kanban.WorkflowPhaseImplementation) || retry.DelayType != "continuation" {
+		t.Fatalf("unexpected retry payload: %+v", retry)
 	}
 }
 
@@ -1276,6 +1328,10 @@ func TestRunWaitsForActiveRunsDuringShutdown(t *testing.T) {
 		release:      make(chan struct{}),
 	}
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Phases.Review.Enabled = false
+	workflow.Config.Phases.Review.Prompt = ""
+	workflow.Config.Phases.Done.Enabled = false
+	workflow.Config.Phases.Done.Prompt = ""
 	workflow.Config.Agent.Mode = config.AgentModeAppServer
 
 	ctx, cancel := context.WithCancel(context.Background())

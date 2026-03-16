@@ -39,6 +39,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.TurnSandboxPolicy["networkAccess"] != true {
 		t.Fatalf("expected default turn sandbox networkAccess=true, got %+v", cfg.Codex.TurnSandboxPolicy)
 	}
+	if !cfg.Phases.Review.Enabled || !strings.Contains(cfg.Phases.Review.Prompt, "review pass") {
+		t.Fatalf("expected review phase defaults, got %+v", cfg.Phases.Review)
+	}
+	if !cfg.Phases.Done.Enabled || !strings.Contains(cfg.Phases.Done.Prompt, "done pass") {
+		t.Fatalf("expected done phase defaults, got %+v", cfg.Phases.Done)
+	}
 }
 
 func TestLoadWorkflowNestedSchema(t *testing.T) {
@@ -148,6 +154,58 @@ Implement {{ issue.identifier }}
 	}
 	if strings.TrimSpace(workflow.Config.Phases.Done.Prompt) != "Finalize {{ issue.identifier }} during {{ phase }}" {
 		t.Fatalf("unexpected done prompt: %q", workflow.Config.Phases.Done.Prompt)
+	}
+}
+
+func TestLoadWorkflowDefaultsPhaseEnablementWhenMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
+		t.Fatalf("expected default review phase when missing from workflow, got %+v", workflow.Config.Phases.Review)
+	}
+	if !workflow.Config.Phases.Done.Enabled || !strings.Contains(workflow.Config.Phases.Done.Prompt, "done pass") {
+		t.Fatalf("expected default done phase when missing from workflow, got %+v", workflow.Config.Phases.Done)
+	}
+}
+
+func TestLoadWorkflowPreservesExplicitDisabledPhases(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Phases.Review.Enabled || workflow.Config.Phases.Done.Enabled {
+		t.Fatalf("expected explicit phase disablement to be preserved, got review=%+v done=%+v", workflow.Config.Phases.Review, workflow.Config.Phases.Done)
 	}
 }
 
@@ -424,7 +482,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"# before_remove: ./scripts/before-remove.sh",
 		"timeout_ms: 60000",
 		"phases:",
-		"enabled: false",
+		"enabled: true",
 		"issue.*, project.*, phase, and attempt",
 		"max_concurrent_agents: 3",
 		"max_turns: 4",
@@ -590,6 +648,12 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	}
 	if workflow.Config.Codex.TurnSandboxPolicy["networkAccess"] != true {
 		t.Fatalf("expected networkAccess=true, got %+v", workflow.Config.Codex.TurnSandboxPolicy)
+	}
+	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "Review the implementation for issue") {
+		t.Fatalf("expected generated workflow review phase to round-trip, got %+v", workflow.Config.Phases.Review)
+	}
+	if !workflow.Config.Phases.Done.Enabled || !strings.Contains(workflow.Config.Phases.Done.Prompt, "Finalize issue") {
+		t.Fatalf("expected generated workflow done phase to round-trip, got %+v", workflow.Config.Phases.Done)
 	}
 	if !strings.Contains(workflow.PromptTemplate, "{{ issue.identifier }}") {
 		t.Fatalf("unexpected prompt template: %q", workflow.PromptTemplate)

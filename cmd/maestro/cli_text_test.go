@@ -57,6 +57,14 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	if _, err := os.Stat(workflowPath); err != nil {
 		t.Fatalf("expected workflow file: %v", err)
 	}
+	workflowData, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read generated workflow: %v", err)
+	}
+	workflowText := string(workflowData)
+	if !strings.Contains(workflowText, "phases:") || !strings.Contains(workflowText, "enabled: true") {
+		t.Fatalf("expected generated workflow to enable default review/done phases, got %q", workflowText)
+	}
 	for _, want := range []string{
 		"Initialized " + workflowPath,
 		"Verification",
