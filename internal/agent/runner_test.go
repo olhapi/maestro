@@ -323,10 +323,10 @@ func TestShouldContinueRunPhaseOnlyForSamePhaseWork(t *testing.T) {
 			want:     false,
 		},
 		{
-			name:     "done continues while done phase stays active",
+			name:     "done stops after a successful finalization turn",
 			runPhase: kanban.WorkflowPhaseDone,
 			state:    kanban.StateDone,
-			want:     true,
+			want:     false,
 		},
 		{
 			name:     "done stops when issue reopens",

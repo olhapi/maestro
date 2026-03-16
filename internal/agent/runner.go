@@ -506,7 +506,7 @@ func shouldContinueRunPhase(workflow *config.Workflow, runPhase kanban.WorkflowP
 	case kanban.WorkflowPhaseReview:
 		return workflow.Config.Phases.Review.Enabled && issue.State == kanban.StateInReview
 	case kanban.WorkflowPhaseDone:
-		return workflow.Config.Phases.Done.Enabled && issue.State == kanban.StateDone
+		return false
 	default:
 		return issue.State != kanban.StateInReview && isActiveState(workflow, string(issue.State))
 	}
