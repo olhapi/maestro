@@ -26,17 +26,20 @@ export function SessionExecutionCard({
   const failureLabel = failureStatusLabel(execution.failure_class)
   const failureSummaryReason =
     execution.pause_reason || execution.failure_class || execution.current_error
+  const pendingInterrupt = execution.pending_interrupt
   const pausedRunSummary = describeFailureRuns(
     execution.consecutive_failures,
     failureSummaryReason,
   )
-  const sessionStatusLabel = execution.retry_state === 'paused'
-    ? 'Paused'
-    : failureLabel
-      ? failureLabel
-      : execution.active
-        ? 'Active session'
-        : 'Idle'
+  const sessionStatusLabel = pendingInterrupt
+    ? 'Waiting for input'
+    : execution.retry_state === 'paused'
+      ? 'Paused'
+      : failureLabel
+        ? failureLabel
+        : execution.active
+          ? 'Active session'
+          : 'Idle'
   const debugSignalCount = debugEntries.length + execution.runtime_events.length
 
   return (
@@ -51,6 +54,12 @@ export function SessionExecutionCard({
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.session_source)}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">Attempt {execution.attempt_number || 0}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.phase || 'implementation')}</Badge>
+          {pendingInterrupt ? (
+            <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">Waiting</Badge>
+          ) : null}
+          {pendingInterrupt?.collaboration_mode === 'plan' ? (
+            <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
+          ) : null}
           {execution.failure_class ? (
             <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">{toTitleCase(execution.failure_class)}</Badge>
           ) : null}
@@ -72,6 +81,23 @@ export function SessionExecutionCard({
                   {execution.pause_reason ? ` Last reason: ${execution.pause_reason}.` : ''}
                 </p>
                 <p className="mt-2 text-amber-100/80">{pausedActionHint}</p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {pendingInterrupt ? (
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
+              <div>
+                <p className="font-medium text-amber-100">Waiting for operator input</p>
+                <p className="mt-2 text-amber-50/90">
+                  {pendingInterrupt.last_activity || 'This run is blocked on a response in the global interrupt queue.'}
+                </p>
+                <p className="mt-2 text-amber-100/80">
+                  Respond from the global interrupt panel to let this thread continue on the same session.
+                </p>
               </div>
             </div>
           </div>
@@ -112,7 +138,10 @@ export function SessionExecutionCard({
               <ChevronDown className="size-3 transition group-open:rotate-180" />
             </span>
           </summary>
-          <div className="mt-3.5 space-y-2.5">
+          <div
+            className="mt-3.5 max-h-[520px] space-y-2.5 overflow-y-auto pr-1"
+            data-testid="debug-signals-scroll"
+          >
             {debugEntries.length === 0 && runtimeEvents.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No persisted runtime events for this issue yet.</p>
             ) : (

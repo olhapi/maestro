@@ -209,6 +209,7 @@ type SessionFeedEntry struct {
 	Source          string            `json:"source"`
 	Active          bool              `json:"active"`
 	Status          string            `json:"status"`
+	PendingInterrupt *appserver.PendingInteraction `json:"pending_interrupt,omitempty"`
 	Phase           string            `json:"phase,omitempty"`
 	Attempt         int               `json:"attempt,omitempty"`
 	RunKind         string            `json:"run_kind,omitempty"`

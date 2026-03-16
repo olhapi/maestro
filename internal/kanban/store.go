@@ -2183,6 +2183,12 @@ func (s *Store) DeleteIssue(id string) error {
 	if _, err := tx.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM issue_activity_updates WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_activity_entries WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id); err != nil {
 		return err
 	}

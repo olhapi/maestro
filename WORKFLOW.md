@@ -39,7 +39,7 @@ hooks:
 phases:
   review:
     # Enable a dedicated review pass after implementation. Other option: false.
-    enabled: false
+    enabled: true
     # Prompt rendered when the issue enters review. Uses the same template variables
     # as the main prompt, such as issue.*, project.*, phase, and attempt.
     prompt: |
@@ -51,7 +51,7 @@ phases:
       Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
   done:
     # Enable a dedicated finalization pass after implementation is otherwise complete.
-    enabled: false
+    enabled: true
     # Prompt rendered when the issue enters done for project-specific wrap-up steps.
     prompt: |
       Finalize issue {{ issue.identifier }} from the current workspace.
