@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useEffectEvent, useMemo, useState } from 'react'
+import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RotateCcw, Search } from 'lucide-react'
@@ -24,6 +24,58 @@ const nav = [
 const APP_TITLE = 'Maestro Control Center'
 const SIDEBAR_TITLE = 'Maestro'
 const brandLinkClass = 'rounded-[calc(var(--panel-radius)-0.125rem)] outline-none transition hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60'
+type AudioContextConstructor = typeof AudioContext
+type InterruptAudioWindow = Window & typeof globalThis & { webkitAudioContext?: AudioContextConstructor }
+
+function playInterruptNotification() {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const AudioContextImpl = (window as InterruptAudioWindow).AudioContext ?? (window as InterruptAudioWindow).webkitAudioContext
+  if (!AudioContextImpl) {
+    return
+  }
+
+  try {
+    const context = new AudioContextImpl()
+    const now = context.currentTime
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    let closed = false
+    const closeContext = () => {
+      if (closed) {
+        return
+      }
+      closed = true
+      void context.close().catch(() => {})
+    }
+
+    oscillator.type = 'triangle'
+    oscillator.frequency.setValueAtTime(880, now)
+    oscillator.frequency.linearRampToValueAtTime(1174.66, now + 0.12)
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32)
+
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+
+    void context.resume().catch(() => {
+      closeContext()
+    })
+    oscillator.start(now)
+    oscillator.stop(now + 0.32)
+    oscillator.addEventListener(
+      'ended',
+      () => {
+        closeContext()
+      },
+      { once: true },
+    )
+  } catch {
+    // Ignore audio failures so interrupts still render even when autoplay is blocked.
+  }
+}
 
 function getPageTitle(pathname: string) {
   if (pathname === appRoutes.overview) return 'Overview'
@@ -43,6 +95,7 @@ export function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
   const [hiddenInterruptId, setHiddenInterruptId] = useState<string | null>(null)
+  const lastObservedInterruptId = useRef<string | null | undefined>(undefined)
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
   const interrupts = useQuery({ queryKey: ['interrupts'], queryFn: api.listInterrupts })
   const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
@@ -105,12 +158,32 @@ export function AppShell() {
   const pageTitle = getPageTitle(activePath) || SIDEBAR_TITLE
   const runningCount = bootstrap.data?.overview.snapshot.running.length ?? 0
   const retryCount = bootstrap.data?.overview.snapshot.retrying.length ?? 0
+  const currentInterruptId = interrupts.data?.current?.id ?? null
   const effectiveHiddenInterruptId = interrupts.data?.current?.id === hiddenInterruptId ? hiddenInterruptId : null
 
   useEffect(() => {
     const nextTitle = getPageTitle(activePath)
     document.title = nextTitle ? `${nextTitle} · ${APP_TITLE}` : APP_TITLE
   }, [activePath])
+
+  useEffect(() => {
+    if (!interrupts.isFetched) {
+      return
+    }
+    if (lastObservedInterruptId.current === undefined) {
+      lastObservedInterruptId.current = currentInterruptId
+      return
+    }
+    if (!currentInterruptId) {
+      lastObservedInterruptId.current = null
+      return
+    }
+    if (lastObservedInterruptId.current === currentInterruptId) {
+      return
+    }
+    lastObservedInterruptId.current = currentInterruptId
+    playInterruptNotification()
+  }, [currentInterruptId, interrupts.isFetched])
 
   return (
     <div className="min-h-screen overflow-x-clip bg-[var(--page)] text-white">

@@ -8,6 +8,7 @@ import (
 // State represents the workflow state of an issue
 type State string
 type ProjectState string
+type ProjectPermissionProfile string
 
 const (
 	StateBacklog    State = "backlog"
@@ -19,6 +20,9 @@ const (
 
 	ProjectStateStopped ProjectState = "stopped"
 	ProjectStateRunning ProjectState = "running"
+
+	ProjectPermissionProfileDefault    ProjectPermissionProfile = "default"
+	ProjectPermissionProfileFullAccess ProjectPermissionProfile = "full-access"
 )
 
 type WorkflowPhase string
@@ -96,6 +100,30 @@ func NormalizeProjectState(raw string) ProjectState {
 	}
 }
 
+func NormalizeProjectPermissionProfile(raw string) ProjectPermissionProfile {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(ProjectPermissionProfileDefault):
+		return ProjectPermissionProfileDefault
+	case "full-access", "full_access", "fullaccess":
+		return ProjectPermissionProfileFullAccess
+	default:
+		return ProjectPermissionProfileDefault
+	}
+}
+
+func ParseProjectPermissionProfile(raw string) (ProjectPermissionProfile, error) {
+	switch profile := NormalizeProjectPermissionProfile(raw); {
+	case strings.TrimSpace(raw) == "":
+		return ProjectPermissionProfileDefault, nil
+	case profile == ProjectPermissionProfileFullAccess:
+		return profile, nil
+	case strings.EqualFold(strings.TrimSpace(raw), string(ProjectPermissionProfileDefault)):
+		return ProjectPermissionProfileDefault, nil
+	default:
+		return "", invalidProjectPermissionProfileError(ProjectPermissionProfile(strings.TrimSpace(raw)))
+	}
+}
+
 func ParseIssueType(raw string) (IssueType, error) {
 	issueType := IssueType(strings.ToLower(strings.TrimSpace(raw)))
 	if issueType == "" {
@@ -128,21 +156,22 @@ func TerminalStates() []State {
 
 // Project represents a top-level project/container
 type Project struct {
-	ID                 string                 `json:"id"`
-	Name               string                 `json:"name"`
-	Description        string                 `json:"description,omitempty"`
-	State              ProjectState           `json:"state"`
-	RepoPath           string                 `json:"repo_path,omitempty"`
-	WorkflowPath       string                 `json:"workflow_path,omitempty"`
-	ProviderKind       string                 `json:"provider_kind,omitempty"`
-	ProviderProjectRef string                 `json:"provider_project_ref,omitempty"`
-	ProviderConfig     map[string]interface{} `json:"provider_config,omitempty"`
-	Capabilities       ProviderCapabilities   `json:"capabilities"`
-	OrchestrationReady bool                   `json:"orchestration_ready"`
-	DispatchReady      bool                   `json:"dispatch_ready"`
-	DispatchError      string                 `json:"dispatch_error,omitempty"`
-	CreatedAt          time.Time              `json:"created_at"`
-	UpdatedAt          time.Time              `json:"updated_at"`
+	ID                 string                   `json:"id"`
+	Name               string                   `json:"name"`
+	Description        string                   `json:"description,omitempty"`
+	State              ProjectState             `json:"state"`
+	PermissionProfile  ProjectPermissionProfile `json:"permission_profile,omitempty"`
+	RepoPath           string                   `json:"repo_path,omitempty"`
+	WorkflowPath       string                   `json:"workflow_path,omitempty"`
+	ProviderKind       string                   `json:"provider_kind,omitempty"`
+	ProviderProjectRef string                   `json:"provider_project_ref,omitempty"`
+	ProviderConfig     map[string]interface{}   `json:"provider_config,omitempty"`
+	Capabilities       ProviderCapabilities     `json:"capabilities"`
+	OrchestrationReady bool                     `json:"orchestration_ready"`
+	DispatchReady      bool                     `json:"dispatch_ready"`
+	DispatchError      string                   `json:"dispatch_error,omitempty"`
+	CreatedAt          time.Time                `json:"created_at"`
+	UpdatedAt          time.Time                `json:"updated_at"`
 }
 
 // Epic represents a collection of related issues

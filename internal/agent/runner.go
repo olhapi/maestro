@@ -99,6 +99,10 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	if err != nil {
 		return nil, err
 	}
+	workflow, err = r.applyProjectPermissionProfile(workflow, issue)
+	if err != nil {
+		return nil, err
+	}
 
 	workspace, err := r.getOrCreateWorkspace(workflow, issue)
 	if err != nil {
@@ -123,6 +127,30 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 		return result, runErr
 	}
 	return result, nil
+}
+
+func (r *Runner) applyProjectPermissionProfile(workflow *config.Workflow, issue *kanban.Issue) (*config.Workflow, error) {
+	if workflow == nil || issue == nil || strings.TrimSpace(issue.ProjectID) == "" {
+		return workflow, nil
+	}
+	project, err := r.store.GetProject(issue.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	switch kanban.NormalizeProjectPermissionProfile(string(project.PermissionProfile)) {
+	case kanban.ProjectPermissionProfileFullAccess:
+		cloned := *workflow
+		cloned.Config = workflow.Config
+		cloned.Config.Codex = workflow.Config.Codex
+		cloned.Config.Codex.ThreadSandbox = "danger-full-access"
+		cloned.Config.Codex.TurnSandboxPolicy = map[string]interface{}{
+			"type":          "dangerFullAccess",
+			"networkAccess": true,
+		}
+		return &cloned, nil
+	default:
+		return workflow, nil
+	}
 }
 
 func (r *Runner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {

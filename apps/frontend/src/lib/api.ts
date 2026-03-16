@@ -90,6 +90,11 @@ export const api = {
     request<Record<string, unknown>>(`/api/v1/app/projects/${id}/stop`, {
       method: "POST",
     }),
+  setProjectPermissionProfile: (id: string, permissionProfile: string) =>
+    request<Project>(`/api/v1/app/projects/${id}/permissions`, {
+      method: "POST",
+      body: JSON.stringify({ permission_profile: permissionProfile }),
+    }),
   listEpics: (projectID?: string) =>
     request<{ items: EpicSummary[] }>(
       `/api/v1/app/epics${projectID ? `?project_id=${projectID}` : ""}`,

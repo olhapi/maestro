@@ -1,6 +1,7 @@
 export type IssueState = string;
 export type IssueType = "standard" | "recurring";
 export type ProjectState = "stopped" | "running";
+export type ProjectPermissionProfile = "default" | "full-access";
 
 export type WorkflowPhase = "implementation" | "review" | "done" | "complete";
 
@@ -33,6 +34,7 @@ export interface Project {
   name: string;
   description?: string;
   state: ProjectState;
+  permission_profile?: ProjectPermissionProfile;
   repo_path?: string;
   workflow_path?: string;
   provider_kind?: string;
