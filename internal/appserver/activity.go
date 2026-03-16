@@ -183,7 +183,7 @@ func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 			Stdin:     payload.Stdin,
 			Raw:       cloneRawMap(msg.Raw),
 		}, payload.ThreadID != "" || payload.TurnID != "" || payload.ItemID != ""
-	case protocol.MethodItemCommandExecutionApproval, protocol.MethodItemFileChangeApproval, protocol.MethodToolRequestUserInput:
+	case protocol.MethodItemCommandExecutionApproval, protocol.MethodItemFileChangeApproval, protocol.MethodExecCommandApproval, protocol.MethodApplyPatchApproval, protocol.MethodToolRequestUserInput:
 		params, ok := messageParamsMap(msg)
 		if !ok {
 			return ActivityEvent{}, false

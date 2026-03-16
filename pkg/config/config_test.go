@@ -9,6 +9,38 @@ import (
 	"testing"
 )
 
+func assertContainsAll(t *testing.T, text string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected text to contain %q, got %q", want, text)
+		}
+	}
+}
+
+func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
+	t.Helper()
+	assertContainsAll(t, prompt,
+		"The done phase owns merge-back and finalization for this issue from the current workspace.",
+		"Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.",
+		"Consider the work complete once the change is merged.",
+		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
+		"If any other blocker prevents completion, report it clearly and keep the issue in done unless the work truly needs to be reopened.",
+	)
+}
+
+func assertInitDonePromptSemantics(t *testing.T, prompt string) {
+	t.Helper()
+	assertContainsAll(t, prompt,
+		"Finalize issue {{ issue.identifier }} from the current workspace.",
+		"The done phase owns merge-back and finalization.",
+		"Merge the issue branch back when possible, resolving merge conflicts when you can do so safely.",
+		"Consider the work complete once the change is merged.",
+		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
+		"Report any other blocker clearly while keeping the issue in done unless it truly needs to be reopened.",
+	)
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
@@ -36,9 +68,19 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
 		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
+	if cfg.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+		t.Fatalf("expected initial collaboration mode %q, got %q", InitialCollaborationModePlan, cfg.Codex.InitialCollaborationMode)
+	}
 	if cfg.Codex.TurnSandboxPolicy["networkAccess"] != true {
 		t.Fatalf("expected default turn sandbox networkAccess=true, got %+v", cfg.Codex.TurnSandboxPolicy)
 	}
+	if !cfg.Phases.Review.Enabled || !strings.Contains(cfg.Phases.Review.Prompt, "review pass") {
+		t.Fatalf("expected review phase defaults, got %+v", cfg.Phases.Review)
+	}
+	if !cfg.Phases.Done.Enabled {
+		t.Fatalf("expected done phase defaults, got %+v", cfg.Phases.Done)
+	}
+	assertDefaultDonePromptSemantics(t, cfg.Phases.Done.Prompt)
 }
 
 func TestLoadWorkflowNestedSchema(t *testing.T) {
@@ -105,12 +147,16 @@ Issue {{ issue.identifier }}
 	if workflow.Config.Codex.ExpectedVersion != "0.111.0" {
 		t.Fatalf("unexpected codex expected version: %q", workflow.Config.Codex.ExpectedVersion)
 	}
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+		t.Fatalf("expected default initial collaboration mode, got %q", workflow.Config.Codex.InitialCollaborationMode)
+	}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected default review prompt, got %+v", workflow.Config.Phases.Review)
 	}
-	if !workflow.Config.Phases.Done.Enabled || !strings.Contains(workflow.Config.Phases.Done.Prompt, "done pass") {
+	if !workflow.Config.Phases.Done.Enabled {
 		t.Fatalf("expected default done prompt, got %+v", workflow.Config.Phases.Done)
 	}
+	assertDefaultDonePromptSemantics(t, workflow.Config.Phases.Done.Prompt)
 	expectedRoot := filepath.Join(tmpDir, "custom-workspaces")
 	if workflow.Config.Workspace.Root != expectedRoot {
 		t.Fatalf("expected resolved workspace root %s, got %s", expectedRoot, workflow.Config.Workspace.Root)
@@ -148,6 +194,83 @@ Implement {{ issue.identifier }}
 	}
 	if strings.TrimSpace(workflow.Config.Phases.Done.Prompt) != "Finalize {{ issue.identifier }} during {{ phase }}" {
 		t.Fatalf("unexpected done prompt: %q", workflow.Config.Phases.Done.Prompt)
+	}
+}
+
+func TestLoadWorkflowPreservesExplicitInitialCollaborationMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  initial_collaboration_mode: default
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
+		t.Fatalf("expected explicit initial collaboration mode %q, got %q", InitialCollaborationModeDefault, workflow.Config.Codex.InitialCollaborationMode)
+	}
+}
+
+func TestLoadWorkflowDefaultsPhaseEnablementWhenMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
+		t.Fatalf("expected default review phase when missing from workflow, got %+v", workflow.Config.Phases.Review)
+	}
+	if !workflow.Config.Phases.Done.Enabled {
+		t.Fatalf("expected default done phase when missing from workflow, got %+v", workflow.Config.Phases.Done)
+	}
+	assertDefaultDonePromptSemantics(t, workflow.Config.Phases.Done.Prompt)
+}
+
+func TestLoadWorkflowPreservesExplicitDisabledPhases(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Phases.Review.Enabled || workflow.Config.Phases.Done.Enabled {
+		t.Fatalf("expected explicit phase disablement to be preserved, got review=%+v done=%+v", workflow.Config.Phases.Review, workflow.Config.Phases.Done)
 	}
 }
 
@@ -424,7 +547,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"# before_remove: ./scripts/before-remove.sh",
 		"timeout_ms: 60000",
 		"phases:",
-		"enabled: false",
+		"enabled: true",
 		"issue.*, project.*, phase, and attempt",
 		"max_concurrent_agents: 3",
 		"max_turns: 4",
@@ -435,7 +558,9 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"codex app-server --model test",
 		"expected_version: 0.111.0",
 		"approval_policy: never",
+		"initial_collaboration_mode: plan",
 		"on-request, on-failure, untrusted",
+		"Ignored for stdio runs and resumed threads.",
 		"read-only, workspace-write, danger-full-access",
 		"type: workspaceWrite",
 		"networkAccess: true",
@@ -474,6 +599,7 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 		"root: ./workspaces",
 		"command: codex app-server",
 		"mode: app_server",
+		"initial_collaboration_mode: plan",
 		"thread_sandbox: workspace-write",
 		"type: workspaceWrite",
 		"networkAccess: true",
@@ -507,6 +633,7 @@ func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
 		"root: ./ws",
 		"command: codex exec --model test",
 		"mode: stdio",
+		"initial_collaboration_mode: plan",
 		"thread_sandbox: danger-full-access",
 		"type: dangerFullAccess",
 		"networkAccess: true",
@@ -541,6 +668,7 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 		"root: ./flag-ws",
 		"command: codex exec --model custom",
 		"mode: stdio",
+		"initial_collaboration_mode: plan",
 		"thread_sandbox: workspace-write",
 		"type: workspaceWrite",
 		"networkAccess: false",
@@ -562,6 +690,7 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 		CodexCommand:  "codex app-server --model test",
 		AgentMode:     AgentModeStdio,
 	})
+	assertInitDonePromptSemantics(t, content)
 	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -588,9 +717,19 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	if workflow.Config.Codex.Command != "codex app-server --model test" {
 		t.Fatalf("unexpected codex command: %q", workflow.Config.Codex.Command)
 	}
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+		t.Fatalf("unexpected initial collaboration mode: %q", workflow.Config.Codex.InitialCollaborationMode)
+	}
 	if workflow.Config.Codex.TurnSandboxPolicy["networkAccess"] != true {
 		t.Fatalf("expected networkAccess=true, got %+v", workflow.Config.Codex.TurnSandboxPolicy)
 	}
+	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "Review the implementation for issue") {
+		t.Fatalf("expected generated workflow review phase to round-trip, got %+v", workflow.Config.Phases.Review)
+	}
+	if !workflow.Config.Phases.Done.Enabled {
+		t.Fatalf("expected generated workflow done phase to round-trip, got %+v", workflow.Config.Phases.Done)
+	}
+	assertInitDonePromptSemantics(t, workflow.Config.Phases.Done.Prompt)
 	if !strings.Contains(workflow.PromptTemplate, "{{ issue.identifier }}") {
 		t.Fatalf("unexpected prompt template: %q", workflow.PromptTemplate)
 	}
@@ -745,5 +884,26 @@ func TestInitWorkflowSandboxProfilesMapToExpectedConfig(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadWorkflowRejectsInvalidInitialCollaborationMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  initial_collaboration_mode: invalid
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadWorkflow(workflowPath)
+	if err == nil || !strings.Contains(err.Error(), "unsupported codex.initial_collaboration_mode") {
+		t.Fatalf("expected invalid initial collaboration mode error, got %v", err)
 	}
 }

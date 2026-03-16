@@ -20,36 +20,39 @@ import (
 	"github.com/olhapi/maestro/internal/appserver/protocol/gen"
 )
 
-const nonInteractiveToolInputAnswer = "This is a non-interactive session. Operator input is unavailable."
+const defaultInitialCollaborationMode = "plan"
 
 type ToolExecutor func(ctx context.Context, name string, arguments interface{}) map[string]interface{}
 
 type ClientConfig struct {
-	Executable        string
-	Args              []string
-	Env               []string
-	Workspace         string
-	WorkspaceRoot     string
-	IssueID           string
-	IssueIdentifier   string
-	Prompt            string
-	Title             string
-	CodexCommand      string
-	ExpectedVersion   string
-	ApprovalPolicy    interface{}
-	ThreadSandbox     string
-	TurnSandboxPolicy map[string]interface{}
-	ReadTimeout       time.Duration
-	TurnTimeout       time.Duration
-	StallTimeout      time.Duration
-	DynamicTools      []map[string]interface{}
-	ToolExecutor      ToolExecutor
-	Logger            *slog.Logger
-	OnMessage         func(map[string]interface{})
-	OnSessionUpdate   func(*Session)
-	OnActivityEvent   func(ActivityEvent)
-	ResumeThreadID    string
-	ResumeSource      string
+	Executable               string
+	Args                     []string
+	Env                      []string
+	Workspace                string
+	WorkspaceRoot            string
+	IssueID                  string
+	IssueIdentifier          string
+	Prompt                   string
+	Title                    string
+	CodexCommand             string
+	ExpectedVersion          string
+	ApprovalPolicy           interface{}
+	InitialCollaborationMode string
+	ThreadSandbox            string
+	TurnSandboxPolicy        map[string]interface{}
+	ReadTimeout              time.Duration
+	TurnTimeout              time.Duration
+	StallTimeout             time.Duration
+	DynamicTools             []map[string]interface{}
+	ToolExecutor             ToolExecutor
+	Logger                   *slog.Logger
+	OnMessage                func(map[string]interface{})
+	OnSessionUpdate          func(*Session)
+	OnActivityEvent          func(ActivityEvent)
+	OnPendingInteraction     func(*PendingInteraction)
+	OnPendingInteractionDone func(string)
+	ResumeThreadID           string
+	ResumeSource             string
 }
 
 type Result struct {
@@ -98,6 +101,17 @@ type Client struct {
 	requestMu sync.Mutex
 	nextID    int
 	closeOnce sync.Once
+
+	pendingMu           sync.Mutex
+	pendingInteractions map[string]*interactionWaiter
+}
+
+type interactionWaiter struct {
+	interaction PendingInteraction
+	payloadID   protocol.RequestID
+	responseCh  chan PendingInteractionResponse
+	doneCh      chan struct{}
+	responded   bool
 }
 
 func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
@@ -118,6 +132,9 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	}
 	if cfg.ApprovalPolicy == nil {
 		cfg.ApprovalPolicy = defaultApprovalPolicy()
+	}
+	if strings.TrimSpace(cfg.InitialCollaborationMode) == "" {
+		cfg.InitialCollaborationMode = defaultInitialCollaborationMode
 	}
 	cfg.TurnSandboxPolicy = normalizeTurnSandboxPolicy(cfg.TurnSandboxPolicy, cfg.Workspace, cfg.WorkspaceRoot)
 	if strings.TrimSpace(cfg.CodexCommand) == "" && looksLikeCodexCommand(cfg.Executable) {
@@ -153,14 +170,15 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	}
 
 	client := &Client{
-		cfg:     cfg,
-		cmd:     cmd,
-		stdin:   stdin,
-		session: &Session{MaxHistory: defaultSessionHistoryLimit},
-		lines:   make(chan string, 128),
-		lineErr: make(chan error, 1),
-		waitCh:  make(chan error, 1),
-		nextID:  1,
+		cfg:                 cfg,
+		cmd:                 cmd,
+		stdin:               stdin,
+		session:             &Session{MaxHistory: defaultSessionHistoryLimit},
+		lines:               make(chan string, 128),
+		lineErr:             make(chan error, 1),
+		waitCh:              make(chan error, 1),
+		nextID:              1,
+		pendingInteractions: make(map[string]*interactionWaiter),
 	}
 	client.session.IssueID = cfg.IssueID
 	client.session.IssueIdentifier = cfg.IssueIdentifier
@@ -265,6 +283,50 @@ func (c *Client) Close() error {
 		}
 	})
 	return closeErr
+}
+
+func (c *Client) RespondToInteraction(ctx context.Context, interactionID string, response PendingInteractionResponse) error {
+	interactionID = strings.TrimSpace(interactionID)
+	if interactionID == "" {
+		return fmt.Errorf("%w: missing interaction id", ErrInvalidInteractionResponse)
+	}
+
+	c.pendingMu.Lock()
+	waiter, ok := c.pendingInteractions[interactionID]
+	if !ok {
+		c.pendingMu.Unlock()
+		return ErrPendingInteractionNotFound
+	}
+	if waiter.responded {
+		c.pendingMu.Unlock()
+		return ErrPendingInteractionConflict
+	}
+	normalized, err := normalizePendingInteractionResponse(waiter.interaction, response)
+	if err != nil {
+		c.pendingMu.Unlock()
+		return err
+	}
+	waiter.responded = true
+	c.pendingMu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		c.pendingMu.Lock()
+		if current, ok := c.pendingInteractions[interactionID]; ok && current == waiter {
+			current.responded = false
+		}
+		c.pendingMu.Unlock()
+		return ctx.Err()
+	case <-waiter.doneCh:
+		c.pendingMu.Lock()
+		if current, ok := c.pendingInteractions[interactionID]; ok && current == waiter {
+			current.responded = false
+		}
+		c.pendingMu.Unlock()
+		return ErrPendingInteractionNotFound
+	case waiter.responseCh <- normalized:
+		return nil
+	}
 }
 
 func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
@@ -405,7 +467,14 @@ func (c *Client) tryResumeThread(ctx context.Context) (string, bool) {
 
 func (c *Client) startThread(ctx context.Context) (string, error) {
 	requestID := c.nextRequestID()
-	req, err := protocol.ThreadStartRequest(requestID, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.ThreadSandbox, c.cfg.DynamicTools)
+	req, err := protocol.ThreadStartRequest(
+		requestID,
+		filepath.Clean(c.cfg.Workspace),
+		c.cfg.ApprovalPolicy,
+		c.cfg.ThreadSandbox,
+		c.cfg.DynamicTools,
+		map[string]interface{}{"initial_collaboration_mode": strings.TrimSpace(c.cfg.InitialCollaborationMode)},
+	)
 	if err != nil {
 		return "", err
 	}
@@ -606,8 +675,7 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 			return true, nil
 		}
-		c.logger.Warn("Codex approval required", "method", method)
-		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+		return c.waitForPendingInteraction(ctx, payload)
 	case protocol.MethodItemFileChangeApproval:
 		if c.autoApproveRequests() {
 			if err := c.sendMessage(protocol.FileChangeApprovalResult(payload.ID, gen.AcceptForSession)); err != nil {
@@ -617,8 +685,7 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 			return true, nil
 		}
-		c.logger.Warn("Codex approval required", "method", method)
-		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+		return c.waitForPendingInteraction(ctx, payload)
 	case protocol.MethodExecCommandApproval:
 		if c.autoApproveRequests() {
 			if err := c.sendMessage(protocol.ExecCommandApprovalResult(payload.ID, gen.ApprovedForSession)); err != nil {
@@ -628,8 +695,7 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 			return true, nil
 		}
-		c.logger.Warn("Codex approval required", "method", method)
-		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+		return c.waitForPendingInteraction(ctx, payload)
 	case protocol.MethodApplyPatchApproval:
 		if c.autoApproveRequests() {
 			if err := c.sendMessage(protocol.ApplyPatchApprovalResult(payload.ID, gen.ApprovedForSession)); err != nil {
@@ -639,8 +705,7 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 			return true, nil
 		}
-		c.logger.Warn("Codex approval required", "method", method)
-		return true, &RunError{Kind: "approval_required", Payload: payload.Raw}
+		return c.waitForPendingInteraction(ctx, payload)
 	case protocol.MethodToolRequestUserInput:
 		var params gen.ToolRequestUserInputParams
 		if err := payload.UnmarshalParams(&params); err != nil {
@@ -648,8 +713,7 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 		}
 		answers, autoApproved := answersForToolInputParams(params, c.autoApproveRequests())
 		if answers == nil {
-			c.logger.Warn("Codex turn input required", "method", method)
-			return true, &RunError{Kind: "turn_input_required", Payload: payload.Raw}
+			return c.waitForPendingInteraction(ctx, payload)
 		}
 		if err := c.sendMessage(protocol.ToolRequestUserInputResult(payload.ID, answers)); err != nil {
 			return true, err
@@ -657,12 +721,6 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 		if autoApproved {
 			c.logger.Info("Codex tool input auto-approved", "method", method)
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
-		} else {
-			c.logger.Info("Codex tool input auto-answered", "method", method)
-			c.emitMessage("tool_input_auto_answered", map[string]interface{}{
-				"payload": payload.Raw,
-				"answer":  nonInteractiveToolInputAnswer,
-			})
 		}
 		return true, nil
 	case protocol.MethodToolCall:
@@ -695,11 +753,629 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 	}
 }
 
+func (c *Client) waitForPendingInteraction(ctx context.Context, payload protocol.Message) (bool, error) {
+	if !c.supportsPendingInteractionQueue() {
+		return true, legacyPendingInteractionError(payload.Method, payload.Raw)
+	}
+
+	interaction, err := c.newPendingInteraction(payload)
+	if err != nil {
+		return true, err
+	}
+	waiter := c.registerPendingInteraction(*interaction, payload.ID)
+	defer c.clearPendingInteraction(interaction.ID)
+
+	c.logger.Warn("Codex operator input required",
+		"method", interaction.Method,
+		"interaction_id", interaction.ID,
+		"issue_identifier", c.cfg.IssueIdentifier,
+	)
+	response, err := c.awaitPendingInteractionResponse(ctx, waiter)
+	if err != nil {
+		return true, err
+	}
+	if err := c.sendPendingInteractionResponse(waiter.interaction, waiter.payloadID, response); err != nil {
+		return true, err
+	}
+	c.emitResolvedInteractionActivity(waiter.interaction, response)
+	return true, nil
+}
+
 func (c *Client) autoApproveRequests() bool {
 	if s, ok := c.cfg.ApprovalPolicy.(string); ok {
 		return strings.EqualFold(strings.TrimSpace(s), "never")
 	}
 	return false
+}
+
+func (c *Client) supportsPendingInteractionQueue() bool {
+	return c.cfg.OnPendingInteraction != nil && !c.autoApproveRequests()
+}
+
+func legacyPendingInteractionError(method string, payload map[string]interface{}) error {
+	switch method {
+	case protocol.MethodToolRequestUserInput:
+		return &RunError{Kind: "turn_input_required", Payload: payload}
+	default:
+		return &RunError{Kind: "approval_required", Payload: payload}
+	}
+}
+
+func (c *Client) newPendingInteraction(payload protocol.Message) (*PendingInteraction, error) {
+	requestID := requestIDString(payload)
+	now := time.Now().UTC()
+	interaction := PendingInteraction{
+		RequestID:       requestID,
+		Method:          strings.TrimSpace(payload.Method),
+		IssueID:         strings.TrimSpace(c.cfg.IssueID),
+		IssueIdentifier: strings.TrimSpace(c.cfg.IssueIdentifier),
+		SessionID:       strings.TrimSpace(c.session.SessionID),
+		ThreadID:        strings.TrimSpace(c.session.ThreadID),
+		TurnID:          strings.TrimSpace(c.session.TurnID),
+		RequestedAt:     now,
+	}
+
+	if !c.session.LastTimestamp.IsZero() {
+		ts := c.session.LastTimestamp.UTC()
+		interaction.LastActivityAt = &ts
+	}
+	if last := strings.TrimSpace(c.session.LastMessage); last != "" {
+		interaction.LastActivity = last
+	}
+	if mode := c.currentInteractionCollaborationMode(); mode != "" {
+		interaction.CollaborationMode = mode
+	}
+
+	switch payload.Method {
+	case protocol.MethodItemCommandExecutionApproval:
+		var params gen.CommandExecutionRequestApprovalParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return nil, err
+		}
+		interaction.Kind = PendingInteractionKindApproval
+		interaction.ItemID = strings.TrimSpace(params.ItemID)
+		interaction.ThreadID = firstNonEmptyInteractionValue(interaction.ThreadID, strings.TrimSpace(params.ThreadID))
+		interaction.TurnID = firstNonEmptyInteractionValue(interaction.TurnID, strings.TrimSpace(params.TurnID))
+		interaction.ID = buildPendingInteractionID(interaction.IssueID, interaction.ThreadID, interaction.TurnID, interaction.ItemID, requestID)
+		interaction.Approval = &PendingApproval{
+			Command:   strings.TrimSpace(stringPtrValue(params.Command)),
+			CWD:       strings.TrimSpace(stringPtrValue(params.Cwd)),
+			Reason:    strings.TrimSpace(stringPtrValue(params.Reason)),
+			Decisions: commandExecutionApprovalDecisions(params),
+		}
+	case protocol.MethodItemFileChangeApproval:
+		var params gen.FileChangeRequestApprovalParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return nil, err
+		}
+		interaction.Kind = PendingInteractionKindApproval
+		interaction.ItemID = strings.TrimSpace(params.ItemID)
+		interaction.ThreadID = firstNonEmptyInteractionValue(interaction.ThreadID, strings.TrimSpace(params.ThreadID))
+		interaction.TurnID = firstNonEmptyInteractionValue(interaction.TurnID, strings.TrimSpace(params.TurnID))
+		interaction.ID = buildPendingInteractionID(interaction.IssueID, interaction.ThreadID, interaction.TurnID, interaction.ItemID, requestID)
+		interaction.Approval = &PendingApproval{
+			Reason:    strings.TrimSpace(stringPtrValue(params.Reason)),
+			Decisions: fileChangeApprovalDecisions(strings.TrimSpace(stringPtrValue(params.GrantRoot))),
+		}
+	case protocol.MethodExecCommandApproval:
+		var params gen.ExecCommandApprovalParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return nil, err
+		}
+		interaction.Kind = PendingInteractionKindApproval
+		interaction.ItemID = strings.TrimSpace(params.CallID)
+		interaction.ID = buildPendingInteractionID(interaction.IssueID, interaction.ThreadID, interaction.TurnID, interaction.ItemID, requestID)
+		interaction.Approval = &PendingApproval{
+			Command:   strings.Join(params.Command, " "),
+			CWD:       strings.TrimSpace(params.Cwd),
+			Reason:    strings.TrimSpace(stringPtrValue(params.Reason)),
+			Decisions: reviewApprovalDecisions(),
+		}
+	case protocol.MethodApplyPatchApproval:
+		var params gen.ApplyPatchApprovalParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return nil, err
+		}
+		interaction.Kind = PendingInteractionKindApproval
+		interaction.ItemID = strings.TrimSpace(params.CallID)
+		interaction.ID = buildPendingInteractionID(interaction.IssueID, interaction.ThreadID, interaction.TurnID, interaction.ItemID, requestID)
+		interaction.Approval = &PendingApproval{
+			Reason:    strings.TrimSpace(stringPtrValue(params.Reason)),
+			Decisions: applyPatchApprovalDecisions(strings.TrimSpace(stringPtrValue(params.GrantRoot))),
+		}
+	case protocol.MethodToolRequestUserInput:
+		var params gen.ToolRequestUserInputParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return nil, err
+		}
+		interaction.Kind = PendingInteractionKindUserInput
+		interaction.ItemID = strings.TrimSpace(params.ItemID)
+		interaction.ThreadID = firstNonEmptyInteractionValue(interaction.ThreadID, strings.TrimSpace(params.ThreadID))
+		interaction.TurnID = firstNonEmptyInteractionValue(interaction.TurnID, strings.TrimSpace(params.TurnID))
+		interaction.ID = buildPendingInteractionID(interaction.IssueID, interaction.ThreadID, interaction.TurnID, interaction.ItemID, requestID)
+		questions := make([]PendingUserInputQuestion, 0, len(params.Questions))
+		for _, question := range params.Questions {
+			converted := PendingUserInputQuestion{
+				Header:   strings.TrimSpace(question.Header),
+				ID:       strings.TrimSpace(question.ID),
+				Question: strings.TrimSpace(question.Question),
+				IsOther:  boolPtrValue(question.IsOther),
+				IsSecret: boolPtrValue(question.IsSecret),
+			}
+			if len(question.Options) > 0 {
+				converted.Options = make([]PendingUserInputOption, 0, len(question.Options))
+				for _, option := range question.Options {
+					converted.Options = append(converted.Options, PendingUserInputOption{
+						Label:       strings.TrimSpace(option.Label),
+						Description: strings.TrimSpace(option.Description),
+					})
+				}
+			}
+			questions = append(questions, converted)
+		}
+		interaction.UserInput = &PendingUserInput{Questions: questions}
+	default:
+		return nil, fmt.Errorf("unsupported interactive method %q", payload.Method)
+	}
+
+	if interaction.ID == "" {
+		interaction.ID = buildPendingInteractionID(interaction.IssueID, interaction.ThreadID, interaction.TurnID, interaction.ItemID, requestID)
+	}
+	if interaction.LastActivity == "" {
+		interaction.LastActivity = pendingInteractionSummary(interaction)
+	}
+	if interaction.LastActivityAt == nil {
+		ts := now
+		interaction.LastActivityAt = &ts
+	}
+	return &interaction, nil
+}
+
+func (c *Client) currentInteractionCollaborationMode() string {
+	if c.threadResumed || c.session == nil || c.session.TurnsStarted != 1 {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(c.cfg.InitialCollaborationMode)) {
+	case "plan":
+		return "plan"
+	case "default":
+		return "default"
+	default:
+		return ""
+	}
+}
+
+func (c *Client) registerPendingInteraction(interaction PendingInteraction, payloadID protocol.RequestID) *interactionWaiter {
+	waiter := &interactionWaiter{
+		interaction: interaction,
+		payloadID:   payloadID,
+		responseCh:  make(chan PendingInteractionResponse),
+		doneCh:      make(chan struct{}),
+	}
+	c.pendingMu.Lock()
+	c.pendingInteractions[interaction.ID] = waiter
+	c.pendingMu.Unlock()
+	if c.cfg.OnPendingInteraction != nil {
+		cp := interaction.Clone()
+		c.cfg.OnPendingInteraction(&cp)
+	}
+	return waiter
+}
+
+func (c *Client) clearPendingInteraction(interactionID string) {
+	c.pendingMu.Lock()
+	waiter, ok := c.pendingInteractions[interactionID]
+	if ok {
+		delete(c.pendingInteractions, interactionID)
+	}
+	c.pendingMu.Unlock()
+	if ok {
+		close(waiter.doneCh)
+	}
+	if c.cfg.OnPendingInteractionDone != nil {
+		c.cfg.OnPendingInteractionDone(interactionID)
+	}
+}
+
+func (c *Client) awaitPendingInteractionResponse(ctx context.Context, waiter *interactionWaiter) (PendingInteractionResponse, error) {
+	select {
+	case <-ctx.Done():
+		return PendingInteractionResponse{}, ctx.Err()
+	case err := <-c.waitCh:
+		select {
+		case c.waitCh <- err:
+		default:
+		}
+		if ctx.Err() != nil {
+			return PendingInteractionResponse{}, ctx.Err()
+		}
+		return PendingInteractionResponse{}, &RunError{Kind: "run_interrupted"}
+	case response := <-waiter.responseCh:
+		return response, nil
+	}
+}
+
+func (c *Client) sendPendingInteractionResponse(interaction PendingInteraction, payloadID protocol.RequestID, response PendingInteractionResponse) error {
+	switch interaction.Method {
+	case protocol.MethodItemCommandExecutionApproval:
+		if len(response.DecisionPayload) > 0 {
+			return c.sendMessage(protocol.CommandExecutionApprovalResultPayload(payloadID, response.DecisionPayload))
+		}
+		return c.sendMessage(protocol.CommandExecutionApprovalResult(payloadID, gen.FileChangeApprovalDecision(response.Decision)))
+	case protocol.MethodItemFileChangeApproval:
+		return c.sendMessage(protocol.FileChangeApprovalResult(payloadID, gen.FileChangeApprovalDecision(response.Decision)))
+	case protocol.MethodExecCommandApproval:
+		return c.sendMessage(protocol.ExecCommandApprovalResult(payloadID, gen.ReviewDecision(response.Decision)))
+	case protocol.MethodApplyPatchApproval:
+		return c.sendMessage(protocol.ApplyPatchApprovalResult(payloadID, gen.ReviewDecision(response.Decision)))
+	case protocol.MethodToolRequestUserInput:
+		answers := make(map[string]gen.ToolRequestUserInputAnswer, len(response.Answers))
+		for questionID, values := range response.Answers {
+			answers[questionID] = gen.ToolRequestUserInputAnswer{Answers: append([]string(nil), values...)}
+		}
+		return c.sendMessage(protocol.ToolRequestUserInputResult(payloadID, answers))
+	default:
+		return fmt.Errorf("unsupported interactive method %q", interaction.Method)
+	}
+}
+
+func (c *Client) emitResolvedInteractionActivity(interaction PendingInteraction, response PendingInteractionResponse) {
+	switch interaction.Kind {
+	case PendingInteractionKindApproval:
+		decision := resolvedApprovalDecisionValue(interaction, response)
+		raw := map[string]interface{}{}
+		if decision != "" {
+			raw["decision"] = decision
+		}
+		if payload := cloneJSONMap(response.DecisionPayload); len(payload) > 0 {
+			raw["decision_payload"] = payload
+		}
+		if label := resolvedApprovalDecisionLabel(interaction, response); label != "" {
+			raw["decision_label"] = label
+		}
+		c.emitActivityEvent(ActivityEvent{
+			Type:      resolvedApprovalEventType(interaction.Method),
+			RequestID: interaction.RequestID,
+			ThreadID:  interaction.ThreadID,
+			TurnID:    interaction.TurnID,
+			ItemID:    interaction.ItemID,
+			Status:    decision,
+			Raw:       raw,
+		})
+	case PendingInteractionKindUserInput:
+		c.emitActivityEvent(ActivityEvent{
+			Type:      "item.tool.userInputSubmitted",
+			RequestID: interaction.RequestID,
+			ThreadID:  interaction.ThreadID,
+			TurnID:    interaction.TurnID,
+			ItemID:    interaction.ItemID,
+			Raw: map[string]interface{}{
+				"answers": sanitizePendingInteractionAnswers(interaction, response.Answers),
+			},
+		})
+	}
+}
+
+func normalizePendingInteractionResponse(interaction PendingInteraction, response PendingInteractionResponse) (PendingInteractionResponse, error) {
+	switch interaction.Kind {
+	case PendingInteractionKindApproval:
+		options := interactionApprovalDecisions(interaction)
+		if len(response.DecisionPayload) > 0 {
+			for _, option := range options {
+				if !decisionPayloadsEqual(option.DecisionPayload, response.DecisionPayload) {
+					continue
+				}
+				return PendingInteractionResponse{DecisionPayload: cloneJSONMap(option.DecisionPayload)}, nil
+			}
+			return PendingInteractionResponse{}, fmt.Errorf("%w: unsupported approval decision payload", ErrInvalidInteractionResponse)
+		}
+		decision := strings.TrimSpace(response.Decision)
+		if decision == "" {
+			return PendingInteractionResponse{}, fmt.Errorf("%w: missing decision", ErrInvalidInteractionResponse)
+		}
+		for _, option := range options {
+			if len(option.DecisionPayload) > 0 {
+				continue
+			}
+			if option.Value == decision {
+				return PendingInteractionResponse{Decision: decision}, nil
+			}
+		}
+		return PendingInteractionResponse{}, fmt.Errorf("%w: unsupported decision %q", ErrInvalidInteractionResponse, decision)
+	case PendingInteractionKindUserInput:
+		if len(response.Answers) == 0 {
+			return PendingInteractionResponse{}, fmt.Errorf("%w: missing answers", ErrInvalidInteractionResponse)
+		}
+		if interaction.UserInput == nil || len(interaction.UserInput.Questions) == 0 {
+			return PendingInteractionResponse{}, fmt.Errorf("%w: missing question schema", ErrInvalidInteractionResponse)
+		}
+		normalized := make(map[string][]string, len(interaction.UserInput.Questions))
+		for _, question := range interaction.UserInput.Questions {
+			rawAnswers, ok := response.Answers[question.ID]
+			if !ok {
+				return PendingInteractionResponse{}, fmt.Errorf("%w: missing answer for %q", ErrInvalidInteractionResponse, question.ID)
+			}
+			answer, err := normalizePendingUserInputAnswer(question, rawAnswers)
+			if err != nil {
+				return PendingInteractionResponse{}, err
+			}
+			normalized[question.ID] = []string{answer}
+		}
+		return PendingInteractionResponse{Answers: normalized}, nil
+	default:
+		return PendingInteractionResponse{}, fmt.Errorf("%w: unsupported interaction kind %q", ErrInvalidInteractionResponse, interaction.Kind)
+	}
+}
+
+func normalizePendingUserInputAnswer(question PendingUserInputQuestion, answers []string) (string, error) {
+	if len(answers) == 0 {
+		return "", fmt.Errorf("%w: missing answer for %q", ErrInvalidInteractionResponse, question.ID)
+	}
+	answer := answers[0]
+	if strings.TrimSpace(answer) == "" {
+		return "", fmt.Errorf("%w: blank answer for %q", ErrInvalidInteractionResponse, question.ID)
+	}
+	if len(question.Options) == 0 {
+		return answer, nil
+	}
+	for _, option := range question.Options {
+		if strings.TrimSpace(option.Label) == strings.TrimSpace(answer) {
+			return option.Label, nil
+		}
+	}
+	if question.IsOther {
+		return answer, nil
+	}
+	return "", fmt.Errorf("%w: unsupported answer for %q", ErrInvalidInteractionResponse, question.ID)
+}
+
+func interactionApprovalDecisions(interaction PendingInteraction) []PendingApprovalDecision {
+	if interaction.Approval != nil && len(interaction.Approval.Decisions) > 0 {
+		return interaction.Approval.Decisions
+	}
+	switch interaction.Method {
+	case protocol.MethodItemCommandExecutionApproval:
+		return commandExecutionApprovalDecisions(gen.CommandExecutionRequestApprovalParams{})
+	case protocol.MethodItemFileChangeApproval:
+		return fileChangeApprovalDecisions("")
+	case protocol.MethodExecCommandApproval:
+		return reviewApprovalDecisions()
+	case protocol.MethodApplyPatchApproval:
+		return applyPatchApprovalDecisions("")
+	default:
+		return nil
+	}
+}
+
+func commandExecutionApprovalDecisions(params gen.CommandExecutionRequestApprovalParams) []PendingApprovalDecision {
+	decisions := []PendingApprovalDecision{
+		{Value: string(gen.Accept), Label: "Accept once", Description: "Run this request once and keep the turn going."},
+	}
+	if len(params.ProposedExecpolicyAmendment) > 0 {
+		amendment := make([]interface{}, 0, len(params.ProposedExecpolicyAmendment))
+		for _, rule := range params.ProposedExecpolicyAmendment {
+			amendment = append(amendment, rule)
+		}
+		decisions = append(decisions, PendingApprovalDecision{
+			Value:       "accept_with_execpolicy_amendment",
+			Label:       "Approve and store rule",
+			Description: "Run this request and allow future matching commands without prompting.",
+			DecisionPayload: map[string]interface{}{
+				"acceptWithExecpolicyAmendment": map[string]interface{}{
+					"execpolicy_amendment": amendment,
+				},
+			},
+		})
+	}
+	decisions = append(decisions, PendingApprovalDecision{
+		Value:       string(gen.AcceptForSession),
+		Label:       "Accept for session",
+		Description: "Allow similar requests for the rest of the session.",
+	})
+	for _, amendment := range params.ProposedNetworkPolicyAmendments {
+		action := strings.TrimSpace(string(amendment.Action))
+		host := strings.TrimSpace(amendment.Host)
+		if action == "" || host == "" {
+			continue
+		}
+		label := "Persist allow rule"
+		description := "Allow this host for future requests and keep the turn going."
+		if strings.EqualFold(action, string(gen.Deny)) {
+			label = "Persist deny rule"
+			description = "Deny this host for future requests and reject the current request."
+		}
+		decisions = append(decisions, PendingApprovalDecision{
+			Value:       "network_policy_" + action + "_" + sanitizePendingDecisionValue(host),
+			Label:       label,
+			Description: description,
+			DecisionPayload: map[string]interface{}{
+				"applyNetworkPolicyAmendment": map[string]interface{}{
+					"network_policy_amendment": map[string]interface{}{
+						"action": action,
+						"host":   host,
+					},
+				},
+			},
+		})
+	}
+	decisions = append(decisions,
+		PendingApprovalDecision{Value: string(gen.Decline), Label: "Decline", Description: "Reject the request and let the agent continue the turn."},
+		PendingApprovalDecision{Value: string(gen.Cancel), Label: "Cancel", Description: "Reject the request and interrupt the current turn."},
+	)
+	return decisions
+}
+
+func fileChangeApprovalDecisions(grantRoot string) []PendingApprovalDecision {
+	acceptForSessionLabel := "Accept for session"
+	acceptForSessionDescription := "Allow similar requests for the rest of the session."
+	if grantRoot != "" {
+		acceptForSessionLabel = "Accept and grant root"
+		acceptForSessionDescription = fmt.Sprintf("Allow writes under %s for the rest of the session.", grantRoot)
+	}
+	return []PendingApprovalDecision{
+		{Value: string(gen.Accept), Label: "Accept once", Description: "Run this request once and keep the turn going."},
+		{Value: string(gen.AcceptForSession), Label: acceptForSessionLabel, Description: acceptForSessionDescription},
+		{Value: string(gen.Decline), Label: "Decline", Description: "Reject the request and let the agent continue the turn."},
+		{Value: string(gen.Cancel), Label: "Cancel", Description: "Reject the request and interrupt the current turn."},
+	}
+}
+
+func reviewApprovalDecisions() []PendingApprovalDecision {
+	return []PendingApprovalDecision{
+		{Value: string(gen.Approved), Label: "Approve once", Description: "Run this request once and keep the turn going."},
+		{Value: string(gen.ApprovedForSession), Label: "Approve for session", Description: "Allow similar requests for the rest of the session."},
+		{Value: string(gen.Denied), Label: "Deny", Description: "Reject the request and let the agent continue the turn."},
+		{Value: string(gen.Abort), Label: "Abort", Description: "Reject the request and interrupt the current turn."},
+	}
+}
+
+func applyPatchApprovalDecisions(grantRoot string) []PendingApprovalDecision {
+	decisions := reviewApprovalDecisions()
+	if grantRoot == "" {
+		return decisions
+	}
+	decisions[1].Label = "Approve and grant root"
+	decisions[1].Description = fmt.Sprintf("Allow writes under %s for the rest of the session.", grantRoot)
+	return decisions
+}
+
+func sanitizePendingDecisionValue(value string) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ".", "_", ":", "_", "@", "_", "-", "_")
+	return replacer.Replace(strings.TrimSpace(value))
+}
+
+func decisionPayloadsEqual(left, right map[string]interface{}) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return len(left) == 0 && len(right) == 0
+	}
+	leftBody, err := json.Marshal(left)
+	if err != nil {
+		return false
+	}
+	rightBody, err := json.Marshal(right)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(leftBody, rightBody)
+}
+
+func resolvedApprovalDecisionLabel(interaction PendingInteraction, response PendingInteractionResponse) string {
+	for _, option := range interactionApprovalDecisions(interaction) {
+		switch {
+		case len(response.DecisionPayload) > 0 && decisionPayloadsEqual(option.DecisionPayload, response.DecisionPayload):
+			return option.Label
+		case response.Decision != "" && option.Value == response.Decision:
+			return option.Label
+		}
+	}
+	return ""
+}
+
+func resolvedApprovalDecisionValue(interaction PendingInteraction, response PendingInteractionResponse) string {
+	for _, option := range interactionApprovalDecisions(interaction) {
+		switch {
+		case len(response.DecisionPayload) > 0 && decisionPayloadsEqual(option.DecisionPayload, response.DecisionPayload):
+			return strings.TrimSpace(option.Value)
+		case response.Decision != "" && option.Value == response.Decision:
+			return strings.TrimSpace(response.Decision)
+		}
+	}
+	return strings.TrimSpace(response.Decision)
+}
+
+func pendingInteractionSummary(interaction PendingInteraction) string {
+	switch interaction.Kind {
+	case PendingInteractionKindApproval:
+		if interaction.Approval == nil {
+			return "Operator approval required."
+		}
+		if command := strings.TrimSpace(interaction.Approval.Command); command != "" {
+			return command
+		}
+		if reason := strings.TrimSpace(interaction.Approval.Reason); reason != "" {
+			return reason
+		}
+		return "Operator approval required."
+	case PendingInteractionKindUserInput:
+		if interaction.UserInput == nil || len(interaction.UserInput.Questions) == 0 {
+			return "Operator input required."
+		}
+		first := interaction.UserInput.Questions[0]
+		if question := strings.TrimSpace(first.Question); question != "" {
+			return question
+		}
+		if header := strings.TrimSpace(first.Header); header != "" {
+			return header
+		}
+		return "Operator input required."
+	default:
+		return "Operator input required."
+	}
+}
+
+func sanitizePendingInteractionAnswers(interaction PendingInteraction, answers map[string][]string) map[string]interface{} {
+	sanitized := make(map[string]interface{}, len(answers))
+	secretByQuestion := make(map[string]bool)
+	if interaction.UserInput != nil {
+		for _, question := range interaction.UserInput.Questions {
+			secretByQuestion[question.ID] = question.IsSecret
+		}
+	}
+	for questionID, values := range answers {
+		if secretByQuestion[questionID] {
+			sanitized[questionID] = []string{"[redacted]"}
+			continue
+		}
+		cloned := append([]string(nil), values...)
+		sanitized[questionID] = cloned
+	}
+	return sanitized
+}
+
+func resolvedApprovalEventType(method string) string {
+	switch method {
+	case protocol.MethodItemCommandExecutionApproval:
+		return "item.commandExecution.approvalResolved"
+	case protocol.MethodItemFileChangeApproval:
+		return "item.fileChange.approvalResolved"
+	case protocol.MethodExecCommandApproval:
+		return "execCommandApproval.resolved"
+	case protocol.MethodApplyPatchApproval:
+		return "applyPatchApproval.resolved"
+	default:
+		return "approval.resolved"
+	}
+}
+
+func buildPendingInteractionID(issueID, threadID, turnID, itemID, requestID string) string {
+	parts := []string{strings.TrimSpace(issueID), strings.TrimSpace(threadID), strings.TrimSpace(turnID), strings.TrimSpace(itemID), strings.TrimSpace(requestID)}
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			filtered = append(filtered, part)
+		}
+	}
+	return strings.Join(filtered, ":")
+}
+
+func firstNonEmptyInteractionValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func stringPtrValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func boolPtrValue(value *bool) bool {
+	return value != nil && *value
 }
 
 func (c *Client) nextLine(ctx context.Context, timeout time.Duration) (string, error) {
@@ -1090,6 +1766,9 @@ func decodeJSONObject(line string) (map[string]interface{}, bool) {
 }
 
 func answersForToolInput(params map[string]interface{}, autoApprove bool) (map[string]interface{}, bool) {
+	if !autoApprove {
+		return nil, false
+	}
 	questions, ok := params["questions"].([]interface{})
 	if !ok || len(questions) == 0 {
 		return nil, false
@@ -1104,20 +1783,19 @@ func answersForToolInput(params map[string]interface{}, autoApprove bool) (map[s
 		if strings.TrimSpace(id) == "" {
 			return nil, false
 		}
-		if autoApprove {
-			label := approvalOptionLabel(q["options"])
-			if label == "" {
-				return nil, false
-			}
-			answers[id] = map[string]interface{}{"answers": []string{label}}
-			continue
+		label := approvalOptionLabel(q["options"])
+		if label == "" {
+			return nil, false
 		}
-		answers[id] = map[string]interface{}{"answers": []string{nonInteractiveToolInputAnswer}}
+		answers[id] = map[string]interface{}{"answers": []string{label}}
 	}
 	return answers, autoApprove
 }
 
 func answersForToolInputParams(params gen.ToolRequestUserInputParams, autoApprove bool) (map[string]gen.ToolRequestUserInputAnswer, bool) {
+	if !autoApprove {
+		return nil, false
+	}
 	if len(params.Questions) == 0 {
 		return nil, false
 	}
@@ -1126,15 +1804,11 @@ func answersForToolInputParams(params gen.ToolRequestUserInputParams, autoApprov
 		if strings.TrimSpace(question.ID) == "" {
 			return nil, false
 		}
-		if autoApprove {
-			label := approvalOptionLabelFromQuestions(question.Options)
-			if label == "" {
-				return nil, false
-			}
-			answers[question.ID] = gen.ToolRequestUserInputAnswer{Answers: []string{label}}
-			continue
+		label := approvalOptionLabelFromQuestions(question.Options)
+		if label == "" {
+			return nil, false
 		}
-		answers[question.ID] = gen.ToolRequestUserInputAnswer{Answers: []string{nonInteractiveToolInputAnswer}}
+		answers[question.ID] = gen.ToolRequestUserInputAnswer{Answers: []string{label}}
 	}
 	return answers, autoApprove
 }

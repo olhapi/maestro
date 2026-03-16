@@ -34,6 +34,8 @@ type Runner struct {
 	extensions       *extensions.Registry
 	sessionObserver  func(issueID string, session *appserver.Session)
 	activityObserver func(issueID string, event appserver.ActivityEvent)
+	interactionObserver     func(issueID string, interaction *appserver.PendingInteraction, responder appserver.InteractionResponder)
+	interactionDoneObserver func(issueID string, interactionID string)
 }
 
 type RunResult struct {
@@ -78,6 +80,14 @@ func (r *Runner) SetSessionObserver(observer func(issueID string, session *appse
 
 func (r *Runner) SetActivityObserver(observer func(issueID string, event appserver.ActivityEvent)) {
 	r.activityObserver = observer
+}
+
+func (r *Runner) SetInteractionObserver(observer func(issueID string, interaction *appserver.PendingInteraction, responder appserver.InteractionResponder)) {
+	r.interactionObserver = observer
+}
+
+func (r *Runner) SetInteractionDoneObserver(observer func(issueID string, interactionID string)) {
+	r.interactionDoneObserver = observer
 }
 
 func (r *Runner) Run(ctx context.Context, issue *kanban.Issue) (*RunResult, error) {
@@ -252,6 +262,10 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 }
 
 func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int, allOutput *strings.Builder) (*RunResult, error) {
+	runPhase := issue.WorkflowPhase
+	if !runPhase.IsValid() {
+		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
+	}
 	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
 		prepared, err := r.prepareTurnPrompt(workflow, issue, attempt, turn)
 		if err != nil {
@@ -271,7 +285,7 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 			return &RunResult{Success: false, Output: allOutput.String(), Error: err}, nil
 		}
 
-		refreshed, continueRun := r.refreshForContinuation(workflow, issue.ID)
+		refreshed, continueRun := r.refreshForContinuation(workflow, runPhase, issue.ID)
 		if !continueRun {
 			return &RunResult{Success: true, Output: allOutput.String()}, nil
 		}
@@ -281,26 +295,32 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 }
 
 func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int, allOutput *strings.Builder) (*RunResult, error) {
-	client, err := appserver.Start(ctx, appserver.ClientConfig{
-		Executable:        "sh",
-		Args:              []string{"-lc", workflow.Config.Codex.Command},
-		Env:               os.Environ(),
-		Workspace:         workspacePath,
-		WorkspaceRoot:     workflow.Config.Workspace.Root,
-		IssueID:           issue.ID,
-		IssueIdentifier:   issue.Identifier,
-		CodexCommand:      workflow.Config.Codex.Command,
-		ExpectedVersion:   workflow.Config.Codex.ExpectedVersion,
-		ApprovalPolicy:    workflow.Config.Codex.ApprovalPolicy,
-		ThreadSandbox:     workflow.Config.Codex.ThreadSandbox,
-		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,
-		ReadTimeout:       time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
-		TurnTimeout:       time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
-		StallTimeout:      time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
-		DynamicTools:      r.extensions.Specs(),
-		ToolExecutor:      r.extensionToolExecutor(),
-		ResumeThreadID:    strings.TrimSpace(issue.ResumeThreadID),
-		ResumeSource:      "orphaned_run_recovery",
+	runPhase := issue.WorkflowPhase
+	if !runPhase.IsValid() {
+		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
+	}
+	var client *appserver.Client
+	clientConfig := appserver.ClientConfig{
+		Executable:               "sh",
+		Args:                     []string{"-lc", workflow.Config.Codex.Command},
+		Env:                      os.Environ(),
+		Workspace:                workspacePath,
+		WorkspaceRoot:            workflow.Config.Workspace.Root,
+		IssueID:                  issue.ID,
+		IssueIdentifier:          issue.Identifier,
+		CodexCommand:             workflow.Config.Codex.Command,
+		ExpectedVersion:          workflow.Config.Codex.ExpectedVersion,
+		ApprovalPolicy:           workflow.Config.Codex.ApprovalPolicy,
+		InitialCollaborationMode: workflow.Config.Codex.InitialCollaborationMode,
+		ThreadSandbox:            workflow.Config.Codex.ThreadSandbox,
+		TurnSandboxPolicy:        workflow.Config.Codex.TurnSandboxPolicy,
+		ReadTimeout:              time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
+		TurnTimeout:              time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
+		StallTimeout:             time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
+		DynamicTools:             r.extensions.Specs(),
+		ToolExecutor:             r.extensionToolExecutor(),
+		ResumeThreadID:           strings.TrimSpace(issue.ResumeThreadID),
+		ResumeSource:             "orphaned_run_recovery",
 		OnSessionUpdate: func(session *appserver.Session) {
 			if r.sessionObserver == nil || issue == nil || session == nil {
 				return
@@ -313,7 +333,21 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			}
 			r.activityObserver(issue.ID, event)
 		},
-	})
+		OnPendingInteraction: func(interaction *appserver.PendingInteraction) {
+			if r.interactionObserver == nil || issue == nil || interaction == nil || client == nil {
+				return
+			}
+			r.interactionObserver(issue.ID, interaction, client.RespondToInteraction)
+		},
+		OnPendingInteractionDone: func(interactionID string) {
+			if r.interactionDoneObserver == nil || issue == nil {
+				return
+			}
+			r.interactionDoneObserver(issue.ID, interactionID)
+		},
+	}
+	var err error
+	client, err = appserver.Start(ctx, clientConfig)
 	if err != nil {
 		return &RunResult{Success: false, Error: err}, nil
 	}
@@ -369,7 +403,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
 		}
 
-		refreshed, continueRun := r.refreshForContinuation(workflow, issue.ID)
+		refreshed, continueRun := r.refreshForContinuation(workflow, runPhase, issue.ID)
 		if !continueRun {
 			return &RunResult{
 				Success:    true,
@@ -479,7 +513,7 @@ func copyIssueImageToWorkspace(srcPath, dstPath, imageID string) error {
 	return nil
 }
 
-func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID string) (*kanban.Issue, bool) {
+func (r *Runner) refreshForContinuation(workflow *config.Workflow, runPhase kanban.WorkflowPhase, issueID string) (*kanban.Issue, bool) {
 	refreshed, err := r.service.RefreshIssueByID(context.Background(), issueID)
 	if err != nil {
 		refreshed, err = r.store.GetIssue(issueID)
@@ -487,7 +521,21 @@ func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID strin
 	if err != nil {
 		return nil, false
 	}
-	return refreshed, isActiveState(workflow, string(refreshed.State))
+	return refreshed, shouldContinueRunPhase(workflow, runPhase, refreshed)
+}
+
+func shouldContinueRunPhase(workflow *config.Workflow, runPhase kanban.WorkflowPhase, issue *kanban.Issue) bool {
+	if workflow == nil || issue == nil {
+		return false
+	}
+	switch runPhase {
+	case kanban.WorkflowPhaseReview:
+		return workflow.Config.Phases.Review.Enabled && issue.State == kanban.StateInReview
+	case kanban.WorkflowPhaseDone:
+		return false
+	default:
+		return issue.State != kanban.StateInReview && isActiveState(workflow, string(issue.State))
+	}
 }
 
 func (r *Runner) buildTurnPrompt(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int) (string, error) {

@@ -13,11 +13,13 @@ import (
 )
 
 const (
-	TrackerKindKanban            = "kanban"
-	AgentModeAppServer           = "app_server"
-	AgentModeStdio               = "stdio"
-	DispatchModeParallel         = "parallel"
-	DispatchModePerProjectSerial = "per_project_serial"
+	TrackerKindKanban               = "kanban"
+	AgentModeAppServer              = "app_server"
+	AgentModeStdio                  = "stdio"
+	DispatchModeParallel            = "parallel"
+	DispatchModePerProjectSerial    = "per_project_serial"
+	InitialCollaborationModePlan    = "plan"
+	InitialCollaborationModeDefault = "default"
 )
 
 var (
@@ -68,14 +70,15 @@ type AgentConfig struct {
 }
 
 type CodexConfig struct {
-	Command           string                 `yaml:"command"`
-	ExpectedVersion   string                 `yaml:"expected_version"`
-	ApprovalPolicy    interface{}            `yaml:"approval_policy"`
-	ThreadSandbox     string                 `yaml:"thread_sandbox"`
-	TurnSandboxPolicy map[string]interface{} `yaml:"turn_sandbox_policy"`
-	TurnTimeoutMs     int                    `yaml:"turn_timeout_ms"`
-	ReadTimeoutMs     int                    `yaml:"read_timeout_ms"`
-	StallTimeoutMs    int                    `yaml:"stall_timeout_ms"`
+	Command                  string                 `yaml:"command"`
+	ExpectedVersion          string                 `yaml:"expected_version"`
+	ApprovalPolicy           interface{}            `yaml:"approval_policy"`
+	InitialCollaborationMode string                 `yaml:"initial_collaboration_mode"`
+	ThreadSandbox            string                 `yaml:"thread_sandbox"`
+	TurnSandboxPolicy        map[string]interface{} `yaml:"turn_sandbox_policy"`
+	TurnTimeoutMs            int                    `yaml:"turn_timeout_ms"`
+	ReadTimeoutMs            int                    `yaml:"read_timeout_ms"`
+	StallTimeoutMs           int                    `yaml:"stall_timeout_ms"`
 }
 
 type PhasesConfig struct {
@@ -133,7 +136,8 @@ func DefaultConfig() Config {
 					"mcp_elicitations": true,
 				},
 			},
-			ThreadSandbox: "workspace-write",
+			InitialCollaborationMode: InitialCollaborationModePlan,
+			ThreadSandbox:            "workspace-write",
 			TurnSandboxPolicy: map[string]interface{}{
 				"type":          "workspaceWrite",
 				"networkAccess": true,
@@ -141,6 +145,16 @@ func DefaultConfig() Config {
 			TurnTimeoutMs:  1800000,
 			ReadTimeoutMs:  10000,
 			StallTimeoutMs: 300000,
+		},
+		Phases: PhasesConfig{
+			Review: PhasePromptConfig{
+				Enabled: true,
+				Prompt:  DefaultReviewPromptTemplate(),
+			},
+			Done: PhasePromptConfig{
+				Enabled: true,
+				Prompt:  DefaultDonePromptTemplate(),
+			},
 		},
 	}
 }
@@ -231,9 +245,12 @@ Description:
 No description provided.
 {% endif %}
 
-The implementation is already complete. Perform the project-specific finalization steps for a done issue from the current workspace, such as preparing or updating a PR, merging, or other release bookkeeping.
+The implementation is already complete. The done phase owns merge-back and finalization for this issue from the current workspace.
 
-- Keep the issue in done unless the work truly needs to be reopened.
+- Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.
+- Consider the work complete once the change is merged.
+- If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.
+- If any other blocker prevents completion, report it clearly and keep the issue in done unless the work truly needs to be reopened.
 `)
 }
 
@@ -245,7 +262,7 @@ Project context:
 {{ project.description }}
 
 {% endif %}
-Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
+The done phase owns merge-back and finalization. Merge the issue branch back when possible, resolving merge conflicts when you can do so safely. Consider the work complete once the change is merged. If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete. Report any other blocker clearly while keeping the issue in done unless it truly needs to be reopened.
 `)
 }
 
@@ -367,8 +384,11 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	agent := ensureMap(out, "agent")
 	codex := ensureMap(out, "codex")
 	phases := ensureMap(out, "phases")
-	ensureMap(phases, "review")
-	ensureMap(phases, "done")
+	review := ensureMap(phases, "review")
+	done := ensureMap(phases, "done")
+
+	setBoolDefault(review, "enabled", true)
+	setBoolDefault(done, "enabled", true)
 
 	moveString(out, tracker, "tracker_kind", "kind")
 	moveStringSlice(out, tracker, "tracker_active_states", "active_states")
@@ -389,6 +409,7 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveString(out, codex, "codex_command", "command")
 	moveString(out, codex, "codex_expected_version", "expected_version")
 	moveValue(out, codex, "codex_approval_policy", "approval_policy")
+	moveString(out, codex, "codex_initial_collaboration_mode", "initial_collaboration_mode")
 	moveString(out, codex, "codex_thread_sandbox", "thread_sandbox")
 	moveMap(out, codex, "codex_turn_sandbox_policy", "turn_sandbox_policy")
 	moveNumeric(out, codex, "codex_turn_timeout_ms", "turn_timeout_ms")
@@ -466,6 +487,13 @@ func moveNumeric(root, dest map[string]interface{}, from, to string) {
 			dest[to] = value
 		}
 	}
+}
+
+func setBoolDefault(dest map[string]interface{}, key string, value bool) {
+	if _, exists := dest[key]; exists {
+		return
+	}
+	dest[key] = value
 }
 
 func moveStringSlice(root, dest map[string]interface{}, from, to string) {
@@ -552,6 +580,10 @@ func applyDefaults(c *Config) {
 	if c.Codex.ApprovalPolicy == nil {
 		c.Codex.ApprovalPolicy = defaults.Codex.ApprovalPolicy
 	}
+	c.Codex.InitialCollaborationMode = normalizeInitialCollaborationMode(c.Codex.InitialCollaborationMode)
+	if c.Codex.InitialCollaborationMode == "" {
+		c.Codex.InitialCollaborationMode = defaults.Codex.InitialCollaborationMode
+	}
 	if strings.TrimSpace(c.Codex.ThreadSandbox) == "" {
 		c.Codex.ThreadSandbox = defaults.Codex.ThreadSandbox
 	}
@@ -589,6 +621,13 @@ func validateConfig(c *Config) error {
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		return fmt.Errorf("codex.command is required")
 	}
+	switch c.Codex.InitialCollaborationMode {
+	case InitialCollaborationModePlan, InitialCollaborationModeDefault:
+	case "":
+		return fmt.Errorf("codex.initial_collaboration_mode is required")
+	default:
+		return fmt.Errorf("unsupported codex.initial_collaboration_mode %q", c.Codex.InitialCollaborationMode)
+	}
 	for _, prompt := range []string{strings.TrimSpace(c.Phases.Review.Prompt), strings.TrimSpace(c.Phases.Done.Prompt)} {
 		if prompt == "" {
 			continue
@@ -598,6 +637,10 @@ func validateConfig(c *Config) error {
 		}
 	}
 	return nil
+}
+
+func normalizeInitialCollaborationMode(raw string) string {
+	return strings.TrimSpace(strings.ToLower(raw))
 }
 
 func resolvePathValue(baseDir, raw, fallback string) string {

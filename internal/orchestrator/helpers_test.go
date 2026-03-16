@@ -674,6 +674,10 @@ func TestAdvanceIssueAfterSuccessWithoutReviewOrDoneKeepsImplementationOpen(t *t
 	}
 
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Phases.Review.Enabled = false
+	workflow.Config.Phases.Review.Prompt = ""
+	workflow.Config.Phases.Done.Enabled = false
+	workflow.Config.Phases.Done.Prompt = ""
 
 	for _, state := range []kanban.State{kanban.StateReady, kanban.StateInProgress} {
 		issue := makeIssue(state)

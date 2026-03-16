@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { vi } from "vitest";
+import { beforeEach, vi } from "vitest";
 
 import { ProjectsPage } from "@/routes/projects";
 import { makeBootstrapResponse } from "@/test/fixtures";
@@ -34,8 +34,13 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const { api } = await import("@/lib/api");
+const { toast } = await import("sonner");
 
 describe("ProjectsPage", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
   it("does not render the portfolio surface badge in the header", async () => {
     const bootstrap = makeBootstrapResponse();
 
@@ -169,6 +174,40 @@ describe("ProjectsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /^stop$/i }));
     await waitFor(() => {
       expect(api.stopProject).toHaveBeenCalledWith(runningBootstrap.projects[0].id);
+    });
+  });
+
+  it("shows a delete error when project removal fails", async () => {
+    const bootstrap = makeBootstrapResponse();
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.listProjects).mockResolvedValue({
+      items: bootstrap.projects,
+    });
+    vi.mocked(api.listEpics).mockResolvedValue({ items: bootstrap.epics });
+    vi.mocked(api.deleteProject).mockRejectedValue(new Error("project has active history"));
+
+    renderWithQueryClient(<ProjectsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^delete$/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    expect(api.deleteProject).not.toHaveBeenCalled();
+
+    const confirmDialog = await screen.findByRole("dialog", {
+      name: /delete platform\?/i,
+    });
+    fireEvent.click(
+      within(confirmDialog).getByRole("button", { name: /delete project/i }),
+    );
+
+    await waitFor(() => {
+      expect(api.deleteProject).toHaveBeenCalledWith(bootstrap.projects[0].id);
+    });
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Unable to delete project: project has active history");
     });
   });
 });

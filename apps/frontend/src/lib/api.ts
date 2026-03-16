@@ -6,6 +6,7 @@ import type {
   IssueDetail,
   IssueImage,
   IssueExecutionDetail,
+  PendingInterruptsResponse,
   IssueSummary,
   Project,
   ProjectDetailResponse,
@@ -191,6 +192,20 @@ export const api = {
     request<{ series: RuntimeSeriesPoint[] }>(
       "/api/v1/app/runtime/series?hours=24",
     ),
+  listInterrupts: () =>
+    request<PendingInterruptsResponse>("/api/v1/app/interrupts"),
+  respondToInterrupt: (
+    id: string,
+    body: {
+      decision?: string;
+      decision_payload?: Record<string, unknown>;
+      answers?: Record<string, string[]>;
+    },
+  ) =>
+    request<{ id: string; status: string }>(`/api/v1/app/interrupts/${id}/respond`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   listSessions: () => request<SessionsResponse>("/api/v1/app/sessions"),
   requestRefresh: () =>
     request<Record<string, unknown>>("/api/v1/refresh", { method: "POST" }),

@@ -388,6 +388,61 @@ func TestProjectAndEpicEndpointsSupportCRUDContracts(t *testing.T) {
 	}
 }
 
+func TestDeleteProjectEndpointRemovesProjectsWithIssueActivityHistory(t *testing.T) {
+	provider := testProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	project, err := store.CreateProject("Runtime", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Tracked issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 1, appserver.ActivityEvent{
+		Type:      "item.completed",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
+		ItemID:    "msg-1",
+		ItemType:  "agentMessage",
+		ItemPhase: "commentary",
+		Item: map[string]interface{}{
+			"id":    "msg-1",
+			"type":  "agentMessage",
+			"phase": "commentary",
+			"text":  "Finished summary",
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries before delete: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one persisted activity entry, got %#v", entries)
+	}
+
+	deleteProject := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/projects/"+project.ID, nil)
+	if deleteProject.StatusCode != http.StatusOK {
+		t.Fatalf("delete project expected 200, got %d", deleteProject.StatusCode)
+	}
+	_ = decodeResponse(t, deleteProject)
+
+	if _, err := store.GetProject(project.ID); err == nil {
+		t.Fatal("expected deleted project to be missing")
+	}
+	entries, err = store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries after delete: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected activity history to be removed, got %#v", entries)
+	}
+}
+
 func TestProjectEndpointsRejectOutOfScopeRepoPaths(t *testing.T) {
 	provider := testProvider{
 		status: map[string]interface{}{

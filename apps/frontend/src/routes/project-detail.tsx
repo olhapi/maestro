@@ -23,6 +23,7 @@ import {
   isProjectRunning,
   summaryActiveCount,
   summaryDoneCount,
+  summaryProgress,
   summaryTokenSpend,
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
@@ -102,6 +103,9 @@ export function ProjectDetailPage() {
       toast.success("Issue deleted");
       setPreviewIssue(undefined);
       await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to delete issue: ${error.message}` : "Unable to delete issue");
     },
   });
 
@@ -254,42 +258,60 @@ export function ProjectDetailPage() {
               </Button>
             </div>
             <div className="mt-4 grid gap-2.5">
-              {project.data.epics.map((epic) => (
-                <div
-                  key={epic.id}
-                  className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-lg font-semibold text-white">
-                        <Link
-                          params={{ epicId: epic.id }}
-                          to={appRoutes.epicDetail}
-                        >
-                          {epic.name}
-                        </Link>
-                      </p>
-                      <p className="mt-2 text-sm leading-5 text-[var(--muted-foreground)]">
-                        {epic.description || "No epic description yet."}
-                      </p>
+              {project.data.epics.map((epic) => {
+                const progress = summaryProgress(epic);
+
+                return (
+                  <div
+                    key={epic.id}
+                    className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-lg font-semibold text-white">
+                          <Link
+                            params={{ epicId: epic.id }}
+                            to={appRoutes.epicDetail}
+                          >
+                            {epic.name}
+                          </Link>
+                        </p>
+                        <p className="mt-2 text-sm leading-5 text-[var(--muted-foreground)]">
+                          {epic.description || "No epic description yet."}
+                        </p>
+                      </div>
+                    </div>
+                    <div
+                      aria-label={`${epic.name} completion`}
+                      aria-valuemax={progress.total || 1}
+                      aria-valuemin={0}
+                      aria-valuenow={progress.closed}
+                      aria-valuetext={`${progress.closed} of ${progress.total} issues closed`}
+                      className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10"
+                      role="progressbar"
+                    >
+                      <div
+                        className="h-full rounded-full bg-[var(--accent)]"
+                        style={{ width: `${progress.percent}%` }}
+                      />
+                    </div>
+                    <div className="mt-3.5 grid gap-2 text-xs text-[var(--muted-foreground)] sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
+                        Backlog {epic.counts.backlog}
+                      </div>
+                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
+                        Ready {epic.counts.ready}
+                      </div>
+                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
+                        In progress {epic.counts.in_progress}
+                      </div>
+                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
+                        Review {epic.counts.in_review}
+                      </div>
                     </div>
                   </div>
-                  <div className="mt-3.5 grid gap-2 text-xs text-[var(--muted-foreground)] sm:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                      Backlog {epic.counts.backlog}
-                    </div>
-                    <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                      Ready {epic.counts.ready}
-                    </div>
-                    <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                      In progress {epic.counts.in_progress}
-                    </div>
-                    <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                      Review {epic.counts.in_review}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>

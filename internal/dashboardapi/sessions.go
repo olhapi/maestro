@@ -67,7 +67,8 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	out := make([]kanban.SessionFeedEntry, 0, len(live)+recentSessionFeedLimit)
 	seen := make(map[string]struct{}, len(live))
 	for identifier, session := range live {
-		entry := buildLiveSessionFeedEntry(identifier, session, runningByIdentifier[identifier], titleByIdentifier[identifier])
+		pendingInterrupt, _ := provider.PendingInterruptForIssue(session.IssueID, firstNonEmpty(session.IssueIdentifier, identifier))
+		entry := buildLiveSessionFeedEntry(identifier, session, runningByIdentifier[identifier], titleByIdentifier[identifier], pendingInterrupt)
 		out = append(out, entry)
 		if entry.IssueIdentifier != "" {
 			seen[entry.IssueIdentifier] = struct{}{}
@@ -187,7 +188,7 @@ func decodeLiveSessions(raw map[string]interface{}) map[string]appserver.Session
 	return out
 }
 
-func buildLiveSessionFeedEntry(identifier string, session appserver.Session, running observability.RunningEntry, issueTitle string) kanban.SessionFeedEntry {
+func buildLiveSessionFeedEntry(identifier string, session appserver.Session, running observability.RunningEntry, issueTitle string, pendingInterrupt *appserver.PendingInteraction) kanban.SessionFeedEntry {
 	updatedAt := session.LastTimestamp
 	if updatedAt.IsZero() {
 		if running.LastEventAt != nil && !running.LastEventAt.IsZero() {
@@ -205,27 +206,41 @@ func buildLiveSessionFeedEntry(identifier string, session appserver.Session, run
 	if totalTokens == 0 {
 		totalTokens = running.Tokens.TotalTokens
 	}
+	status := "active"
+	var pending *appserver.PendingInteraction
+	if pendingInterrupt != nil {
+		cloned := pendingInterrupt.Clone()
+		pending = &cloned
+		status = "waiting"
+		if pending.LastActivityAt != nil && !pending.LastActivityAt.IsZero() {
+			updatedAt = pending.LastActivityAt.UTC()
+		}
+		if strings.TrimSpace(pending.LastActivity) != "" {
+			lastMessage = pending.LastActivity
+		}
+	}
 
 	return kanban.SessionFeedEntry{
-		IssueID:         firstNonEmpty(session.IssueID, running.IssueID),
-		IssueIdentifier: firstNonEmpty(session.IssueIdentifier, identifier, running.Identifier),
-		IssueTitle:      issueTitle,
-		Source:          "live",
-		Active:          true,
-		Status:          "active",
-		Phase:           running.Phase,
-		Attempt:         running.Attempt,
-		RunKind:         "run_started",
-		UpdatedAt:       updatedAt,
-		LastEvent:       firstNonEmpty(session.LastEvent, running.LastEvent),
-		LastMessage:     lastMessage,
-		TotalTokens:     totalTokens,
-		EventsProcessed: session.EventsProcessed,
-		TurnsStarted:    maxInt(session.TurnsStarted, running.TurnCount),
-		TurnsCompleted:  session.TurnsCompleted,
-		Terminal:        session.Terminal,
-		TerminalReason:  session.TerminalReason,
-		History:         append([]appserver.Event(nil), session.History...),
+		IssueID:          firstNonEmpty(session.IssueID, running.IssueID),
+		IssueIdentifier:  firstNonEmpty(session.IssueIdentifier, identifier, running.Identifier),
+		IssueTitle:       issueTitle,
+		Source:           "live",
+		Active:           true,
+		Status:           status,
+		PendingInterrupt: pending,
+		Phase:            running.Phase,
+		Attempt:          running.Attempt,
+		RunKind:          "run_started",
+		UpdatedAt:        updatedAt,
+		LastEvent:        firstNonEmpty(session.LastEvent, running.LastEvent),
+		LastMessage:      lastMessage,
+		TotalTokens:      totalTokens,
+		EventsProcessed:  session.EventsProcessed,
+		TurnsStarted:     maxInt(session.TurnsStarted, running.TurnCount),
+		TurnsCompleted:   session.TurnsCompleted,
+		Terminal:         session.Terminal,
+		TerminalReason:   session.TerminalReason,
+		History:          append([]appserver.Event(nil), session.History...),
 	}
 }
 
