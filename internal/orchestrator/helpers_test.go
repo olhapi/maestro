@@ -654,6 +654,43 @@ func TestAdvanceIssueAfterSuccessMatrix(t *testing.T) {
 	}
 }
 
+func TestAdvanceIssueAfterSuccessWithoutReviewOrDoneKeepsImplementationOpen(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	makeIssue := func(state kanban.State) *kanban.Issue {
+		t.Helper()
+		issue, err := store.CreateIssue("", "", string(state)+"-implementation", "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if err := store.UpdateIssueStateAndPhase(issue.ID, state, kanban.WorkflowPhaseImplementation); err != nil {
+			t.Fatalf("UpdateIssueStateAndPhase: %v", err)
+		}
+		current, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		return current
+	}
+
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+
+	for _, state := range []kanban.State{kanban.StateReady, kanban.StateInProgress} {
+		issue := makeIssue(state)
+		nextPhase, cont := orch.advanceIssueAfterSuccess(workflow, issue, kanban.WorkflowPhaseImplementation)
+		if nextPhase != kanban.WorkflowPhaseImplementation || !cont {
+			t.Fatalf("%s: got (%s,%v), want (%s,%v)", state, nextPhase, cont, kanban.WorkflowPhaseImplementation, true)
+		}
+		current, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("%s: GetIssue: %v", state, err)
+		}
+		if current.WorkflowPhase != kanban.WorkflowPhaseImplementation || current.State != state {
+			t.Fatalf("%s: got state=%s phase=%s, want state=%s phase=%s", state, current.State, current.WorkflowPhase, state, kanban.WorkflowPhaseImplementation)
+		}
+	}
+}
+
 func TestRuntimeResolutionAndUtilityHelpers(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

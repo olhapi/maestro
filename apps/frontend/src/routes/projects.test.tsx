@@ -48,23 +48,15 @@ describe("ProjectsPage", () => {
     renderWithQueryClient(<ProjectsPage />);
 
     await waitFor(() => {
-      expect(
-        screen.getByText("Projects are now entry points, not dead-end rollups"),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument();
     });
 
     expect(screen.queryByText("Portfolio surface")).not.toBeInTheDocument();
 
     const createGroup = screen.getByRole("group", { name: /create work items/i });
-    expect(
-      within(createGroup).getByRole("button", { name: /^\+?\s*project$/i }),
-    ).toBeInTheDocument();
-    expect(
-      within(createGroup).getByRole("button", { name: /^\+?\s*epic$/i }),
-    ).toBeInTheDocument();
-    expect(
-      within(createGroup).getByRole("button", { name: /^\+?\s*issue$/i }),
-    ).toBeInTheDocument();
+    expect(within(createGroup).getByRole("button", { name: /^\+?\s*project$/i })).toBeInTheDocument();
+    expect(within(createGroup).getByRole("button", { name: /^\+?\s*epic$/i })).toBeInTheDocument();
+    expect(within(createGroup).getByRole("button", { name: /^\+?\s*issue$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new project/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new epic/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new issue/i })).not.toBeInTheDocument();
@@ -81,9 +73,7 @@ describe("ProjectsPage", () => {
     expect(screen.queryByText(/^delete$/i)).not.toBeInTheDocument();
 
     const tokenStat = screen.getByText("Tokens").closest("div");
-    expect(tokenStat?.parentElement).toHaveClass(
-      "grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))]",
-    );
+    expect(tokenStat?.parentElement).toHaveClass("grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))]");
   });
 
   it("marks out-of-scope projects as not runnable", async () => {
@@ -101,8 +91,7 @@ describe("ProjectsPage", () => {
           ...base.projects[0],
           repo_path: "/repo/other",
           dispatch_ready: false,
-          dispatch_error:
-            "Project repo is outside the current server scope (/repo/current)",
+          dispatch_error: "Project repo is outside the current server scope (/repo/current)",
         },
       ],
     });
@@ -129,7 +118,9 @@ describe("ProjectsPage", () => {
       expect(screen.getByText("Bring the repo into this server scope")).toBeInTheDocument();
     });
     expect(screen.getByText("Project repo is outside the current server scope (/repo/current)")).toBeInTheDocument();
-    expect(screen.getByText("Move the project's repo path under /repo/current, or restart Maestro scoped to /repo/other.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Move the project's repo path under /repo/current, or restart Maestro scoped to /repo/other."),
+    ).toBeInTheDocument();
     expect(screen.getByText("Project repo: /repo/other")).toBeInTheDocument();
     expect(screen.getByText("Server scope: /repo/current")).toBeInTheDocument();
     expect(screen.getByText("Tokens")).toBeInTheDocument();
@@ -150,9 +141,7 @@ describe("ProjectsPage", () => {
     renderWithQueryClient(<ProjectsPage />);
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /^run$/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^run$/i })).toBeInTheDocument();
     });
 
     expect(screen.queryByText("Runnable")).not.toBeInTheDocument();
