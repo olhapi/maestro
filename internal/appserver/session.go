@@ -60,8 +60,8 @@ func (s *Session) ApplyEvent(e Event) {
 	}
 	s.LastEvent = e.Type
 	s.LastTimestamp = time.Now().UTC()
-	if e.Message != "" {
-		s.LastMessage = e.Message
+	if message, ok := sessionSummaryMessage(e); ok {
+		s.LastMessage = message
 	}
 	if e.ThreadID != "" {
 		s.ThreadID = e.ThreadID
@@ -90,7 +90,7 @@ func (s *Session) ApplyEvent(e Event) {
 		s.TurnsCompleted++
 		s.Terminal = true
 		s.TerminalReason = e.Type
-	case "session.completed", "run.completed", "run.failed", "error":
+	case "turn.failed", "turn.cancelled", "session.completed", "run.completed", "run.failed", "error":
 		s.Terminal = true
 		s.TerminalReason = e.Type
 	}
@@ -99,6 +99,33 @@ func (s *Session) ApplyEvent(e Event) {
 	if len(s.History) > s.MaxHistory {
 		s.History = s.History[len(s.History)-s.MaxHistory:]
 	}
+}
+
+func sessionSummaryMessage(e Event) (string, bool) {
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		return "", false
+	}
+
+	switch e.Type {
+	case "item.completed":
+		if strings.EqualFold(strings.TrimSpace(e.ItemType), "agentMessage") {
+			return message, true
+		}
+		return "", false
+	case "turn.completed", "turn.failed", "turn.cancelled", "session.completed", "run.completed", "run.failed", "error":
+		if messageDerivedFromChunkOnly(e, message) {
+			return "", false
+		}
+		return message, true
+	default:
+		return "", false
+	}
+}
+
+func messageDerivedFromChunkOnly(e Event, message string) bool {
+	chunk := strings.TrimSpace(e.Chunk)
+	return chunk != "" && message == chunk
 }
 
 // ParseEventLine attempts to parse one JSON line as an app-server event.

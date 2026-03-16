@@ -198,6 +198,86 @@ func TestIssueExecutionEndpointReturnsLiveSession(t *testing.T) {
 	}
 }
 
+func TestBootstrapReturnsCompletedLiveSummaryInsteadOfStreamingDelta(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Streaming summary regression", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	session := &appserver.Session{}
+	session.ApplyEvent(appserver.Event{
+		Type:      "item.completed",
+		ThreadID:  "thread-live",
+		TurnID:    "turn-live",
+		ItemID:    "msg-1",
+		ItemType:  "agentMessage",
+		ItemPhase: "commentary",
+		Message:   "Completed summary",
+	})
+	session.ApplyEvent(appserver.Event{
+		Type:     "item.agentMessage.delta",
+		ThreadID: "thread-live",
+		TurnID:   "turn-live",
+		ItemID:   "msg-2",
+		ItemType: "agentMessage",
+		Message:  "Partial follow-up fragment",
+	})
+	if session.LastMessage != "Completed summary" {
+		t.Fatalf("expected live session to retain the completed summary, got %+v", session)
+	}
+
+	lastEventAt := session.LastTimestamp
+	provider := testProvider{
+		snapshot: observability.Snapshot{
+			GeneratedAt: time.Now().UTC().Truncate(time.Second),
+			Running: []observability.RunningEntry{{
+				IssueID:     issue.ID,
+				Identifier:  issue.Identifier,
+				State:       "in_progress",
+				Phase:       "implementation",
+				SessionID:   session.SessionID,
+				TurnCount:   session.TurnsStarted,
+				LastEvent:   session.LastEvent,
+				LastMessage: session.LastMessage,
+				StartedAt:   lastEventAt.Add(-15 * time.Second),
+				LastEventAt: &lastEventAt,
+				Tokens:      observability.TokenTotals{TotalTokens: 12, SecondsRunning: 15},
+			}},
+		},
+		sessions: map[string]interface{}{
+			issue.Identifier: *session,
+		},
+	}
+
+	mux := http.NewServeMux()
+	NewServer(store, provider).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/bootstrap", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	payload := decodeResponse(t, resp)
+	overview := payload["overview"].(map[string]interface{})
+	snapshot := overview["snapshot"].(map[string]interface{})
+	running := snapshot["running"].([]interface{})
+	if len(running) != 1 {
+		t.Fatalf("expected one running entry, got %#v", running)
+	}
+	entry := running[0].(map[string]interface{})
+	if entry["last_message"] != "Completed summary" {
+		t.Fatalf("expected bootstrap running summary to keep completed text, got %#v", entry["last_message"])
+	}
+}
+
 func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
 	provider := &interruptProvider{
 		interrupts: appserver.PendingInteractionSnapshot{
