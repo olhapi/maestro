@@ -36,6 +36,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
 		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
+	if cfg.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+		t.Fatalf("expected initial collaboration mode %q, got %q", InitialCollaborationModePlan, cfg.Codex.InitialCollaborationMode)
+	}
 	if cfg.Codex.TurnSandboxPolicy["networkAccess"] != true {
 		t.Fatalf("expected default turn sandbox networkAccess=true, got %+v", cfg.Codex.TurnSandboxPolicy)
 	}
@@ -111,6 +114,9 @@ Issue {{ issue.identifier }}
 	if workflow.Config.Codex.ExpectedVersion != "0.111.0" {
 		t.Fatalf("unexpected codex expected version: %q", workflow.Config.Codex.ExpectedVersion)
 	}
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+		t.Fatalf("expected default initial collaboration mode, got %q", workflow.Config.Codex.InitialCollaborationMode)
+	}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected default review prompt, got %+v", workflow.Config.Phases.Review)
 	}
@@ -154,6 +160,30 @@ Implement {{ issue.identifier }}
 	}
 	if strings.TrimSpace(workflow.Config.Phases.Done.Prompt) != "Finalize {{ issue.identifier }} during {{ phase }}" {
 		t.Fatalf("unexpected done prompt: %q", workflow.Config.Phases.Done.Prompt)
+	}
+}
+
+func TestLoadWorkflowPreservesExplicitInitialCollaborationMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  initial_collaboration_mode: default
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
+		t.Fatalf("expected explicit initial collaboration mode %q, got %q", InitialCollaborationModeDefault, workflow.Config.Codex.InitialCollaborationMode)
 	}
 }
 
@@ -493,7 +523,9 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"codex app-server --model test",
 		"expected_version: 0.111.0",
 		"approval_policy: never",
+		"initial_collaboration_mode: plan",
 		"on-request, on-failure, untrusted",
+		"Ignored for stdio runs and resumed threads.",
 		"read-only, workspace-write, danger-full-access",
 		"type: workspaceWrite",
 		"networkAccess: true",
@@ -532,6 +564,7 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 		"root: ./workspaces",
 		"command: codex app-server",
 		"mode: app_server",
+		"initial_collaboration_mode: plan",
 		"thread_sandbox: workspace-write",
 		"type: workspaceWrite",
 		"networkAccess: true",
@@ -565,6 +598,7 @@ func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
 		"root: ./ws",
 		"command: codex exec --model test",
 		"mode: stdio",
+		"initial_collaboration_mode: plan",
 		"thread_sandbox: danger-full-access",
 		"type: dangerFullAccess",
 		"networkAccess: true",
@@ -599,6 +633,7 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 		"root: ./flag-ws",
 		"command: codex exec --model custom",
 		"mode: stdio",
+		"initial_collaboration_mode: plan",
 		"thread_sandbox: workspace-write",
 		"type: workspaceWrite",
 		"networkAccess: false",
@@ -645,6 +680,9 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	}
 	if workflow.Config.Codex.Command != "codex app-server --model test" {
 		t.Fatalf("unexpected codex command: %q", workflow.Config.Codex.Command)
+	}
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+		t.Fatalf("unexpected initial collaboration mode: %q", workflow.Config.Codex.InitialCollaborationMode)
 	}
 	if workflow.Config.Codex.TurnSandboxPolicy["networkAccess"] != true {
 		t.Fatalf("expected networkAccess=true, got %+v", workflow.Config.Codex.TurnSandboxPolicy)
@@ -809,5 +847,26 @@ func TestInitWorkflowSandboxProfilesMapToExpectedConfig(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadWorkflowRejectsInvalidInitialCollaborationMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  initial_collaboration_mode: invalid
+---
+Implement {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadWorkflow(workflowPath)
+	if err == nil || !strings.Contains(err.Error(), "unsupported codex.initial_collaboration_mode") {
+		t.Fatalf("expected invalid initial collaboration mode error, got %v", err)
 	}
 }

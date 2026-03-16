@@ -25,6 +25,12 @@ export interface ProjectDispatchGuidance {
   context: string[];
 }
 
+export interface SummaryProgress {
+  closed: number;
+  total: number;
+  percent: number;
+}
+
 function defaultWorkflowPath(repoPath?: string) {
   if (!repoPath) {
     return "<repo>/WORKFLOW.md";
@@ -230,6 +236,17 @@ export function summaryDoneCount(summary: ProjectSummary | EpicSummary) {
     summary.state_buckets?.find((bucket) => bucket.state === "done")?.count ??
     fallbackCounts(summary).done
   );
+}
+
+export function summaryProgress(summary: ProjectSummary | EpicSummary): SummaryProgress {
+  const closed = summaryTerminalCount(summary);
+  const total = summaryTotalCount(summary);
+
+  return {
+    closed,
+    total,
+    percent: total === 0 ? 0 : Math.min(100, Math.max(0, (closed / total) * 100)),
+  };
 }
 
 export function summaryTokenSpend(summary: ProjectSummary) {

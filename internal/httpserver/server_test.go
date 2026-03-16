@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -34,6 +35,18 @@ func (testProvider) Snapshot() observability.Snapshot {
 
 func (testProvider) LiveSessions() map[string]interface{} {
 	return map[string]interface{}{"sessions": map[string]interface{}{}}
+}
+
+func (testProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
+	return appserver.PendingInteractionSnapshot{}
+}
+
+func (testProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+	return nil, false
+}
+
+func (testProvider) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+	return nil
 }
 
 func (testProvider) Events(since int64, limit int) map[string]interface{} {

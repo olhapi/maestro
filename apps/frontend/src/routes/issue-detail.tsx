@@ -10,6 +10,7 @@ import { IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -75,6 +76,8 @@ export function IssueDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [commandDraft, setCommandDraft] = useState("");
   const [previewImageID, setPreviewImageID] = useState<string | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteImageConfirmOpen, setDeleteImageConfirmOpen] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const bootstrap = useQuery({
@@ -144,6 +147,9 @@ export function IssueDetailPage() {
       await invalidate();
       void navigate({ to: appRoutes.work });
     },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to delete issue: ${error.message}` : "Unable to delete issue");
+    },
   });
   const uploadImagesMutation = useMutation({
     mutationFn: (files: File[]) =>
@@ -174,6 +180,9 @@ export function IssueDetailPage() {
         toast.success("Image removed");
       }
       await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to remove image: ${error.message}` : "Unable to remove image");
     },
   });
 
@@ -408,7 +417,7 @@ export function IssueDetailPage() {
                   variant="destructive"
                   size="icon"
                   className="h-12 w-full"
-                  onClick={() => deleteMutation.mutate()}
+                  onClick={() => setDeleteConfirmOpen(true)}
                   disabled={deleteMutation.isPending}
                   aria-label="Delete"
                   title="Delete"
@@ -487,11 +496,25 @@ export function IssueDetailPage() {
         }}
       />
 
+      <ConfirmationDialog
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title={`Delete ${issue.data.identifier}?`}
+        description="This removes the issue from Maestro, including its local workspace, activity history, and attached images. Linked provider items may also be removed."
+        confirmLabel="Delete issue"
+        pendingLabel="Deleting issue..."
+        isPending={deleteMutation.isPending}
+        onConfirm={async () => {
+          await deleteMutation.mutateAsync();
+        }}
+      />
+
       <Dialog
         open={previewImage !== null}
         onOpenChange={(nextOpen) => {
           if (!nextOpen) {
             setPreviewImageID(null);
+            setDeleteImageConfirmOpen(false);
           }
         }}
       >
@@ -533,7 +556,7 @@ export function IssueDetailPage() {
                   <Button
                     variant="destructive"
                     disabled={deleteImageMutation.isPending}
-                    onClick={() => deleteImageMutation.mutate(previewImage.id)}
+                    onClick={() => setDeleteImageConfirmOpen(true)}
                   >
                     <Trash2 className="size-4" />
                     Remove image
@@ -544,6 +567,22 @@ export function IssueDetailPage() {
           </DialogContent>
         ) : null}
       </Dialog>
+
+      <ConfirmationDialog
+        open={deleteImageConfirmOpen && previewImage !== null}
+        onOpenChange={setDeleteImageConfirmOpen}
+        title={previewImage ? `Delete ${previewImage.filename}?` : "Delete image?"}
+        description="This permanently deletes the image attachment from the issue."
+        confirmLabel="Delete image"
+        pendingLabel="Deleting image..."
+        isPending={deleteImageMutation.isPending}
+        onConfirm={async () => {
+          if (!previewImage) {
+            return;
+          }
+          await deleteImageMutation.mutateAsync(previewImage.id);
+        }}
+      />
     </div>
   );
 }

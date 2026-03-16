@@ -13,11 +13,13 @@ import (
 )
 
 const (
-	TrackerKindKanban            = "kanban"
-	AgentModeAppServer           = "app_server"
-	AgentModeStdio               = "stdio"
-	DispatchModeParallel         = "parallel"
-	DispatchModePerProjectSerial = "per_project_serial"
+	TrackerKindKanban               = "kanban"
+	AgentModeAppServer              = "app_server"
+	AgentModeStdio                  = "stdio"
+	DispatchModeParallel            = "parallel"
+	DispatchModePerProjectSerial    = "per_project_serial"
+	InitialCollaborationModePlan    = "plan"
+	InitialCollaborationModeDefault = "default"
 )
 
 var (
@@ -68,14 +70,15 @@ type AgentConfig struct {
 }
 
 type CodexConfig struct {
-	Command           string                 `yaml:"command"`
-	ExpectedVersion   string                 `yaml:"expected_version"`
-	ApprovalPolicy    interface{}            `yaml:"approval_policy"`
-	ThreadSandbox     string                 `yaml:"thread_sandbox"`
-	TurnSandboxPolicy map[string]interface{} `yaml:"turn_sandbox_policy"`
-	TurnTimeoutMs     int                    `yaml:"turn_timeout_ms"`
-	ReadTimeoutMs     int                    `yaml:"read_timeout_ms"`
-	StallTimeoutMs    int                    `yaml:"stall_timeout_ms"`
+	Command                  string                 `yaml:"command"`
+	ExpectedVersion          string                 `yaml:"expected_version"`
+	ApprovalPolicy           interface{}            `yaml:"approval_policy"`
+	InitialCollaborationMode string                 `yaml:"initial_collaboration_mode"`
+	ThreadSandbox            string                 `yaml:"thread_sandbox"`
+	TurnSandboxPolicy        map[string]interface{} `yaml:"turn_sandbox_policy"`
+	TurnTimeoutMs            int                    `yaml:"turn_timeout_ms"`
+	ReadTimeoutMs            int                    `yaml:"read_timeout_ms"`
+	StallTimeoutMs           int                    `yaml:"stall_timeout_ms"`
 }
 
 type PhasesConfig struct {
@@ -133,7 +136,8 @@ func DefaultConfig() Config {
 					"mcp_elicitations": true,
 				},
 			},
-			ThreadSandbox: "workspace-write",
+			InitialCollaborationMode: InitialCollaborationModePlan,
+			ThreadSandbox:            "workspace-write",
 			TurnSandboxPolicy: map[string]interface{}{
 				"type":          "workspaceWrite",
 				"networkAccess": true,
@@ -402,6 +406,7 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveString(out, codex, "codex_command", "command")
 	moveString(out, codex, "codex_expected_version", "expected_version")
 	moveValue(out, codex, "codex_approval_policy", "approval_policy")
+	moveString(out, codex, "codex_initial_collaboration_mode", "initial_collaboration_mode")
 	moveString(out, codex, "codex_thread_sandbox", "thread_sandbox")
 	moveMap(out, codex, "codex_turn_sandbox_policy", "turn_sandbox_policy")
 	moveNumeric(out, codex, "codex_turn_timeout_ms", "turn_timeout_ms")
@@ -572,6 +577,10 @@ func applyDefaults(c *Config) {
 	if c.Codex.ApprovalPolicy == nil {
 		c.Codex.ApprovalPolicy = defaults.Codex.ApprovalPolicy
 	}
+	c.Codex.InitialCollaborationMode = normalizeInitialCollaborationMode(c.Codex.InitialCollaborationMode)
+	if c.Codex.InitialCollaborationMode == "" {
+		c.Codex.InitialCollaborationMode = defaults.Codex.InitialCollaborationMode
+	}
 	if strings.TrimSpace(c.Codex.ThreadSandbox) == "" {
 		c.Codex.ThreadSandbox = defaults.Codex.ThreadSandbox
 	}
@@ -609,6 +618,13 @@ func validateConfig(c *Config) error {
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		return fmt.Errorf("codex.command is required")
 	}
+	switch c.Codex.InitialCollaborationMode {
+	case InitialCollaborationModePlan, InitialCollaborationModeDefault:
+	case "":
+		return fmt.Errorf("codex.initial_collaboration_mode is required")
+	default:
+		return fmt.Errorf("unsupported codex.initial_collaboration_mode %q", c.Codex.InitialCollaborationMode)
+	}
 	for _, prompt := range []string{strings.TrimSpace(c.Phases.Review.Prompt), strings.TrimSpace(c.Phases.Done.Prompt)} {
 		if prompt == "" {
 			continue
@@ -618,6 +634,10 @@ func validateConfig(c *Config) error {
 		}
 	}
 	return nil
+}
+
+func normalizeInitialCollaborationMode(raw string) string {
+	return strings.TrimSpace(strings.ToLower(raw))
 }
 
 func resolvePathValue(baseDir, raw, fallback string) string {

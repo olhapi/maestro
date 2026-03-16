@@ -194,6 +194,44 @@ describe('IssuePreviewSheet', () => {
     expect(deleteButton.querySelector('svg')).not.toBeNull()
   })
 
+  it('confirms deletion before calling the preview delete handler', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const summary = makeIssueSummary()
+    const onDelete = vi.fn().mockResolvedValue(undefined)
+    const onOpenChange = vi.fn()
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={onOpenChange}
+        onInvalidate={vi.fn().mockResolvedValue(undefined)}
+        onDelete={onDelete}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Investigate retries')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(onDelete).not.toHaveBeenCalled()
+
+    const confirmDialog = await screen.findByRole('dialog', {
+      name: /delete iss-1\?/i,
+    })
+    fireEvent.click(
+      within(confirmDialog).getByRole('button', { name: /delete issue/i }),
+    )
+
+    await waitFor(() => {
+      expect(onDelete).toHaveBeenCalledWith(summary.identifier)
+      expect(onOpenChange).toHaveBeenCalledWith(false)
+    })
+  })
+
   it('keeps actions scoped to the currently selected issue while detail loads', async () => {
     const bootstrap = makeBootstrapResponse()
     const firstSummary = makeIssueSummary({

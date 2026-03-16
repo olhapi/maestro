@@ -986,6 +986,15 @@ func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
 	if len(turnStarts) != 1 {
 		t.Fatalf("expected one turn/start request, got %#v", turnStarts)
 	}
+	threadStarts := threadStartPayloads(readTraceLines(t, traceFile))
+	if len(threadStarts) != 1 {
+		t.Fatalf("expected one thread/start request, got %#v", threadStarts)
+	}
+	threadParams, _ := threadStarts[0]["params"].(map[string]interface{})
+	threadConfig, _ := threadParams["config"].(map[string]interface{})
+	if threadConfig["initial_collaboration_mode"] != config.InitialCollaborationModePlan {
+		t.Fatalf("unexpected thread/start config: %#v", threadConfig)
+	}
 	params, _ := turnStarts[0]["params"].(map[string]interface{})
 	input, _ := params["input"].([]interface{})
 	if len(input) != 3 {
@@ -1477,6 +1486,16 @@ func turnStartPayloads(payloads []map[string]interface{}) []map[string]interface
 	out := make([]map[string]interface{}, 0, len(payloads))
 	for _, payload := range payloads {
 		if method, _ := payload["method"].(string); method == "turn/start" {
+			out = append(out, payload)
+		}
+	}
+	return out
+}
+
+func threadStartPayloads(payloads []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(payloads))
+	for _, payload := range payloads {
+		if method, _ := payload["method"].(string); method == "thread/start" {
 			out = append(out, payload)
 		}
 	}
