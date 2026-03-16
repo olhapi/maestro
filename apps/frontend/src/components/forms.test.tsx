@@ -1,7 +1,8 @@
+import * as React from 'react'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
-import { IssueDialog, ProjectDialog } from '@/components/forms'
+import { EpicDialog, IssueDialog, ProjectDialog } from '@/components/forms'
 import { MockSpeechRecognition } from '@/test/mock-speech-recognition'
 import {
   makeBootstrapResponse,
@@ -307,6 +308,54 @@ describe('IssueDialog', () => {
       )
     })
   })
+
+  it('preserves draft input while open when parent rerenders with refreshed issue props', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const initial = makeIssueDetail({
+      identifier: 'ISS-1',
+      title: 'Original title',
+      description: 'Original description',
+    })
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+
+    function Harness() {
+      const [currentInitial, setCurrentInitial] = React.useState(initial)
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              setCurrentInitial((value) => ({
+                ...value,
+                updated_at: '2026-03-16T12:00:00.000Z',
+              }))
+            }
+          >
+            refresh
+          </button>
+          <IssueDialog
+            open
+            onOpenChange={vi.fn()}
+            initial={currentInitial}
+            projects={bootstrap.projects}
+            epics={bootstrap.epics}
+            availableIssues={bootstrap.issues.items}
+            onSubmit={onSubmit}
+          />
+        </>
+      )
+    }
+
+    renderWithQueryClient(<Harness />)
+
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Draft title' } })
+    fireEvent.change(screen.getByLabelText(/description/i), { target: { value: 'Draft description' } })
+
+    fireEvent.click(screen.getByText('refresh'))
+
+    expect(screen.getByLabelText(/title/i)).toHaveValue('Draft title')
+    expect(screen.getByLabelText(/description/i)).toHaveValue('Draft description')
+  })
 })
 
 describe('ProjectDialog', () => {
@@ -320,5 +369,97 @@ describe('ProjectDialog', () => {
     )
 
     expect(screen.getByRole('dialog')).toHaveClass('max-h-[calc(100vh-2rem)]', 'overflow-y-auto')
+  })
+
+  it('preserves draft input while open when parent rerenders with refreshed project props', () => {
+    const initial = {
+      id: 'project-1',
+      name: 'Runtime',
+      description: 'Original project description',
+      repo_path: '/tmp/runtime',
+    }
+
+    function Harness() {
+      const [currentInitial, setCurrentInitial] = React.useState(initial)
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              setCurrentInitial((value) => ({
+                ...value,
+                updated_at: '2026-03-16T12:00:00.000Z',
+              }))
+            }
+          >
+            refresh
+          </button>
+          <ProjectDialog
+            open
+            onOpenChange={vi.fn()}
+            initial={currentInitial}
+            onSubmit={vi.fn().mockResolvedValue(undefined)}
+          />
+        </>
+      )
+    }
+
+    renderWithQueryClient(<Harness />)
+
+    fireEvent.change(screen.getByLabelText(/project name/i), { target: { value: 'Draft project name' } })
+    fireEvent.change(screen.getByLabelText(/description/i), { target: { value: 'Draft project description' } })
+
+    fireEvent.click(screen.getByText('refresh'))
+
+    expect(screen.getByLabelText(/project name/i)).toHaveValue('Draft project name')
+    expect(screen.getByLabelText(/description/i)).toHaveValue('Draft project description')
+  })
+})
+
+describe('EpicDialog', () => {
+  it('preserves draft input while open when parent rerenders with refreshed epic props', () => {
+    const bootstrap = makeBootstrapResponse()
+    const initial = {
+      id: 'epic-1',
+      project_id: 'project-1',
+      name: 'Runtime cleanup',
+      description: 'Original epic description',
+    }
+
+    function Harness() {
+      const [currentInitial, setCurrentInitial] = React.useState(initial)
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              setCurrentInitial((value) => ({
+                ...value,
+                updated_at: '2026-03-16T12:00:00.000Z',
+              }))
+            }
+          >
+            refresh
+          </button>
+          <EpicDialog
+            open
+            onOpenChange={vi.fn()}
+            initial={currentInitial}
+            projects={bootstrap.projects}
+            onSubmit={vi.fn().mockResolvedValue(undefined)}
+          />
+        </>
+      )
+    }
+
+    renderWithQueryClient(<Harness />)
+
+    fireEvent.change(screen.getByLabelText(/epic name/i), { target: { value: 'Draft epic name' } })
+    fireEvent.change(screen.getByLabelText(/description/i), { target: { value: 'Draft epic description' } })
+
+    fireEvent.click(screen.getByText('refresh'))
+
+    expect(screen.getByLabelText(/epic name/i)).toHaveValue('Draft epic name')
+    expect(screen.getByLabelText(/description/i)).toHaveValue('Draft epic description')
   })
 })

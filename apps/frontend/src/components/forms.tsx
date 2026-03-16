@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { MultiCombobox, type MultiComboboxOption } from "@/components/ui/multi-combobox";
 import { Button } from "@/components/ui/button";
@@ -55,6 +55,28 @@ function dedupeIssues(issues: IssueSummary[]) {
   return [...unique.values()];
 }
 
+function useDialogReset(open: boolean, resetKey: string, reset: () => void) {
+  const previousOpenRef = useRef(open);
+  const previousResetKeyRef = useRef(resetKey);
+  const resetRef = useRef(reset);
+
+  useEffect(() => {
+    resetRef.current = reset;
+  }, [reset]);
+
+  useEffect(() => {
+    const opened = open && !previousOpenRef.current;
+    const targetChanged = open && previousResetKeyRef.current !== resetKey;
+
+    if (opened || targetChanged) {
+      resetRef.current();
+    }
+
+    previousOpenRef.current = open;
+    previousResetKeyRef.current = resetKey;
+  }, [open, resetKey]);
+}
+
 export function ProjectDialog({
   open,
   onOpenChange,
@@ -84,7 +106,7 @@ export function ProjectDialog({
   const [providerAssignee, setProviderAssignee] = useState(String(initial?.provider_config?.assignee ?? ""));
   const [pending, setPending] = useState(false);
 
-  useEffect(() => {
+  useDialogReset(open, initial?.id ?? initial?.name ?? "__new__", () => {
     setName(initial?.name ?? "");
     setDescription(initial?.description ?? "");
     setRepoPath(initial?.repo_path ?? "");
@@ -93,7 +115,7 @@ export function ProjectDialog({
     setProviderProjectRef(initial?.provider_project_ref ?? "");
     setProviderEndpoint(String(initial?.provider_config?.endpoint ?? ""));
     setProviderAssignee(String(initial?.provider_config?.assignee ?? ""));
-  }, [initial, open]);
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -250,11 +272,11 @@ export function EpicDialog({
   const [description, setDescription] = useState(initial?.description ?? "");
   const [pending, setPending] = useState(false);
 
-  useEffect(() => {
+  useDialogReset(open, initial?.id ?? initial?.name ?? "__new__", () => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? "");
     setName(initial?.name ?? "");
     setDescription(initial?.description ?? "");
-  }, [initial, open, projects]);
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -367,7 +389,7 @@ export function IssueDialog({
   const supportsEpics = selectedProject?.capabilities?.epics ?? true;
   const canChangeIssueType = !isEditing || initial?.provider_kind === "kanban";
 
-  useEffect(() => {
+  useDialogReset(open, initial?.identifier ?? "__new__", () => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? "");
     setEpicID(initial?.epic_id ?? "");
     setTitle(initial?.title ?? "");
@@ -385,7 +407,7 @@ export function IssueDialog({
     setRemovedImageIDs([]);
     setBlockerSearch("");
     setRemoteBlockerIssues([]);
-  }, [initial, open, projects]);
+  });
 
   useEffect(() => {
     if (!open || !projectID || blockerSearch.trim().length < 2) {
