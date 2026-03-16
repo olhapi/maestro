@@ -83,6 +83,22 @@ func sampleRunnerPNGBytes() []byte {
 	}
 }
 
+func defaultPromptWorkflowForTest() *config.Workflow {
+	cfg := config.DefaultConfig()
+	cfg.Phases.Review = config.PhasePromptConfig{
+		Enabled: true,
+		Prompt:  config.DefaultReviewPromptTemplate(),
+	}
+	cfg.Phases.Done = config.PhasePromptConfig{
+		Enabled: true,
+		Prompt:  config.DefaultDonePromptTemplate(),
+	}
+	return &config.Workflow{
+		Config:         cfg,
+		PromptTemplate: config.DefaultPromptTemplate(),
+	}
+}
+
 func baseRunnerAppServerScenario(threadID, turnID string, afterTurnStart ...fakeappserver.Output) fakeappserver.Scenario {
 	return fakeappserver.Scenario{
 		Steps: []fakeappserver.Step{
@@ -146,6 +162,159 @@ func TestBuildTurnPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Prefer deterministic local verification first") {
 		t.Fatalf("expected execution guidance in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildTurnPromptIncludesProjectContextInDefaultImplementationPrompt(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflow := defaultPromptWorkflowForTest()
+
+	project, err := store.CreateProject("Platform", "Use pnpm in this repo and run focused validation for touched packages.", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Fix Login Bug", "Users cannot log in", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	prompt, err := runner.buildTurnPrompt(workflow, issue, 0, 1)
+	if err != nil {
+		t.Fatalf("buildTurnPrompt: %v", err)
+	}
+	if !strings.Contains(prompt, "Project context:\nUse pnpm in this repo and run focused validation for touched packages.") {
+		t.Fatalf("expected project context in prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Description:") || !strings.Contains(prompt, "Users cannot log in") {
+		t.Fatalf("expected issue description in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildTurnPromptIncludesProjectContextInDefaultPhasePrompts(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflow := defaultPromptWorkflowForTest()
+
+	project, err := store.CreateProject("Platform", "Always preserve the public API unless the issue explicitly allows a breaking change.", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Ship the change", "Issue details", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		phase kanban.WorkflowPhase
+		want  string
+	}{
+		{name: "review", phase: kanban.WorkflowPhaseReview, want: "You are performing the review pass"},
+		{name: "done", phase: kanban.WorkflowPhaseDone, want: "You are performing the done pass"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			issueCopy := *issue
+			issueCopy.WorkflowPhase = tc.phase
+
+			prompt, err := runner.buildTurnPrompt(workflow, &issueCopy, 0, 1)
+			if err != nil {
+				t.Fatalf("buildTurnPrompt: %v", err)
+			}
+			if !strings.Contains(prompt, tc.want) {
+				t.Fatalf("expected phase heading %q, got %q", tc.want, prompt)
+			}
+			if !strings.Contains(prompt, "Project context:\nAlways preserve the public API unless the issue explicitly allows a breaking change.") {
+				t.Fatalf("expected project context in %s prompt, got %q", tc.phase, prompt)
+			}
+		})
+	}
+}
+
+func TestBuildTurnPromptRendersProjectVariablesInCustomWorkflow(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflow := &config.Workflow{
+		Config:         config.DefaultConfig(),
+		PromptTemplate: "Project={{ project.name }}|{{ project.description }}\nIssue={{ issue.identifier }}",
+	}
+
+	project, err := store.CreateProject("Platform", "Ship focused changes.", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issueWithProject, err := store.CreateIssue(project.ID, "", "Custom prompt", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue with project: %v", err)
+	}
+	issueWithMissingProject, err := store.CreateIssue("", "", "Missing project", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue missing project: %v", err)
+	}
+	issueWithMissingProject.ProjectID = "proj-missing"
+
+	cases := []struct {
+		name  string
+		issue *kanban.Issue
+		want  string
+	}{
+		{name: "present", issue: issueWithProject, want: "Project=Platform|Ship focused changes."},
+		{name: "missing", issue: issueWithMissingProject, want: "Project=|"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, err := runner.buildTurnPrompt(workflow, tc.issue, 0, 1)
+			if err != nil {
+				t.Fatalf("buildTurnPrompt: %v", err)
+			}
+			if !strings.Contains(prompt, tc.want) {
+				t.Fatalf("expected prompt to contain %q, got %q", tc.want, prompt)
+			}
+		})
+	}
+}
+
+func TestBuildTurnPromptOmitsProjectContextWhenUnavailable(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflow := defaultPromptWorkflowForTest()
+
+	issueWithoutProject, err := store.CreateIssue("", "", "No project", "Issue details", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue without project: %v", err)
+	}
+	projectWithoutDescription, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject empty description: %v", err)
+	}
+	issueWithoutProjectDescription, err := store.CreateIssue(projectWithoutDescription.ID, "", "Empty project description", "Issue details", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue empty description: %v", err)
+	}
+	issueWithMissingProject, err := store.CreateIssue("", "", "Missing project", "Issue details", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue missing project: %v", err)
+	}
+	issueWithMissingProject.ProjectID = "proj-missing"
+
+	cases := []struct {
+		name  string
+		issue *kanban.Issue
+	}{
+		{name: "no_project", issue: issueWithoutProject},
+		{name: "empty_description", issue: issueWithoutProjectDescription},
+		{name: "missing_project", issue: issueWithMissingProject},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, err := runner.buildTurnPrompt(workflow, tc.issue, 0, 1)
+			if err != nil {
+				t.Fatalf("buildTurnPrompt: %v", err)
+			}
+			if strings.Contains(prompt, "Project context:") {
+				t.Fatalf("expected prompt to omit project context, got %q", prompt)
+			}
+		})
 	}
 }
 

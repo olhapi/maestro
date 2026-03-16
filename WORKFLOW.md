@@ -41,9 +41,13 @@ phases:
     # Enable a dedicated review pass after implementation. Other option: false.
     enabled: false
     # Prompt rendered when the issue enters review. Uses the same template variables
-    # as the main prompt, such as issue.*, phase, and attempt.
+    # as the main prompt, such as issue.*, project.*, phase, and attempt.
     prompt: |
       Review the implementation for issue {{ issue.identifier }} in the current workspace.
+      {% if project.description %}
+      Project context:
+      {{ project.description }}
+      {% endif %}
       Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
   done:
     # Enable a dedicated finalization pass after implementation is otherwise complete.
@@ -51,6 +55,10 @@ phases:
     # Prompt rendered when the issue enters done for project-specific wrap-up steps.
     prompt: |
       Finalize issue {{ issue.identifier }} from the current workspace.
+      {% if project.description %}
+      Project context:
+      {{ project.description }}
+      {% endif %}
       Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
 
 # Agent runtime settings.
@@ -113,6 +121,11 @@ Continuation attempt: {{ attempt }}
 
 Title: {{ issue.title }}
 State: {{ issue.state }}
+{% if project.description %}
+Project context:
+{{ project.description }}
+
+{% endif %}
 Description:
 {% if issue.description %}
 {{ issue.description }}

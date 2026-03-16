@@ -68,8 +68,13 @@ The issue prompt template can interpolate:
 - `{{ issue.title }}`
 - `{{ issue.description }}`
 - `{{ issue.state }}`
+- `{{ project.id }}`
+- `{{ project.name }}`
+- `{{ project.description }}`
 - `{{ phase }}`
 - `{{ attempt }}`
+
+If a project has a description, Maestro's default implementation, review, and done prompts automatically add it as a `Project context:` section. Use project descriptions for standing guidance that should apply across every issue in that project, and use custom workflow templates when you want to move `{{ project.description }}` elsewhere.
 
 ## Bootstrap behavior
 
