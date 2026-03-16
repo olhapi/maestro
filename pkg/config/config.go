@@ -162,6 +162,11 @@ Continuation attempt: {{ attempt }}
 {% endif %}
 
 Title: {{ issue.title }}
+{% if project.description %}
+Project context:
+{{ project.description }}
+
+{% endif %}
 Description:
 {% if issue.description %}
 {{ issue.description }}
@@ -177,6 +182,11 @@ You are performing the review pass for issue {{ issue.identifier }}.
 
 Title: {{ issue.title }}
 State: {{ issue.state }}
+{% if project.description %}
+Project context:
+{{ project.description }}
+
+{% endif %}
 Description:
 {% if issue.description %}
 {{ issue.description }}
@@ -194,6 +204,11 @@ Review the implementation in the current workspace, run focused verification, an
 func DefaultInitReviewPromptTemplate() string {
 	return strings.TrimSpace(`
 Review the implementation for issue {{ issue.identifier }} in the current workspace.
+{% if project.description %}
+Project context:
+{{ project.description }}
+
+{% endif %}
 Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
 `)
 }
@@ -204,6 +219,11 @@ You are performing the done pass for issue {{ issue.identifier }}.
 
 Title: {{ issue.title }}
 State: {{ issue.state }}
+{% if project.description %}
+Project context:
+{{ project.description }}
+
+{% endif %}
 Description:
 {% if issue.description %}
 {{ issue.description }}
@@ -220,6 +240,11 @@ The implementation is already complete. Perform the project-specific finalizatio
 func DefaultInitDonePromptTemplate() string {
 	return strings.TrimSpace(`
 Finalize issue {{ issue.identifier }} from the current workspace.
+{% if project.description %}
+Project context:
+{{ project.description }}
+
+{% endif %}
 Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
 `)
 }

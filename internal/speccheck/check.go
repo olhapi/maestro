@@ -62,6 +62,11 @@ func Run(repoRoot string) Report {
 				"description": "Parses correctly",
 				"state":       "ready",
 			},
+			"project": map[string]interface{}{
+				"id":          "PRJ-1",
+				"name":        "Spec check project",
+				"description": "Follow repo-wide guidance",
+			},
 			"phase":   "implementation",
 			"attempt": 1,
 		}); err != nil {

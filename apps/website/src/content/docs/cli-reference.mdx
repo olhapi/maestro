@@ -22,6 +22,8 @@ maestro project delete <id>`}
 
 Use project commands to register a repo, inspect the local tracker, configure project-level providers, and remove stale projects from the store.
 
+Use `--desc` for durable Codex guidance, not just a label. Maestro includes `project.description` in the default implementation, review, and done prompts for every issue in that project.
+
 `start` and `stop` are live control commands. They require `--api-url` because they talk to a running Maestro daemon over HTTP.
 
 `kanban` is the default provider. `linear` support exists, but it is intentionally limited and does not support epics.
