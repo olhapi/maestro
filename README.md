@@ -110,18 +110,24 @@ Issue images are stored next to the active database under `assets/images`. With 
 
 The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
 
-### 4. Add the Maestro MCP server to Codex or Claude Code
+### 4. Add the Maestro MCP server to your coding agent
 
-If `maestro` is already on your `PATH`, save the MCP entry in your client once:
+Register `maestro mcp` with the MCP setup flow your coding agent provides. Most MCP-capable agents accept a config equivalent to:
 
-```bash
-codex mcp add maestro -- maestro mcp
-claude mcp add maestro -- maestro mcp
+```json
+{
+  "mcpServers": {
+    "maestro": {
+      "command": "maestro",
+      "args": ["mcp"]
+    }
+  }
+}
 ```
 
-If you built Maestro from source and did not add it to your `PATH`, replace `maestro` with the absolute path to the binary in either command. If you want Claude Code to persist the server in a shared project config, use `claude mcp add --scope project maestro -- maestro mcp`.
+If you built Maestro from source and did not add it to your `PATH`, replace `maestro` with the absolute path to the binary.
 
-`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let Codex or Claude Code invoke `maestro mcp`.
+`maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let your coding agent invoke `maestro mcp`.
 
 ### 5. Open the dashboard or use live CLI helpers
 
