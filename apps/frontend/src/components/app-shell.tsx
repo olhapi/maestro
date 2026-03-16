@@ -41,6 +41,14 @@ function playInterruptNotification() {
     const now = context.currentTime
     const oscillator = context.createOscillator()
     const gain = context.createGain()
+    let closed = false
+    const closeContext = () => {
+      if (closed) {
+        return
+      }
+      closed = true
+      void context.close().catch(() => {})
+    }
 
     oscillator.type = 'triangle'
     oscillator.frequency.setValueAtTime(880, now)
@@ -52,12 +60,18 @@ function playInterruptNotification() {
     oscillator.connect(gain)
     gain.connect(context.destination)
 
-    void context.resume().catch(() => {})
+    void context.resume().catch(() => {
+      closeContext()
+    })
     oscillator.start(now)
     oscillator.stop(now + 0.32)
-    oscillator.addEventListener('ended', () => {
-      void context.close().catch(() => {})
-    }, { once: true })
+    oscillator.addEventListener(
+      'ended',
+      () => {
+        closeContext()
+      },
+      { once: true },
+    )
   } catch {
     // Ignore audio failures so interrupts still render even when autoplay is blocked.
   }
