@@ -114,7 +114,22 @@ The preview warning on `run` is intentional. Pass `--i-understand-that-this-will
 
 ### 4. Add the Maestro MCP server to your coding agent
 
-Register `maestro mcp` with the MCP setup flow your coding agent provides. Most MCP-capable agents accept a config equivalent to:
+Use the setup path that matches your coding agent:
+
+Codex:
+
+```bash
+codex mcp add maestro -- maestro mcp
+```
+
+Claude Code:
+
+```bash
+claude mcp add maestro -- maestro mcp
+claude mcp add --scope project maestro -- maestro mcp
+```
+
+Other MCP-capable agents:
 
 ```json
 {
