@@ -1,9 +1,10 @@
-import { useEffect, useEffectEvent, useMemo, useState } from 'react'
+import { startTransition, useEffect, useEffectEvent, useMemo, useState } from 'react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RotateCcw, Search } from 'lucide-react'
 
 import { CommandPalette } from '@/components/command-palette'
+import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
@@ -41,12 +42,49 @@ export function AppShell() {
   const isMobileLayout = useIsMobileLayout()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
+  const [hiddenInterruptId, setHiddenInterruptId] = useState<string | null>(null)
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const interrupts = useQuery({ queryKey: ['interrupts'], queryFn: api.listInterrupts })
   const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
+  const respondToInterrupt = useMutation({
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string
+      body: {
+        decision?: string
+        decision_payload?: Record<string, unknown>
+        answers?: Record<string, string[]>
+      }
+    }) =>
+      api.respondToInterrupt(id, body),
+    onMutate: ({ id }) => {
+      startTransition(() => {
+        setHiddenInterruptId(id)
+      })
+    },
+    onError: () => {
+      setHiddenInterruptId(null)
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['interrupts'], refetchType: 'active' }),
+        queryClient.invalidateQueries({ queryKey: ['sessions'], refetchType: 'active' }),
+        queryClient.invalidateQueries({ queryKey: ['issue-execution'], refetchType: 'active' }),
+      ])
+    },
+  })
 
   const handleSocketInvalidate = useEffectEvent(() => {
     setLastRefresh(new Date().toISOString())
-    void refreshDashboardQueries(queryClient, activePath)
+    void Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ['interrupts'],
+        refetchType: 'active',
+      }),
+      refreshDashboardQueries(queryClient, activePath),
+    ])
   })
 
   useEffect(() => {
@@ -67,6 +105,7 @@ export function AppShell() {
   const pageTitle = getPageTitle(activePath) || SIDEBAR_TITLE
   const runningCount = bootstrap.data?.overview.snapshot.running.length ?? 0
   const retryCount = bootstrap.data?.overview.snapshot.retrying.length ?? 0
+  const effectiveHiddenInterruptId = interrupts.data?.current?.id === hiddenInterruptId ? hiddenInterruptId : null
 
   useEffect(() => {
     const nextTitle = getPageTitle(activePath)
@@ -203,6 +242,20 @@ export function AppShell() {
               </button>
             </div>
           </header>
+          <GlobalInterruptPanel
+            key={interrupts.data?.current?.id ?? 'interrupt-panel'}
+            count={interrupts.data?.count ?? 0}
+            current={interrupts.data?.current}
+            hiddenCurrentId={effectiveHiddenInterruptId}
+            isSubmitting={respondToInterrupt.isPending}
+            onRespond={(body) => {
+              const current = interrupts.data?.current
+              if (!current) {
+                return
+              }
+              respondToInterrupt.mutate({ id: current.id, body })
+            }}
+          />
           <div
             className={cn(
               'flex-1 min-w-0 p-[var(--shell-padding)]',

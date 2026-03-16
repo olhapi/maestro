@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/olhapi/maestro/internal/appserver/protocol"
+	"github.com/olhapi/maestro/internal/appserver/protocol/gen"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
 )
 
@@ -200,7 +202,8 @@ func TestRunAutoApprovesCommandExecutionWhenNever(t *testing.T) {
 			foundInit = nestedBool(payload, "params", "capabilities", "experimentalApi")
 		}
 		if id, ok := asInt(payload["id"]); ok && id == 2 {
-			if nestedStringMap(payload, "method") == "thread/start" && nestedStringMap(payload, "params", "cwd") != "" {
+			if nestedStringMap(payload, "method") == "thread/start" && nestedStringMap(payload, "params", "cwd") != "" &&
+				nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "plan" {
 				foundThreadStart = true
 			}
 		}
@@ -350,7 +353,7 @@ func TestRunFallsBackToThreadStartWhenResumeFails(t *testing.T) {
 		case "thread/resume":
 			foundResume = true
 		case "thread/start":
-			foundStart = true
+			foundStart = nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "plan"
 		}
 	}
 	if !foundResume || !foundStart {
@@ -388,7 +391,7 @@ func TestRunWithoutResumeConfigStartsFreshThread(t *testing.T) {
 		case "thread/resume":
 			foundResume = true
 		case "thread/start":
-			foundStart = true
+			foundStart = nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "plan"
 		}
 	}
 	if foundResume {
@@ -396,6 +399,598 @@ func TestRunWithoutResumeConfigStartsFreshThread(t *testing.T) {
 	}
 	if !foundStart {
 		t.Fatal("expected default initialization to send thread/start")
+	}
+}
+
+func TestRunStartsFreshThreadWithExplicitDefaultInitialCollaborationMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-FRESH-DEFAULT")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, baseScenario("thread-explicit-default", "turn-explicit-default",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-explicit-default", "turn": map[string]interface{}{"id": "turn-explicit-default"}},
+			},
+		},
+	))
+	cfg.InitialCollaborationMode = "default"
+	cfg = withTrace(cfg, traceFile)
+
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundStart := false
+	for _, payload := range lines {
+		if nestedStringMap(payload, "method") == "thread/start" &&
+			nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "default" {
+			foundStart = true
+		}
+	}
+	if !foundStart {
+		t.Fatalf("expected explicit initial collaboration mode in thread/start payload, got %#v", lines)
+	}
+}
+
+func TestRunWaitsForApprovalResponseAndResumesTurnInPlanMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-PLAN-WAIT")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := baseScenario("thread-plan-wait", "turn-plan-wait",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id":     99,
+				"method": "item/commandExecution/requestApproval",
+				"params": map[string]interface{}{
+					"threadId": "thread-plan-wait",
+					"turnId":   "turn-plan-wait",
+					"itemId":   "approval-item-1",
+					"command":  "gh pr view",
+				},
+			},
+		},
+	)
+	scenario.Steps = append(scenario.Steps, fakeappserver.Step{
+		Match: fakeappserver.Match{ID: fakeappserver.Int(99)},
+		Emit: []fakeappserver.Output{{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-plan-wait", "turnId": "turn-plan-wait"},
+			},
+		}},
+		ExitCode: fakeappserver.Int(0),
+	})
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg = withTrace(cfg, traceFile)
+	interrupts := make(chan PendingInteraction, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	var interaction PendingInteraction
+	select {
+	case interaction = <-interrupts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected pending interaction")
+	}
+	if interaction.CollaborationMode != "plan" {
+		t.Fatalf("expected plan collaboration mode, got %+v", interaction)
+	}
+	if interaction.Approval == nil || interaction.Approval.Command != "gh pr view" {
+		t.Fatalf("unexpected approval payload: %+v", interaction)
+	}
+	if err := client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); err != nil {
+		t.Fatalf("respond to interaction: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("run turn failed: %v", err)
+	}
+	if err := client.Wait(); err != nil {
+		t.Fatalf("wait failed: %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundResponse := false
+	for _, payload := range lines {
+		if id, ok := asInt(payload["id"]); ok && id == 99 {
+			if result, ok := payload["result"].(map[string]interface{}); ok && result["decision"] == "acceptForSession" {
+				foundResponse = true
+			}
+		}
+	}
+	if !foundResponse {
+		t.Fatalf("expected approval response in trace, got %#v", lines)
+	}
+}
+
+func TestRunPreservesStructuredApprovalDecisions(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-PLAN-STRUCTURED")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := baseScenario("thread-structured", "turn-structured",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id":     101,
+				"method": "item/commandExecution/requestApproval",
+				"params": map[string]interface{}{
+					"threadId":                    "thread-structured",
+					"turnId":                      "turn-structured",
+					"itemId":                      "approval-item-structured",
+					"command":                     "curl https://api.github.com",
+					"proposedExecpolicyAmendment": []string{"allow command=curl https://api.github.com"},
+					"proposedNetworkPolicyAmendments": []map[string]interface{}{
+						{"action": "allow", "host": "api.github.com"},
+					},
+				},
+			},
+		},
+	)
+	scenario.Steps = append(scenario.Steps, fakeappserver.Step{
+		Match: fakeappserver.Match{ID: fakeappserver.Int(101)},
+		Emit: []fakeappserver.Output{{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-structured", "turnId": "turn-structured"},
+			},
+		}},
+		ExitCode: fakeappserver.Int(0),
+	})
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg = withTrace(cfg, traceFile)
+	interrupts := make(chan PendingInteraction, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	var interaction PendingInteraction
+	select {
+	case interaction = <-interrupts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected pending structured interaction")
+	}
+	if interaction.Approval == nil {
+		t.Fatalf("expected approval payload, got %+v", interaction)
+	}
+
+	var execpolicyDecision *PendingApprovalDecision
+	var networkDecision *PendingApprovalDecision
+	for i := range interaction.Approval.Decisions {
+		option := interaction.Approval.Decisions[i]
+		if _, ok := nestedMap(option.DecisionPayload, "acceptWithExecpolicyAmendment"); ok {
+			execpolicyDecision = &interaction.Approval.Decisions[i]
+		}
+		if _, ok := nestedMap(option.DecisionPayload, "applyNetworkPolicyAmendment"); ok {
+			networkDecision = &interaction.Approval.Decisions[i]
+		}
+	}
+	if execpolicyDecision == nil || networkDecision == nil {
+		t.Fatalf("expected structured approval options, got %+v", interaction.Approval.Decisions)
+	}
+
+	if err := client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+		DecisionPayload: execpolicyDecision.DecisionPayload,
+	}); err != nil {
+		t.Fatalf("respond to structured interaction: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("run turn failed: %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundPayload := false
+	for _, payload := range lines {
+		if id, ok := asInt(payload["id"]); ok && id == 101 {
+			if decision, ok := nestedMap(payload, "result", "decision"); ok {
+				if _, ok := nestedMap(decision, "acceptWithExecpolicyAmendment"); ok {
+					foundPayload = true
+				}
+			}
+		}
+	}
+	if !foundPayload {
+		t.Fatalf("expected structured approval payload in trace, got %#v", lines)
+	}
+}
+
+func TestRunWaitsForUserInputResponseAndResumesTurnInDefaultMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-DEFAULT-WAIT")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := baseScenario("thread-default-wait", "turn-default-wait",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id":     110,
+				"method": "item/tool/requestUserInput",
+				"params": map[string]interface{}{
+					"threadId": "thread-default-wait",
+					"turnId":   "turn-default-wait",
+					"itemId":   "input-item-1",
+					"questions": []map[string]interface{}{{
+						"id":       "path",
+						"question": "Where should the agent write the patch?",
+						"isOther":  true,
+					}},
+				},
+			},
+		},
+	)
+	scenario.Steps = append(scenario.Steps, fakeappserver.Step{
+		Match: fakeappserver.Match{ID: fakeappserver.Int(110)},
+		Emit: []fakeappserver.Output{{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-default-wait", "turnId": "turn-default-wait"},
+			},
+		}},
+		ExitCode: fakeappserver.Int(0),
+	})
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.InitialCollaborationMode = "default"
+	cfg = withTrace(cfg, traceFile)
+	interrupts := make(chan PendingInteraction, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	var interaction PendingInteraction
+	select {
+	case interaction = <-interrupts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected pending user input interaction")
+	}
+	if interaction.CollaborationMode != "default" {
+		t.Fatalf("expected default collaboration mode, got %+v", interaction)
+	}
+	if interaction.UserInput == nil || len(interaction.UserInput.Questions) != 1 {
+		t.Fatalf("unexpected input payload: %+v", interaction)
+	}
+	if err := client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+		Answers: map[string][]string{
+			"path": {"./workspaces/output.patch"},
+		},
+	}); err != nil {
+		t.Fatalf("respond to interaction: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("run turn failed: %v", err)
+	}
+	if err := client.Wait(); err != nil {
+		t.Fatalf("wait failed: %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundResponse := false
+	for _, payload := range lines {
+		if id, ok := asInt(payload["id"]); ok && id == 110 {
+			if answers, ok := nestedMap(payload, "result", "answers"); ok {
+				if questionAnswers, ok := answers["path"].(map[string]interface{}); ok {
+					if vals, ok := questionAnswers["answers"].([]interface{}); ok && len(vals) == 1 && vals[0] == "./workspaces/output.patch" {
+						foundResponse = true
+					}
+				}
+			}
+		}
+	}
+	if !foundResponse {
+		t.Fatalf("expected user input response in trace, got %#v", lines)
+	}
+}
+
+func TestRunResumedThreadWaitsForApprovalWithoutStartupModeLabel(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-RESUME-WAIT")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/resume"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-resumed-wait"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-resumed-wait"}}}},
+					{JSON: map[string]interface{}{
+						"id":     120,
+						"method": "item/commandExecution/requestApproval",
+						"params": map[string]interface{}{
+							"threadId": "thread-resumed-wait",
+							"turnId":   "turn-resumed-wait",
+							"itemId":   "approval-item-2",
+							"command":  "git status",
+						},
+					}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{ID: fakeappserver.Int(120)},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"method": "turn/completed",
+						"params": map[string]interface{}{"threadId": "thread-resumed-wait", "turnId": "turn-resumed-wait"},
+					},
+				}},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.ResumeThreadID = "thread-stale"
+	cfg.ResumeSource = "required"
+	cfg = withTrace(cfg, traceFile)
+	interrupts := make(chan PendingInteraction, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	interaction := <-interrupts
+	if interaction.CollaborationMode != "" {
+		t.Fatalf("expected resumed interaction to omit startup collaboration mode, got %+v", interaction)
+	}
+	if err := client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); err != nil {
+		t.Fatalf("respond to interaction: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("run turn failed: %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	for _, payload := range lines {
+		if nestedStringMap(payload, "method") == "thread/start" {
+			t.Fatalf("expected resumed run not to start a new thread, got %#v", lines)
+		}
+	}
+}
+
+func TestRunIncludesGrantRootChoiceForFileChangeApprovals(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-GRANT-ROOT")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := baseScenario("thread-grant-root", "turn-grant-root",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id":     130,
+				"method": "item/fileChange/requestApproval",
+				"params": map[string]interface{}{
+					"threadId":  "thread-grant-root",
+					"turnId":    "turn-grant-root",
+					"itemId":    "file-change-item",
+					"grantRoot": "/tmp/granted-root",
+					"reason":    "Need broader write access",
+				},
+			},
+		},
+	)
+	scenario.Steps = append(scenario.Steps, fakeappserver.Step{
+		Match: fakeappserver.Match{ID: fakeappserver.Int(130)},
+		Emit: []fakeappserver.Output{{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-grant-root", "turnId": "turn-grant-root"},
+			},
+		}},
+		ExitCode: fakeappserver.Int(0),
+	})
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg = withTrace(cfg, traceFile)
+	interrupts := make(chan PendingInteraction, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	interaction := <-interrupts
+	if interaction.Approval == nil {
+		t.Fatalf("expected approval payload, got %+v", interaction)
+	}
+
+	var grantRootDecision *PendingApprovalDecision
+	for i := range interaction.Approval.Decisions {
+		option := interaction.Approval.Decisions[i]
+		if option.Value == "acceptForSession" {
+			grantRootDecision = &interaction.Approval.Decisions[i]
+			break
+		}
+	}
+	if grantRootDecision == nil {
+		t.Fatalf("expected accept-for-session option, got %+v", interaction.Approval.Decisions)
+	}
+	if grantRootDecision.Label != "Accept and grant root" || !strings.Contains(grantRootDecision.Description, "/tmp/granted-root") {
+		t.Fatalf("expected grant-root copy, got %+v", grantRootDecision)
+	}
+
+	if err := client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); err != nil {
+		t.Fatalf("respond to grant-root interaction: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("run turn failed: %v", err)
+	}
+}
+
+func TestRunStopsWaitingIfAppServerExitsDuringInteraction(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-EXIT-WAIT")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scenario := baseScenario("thread-exit-wait", "turn-exit-wait",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id":     140,
+				"method": "item/commandExecution/requestApproval",
+				"params": map[string]interface{}{
+					"threadId": "thread-exit-wait",
+					"turnId":   "turn-exit-wait",
+					"itemId":   "approval-item-exit",
+					"command":  "git status",
+				},
+			},
+		},
+	)
+	scenario.Steps[3].ExitCode = fakeappserver.Int(1)
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	interrupts := make(chan PendingInteraction, 1)
+	doneIDs := make(chan string, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+	cfg.OnPendingInteractionDone = func(interactionID string) {
+		doneIDs <- interactionID
+	}
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	var interaction PendingInteraction
+	select {
+	case interaction = <-interrupts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected pending interaction")
+	}
+
+	var runErr *RunError
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected interrupted run error")
+		}
+		if !errors.As(err, &runErr) || runErr.Kind != "run_interrupted" {
+			t.Fatalf("expected run_interrupted, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected run turn to stop waiting after app-server exit")
+	}
+
+	select {
+	case doneID := <-doneIDs:
+		if doneID != interaction.ID {
+			t.Fatalf("expected interaction %q to be cleared, got %q", interaction.ID, doneID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected pending interaction to be cleared")
+	}
+
+	if err := client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); !errors.Is(err, ErrPendingInteractionNotFound) {
+		t.Fatalf("expected cleared interaction to reject late response, got %v", err)
 	}
 }
 
@@ -506,6 +1101,56 @@ func TestRunRejectsNonApprovalToolInputInUnattendedMode(t *testing.T) {
 		if id, ok := asInt(payload["id"]); ok && id == 111 {
 			t.Fatal("expected no auto-answer payload for non-approval tool input")
 		}
+	}
+}
+
+func TestRunRejectsNonApprovalToolInputInUnattendedModeWithObserver(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-3B")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scenario := baseScenario("thread-3b", "turn-3b",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id":     112,
+				"method": "item/tool/requestUserInput",
+				"params": map[string]interface{}{
+					"questions": []map[string]interface{}{{
+						"id": "options-3b",
+						"options": []map[string]interface{}{
+							{"label": "Use default"},
+							{"label": "Skip"},
+						},
+					}},
+				},
+			},
+		},
+	)
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.Title = "ISS-3B: Tool input"
+	cfg.ApprovalPolicy = "never"
+	interrupts := make(chan PendingInteraction, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+
+	_, err := Run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected non-approval tool input to require input")
+	}
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != "turn_input_required" {
+		t.Fatalf("expected turn_input_required, got %v", err)
+	}
+
+	select {
+	case interaction := <-interrupts:
+		t.Fatalf("expected unattended mode not to queue an interaction, got %+v", interaction)
+	default:
 	}
 }
 
@@ -1073,6 +1718,86 @@ func TestClientHelperMethodsUpdateSessionAndMessages(t *testing.T) {
 	client.lineErr <- errors.New("read failed")
 	if err := client.Wait(); err == nil || !strings.Contains(err.Error(), "read failed") {
 		t.Fatalf("expected read failure, got %v", err)
+	}
+}
+
+func TestRespondToInteractionRejectsStoppedWaiter(t *testing.T) {
+	waiter := &interactionWaiter{
+		interaction: PendingInteraction{
+			ID:     "interrupt-1",
+			Kind:   PendingInteractionKindApproval,
+			Method: protocol.MethodExecCommandApproval,
+			Approval: &PendingApproval{
+				Decisions: reviewApprovalDecisions(),
+			},
+		},
+		responseCh: make(chan PendingInteractionResponse),
+		doneCh:     make(chan struct{}),
+	}
+	close(waiter.doneCh)
+
+	client := &Client{
+		pendingInteractions: map[string]*interactionWaiter{
+			"interrupt-1": waiter,
+		},
+	}
+
+	err := client.RespondToInteraction(context.Background(), "interrupt-1", PendingInteractionResponse{
+		Decision: string(gen.Approved),
+	})
+	if !errors.Is(err, ErrPendingInteractionNotFound) {
+		t.Fatalf("expected stopped waiter to reject response, got %v", err)
+	}
+}
+
+func TestEmitResolvedInteractionActivityPreservesStructuredApprovalStatus(t *testing.T) {
+	var events []ActivityEvent
+	client := &Client{
+		cfg: ClientConfig{
+			OnActivityEvent: func(event ActivityEvent) {
+				events = append(events, event)
+			},
+		},
+	}
+
+	decisionPayload := map[string]interface{}{
+		"acceptWithExecpolicyAmendment": map[string]interface{}{
+			"execpolicy_amendment": []interface{}{"allow command=curl https://api.github.com"},
+		},
+	}
+	interaction := PendingInteraction{
+		RequestID: "req-structured",
+		Kind:      PendingInteractionKindApproval,
+		Method:    protocol.MethodItemCommandExecutionApproval,
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
+		ItemID:    "item-1",
+		Approval: &PendingApproval{
+			Decisions: []PendingApprovalDecision{
+				{
+					Value:           "accept_with_execpolicy_amendment",
+					Label:           "Approve and store rule",
+					DecisionPayload: decisionPayload,
+				},
+			},
+		},
+	}
+
+	client.emitResolvedInteractionActivity(interaction, PendingInteractionResponse{
+		DecisionPayload: decisionPayload,
+	})
+
+	if len(events) != 1 {
+		t.Fatalf("expected one activity event, got %#v", events)
+	}
+	if events[0].Status != "accept_with_execpolicy_amendment" {
+		t.Fatalf("expected structured approval status, got %+v", events[0])
+	}
+	if events[0].Raw["decision"] != "accept_with_execpolicy_amendment" {
+		t.Fatalf("expected structured decision value in raw payload, got %+v", events[0].Raw)
+	}
+	if events[0].Raw["decision_label"] != "Approve and store rule" {
+		t.Fatalf("expected structured decision label in raw payload, got %+v", events[0].Raw)
 	}
 }
 

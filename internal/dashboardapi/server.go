@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
@@ -28,6 +29,9 @@ type Provider interface {
 	observability.SessionProvider
 	observability.EventProvider
 	observability.RefreshProvider
+	PendingInterrupts() appserver.PendingInteractionSnapshot
+	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
+	RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error
 	RetryIssueNow(identifier string) map[string]interface{}
 	RunRecurringIssueNow(identifier string) map[string]interface{}
 	RequestProjectRefresh(projectID string) map[string]interface{}
@@ -119,6 +123,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/app/issues/", s.handleIssue)
 	mux.HandleFunc("/api/v1/app/runtime/events", s.handleRuntimeEvents)
 	mux.HandleFunc("/api/v1/app/runtime/series", s.handleRuntimeSeries)
+	mux.HandleFunc("/api/v1/app/interrupts", s.handleInterrupts)
+	mux.HandleFunc("/api/v1/app/interrupts/", s.handleInterrupt)
 	mux.HandleFunc("/api/v1/app/sessions", s.handleSessions)
 	mux.HandleFunc("/api/v1/ws", s.handleWS)
 }
@@ -871,6 +877,60 @@ func (s *Server) handleRuntimeSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"series": series})
 }
 
+func (s *Server) handleInterrupts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, s.provider.PendingInterrupts())
+}
+
+func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/app/interrupts/")
+	if rest == "" {
+		http.NotFound(w, r)
+		return
+	}
+	interactionID, action, hasAction := strings.Cut(rest, "/")
+	if interactionID == "" || strings.Contains(interactionID, "/") || !hasAction || action != "respond" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var body struct {
+		Decision        string                 `json:"decision"`
+		DecisionPayload map[string]interface{} `json:"decision_payload"`
+		Answers         map[string][]string    `json:"answers"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	err := s.provider.RespondToInterrupt(r.Context(), interactionID, appserver.PendingInteractionResponse{
+		Decision:        strings.TrimSpace(body.Decision),
+		DecisionPayload: body.DecisionPayload,
+		Answers:         body.Answers,
+	})
+	switch {
+	case err == nil:
+		writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
+			"id":     interactionID,
+			"status": "accepted",
+		})
+	case errors.Is(err, appserver.ErrPendingInteractionNotFound):
+		writeErrorStatus(w, http.StatusNotFound, err)
+	case errors.Is(err, appserver.ErrPendingInteractionConflict):
+		writeErrorStatus(w, http.StatusConflict, err)
+	case errors.Is(err, appserver.ErrInvalidInteractionResponse):
+		writeErrorStatus(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -929,14 +989,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-updates:
 			seq, err := s.store.LatestChangeSeq()
-			if err != nil || seq <= lastSeq {
+			if err != nil {
 				continue
 			}
-			lastSeq = seq
+			runtimeOnly := seq <= lastSeq
+			if seq > lastSeq {
+				lastSeq = seq
+			}
 			if err := writeJSON(map[string]interface{}{
-				"type": "invalidate",
-				"at":   time.Now().UTC().Format(time.RFC3339),
-				"seq":  seq,
+				"type":         "invalidate",
+				"at":           time.Now().UTC().Format(time.RFC3339),
+				"seq":          lastSeq,
+				"runtime_only": runtimeOnly,
 			}); err != nil {
 				return
 			}

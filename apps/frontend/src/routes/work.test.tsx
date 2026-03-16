@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { WorkPage } from '@/routes/work'
@@ -185,5 +185,44 @@ describe('WorkPage', () => {
     expect(screen.getAllByText('Backlog').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Ready').length).toBeGreaterThan(0)
     expect(screen.getAllByRole('button', { name: 'New' }).length).toBeGreaterThan(0)
+  })
+
+  it('confirms issue deletion from the list view before calling the API', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(api.deleteIssue).mockResolvedValue({ deleted: true })
+
+    renderWithQueryClient(<WorkPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('columnheader', { name: 'Issue' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /delete issue/i }))
+    expect(api.deleteIssue).not.toHaveBeenCalled()
+
+    const confirmDialog = await screen.findByRole('dialog', {
+      name: /delete iss-1\?/i,
+    })
+    fireEvent.click(
+      within(confirmDialog).getByRole('button', { name: /delete issue/i }),
+    )
+
+    await waitFor(() => {
+      expect(api.deleteIssue).toHaveBeenCalledWith('ISS-1')
+    })
   })
 })

@@ -13,6 +13,8 @@ STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-20}"
 
 backend_pid=""
 frontend_pid=""
+managed_backend_pid=""
+managed_frontend_pid=""
 requested_exit_code=""
 
 stop_process_group() {
@@ -42,8 +44,8 @@ cleanup() {
   local exit_code=$?
   trap - EXIT INT TERM
 
-  stop_process_group "$frontend_pid"
-  stop_process_group "$backend_pid"
+  stop_process_group "$managed_frontend_pid"
+  stop_process_group "$managed_backend_pid"
 
   if [[ -n "$requested_exit_code" ]]; then
     exit "$requested_exit_code"
@@ -128,6 +130,12 @@ listener_command() {
   ps -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//'
 }
 
+listener_command_with_env() {
+  local pid="$1"
+
+  ps eww -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//'
+}
+
 listener_cwd() {
   local pid="$1"
 
@@ -158,6 +166,45 @@ describe_listener() {
   fi
 }
 
+is_reusable_backend_listener() {
+  local pid="$1"
+  local cmdline
+  local cwd
+
+  cmdline="$(listener_command_with_env "$pid" || true)"
+  cwd="$(listener_cwd "$pid" || true)"
+
+  if [[ -z "$cmdline" ]] || [[ -z "$cwd" ]]; then
+    return 1
+  fi
+
+  if [[ "$cwd" != "$ROOT_DIR" ]]; then
+    return 1
+  fi
+
+  if [[ "$cmdline" != *" run "* ]]; then
+    return 1
+  fi
+
+  if ! printf '%s\n' "$cmdline" | grep -F -q -- " --db $DB_PATH"; then
+    return 1
+  fi
+
+  if ! printf '%s\n' "$cmdline" | grep -F -q -- " --port $BACKEND_PORT"; then
+    return 1
+  fi
+
+  if ! printf '%s\n' "$cmdline" | grep -F -q -- " MAESTRO_UI_DEV_PROXY_URL=$FRONTEND_DEV_PROXY_URL"; then
+    return 1
+  fi
+
+  if [[ -n "$REPO_PATH" ]] && ! printf '%s\n' "$cmdline" | grep -F -q -- " $REPO_PATH"; then
+    return 1
+  fi
+
+  return 0
+}
+
 wait_for_port_release() {
   local port="$1"
   local label="$2"
@@ -175,18 +222,27 @@ wait_for_port_release() {
   done
 }
 
-wait_for_port_release "$BACKEND_PORT" "backend"
 wait_for_port_release "$FRONTEND_PORT" "frontend"
 
-backend_cmd=(go run ./cmd/maestro run --db "$DB_PATH" --port "$BACKEND_PORT")
-if [[ -n "$REPO_PATH" ]]; then
-  backend_cmd+=( "$REPO_PATH" )
+existing_backend_pid="$(listener_pid "$BACKEND_PORT" || true)"
+if [[ -n "$existing_backend_pid" ]] && is_reusable_backend_listener "$existing_backend_pid"; then
+  backend_pid="$existing_backend_pid"
+  echo "Reusing existing backend on http://127.0.0.1:${BACKEND_PORT} (PID ${backend_pid})."
+else
+  wait_for_port_release "$BACKEND_PORT" "backend"
+
+  backend_cmd=(go run ./cmd/maestro run --db "$DB_PATH" --port "$BACKEND_PORT")
+  if [[ -n "$REPO_PATH" ]]; then
+    backend_cmd+=( "$REPO_PATH" )
+  fi
+  start_process_group backend_pid "$ROOT_DIR" env MAESTRO_UI_DEV_PROXY_URL="$FRONTEND_DEV_PROXY_URL" "${backend_cmd[@]}"
+  managed_backend_pid="$backend_pid"
 fi
-start_process_group backend_pid "$ROOT_DIR" env MAESTRO_UI_DEV_PROXY_URL="$FRONTEND_DEV_PROXY_URL" "${backend_cmd[@]}"
 
 wait_for_backend
 
 start_process_group frontend_pid "$ROOT_DIR/apps/frontend" pnpm exec vite --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort
+managed_frontend_pid="$frontend_pid"
 
 if [[ -n "$REPO_PATH" ]]; then
   echo "Repo:     ${REPO_PATH}"
@@ -199,9 +255,6 @@ echo "Vite:      http://${FRONTEND_HOST}:${FRONTEND_PORT} (direct)"
 echo "Press Ctrl+C to stop both."
 
 wait_targets=()
-if [[ -n "$backend_pid" ]]; then
-  wait_targets+=( "$backend_pid" )
-fi
 if [[ -n "$frontend_pid" ]]; then
   wait_targets+=( "$frontend_pid" )
 fi

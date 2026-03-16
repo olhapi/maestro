@@ -22,6 +22,9 @@ function isQuiet(entry: SessionFeedEntry) {
 }
 
 function summaryText(entry: SessionFeedEntry) {
+  if (entry.pending_interrupt?.last_activity) {
+    return entry.pending_interrupt.last_activity
+  }
   return entry.last_message || entry.error || entry.last_event || 'No progress details yet.'
 }
 
@@ -29,6 +32,8 @@ function badgeClassForStatus(status: SessionFeedEntry['status']) {
   switch (status) {
     case 'active':
       return 'border-lime-400/20 bg-lime-400/10 text-lime-100'
+    case 'waiting':
+      return 'border-amber-400/20 bg-amber-400/10 text-amber-100'
     case 'paused':
       return 'border-amber-400/20 bg-amber-400/10 text-amber-100'
     case 'completed':
@@ -98,6 +103,9 @@ export function SessionsPage() {
                           <p className="font-medium text-white">{title}</p>
                           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(entry.source)}</Badge>
                           <Badge className={badgeClassForStatus(entry.status)}>{toTitleCase(entry.status)}</Badge>
+                          {entry.pending_interrupt?.collaboration_mode === 'plan' ? (
+                            <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
+                          ) : null}
                           {quiet ? <Badge className="border-orange-400/20 bg-orange-400/10 text-orange-100">Quiet</Badge> : null}
                         </div>
                         <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{context}</p>

@@ -14,6 +14,7 @@ import (
 type ExecutionProvider interface {
 	observability.SnapshotProvider
 	observability.SessionProvider
+	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
 }
 
 func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issue *kanban.Issue) (map[string]interface{}, error) {
@@ -44,6 +45,12 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if runtimeAvailable {
 		if session, ok := findLiveSession(provider.LiveSessions(), issue.Identifier); ok {
 			liveSession = &session
+		}
+	}
+	var pendingInterrupt *appserver.PendingInteraction
+	if runtimeAvailable {
+		if interaction, ok := provider.PendingInterruptForIssue(issue.ID, issue.Identifier); ok {
+			pendingInterrupt = interaction
 		}
 	}
 
@@ -131,6 +138,9 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	}
 	if session != nil {
 		payload["session"] = session
+	}
+	if pendingInterrupt != nil {
+		payload["pending_interrupt"] = pendingInterrupt
 	}
 	return payload, nil
 }

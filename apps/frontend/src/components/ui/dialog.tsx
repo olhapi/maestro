@@ -1,6 +1,6 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
-import type { PropsWithChildren } from 'react'
+import type { ComponentPropsWithoutRef, HTMLAttributes } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -11,9 +11,11 @@ export const DialogClose = DialogPrimitive.Close
 export function DialogContent({
   children,
   className,
-}: PropsWithChildren<{
-  className?: string
-}>) {
+  showCloseButton = true,
+  ...props
+}: ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+  showCloseButton?: boolean
+}) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
@@ -22,14 +24,25 @@ export function DialogContent({
           'fixed left-1/2 top-1/2 z-50 w-[min(94vw,720px)] -translate-x-1/2 -translate-y-1/2 rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-6 shadow-2xl',
           className,
         )}
+        {...props}
       >
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-full p-2 text-[var(--muted-foreground)] hover:bg-white/8 hover:text-white">
-          <X className="size-4" />
-        </DialogPrimitive.Close>
+        {showCloseButton ? (
+          <DialogPrimitive.Close className="absolute right-4 top-4 rounded-full p-2 text-[var(--muted-foreground)] hover:bg-white/8 hover:text-white">
+            <X className="size-4" />
+          </DialogPrimitive.Close>
+        ) : null}
         {children}
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   )
+}
+
+export function DialogHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn('space-y-2 text-left', className)} {...props} />
+}
+
+export function DialogFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn('flex flex-col-reverse gap-2 sm:flex-row sm:justify-end', className)} {...props} />
 }
 
 export const DialogTitle = DialogPrimitive.Title

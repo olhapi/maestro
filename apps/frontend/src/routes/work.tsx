@@ -11,6 +11,7 @@ import { IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -65,6 +66,7 @@ export function WorkPage() {
     state: "backlog",
   });
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
+  const [issuePendingDelete, setIssuePendingDelete] = useState<IssueSummary | null>(null);
 
   const issuesKey = ["issues", deferredSearch, projectID, state, issueType, sort] as const;
   const bootstrap = useQuery({ queryKey: ["bootstrap"], queryFn: api.bootstrap });
@@ -129,6 +131,9 @@ export function WorkPage() {
       toast.success("Issue deleted");
       setPreviewIssue(undefined);
       await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to delete issue: ${error.message}` : "Unable to delete issue");
     },
   });
 
@@ -354,7 +359,14 @@ export function WorkPage() {
                           >
                             <Pencil className="size-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate(issue.identifier)}>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Delete issue"
+                            title="Delete issue"
+                            disabled={deleteMutation.isPending}
+                            onClick={() => setIssuePendingDelete(issue)}
+                          >
                             <Trash2 className="size-4" />
                           </Button>
                         </div>
@@ -367,6 +379,26 @@ export function WorkPage() {
           </Card>
         </div>
       )}
+
+      <ConfirmationDialog
+        open={issuePendingDelete !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setIssuePendingDelete(null);
+          }
+        }}
+        title={issuePendingDelete ? `Delete ${issuePendingDelete.identifier}?` : "Delete issue?"}
+        description="This removes the issue from Maestro, including its local workspace, activity history, and attached images. Linked provider items may also be removed."
+        confirmLabel="Delete issue"
+        pendingLabel="Deleting issue..."
+        isPending={deleteMutation.isPending}
+        onConfirm={async () => {
+          if (!issuePendingDelete) {
+            return;
+          }
+          await deleteMutation.mutateAsync(issuePendingDelete.identifier);
+        }}
+      />
 
       <IssueDialog
         open={dialogOpen}

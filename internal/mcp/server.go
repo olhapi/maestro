@@ -13,6 +13,7 @@ import (
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
@@ -28,6 +29,7 @@ type RuntimeProvider interface {
 	StopProjectRuns(projectID string) map[string]interface{}
 	RetryIssueNow(identifier string) map[string]interface{}
 	RunRecurringIssueNow(identifier string) map[string]interface{}
+	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
 }
 
 // Server implements the MCP server for the kanban board

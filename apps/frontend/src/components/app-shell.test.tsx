@@ -42,6 +42,8 @@ vi.mock('@/lib/live', () => ({
 vi.mock('@/lib/api', () => ({
   api: {
     bootstrap: vi.fn(),
+    listInterrupts: vi.fn(),
+    respondToInterrupt: vi.fn(),
   },
 }))
 
@@ -60,6 +62,7 @@ describe('AppShell', () => {
 
   it('renders navigation and reacts to live updates', async () => {
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
 
     const { queryClient } = renderWithQueryClient(<AppShell />)
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
@@ -86,7 +89,11 @@ describe('AppShell', () => {
       expect(screen.getAllByText('1 running').length).toBeGreaterThan(0)
     })
 
-    expect(invalidateQueries).toHaveBeenCalledTimes(2)
+    expect(invalidateQueries).toHaveBeenCalledTimes(3)
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['interrupts'],
+      refetchType: 'active',
+    })
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['bootstrap'],
       refetchType: 'active',
@@ -100,6 +107,7 @@ describe('AppShell', () => {
   it('keeps the sessions nav state and title on nested session routes', async () => {
     pathname = '/sessions/ISS-1'
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
 
     renderWithQueryClient(<AppShell />)
 
@@ -118,6 +126,7 @@ describe('AppShell', () => {
     })
     window.dispatchEvent(new Event('resize'))
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
 
     renderWithQueryClient(<AppShell />)
 
@@ -132,5 +141,40 @@ describe('AppShell', () => {
     expect(screen.getAllByRole('link', { name: 'Maestro' })[0]).toHaveAttribute('href', '/')
     expect(screen.getAllByRole('link', { name: 'Overview' }).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('link', { name: 'Projects' }).length).toBeGreaterThan(0)
+  })
+
+  it('renders the global interrupt panel for the first waiting interaction', async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts).mockResolvedValue({
+      count: 2,
+      current: {
+        id: 'interrupt-1',
+        kind: 'approval',
+        issue_identifier: 'ISS-1',
+        issue_title: 'Review migrations',
+        phase: 'implementation',
+        attempt: 1,
+        requested_at: '2026-03-16T10:00:00Z',
+        last_activity_at: '2026-03-16T10:00:00Z',
+        last_activity: 'gh pr view',
+        collaboration_mode: 'plan',
+        approval: {
+          decisions: [
+            { value: 'approved', label: 'Approve once' },
+            { value: 'approved_for_session', label: 'Approve for session' },
+          ],
+        },
+      },
+    })
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Review migrations')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('2 waiting')).toBeInTheDocument()
+    expect(screen.getByText('Plan turn')).toBeInTheDocument()
+    expect(screen.getByText('1 more queued')).toBeInTheDocument()
   })
 })

@@ -87,6 +87,11 @@ workspace:
   root: ` + workspaceRoot + `
 hooks:
   timeout_ms: 1000
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
 agent:
   max_concurrent_agents: ` + fmt.Sprintf("%d", maxConcurrent) + `
   max_turns: 2
@@ -175,6 +180,10 @@ Implement {{ issue.identifier }} in {{ phase }}
 }
 
 func writeAppServerWorkflow(t *testing.T, manager *config.Manager, workspaceRoot, command, approvalPolicy string, turnTimeoutMs, stallTimeoutMs int) {
+	writeAppServerWorkflowWithConcurrency(t, manager, workspaceRoot, command, approvalPolicy, turnTimeoutMs, stallTimeoutMs, 1)
+}
+
+func writeAppServerWorkflowWithConcurrency(t *testing.T, manager *config.Manager, workspaceRoot, command, approvalPolicy string, turnTimeoutMs, stallTimeoutMs, maxConcurrentAgents int) {
 	t.Helper()
 	workflowContent := `---
 tracker:
@@ -192,8 +201,13 @@ workspace:
   root: ` + workspaceRoot + `
 hooks:
   timeout_ms: 1000
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
 agent:
-  max_concurrent_agents: 1
+  max_concurrent_agents: ` + fmt.Sprintf("%d", maxConcurrentAgents) + `
   max_turns: 1
   max_retry_backoff_ms: 100
   max_automatic_retries: 8
@@ -294,6 +308,20 @@ func waitForExecutionSnapshot(t *testing.T, store *kanban.Store, issueID string,
 	return nil
 }
 
+func waitForRunStartedExecutionSnapshot(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration) *kanban.ExecutionSessionSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snapshot, err := store.GetIssueExecutionSession(issueID)
+		if err == nil && snapshot != nil && snapshot.RunKind == "run_started" {
+			return snapshot
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for run_started execution snapshot %s", issueID)
+	return nil
+}
+
 func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -322,6 +350,20 @@ func waitForRunningCount(t *testing.T, orch *Orchestrator, expected int, timeout
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for running count %d", expected)
+}
+
+func waitForPendingInterruptCount(t *testing.T, orch *Orchestrator, expected int, timeout time.Duration) appserver.PendingInteractionSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snapshot := orch.PendingInterrupts()
+		if snapshot.Count == expected {
+			return snapshot
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for pending interrupt count %d", expected)
+	return appserver.PendingInteractionSnapshot{}
 }
 
 func forceRetryDue(t *testing.T, orch *Orchestrator, issueID string) {
@@ -687,6 +729,55 @@ func TestImplementationSuccessWithoutStateTransitionPausesAutomaticRetry(t *test
 	latest := events[len(events)-1]
 	if latest.Kind != "retry_paused" || latest.Error != "no_state_transition" || latest.Attempt != 1 {
 		t.Fatalf("unexpected latest runtime event: %+v", latest)
+	}
+}
+
+func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseImplementation: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview); err != nil {
+					return nil, err
+				}
+				return &agent.RunResult{Success: true}, nil
+			},
+		},
+	}
+
+	issue, _ := store.CreateIssue("", "", "Review disabled continuation", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateInProgress, kanban.WorkflowPhaseImplementation, time.Second)
+	if updated.State != kanban.StateInProgress || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
+		t.Fatalf("expected in_progress/implementation, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	if dispatchable, reason, phase := orch.isDispatchable(workflow, updated); !dispatchable {
+		t.Fatalf("expected normalized issue to remain dispatchable, got reason=%s phase=%s", reason, phase)
+	}
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	retry, retryOK := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if pausedOK {
+		t.Fatalf("expected continuation retry instead of pause, got %+v", paused)
+	}
+	if !retryOK {
+		t.Fatal("expected continuation retry after in_review normalization")
+	}
+	if retry.Phase != string(kanban.WorkflowPhaseImplementation) || retry.DelayType != "continuation" {
+		t.Fatalf("unexpected retry payload: %+v", retry)
 	}
 }
 
@@ -1183,7 +1274,7 @@ func TestLiveSessionsTracksOnlyActiveRuns(t *testing.T) {
 	}
 }
 
-func TestInterruptedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
+func TestPendingInterruptRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
 		Steps: []fakeappserver.Step{
@@ -1194,6 +1285,12 @@ func TestInterruptedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-approval"}}}},
 				{JSON: map[string]interface{}{"id": 99, "method": "item/commandExecution/requestApproval", "params": map[string]interface{}{"command": "gh pr view"}}},
 			}},
+			{Match: fakeappserver.Match{ID: fakeappserver.Int(99)}, Emit: []fakeappserver.Output{{
+				JSON: map[string]interface{}{
+					"method": "turn/completed",
+					"params": map[string]interface{}{"threadId": "thread-approval", "turnId": "turn-approval"},
+				},
+			}}, ExitCode: fakeappserver.Int(0)},
 		},
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "on_request", 3000, 3000)
@@ -1204,10 +1301,13 @@ func TestInterruptedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 3*time.Second)
-	waitForNoRunning(t, orch, 3*time.Second)
+	pending := waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
+	if pending.Current == nil || pending.Current.IssueID != issue.ID {
+		t.Fatalf("expected current pending interrupt for %s, got %+v", issue.ID, pending)
+	}
+	snapshot := waitForRunStartedExecutionSnapshot(t, store, issue.ID, 3*time.Second)
 
-	if snapshot.RunKind != "run_unsuccessful" || snapshot.Error != "approval_required" || snapshot.Attempt != 0 {
+	if snapshot.RunKind != "run_started" || snapshot.Error != "" || snapshot.Attempt != 0 {
 		t.Fatalf("unexpected execution snapshot: %+v", snapshot)
 	}
 	if snapshot.AppSession.SessionID != "thread-approval-turn-approval" {
@@ -1217,8 +1317,22 @@ func TestInterruptedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 		t.Fatalf("expected persisted session history, got %+v", snapshot.AppSession)
 	}
 	sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
+	if len(sessions) != 1 {
+		t.Fatalf("expected live session while interrupt is pending, got %#v", sessions)
+	}
+
+	if err := orch.RespondToInterrupt(context.Background(), pending.Current.ID, appserver.PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); err != nil {
+		t.Fatalf("respond to pending interrupt: %v", err)
+	}
+
+	waitForPendingInterruptCount(t, orch, 0, 3*time.Second)
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	sessions = orch.LiveSessions()["sessions"].(map[string]interface{})
 	if len(sessions) != 0 {
-		t.Fatalf("expected no live sessions after interrupted run, got %#v", sessions)
+		t.Fatalf("expected no live sessions after pending interrupt resolved, got %#v", sessions)
 	}
 }
 
@@ -1276,6 +1390,10 @@ func TestRunWaitsForActiveRunsDuringShutdown(t *testing.T) {
 		release:      make(chan struct{}),
 	}
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Phases.Review.Enabled = false
+	workflow.Config.Phases.Review.Prompt = ""
+	workflow.Config.Phases.Done.Enabled = false
+	workflow.Config.Phases.Done.Prompt = ""
 	workflow.Config.Agent.Mode = config.AgentModeAppServer
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1597,6 +1715,146 @@ func TestTurnInputRequiredPausesAutomaticRetries(t *testing.T) {
 	}
 	if snapshot.RunKind != "retry_paused" || snapshot.Error != "turn_input_required" {
 		t.Fatalf("unexpected execution snapshot: %+v", snapshot)
+	}
+}
+
+func TestInteractiveAppServerInterruptQueueUsesFIFOAndPromotesNextRequest(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestratorWithConcurrency(t, "cat", 2)
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-interactive"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-interactive"}}}},
+				{JSON: map[string]interface{}{
+					"id":     99,
+					"method": "item/commandExecution/requestApproval",
+					"params": map[string]interface{}{
+						"threadId": "thread-interactive",
+						"turnId":   "turn-interactive",
+						"itemId":   "approval-item",
+						"command":  "git status",
+					},
+				}},
+			}},
+			{Match: fakeappserver.Match{ID: fakeappserver.Int(99)}, Emit: []fakeappserver.Output{{
+				JSON: map[string]interface{}{
+					"method": "turn/completed",
+					"params": map[string]interface{}{"threadId": "thread-interactive", "turnId": "turn-interactive"},
+				},
+			}}, ExitCode: fakeappserver.Int(0)},
+		},
+	})
+	writeAppServerWorkflowWithConcurrency(t, manager, workspaceRoot, command, "on-request", 3000, 3000, 2)
+
+	first, _ := store.CreateIssue("", "", "First interactive issue", "", 0, nil)
+	_ = store.UpdateIssueState(first.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
+	if snapshot.Current == nil || snapshot.Current.IssueID != first.ID {
+		t.Fatalf("expected FIFO current interrupt for first issue, got %+v", snapshot)
+	}
+
+	second, _ := store.CreateIssue("", "", "Second interactive issue", "", 0, nil)
+	_ = store.UpdateIssueState(second.ID, kanban.StateReady)
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = waitForPendingInterruptCount(t, orch, 2, 3*time.Second)
+	if snapshot.Current == nil || snapshot.Current.IssueID != first.ID {
+		t.Fatalf("expected first issue to stay at the front of the queue, got %+v", snapshot)
+	}
+
+	if err := orch.RespondToInterrupt(context.Background(), snapshot.Current.ID, appserver.PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); err != nil {
+		t.Fatalf("respond to first interrupt: %v", err)
+	}
+
+	snapshot = waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
+	if snapshot.Current == nil || snapshot.Current.IssueID != second.ID {
+		t.Fatalf("expected second issue to be promoted, got %+v", snapshot)
+	}
+	if err := orch.RespondToInterrupt(context.Background(), snapshot.Current.ID, appserver.PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); err != nil {
+		t.Fatalf("respond to second interrupt: %v", err)
+	}
+
+	waitForPendingInterruptCount(t, orch, 0, 3*time.Second)
+	waitForNoRunning(t, orch, 3*time.Second)
+}
+
+func TestInteractiveAppServerRedactsSecretUserInputFromPersistedActivity(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-secret"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-secret"}}}},
+				{JSON: map[string]interface{}{
+					"id":     100,
+					"method": "item/tool/requestUserInput",
+					"params": map[string]interface{}{
+						"threadId": "thread-secret",
+						"turnId":   "turn-secret",
+						"itemId":   "secret-item",
+						"questions": []map[string]interface{}{{
+							"id":       "token",
+							"question": "API token",
+							"isSecret": true,
+						}},
+					},
+				}},
+			}},
+			{Match: fakeappserver.Match{ID: fakeappserver.Int(100)}, Emit: []fakeappserver.Output{{
+				JSON: map[string]interface{}{
+					"method": "turn/completed",
+					"params": map[string]interface{}{"threadId": "thread-secret", "turnId": "turn-secret"},
+				},
+			}}, ExitCode: fakeappserver.Int(0)},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "on-request", 3000, 3000)
+
+	issue, _ := store.CreateIssue("", "", "Secret input issue", "", 0, nil)
+	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
+	if snapshot.Current == nil {
+		t.Fatal("expected pending interrupt")
+	}
+	secret := "super-secret-token"
+	if err := orch.RespondToInterrupt(context.Background(), snapshot.Current.ID, appserver.PendingInteractionResponse{
+		Answers: map[string][]string{
+			"token": []string{secret},
+		},
+	}); err != nil {
+		t.Fatalf("respond to secret interrupt: %v", err)
+	}
+
+	waitForPendingInterruptCount(t, orch, 0, 3*time.Second)
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	body := fmt.Sprintf("%#v", entries)
+	if strings.Contains(body, secret) {
+		t.Fatalf("expected secret input to be redacted from persisted activity, got %s", body)
+	}
+	if !strings.Contains(body, "[redacted]") {
+		t.Fatalf("expected redacted marker in persisted activity, got %s", body)
 	}
 }
 

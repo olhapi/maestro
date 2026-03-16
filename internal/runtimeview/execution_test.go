@@ -12,8 +12,9 @@ import (
 )
 
 type testProvider struct {
-	snapshot observability.Snapshot
-	sessions map[string]interface{}
+	snapshot          observability.Snapshot
+	sessions          map[string]interface{}
+	pendingInterrupts map[string]appserver.PendingInteraction
 }
 
 func (p testProvider) Snapshot() observability.Snapshot {
@@ -22,6 +23,18 @@ func (p testProvider) Snapshot() observability.Snapshot {
 
 func (p testProvider) LiveSessions() map[string]interface{} {
 	return map[string]interface{}{"sessions": p.sessions}
+}
+
+func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+	if interaction, ok := p.pendingInterrupts[issueID]; ok {
+		cloned := interaction.Clone()
+		return &cloned, true
+	}
+	if interaction, ok := p.pendingInterrupts[identifier]; ok {
+		cloned := interaction.Clone()
+		return &cloned, true
+	}
+	return nil, false
 }
 
 func TestIssueExecutionPayloadUsesLiveRuntimeWhenAvailable(t *testing.T) {
@@ -94,6 +107,46 @@ func TestIssueExecutionPayloadUsesLiveRuntimeWhenAvailable(t *testing.T) {
 	}
 	if payload["attempt_number"].(int) != 4 {
 		t.Fatalf("expected running attempt number, got %#v", payload["attempt_number"])
+	}
+}
+
+func TestIssueExecutionPayloadIncludesPendingInterruptMetadata(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Waiting issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	payload, err := IssueExecutionPayload(store, testProvider{
+		snapshot: observability.Snapshot{
+			Running: []observability.RunningEntry{{
+				IssueID:    issue.ID,
+				Identifier: issue.Identifier,
+				Phase:      "implementation",
+				Attempt:    1,
+			}},
+		},
+		pendingInterrupts: map[string]appserver.PendingInteraction{
+			issue.ID: {
+				ID:              "interrupt-1",
+				Kind:            appserver.PendingInteractionKindApproval,
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	pending, ok := payload["pending_interrupt"].(*appserver.PendingInteraction)
+	if !ok || pending.ID != "interrupt-1" {
+		t.Fatalf("expected pending interrupt payload, got %#v", payload["pending_interrupt"])
 	}
 }
 
