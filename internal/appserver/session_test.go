@@ -163,6 +163,122 @@ func TestSessionApplyEvent(t *testing.T) {
 	}
 }
 
+func TestSessionApplyEventUsesCompletedAgentMessagesForLastMessage(t *testing.T) {
+	s := &Session{}
+
+	s.ApplyEvent(Event{
+		Type:      "item.completed",
+		ThreadID:  "th",
+		TurnID:    "tu",
+		ItemID:    "msg-1",
+		ItemType:  "agentMessage",
+		ItemPhase: "commentary",
+		Message:   "Planning the verification pass",
+	})
+	if s.LastMessage != "Planning the verification pass" {
+		t.Fatalf("expected commentary summary to persist, got %+v", s)
+	}
+
+	s.ApplyEvent(Event{
+		Type:      "item.completed",
+		ThreadID:  "th",
+		TurnID:    "tu",
+		ItemID:    "msg-2",
+		ItemType:  "agentMessage",
+		ItemPhase: "final_answer",
+		Message:   "Implemented the change and queued tests.",
+	})
+	if s.LastMessage != "Implemented the change and queued tests." {
+		t.Fatalf("expected latest completed agent message to win, got %+v", s)
+	}
+}
+
+func TestSessionApplyEventUsesTerminalEventMessagesForLastMessage(t *testing.T) {
+	s := &Session{}
+
+	s.ApplyEvent(Event{
+		Type:        "turn.completed",
+		ThreadID:    "th",
+		TurnID:      "tu",
+		Message:     "Verification passed.",
+		TotalTokens: 9,
+	})
+	if s.LastMessage != "Verification passed." {
+		t.Fatalf("expected terminal event message to persist, got %+v", s)
+	}
+}
+
+func TestSessionApplyEventIgnoresStreamingAgentMessageDeltasForLastMessage(t *testing.T) {
+	s := &Session{LastMessage: "Completed summary"}
+
+	s.ApplyEvent(Event{
+		Type:     "item.agentMessage.delta",
+		ThreadID: "th",
+		TurnID:   "tu",
+		ItemID:   "msg-1",
+		ItemType: "agentMessage",
+		Message:  "Partial stream chunk",
+	})
+	if s.LastMessage != "Completed summary" {
+		t.Fatalf("expected agent delta to leave last message unchanged, got %+v", s)
+	}
+	if s.LastEvent != "item.agentMessage.delta" || len(s.History) != 1 {
+		t.Fatalf("expected streaming delta to remain in session history, got %+v", s)
+	}
+}
+
+func TestSessionApplyEventIgnoresCommandOutputDeltasForLastMessage(t *testing.T) {
+	s := &Session{LastMessage: "Completed summary"}
+
+	s.ApplyEvent(Event{
+		Type:     "item.commandExecution.outputDelta",
+		ThreadID: "th",
+		TurnID:   "tu",
+		ItemID:   "cmd-1",
+		ItemType: "commandExecution",
+		Command:  "go test ./...",
+		Chunk:    "ok\tgithub.com/olhapi/maestro/internal/appserver\t0.123s",
+		Message:  "ok\tgithub.com/olhapi/maestro/internal/appserver\t0.123s",
+	})
+	if s.LastMessage != "Completed summary" {
+		t.Fatalf("expected command output delta to leave last message unchanged, got %+v", s)
+	}
+}
+
+func TestSessionApplyEventRetainsCompletedSummaryWhileStreaming(t *testing.T) {
+	s := &Session{}
+
+	s.ApplyEvent(Event{
+		Type:      "item.completed",
+		ThreadID:  "th",
+		TurnID:    "tu",
+		ItemID:    "msg-1",
+		ItemType:  "agentMessage",
+		ItemPhase: "commentary",
+		Message:   "Reviewing the remaining edge cases.",
+	})
+	s.ApplyEvent(Event{
+		Type:     "agent_message_content_delta",
+		ThreadID: "th",
+		TurnID:   "tu",
+		ItemID:   "msg-2",
+		ItemType: "agentMessage",
+		Message:  "Streaming fragment",
+	})
+	s.ApplyEvent(Event{
+		Type:     "exec_command_output_delta",
+		ThreadID: "th",
+		TurnID:   "tu",
+		CallID:   "call-1",
+		Stream:   "stdout",
+		Chunk:    "line 1",
+		Message:  "line 1",
+	})
+	if s.LastMessage != "Reviewing the remaining edge cases." {
+		t.Fatalf("expected completed summary to survive later streaming events, got %+v", s)
+	}
+}
+
 func TestSessionHistoryRingBuffer(t *testing.T) {
 	s := &Session{MaxHistory: 2}
 	s.ApplyEvent(Event{Type: "a"})
