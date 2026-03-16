@@ -10,9 +10,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
 
 func TestMainHelperProcess(t *testing.T) {
 	if os.Getenv("MAESTRO_MAIN_HELPER") != "1" {
@@ -43,8 +61,8 @@ func runMainHelper(t *testing.T, args ...string) (string, string, error) {
 		"MAESTRO_MAIN_HELPER=1",
 		"MAESTRO_MAIN_ARGS="+strings.Join(args, "\n"),
 	)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	var stdout lockedBuffer
+	var stderr lockedBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -139,8 +157,8 @@ Test prompt for {{ issue.identifier }}
 			"run", "--workflow", workflowPath, "--db", dbPath, "--port", addr, "--" + strings.TrimPrefix(guardrailsAcknowledgementFlag, "--"), repoPath,
 		}, "\n"),
 	)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	var stdout lockedBuffer
+	var stderr lockedBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
