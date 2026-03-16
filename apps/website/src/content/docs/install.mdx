@@ -18,11 +18,12 @@ If you are on a supported platform, the published npm package is the fastest pat
 
 The installed command name is still `maestro`.
 
-## Add the MCP server to Codex
+## Add the MCP server to Codex or Claude Code
 
-Once `maestro` is on your `PATH`, register the shipped MCP bridge with Codex:
+Once `maestro` is on your `PATH`, register the shipped MCP bridge with your MCP client:
 
 <DocsCommandField command={`codex mcp add maestro -- maestro mcp`} />
+<DocsCommandField command={`claude mcp add maestro -- maestro mcp`} />
 
 If you built Maestro from source and the binary is not on your `PATH`, replace `maestro` with the absolute path to the binary you built.
 
@@ -58,7 +59,8 @@ Contributor Docker build:
 
 - Install `go` if you need source builds or local development.
 - Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
-- Use the npm package when you want the shortest path from machine setup to `codex mcp add maestro -- maestro mcp`.
+- Install `claude` if you want Claude Code to connect to the local queue through MCP.
+- Use the npm package when you want the shortest path from machine setup to `codex mcp add maestro -- maestro mcp` or `claude mcp add maestro -- maestro mcp`.
 
 ## Contributor tooling
 
