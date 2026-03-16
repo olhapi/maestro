@@ -57,8 +57,10 @@ func TestMainHelperProcess(t *testing.T) {
 func runMainHelper(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=TestMainHelperProcess")
+	daemonRegistryDir := filepath.Join(t.TempDir(), "daemon-registry")
 	cmd.Env = append(os.Environ(),
 		"MAESTRO_MAIN_HELPER=1",
+		"MAESTRO_DAEMON_REGISTRY_DIR="+daemonRegistryDir,
 		"MAESTRO_MAIN_ARGS="+strings.Join(args, "\n"),
 	)
 	var stdout lockedBuffer
@@ -149,9 +151,11 @@ Test prompt for {{ issue.identifier }}
 
 	addr := freeAddrForHelper(t)
 	recordPath := filepath.Join(t.TempDir(), "dashboard-url.txt")
+	daemonRegistryDir := filepath.Join(t.TempDir(), "daemon-registry")
 	cmd := exec.Command(os.Args[0], "-test.run=TestMainHelperProcess")
 	cmd.Env = append(os.Environ(),
 		"MAESTRO_MAIN_HELPER=1",
+		"MAESTRO_DAEMON_REGISTRY_DIR="+daemonRegistryDir,
 		"MAESTRO_RECORD_BROWSER_OPEN="+recordPath,
 		"MAESTRO_MAIN_ARGS="+strings.Join([]string{
 			"run", "--workflow", workflowPath, "--db", dbPath, "--port", addr, "--" + strings.TrimPrefix(guardrailsAcknowledgementFlag, "--"), repoPath,
