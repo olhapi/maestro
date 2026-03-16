@@ -9,6 +9,38 @@ import (
 	"testing"
 )
 
+func assertContainsAll(t *testing.T, text string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected text to contain %q, got %q", want, text)
+		}
+	}
+}
+
+func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
+	t.Helper()
+	assertContainsAll(t, prompt,
+		"The done phase owns merge-back and finalization for this issue from the current workspace.",
+		"Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.",
+		"Consider the work complete once the change is merged.",
+		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
+		"If any other blocker prevents completion, report it clearly and keep the issue in done unless the work truly needs to be reopened.",
+	)
+}
+
+func assertInitDonePromptSemantics(t *testing.T, prompt string) {
+	t.Helper()
+	assertContainsAll(t, prompt,
+		"Finalize issue {{ issue.identifier }} from the current workspace.",
+		"The done phase owns merge-back and finalization.",
+		"Merge the issue branch back when possible, resolving merge conflicts when you can do so safely.",
+		"Consider the work complete once the change is merged.",
+		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
+		"Report any other blocker clearly while keeping the issue in done unless it truly needs to be reopened.",
+	)
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
@@ -45,9 +77,10 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Phases.Review.Enabled || !strings.Contains(cfg.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected review phase defaults, got %+v", cfg.Phases.Review)
 	}
-	if !cfg.Phases.Done.Enabled || !strings.Contains(cfg.Phases.Done.Prompt, "done pass") {
+	if !cfg.Phases.Done.Enabled {
 		t.Fatalf("expected done phase defaults, got %+v", cfg.Phases.Done)
 	}
+	assertDefaultDonePromptSemantics(t, cfg.Phases.Done.Prompt)
 }
 
 func TestLoadWorkflowNestedSchema(t *testing.T) {
@@ -120,9 +153,10 @@ Issue {{ issue.identifier }}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected default review prompt, got %+v", workflow.Config.Phases.Review)
 	}
-	if !workflow.Config.Phases.Done.Enabled || !strings.Contains(workflow.Config.Phases.Done.Prompt, "done pass") {
+	if !workflow.Config.Phases.Done.Enabled {
 		t.Fatalf("expected default done prompt, got %+v", workflow.Config.Phases.Done)
 	}
+	assertDefaultDonePromptSemantics(t, workflow.Config.Phases.Done.Prompt)
 	expectedRoot := filepath.Join(tmpDir, "custom-workspaces")
 	if workflow.Config.Workspace.Root != expectedRoot {
 		t.Fatalf("expected resolved workspace root %s, got %s", expectedRoot, workflow.Config.Workspace.Root)
@@ -207,9 +241,10 @@ Implement {{ issue.identifier }}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected default review phase when missing from workflow, got %+v", workflow.Config.Phases.Review)
 	}
-	if !workflow.Config.Phases.Done.Enabled || !strings.Contains(workflow.Config.Phases.Done.Prompt, "done pass") {
+	if !workflow.Config.Phases.Done.Enabled {
 		t.Fatalf("expected default done phase when missing from workflow, got %+v", workflow.Config.Phases.Done)
 	}
+	assertDefaultDonePromptSemantics(t, workflow.Config.Phases.Done.Prompt)
 }
 
 func TestLoadWorkflowPreservesExplicitDisabledPhases(t *testing.T) {
@@ -655,6 +690,7 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 		CodexCommand:  "codex app-server --model test",
 		AgentMode:     AgentModeStdio,
 	})
+	assertInitDonePromptSemantics(t, content)
 	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -690,9 +726,10 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "Review the implementation for issue") {
 		t.Fatalf("expected generated workflow review phase to round-trip, got %+v", workflow.Config.Phases.Review)
 	}
-	if !workflow.Config.Phases.Done.Enabled || !strings.Contains(workflow.Config.Phases.Done.Prompt, "Finalize issue") {
+	if !workflow.Config.Phases.Done.Enabled {
 		t.Fatalf("expected generated workflow done phase to round-trip, got %+v", workflow.Config.Phases.Done)
 	}
+	assertInitDonePromptSemantics(t, workflow.Config.Phases.Done.Prompt)
 	if !strings.Contains(workflow.PromptTemplate, "{{ issue.identifier }}") {
 		t.Fatalf("unexpected prompt template: %q", workflow.PromptTemplate)
 	}
