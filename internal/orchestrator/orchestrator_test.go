@@ -701,7 +701,7 @@ func TestImplementationSuccessWithoutStateTransitionPausesAutomaticRetry(t *test
 }
 
 func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(t *testing.T) {
-	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
 	orch.runner = &phaseScriptRunner{
 		store: store,
 		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
@@ -722,9 +722,16 @@ func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(
 	}
 	waitForNoRunning(t, orch, time.Second)
 
-	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateInReview, kanban.WorkflowPhaseImplementation, time.Second)
-	if updated.State != kanban.StateInReview || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
-		t.Fatalf("expected in_review/implementation, got %s/%s", updated.State, updated.WorkflowPhase)
+	updated := waitForIssueStateAndPhase(t, store, issue.ID, kanban.StateInProgress, kanban.WorkflowPhaseImplementation, time.Second)
+	if updated.State != kanban.StateInProgress || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
+		t.Fatalf("expected in_progress/implementation, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	if dispatchable, reason, phase := orch.isDispatchable(workflow, updated); !dispatchable {
+		t.Fatalf("expected normalized issue to remain dispatchable, got reason=%s phase=%s", reason, phase)
 	}
 
 	orch.mu.RLock()

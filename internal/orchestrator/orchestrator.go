@@ -1368,6 +1368,7 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 	defer o.mu.Unlock()
 
 	o.successfulRuns++
+	previousState := issue.State
 	nextPhase, shouldContinue := o.advanceIssueAfterSuccess(workflow, issue, phase)
 	fields := map[string]interface{}{
 		"issue_id":   issue.ID,
@@ -1376,7 +1377,7 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 		"attempt":    attempt,
 	}
 	attachResultMetrics(fields, result)
-	if shouldContinue && shouldScheduleSuccessfulContinuation(phase, nextPhase, issue.State) {
+	if shouldContinue && shouldScheduleSuccessfulContinuation(phase, nextPhase, previousState, issue.State) {
 		next := nextAttempt(attempt)
 		fields["next_retry"] = next
 		fields["next_phase"] = string(nextPhase)
@@ -1523,7 +1524,7 @@ func (o *Orchestrator) advanceIssueAfterSuccess(workflow *config.Workflow, issue
 				o.updateIssuePhase(issue, kanban.WorkflowPhaseReview)
 				return kanban.WorkflowPhaseReview, true
 			}
-			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			o.updateIssueStatePhase(issue, kanban.StateInProgress, kanban.WorkflowPhaseImplementation)
 			return kanban.WorkflowPhaseImplementation, true
 		case kanban.StateReady, kanban.StateInProgress:
 			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
@@ -1548,7 +1549,7 @@ func (o *Orchestrator) advanceIssueAfterSuccess(workflow *config.Workflow, issue
 				o.updateIssuePhase(issue, kanban.WorkflowPhaseReview)
 				return kanban.WorkflowPhaseReview, true
 			}
-			o.updateIssuePhase(issue, kanban.WorkflowPhaseImplementation)
+			o.updateIssueStatePhase(issue, kanban.StateInProgress, kanban.WorkflowPhaseImplementation)
 			return kanban.WorkflowPhaseImplementation, true
 		case kanban.StateReady, kanban.StateInProgress:
 			if workflow.Config.Phases.Review.Enabled {
@@ -1790,17 +1791,11 @@ func pausesWithoutStateReset(errText string) bool {
 	}
 }
 
-func shouldScheduleSuccessfulContinuation(phase, nextPhase kanban.WorkflowPhase, state kanban.State) bool {
-	switch phase {
-	case kanban.WorkflowPhaseImplementation:
-		return nextPhase == kanban.WorkflowPhaseReview || nextPhase == kanban.WorkflowPhaseDone || state == kanban.StateInReview
-	case kanban.WorkflowPhaseReview:
-		return nextPhase == kanban.WorkflowPhaseImplementation || nextPhase == kanban.WorkflowPhaseDone
-	case kanban.WorkflowPhaseDone:
-		return nextPhase == kanban.WorkflowPhaseImplementation || nextPhase == kanban.WorkflowPhaseReview
-	default:
-		return false
+func shouldScheduleSuccessfulContinuation(previousPhase, nextPhase kanban.WorkflowPhase, previousState, currentState kanban.State) bool {
+	if nextPhase != previousPhase {
+		return true
 	}
+	return previousState != currentState
 }
 
 func interruptedFailureStreak(events []kanban.RuntimeEvent) int {
