@@ -55,6 +55,8 @@ On a maintainer machine that is already logged in to npm for the `@olhapi` scope
 ```bash
 VERSION=0.1.0-rc.1
 
+npm whoami
+
 for tarball in \
   "dist/npm/olhapi-maestro-darwin-arm64-${VERSION}.tgz" \
   "dist/npm/olhapi-maestro-darwin-x64-${VERSION}.tgz" \
@@ -66,6 +68,15 @@ done
 
 npm publish --access public --tag next "dist/npm/olhapi-maestro-${VERSION}.tgz"
 ```
+
+If `npm whoami` fails with `E401`, refresh the maintainer session before publishing:
+
+```bash
+npm login --scope=@olhapi --registry=https://registry.npmjs.org/
+npm whoami
+```
+
+If `npm whoami` succeeds but `npm publish` still returns `404 Not Found` for an `@olhapi/*` package, the authenticated account does not have publish rights for the `@olhapi` scope.
 
 Verify the bootstrap publish before enabling CI publishing:
 

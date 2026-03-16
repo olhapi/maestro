@@ -318,8 +318,17 @@ publish_tarball_if_needed() {
   npm publish --access public --tag "$dist_tag" "$tarball"
 }
 
+ensure_npm_publish_session() {
+  local npm_user
+  if ! npm_user="$(npm whoami 2>/dev/null)"; then
+    fail "npm authentication is required before local artifact publish fallback; run 'npm login --scope=@olhapi --registry=https://registry.npmjs.org/' and verify with 'npm whoami'"
+  fi
+  log "using npm publisher account: $npm_user"
+}
+
 manual_publish_from_artifacts() {
   local dist_tag="$1"
+  ensure_npm_publish_session
   download_release_artifacts
 
   log "publishing workflow artifacts locally with npm dist-tag $dist_tag"

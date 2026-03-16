@@ -53,9 +53,9 @@ This seeds the same queue you will supervise from the dashboard once real work i
 
 With the daemon running, ask your coding agent to seed the tracker through the saved `maestro` MCP server. For example:
 
-```text
-Use the maestro MCP server to create a project, epics, and issues for a new react todo app. Set the project repo path to the current working directory. Plan the features first, split them into epics, add a priority value and blockers for each issue, set their state to ready.
-```
+<DocsCommandField
+  command={`Use the maestro MCP server to create a project, epics, and issues for a new react todo app. Set the project repo path to the current working directory. Plan the features first, split them into epics, add a priority value and blockers for each issue, set their state to ready.`}
+/>
 
 This example assumes the default local `kanban` provider, which supports epics, issue priorities, and blockers.
 The same prompt works in any connected coding agent once the `maestro` MCP server is saved there.

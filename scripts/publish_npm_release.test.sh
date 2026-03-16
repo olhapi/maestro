@@ -194,6 +194,13 @@ if [[ "$1" == "view" && "$3" == "dist-tags" && "$4" == "--json" ]]; then
   ' "$MOCK_PUBLISHED_STATE_FILE" "$2" "$MOCK_DIST_TAG"
   exit 0
 fi
+if [[ "$1" == "whoami" ]]; then
+  if [[ "${MOCK_NPM_WHOAMI_EXIT_CODE:-0}" != "0" ]]; then
+    exit "$MOCK_NPM_WHOAMI_EXIT_CODE"
+  fi
+  printf '%s\n' "${MOCK_NPM_WHOAMI:-olhapi}"
+  exit 0
+fi
 if [[ "$1" == "publish" ]]; then
   package_name="$(resolve_package_from_tarball "${@: -1}")"
   node -e '
@@ -461,6 +468,42 @@ run_manual_fallback_test() {
     "olhapi-maestro-linux-arm64-gnu-1.2.3.tgz" \
     "olhapi-maestro-win32-x64-1.2.3.tgz" \
     "olhapi-maestro-1.2.3.tgz"
+  assert_in_order \
+    "$tmp_dir/log.txt" \
+    "npm whoami" \
+    "gh run download 202 --repo olhapi/maestro --dir" \
+    "npm publish --access public --tag latest"
+}
+
+run_manual_fallback_requires_npm_auth_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-auth-guard.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  write_run_list_json "$tmp_dir/run-list.json" 707 failure "v1.2.4-rc.1"
+  write_manual_fallback_run_json "$tmp_dir/run-view.json"
+
+  if PATH="$tmp_dir/bin:$PATH" \
+    MOCK_LOG="$tmp_dir/log.txt" \
+    MOCK_HEAD_SHA="guard707" \
+    MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+    MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+    MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+    MOCK_NPM_WHOAMI_EXIT_CODE=1 \
+    MOCK_DIST_TAG="next" \
+    MOCK_VERSION="1.2.4-rc.1" \
+    RELEASE_POLL_SEC=0 \
+    RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+    RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+    "$SCRIPT_UNDER_TEST" "1.2.4-rc.1" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"; then
+    fail "manual fallback auth guard test should have failed"
+  fi
+
+  assert_contains "$tmp_dir/log.txt" "npm whoami"
+  assert_not_contains "$tmp_dir/log.txt" "gh run download"
+  assert_not_contains "$tmp_dir/log.txt" "npm publish --access public --tag next"
+  assert_contains "$tmp_dir/stderr.txt" "npm authentication is required before local artifact publish fallback"
 }
 
 run_existing_remote_tag_resume_test() {
@@ -596,6 +639,7 @@ run_success_path_test
 run_double_dash_passthrough_test
 run_tag_specific_run_selection_test
 run_manual_fallback_test
+run_manual_fallback_requires_npm_auth_test
 run_existing_remote_tag_resume_test
 run_existing_local_tag_push_test
 run_stale_local_tag_guard_test
