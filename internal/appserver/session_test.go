@@ -208,6 +208,36 @@ func TestSessionApplyEventUsesTerminalEventMessagesForLastMessage(t *testing.T) 
 	}
 }
 
+func TestSessionApplyEventUsesFailedAndCancelledTurnMessagesForLastMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  string
+	}{
+		{name: "failed", typ: "turn.failed"},
+		{name: "cancelled", typ: "turn.cancelled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Session{}
+
+			s.ApplyEvent(Event{
+				Type:     tt.typ,
+				ThreadID: "th",
+				TurnID:   "tu",
+				Message:  "Turn ended before completion.",
+			})
+
+			if s.LastMessage != "Turn ended before completion." {
+				t.Fatalf("expected %s message to persist, got %+v", tt.typ, s)
+			}
+			if !s.Terminal || s.TerminalReason != tt.typ {
+				t.Fatalf("expected %s to mark the session terminal, got %+v", tt.typ, s)
+			}
+		})
+	}
+}
+
 func TestSessionApplyEventIgnoresStreamingAgentMessageDeltasForLastMessage(t *testing.T) {
 	s := &Session{LastMessage: "Completed summary"}
 

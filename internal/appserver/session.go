@@ -90,7 +90,7 @@ func (s *Session) ApplyEvent(e Event) {
 		s.TurnsCompleted++
 		s.Terminal = true
 		s.TerminalReason = e.Type
-	case "session.completed", "run.completed", "run.failed", "error":
+	case "turn.failed", "turn.cancelled", "session.completed", "run.completed", "run.failed", "error":
 		s.Terminal = true
 		s.TerminalReason = e.Type
 	}
@@ -113,7 +113,7 @@ func sessionSummaryMessage(e Event) (string, bool) {
 			return message, true
 		}
 		return "", false
-	case "turn.completed", "session.completed", "run.completed", "run.failed", "error":
+	case "turn.completed", "turn.failed", "turn.cancelled", "session.completed", "run.completed", "run.failed", "error":
 		if messageDerivedFromChunkOnly(e, message) {
 			return "", false
 		}
