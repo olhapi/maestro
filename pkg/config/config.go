@@ -245,9 +245,12 @@ Description:
 No description provided.
 {% endif %}
 
-The implementation is already complete. Perform the project-specific finalization steps for a done issue from the current workspace, such as preparing or updating a PR, merging, or other release bookkeeping.
+The implementation is already complete. The done phase owns merge-back and finalization for this issue from the current workspace.
 
-- Keep the issue in done unless the work truly needs to be reopened.
+- Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.
+- Consider the work complete once the change is merged.
+- If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.
+- If any other blocker prevents completion, report it clearly and keep the issue in done unless the work truly needs to be reopened.
 `)
 }
 
@@ -259,7 +262,7 @@ Project context:
 {{ project.description }}
 
 {% endif %}
-Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
+The done phase owns merge-back and finalization. Merge the issue branch back when possible, resolving merge conflicts when you can do so safely. Consider the work complete once the change is merged. If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete. Report any other blocker clearly while keeping the issue in done unless it truly needs to be reopened.
 `)
 }
 
