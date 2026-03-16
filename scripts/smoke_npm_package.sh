@@ -5,6 +5,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACK_DIR="${PACK_DIR:-$ROOT_DIR/dist/npm}"
 ROOT_PACKAGE_NAME="@olhapi/maestro"
+NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$ROOT_DIR/.cache/npm}"
+MAESTRO_DAEMON_REGISTRY_DIR="${MAESTRO_DAEMON_REGISTRY_DIR:-$ROOT_DIR/.cache/maestro-daemons}"
+
+export NPM_CONFIG_CACHE
+export MAESTRO_DAEMON_REGISTRY_DIR
 
 usage() {
   cat <<'EOF'
