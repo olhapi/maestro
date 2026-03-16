@@ -1376,7 +1376,7 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 		"attempt":    attempt,
 	}
 	attachResultMetrics(fields, result)
-	if shouldContinue && shouldScheduleSuccessfulContinuation(phase, nextPhase) {
+	if shouldContinue && shouldScheduleSuccessfulContinuation(phase, nextPhase, issue.State) {
 		next := nextAttempt(attempt)
 		fields["next_retry"] = next
 		fields["next_phase"] = string(nextPhase)
@@ -1790,14 +1790,14 @@ func pausesWithoutStateReset(errText string) bool {
 	}
 }
 
-func shouldScheduleSuccessfulContinuation(phase, nextPhase kanban.WorkflowPhase) bool {
-	switch {
-	case phase == kanban.WorkflowPhaseImplementation && nextPhase == kanban.WorkflowPhaseReview:
-		return true
-	case phase == kanban.WorkflowPhaseImplementation && nextPhase == kanban.WorkflowPhaseDone:
-		return true
-	case phase == kanban.WorkflowPhaseReview && nextPhase == kanban.WorkflowPhaseDone:
-		return true
+func shouldScheduleSuccessfulContinuation(phase, nextPhase kanban.WorkflowPhase, state kanban.State) bool {
+	switch phase {
+	case kanban.WorkflowPhaseImplementation:
+		return nextPhase == kanban.WorkflowPhaseReview || nextPhase == kanban.WorkflowPhaseDone || state == kanban.StateInReview
+	case kanban.WorkflowPhaseReview:
+		return nextPhase == kanban.WorkflowPhaseImplementation || nextPhase == kanban.WorkflowPhaseDone
+	case kanban.WorkflowPhaseDone:
+		return nextPhase == kanban.WorkflowPhaseImplementation || nextPhase == kanban.WorkflowPhaseReview
 	default:
 		return false
 	}

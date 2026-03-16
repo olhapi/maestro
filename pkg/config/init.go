@@ -373,14 +373,14 @@ hooks:
 phases:
   review:
     # Enable a dedicated review pass after implementation. Other option: false.
-    enabled: false
+    enabled: %t
     # Prompt rendered when the issue enters review. Uses the same template variables
     # as the main prompt, such as issue.*, project.*, phase, and attempt.
     prompt: |
 %s
   done:
     # Enable a dedicated finalization pass after implementation is otherwise complete.
-    enabled: false
+    enabled: %t
     # Prompt rendered when the issue enters done for project-specific wrap-up steps.
     prompt: |
 %s
@@ -437,7 +437,7 @@ codex:
 ---
 
 %s
-`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, reviewPrompt, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, cfg.Agent.Mode, cfg.Agent.DispatchMode, cfg.Codex.Command, cfg.Codex.ExpectedVersion, cfg.Codex.ApprovalPolicy, cfg.Codex.ThreadSandbox, turnPolicyType, networkAccess, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
+`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, cfg.Phases.Review.Enabled, reviewPrompt, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, cfg.Agent.Mode, cfg.Agent.DispatchMode, cfg.Codex.Command, cfg.Codex.ExpectedVersion, cfg.Codex.ApprovalPolicy, cfg.Codex.ThreadSandbox, turnPolicyType, networkAccess, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
 }
 
 func indentBlock(text, prefix string) string {

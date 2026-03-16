@@ -36,6 +36,11 @@ workspace:
   root: ` + workspaceRoot + `
 hooks:
   timeout_ms: 1000
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
 agent:
   max_concurrent_agents: 2
   max_turns: 3
@@ -269,6 +274,83 @@ func TestBuildTurnPromptRendersProjectVariablesInCustomWorkflow(t *testing.T) {
 			}
 			if !strings.Contains(prompt, tc.want) {
 				t.Fatalf("expected prompt to contain %q, got %q", tc.want, prompt)
+			}
+		})
+	}
+}
+
+func TestShouldContinueRunPhaseOnlyForSamePhaseWork(t *testing.T) {
+	workflow := defaultPromptWorkflowForTest()
+
+	cases := []struct {
+		name     string
+		runPhase kanban.WorkflowPhase
+		state    kanban.State
+		workflow func(*config.Workflow)
+		want     bool
+	}{
+		{
+			name:     "implementation continues while work stays active",
+			runPhase: kanban.WorkflowPhaseImplementation,
+			state:    kanban.StateInProgress,
+			want:     true,
+		},
+		{
+			name:     "implementation stops after in review transition",
+			runPhase: kanban.WorkflowPhaseImplementation,
+			state:    kanban.StateInReview,
+			want:     false,
+		},
+		{
+			name:     "review continues while review phase stays active",
+			runPhase: kanban.WorkflowPhaseReview,
+			state:    kanban.StateInReview,
+			want:     true,
+		},
+		{
+			name:     "review stops when issue reopens for implementation",
+			runPhase: kanban.WorkflowPhaseReview,
+			state:    kanban.StateInProgress,
+			want:     false,
+		},
+		{
+			name:     "done continues while done phase stays active",
+			runPhase: kanban.WorkflowPhaseDone,
+			state:    kanban.StateDone,
+			want:     true,
+		},
+		{
+			name:     "done stops when issue reopens",
+			runPhase: kanban.WorkflowPhaseDone,
+			state:    kanban.StateInReview,
+			want:     false,
+		},
+		{
+			name:     "review does not continue when review phase is disabled",
+			runPhase: kanban.WorkflowPhaseReview,
+			state:    kanban.StateInReview,
+			workflow: func(workflow *config.Workflow) { workflow.Config.Phases.Review.Enabled = false },
+			want:     false,
+		},
+		{
+			name:     "done does not continue when done phase is disabled",
+			runPhase: kanban.WorkflowPhaseDone,
+			state:    kanban.StateDone,
+			workflow: func(workflow *config.Workflow) { workflow.Config.Phases.Done.Enabled = false },
+			want:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			current := *workflow
+			current.Config = workflow.Config
+			if tc.workflow != nil {
+				tc.workflow(&current)
+			}
+			issue := &kanban.Issue{State: tc.state}
+			if got := shouldContinueRunPhase(&current, tc.runPhase, issue); got != tc.want {
+				t.Fatalf("shouldContinueRunPhase(%s, %s) = %v, want %v", tc.runPhase, tc.state, got, tc.want)
 			}
 		})
 	}

@@ -142,6 +142,16 @@ func DefaultConfig() Config {
 			ReadTimeoutMs:  10000,
 			StallTimeoutMs: 300000,
 		},
+		Phases: PhasesConfig{
+			Review: PhasePromptConfig{
+				Enabled: true,
+				Prompt:  DefaultReviewPromptTemplate(),
+			},
+			Done: PhasePromptConfig{
+				Enabled: true,
+				Prompt:  DefaultDonePromptTemplate(),
+			},
+		},
 	}
 }
 
@@ -367,8 +377,11 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	agent := ensureMap(out, "agent")
 	codex := ensureMap(out, "codex")
 	phases := ensureMap(out, "phases")
-	ensureMap(phases, "review")
-	ensureMap(phases, "done")
+	review := ensureMap(phases, "review")
+	done := ensureMap(phases, "done")
+
+	setBoolDefault(review, "enabled", true)
+	setBoolDefault(done, "enabled", true)
 
 	moveString(out, tracker, "tracker_kind", "kind")
 	moveStringSlice(out, tracker, "tracker_active_states", "active_states")
@@ -466,6 +479,13 @@ func moveNumeric(root, dest map[string]interface{}, from, to string) {
 			dest[to] = value
 		}
 	}
+}
+
+func setBoolDefault(dest map[string]interface{}, key string, value bool) {
+	if _, exists := dest[key]; exists {
+		return
+	}
+	dest[key] = value
 }
 
 func moveStringSlice(root, dest map[string]interface{}, from, to string) {

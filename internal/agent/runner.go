@@ -252,6 +252,10 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 }
 
 func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int, allOutput *strings.Builder) (*RunResult, error) {
+	runPhase := issue.WorkflowPhase
+	if !runPhase.IsValid() {
+		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
+	}
 	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
 		prepared, err := r.prepareTurnPrompt(workflow, issue, attempt, turn)
 		if err != nil {
@@ -271,7 +275,7 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 			return &RunResult{Success: false, Output: allOutput.String(), Error: err}, nil
 		}
 
-		refreshed, continueRun := r.refreshForContinuation(workflow, issue.ID)
+		refreshed, continueRun := r.refreshForContinuation(workflow, runPhase, issue.ID)
 		if !continueRun {
 			return &RunResult{Success: true, Output: allOutput.String()}, nil
 		}
@@ -281,6 +285,10 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 }
 
 func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int, allOutput *strings.Builder) (*RunResult, error) {
+	runPhase := issue.WorkflowPhase
+	if !runPhase.IsValid() {
+		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
+	}
 	client, err := appserver.Start(ctx, appserver.ClientConfig{
 		Executable:        "sh",
 		Args:              []string{"-lc", workflow.Config.Codex.Command},
@@ -369,7 +377,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
 		}
 
-		refreshed, continueRun := r.refreshForContinuation(workflow, issue.ID)
+		refreshed, continueRun := r.refreshForContinuation(workflow, runPhase, issue.ID)
 		if !continueRun {
 			return &RunResult{
 				Success:    true,
@@ -479,7 +487,7 @@ func copyIssueImageToWorkspace(srcPath, dstPath, imageID string) error {
 	return nil
 }
 
-func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID string) (*kanban.Issue, bool) {
+func (r *Runner) refreshForContinuation(workflow *config.Workflow, runPhase kanban.WorkflowPhase, issueID string) (*kanban.Issue, bool) {
 	refreshed, err := r.service.RefreshIssueByID(context.Background(), issueID)
 	if err != nil {
 		refreshed, err = r.store.GetIssue(issueID)
@@ -487,7 +495,21 @@ func (r *Runner) refreshForContinuation(workflow *config.Workflow, issueID strin
 	if err != nil {
 		return nil, false
 	}
-	return refreshed, isActiveState(workflow, string(refreshed.State))
+	return refreshed, shouldContinueRunPhase(workflow, runPhase, refreshed)
+}
+
+func shouldContinueRunPhase(workflow *config.Workflow, runPhase kanban.WorkflowPhase, issue *kanban.Issue) bool {
+	if workflow == nil || issue == nil {
+		return false
+	}
+	switch runPhase {
+	case kanban.WorkflowPhaseReview:
+		return workflow.Config.Phases.Review.Enabled && issue.State == kanban.StateInReview
+	case kanban.WorkflowPhaseDone:
+		return workflow.Config.Phases.Done.Enabled && issue.State == kanban.StateDone
+	default:
+		return issue.State == kanban.StateReady || issue.State == kanban.StateInProgress
+	}
 }
 
 func (r *Runner) buildTurnPrompt(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int) (string, error) {
