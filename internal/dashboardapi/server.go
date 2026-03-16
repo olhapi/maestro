@@ -288,6 +288,30 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		case r.Method == http.MethodPost && action == "stop":
 			writeJSON(w, s.provider.StopProjectRuns(id))
 			return
+		case r.Method == http.MethodPost && action == "permissions":
+			var body struct {
+				PermissionProfile string `json:"permission_profile"`
+			}
+			if !decodeJSON(w, r, &body) {
+				return
+			}
+			profile, err := kanban.ParseProjectPermissionProfile(body.PermissionProfile)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			if err := s.store.UpdateProjectPermissionProfile(id, profile); err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			updated, err := s.store.GetProject(id)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			decorateProject(updated, scopedRepoPathFromStatus(s.provider.Status()))
+			writeJSON(w, updated)
+			return
 		default:
 			http.NotFound(w, r)
 			return

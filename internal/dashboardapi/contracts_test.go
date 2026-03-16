@@ -392,6 +392,9 @@ func TestProjectAndEpicEndpointsSupportCRUDContracts(t *testing.T) {
 	if projectDetail["project"].(map[string]interface{})["id"].(string) != projectID {
 		t.Fatalf("unexpected project detail: %#v", projectDetail)
 	}
+	if projectDetail["project"].(map[string]interface{})["permission_profile"].(string) != "default" {
+		t.Fatalf("expected default permission profile, got %#v", projectDetail["project"])
+	}
 
 	getEpic := requestJSON(t, srv, http.MethodGet, "/api/v1/app/epics/"+epicID, nil)
 	if getEpic.StatusCode != http.StatusOK {
@@ -413,6 +416,26 @@ func TestProjectAndEpicEndpointsSupportCRUDContracts(t *testing.T) {
 	}
 	if decodeResponse(t, updateProject)["name"].(string) != "CLI Updated" {
 		t.Fatal("expected updated project name")
+	}
+
+	updatePermissions := requestJSON(t, srv, http.MethodPost, "/api/v1/app/projects/"+projectID+"/permissions", map[string]interface{}{
+		"permission_profile": "full-access",
+	})
+	if updatePermissions.StatusCode != http.StatusOK {
+		t.Fatalf("update permissions expected 200, got %d", updatePermissions.StatusCode)
+	}
+	if decodeResponse(t, updatePermissions)["permission_profile"].(string) != "full-access" {
+		t.Fatal("expected updated permission profile")
+	}
+
+	invalidPermissions := requestJSON(t, srv, http.MethodPost, "/api/v1/app/projects/"+projectID+"/permissions", map[string]interface{}{
+		"permission_profile": "admin-mode",
+	})
+	if invalidPermissions.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid permission profile expected 400, got %d", invalidPermissions.StatusCode)
+	}
+	if !strings.Contains(decodeResponse(t, invalidPermissions)["error"].(string), "invalid project permission profile") {
+		t.Fatal("expected validation error for invalid permission profile")
 	}
 
 	updateEpic := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/epics/"+epicID, map[string]interface{}{
