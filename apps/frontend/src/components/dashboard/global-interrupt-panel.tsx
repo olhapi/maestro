@@ -6,11 +6,23 @@ import { cn, formatRelativeTimeCompact, toTitleCase } from "@/lib/utils";
 
 const EMPTY_QUESTIONS: PendingUserInputQuestion[] = [];
 
-function answerValue(question: PendingUserInputQuestion, draft: string) {
-  if (!question.options?.length) {
-    return draft;
-  }
+function answerValue(draft: string) {
   return draft;
+}
+
+function buildAnswers(questions: PendingUserInputQuestion[], draftAnswers: Record<string, string>) {
+  const next: Record<string, string[]> = {};
+  for (const question of questions) {
+    const value = answerValue(draftAnswers[question.id] ?? "");
+    if (value.trim()) {
+      next[question.id] = [value];
+    }
+  }
+  return next;
+}
+
+function questionHasTextInput(question: PendingUserInputQuestion) {
+  return !question.options?.length || question.is_other;
 }
 
 function interruptSummary(interrupt: PendingInterrupt) {
@@ -45,21 +57,14 @@ export function GlobalInterruptPanel({
   const [decision, setDecision] = useState("");
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string>>({});
   const questions = visibleCurrent?.user_input?.questions ?? EMPTY_QUESTIONS;
-  const answers = useMemo(() => {
-    const next: Record<string, string[]> = {};
-    for (const question of questions) {
-      const value = answerValue(question, draftAnswers[question.id] ?? "");
-      if (value.trim()) {
-        next[question.id] = [value];
-      }
-    }
-    return next;
-  }, [draftAnswers, questions]);
+  const answers = useMemo(() => buildAnswers(questions, draftAnswers), [draftAnswers, questions]);
 
   if (!visibleCurrent || visibleCount === 0) {
     return null;
   }
 
+  const requiresExplicitSubmit =
+    visibleCurrent.kind === "user_input" && questions.some((question) => questionHasTextInput(question));
   const valid =
     visibleCurrent.kind === "approval"
       ? !!decision
@@ -148,13 +153,23 @@ export function GlobalInterruptPanel({
                         : "border-white/10 bg-white/5 text-[var(--muted-foreground)] hover:border-white/20 hover:text-white",
                     )}
                     type="button"
-                    onClick={() => setDecision(option.value)}
-                    >
+                    onClick={() => {
+                      if (isSubmitting) {
+                        return;
+                      }
+                      setDecision(option.value);
+                      if (option.decision_payload) {
+                        onRespond({ decision_payload: option.decision_payload });
+                        return;
+                      }
+                      onRespond({ decision: option.value });
+                    }}
+                  >
                       <p className="text-sm font-medium">{option.label}</p>
                       {option.description ? (
-                      <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">{option.description}</p>
+                        <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">{option.description}</p>
                       ) : null}
-                    </button>
+                  </button>
                 );
               })}
             </div>
@@ -187,12 +202,29 @@ export function GlobalInterruptPanel({
                                 : "border-white/10 bg-black/20 text-[var(--muted-foreground)] hover:border-white/20 hover:text-white",
                             )}
                             type="button"
-                            onClick={() =>
-                              setDraftAnswers((currentDraft) => ({
-                                ...currentDraft,
+                            onClick={() => {
+                              if (isSubmitting) {
+                                return;
+                              }
+                              const nextDraftAnswers = {
+                                ...draftAnswers,
                                 [question.id]: option.label,
-                              }))
-                            }
+                              };
+                              setDraftAnswers(nextDraftAnswers);
+                              if (requiresExplicitSubmit) {
+                                return;
+                              }
+                              const nextAnswers = buildAnswers(questions, nextDraftAnswers);
+                              const readyToSubmit =
+                                questions.length > 0 &&
+                                questions.every(
+                                  (currentQuestion) =>
+                                    (nextAnswers[currentQuestion.id]?.[0] ?? "").trim().length > 0,
+                                );
+                              if (readyToSubmit) {
+                                onRespond({ answers: nextAnswers });
+                              }
+                            }}
                           >
                             <span className="font-medium">{option.label}</span>
                             {option.description ? (
@@ -222,20 +254,22 @@ export function GlobalInterruptPanel({
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-3">
-            <button
-              className={cn(
-                "inline-flex h-11 items-center rounded-2xl border px-4 text-sm font-medium transition",
-                valid && !isSubmitting
-                  ? "border-[var(--accent)]/45 bg-[linear-gradient(135deg,rgba(196,255,87,.24),rgba(255,255,255,.06))] text-white hover:border-[var(--accent)]/60"
-                  : "border-white/10 bg-white/5 text-white/45",
-              )}
-              disabled={!valid || isSubmitting}
-              type="submit"
-            >
-              {isSubmitting ? "Submitting..." : "Submit response"}
-            </button>
-          </div>
+          {requiresExplicitSubmit ? (
+            <div className="flex items-center justify-end gap-3">
+              <button
+                className={cn(
+                  "inline-flex h-11 items-center rounded-2xl border px-4 text-sm font-medium transition",
+                  valid && !isSubmitting
+                    ? "border-[var(--accent)]/45 bg-[linear-gradient(135deg,rgba(196,255,87,.24),rgba(255,255,255,.06))] text-white hover:border-[var(--accent)]/60"
+                    : "border-white/10 bg-white/5 text-white/45",
+                )}
+                disabled={!valid || isSubmitting}
+                type="submit"
+              >
+                {isSubmitting ? "Submitting..." : "Submit response"}
+              </button>
+            </div>
+          ) : null}
         </form>
       </div>
     </section>
