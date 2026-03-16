@@ -59,12 +59,12 @@ phases:
       Project context:
       {{ project.description }}
       {% endif %}
-      Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
+      Commit all changes to the feature branch, push it and create a PR with a description of changes and all implementation choices that took place.
 
 # Agent runtime settings.
 agent:
   # Maximum concurrent issues per project when dispatch_mode is parallel.
-  max_concurrent_agents: 1
+  max_concurrent_agents: 2
   # Maximum turns Maestro gives Codex before ending an attempt.
   max_turns: 50
   # Maximum delay between automatic retries after failed attempts.

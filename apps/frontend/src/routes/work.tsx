@@ -24,6 +24,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
+import { useGlobalDashboardContext } from "@/lib/global-dashboard-context";
 import {
   applyIssueImageChanges,
   summarizeIssueImageFailures,
@@ -53,12 +54,10 @@ function StatCard({ label, value, detail }: { label: string; value: string; deta
 export function WorkPage() {
   const queryClient = useQueryClient();
   const isMobileLayout = useIsMobileLayout();
+  const { workOverviewFilters, setWorkOverviewFilters } = useGlobalDashboardContext();
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
-  const [projectID, setProjectID] = useState("");
-  const [state, setState] = useState("");
-  const [issueType, setIssueType] = useState("");
-  const [sort, setSort] = useState("priority_asc");
+  const { issueType, projectID, sort, state } = workOverviewFilters;
   const [view, setView] = useState<"board" | "list">("board");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<IssueDetail | undefined>();
@@ -74,6 +73,10 @@ export function WorkPage() {
     queryKey: issuesKey,
     queryFn: () => api.listIssues({ search: deferredSearch, project_id: projectID, state, issue_type: issueType, sort, limit: 200 }),
   });
+
+  const updateWorkOverviewFilters = (updates: Partial<typeof workOverviewFilters>) => {
+    setWorkOverviewFilters((current) => ({ ...current, ...updates }));
+  };
 
   const invalidate = async () => {
     await Promise.all([
@@ -193,7 +196,10 @@ export function WorkPage() {
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by identifier, title, or description"
             />
-            <Select value={projectID || allProjectsValue} onValueChange={(value) => setProjectID(value === allProjectsValue ? "" : value)}>
+            <Select
+              value={projectID || allProjectsValue}
+              onValueChange={(value) => updateWorkOverviewFilters({ projectID: value === allProjectsValue ? "" : value })}
+            >
               <SelectTrigger aria-label="Filter by project">
                 <SelectValue />
               </SelectTrigger>
@@ -206,7 +212,10 @@ export function WorkPage() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={state || allStatesValue} onValueChange={(value) => setState(value === allStatesValue ? "" : value)}>
+            <Select
+              value={state || allStatesValue}
+              onValueChange={(value) => updateWorkOverviewFilters({ state: value === allStatesValue ? "" : value })}
+            >
               <SelectTrigger aria-label="Filter by state">
                 <SelectValue />
               </SelectTrigger>
@@ -219,7 +228,10 @@ export function WorkPage() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={issueType || allTypesValue} onValueChange={(value) => setIssueType(value === allTypesValue ? "" : value)}>
+            <Select
+              value={issueType || allTypesValue}
+              onValueChange={(value) => updateWorkOverviewFilters({ issueType: value === allTypesValue ? "" : value })}
+            >
               <SelectTrigger aria-label="Filter by issue type">
                 <SelectValue />
               </SelectTrigger>
@@ -239,7 +251,7 @@ export function WorkPage() {
             {isMobileLayout ? "Review work state by state" : "Triage, route, and monitor work in one surface"}
           </h2>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Select value={sort} onValueChange={setSort}>
+            <Select value={sort} onValueChange={(value) => updateWorkOverviewFilters({ sort: value })}>
               <SelectTrigger
                 aria-label="Sort issues"
                 className={isMobileLayout ? "h-9 w-full text-xs" : "h-9 w-[176px] text-xs"}

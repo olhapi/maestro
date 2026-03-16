@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
+import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
 import { WorkPage } from '@/routes/work'
 import { makeBootstrapResponse, makeIssueDetail, makeIssueSummary } from '@/test/fixtures'
 import { renderWithQueryClient, selectOption } from '@/test/test-utils'
@@ -152,6 +153,100 @@ describe('WorkPage', () => {
         state: '',
         issue_type: 'recurring',
         sort: 'priority_asc',
+        limit: 200,
+      })
+    })
+  })
+
+  it('retains selected filters after the page remounts', async () => {
+    const bootstrap = makeBootstrapResponse({
+      projects: [
+        makeBootstrapResponse().projects[0],
+        {
+          ...makeBootstrapResponse().projects[0],
+          id: 'project-2',
+          name: 'Operations',
+        },
+      ],
+      issues: {
+        ...makeBootstrapResponse().issues,
+        items: [
+          makeIssueSummary(),
+          makeIssueSummary({
+            id: 'issue-2',
+            identifier: 'ISS-2',
+            title: 'Nightly sync',
+            issue_type: 'recurring',
+            project_id: 'project-2',
+            project_name: 'Operations',
+            state: 'in_progress',
+          }),
+        ],
+      },
+    })
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+    })
+
+    function Harness() {
+      const [visible, setVisible] = useState(true)
+
+      return (
+        <GlobalDashboardProvider>
+          <button onClick={() => setVisible((current) => !current)} type="button">
+            Toggle work page
+          </button>
+          {visible ? <WorkPage /> : null}
+        </GlobalDashboardProvider>
+      )
+    }
+
+    renderWithQueryClient(<Harness />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
+    })
+
+    await selectOption(/filter by project/i, /operations/i)
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /filter by state/i })).toBeInTheDocument()
+    })
+    await selectOption(/filter by state/i, /in progress/i)
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /filter by issue type/i })).toBeInTheDocument()
+    })
+    await selectOption(/filter by issue type/i, /recurring/i)
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /sort issues/i })).toBeInTheDocument()
+    })
+    await selectOption(/sort issues/i, /recently updated/i)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle work page' }))
+    expect(screen.queryByText('Coordinate work on one board')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle work page' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /filter by project/i })).toBeInTheDocument()
+    })
+
+    expect(screen.getByRole('combobox', { name: /filter by project/i })).toHaveTextContent('Operations')
+    expect(screen.getByRole('combobox', { name: /filter by state/i })).toHaveTextContent('In Progress')
+    expect(screen.getByRole('combobox', { name: /filter by issue type/i })).toHaveTextContent('Recurring')
+    expect(screen.getByRole('combobox', { name: /sort issues/i })).toHaveTextContent('Recently updated')
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: 'project-2',
+        state: 'in_progress',
+        issue_type: 'recurring',
+        sort: 'updated_desc',
         limit: 200,
       })
     })
