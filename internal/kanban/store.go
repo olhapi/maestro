@@ -169,6 +169,8 @@ func (s *Store) migrate() error {
 			state TEXT NOT NULL DEFAULT 'backlog',
 			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
 			priority INTEGER DEFAULT 0,
+			agent_name TEXT NOT NULL DEFAULT '',
+			agent_prompt TEXT NOT NULL DEFAULT '',
 			branch_name TEXT,
 			pr_url TEXT,
 			created_at DATETIME NOT NULL,
@@ -376,6 +378,8 @@ func (s *Store) ensureIssueColumns() error {
 		`ALTER TABLE issues ADD COLUMN provider_shadow INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE issues ADD COLUMN total_tokens_spent INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE issues ADD COLUMN last_synced_at DATETIME`,
+		`ALTER TABLE issues ADD COLUMN agent_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE issues ADD COLUMN agent_prompt TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
@@ -563,6 +567,8 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 			state TEXT NOT NULL DEFAULT 'backlog',
 			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
 			priority INTEGER DEFAULT 0,
+			agent_name TEXT NOT NULL DEFAULT '',
+			agent_prompt TEXT NOT NULL DEFAULT '',
 			branch_name TEXT,
 			pr_url TEXT,
 			created_at DATETIME NOT NULL,
@@ -576,7 +582,7 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 		)`,
 		`INSERT INTO issues_new (
 			id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description,
-			state, workflow_phase, priority, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+			state, workflow_phase, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 		)
 		SELECT
 			legacy.id,
@@ -599,7 +605,7 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 				ELSE NULL
 			END,
 			legacy.identifier, legacy.issue_type, legacy.provider_kind, legacy.provider_issue_ref, legacy.provider_shadow, legacy.title, legacy.description,
-			legacy.state, legacy.workflow_phase, legacy.priority, legacy.branch_name, legacy.pr_url, legacy.created_at, legacy.updated_at, legacy.total_tokens_spent, legacy.started_at, legacy.completed_at, legacy.last_synced_at
+			legacy.state, legacy.workflow_phase, legacy.priority, COALESCE(legacy.agent_name, ''), COALESCE(legacy.agent_prompt, ''), legacy.branch_name, legacy.pr_url, legacy.created_at, legacy.updated_at, legacy.total_tokens_spent, legacy.started_at, legacy.completed_at, legacy.last_synced_at
 		FROM issues AS legacy`,
 		`DROP TABLE issues`,
 		`ALTER TABLE issues_new RENAME TO issues`,
@@ -1356,9 +1362,9 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 	}
 
 	_, err = tx.Exec(`
-		INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, now, now,
+		INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, agent_name, agent_prompt, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, strings.TrimSpace(opts.AgentName), strings.TrimSpace(opts.AgentPrompt), now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -1390,6 +1396,12 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 		"title":      title,
 		"issue_type": issueType,
 	}
+	if agentName := strings.TrimSpace(opts.AgentName); agentName != "" {
+		payload["agent_name"] = agentName
+	}
+	if agentPrompt := strings.TrimSpace(opts.AgentPrompt); agentPrompt != "" {
+		payload["agent_prompt"] = agentPrompt
+	}
 	if issueType == IssueTypeRecurring {
 		payload["cron"] = normalizeCronSpec(opts.Cron)
 		payload["enabled"] = defaultRecurringEnabled(opts.Enabled)
@@ -1417,7 +1429,7 @@ func scanIssueRecord(scanner issueScanner) (*Issue, error) {
 
 	if err := scanner.Scan(
 		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &issue.Priority,
-		&branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+		&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -1478,7 +1490,7 @@ func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(order)), ",")
 	rows, err := s.db.Query(`
 		SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
-		       branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+		       agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 		FROM issues
 		WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
@@ -1593,9 +1605,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
 		_, err = tx.Exec(`
-			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, created_at, updated_at, last_synced_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, createdAt, updatedAt, lastSyncedAt,
+			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -2020,6 +2032,14 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	if branch, ok := updates["branch_name"].(string); ok {
 		query += ", branch_name = ?"
 		args = append(args, branch)
+	}
+	if agentName, ok := updates["agent_name"].(string); ok {
+		query += ", agent_name = ?"
+		args = append(args, strings.TrimSpace(agentName))
+	}
+	if agentPrompt, ok := updates["agent_prompt"].(string); ok {
+		query += ", agent_prompt = ?"
+		args = append(args, strings.TrimSpace(agentPrompt))
 	}
 	if projectID, ok := updates["project_id"].(string); ok {
 		query += ", project_id = ?"
@@ -2486,7 +2506,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 
 	rows, err := s.db.Query(`
 		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.priority,
-		       i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
+		       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
 		       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
 		FROM issues i
@@ -2511,7 +2531,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		var projectDesc, epicDesc string
 		if err := rows.Scan(
 			&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
-			&branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+			&item.AgentName, &item.AgentPrompt, &branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
 			return nil, 0, err

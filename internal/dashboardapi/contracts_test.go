@@ -512,16 +512,18 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	}
 
 	createIssue := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues", map[string]interface{}{
-		"project_id":  project.ID,
-		"epic_id":     epic.ID,
-		"title":       "Track issue",
-		"description": "desc",
-		"priority":    3,
-		"labels":      []string{"api", "runtime"},
-		"state":       "ready",
-		"blocked_by":  []string{},
-		"branch_name": "feature/track",
-		"pr_url":      "https://example.com/pr/12",
+		"project_id":   project.ID,
+		"epic_id":      epic.ID,
+		"title":        "Track issue",
+		"description":  "desc",
+		"priority":     3,
+		"labels":       []string{"api", "runtime"},
+		"agent_name":   "marketing",
+		"agent_prompt": "Review messaging before implementation.",
+		"state":        "ready",
+		"blocked_by":   []string{},
+		"branch_name":  "feature/track",
+		"pr_url":       "https://example.com/pr/12",
 	})
 	if createIssue.StatusCode != http.StatusCreated {
 		t.Fatalf("create issue expected 201, got %d", createIssue.StatusCode)
@@ -531,21 +533,46 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	issueID := created["id"].(string)
 
 	patchIssue := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/issues/"+identifier, map[string]interface{}{
-		"project_id":  project.ID,
-		"epic_id":     epic.ID,
-		"title":       "Track issue updated",
-		"description": "updated",
-		"priority":    5,
-		"labels":      []string{"updated"},
-		"blocked_by":  []string{},
-		"branch_name": "feature/updated",
-		"pr_url":      "https://example.com/pr/99",
+		"project_id":   project.ID,
+		"epic_id":      epic.ID,
+		"title":        "Track issue updated",
+		"description":  "updated",
+		"priority":     5,
+		"labels":       []string{"updated"},
+		"agent_name":   "designer",
+		"agent_prompt": "Focus on tone and visual hierarchy.",
+		"blocked_by":   []string{},
+		"branch_name":  "feature/updated",
+		"pr_url":       "https://example.com/pr/99",
 	})
 	if patchIssue.StatusCode != http.StatusOK {
 		t.Fatalf("patch issue expected 200, got %d", patchIssue.StatusCode)
 	}
-	if decodeResponse(t, patchIssue)["title"].(string) != "Track issue updated" {
+	patched := decodeResponse(t, patchIssue)
+	if patched["title"].(string) != "Track issue updated" {
 		t.Fatal("expected patched issue title")
+	}
+	if patched["agent_name"].(string) != "designer" || patched["agent_prompt"].(string) != "Focus on tone and visual hierarchy." {
+		t.Fatalf("expected patched agent metadata, got %#v", patched)
+	}
+
+	patchWithoutAgentFields := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/issues/"+identifier, map[string]interface{}{
+		"project_id":  project.ID,
+		"epic_id":     epic.ID,
+		"title":       "Track issue retitled",
+		"description": "retitled without touching agent metadata",
+		"priority":    2,
+		"labels":      []string{"retitled"},
+		"blocked_by":  []string{},
+		"branch_name": "feature/retitled",
+		"pr_url":      "https://example.com/pr/100",
+	})
+	if patchWithoutAgentFields.StatusCode != http.StatusOK {
+		t.Fatalf("patch without agent metadata expected 200, got %d", patchWithoutAgentFields.StatusCode)
+	}
+	patchedWithoutAgentFields := decodeResponse(t, patchWithoutAgentFields)
+	if patchedWithoutAgentFields["agent_name"].(string) != "designer" || patchedWithoutAgentFields["agent_prompt"].(string) != "Focus on tone and visual hierarchy." {
+		t.Fatalf("expected patch without agent fields to preserve metadata, got %#v", patchedWithoutAgentFields)
 	}
 
 	for _, req := range []struct {

@@ -123,6 +123,12 @@ func printIssueDetail(out io.Writer, issue *kanban.IssueDetail) {
 	if len(issue.Labels) > 0 {
 		fmt.Fprintf(out, "Labels:\t%s\n", strings.Join(issue.Labels, ", "))
 	}
+	if issue.AgentName != "" {
+		fmt.Fprintf(out, "Agent:\t%s\n", issue.AgentName)
+	}
+	if issue.AgentPrompt != "" {
+		fmt.Fprintf(out, "Agent Prompt:\t%s\n", issue.AgentPrompt)
+	}
 	if issue.BranchName != "" {
 		fmt.Fprintf(out, "Branch:\t%s\n", issue.BranchName)
 	}

@@ -154,6 +154,13 @@ func TestGetOrCreateWorkspace(t *testing.T) {
 func TestBuildTurnPrompt(t *testing.T) {
 	runner, store, manager, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Fix Login Bug", "Users cannot log in", 1, []string{"bug", "urgent"})
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"agent_name":   "marketing",
+		"agent_prompt": "Review the copy before changing the landing page.",
+	}); err != nil {
+		t.Fatalf("UpdateIssue agent metadata: %v", err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
 	workflow, _ := manager.Current()
 
 	prompt, err := runner.buildTurnPrompt(workflow, issue, 2, 1)
@@ -161,6 +168,11 @@ func TestBuildTurnPrompt(t *testing.T) {
 		t.Fatalf("Failed to build prompt: %v", err)
 	}
 	for _, part := range []string{issue.Identifier, "Fix Login Bug", "retry 2"} {
+		if !strings.Contains(prompt, part) {
+			t.Fatalf("expected prompt to contain %q, got %q", part, prompt)
+		}
+	}
+	for _, part := range []string{"Assigned agent: marketing", "Review the copy before changing the landing page."} {
 		if !strings.Contains(prompt, part) {
 			t.Fatalf("expected prompt to contain %q, got %q", part, prompt)
 		}
