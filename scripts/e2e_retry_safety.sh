@@ -9,6 +9,7 @@ WORKSPACES_DIR="$HARNESS_ROOT/workspaces"
 LOGS_DIR="$HARNESS_ROOT/logs"
 REPOS_DIR="$HARNESS_ROOT/repos"
 DB_PATH="$HARNESS_ROOT/.maestro/maestro.db"
+DAEMON_REGISTRY_DIR="$HARNESS_ROOT/.maestro-daemons"
 ORCH_LOG="$HARNESS_ROOT/orchestrator.log"
 MAESTRO_BIN="$BIN_DIR/maestro"
 FAKE_APPSERVER_BIN="$BIN_DIR/maestro-fake-appserver"
@@ -19,6 +20,7 @@ HTTP_PORT="${E2E_HTTP_PORT:-0}"
 ORCH_PID=""
 
 cd "$ROOT_DIR"
+export MAESTRO_DAEMON_REGISTRY_DIR="$DAEMON_REGISTRY_DIR"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
