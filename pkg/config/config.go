@@ -70,15 +70,13 @@ type AgentConfig struct {
 }
 
 type CodexConfig struct {
-	Command                  string                 `yaml:"command"`
-	ExpectedVersion          string                 `yaml:"expected_version"`
-	ApprovalPolicy           interface{}            `yaml:"approval_policy"`
-	InitialCollaborationMode string                 `yaml:"initial_collaboration_mode"`
-	ThreadSandbox            string                 `yaml:"thread_sandbox"`
-	TurnSandboxPolicy        map[string]interface{} `yaml:"turn_sandbox_policy"`
-	TurnTimeoutMs            int                    `yaml:"turn_timeout_ms"`
-	ReadTimeoutMs            int                    `yaml:"read_timeout_ms"`
-	StallTimeoutMs           int                    `yaml:"stall_timeout_ms"`
+	Command                  string      `yaml:"command"`
+	ExpectedVersion          string      `yaml:"expected_version"`
+	ApprovalPolicy           interface{} `yaml:"approval_policy"`
+	InitialCollaborationMode string      `yaml:"initial_collaboration_mode"`
+	TurnTimeoutMs            int         `yaml:"turn_timeout_ms"`
+	ReadTimeoutMs            int         `yaml:"read_timeout_ms"`
+	StallTimeoutMs           int         `yaml:"stall_timeout_ms"`
 }
 
 type PhasesConfig struct {
@@ -138,14 +136,9 @@ func DefaultConfig() Config {
 				},
 			},
 			InitialCollaborationMode: InitialCollaborationModePlan,
-			ThreadSandbox:            "workspace-write",
-			TurnSandboxPolicy: map[string]interface{}{
-				"type":          "workspaceWrite",
-				"networkAccess": true,
-			},
-			TurnTimeoutMs:  1800000,
-			ReadTimeoutMs:  10000,
-			StallTimeoutMs: 300000,
+			TurnTimeoutMs:            1800000,
+			ReadTimeoutMs:            10000,
+			StallTimeoutMs:           300000,
 		},
 		Phases: PhasesConfig{
 			Review: PhasePromptConfig{
@@ -415,8 +408,6 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveString(out, codex, "codex_expected_version", "expected_version")
 	moveValue(out, codex, "codex_approval_policy", "approval_policy")
 	moveString(out, codex, "codex_initial_collaboration_mode", "initial_collaboration_mode")
-	moveString(out, codex, "codex_thread_sandbox", "thread_sandbox")
-	moveMap(out, codex, "codex_turn_sandbox_policy", "turn_sandbox_policy")
 	moveNumeric(out, codex, "codex_turn_timeout_ms", "turn_timeout_ms")
 	moveNumeric(out, codex, "codex_read_timeout_ms", "read_timeout_ms")
 	moveNumeric(out, codex, "codex_stall_timeout_ms", "stall_timeout_ms")
@@ -589,12 +580,6 @@ func applyDefaults(c *Config) {
 	if c.Codex.InitialCollaborationMode == "" {
 		c.Codex.InitialCollaborationMode = defaults.Codex.InitialCollaborationMode
 	}
-	if strings.TrimSpace(c.Codex.ThreadSandbox) == "" {
-		c.Codex.ThreadSandbox = defaults.Codex.ThreadSandbox
-	}
-	if c.Codex.TurnSandboxPolicy == nil {
-		c.Codex.TurnSandboxPolicy = defaults.Codex.TurnSandboxPolicy
-	}
 	if c.Codex.TurnTimeoutMs <= 0 {
 		c.Codex.TurnTimeoutMs = defaults.Codex.TurnTimeoutMs
 	}
@@ -609,6 +594,68 @@ func applyDefaults(c *Config) {
 	}
 	if c.Phases.Done.Enabled && strings.TrimSpace(c.Phases.Done.Prompt) == "" {
 		c.Phases.Done.Prompt = DefaultDonePromptTemplate()
+	}
+}
+
+func LegacyWorkflowUsesFullAccess(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	content := string(data)
+	if !strings.HasPrefix(content, "---\n") {
+		return false, nil
+	}
+
+	end := strings.Index(content[4:], "\n---\n")
+	frontMatter := content[4:]
+	if end != -1 {
+		frontMatter = content[4 : end+4]
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal([]byte(frontMatter), &raw); err != nil {
+		return false, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
+	}
+	if raw == nil {
+		return false, nil
+	}
+	return rawWorkflowUsesFullAccess(raw), nil
+}
+
+func rawWorkflowUsesFullAccess(raw map[string]interface{}) bool {
+	codex := extractMap(raw["codex"])
+	if strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", codex["thread_sandbox"])), "danger-full-access") {
+		return true
+	}
+	if policy := extractMap(codex["turn_sandbox_policy"]); strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", policy["type"])), "dangerFullAccess") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", raw["codex_thread_sandbox"])), "danger-full-access") {
+		return true
+	}
+	if policy := extractMap(raw["codex_turn_sandbox_policy"]); strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", policy["type"])), "dangerFullAccess") {
+		return true
+	}
+	return false
+}
+
+func extractMap(raw interface{}) map[string]interface{} {
+	switch typed := raw.(type) {
+	case map[string]interface{}:
+		return typed
+	case map[interface{}]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			out[fmt.Sprint(key)] = value
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

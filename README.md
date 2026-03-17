@@ -263,9 +263,7 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 - `codex.expected_version: 0.114.0`
 - `codex.approval_policy: never`
 - `codex.initial_collaboration_mode: plan` for fresh `app_server` threads
-- `codex.thread_sandbox: workspace-write`
-- `codex.turn_sandbox_policy.type: workspaceWrite`
-- `codex.turn_sandbox_policy.networkAccess: true`
+- runtime permission profiles now live in the DB per project/issue instead of `WORKFLOW.md`
 
 `initial_collaboration_mode: plan` only changes the startup mode for a fresh `app_server` thread. Interactive approvals and `requestUserInput` prompts still depend on using a non-`never` approval policy, and those prompts are queued through the dashboard's global interrupt panel. Resumed threads and `stdio` runs do not use that startup-mode path.
 

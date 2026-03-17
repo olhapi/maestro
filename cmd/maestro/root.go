@@ -218,7 +218,6 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 	var workspaceRoot string
 	var codexCommand string
 	var agentMode string
-	var sandboxProfile string
 	var force bool
 	var defaults bool
 
@@ -242,17 +241,16 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 			repoPath = resolveCLIRepoPath(repoPath)
 			interactive := !defaults && isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 			if err := config.InitWorkflow(repoPath, config.InitOptions{
-				WorkspaceRoot:  workspaceRoot,
-				CodexCommand:   codexCommand,
-				AgentMode:      agentMode,
-				SandboxProfile: sandboxProfile,
-				Interactive:    interactive,
-				Force:          force,
-				Stdin:          os.Stdin,
-				Stdout:         a.stdout,
+				WorkspaceRoot: workspaceRoot,
+				CodexCommand:  codexCommand,
+				AgentMode:     agentMode,
+				Interactive:   interactive,
+				Force:         force,
+				Stdin:         os.Stdin,
+				Stdout:        a.stdout,
 			}); err != nil {
 				switch {
-				case errors.Is(err, config.ErrWorkflowExists), errors.Is(err, config.ErrWorkflowInitCancelled), errors.Is(err, config.ErrInvalidInitAgentMode), errors.Is(err, config.ErrInvalidSandboxProfile):
+				case errors.Is(err, config.ErrWorkflowExists), errors.Is(err, config.ErrWorkflowInitCancelled), errors.Is(err, config.ErrInvalidInitAgentMode):
 					return usageErrorf("%v", err)
 				}
 				return wrapRuntime(err, "failed to initialize workflow")
@@ -270,7 +268,6 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 	initCmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "Workspace root to write into WORKFLOW.md")
 	initCmd.Flags().StringVar(&codexCommand, "codex-command", "", "Codex command to write into WORKFLOW.md")
 	initCmd.Flags().StringVar(&agentMode, "agent-mode", "", "Agent mode to write into WORKFLOW.md (app_server or stdio)")
-	initCmd.Flags().StringVar(&sandboxProfile, "sandbox-profile", "", "Sandbox profile to write into WORKFLOW.md (careful, secure, or yolo)")
 	initCmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing WORKFLOW.md")
 	initCmd.Flags().BoolVar(&defaults, "defaults", false, "Use defaults without prompting")
 	cmd.AddCommand(initCmd)

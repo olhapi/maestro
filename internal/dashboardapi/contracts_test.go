@@ -721,6 +721,9 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	if issuePayload["permission_profile"].(string) != "default" {
 		t.Fatalf("expected default issue permission profile, got %#v", issuePayload)
 	}
+	if issuePayload["project_permission_profile"].(string) != "default" {
+		t.Fatalf("expected default project permission profile in issue detail, got %#v", issuePayload)
+	}
 
 	updateIssuePermissions := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/permissions", map[string]interface{}{
 		"permission_profile": "full-access",

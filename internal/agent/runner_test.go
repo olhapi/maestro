@@ -49,9 +49,6 @@ agent:
 codex:
   command: ` + command + `
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
   read_timeout_ms: 1000
   turn_timeout_ms: 10000
 ---
@@ -207,7 +204,7 @@ func TestBuildTurnPromptIncludesProjectContextInDefaultImplementationPrompt(t *t
 	}
 }
 
-func TestApplyIssuePermissionProfileOverridesWorkflowSandboxForFullAccess(t *testing.T) {
+func TestPermissionConfigForIssueUsesFullAccessForIssueOverride(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	project, err := store.CreateProject("Platform", "", repoPath, "")
 	if err != nil {
@@ -229,19 +226,19 @@ func TestApplyIssuePermissionProfileOverridesWorkflowSandboxForFullAccess(t *tes
 		t.Fatalf("Current: %v", err)
 	}
 
-	overridden := runner.applyIssuePermissionProfile(workflow, issue)
-	if overridden.Config.Codex.ThreadSandbox != "danger-full-access" {
-		t.Fatalf("expected danger-full-access thread sandbox, got %q", overridden.Config.Codex.ThreadSandbox)
+	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy)
+	if permissions.ThreadSandbox != "danger-full-access" {
+		t.Fatalf("expected danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
-	if overridden.Config.Codex.TurnSandboxPolicy["type"] != "dangerFullAccess" {
-		t.Fatalf("expected dangerFullAccess turn policy, got %#v", overridden.Config.Codex.TurnSandboxPolicy)
+	if permissions.TurnSandboxPolicy["type"] != "dangerFullAccess" {
+		t.Fatalf("expected dangerFullAccess turn policy, got %#v", permissions.TurnSandboxPolicy)
 	}
-	if workflow.Config.Codex.ThreadSandbox != "workspace-write" {
-		t.Fatalf("expected source workflow to remain unchanged, got %q", workflow.Config.Codex.ThreadSandbox)
+	if workflow.Config.Codex.Command == "" {
+		t.Fatal("expected workflow to remain available")
 	}
 }
 
-func TestApplyIssuePermissionProfileFallsBackToProjectProfile(t *testing.T) {
+func TestPermissionConfigForIssueFallsBackToProjectProfile(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	project, err := store.CreateProject("Platform", "", repoPath, "")
 	if err != nil {
@@ -266,9 +263,37 @@ func TestApplyIssuePermissionProfileFallsBackToProjectProfile(t *testing.T) {
 		t.Fatalf("Current: %v", err)
 	}
 
-	overridden := runner.applyIssuePermissionProfile(workflow, issue)
-	if overridden.Config.Codex.ThreadSandbox != "danger-full-access" {
-		t.Fatalf("expected inherited danger-full-access thread sandbox, got %q", overridden.Config.Codex.ThreadSandbox)
+	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy)
+	if permissions.ThreadSandbox != "danger-full-access" {
+		t.Fatalf("expected inherited danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
+	}
+}
+
+func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Safe default", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy)
+	if permissions.ThreadSandbox != "workspace-write" {
+		t.Fatalf("expected workspace-write thread sandbox, got %q", permissions.ThreadSandbox)
+	}
+	if permissions.TurnSandboxPolicy != nil {
+		t.Fatalf("expected nil turn sandbox policy for safe baseline, got %#v", permissions.TurnSandboxPolicy)
 	}
 }
 func TestBuildTurnPromptIncludesProjectContextInDefaultPhasePrompts(t *testing.T) {
@@ -502,9 +527,6 @@ agent:
 codex:
   command: cat
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
   read_timeout_ms: 1000
   turn_timeout_ms: 10000
 phases:
