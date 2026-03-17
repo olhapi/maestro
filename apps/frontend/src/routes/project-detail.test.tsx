@@ -4,7 +4,7 @@ import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
 import { makeBootstrapResponse } from "@/test/fixtures";
-import { renderWithQueryClient, selectOption } from "@/test/test-utils";
+import { renderWithQueryClient } from "@/test/test-utils";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
