@@ -93,3 +93,7 @@ func (p *KanbanProvider) SetIssueState(_ context.Context, _ *kanban.Project, iss
 	}
 	return p.store.GetIssue(issue.ID)
 }
+
+func (p *KanbanProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error {
+	return ErrUnsupportedCapability
+}

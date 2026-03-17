@@ -3,8 +3,12 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/olhapi/maestro/internal/kanban"
@@ -52,7 +56,8 @@ func TestLinearProviderNormalizeIssueFiltersNonBlockingRelations(t *testing.T) {
 }
 
 func TestLinearProviderListIssuesFiltersByAssignee(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -132,7 +137,8 @@ func TestLinearProviderListIssuesFiltersByAssignee(t *testing.T) {
 }
 
 func TestLinearProviderResolveAssigneeMatcherForViewer(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": map[string]interface{}{
 				"viewer": map[string]interface{}{
@@ -162,5 +168,143 @@ func TestLinearProviderResolveAssigneeMatcherForViewer(t *testing.T) {
 	}
 	if _, ok := matcher.matchValues["viewer-123"]; !ok {
 		t.Fatalf("expected viewer id match set, got %#v", matcher.matchValues)
+	}
+}
+
+func TestLinearProviderCreateIssueCommentCreatesPlainComment(t *testing.T) {
+	var mutationBody map[string]interface{}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&mutationBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"commentCreate": map[string]interface{}{
+					"success": true,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-1"}
+
+	if err := provider.CreateIssueComment(context.Background(), project, issue, IssueCommentInput{Body: "Review preview is ready."}); err != nil {
+		t.Fatalf("CreateIssueComment: %v", err)
+	}
+
+	query, _ := mutationBody["query"].(string)
+	if query == "" || mutationBody["variables"] == nil {
+		t.Fatalf("expected graphql mutation payload, got %#v", mutationBody)
+	}
+	variables := mutationBody["variables"].(map[string]interface{})
+	if variables["issueId"] != "linear-issue-1" || variables["body"] != "Review preview is ready." {
+		t.Fatalf("unexpected comment mutation variables: %#v", variables)
+	}
+}
+
+func TestLinearProviderCreateIssueCommentUploadsAttachmentsAndAppendsLinks(t *testing.T) {
+	tempDir := t.TempDir()
+	attachmentPath := filepath.Join(tempDir, "preview.mp4")
+	if err := os.WriteFile(attachmentPath, []byte("preview-bytes"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	type graphqlRequest struct {
+		Query     string                 `json:"query"`
+		Variables map[string]interface{} `json:"variables"`
+	}
+
+	var requests []graphqlRequest
+	var uploadedContentType string
+	var uploadedBody string
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/upload":
+			uploadedContentType = r.Header.Get("Content-Type")
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read upload body: %v", err)
+			}
+			uploadedBody = string(data)
+			w.WriteHeader(http.StatusOK)
+		default:
+			var body graphqlRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			requests = append(requests, body)
+			switch {
+			case strings.Contains(body.Query, "fileUpload"):
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"fileUpload": map[string]interface{}{
+							"success": true,
+							"uploadFile": map[string]interface{}{
+								"uploadUrl": server.URL + "/upload",
+								"assetUrl":  "https://linear.example/assets/preview.mp4",
+								"headers": []map[string]interface{}{
+									{"key": "x-amz-acl", "value": "private"},
+								},
+							},
+						},
+					},
+				})
+			case strings.Contains(body.Query, "commentCreate"):
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"commentCreate": map[string]interface{}{
+							"success": true,
+						},
+					},
+				})
+			default:
+				t.Fatalf("unexpected graphql query: %s", body.Query)
+			}
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-2"}
+
+	err := provider.CreateIssueComment(context.Background(), project, issue, IssueCommentInput{
+		Body: "Attached reviewer preview.",
+		Attachments: []IssueCommentAttachment{
+			{Path: attachmentPath, ContentType: "video/mp4"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueComment: %v", err)
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("expected fileUpload and commentCreate requests, got %d", len(requests))
+	}
+	if uploadedContentType != "video/mp4" {
+		t.Fatalf("expected uploaded content type video/mp4, got %q", uploadedContentType)
+	}
+	if uploadedBody != "preview-bytes" {
+		t.Fatalf("unexpected uploaded body %q", uploadedBody)
+	}
+	commentVars := requests[1].Variables
+	body, _ := commentVars["body"].(string)
+	if !strings.Contains(body, "Attached reviewer preview.") || !strings.Contains(body, "https://linear.example/assets/preview.mp4") {
+		t.Fatalf("expected comment body to include uploaded asset link, got %q", body)
 	}
 }

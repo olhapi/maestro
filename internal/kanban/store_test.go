@@ -3004,6 +3004,19 @@ func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 	if project.Name != "Project Updated" || project.RepoPath != updatedRepo || project.WorkflowPath != updatedWorkflow {
 		t.Fatalf("unexpected updated project: %+v", project)
 	}
+	if project.PermissionProfile != ProjectPermissionProfileDefault {
+		t.Fatalf("expected default permission profile, got %q", project.PermissionProfile)
+	}
+	if err := store.UpdateProjectPermissionProfile(project.ID, ProjectPermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile failed: %v", err)
+	}
+	project, err = store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject after permission update failed: %v", err)
+	}
+	if project.PermissionProfile != ProjectPermissionProfileFullAccess {
+		t.Fatalf("expected full-access permission profile, got %q", project.PermissionProfile)
+	}
 
 	epic, err := store.CreateEpic(project.ID, "Epic", "desc")
 	if err != nil {

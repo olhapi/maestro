@@ -37,6 +37,10 @@ func invalidIssueTypeError(issueType IssueType) error {
 	return fmt.Errorf("%w: invalid issue type %q", ErrValidation, issueType)
 }
 
+func invalidProjectPermissionProfileError(profile ProjectPermissionProfile) error {
+	return fmt.Errorf("%w: invalid project permission profile %q", ErrValidation, profile)
+}
+
 func blockedInProgressError(blockers []string) error {
 	if len(blockers) == 1 {
 		return fmt.Errorf("%w: cannot move issue to in_progress: blocked by %s. Move the blocker to done or cancelled, or remove it from blocked_by first", ErrBlockedTransition, blockers[0])

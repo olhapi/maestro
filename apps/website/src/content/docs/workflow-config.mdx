@@ -36,7 +36,7 @@ agent:
   dispatch_mode: parallel
 codex:
   command: codex app-server
-  expected_version: 0.111.0
+  expected_version: 0.114.0
   approval_policy: never
   initial_collaboration_mode: plan
   thread_sandbox: workspace-write
@@ -110,7 +110,7 @@ That scaffold currently includes:
 - the local `kanban` tracker with `ready`, `in_progress`, and `in_review` as active states
 - `workspace.root: ./workspaces`
 - hook stubs with a `timeout_ms` budget
-- disabled `review` and `done` phases with starter prompt text already filled in
+- disabled `review` and `done` phases with starter prompt text already filled in, including done-phase guidance for a short reviewer preview video when local demo tooling is available
 - `agent.max_concurrent_agents: 3`, `max_turns: 4`, `max_automatic_retries: 8`, and `dispatch_mode: parallel`
 - `codex.command: codex app-server`, `agent.mode: app_server`, `approval_policy: never`, and `initial_collaboration_mode: plan`
 - a careful sandbox by default: `thread_sandbox: workspace-write` with `turn_sandbox_policy.type: workspaceWrite` and `networkAccess: true`

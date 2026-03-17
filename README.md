@@ -260,7 +260,7 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 - `agent.mode: app_server`
 - `agent.dispatch_mode: parallel`
 - `codex.command: codex app-server`
-- `codex.expected_version: 0.111.0`
+- `codex.expected_version: 0.114.0`
 - `codex.approval_policy: never`
 - `codex.initial_collaboration_mode: plan` for fresh `app_server` threads
 - `codex.thread_sandbox: workspace-write`
@@ -282,6 +282,7 @@ Supported prompt-template variables are:
 - `{{ attempt }}`
 
 When a project has a description, Maestro's default implementation, review, and done prompts include it automatically under a `Project context:` section. Custom workflows can place `{{ project.description }}` wherever they want.
+The default done prompt also tells the agent to create a short local preview video when the change can be demonstrated and attach it to an issue comment when the available tracker or provider tooling supports that flow.
 
 The checked-in [`WORKFLOW.md`](WORKFLOW.md) is this repository's own workflow example. It is not guaranteed to match fresh `workflow init` defaults exactly.
 

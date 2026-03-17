@@ -1591,9 +1591,10 @@ func validateWorkspaceCWD(workspace, workspaceRoot string) error {
 func defaultApprovalPolicy() map[string]interface{} {
 	return map[string]interface{}{
 		"reject": map[string]interface{}{
-			"sandbox_approval": true,
-			"rules":            true,
-			"mcp_elicitations": true,
+			"sandbox_approval":    true,
+			"rules":               true,
+			"mcp_elicitations":    true,
+			"request_permissions": false,
 		},
 	}
 }

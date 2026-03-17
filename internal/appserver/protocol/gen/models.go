@@ -44,9 +44,10 @@ type PurpleRejectAskForApproval struct {
 }
 
 type PurpleReject struct {
-	MCPElicitations bool `json:"mcp_elicitations"`
-	Rules           bool `json:"rules"`
-	SandboxApproval bool `json:"sandbox_approval"`
+	MCPElicitations    bool  `json:"mcp_elicitations"`
+	RequestPermissions *bool `json:"request_permissions,omitempty"`
+	Rules              bool  `json:"rules"`
+	SandboxApproval    bool  `json:"sandbox_approval"`
 }
 
 type ThreadStartResponse struct {
@@ -65,9 +66,10 @@ type AskForApprovalRejectAskForApproval struct {
 }
 
 type FluffyReject struct {
-	MCPElicitations bool `json:"mcp_elicitations"`
-	Rules           bool `json:"rules"`
-	SandboxApproval bool `json:"sandbox_approval"`
+	MCPElicitations    bool  `json:"mcp_elicitations"`
+	RequestPermissions *bool `json:"request_permissions,omitempty"`
+	Rules              bool  `json:"rules"`
+	SandboxApproval    bool  `json:"sandbox_approval"`
 }
 
 type SandboxPolicy struct {
@@ -349,9 +351,10 @@ type FluffyRejectAskForApproval struct {
 }
 
 type TentacledReject struct {
-	MCPElicitations bool `json:"mcp_elicitations"`
-	Rules           bool `json:"rules"`
-	SandboxApproval bool `json:"sandbox_approval"`
+	MCPElicitations    bool  `json:"mcp_elicitations"`
+	RequestPermissions *bool `json:"request_permissions,omitempty"`
+	Rules              bool  `json:"rules"`
+	SandboxApproval    bool  `json:"sandbox_approval"`
 }
 
 type UserInputElement struct {

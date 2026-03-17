@@ -131,9 +131,10 @@ func DefaultConfig() Config {
 			ExpectedVersion: codexschema.SupportedVersion,
 			ApprovalPolicy: map[string]interface{}{
 				"reject": map[string]interface{}{
-					"sandbox_approval": true,
-					"rules":            true,
-					"mcp_elicitations": true,
+					"sandbox_approval":    true,
+					"rules":               true,
+					"mcp_elicitations":    true,
+					"request_permissions": false,
 				},
 			},
 			InitialCollaborationMode: InitialCollaborationModePlan,
@@ -247,6 +248,10 @@ No description provided.
 
 The implementation is already complete. The done phase owns merge-back and finalization for this issue from the current workspace.
 
+- Create a short video preview or walkthrough of the finished result whenever the change can be demonstrated locally.
+- Save the preview under .maestro/review-preview/ in the current workspace as a single .mp4, .webm, .mov, or .m4v file so Maestro can publish it automatically.
+- Use the available browser automation or local tooling to capture the preview, then attach it to an issue comment for reviewers when the tracker/provider tooling supports comments and attachments.
+- If a video preview is not possible because the result is not demoable locally or the required tooling is unavailable, report that blocker clearly and fall back to the strongest deterministic validation you can run.
 - Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.
 - Consider the work complete once the change is merged.
 - If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.
@@ -262,7 +267,7 @@ Project context:
 {{ project.description }}
 
 {% endif %}
-The done phase owns merge-back and finalization. Merge the issue branch back when possible, resolving merge conflicts when you can do so safely. Consider the work complete once the change is merged. If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete. Report any other blocker clearly while keeping the issue in done unless it truly needs to be reopened.
+The done phase owns merge-back and finalization. Create a short video preview or walkthrough of the finished result whenever it can be demonstrated locally, save it under .maestro/review-preview/ in the current workspace as a single .mp4, .webm, .mov, or .m4v file, then attach it to an issue comment for reviewers when the available tracker/provider tooling supports comments and attachments. If that preview is blocked by missing tooling or a non-demoable change, report the blocker clearly and fall back to deterministic validation. Merge the issue branch back when possible, resolving merge conflicts when you can do so safely. Consider the work complete once the change is merged. If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete. Report any other blocker clearly while keeping the issue in done unless it truly needs to be reopened.
 `)
 }
 

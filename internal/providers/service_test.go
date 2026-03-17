@@ -12,18 +12,19 @@ import (
 )
 
 type stubProvider struct {
-	kind       string
-	issues     []kanban.Issue
-	lastQuery  kanban.IssueQuery
-	listErr    error
-	listGate   <-chan struct{}
-	listFunc   func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
-	getIssue   *kanban.Issue
-	getErr     error
-	getGate    <-chan struct{}
-	getFunc    func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
-	createFunc func(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error)
-	updateFunc func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
+	kind        string
+	issues      []kanban.Issue
+	lastQuery   kanban.IssueQuery
+	listErr     error
+	listGate    <-chan struct{}
+	listFunc    func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
+	getIssue    *kanban.Issue
+	getErr      error
+	getGate     <-chan struct{}
+	getFunc     func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
+	createFunc  func(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error)
+	updateFunc  func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
+	commentFunc func(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error
 }
 
 func sampleProviderPNGBytes() []byte {
@@ -122,6 +123,13 @@ func (p *stubProvider) DeleteIssue(context.Context, *kanban.Project, *kanban.Iss
 
 func (p *stubProvider) SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error) {
 	return nil, ErrUnsupportedCapability
+}
+
+func (p *stubProvider) CreateIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, input IssueCommentInput) error {
+	if p.commentFunc != nil {
+		return p.commentFunc(ctx, project, issue, input)
+	}
+	return ErrUnsupportedCapability
 }
 
 func TestServiceSyncIssuesPrunesStaleProviderShadowIssues(t *testing.T) {
@@ -240,6 +248,71 @@ func TestServiceSyncForRepoPathPassesProviderAssigneeFilter(t *testing.T) {
 	}
 	if _, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-keep"); err != nil {
 		t.Fatalf("expected synced issue for project %s: %v", project.ID, err)
+	}
+}
+
+func TestServiceCreateIssueCommentDelegatesToProvider(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     kanban.ProviderKindLinear,
+		ProviderIssueRef: "linear-1",
+		Identifier:       "LIN-1",
+		Title:            "Provider issue",
+		State:            kanban.StateDone,
+	}); err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	var got IssueCommentInput
+	svc := NewService(store)
+	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+		kind: kanban.ProviderKindLinear,
+		getIssue: &kanban.Issue{
+			ProjectID:        project.ID,
+			ProviderKind:     kanban.ProviderKindLinear,
+			ProviderIssueRef: "linear-1",
+			Identifier:       "LIN-1",
+		},
+		commentFunc: func(_ context.Context, gotProject *kanban.Project, issue *kanban.Issue, input IssueCommentInput) error {
+			if gotProject == nil || gotProject.ID != project.ID {
+				t.Fatalf("unexpected project context: %#v", gotProject)
+			}
+			if issue.Identifier != "LIN-1" {
+				t.Fatalf("unexpected issue %q", issue.Identifier)
+			}
+			got = input
+			return nil
+		},
+	}
+
+	input := IssueCommentInput{
+		Body: "Done pass preview",
+		Attachments: []IssueCommentAttachment{{
+			Path: "/tmp/preview.mp4",
+		}},
+	}
+	if err := svc.CreateIssueComment(context.Background(), "LIN-1", input); err != nil {
+		t.Fatalf("CreateIssueComment: %v", err)
+	}
+	if got.Body != input.Body || len(got.Attachments) != 1 || got.Attachments[0].Path != input.Attachments[0].Path {
+		t.Fatalf("unexpected delegated comment input: %#v", got)
 	}
 }
 

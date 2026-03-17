@@ -138,6 +138,7 @@ func (s *Store) migrate() error {
 			name TEXT NOT NULL,
 			description TEXT,
 			state TEXT NOT NULL DEFAULT 'stopped',
+			permission_profile TEXT NOT NULL DEFAULT 'default',
 			repo_path TEXT NOT NULL DEFAULT '',
 			workflow_path TEXT NOT NULL DEFAULT '',
 			provider_kind TEXT NOT NULL DEFAULT 'kanban',
@@ -354,6 +355,7 @@ func (s *Store) migrate() error {
 func (s *Store) ensureProjectColumns() error {
 	for _, stmt := range []string{
 		`ALTER TABLE projects ADD COLUMN state TEXT NOT NULL DEFAULT 'stopped'`,
+		`ALTER TABLE projects ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'default'`,
 		`ALTER TABLE projects ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN workflow_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'kanban'`,
@@ -929,9 +931,9 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 	providerConfigJSON := encodeProviderConfig(providerConfig)
 
 	_, err = s.db.Exec(`
-		INSERT INTO projects (id, name, description, state, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, name, description, ProjectStateStopped, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
+		INSERT INTO projects (id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, name, description, ProjectStateStopped, ProjectPermissionProfileDefault, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -941,6 +943,7 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 		Name:               name,
 		Description:        description,
 		State:              ProjectStateStopped,
+		PermissionProfile:  ProjectPermissionProfileDefault,
 		RepoPath:           repoPath,
 		WorkflowPath:       workflowPath,
 		ProviderKind:       providerKind,
@@ -960,19 +963,20 @@ func (s *Store) GetProject(id string) (*Project, error) {
 	p := &Project{}
 	var providerConfigJSON string
 	err := s.db.QueryRow(`
-		SELECT id, name, description, state, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at
+		SELECT id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at
 		FROM projects WHERE id = ?`, id,
-	).Scan(&p.ID, &p.Name, &p.Description, &p.State, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.Description, &p.State, &p.PermissionProfile, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	p.PermissionProfile = NormalizeProjectPermissionProfile(string(p.PermissionProfile))
 	p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 	hydrateProject(p)
 	return p, nil
 }
 
 func (s *Store) ListProjects() ([]Project, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, state, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at FROM projects ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -982,9 +986,10 @@ func (s *Store) ListProjects() ([]Project, error) {
 	for rows.Next() {
 		p := Project{}
 		var providerConfigJSON string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.State, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.State, &p.PermissionProfile, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		p.PermissionProfile = NormalizeProjectPermissionProfile(string(p.PermissionProfile))
 		p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 		hydrateProject(&p)
 		projects = append(projects, p)
@@ -1015,6 +1020,22 @@ func (s *Store) UpdateProjectWithProvider(id, name, description, repoPath, workf
 		return notFoundError("project", id)
 	}
 	return s.appendChange("project", id, "updated", map[string]interface{}{"name": name, "repo_path": repoPath, "provider_kind": providerKind, "provider_project_ref": providerProjectRef})
+}
+
+func (s *Store) UpdateProjectPermissionProfile(id string, profile ProjectPermissionProfile) error {
+	profile = NormalizeProjectPermissionProfile(string(profile))
+	res, err := s.db.Exec(`
+		UPDATE projects SET permission_profile = ?, updated_at = ?
+		WHERE id = ?`,
+		profile, time.Now().UTC(), id,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("project", id)
+	}
+	return s.appendChange("project", id, "permission_profile_updated", map[string]interface{}{"permission_profile": profile})
 }
 
 func (s *Store) UpdateProjectState(id string, state ProjectState) error {

@@ -59,12 +59,12 @@ phases:
       Project context:
       {{ project.description }}
       {% endif %}
-      Perform the project-specific done steps, such as opening or updating a PR, merging, or other release bookkeeping, while keeping the issue in done unless it truly needs to be reopened.
+      Create a short video preview or walkthrough of the finished result whenever it can be demonstrated locally, then attach it to an issue comment for reviewers when the available tracker/provider tooling supports comments and attachments. If that preview is blocked by missing tooling or a non-demoable change, report the blocker clearly and fall back to deterministic validation. Commit all changes to the feature branch, push it and create a PR with a description of changes and all implementation choices that took place.
 
 # Agent runtime settings.
 agent:
   # Maximum concurrent issues per project when dispatch_mode is parallel.
-  max_concurrent_agents: 1
+  max_concurrent_agents: 2
   # Maximum turns Maestro gives Codex before ending an attempt.
   max_turns: 50
   # Maximum delay between automatic retries after failed attempts.
@@ -81,7 +81,7 @@ codex:
   # Exact command Maestro launches for the agent.
   command: codex app-server
   # Expected codex --version. Mismatches warn but do not hard-fail.
-  expected_version: 0.111.0
+  expected_version: 0.114.0
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured reject object is also supported for per-category rejection policies.
   approval_policy: never

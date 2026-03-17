@@ -11,6 +11,7 @@ import { IssuePreviewSheet } from "@/components/dashboard/issue-preview-sheet";
 import { EpicDialog, IssueDialog } from "@/components/forms";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
@@ -27,8 +28,18 @@ import {
   summaryTokenSpend,
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
-import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
+import type {
+  IssueDetail,
+  IssueState,
+  IssueSummary,
+  ProjectPermissionProfile,
+} from "@/lib/types";
 import { formatCompactNumber, formatRelativeTime } from "@/lib/utils";
+
+const permissionProfileLabels: Record<ProjectPermissionProfile, string> = {
+  default: "Default permissions",
+  "full-access": "Full access",
+};
 
 function ProjectStat({
   label,
@@ -124,6 +135,19 @@ export function ProjectDetailPage() {
       await invalidate();
     },
   });
+  const updatePermissionProfile = useMutation({
+    mutationFn: (permissionProfile: ProjectPermissionProfile) =>
+      api.setProjectPermissionProfile(projectId, permissionProfile),
+    onSuccess: async () => {
+      toast.success("Permissions updated");
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? `Unable to update permissions: ${error.message}` : "Unable to update permissions",
+      );
+    },
+  });
 
   if (!bootstrap.data || !project.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
@@ -133,6 +157,7 @@ export function ProjectDetailPage() {
   const dispatchReady = isProjectDispatchReady(project.data.project);
   const isRunning = isProjectRunning(project.data.project);
   const togglePending = runProject.isPending || stopProject.isPending;
+  const permissionProfile = project.data.project.permission_profile ?? "default";
 
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -229,6 +254,29 @@ export function ProjectDetailPage() {
                 {project.data.project.dispatch_error}
               </p>
             ) : null}
+          </div>
+          <div className="grid min-w-[14rem] gap-2">
+            <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+              Agent permissions
+            </p>
+            <Select
+              value={permissionProfile}
+              onValueChange={(value) => {
+                void updatePermissionProfile.mutateAsync(value as ProjectPermissionProfile);
+              }}
+            >
+              <SelectTrigger aria-label="Agent permissions" disabled={updatePermissionProfile.isPending}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">{permissionProfileLabels.default}</SelectItem>
+                <SelectItem value="full-access">{permissionProfileLabels["full-access"]}</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Default follows `WORKFLOW.md`. Full access switches Codex to unrestricted filesystem and network access
+              for this project at run time.
+            </p>
           </div>
           {!dispatchReady ? (
             <ProjectDispatchBadge project={project.data.project} />

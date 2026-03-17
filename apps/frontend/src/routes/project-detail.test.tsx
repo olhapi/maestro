@@ -4,7 +4,7 @@ import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
 import { makeBootstrapResponse } from "@/test/fixtures";
-import { renderWithQueryClient } from "@/test/test-utils";
+import { renderWithQueryClient, selectOption } from "@/test/test-utils";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
@@ -27,6 +27,7 @@ vi.mock("@/lib/api", () => ({
     deleteIssue: vi.fn(),
     runProject: vi.fn(),
     stopProject: vi.fn(),
+    setProjectPermissionProfile: vi.fn(),
     createIssue: vi.fn(),
     createEpic: vi.fn(),
   },
@@ -141,6 +142,34 @@ describe("ProjectDetailPage", () => {
     });
     expect(screen.getByText("Open the project settings and set Repo path to the local checkout for this project.")).toBeInTheDocument();
     expect(screen.getByText("Leave Workflow path empty to use WORKFLOW.md at the repo root, or set an explicit workflow file.")).toBeInTheDocument();
+  });
+
+  it("updates the project permission profile from the inline selector", async () => {
+    const bootstrap = makeBootstrapResponse();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getProject).mockResolvedValue({
+      project: bootstrap.projects[0],
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+    });
+    vi.mocked(api.setProjectPermissionProfile).mockResolvedValue({
+      ...bootstrap.projects[0],
+      permission_profile: "full-access",
+    });
+
+    renderWithQueryClient(<ProjectDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /agent permissions/i })).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/default follows `WORKFLOW\.md`\. full access switches codex to unrestricted filesystem and network access/i)).toBeInTheDocument();
+
+    await selectOption(/agent permissions/i, /full access/i);
+
+    await waitFor(() => {
+      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith("project-1", "full-access");
+    });
   });
 
   it("renders epic progress using terminal work counts", async () => {

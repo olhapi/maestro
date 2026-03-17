@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ const (
 	automaticRetryHistoryLimit   = 200
 	gracefulShutdownStopReason   = "graceful_shutdown"
 	gracefulShutdownWaitTimeout  = 5 * time.Second
+	reviewPreviewDir             = ".maestro/review-preview"
 )
 
 type runningEntry struct {
@@ -113,28 +115,28 @@ type Orchestrator struct {
 	runtimeMu       sync.Mutex
 	projectRuntimes map[string]*projectRuntime
 
-	mu             sync.RWMutex
-	running        map[string]runningEntry
-	claimed        map[string]struct{}
-	retries        map[string]retryEntry
-	paused         map[string]pausedEntry
-	pendingInteractions map[string]pendingInteractionEntry
+	mu                      sync.RWMutex
+	running                 map[string]runningEntry
+	claimed                 map[string]struct{}
+	retries                 map[string]retryEntry
+	paused                  map[string]pausedEntry
+	pendingInteractions     map[string]pendingInteractionEntry
 	pendingInteractionOrder []string
-	startedAt      time.Time
-	lastTickAt     time.Time
-	totalRuns      int
-	successfulRuns int
-	failedRuns     int
-	liveSessions   map[string]*appserver.Session
-	sessionWriteMu sync.Mutex
-	sessionWrites  map[string]sessionPersistenceState
-	tokenSpendMu   sync.Mutex
-	tokenSpends    map[string]issueTokenSpendState
-	eventSeq       int64
-	events         []map[string]interface{}
-	maxEvents      int
-	runWG          sync.WaitGroup
-	testHooks      orchestratorTestHooks
+	startedAt               time.Time
+	lastTickAt              time.Time
+	totalRuns               int
+	successfulRuns          int
+	failedRuns              int
+	liveSessions            map[string]*appserver.Session
+	sessionWriteMu          sync.Mutex
+	sessionWrites           map[string]sessionPersistenceState
+	tokenSpendMu            sync.Mutex
+	tokenSpends             map[string]issueTokenSpendState
+	eventSeq                int64
+	events                  []map[string]interface{}
+	maxEvents               int
+	runWG                   sync.WaitGroup
+	testHooks               orchestratorTestHooks
 }
 
 func New(store *kanban.Store, workflows *config.Manager) *Orchestrator {
@@ -146,20 +148,20 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 		registry = extensions.EmptyRegistry()
 	}
 	o := &Orchestrator{
-		store:           store,
-		service:         providers.NewService(store),
-		extensions:      registry,
-		projectRuntimes: make(map[string]*projectRuntime),
-		running:         make(map[string]runningEntry),
-		claimed:         make(map[string]struct{}),
-		retries:         make(map[string]retryEntry),
-		paused:          make(map[string]pausedEntry),
+		store:               store,
+		service:             providers.NewService(store),
+		extensions:          registry,
+		projectRuntimes:     make(map[string]*projectRuntime),
+		running:             make(map[string]runningEntry),
+		claimed:             make(map[string]struct{}),
+		retries:             make(map[string]retryEntry),
+		paused:              make(map[string]pausedEntry),
 		pendingInteractions: make(map[string]pendingInteractionEntry),
-		startedAt:       time.Now().UTC(),
-		liveSessions:    make(map[string]*appserver.Session),
-		sessionWrites:   make(map[string]sessionPersistenceState),
-		tokenSpends:     make(map[string]issueTokenSpendState),
-		maxEvents:       500,
+		startedAt:           time.Now().UTC(),
+		liveSessions:        make(map[string]*appserver.Session),
+		sessionWrites:       make(map[string]sessionPersistenceState),
+		tokenSpends:         make(map[string]issueTokenSpendState),
+		maxEvents:           500,
 	}
 	o.workflows = workflows
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
@@ -189,22 +191,22 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 		}
 	}
 	o := &Orchestrator{
-		store:              store,
-		service:            providers.NewService(store),
-		extensions:         registry,
-		scopedRepoPath:     scopedRepoPath,
-		scopedWorkflowPath: scopedWorkflowPath,
-		projectRuntimes:    make(map[string]*projectRuntime),
-		running:            make(map[string]runningEntry),
-		claimed:            make(map[string]struct{}),
-		retries:            make(map[string]retryEntry),
-		paused:             make(map[string]pausedEntry),
+		store:               store,
+		service:             providers.NewService(store),
+		extensions:          registry,
+		scopedRepoPath:      scopedRepoPath,
+		scopedWorkflowPath:  scopedWorkflowPath,
+		projectRuntimes:     make(map[string]*projectRuntime),
+		running:             make(map[string]runningEntry),
+		claimed:             make(map[string]struct{}),
+		retries:             make(map[string]retryEntry),
+		paused:              make(map[string]pausedEntry),
 		pendingInteractions: make(map[string]pendingInteractionEntry),
-		startedAt:          time.Now().UTC(),
-		liveSessions:       make(map[string]*appserver.Session),
-		sessionWrites:      make(map[string]sessionPersistenceState),
-		tokenSpends:        make(map[string]issueTokenSpendState),
-		maxEvents:          500,
+		startedAt:           time.Now().UTC(),
+		liveSessions:        make(map[string]*appserver.Session),
+		sessionWrites:       make(map[string]sessionPersistenceState),
+		tokenSpends:         make(map[string]issueTokenSpendState),
+		maxEvents:           500,
 	}
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
 		runner := agent.NewRunnerWithExtensions(manager, store, registry)
@@ -1300,6 +1302,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		)
 	default:
 		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_completed", "", result)
+		o.publishIssuePreview(current, phase, result)
 		next, scheduled := o.handleSuccessfulRun(workflow, current, phase, attempt, result)
 		extra := []interface{}{"phase", phase}
 		if scheduled {
@@ -1311,6 +1314,88 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	}
 	o.processPendingRecurringRerunIgnoringRunning(current, issue.ID)
 	o.flushIssueTokenSpend(issue.ID)
+}
+
+func (o *Orchestrator) publishIssuePreview(issue *kanban.Issue, phase kanban.WorkflowPhase, result *agent.RunResult) {
+	if phase != kanban.WorkflowPhaseDone || issue == nil {
+		return
+	}
+	workspace, err := o.store.GetWorkspace(issue.ID)
+	if err != nil || workspace == nil {
+		return
+	}
+	previewPath, err := findReviewPreviewVideo(workspace.Path)
+	if err != nil || previewPath == "" {
+		return
+	}
+	commentBody := buildIssuePreviewCommentBody(issue, result, previewPath)
+	if err := o.service.CreateIssueComment(context.Background(), issue.Identifier, providers.IssueCommentInput{
+		Body: commentBody,
+		Attachments: []providers.IssueCommentAttachment{{
+			Path: previewPath,
+		}},
+	}); err != nil {
+		if providers.IsUnsupported(err) {
+			return
+		}
+		slog.Warn("Failed to publish issue preview",
+			issueLogAttrs(issue, -1, "phase", phase, "preview_path", previewPath, "error", err)...,
+		)
+		return
+	}
+	slog.Info("Published issue preview",
+		issueLogAttrs(issue, -1, "phase", phase, "preview_path", previewPath)...,
+	)
+}
+
+func findReviewPreviewVideo(workspacePath string) (string, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return "", nil
+	}
+	previewDir := filepath.Join(workspacePath, filepath.FromSlash(reviewPreviewDir))
+	entries, err := os.ReadDir(previewDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		switch ext {
+		case ".mp4", ".webm", ".mov", ".m4v":
+			return filepath.Join(previewDir, entry.Name()), nil
+		}
+	}
+	return "", nil
+}
+
+func buildIssuePreviewCommentBody(issue *kanban.Issue, result *agent.RunResult, previewPath string) string {
+	lines := []string{"Automated reviewer preview from the done pass."}
+	finalMessage := strings.TrimSpace(issuePreviewSummary(result))
+	if finalMessage != "" {
+		lines = append(lines, "", finalMessage)
+	}
+	filename := filepath.Base(strings.TrimSpace(previewPath))
+	if filename != "" && filename != "." {
+		lines = append(lines, "", fmt.Sprintf("Preview file: `%s`", filename))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func issuePreviewSummary(result *agent.RunResult) string {
+	if result == nil {
+		return ""
+	}
+	if result.AppSession != nil {
+		if message := strings.TrimSpace(result.AppSession.LastMessage); message != "" {
+			return message
+		}
+	}
+	return strings.TrimSpace(result.Output)
 }
 
 func isCancelledRunCompletion(err error, result *agent.RunResult) bool {
