@@ -596,18 +596,20 @@ Continuation guidance:
 	}
 	ctx := map[string]interface{}{
 		"issue": map[string]interface{}{
-			"id":          issue.ID,
-			"identifier":  issue.Identifier,
-			"title":       issue.Title,
-			"description": issue.Description,
-			"state":       string(issue.State),
-			"priority":    issue.Priority,
-			"labels":      issue.Labels,
-			"branch_name": issue.BranchName,
-			"pr_url":      issue.PRURL,
-			"blocked_by":  issue.BlockedBy,
-			"created_at":  issue.CreatedAt.Format(time.RFC3339),
-			"updated_at":  issue.UpdatedAt.Format(time.RFC3339),
+			"id":           issue.ID,
+			"identifier":   issue.Identifier,
+			"title":        issue.Title,
+			"description":  issue.Description,
+			"state":        string(issue.State),
+			"priority":     issue.Priority,
+			"labels":       issue.Labels,
+			"agent_name":   issue.AgentName,
+			"agent_prompt": issue.AgentPrompt,
+			"branch_name":  issue.BranchName,
+			"pr_url":       issue.PRURL,
+			"blocked_by":   issue.BlockedBy,
+			"created_at":   issue.CreatedAt.Format(time.RFC3339),
+			"updated_at":   issue.UpdatedAt.Format(time.RFC3339),
 		},
 		"project": projectCtx,
 		"attempt": nil,
@@ -621,6 +623,7 @@ Continuation guidance:
 		return preparedTurnPrompt{}, fmt.Errorf("template_render_error: %w", err)
 	}
 	rendered = strings.TrimSpace(rendered)
+	rendered = appendAgentInstructions(rendered, issue)
 	commands, err := r.pendingCommandsForIssue(issue.ID)
 	if err != nil {
 		return preparedTurnPrompt{}, err
@@ -707,6 +710,30 @@ func appendOperatorCommands(prompt string, commands []kanban.IssueAgentCommand) 
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, command.Command))
 	}
 	section := strings.Join(lines, "\n")
+	if prompt == "" {
+		return section
+	}
+	return prompt + "\n\n" + section
+}
+
+func appendAgentInstructions(prompt string, issue *kanban.Issue) string {
+	if issue == nil {
+		return strings.TrimSpace(prompt)
+	}
+	agentName := strings.TrimSpace(issue.AgentName)
+	agentPrompt := strings.TrimSpace(issue.AgentPrompt)
+	if agentName == "" && agentPrompt == "" {
+		return strings.TrimSpace(prompt)
+	}
+	lines := []string{"Issue-specific agent context:"}
+	if agentName != "" {
+		lines = append(lines, "", "- Assigned agent: "+agentName)
+	}
+	if agentPrompt != "" {
+		lines = append(lines, "- Additional instructions: "+agentPrompt)
+	}
+	section := strings.Join(lines, "\n")
+	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return section
 	}

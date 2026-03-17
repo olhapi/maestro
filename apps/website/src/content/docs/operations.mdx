@@ -59,6 +59,41 @@ These endpoints back the embedded UI:
 | `/api/v1/app/runtime/events` | Persisted runtime event feed |
 | `/api/v1/app/runtime/series` | Runtime series charts |
 | `/api/v1/app/sessions` | Session list for the embedded dashboard |
+| `POST /api/v1/webhooks` | Authenticated third-party trigger endpoint |
+
+### Webhook triggers
+
+Set `MAESTRO_WEBHOOK_BEARER_TOKEN` before starting `maestro run` to enable authenticated webhook delivery. Requests without `Authorization: Bearer <token>` return `401`. If the env var is unset, `/api/v1/webhooks` returns `503`.
+
+Supported events:
+
+- `issue.retry` with `payload.issue_identifier`
+- `issue.run_now` with `payload.issue_identifier`
+- `project.run` with `payload.project_id`
+- `project.stop` with `payload.project_id`
+
+Example delivery:
+
+<DocsCommandField
+  command={`curl -X POST http://127.0.0.1:8787/api/v1/webhooks \\
+  -H "Authorization: Bearer $MAESTRO_WEBHOOK_BEARER_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "event": "issue.retry",
+    "delivery_id": "github-evt-42",
+    "payload": {
+      "issue_identifier": "ISS-42"
+    }
+  }'`}
+/>
+
+Failure behavior:
+
+- validation failures and unsupported events return `400`
+- non-dispatchable `project.run` requests return `400`
+- missing issues or projects return `404`
+- recurring-only mismatches for `issue.run_now` return `409`
+- accepted trigger requests return `202` with the underlying orchestration result echoed in `result`
 
 ### WebSocket invalidation
 

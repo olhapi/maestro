@@ -339,6 +339,8 @@ func (a *cliApp) newIssueCreateCmd() *cobra.Command {
 	var cronSpec string
 	var enabled bool
 	var priority int
+	var agentName string
+	var agentPrompt string
 	cmd := &cobra.Command{
 		Use:   "create <title>",
 		Short: "Create an issue",
@@ -363,6 +365,8 @@ func (a *cliApp) newIssueCreateCmd() *cobra.Command {
 				Enabled:     enabledPtr,
 				Priority:    priority,
 				Labels:      parseCSV(labels),
+				AgentName:   agentName,
+				AgentPrompt: agentPrompt,
 			})
 			if err != nil {
 				return err
@@ -386,6 +390,8 @@ func (a *cliApp) newIssueCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cronSpec, "cron", "", "Cron schedule for recurring issues (5-field local-time spec)")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Enable recurring scheduling for recurring issues")
 	cmd.Flags().IntVar(&priority, "priority", 0, "Issue priority (lower is higher)")
+	cmd.Flags().StringVar(&agentName, "agent", "", "Assigned agent name")
+	cmd.Flags().StringVar(&agentPrompt, "agent-prompt", "", "Additional agent-specific instructions")
 	return cmd
 }
 
@@ -527,12 +533,16 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	var priority int
 	var branch string
 	var prURL string
+	var agentName string
+	var agentPrompt string
 	var clearLabels bool
 	var clearPriority bool
 	var clearProject bool
 	var clearEpic bool
 	var clearBranch bool
 	var clearPR bool
+	var clearAgent bool
+	var clearAgentPrompt bool
 
 	cmd := &cobra.Command{
 		Use:   "update <identifier>",
@@ -588,6 +598,18 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("branch") {
 				updates["branch_name"] = branch
 			}
+			if cmd.Flags().Changed("agent") {
+				updates["agent_name"] = agentName
+			}
+			if clearAgent {
+				updates["agent_name"] = ""
+			}
+			if cmd.Flags().Changed("agent-prompt") {
+				updates["agent_prompt"] = agentPrompt
+			}
+			if clearAgentPrompt {
+				updates["agent_prompt"] = ""
+			}
 			if clearBranch {
 				updates["branch_name"] = ""
 			}
@@ -624,12 +646,16 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	cmd.Flags().IntVar(&priority, "priority", 0, "New priority")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
 	cmd.Flags().StringVar(&epicID, "epic", "", "Epic ID")
+	cmd.Flags().StringVar(&agentName, "agent", "", "Assigned agent name")
+	cmd.Flags().StringVar(&agentPrompt, "agent-prompt", "", "Additional agent-specific instructions")
 	cmd.Flags().StringVar(&branch, "branch", "", "Branch name")
 	cmd.Flags().StringVar(&prURL, "pr-url", "", "Pull request URL")
 	cmd.Flags().BoolVar(&clearLabels, "clear-labels", false, "Clear all labels")
 	cmd.Flags().BoolVar(&clearPriority, "clear-priority", false, "Clear the priority")
 	cmd.Flags().BoolVar(&clearProject, "clear-project", false, "Clear the project")
 	cmd.Flags().BoolVar(&clearEpic, "clear-epic", false, "Clear the epic")
+	cmd.Flags().BoolVar(&clearAgent, "clear-agent", false, "Clear the assigned agent")
+	cmd.Flags().BoolVar(&clearAgentPrompt, "clear-agent-prompt", false, "Clear the agent prompt")
 	cmd.Flags().BoolVar(&clearBranch, "clear-branch", false, "Clear the branch name")
 	cmd.Flags().BoolVar(&clearPR, "clear-pr", false, "Clear the pull request URL")
 	return cmd

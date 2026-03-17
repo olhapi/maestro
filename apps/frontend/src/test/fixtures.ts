@@ -14,6 +14,8 @@ export function makeIssueSummary(
     workflow_phase: "implementation",
     priority: 2,
     labels: ["api"],
+    agent_name: "marketing",
+    agent_prompt: "Review website copy for clarity and conversion.",
     blocked_by: [],
     created_at: "2026-03-09T10:00:00Z",
     updated_at: "2026-03-09T11:00:00Z",

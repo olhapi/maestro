@@ -42,6 +42,7 @@ type Server struct {
 	store    *kanban.Store
 	service  *providers.Service
 	provider Provider
+	webhook  webhookAuthConfig
 	upgrader websocket.Upgrader
 }
 
@@ -56,6 +57,7 @@ func NewServer(store *kanban.Store, provider Provider) *Server {
 		store:    store,
 		service:  providers.NewService(store),
 		provider: provider,
+		webhook:  loadWebhookAuthConfig(),
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
 }
@@ -114,6 +116,7 @@ func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/webhooks", s.handleWebhook)
 	mux.HandleFunc("/api/v1/app/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("/api/v1/app/projects", s.handleProjects)
 	mux.HandleFunc("/api/v1/app/projects/", s.handleProject)
@@ -566,6 +569,8 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Enabled     *bool    `json:"enabled"`
 			Priority    int      `json:"priority"`
 			Labels      []string `json:"labels"`
+			AgentName   string   `json:"agent_name"`
+			AgentPrompt string   `json:"agent_prompt"`
 			State       string   `json:"state"`
 			BlockedBy   []string `json:"blocked_by"`
 			BranchName  string   `json:"branch_name"`
@@ -584,6 +589,8 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Enabled:     body.Enabled,
 			Priority:    body.Priority,
 			Labels:      body.Labels,
+			AgentName:   strings.TrimSpace(body.AgentName),
+			AgentPrompt: strings.TrimSpace(body.AgentPrompt),
 			State:       body.State,
 			BlockedBy:   body.BlockedBy,
 			BranchName:  body.BranchName,
@@ -637,6 +644,8 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				Enabled     *bool    `json:"enabled"`
 				Priority    int      `json:"priority"`
 				Labels      []string `json:"labels"`
+				AgentName   *string  `json:"agent_name"`
+				AgentPrompt *string  `json:"agent_prompt"`
 				BlockedBy   []string `json:"blocked_by"`
 				BranchName  string   `json:"branch_name"`
 				PRURL       string   `json:"pr_url"`
@@ -654,6 +663,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				"blocked_by":  body.BlockedBy,
 				"branch_name": body.BranchName,
 				"pr_url":      body.PRURL,
+			}
+			if body.AgentName != nil {
+				updates["agent_name"] = strings.TrimSpace(*body.AgentName)
+			}
+			if body.AgentPrompt != nil {
+				updates["agent_prompt"] = strings.TrimSpace(*body.AgentPrompt)
 			}
 			if body.IssueType != nil {
 				updates["issue_type"] = strings.TrimSpace(*body.IssueType)

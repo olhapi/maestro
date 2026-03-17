@@ -101,7 +101,6 @@ describe('connectDashboardSocket', () => {
 
     handle.disconnect()
   })
-
   it('coalesces visibility and focus resume events into a single refresh', () => {
     const onInvalidate = vi.fn()
 

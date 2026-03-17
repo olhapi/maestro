@@ -20,6 +20,8 @@ type IssueCreateInput struct {
 	Enabled     *bool
 	Priority    int
 	Labels      []string
+	AgentName   string
+	AgentPrompt string
 	State       string
 	BlockedBy   []string
 	BranchName  string

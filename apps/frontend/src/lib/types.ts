@@ -113,6 +113,8 @@ export interface Issue {
   workflow_phase: WorkflowPhase;
   priority: number;
   labels?: string[];
+  agent_name?: string;
+  agent_prompt?: string;
   branch_name?: string;
   pr_url?: string;
   blocked_by?: string[];
