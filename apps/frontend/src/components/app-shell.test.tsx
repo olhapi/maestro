@@ -79,9 +79,12 @@ vi.mock('@/components/command-palette', () => ({
 }))
 
 vi.mock('@/lib/live', () => ({
-  connectDashboardSocket: (onInvalidate: () => void) => {
+  connectDashboardSocket: ({ onInvalidate }: { onInvalidate: () => void }) => {
     invalidateSocket.mockImplementation(onInvalidate)
-    return () => {}
+    return {
+      reconnect: vi.fn(),
+      disconnect: vi.fn(),
+    }
   },
 }))
 
