@@ -300,6 +300,40 @@ describe('IssueDialog', () => {
     expect(screen.getByRole('button', { name: /create issue/i })).toBeDisabled()
   })
 
+  it('fills the default project once projects load after opening', async () => {
+    const bootstrap = makeBootstrapResponse()
+
+    function Harness() {
+      const [projects, setProjects] = React.useState<typeof bootstrap.projects>([])
+      return (
+        <>
+          <button type="button" onClick={() => setProjects(bootstrap.projects)}>
+            load projects
+          </button>
+          <IssueDialog
+            open
+            onOpenChange={vi.fn()}
+            projects={projects}
+            epics={bootstrap.epics}
+            onSubmit={vi.fn().mockResolvedValue(undefined)}
+          />
+        </>
+      )
+    }
+
+    renderWithQueryClient(<Harness />)
+
+    const submit = screen.getByRole('button', { name: /create issue/i })
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Late projects' } })
+    expect(submit).toBeDisabled()
+
+    fireEvent.click(screen.getByText('load projects'))
+
+    await waitFor(() => {
+      expect(submit).toBeEnabled()
+    })
+  })
+
   it('submits dictated description text after speech recognition finishes', async () => {
     vi.stubGlobal('SpeechRecognition', MockSpeechRecognition)
 
@@ -456,6 +490,38 @@ describe('ProjectDialog', () => {
 })
 
 describe('EpicDialog', () => {
+  it('fills the default project once projects load after opening', async () => {
+    const bootstrap = makeBootstrapResponse()
+
+    function Harness() {
+      const [projects, setProjects] = React.useState<typeof bootstrap.projects>([])
+      return (
+        <>
+          <button type="button" onClick={() => setProjects(bootstrap.projects)}>
+            load projects
+          </button>
+          <EpicDialog
+            open
+            onOpenChange={vi.fn()}
+            projects={projects}
+            onSubmit={vi.fn().mockResolvedValue(undefined)}
+          />
+        </>
+      )
+    }
+
+    renderWithQueryClient(<Harness />)
+
+    const submit = screen.getByRole('button', { name: /create epic/i })
+    fireEvent.change(screen.getByLabelText(/epic name/i), { target: { value: 'Late projects epic' } })
+    expect(submit).toBeDisabled()
+
+    fireEvent.click(screen.getByText('load projects'))
+
+    await waitFor(() => {
+      expect(submit).toBeEnabled()
+    })
+  })
   it('preserves draft input while open when parent rerenders with refreshed epic props', () => {
     const bootstrap = makeBootstrapResponse()
     const initial = {

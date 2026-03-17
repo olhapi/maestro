@@ -80,9 +80,10 @@ type IssueSummary struct {
 
 type IssueDetail struct {
 	IssueSummary
-	ProjectDescription string       `json:"project_description,omitempty"`
-	EpicDescription    string       `json:"epic_description,omitempty"`
-	Images             []IssueImage `json:"images"`
+	ProjectDescription       string            `json:"project_description,omitempty"`
+	EpicDescription          string            `json:"epic_description,omitempty"`
+	ProjectPermissionProfile PermissionProfile `json:"project_permission_profile,omitempty"`
+	Images                   []IssueImage      `json:"images"`
 }
 
 type IssueQuery struct {
@@ -203,26 +204,26 @@ type IssueAgentCommand struct {
 }
 
 type SessionFeedEntry struct {
-	IssueID         string            `json:"issue_id"`
-	IssueIdentifier string            `json:"issue_identifier"`
-	IssueTitle      string            `json:"issue_title,omitempty"`
-	Source          string            `json:"source"`
-	Active          bool              `json:"active"`
-	Status          string            `json:"status"`
+	IssueID          string                        `json:"issue_id"`
+	IssueIdentifier  string                        `json:"issue_identifier"`
+	IssueTitle       string                        `json:"issue_title,omitempty"`
+	Source           string                        `json:"source"`
+	Active           bool                          `json:"active"`
+	Status           string                        `json:"status"`
 	PendingInterrupt *appserver.PendingInteraction `json:"pending_interrupt,omitempty"`
-	Phase           string            `json:"phase,omitempty"`
-	Attempt         int               `json:"attempt,omitempty"`
-	RunKind         string            `json:"run_kind,omitempty"`
-	FailureClass    string            `json:"failure_class,omitempty"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-	LastEvent       string            `json:"last_event,omitempty"`
-	LastMessage     string            `json:"last_message,omitempty"`
-	TotalTokens     int               `json:"total_tokens,omitempty"`
-	EventsProcessed int               `json:"events_processed,omitempty"`
-	TurnsStarted    int               `json:"turns_started,omitempty"`
-	TurnsCompleted  int               `json:"turns_completed,omitempty"`
-	Terminal        bool              `json:"terminal"`
-	TerminalReason  string            `json:"terminal_reason,omitempty"`
-	History         []appserver.Event `json:"history,omitempty"`
-	Error           string            `json:"error,omitempty"`
+	Phase            string                        `json:"phase,omitempty"`
+	Attempt          int                           `json:"attempt,omitempty"`
+	RunKind          string                        `json:"run_kind,omitempty"`
+	FailureClass     string                        `json:"failure_class,omitempty"`
+	UpdatedAt        time.Time                     `json:"updated_at"`
+	LastEvent        string                        `json:"last_event,omitempty"`
+	LastMessage      string                        `json:"last_message,omitempty"`
+	TotalTokens      int                           `json:"total_tokens,omitempty"`
+	EventsProcessed  int                           `json:"events_processed,omitempty"`
+	TurnsStarted     int                           `json:"turns_started,omitempty"`
+	TurnsCompleted   int                           `json:"turns_completed,omitempty"`
+	Terminal         bool                          `json:"terminal"`
+	TerminalReason   string                        `json:"terminal_reason,omitempty"`
+	History          []appserver.Event             `json:"history,omitempty"`
+	Error            string                        `json:"error,omitempty"`
 }

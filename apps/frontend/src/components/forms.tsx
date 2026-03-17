@@ -278,6 +278,13 @@ export function EpicDialog({
     setDescription(initial?.description ?? "");
   });
 
+  useEffect(() => {
+    if (!open || initial?.project_id || projectID || !projects[0]?.id) {
+      return;
+    }
+    setProjectID(projects[0].id);
+  }, [initial?.project_id, open, projectID, projects]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -412,6 +419,13 @@ export function IssueDialog({
     setBlockerSearch("");
     setRemoteBlockerIssues([]);
   });
+
+  useEffect(() => {
+    if (!open || initial?.project_id || projectID || !projects[0]?.id) {
+      return;
+    }
+    setProjectID(projects[0].id);
+  }, [initial?.project_id, open, projectID, projects]);
 
   useEffect(() => {
     if (!open || !projectID || blockerSearch.trim().length < 2) {

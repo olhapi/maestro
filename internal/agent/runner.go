@@ -99,10 +99,7 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	if err != nil {
 		return nil, err
 	}
-	workflow, err = r.applyProjectPermissionProfile(workflow, issue)
-	if err != nil {
-		return nil, err
-	}
+	workflow = r.applyIssuePermissionProfile(workflow, issue)
 
 	workspace, err := r.getOrCreateWorkspace(workflow, issue)
 	if err != nil {
@@ -129,16 +126,12 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	return result, nil
 }
 
-func (r *Runner) applyProjectPermissionProfile(workflow *config.Workflow, issue *kanban.Issue) (*config.Workflow, error) {
-	if workflow == nil || issue == nil || strings.TrimSpace(issue.ProjectID) == "" {
-		return workflow, nil
+func (r *Runner) applyIssuePermissionProfile(workflow *config.Workflow, issue *kanban.Issue) *config.Workflow {
+	if workflow == nil || issue == nil {
+		return workflow
 	}
-	project, err := r.store.GetProject(issue.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	switch kanban.NormalizeProjectPermissionProfile(string(project.PermissionProfile)) {
-	case kanban.ProjectPermissionProfileFullAccess:
+	switch r.effectivePermissionProfile(issue) {
+	case kanban.PermissionProfileFullAccess:
 		cloned := *workflow
 		cloned.Config = workflow.Config
 		cloned.Config.Codex = workflow.Config.Codex
@@ -147,12 +140,30 @@ func (r *Runner) applyProjectPermissionProfile(workflow *config.Workflow, issue 
 			"type":          "dangerFullAccess",
 			"networkAccess": true,
 		}
-		return &cloned, nil
+		return &cloned
 	default:
-		return workflow, nil
+		return workflow
 	}
 }
 
+func (r *Runner) effectivePermissionProfile(issue *kanban.Issue) kanban.PermissionProfile {
+	if issue == nil {
+		return kanban.PermissionProfileDefault
+	}
+	profile := kanban.NormalizePermissionProfile(string(issue.PermissionProfile))
+	if profile != kanban.PermissionProfileDefault {
+		return profile
+	}
+	projectID := strings.TrimSpace(issue.ProjectID)
+	if projectID == "" || r.store == nil {
+		return kanban.PermissionProfileDefault
+	}
+	project, err := r.store.GetProject(projectID)
+	if err != nil {
+		return kanban.PermissionProfileDefault
+	}
+	return kanban.NormalizePermissionProfile(string(project.PermissionProfile))
+}
 func (r *Runner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
 	workflow, err := r.workflowProvider.Current()
 	if err != nil {
@@ -295,11 +306,16 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
 	}
 	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
-		prepared, err := r.prepareTurnPrompt(workflow, issue, attempt, turn)
+		activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
 		if err != nil {
 			return nil, err
 		}
-		out, err := r.executeStdioTurn(ctx, workspacePath, workflow.Config.Codex.Command, prepared.Prompt, workflow.Config.Codex.TurnTimeoutMs)
+		issue = refreshedIssue
+		prepared, err := r.prepareTurnPrompt(activeWorkflow, issue, attempt, turn)
+		if err != nil {
+			return nil, err
+		}
+		out, err := r.executeStdioTurn(ctx, workspacePath, activeWorkflow.Config.Codex.Command, prepared.Prompt, activeWorkflow.Config.Codex.TurnTimeoutMs)
 		if out != "" {
 			if allOutput.Len() > 0 {
 				allOutput.WriteString("\n")
@@ -327,24 +343,29 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 	if !runPhase.IsValid() {
 		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
 	}
+	activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
+	if err != nil {
+		return nil, err
+	}
+	issue = refreshedIssue
 	var client *appserver.Client
 	clientConfig := appserver.ClientConfig{
 		Executable:               "sh",
-		Args:                     []string{"-lc", workflow.Config.Codex.Command},
+		Args:                     []string{"-lc", activeWorkflow.Config.Codex.Command},
 		Env:                      os.Environ(),
 		Workspace:                workspacePath,
-		WorkspaceRoot:            workflow.Config.Workspace.Root,
+		WorkspaceRoot:            activeWorkflow.Config.Workspace.Root,
 		IssueID:                  issue.ID,
 		IssueIdentifier:          issue.Identifier,
-		CodexCommand:             workflow.Config.Codex.Command,
-		ExpectedVersion:          workflow.Config.Codex.ExpectedVersion,
-		ApprovalPolicy:           workflow.Config.Codex.ApprovalPolicy,
-		InitialCollaborationMode: workflow.Config.Codex.InitialCollaborationMode,
-		ThreadSandbox:            workflow.Config.Codex.ThreadSandbox,
-		TurnSandboxPolicy:        workflow.Config.Codex.TurnSandboxPolicy,
-		ReadTimeout:              time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
-		TurnTimeout:              time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
-		StallTimeout:             time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
+		CodexCommand:             activeWorkflow.Config.Codex.Command,
+		ExpectedVersion:          activeWorkflow.Config.Codex.ExpectedVersion,
+		ApprovalPolicy:           activeWorkflow.Config.Codex.ApprovalPolicy,
+		InitialCollaborationMode: activeWorkflow.Config.Codex.InitialCollaborationMode,
+		ThreadSandbox:            activeWorkflow.Config.Codex.ThreadSandbox,
+		TurnSandboxPolicy:        activeWorkflow.Config.Codex.TurnSandboxPolicy,
+		ReadTimeout:              time.Duration(activeWorkflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
+		TurnTimeout:              time.Duration(activeWorkflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
+		StallTimeout:             time.Duration(activeWorkflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
 		DynamicTools:             r.extensions.Specs(),
 		ToolExecutor:             r.extensionToolExecutor(),
 		ResumeThreadID:           strings.TrimSpace(issue.ResumeThreadID),
@@ -374,7 +395,6 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			r.interactionDoneObserver(issue.ID, interactionID)
 		},
 	}
-	var err error
 	client, err = appserver.Start(ctx, clientConfig)
 	if err != nil {
 		return &RunResult{Success: false, Error: err}, nil
@@ -382,7 +402,13 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 	defer client.Close()
 
 	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
-		prepared, err := r.prepareTurnPrompt(workflow, issue, attempt, turn)
+		activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
+		if err != nil {
+			return nil, err
+		}
+		issue = refreshedIssue
+		client.UpdatePermissionConfig(activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.ThreadSandbox, activeWorkflow.Config.Codex.TurnSandboxPolicy)
+		prepared, err := r.prepareTurnPrompt(activeWorkflow, issue, attempt, turn)
 		if err != nil {
 			return nil, err
 		}
@@ -418,7 +444,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 				AppSession: client.Session(),
 			}, nil
 		}
-		deliveredManualCommands, err := r.runPendingCommandsInActiveThread(ctx, client, issue, attempt, title)
+		deliveredManualCommands, err := r.runPendingCommandsInActiveThread(ctx, client, workflow, issue, attempt, title)
 		if err != nil {
 			return &RunResult{
 				Success:    false,
@@ -442,6 +468,20 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		issue = refreshed
 	}
 	return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+}
+
+func (r *Runner) currentWorkflowIssue(workflow *config.Workflow, issue *kanban.Issue) (*config.Workflow, *kanban.Issue, error) {
+	if issue == nil {
+		return nil, nil, fmt.Errorf("issue is required")
+	}
+	refreshed, err := r.store.GetIssue(issue.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if refreshed.ResumeThreadID == "" {
+		refreshed.ResumeThreadID = issue.ResumeThreadID
+	}
+	return r.applyIssuePermissionProfile(workflow, refreshed), refreshed, nil
 }
 
 func (r *Runner) prepareAppServerTurnInput(workspacePath string, issue *kanban.Issue, prompt string, includeImages bool) ([]gen.UserInputElement, error) {
@@ -766,7 +806,7 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 	})
 }
 
-func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, client *appserver.Client, issue *kanban.Issue, attempt int, title string) (bool, error) {
+func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, client *appserver.Client, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string) (bool, error) {
 	deadline := time.Now().Add(activeThreadCommandPollWindow)
 	var commands []kanban.IssueAgentCommand
 	for {
@@ -787,6 +827,12 @@ func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, client *a
 	if len(commands) == 0 {
 		return false, nil
 	}
+	activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
+	if err != nil {
+		return false, err
+	}
+	issue = refreshedIssue
+	client.UpdatePermissionConfig(activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.ThreadSandbox, activeWorkflow.Config.Codex.TurnSandboxPolicy)
 	var deliverErr error
 	if err := client.RunTurnWithStartCallback(ctx, buildOperatorFollowUpPrompt(commands), title, func(session *appserver.Session) {
 		deliverErr = r.markDeliveredCommands(issue, commands, "same_thread", session.ThreadID, attempt)

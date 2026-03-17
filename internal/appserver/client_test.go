@@ -1751,6 +1751,95 @@ func TestRespondToInteractionRejectsStoppedWaiter(t *testing.T) {
 	}
 }
 
+func TestUpdatePermissionConfigAppliesToSubsequentTurns(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-PERM")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-perm"}}}}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-1"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-perm", "turnId": "turn-1"}}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-2"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-perm", "turnId": "turn-2"}}},
+				},
+			},
+		},
+	}
+
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg = withTrace(cfg, traceFile)
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.RunTurn(context.Background(), "first", "First"); err != nil {
+		t.Fatalf("first RunTurn: %v", err)
+	}
+
+	client.UpdatePermissionConfig(
+		defaultApprovalPolicy(),
+		"danger-full-access",
+		map[string]interface{}{
+			"type":          "dangerFullAccess",
+			"networkAccess": true,
+		},
+	)
+
+	if err := client.RunTurn(context.Background(), "second", "Second"); err != nil {
+		t.Fatalf("second RunTurn: %v", err)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	threadStarts := 0
+	turnStarts := 0
+	foundUpdatedTurnSandbox := false
+	for _, payload := range lines {
+		switch payload["method"] {
+		case "thread/start":
+			threadStarts++
+		case "turn/start":
+			turnStarts++
+			if turnStarts != 2 {
+				continue
+			}
+			params, _ := payload["params"].(map[string]interface{})
+			sandboxPolicy, _ := params["sandboxPolicy"].(map[string]interface{})
+			if sandboxPolicy["type"] == "dangerFullAccess" && nestedStringMap(params, "threadId") == "thread-perm" {
+				foundUpdatedTurnSandbox = true
+			}
+		}
+	}
+	if threadStarts != 1 {
+		t.Fatalf("expected permission update to reuse the active thread, got %#v", lines)
+	}
+	if !foundUpdatedTurnSandbox {
+		t.Fatalf("expected second turn/start to use updated sandbox policy, got %#v", lines)
+	}
+}
+
 func TestEmitResolvedInteractionActivityPreservesStructuredApprovalStatus(t *testing.T) {
 	var events []ActivityEvent
 	client := &Client{

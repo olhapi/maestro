@@ -8,7 +8,7 @@ import (
 // State represents the workflow state of an issue
 type State string
 type ProjectState string
-type ProjectPermissionProfile string
+type PermissionProfile string
 
 const (
 	StateBacklog    State = "backlog"
@@ -21,8 +21,8 @@ const (
 	ProjectStateStopped ProjectState = "stopped"
 	ProjectStateRunning ProjectState = "running"
 
-	ProjectPermissionProfileDefault    ProjectPermissionProfile = "default"
-	ProjectPermissionProfileFullAccess ProjectPermissionProfile = "full-access"
+	PermissionProfileDefault    PermissionProfile = "default"
+	PermissionProfileFullAccess PermissionProfile = "full-access"
 )
 
 type WorkflowPhase string
@@ -100,27 +100,27 @@ func NormalizeProjectState(raw string) ProjectState {
 	}
 }
 
-func NormalizeProjectPermissionProfile(raw string) ProjectPermissionProfile {
+func NormalizePermissionProfile(raw string) PermissionProfile {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", string(ProjectPermissionProfileDefault):
-		return ProjectPermissionProfileDefault
+	case "", string(PermissionProfileDefault):
+		return PermissionProfileDefault
 	case "full-access", "full_access", "fullaccess":
-		return ProjectPermissionProfileFullAccess
+		return PermissionProfileFullAccess
 	default:
-		return ProjectPermissionProfileDefault
+		return PermissionProfileDefault
 	}
 }
 
-func ParseProjectPermissionProfile(raw string) (ProjectPermissionProfile, error) {
-	switch profile := NormalizeProjectPermissionProfile(raw); {
+func ParsePermissionProfile(raw string) (PermissionProfile, error) {
+	switch profile := NormalizePermissionProfile(raw); {
 	case strings.TrimSpace(raw) == "":
-		return ProjectPermissionProfileDefault, nil
-	case profile == ProjectPermissionProfileFullAccess:
+		return PermissionProfileDefault, nil
+	case profile == PermissionProfileFullAccess:
 		return profile, nil
-	case strings.EqualFold(strings.TrimSpace(raw), string(ProjectPermissionProfileDefault)):
-		return ProjectPermissionProfileDefault, nil
+	case strings.EqualFold(strings.TrimSpace(raw), string(PermissionProfileDefault)):
+		return PermissionProfileDefault, nil
 	default:
-		return "", invalidProjectPermissionProfileError(ProjectPermissionProfile(strings.TrimSpace(raw)))
+		return "", invalidPermissionProfileError(PermissionProfile(strings.TrimSpace(raw)))
 	}
 }
 
@@ -156,22 +156,22 @@ func TerminalStates() []State {
 
 // Project represents a top-level project/container
 type Project struct {
-	ID                 string                   `json:"id"`
-	Name               string                   `json:"name"`
-	Description        string                   `json:"description,omitempty"`
-	State              ProjectState             `json:"state"`
-	PermissionProfile  ProjectPermissionProfile `json:"permission_profile,omitempty"`
-	RepoPath           string                   `json:"repo_path,omitempty"`
-	WorkflowPath       string                   `json:"workflow_path,omitempty"`
-	ProviderKind       string                   `json:"provider_kind,omitempty"`
-	ProviderProjectRef string                   `json:"provider_project_ref,omitempty"`
-	ProviderConfig     map[string]interface{}   `json:"provider_config,omitempty"`
-	Capabilities       ProviderCapabilities     `json:"capabilities"`
-	OrchestrationReady bool                     `json:"orchestration_ready"`
-	DispatchReady      bool                     `json:"dispatch_ready"`
-	DispatchError      string                   `json:"dispatch_error,omitempty"`
-	CreatedAt          time.Time                `json:"created_at"`
-	UpdatedAt          time.Time                `json:"updated_at"`
+	ID                 string                 `json:"id"`
+	Name               string                 `json:"name"`
+	Description        string                 `json:"description,omitempty"`
+	State              ProjectState           `json:"state"`
+	PermissionProfile  PermissionProfile      `json:"permission_profile,omitempty"`
+	RepoPath           string                 `json:"repo_path,omitempty"`
+	WorkflowPath       string                 `json:"workflow_path,omitempty"`
+	ProviderKind       string                 `json:"provider_kind,omitempty"`
+	ProviderProjectRef string                 `json:"provider_project_ref,omitempty"`
+	ProviderConfig     map[string]interface{} `json:"provider_config,omitempty"`
+	Capabilities       ProviderCapabilities   `json:"capabilities"`
+	OrchestrationReady bool                   `json:"orchestration_ready"`
+	DispatchReady      bool                   `json:"dispatch_ready"`
+	DispatchError      string                 `json:"dispatch_error,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 // Epic represents a collection of related issues
@@ -186,37 +186,38 @@ type Epic struct {
 
 // Issue represents a single work item
 type Issue struct {
-	ID               string        `json:"id"`
-	ProjectID        string        `json:"project_id,omitempty"`
-	EpicID           string        `json:"epic_id,omitempty"`
-	Identifier       string        `json:"identifier"` // Human-readable: PROJ-123
-	IssueType        IssueType     `json:"issue_type"`
-	ProviderKind     string        `json:"provider_kind,omitempty"`
-	ProviderIssueRef string        `json:"provider_issue_ref,omitempty"`
-	ProviderShadow   bool          `json:"provider_shadow,omitempty"`
-	Title            string        `json:"title"`
-	Description      string        `json:"description,omitempty"`
-	State            State         `json:"state"`
-	WorkflowPhase    WorkflowPhase `json:"workflow_phase"`
-	Priority         int           `json:"priority,omitempty"` // Lower = higher priority
-	Labels           []string      `json:"labels,omitempty"`
-	AgentName        string        `json:"agent_name,omitempty"`
-	AgentPrompt      string        `json:"agent_prompt,omitempty"`
-	BranchName       string        `json:"branch_name,omitempty"`
-	PRURL            string        `json:"pr_url,omitempty"`
-	BlockedBy        []string      `json:"blocked_by,omitempty"` // Issue identifiers
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
-	TotalTokensSpent int           `json:"total_tokens_spent"`
-	StartedAt        *time.Time    `json:"started_at,omitempty"`
-	CompletedAt      *time.Time    `json:"completed_at,omitempty"`
-	LastSyncedAt     *time.Time    `json:"last_synced_at,omitempty"`
-	Cron             string        `json:"cron,omitempty"`
-	Enabled          bool          `json:"enabled"`
-	NextRunAt        *time.Time    `json:"next_run_at,omitempty"`
-	LastEnqueuedAt   *time.Time    `json:"last_enqueued_at,omitempty"`
-	PendingRerun     bool          `json:"pending_rerun"`
-	ResumeThreadID   string        `json:"-"`
+	ID                string            `json:"id"`
+	ProjectID         string            `json:"project_id,omitempty"`
+	EpicID            string            `json:"epic_id,omitempty"`
+	Identifier        string            `json:"identifier"` // Human-readable: PROJ-123
+	IssueType         IssueType         `json:"issue_type"`
+	ProviderKind      string            `json:"provider_kind,omitempty"`
+	ProviderIssueRef  string            `json:"provider_issue_ref,omitempty"`
+	ProviderShadow    bool              `json:"provider_shadow,omitempty"`
+	Title             string            `json:"title"`
+	Description       string            `json:"description,omitempty"`
+	State             State             `json:"state"`
+	WorkflowPhase     WorkflowPhase     `json:"workflow_phase"`
+	PermissionProfile PermissionProfile `json:"permission_profile,omitempty"`
+	Priority          int               `json:"priority,omitempty"` // Lower = higher priority
+	Labels            []string          `json:"labels,omitempty"`
+	AgentName         string            `json:"agent_name,omitempty"`
+	AgentPrompt       string            `json:"agent_prompt,omitempty"`
+	BranchName        string            `json:"branch_name,omitempty"`
+	PRURL             string            `json:"pr_url,omitempty"`
+	BlockedBy         []string          `json:"blocked_by,omitempty"` // Issue identifiers
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	TotalTokensSpent  int               `json:"total_tokens_spent"`
+	StartedAt         *time.Time        `json:"started_at,omitempty"`
+	CompletedAt       *time.Time        `json:"completed_at,omitempty"`
+	LastSyncedAt      *time.Time        `json:"last_synced_at,omitempty"`
+	Cron              string            `json:"cron,omitempty"`
+	Enabled           bool              `json:"enabled"`
+	NextRunAt         *time.Time        `json:"next_run_at,omitempty"`
+	LastEnqueuedAt    *time.Time        `json:"last_enqueued_at,omitempty"`
+	PendingRerun      bool              `json:"pending_rerun"`
+	ResumeThreadID    string            `json:"-"`
 }
 
 func (i Issue) IsRecurring() bool {

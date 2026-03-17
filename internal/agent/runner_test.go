@@ -207,28 +207,29 @@ func TestBuildTurnPromptIncludesProjectContextInDefaultImplementationPrompt(t *t
 	}
 }
 
-func TestApplyProjectPermissionProfileOverridesWorkflowSandboxForFullAccess(t *testing.T) {
+func TestApplyIssuePermissionProfileOverridesWorkflowSandboxForFullAccess(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	project, err := store.CreateProject("Platform", "", repoPath, "")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if err := store.UpdateProjectPermissionProfile(project.ID, kanban.ProjectPermissionProfileFullAccess); err != nil {
-		t.Fatalf("UpdateProjectPermissionProfile: %v", err)
-	}
 	issue, err := store.CreateIssue(project.ID, "", "Sandbox override", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
 	}
 	workflow, err := manager.Current()
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
 
-	overridden, err := runner.applyProjectPermissionProfile(workflow, issue)
-	if err != nil {
-		t.Fatalf("applyProjectPermissionProfile: %v", err)
-	}
+	overridden := runner.applyIssuePermissionProfile(workflow, issue)
 	if overridden.Config.Codex.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected danger-full-access thread sandbox, got %q", overridden.Config.Codex.ThreadSandbox)
 	}
@@ -240,6 +241,36 @@ func TestApplyProjectPermissionProfileOverridesWorkflowSandboxForFullAccess(t *t
 	}
 }
 
+func TestApplyIssuePermissionProfileFallsBackToProjectProfile(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := store.UpdateProjectPermissionProfile(project.ID, kanban.PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Inherited sandbox override", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfileDefault); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	overridden := runner.applyIssuePermissionProfile(workflow, issue)
+	if overridden.Config.Codex.ThreadSandbox != "danger-full-access" {
+		t.Fatalf("expected inherited danger-full-access thread sandbox, got %q", overridden.Config.Codex.ThreadSandbox)
+	}
+}
 func TestBuildTurnPromptIncludesProjectContextInDefaultPhasePrompts(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	workflow := defaultPromptWorkflowForTest()

@@ -101,6 +101,9 @@ type Client struct {
 	requestMu sync.Mutex
 	nextID    int
 	closeOnce sync.Once
+	configMu  sync.RWMutex
+
+	activeThreadSandbox string
 
 	pendingMu           sync.Mutex
 	pendingInteractions map[string]*interactionWaiter
@@ -342,8 +345,12 @@ func (c *Client) RunTurnWithInputs(ctx context.Context, input []gen.UserInputEle
 }
 
 func (c *Client) RunTurnWithInputsAndStartCallback(ctx context.Context, input []gen.UserInputElement, title string, onStarted func(*Session)) error {
+	if err := c.ensureThreadForTurn(ctx); err != nil {
+		return err
+	}
 	requestID := c.nextRequestID()
-	req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, input, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.TurnSandboxPolicy)
+	approvalPolicy, _, turnSandboxPolicy := c.permissionConfig()
+	req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, input, filepath.Clean(c.cfg.Workspace), approvalPolicy, turnSandboxPolicy)
 	if err != nil {
 		return err
 	}
@@ -403,9 +410,9 @@ func (c *Client) initialize(ctx context.Context) error {
 }
 
 func (c *Client) initializeThread(ctx context.Context) error {
+	_, threadSandbox, _ := c.permissionConfig()
 	if threadID, resumed := c.tryResumeThread(ctx); resumed {
-		c.session.ThreadID = threadID
-		c.threadResumed = true
+		c.activateThread(threadID, threadSandbox, true)
 		c.logger.Info("Codex thread resumed", "thread_id", threadID, "source", strings.TrimSpace(c.cfg.ResumeSource))
 		return nil
 	}
@@ -414,8 +421,7 @@ func (c *Client) initializeThread(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.session.ThreadID = threadID
-	c.threadResumed = false
+	c.activateThread(threadID, threadSandbox, false)
 	c.logger.Info("Codex thread started", "thread_id", threadID)
 	return nil
 }
@@ -427,7 +433,8 @@ func (c *Client) tryResumeThread(ctx context.Context) (string, bool) {
 	}
 
 	requestID := c.nextRequestID()
-	req, err := protocol.ThreadResumeRequest(requestID, threadID, filepath.Clean(c.cfg.Workspace), c.cfg.ApprovalPolicy, c.cfg.ThreadSandbox)
+	approvalPolicy, threadSandbox, _ := c.permissionConfig()
+	req, err := protocol.ThreadResumeRequest(requestID, threadID, filepath.Clean(c.cfg.Workspace), approvalPolicy, threadSandbox)
 	if err != nil {
 		c.logger.Warn("Codex thread resume unavailable; falling back to thread/start",
 			"thread_id", threadID,
@@ -467,11 +474,12 @@ func (c *Client) tryResumeThread(ctx context.Context) (string, bool) {
 
 func (c *Client) startThread(ctx context.Context) (string, error) {
 	requestID := c.nextRequestID()
+	approvalPolicy, threadSandbox, _ := c.permissionConfig()
 	req, err := protocol.ThreadStartRequest(
 		requestID,
 		filepath.Clean(c.cfg.Workspace),
-		c.cfg.ApprovalPolicy,
-		c.cfg.ThreadSandbox,
+		approvalPolicy,
+		threadSandbox,
 		c.cfg.DynamicTools,
 		map[string]interface{}{"initial_collaboration_mode": strings.TrimSpace(c.cfg.InitialCollaborationMode)},
 	)
@@ -490,6 +498,57 @@ func (c *Client) startThread(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("decode thread/start response: %w", err)
 	}
 	return threadID, nil
+}
+
+func (c *Client) UpdatePermissionConfig(approvalPolicy interface{}, threadSandbox string, turnSandboxPolicy map[string]interface{}) {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	c.cfg.ApprovalPolicy = approvalPolicy
+	if strings.TrimSpace(threadSandbox) != "" {
+		c.cfg.ThreadSandbox = threadSandbox
+	}
+	c.cfg.TurnSandboxPolicy = normalizeTurnSandboxPolicy(turnSandboxPolicy, c.cfg.Workspace, c.cfg.WorkspaceRoot)
+}
+
+func (c *Client) permissionConfig() (interface{}, string, map[string]interface{}) {
+	c.configMu.RLock()
+	defer c.configMu.RUnlock()
+	return c.cfg.ApprovalPolicy, c.cfg.ThreadSandbox, normalizeTurnSandboxPolicy(c.cfg.TurnSandboxPolicy, c.cfg.Workspace, c.cfg.WorkspaceRoot)
+}
+
+func (c *Client) ensureThreadForTurn(ctx context.Context) error {
+	if strings.TrimSpace(c.session.ThreadID) != "" {
+		return nil
+	}
+
+	_, desiredThreadSandbox, _ := c.permissionConfig()
+	desiredThreadSandbox = strings.TrimSpace(desiredThreadSandbox)
+	threadID, err := c.startThread(ctx)
+	if err != nil {
+		return err
+	}
+	c.activateThread(threadID, desiredThreadSandbox, false)
+	c.logger.Info("Codex thread started for turn", "thread_id", threadID)
+	return nil
+}
+
+func (c *Client) activateThread(threadID, threadSandbox string, resumed bool) {
+	c.session.ThreadID = threadID
+	c.session.TurnID = ""
+	c.session.SessionID = ""
+	c.session.Terminal = false
+	c.session.TerminalReason = ""
+	c.threadResumed = resumed
+
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	c.activeThreadSandbox = strings.TrimSpace(threadSandbox)
+}
+
+func (c *Client) activeThreadConfig() string {
+	c.configMu.RLock()
+	defer c.configMu.RUnlock()
+	return strings.TrimSpace(c.activeThreadSandbox)
 }
 
 func decodeThreadResponse(resp protocol.Message) (string, error) {
