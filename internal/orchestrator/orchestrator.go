@@ -29,6 +29,7 @@ const (
 	automaticRetryHistoryLimit   = 200
 	gracefulShutdownStopReason   = "graceful_shutdown"
 	gracefulShutdownWaitTimeout  = 5 * time.Second
+	reviewPreviewPublishTimeout  = 15 * time.Second
 	reviewPreviewDir             = ".maestro/review-preview"
 )
 
@@ -1302,7 +1303,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		)
 	default:
 		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_completed", "", result)
-		o.publishIssuePreview(current, phase, result)
+		o.publishIssuePreviewAsync(current, phase, result)
 		next, scheduled := o.handleSuccessfulRun(workflow, current, phase, attempt, result)
 		extra := []interface{}{"phase", phase}
 		if scheduled {
@@ -1316,7 +1317,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	o.flushIssueTokenSpend(issue.ID)
 }
 
-func (o *Orchestrator) publishIssuePreview(issue *kanban.Issue, phase kanban.WorkflowPhase, result *agent.RunResult) {
+func (o *Orchestrator) publishIssuePreviewAsync(issue *kanban.Issue, phase kanban.WorkflowPhase, result *agent.RunResult) {
 	if phase != kanban.WorkflowPhaseDone || issue == nil {
 		return
 	}
@@ -1329,23 +1330,28 @@ func (o *Orchestrator) publishIssuePreview(issue *kanban.Issue, phase kanban.Wor
 		return
 	}
 	commentBody := buildIssuePreviewCommentBody(issue, result, previewPath)
-	if err := o.service.CreateIssueComment(context.Background(), issue.Identifier, providers.IssueCommentInput{
-		Body: commentBody,
-		Attachments: []providers.IssueCommentAttachment{{
-			Path: previewPath,
-		}},
-	}); err != nil {
-		if providers.IsUnsupported(err) {
+	issueCopy := *issue
+	go func(issue kanban.Issue, previewPath string, commentBody string) {
+		ctx, cancel := context.WithTimeout(context.Background(), reviewPreviewPublishTimeout)
+		defer cancel()
+		if err := o.service.CreateIssueComment(ctx, issue.Identifier, providers.IssueCommentInput{
+			Body: commentBody,
+			Attachments: []providers.IssueCommentAttachment{{
+				Path: previewPath,
+			}},
+		}); err != nil {
+			if providers.IsUnsupported(err) {
+				return
+			}
+			slog.Warn("Failed to publish issue preview",
+				issueLogAttrs(&issue, -1, "phase", phase, "preview_path", previewPath, "error", err)...,
+			)
 			return
 		}
-		slog.Warn("Failed to publish issue preview",
-			issueLogAttrs(issue, -1, "phase", phase, "preview_path", previewPath, "error", err)...,
+		slog.Info("Published issue preview",
+			issueLogAttrs(&issue, -1, "phase", phase, "preview_path", previewPath)...,
 		)
-		return
-	}
-	slog.Info("Published issue preview",
-		issueLogAttrs(issue, -1, "phase", phase, "preview_path", previewPath)...,
-	)
+	}(issueCopy, previewPath, commentBody)
 }
 
 func findReviewPreviewVideo(workspacePath string) (string, error) {
@@ -1361,7 +1367,14 @@ func findReviewPreviewVideo(workspacePath string) (string, error) {
 		return "", err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(entry.Name()))

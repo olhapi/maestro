@@ -341,6 +341,18 @@ func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
 	t.Fatal("timed out waiting for running orchestrator jobs to stop")
 }
 
+func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if check() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for condition")
+}
+
 func waitForRunningCount(t *testing.T, orch *Orchestrator, expected int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -1245,7 +1257,10 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 		Variables map[string]interface{} `json:"variables"`
 	}
 
-	var requests []graphqlRequest
+	var (
+		requests   []graphqlRequest
+		requestsMu sync.Mutex
+	)
 	var uploadedBody string
 	var uploadedContentType string
 	var server *httptest.Server
@@ -1264,7 +1279,9 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
+			requestsMu.Lock()
 			requests = append(requests, body)
+			requestsMu.Unlock()
 			switch {
 			case strings.Contains(body.Query, "query MaestroLinearIssue"):
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1375,7 +1392,14 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForNoRunning(t, orch, time.Second)
+	waitForCondition(t, time.Second, func() bool {
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+		return len(requests) == 3
+	})
 
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
 	if len(requests) != 3 {
 		t.Fatalf("expected issue lookup, file upload, and comment create requests, got %d", len(requests))
 	}
@@ -3382,6 +3406,29 @@ func TestFindReviewPreviewVideoReturnsKnownMediaExtensions(t *testing.T) {
 	}
 }
 
+func TestFindReviewPreviewVideoSkipsSymlinkArtifacts(t *testing.T) {
+	workspace := t.TempDir()
+	previewDir := filepath.Join(workspace, ".maestro", "review-preview")
+	if err := os.MkdirAll(previewDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret.mp4")
+	if err := os.WriteFile(outside, []byte("video"), 0o644); err != nil {
+		t.Fatalf("WriteFile outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(previewDir, "leak.mp4")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	got, err := findReviewPreviewVideo(workspace)
+	if err != nil {
+		t.Fatalf("findReviewPreviewVideo: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected symlink preview to be ignored, got %s", got)
+	}
+}
+
 func TestBuildIssuePreviewCommentBodyIncludesSummaryAndFilename(t *testing.T) {
 	body := buildIssuePreviewCommentBody(&kanban.Issue{Identifier: "MAES-18"}, &agent.RunResult{
 		Output: "fallback output",
@@ -3399,4 +3446,147 @@ func TestBuildIssuePreviewCommentBodyIncludesSummaryAndFilename(t *testing.T) {
 	if !strings.Contains(body, "Preview file: `preview.mp4`") {
 		t.Fatalf("expected filename in comment body, got %q", body)
 	}
+}
+
+func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+
+	type previewGraphqlRequest struct {
+		Query     string                 `json:"query"`
+		Variables map[string]interface{} `json:"variables"`
+	}
+
+	releaseRequests := make(chan struct{})
+	var requestCount int
+	var requestMu sync.Mutex
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/upload":
+			<-releaseRequests
+			w.WriteHeader(http.StatusOK)
+		default:
+			var body previewGraphqlRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			requestMu.Lock()
+			requestCount++
+			requestMu.Unlock()
+			<-releaseRequests
+			switch {
+			case strings.Contains(body.Query, "query MaestroLinearIssue"):
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"issues": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{
+									"id":               "linear-1",
+									"identifier":       "LIN-1",
+									"title":            "Done success",
+									"state":            map[string]interface{}{"name": "done"},
+									"labels":           map[string]interface{}{"nodes": []interface{}{}},
+									"inverseRelations": map[string]interface{}{"nodes": []interface{}{}},
+								},
+							},
+						},
+					},
+				})
+			case strings.Contains(body.Query, "fileUpload"):
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"fileUpload": map[string]interface{}{
+							"success": true,
+							"uploadFile": map[string]interface{}{
+								"uploadUrl": server.URL + "/upload",
+								"assetUrl":  "https://linear.example/assets/walkthrough.webm",
+							},
+						},
+					},
+				})
+			case strings.Contains(body.Query, "commentCreate"):
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"commentCreate": map[string]interface{}{"success": true},
+					},
+				})
+			default:
+				t.Fatalf("unexpected graphql query: %s", body.Query)
+			}
+		}
+	}))
+	defer server.Close()
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug", "endpoint": server.URL},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProjectID:        project.ID,
+		ProviderKind:     kanban.ProviderKindLinear,
+		ProviderIssueRef: "linear-1",
+		Identifier:       "LIN-1",
+		Title:            "Done success",
+		State:            kanban.StateDone,
+		WorkflowPhase:    kanban.WorkflowPhaseDone,
+		ProviderShadow:   true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone); err != nil {
+		t.Fatalf("UpdateIssueStateAndPhase: %v", err)
+	}
+
+	wsPath := filepath.Join(workspaceRoot, issue.Identifier)
+	previewDir := filepath.Join(wsPath, ".maestro", "review-preview")
+	if err := os.MkdirAll(previewDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(previewDir, "walkthrough.webm"), []byte("video-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile preview: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, wsPath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseDone: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				return &agent.RunResult{Success: true}, nil
+			},
+		},
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	requestMu.Lock()
+	gotRequests := requestCount
+	requestMu.Unlock()
+	if gotRequests != 1 {
+		t.Fatalf("expected preview publication to start in the background before run cleanup, got %d requests", gotRequests)
+	}
+
+	close(releaseRequests)
+	waitForCondition(t, time.Second, func() bool {
+		requestMu.Lock()
+		defer requestMu.Unlock()
+		return requestCount >= 3
+	})
 }
