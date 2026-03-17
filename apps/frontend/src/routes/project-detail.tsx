@@ -270,8 +270,8 @@ export function ProjectDetailPage() {
               </option>
             </select>
             <p className="text-xs text-[var(--muted-foreground)]">
-              New issues inherit this profile. Existing issues keep their own setting unless they are still on
-              the default profile.
+              Issues on the default profile inherit this setting. Switching an issue to full access pins it there
+              even if the project default changes later.
             </p>
           </div>
           {!dispatchReady ? (

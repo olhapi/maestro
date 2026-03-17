@@ -79,9 +79,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
 		t.Fatalf("expected initial collaboration mode %q, got %q", InitialCollaborationModePlan, cfg.Codex.InitialCollaborationMode)
 	}
-	if cfg.Codex.TurnSandboxPolicy["networkAccess"] != true {
-		t.Fatalf("expected default turn sandbox networkAccess=true, got %+v", cfg.Codex.TurnSandboxPolicy)
-	}
 	reject, ok := cfg.Codex.ApprovalPolicy.(map[string]interface{})["reject"].(map[string]interface{})
 	if !ok || reject["request_permissions"] != false {
 		t.Fatalf("expected default approval policy to reject permission requests, got %+v", cfg.Codex.ApprovalPolicy)
@@ -573,13 +570,6 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"initial_collaboration_mode: plan",
 		"on-request, on-failure, untrusted",
 		"Ignored for stdio runs and resumed threads.",
-		"read-only, workspace-write, danger-full-access",
-		"type: workspaceWrite",
-		"networkAccess: true",
-		"# writableRoots:",
-		"# readOnlyAccess:",
-		"# excludeTmpdirEnvVar: false",
-		"# excludeSlashTmp: false",
 		"turn_timeout_ms: 1800000",
 		"read_timeout_ms: 10000",
 		"stall_timeout_ms: 300000",
@@ -612,15 +602,12 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 		"command: codex app-server",
 		"mode: app_server",
 		"initial_collaboration_mode: plan",
-		"thread_sandbox: workspace-write",
-		"type: workspaceWrite",
-		"networkAccess: true",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if !strings.Contains(stdout.String(), "Target workflow file:") || !strings.Contains(stdout.String(), "Runtime setup:") || !strings.Contains(stdout.String(), "Sandbox access:") {
+	if !strings.Contains(stdout.String(), "Target workflow file:") || !strings.Contains(stdout.String(), "Runtime setup:") {
 		t.Fatalf("expected wizard output, got %q", stdout.String())
 	}
 }
@@ -630,7 +617,7 @@ func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("./ws\n2\ncodex exec --model test\nstdio\n3\n"),
+		Stdin:       strings.NewReader("./ws\n2\ncodex exec --model test\nstdio\n"),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -646,9 +633,6 @@ func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
 		"command: codex exec --model test",
 		"mode: stdio",
 		"initial_collaboration_mode: plan",
-		"thread_sandbox: danger-full-access",
-		"type: dangerFullAccess",
-		"networkAccess: true",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
@@ -660,13 +644,12 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 	tmpDir := t.TempDir()
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
-		Interactive:    true,
-		WorkspaceRoot:  "./flag-ws",
-		CodexCommand:   "codex exec --model custom",
-		AgentMode:      AgentModeStdio,
-		SandboxProfile: SandboxProfileSecure,
-		Stdin:          strings.NewReader(""),
-		Stdout:         &stdout,
+		Interactive:   true,
+		WorkspaceRoot: "./flag-ws",
+		CodexCommand:  "codex exec --model custom",
+		AgentMode:     AgentModeStdio,
+		Stdin:         strings.NewReader(""),
+		Stdout:        &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
 	}
@@ -681,15 +664,12 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 		"command: codex exec --model custom",
 		"mode: stdio",
 		"initial_collaboration_mode: plan",
-		"thread_sandbox: workspace-write",
-		"type: workspaceWrite",
-		"networkAccess: false",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if strings.Contains(stdout.String(), "Runtime setup:") || strings.Contains(stdout.String(), "Workspace root [") || strings.Contains(stdout.String(), "Sandbox access:") {
+	if strings.Contains(stdout.String(), "Runtime setup:") || strings.Contains(stdout.String(), "Workspace root [") {
 		t.Fatalf("expected explicit values to skip prompts, got %q", stdout.String())
 	}
 }
@@ -732,9 +712,6 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
 		t.Fatalf("unexpected initial collaboration mode: %q", workflow.Config.Codex.InitialCollaborationMode)
 	}
-	if workflow.Config.Codex.TurnSandboxPolicy["networkAccess"] != true {
-		t.Fatalf("expected networkAccess=true, got %+v", workflow.Config.Codex.TurnSandboxPolicy)
-	}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "Review the implementation for issue") {
 		t.Fatalf("expected generated workflow review phase to round-trip, got %+v", workflow.Config.Phases.Review)
 	}
@@ -744,6 +721,43 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	assertInitDonePromptSemantics(t, workflow.Config.Phases.Done.Prompt)
 	if !strings.Contains(workflow.PromptTemplate, "{{ issue.identifier }}") {
 		t.Fatalf("unexpected prompt template: %q", workflow.PromptTemplate)
+	}
+	if strings.Contains(content, "thread_sandbox:") || strings.Contains(content, "turn_sandbox_policy:") {
+		t.Fatalf("expected generated workflow to omit sandbox fields, got %q", content)
+	}
+}
+
+func TestLegacyWorkflowUsesFullAccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy:
+    type: dangerFullAccess
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	usesFullAccess, err := LegacyWorkflowUsesFullAccess(workflowPath)
+	if err != nil {
+		t.Fatalf("LegacyWorkflowUsesFullAccess: %v", err)
+	}
+	if !usesFullAccess {
+		t.Fatal("expected legacy workflow helper to detect full access")
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Codex.Command == "" {
+		t.Fatal("expected workflow to remain loadable after ignoring legacy sandbox fields")
 	}
 }
 
@@ -766,14 +780,6 @@ func TestInitWorkflowRejectsInvalidExplicitAgentMode(t *testing.T) {
 	err := InitWorkflow(tmpDir, InitOptions{AgentMode: "invalid"})
 	if !errors.Is(err, ErrInvalidInitAgentMode) {
 		t.Fatalf("expected invalid agent mode error, got %v", err)
-	}
-}
-
-func TestInitWorkflowRejectsInvalidSandboxProfile(t *testing.T) {
-	tmpDir := t.TempDir()
-	err := InitWorkflow(tmpDir, InitOptions{SandboxProfile: "unsafe"})
-	if !errors.Is(err, ErrInvalidSandboxProfile) {
-		t.Fatalf("expected invalid sandbox profile error, got %v", err)
 	}
 }
 
@@ -868,34 +874,6 @@ func TestInitWorkflowInteractiveOverwriteAccepted(t *testing.T) {
 	}
 	if string(data) == "original" {
 		t.Fatalf("expected existing workflow to be replaced")
-	}
-}
-
-func TestInitWorkflowSandboxProfilesMapToExpectedConfig(t *testing.T) {
-	tests := []struct {
-		name          string
-		profile       string
-		threadSandbox string
-		turnType      string
-		networkAccess string
-	}{
-		{name: "careful", profile: SandboxProfileCareful, threadSandbox: "workspace-write", turnType: "workspaceWrite", networkAccess: "networkAccess: true"},
-		{name: "secure", profile: SandboxProfileSecure, threadSandbox: "workspace-write", turnType: "workspaceWrite", networkAccess: "networkAccess: false"},
-		{name: "yolo", profile: SandboxProfileYolo, threadSandbox: "danger-full-access", turnType: "dangerFullAccess", networkAccess: "networkAccess: true"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			text := buildWorkflowFile(InitOptions{SandboxProfile: tc.profile})
-			for _, want := range []string{
-				"thread_sandbox: " + tc.threadSandbox,
-				"type: " + tc.turnType,
-				tc.networkAccess,
-			} {
-				if !strings.Contains(text, want) {
-					t.Fatalf("expected generated workflow to contain %q", want)
-				}
-			}
-		})
 	}
 }
 

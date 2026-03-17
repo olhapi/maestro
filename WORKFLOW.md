@@ -76,7 +76,7 @@ agent:
   # Scheduling behavior. Other options: parallel, per_project_serial.
   dispatch_mode: parallel
 
-# Codex CLI launch and sandbox settings.
+# Codex CLI launch and collaboration settings.
 codex:
   # Exact command Maestro launches for the agent.
   command: codex app-server
@@ -85,24 +85,9 @@ codex:
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured reject object is also supported for per-category rejection policies.
   approval_policy: never
-  # Thread-level sandbox. Other options: read-only, workspace-write, danger-full-access.
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    # Per-turn sandbox policy. Other policy types: readOnly, externalSandbox, dangerFullAccess.
-    type: workspaceWrite
-    # Network access during a turn. For externalSandbox, the schema also allows enabled/restricted.
-    networkAccess: true
-    # Optional for workspaceWrite. If omitted, Maestro fills writable roots automatically.
-    # writableRoots:
-    #   - /absolute/path/to/repo
-    # Optional for workspaceWrite. Other options: fullAccess or restricted.
-    # readOnlyAccess:
-    #   type: fullAccess
-    #   # For restricted, you can also set includePlatformDefaults and readableRoots.
-    # Optional for workspaceWrite only.
-    # excludeTmpdirEnvVar: false
-    # Optional for workspaceWrite only.
-    # excludeSlashTmp: false
+  # Initial collaboration mode for fresh app_server threads. Other option: default.
+  # Ignored for stdio runs and resumed threads.
+  initial_collaboration_mode: plan
   # Maximum total runtime for one turn before Maestro cancels it.
   turn_timeout_ms: 3600000
   # Maximum time to wait for streamed output before considering the stream stalled.

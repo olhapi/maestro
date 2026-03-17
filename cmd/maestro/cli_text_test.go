@@ -291,7 +291,6 @@ func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
 		"--workspace-root",
 		"--codex-command",
 		"--agent-mode",
-		"--sandbox-profile",
 		"--force",
 		"--defaults",
 	} {
@@ -338,12 +337,12 @@ func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
 	}
 }
 
-func TestWorkflowInitSandboxProfileFlagWritesSecureConfig(t *testing.T) {
+func TestWorkflowInitOmitsSandboxFields(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
 
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", codexPath+" app-server", "--sandbox-profile", "secure")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init failed: %d stderr=%s stdout=%s", code, stderr, stdout)
 	}
@@ -353,13 +352,12 @@ func TestWorkflowInitSandboxProfileFlagWritesSecureConfig(t *testing.T) {
 		t.Fatalf("read workflow: %v", err)
 	}
 	text := string(data)
-	for _, want := range []string{
-		"thread_sandbox: workspace-write",
-		"type: workspaceWrite",
-		"networkAccess: false",
+	for _, unwanted := range []string{
+		"thread_sandbox:",
+		"turn_sandbox_policy:",
 	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("expected workflow to contain %q, got %q", want, text)
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("expected workflow to omit %q, got %q", unwanted, text)
 		}
 	}
 }

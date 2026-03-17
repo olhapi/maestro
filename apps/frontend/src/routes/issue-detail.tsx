@@ -36,7 +36,7 @@ function permissionProfileHelpText(issuePermissionProfile: PermissionProfile | u
   if ((issuePermissionProfile ?? "default") === "default" && (projectPermissionProfile ?? "default") === "full-access") {
     return "Default currently inherits this project's full-access profile. Switching to full access keeps the issue pinned there even if the project default changes later."
   }
-  return "Default follows the workflow sandbox. Full access applies on the next turn in the active run without restarting the thread."
+  return "Default inherits the project permission profile. Full access applies on the next turn in the active run without restarting the thread."
 }
 
 function commandStatusMeta(status: AgentCommand["status"]) {

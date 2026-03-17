@@ -13,6 +13,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 // Store manages persistence for the kanban board
@@ -968,6 +969,31 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 	return project, nil
 }
 
+func (s *Store) backfillLegacyProjectPermissionProfile(project *Project) error {
+	if project == nil {
+		return nil
+	}
+	if NormalizePermissionProfile(string(project.PermissionProfile)) != PermissionProfileDefault {
+		return nil
+	}
+	if strings.TrimSpace(project.RepoPath) == "" && strings.TrimSpace(project.WorkflowPath) == "" {
+		return nil
+	}
+
+	workflowPath := config.ResolveWorkflowPath(project.RepoPath, project.WorkflowPath)
+	usesFullAccess, err := config.LegacyWorkflowUsesFullAccess(workflowPath)
+	if err != nil || !usesFullAccess {
+		return nil
+	}
+	if err := s.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
+		return err
+	}
+	project.PermissionProfile = PermissionProfileFullAccess
+	project.UpdatedAt = time.Now().UTC()
+	hydrateProject(project)
+	return nil
+}
+
 func (s *Store) GetProject(id string) (*Project, error) {
 	p := &Project{}
 	var providerConfigJSON string
@@ -981,6 +1007,9 @@ func (s *Store) GetProject(id string) (*Project, error) {
 	p.PermissionProfile = NormalizePermissionProfile(string(p.PermissionProfile))
 	p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 	hydrateProject(p)
+	if err := s.backfillLegacyProjectPermissionProfile(p); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -1001,6 +1030,9 @@ func (s *Store) ListProjects() ([]Project, error) {
 		p.PermissionProfile = NormalizePermissionProfile(string(p.PermissionProfile))
 		p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 		hydrateProject(&p)
+		if err := s.backfillLegacyProjectPermissionProfile(&p); err != nil {
+			return nil, err
+		}
 		projects = append(projects, p)
 	}
 	return projects, nil

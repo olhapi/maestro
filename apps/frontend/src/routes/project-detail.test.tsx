@@ -201,6 +201,7 @@ describe("ProjectDetailPage", () => {
     renderWithQueryClient(<ProjectDetailPage />);
 
     const select = await screen.findByLabelText(/project agent permissions/i);
+    expect(screen.getByText(/issues on the default profile inherit this setting/i)).toBeInTheDocument();
     fireEvent.change(select, { target: { value: "full-access" } });
 
     await waitFor(() => {

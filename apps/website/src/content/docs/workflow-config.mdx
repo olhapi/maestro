@@ -1,6 +1,6 @@
 ---
 title: Workflow config
-description: Tune how much work Maestro can offload, how aggressively it retries, and which guardrails stay in place through WORKFLOW.md.
+description: Tune how much work Maestro can offload, how aggressively it retries, and how Codex is launched through WORKFLOW.md.
 section: concepts
 order: 2
 navLabel: Workflow config
@@ -19,7 +19,7 @@ When the default handoff is close but not quite right, `WORKFLOW.md` is where yo
 - hook commands and timeout
 - agent concurrency, mode, and dispatch behavior
 - optional review and done phase prompts
-- Codex command and sandbox settings
+- Codex command and collaboration settings
 - the prompt template rendered for each issue
 
 Project-level provider selection is separate from this file. `WORKFLOW.md` still controls orchestration for every project, while `tracker.kind` remains `kanban` even if a project is configured to sync issues from Linear.
@@ -39,10 +39,6 @@ codex:
   expected_version: 0.114.0
   approval_policy: never
   initial_collaboration_mode: plan
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
   turn_timeout_ms: 1800000
   read_timeout_ms: 10000
   stall_timeout_ms: 300000
@@ -59,8 +55,13 @@ codex:
 - `codex.expected_version`: version Maestro expects from `codex --version`.
 - `codex.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
 - `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `plan` by default or `default` to opt out. This does not affect `stdio` or resumed threads.
-- `codex.thread_sandbox` and `codex.turn_sandbox_policy`: define where Codex can write and whether network access stays on.
 - `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
+
+Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves runtime sandbox access from DB-backed permission profiles:
+
+- issue `permission_profile` is authoritative
+- issue `default` inherits the project profile
+- project `default` maps to the normal safe baseline
 
 ## Plan mode versus interrupts
 
@@ -113,7 +114,6 @@ That scaffold currently includes:
 - disabled `review` and `done` phases with starter prompt text already filled in, including done-phase guidance for a short reviewer preview video when local demo tooling is available
 - `agent.max_concurrent_agents: 3`, `max_turns: 4`, `max_automatic_retries: 8`, and `dispatch_mode: parallel`
 - `codex.command: codex app-server`, `agent.mode: app_server`, `approval_policy: never`, and `initial_collaboration_mode: plan`
-- a careful sandbox by default: `thread_sandbox: workspace-write` with `turn_sandbox_policy.type: workspaceWrite` and `networkAccess: true`
 - the default issue prompt template appended after the YAML front matter
 
 When `--defaults` is not set and both stdin and stdout are TTYs, `workflow init` becomes interactive. The current implementation prompts in this order:
@@ -121,25 +121,17 @@ When `--defaults` is not set and both stdin and stdout are TTYs, `workflow init`
 1. `Workspace root`
 2. Runtime selection: recommended Codex setup or `Custom / advanced`
 3. If you choose custom runtime, `Codex command` and `Agent mode (app_server|stdio)`
-4. `Sandbox profile`
 
 Use flags when you want to skip prompts but still override part of the scaffold:
 
 <DocsCommandField
-  command={`maestro workflow init . --defaults --workspace-root ./tmp/workspaces --codex-command "codex app-server" --agent-mode app_server --sandbox-profile secure`}
+  command={`maestro workflow init . --defaults --workspace-root ./tmp/workspaces --codex-command "codex app-server" --agent-mode app_server`}
 />
 
 - `--workspace-root` sets `workspace.root`
 - `--codex-command` sets the exact command Maestro launches
 - `--agent-mode` accepts `app_server` or `stdio`
-- `--sandbox-profile` accepts `careful`, `secure`, or `yolo`
 - `--force` overwrites an existing `WORKFLOW.md`
-
-The sandbox presets map directly onto the generated Codex settings:
-
-- `careful`: `workspace-write` with network access enabled
-- `secure`: `workspace-write` with network access disabled
-- `yolo`: `danger-full-access` with network access enabled
 
 Overwrite behavior is intentional. In non-interactive mode, an existing `WORKFLOW.md` is left alone unless you pass `--force`. In interactive mode, Maestro asks for confirmation before replacing the file.
 
@@ -157,5 +149,4 @@ For reliable unattended orchestration:
 
 - Codex must already be installed and logged in
 - the configured command must resolve on `PATH`, or you should use an absolute path
-- the sandbox must still allow reads from the repo and writes inside the per-issue workspace
-- network access should stay enabled when tasks depend on package registries, Git remotes, or APIs
+- the selected project or issue permission profile must still allow the access your tasks need

@@ -16,24 +16,16 @@ var (
 	ErrWorkflowExists        = errors.New("workflow file already exists")
 	ErrWorkflowInitCancelled = errors.New("workflow initialization cancelled")
 	ErrInvalidInitAgentMode  = errors.New("invalid workflow init agent mode")
-	ErrInvalidSandboxProfile = errors.New("invalid workflow init sandbox profile")
-)
-
-const (
-	SandboxProfileCareful = "careful"
-	SandboxProfileYolo    = "yolo"
-	SandboxProfileSecure  = "secure"
 )
 
 type InitOptions struct {
-	WorkspaceRoot  string
-	CodexCommand   string
-	AgentMode      string
-	SandboxProfile string
-	Interactive    bool
-	Force          bool
-	Stdin          io.Reader
-	Stdout         io.Writer
+	WorkspaceRoot string
+	CodexCommand  string
+	AgentMode     string
+	Interactive   bool
+	Force         bool
+	Stdin         io.Reader
+	Stdout        io.Writer
 }
 
 func EnsureWorkflow(repoPath string, opts InitOptions) (string, bool, error) {
@@ -97,10 +89,9 @@ func InitWorkflowAtPath(path string, opts InitOptions) error {
 func defaultInitOptions() InitOptions {
 	cfg := DefaultInitConfig()
 	return InitOptions{
-		WorkspaceRoot:  cfg.Workspace.Root,
-		CodexCommand:   cfg.Codex.Command,
-		AgentMode:      cfg.Agent.Mode,
-		SandboxProfile: SandboxProfileCareful,
+		WorkspaceRoot: cfg.Workspace.Root,
+		CodexCommand:  cfg.Codex.Command,
+		AgentMode:     cfg.Agent.Mode,
 	}
 }
 
@@ -121,13 +112,6 @@ func resolveInitOptions(path string, opts InitOptions) (InitOptions, error) {
 			return InitOptions{}, err
 		}
 		answers.AgentMode = mode
-	}
-	if strings.TrimSpace(opts.SandboxProfile) != "" {
-		profile, err := validateSandboxProfile(opts.SandboxProfile)
-		if err != nil {
-			return InitOptions{}, err
-		}
-		answers.SandboxProfile = profile
 	}
 	return answers, nil
 }
@@ -155,9 +139,6 @@ func promptInitOptions(path string, opts InitOptions, defaults InitOptions) Init
 		if strings.TrimSpace(opts.AgentMode) == "" {
 			defaults.AgentMode = promptAgentMode(reader, writer, defaults.AgentMode)
 		}
-	}
-	if strings.TrimSpace(opts.SandboxProfile) == "" {
-		defaults.SandboxProfile = promptSandboxProfile(reader, writer, defaults.SandboxProfile)
 	}
 	return defaults
 }
@@ -199,15 +180,6 @@ func promptRuntimeChoice(reader *bufio.Reader, writer io.Writer, recommendedComm
 func promptAgentMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
 	mode := promptLine(reader, writer, "Agent mode (app_server|stdio)", fallback)
 	return normalizePromptAgentMode(mode, fallback)
-}
-
-func promptSandboxProfile(reader *bufio.Reader, writer io.Writer, fallback string) string {
-	fmt.Fprintln(writer, "Sandbox access:")
-	fmt.Fprintln(writer, "  1) Careful (recommended, workspace-write with network access)")
-	fmt.Fprintln(writer, "  2) Secure (workspace-write with network disabled)")
-	fmt.Fprintln(writer, "  3) YOLO (danger-full-access with network access)")
-	choice := promptLine(reader, writer, "Sandbox profile", sandboxProfilePromptDefault(fallback))
-	return normalizePromptSandboxProfile(choice, fallback)
 }
 
 func promptConfirm(reader *bufio.Reader, writer io.Writer, label string, defaultYes bool) bool {
@@ -264,51 +236,6 @@ func normalizePromptAgentMode(raw, fallback string) string {
 	return validated
 }
 
-func validateSandboxProfile(raw string) (string, error) {
-	profile := strings.TrimSpace(strings.ToLower(raw))
-	switch profile {
-	case SandboxProfileCareful, SandboxProfileYolo, SandboxProfileSecure:
-		return profile, nil
-	case "":
-		return "", fmt.Errorf("%w: expected %s, %s, or %s", ErrInvalidSandboxProfile, SandboxProfileCareful, SandboxProfileSecure, SandboxProfileYolo)
-	default:
-		return "", fmt.Errorf("%w: %q (expected %s, %s, or %s)", ErrInvalidSandboxProfile, raw, SandboxProfileCareful, SandboxProfileSecure, SandboxProfileYolo)
-	}
-}
-
-func normalizePromptSandboxProfile(raw, fallback string) string {
-	choice := strings.TrimSpace(strings.ToLower(raw))
-	switch choice {
-	case "1":
-		return SandboxProfileCareful
-	case "2":
-		return SandboxProfileSecure
-	case "3":
-		return SandboxProfileYolo
-	case "careful", "secure", "yolo":
-		return choice
-	case "":
-		return fallback
-	default:
-		validated, err := validateSandboxProfile(choice)
-		if err != nil {
-			return fallback
-		}
-		return validated
-	}
-}
-
-func sandboxProfilePromptDefault(fallback string) string {
-	switch strings.TrimSpace(strings.ToLower(fallback)) {
-	case SandboxProfileSecure:
-		return "2"
-	case SandboxProfileYolo:
-		return "3"
-	default:
-		return "1"
-	}
-}
-
 func buildWorkflowFile(opts InitOptions) string {
 	cfg := DefaultInitConfig()
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
@@ -319,15 +246,6 @@ func buildWorkflowFile(opts InitOptions) string {
 	}
 	if strings.TrimSpace(opts.AgentMode) != "" {
 		cfg.Agent.Mode = normalizePromptAgentMode(opts.AgentMode, cfg.Agent.Mode)
-	}
-	applySandboxProfile(&cfg, opts.SandboxProfile)
-	turnPolicyType, _ := cfg.Codex.TurnSandboxPolicy["type"].(string)
-	if strings.TrimSpace(turnPolicyType) == "" {
-		turnPolicyType = "workspaceWrite"
-	}
-	networkAccess, ok := cfg.Codex.TurnSandboxPolicy["networkAccess"].(bool)
-	if !ok {
-		networkAccess = true
 	}
 	reviewPrompt := indentBlock(DefaultInitReviewPromptTemplate(), "      ")
 	donePrompt := indentBlock(DefaultInitDonePromptTemplate(), "      ")
@@ -400,7 +318,7 @@ agent:
   # Scheduling behavior. Other options: parallel, per_project_serial.
   dispatch_mode: %s
 
-# Codex CLI launch and sandbox settings.
+# Codex CLI launch and collaboration settings.
 codex:
   # Exact command Maestro launches for the agent.
   command: %s
@@ -412,25 +330,6 @@ codex:
   # Initial collaboration mode for fresh app_server threads. Other option: default.
   # Ignored for stdio runs and resumed threads.
   initial_collaboration_mode: %s
-  # Setup presets: YOLO => danger-full-access, Careful => workspace-write, Secure => workspace-write without network.
-  # Thread-level sandbox. Other options: read-only, workspace-write, danger-full-access.
-  thread_sandbox: %s
-  turn_sandbox_policy:
-    # Per-turn sandbox policy. Other policy types: readOnly, externalSandbox, dangerFullAccess.
-    type: %s
-    # Network access during a turn. For externalSandbox, the schema also allows enabled/restricted.
-    networkAccess: %t
-    # Optional for workspaceWrite. If omitted, Maestro fills writable roots automatically.
-    # writableRoots:
-    #   - /absolute/path/to/repo
-    # Optional for workspaceWrite. Other options: fullAccess or restricted.
-    # readOnlyAccess:
-    #   type: fullAccess
-    #   # For restricted, you can also set includePlatformDefaults and readableRoots.
-    # Optional for workspaceWrite only.
-    # excludeTmpdirEnvVar: false
-    # Optional for workspaceWrite only.
-    # excludeSlashTmp: false
   # Maximum total runtime for one turn before Maestro cancels it.
   turn_timeout_ms: %d
   # Maximum time to wait for streamed output before considering the stream stalled.
@@ -440,7 +339,7 @@ codex:
 ---
 
 %s
-`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, cfg.Phases.Review.Enabled, reviewPrompt, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, cfg.Agent.Mode, cfg.Agent.DispatchMode, cfg.Codex.Command, cfg.Codex.ExpectedVersion, cfg.Codex.ApprovalPolicy, cfg.Codex.InitialCollaborationMode, cfg.Codex.ThreadSandbox, turnPolicyType, networkAccess, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
+`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, cfg.Phases.Review.Enabled, reviewPrompt, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, cfg.Agent.Mode, cfg.Agent.DispatchMode, cfg.Codex.Command, cfg.Codex.ExpectedVersion, cfg.Codex.ApprovalPolicy, cfg.Codex.InitialCollaborationMode, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
 }
 
 func indentBlock(text, prefix string) string {
@@ -449,31 +348,4 @@ func indentBlock(text, prefix string) string {
 		lines[i] = prefix + line
 	}
 	return strings.Join(lines, "\n")
-}
-
-func applySandboxProfile(cfg *Config, rawProfile string) {
-	if cfg == nil {
-		return
-	}
-	profile := normalizePromptSandboxProfile(rawProfile, SandboxProfileCareful)
-	switch profile {
-	case SandboxProfileYolo:
-		cfg.Codex.ThreadSandbox = "danger-full-access"
-		cfg.Codex.TurnSandboxPolicy = map[string]interface{}{
-			"type":          "dangerFullAccess",
-			"networkAccess": true,
-		}
-	case SandboxProfileSecure:
-		cfg.Codex.ThreadSandbox = "workspace-write"
-		cfg.Codex.TurnSandboxPolicy = map[string]interface{}{
-			"type":          "workspaceWrite",
-			"networkAccess": false,
-		}
-	default:
-		cfg.Codex.ThreadSandbox = "workspace-write"
-		cfg.Codex.TurnSandboxPolicy = map[string]interface{}{
-			"type":          "workspaceWrite",
-			"networkAccess": true,
-		}
-	}
 }

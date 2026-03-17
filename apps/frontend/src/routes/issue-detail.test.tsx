@@ -217,7 +217,7 @@ describe("IssueDetailPage", () => {
       expect(screen.getByRole("combobox", { name: /agent permissions/i })).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/full access applies on the next turn/i)).toBeInTheDocument();
+    expect(screen.getByText(/default inherits the project permission profile/i)).toBeInTheDocument();
 
     await selectOption(/agent permissions/i, /full access/i);
 
