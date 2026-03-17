@@ -127,6 +127,28 @@ func TestNewHandlerServesAPIAndSPAContent(t *testing.T) {
 	}
 }
 
+func TestNewHandlerServesWebhookRoute(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	handler := newHandler(store, testProvider{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", strings.NewReader(`{"event":"issue.retry","payload":{"issue_identifier":"ISS-1"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("webhooks: expected 503 when auth is disabled, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "MAESTRO_WEBHOOK_BEARER_TOKEN") {
+		t.Fatalf("webhooks: expected disabled auth guidance, got %q", rec.Body.String())
+	}
+}
+
 func TestNewHandlerProxiesDashboardToDevServerWhenConfigured(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

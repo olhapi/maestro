@@ -42,6 +42,7 @@ type Server struct {
 	store    *kanban.Store
 	service  *providers.Service
 	provider Provider
+	webhook  webhookAuthConfig
 	upgrader websocket.Upgrader
 }
 
@@ -56,6 +57,7 @@ func NewServer(store *kanban.Store, provider Provider) *Server {
 		store:    store,
 		service:  providers.NewService(store),
 		provider: provider,
+		webhook:  loadWebhookAuthConfig(),
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
 }
@@ -114,6 +116,7 @@ func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/webhooks", s.handleWebhook)
 	mux.HandleFunc("/api/v1/app/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("/api/v1/app/projects", s.handleProjects)
 	mux.HandleFunc("/api/v1/app/projects/", s.handleProject)
@@ -284,6 +287,30 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			return
 		case r.Method == http.MethodPost && action == "stop":
 			writeJSON(w, s.provider.StopProjectRuns(id))
+			return
+		case r.Method == http.MethodPost && action == "permissions":
+			var body struct {
+				PermissionProfile string `json:"permission_profile"`
+			}
+			if !decodeJSON(w, r, &body) {
+				return
+			}
+			profile, err := kanban.ParseProjectPermissionProfile(body.PermissionProfile)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			if err := s.store.UpdateProjectPermissionProfile(id, profile); err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			updated, err := s.store.GetProject(id)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			decorateProject(updated, scopedRepoPathFromStatus(s.provider.Status()))
+			writeJSON(w, updated)
 			return
 		default:
 			http.NotFound(w, r)
