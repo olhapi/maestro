@@ -129,8 +129,12 @@ export function AppShell() {
     },
   })
 
-  const handleSocketInvalidate = useEffectEvent(() => {
+  const handleSocketSignal = useEffectEvent(() => {
     setLastRefresh(new Date().toISOString())
+  })
+
+  const handleSocketInvalidate = useEffectEvent(() => {
+    handleSocketSignal()
     void Promise.all([
       queryClient.invalidateQueries({
         queryKey: ['interrupts'],
@@ -141,7 +145,13 @@ export function AppShell() {
   })
 
   useEffect(() => {
-    return connectDashboardSocket(handleSocketInvalidate)
+    const socket = connectDashboardSocket({
+      onInvalidate: handleSocketInvalidate,
+      onSignal: handleSocketSignal,
+    })
+    return () => {
+      socket.disconnect()
+    }
   }, [])
 
   useEffect(() => {
