@@ -26,6 +26,7 @@ async function main(installDir) {
   const exePath = getExePath();
   const logPath = path.join(resolvedInstallDir, "maestro-run-smoke.log");
   const dbPath = path.join(resolvedInstallDir, "maestro-run-smoke.db");
+  const daemonRegistryDir = path.join(resolvedInstallDir, ".maestro-daemons");
 
   const port = await freePort();
   const baseURL = `http://127.0.0.1:${port}`;
@@ -44,6 +45,10 @@ async function main(installDir) {
     {
       cwd: resolvedInstallDir,
       detached: true,
+      env: {
+        ...process.env,
+        MAESTRO_DAEMON_REGISTRY_DIR: daemonRegistryDir,
+      },
       stdio: ["ignore", logFD, logFD],
     },
   );
