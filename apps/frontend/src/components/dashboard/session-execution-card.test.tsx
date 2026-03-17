@@ -49,7 +49,6 @@ function makeExecutionDetail(overrides: Partial<IssueExecutionDetail> = {}): Iss
       turns_started: 2,
       turns_completed: 2,
       terminal: false,
-      history: [],
     },
     runtime_events: [],
     activity_groups: [],

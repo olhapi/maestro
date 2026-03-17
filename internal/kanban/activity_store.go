@@ -8,11 +8,21 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/olhapi/maestro/internal/appserver"
 )
 
 var activityANSIPattern = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+const (
+	activitySummaryMaxBytes      = 2 * 1024
+	activityDetailMaxBytes       = 8 * 1024
+	activityPayloadValueMaxBytes = 2 * 1024
+	activityDiagnosticTailLimit  = 20
+)
+
+const activityTruncationMarker = "\n...[truncated]"
 
 func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int, event appserver.ActivityEvent) error {
 	if strings.TrimSpace(issueID) == "" {
@@ -43,10 +53,17 @@ func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int,
 		return nil
 	}
 
-	if err := s.appendIssueActivityUpdateTx(tx, issueID, logicalID, now, event); err != nil {
-		return err
+	entry = normalizeIssueActivityEntry(entry)
+
+	if shouldPersistIssueActivityUpdate(event.Type) {
+		if err := s.appendIssueActivityUpdateTx(tx, issueID, logicalID, now, event); err != nil {
+			return err
+		}
 	}
 	if err := s.upsertIssueActivityEntryTx(tx, entry, existing != nil); err != nil {
+		return err
+	}
+	if err := s.compactIssueActivityAttemptTx(tx, issueID, attempt, event.Type); err != nil {
 		return err
 	}
 	if err := s.appendChangeTx(tx, "issue_activity", issueID, entry.ID, map[string]interface{}{
@@ -63,6 +80,335 @@ func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int,
 	}
 	tx = nil
 	return nil
+}
+
+func (s *Store) CompactIssueActivityAttemptSuccess(issueID string, attempt int) error {
+	return s.compactIssueActivityAttempt(issueID, attempt, true)
+}
+
+func (s *Store) CompactIssueActivityAttemptDiagnostic(issueID string, attempt int) error {
+	return s.compactIssueActivityAttempt(issueID, attempt, false)
+}
+
+func (s *Store) compactIssueActivityAttempt(issueID string, attempt int, success bool) error {
+	if strings.TrimSpace(issueID) == "" || attempt <= 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if success {
+		err = s.compactIssueActivityAttemptSuccessTx(tx, issueID, attempt)
+	} else {
+		err = s.compactIssueActivityAttemptDiagnosticTx(tx, issueID, attempt)
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
+}
+
+func shouldPersistIssueActivityUpdate(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "item.agentMessage.delta", "item.plan.delta", "item.commandExecution.outputDelta", "item.commandExecution.terminalInteraction":
+		return false
+	default:
+		return true
+	}
+}
+
+func normalizeIssueActivityEntry(entry IssueActivityEntry) IssueActivityEntry {
+	entry.Summary = truncateActivityText(entry.Summary, activitySummaryMaxBytes)
+	entry.Detail = truncateActivityDetail(entry, activityDetailMaxBytes)
+	if raw, ok := truncateActivityValue(entry.RawPayload).(map[string]interface{}); ok {
+		entry.RawPayload = raw
+	} else {
+		entry.RawPayload = nil
+	}
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	return entry
+}
+
+func truncateActivityText(value string, maxBytes int) string {
+	value = strings.TrimRight(value, "\n")
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	budget := maxBytes - len(activityTruncationMarker)
+	if budget <= 0 {
+		return trimToUTF8Boundary(activityTruncationMarker, maxBytes)
+	}
+	value = trimToUTF8Boundary(value, budget)
+	return value + activityTruncationMarker
+}
+
+func truncateActivityDetail(entry IssueActivityEntry, maxBytes int) string {
+	if entry.Kind == "command" && entry.ItemType == "commandExecution" {
+		return truncateCommandDetail(entry.Detail, maxBytes)
+	}
+	return truncateActivityTail(entry.Detail, maxBytes)
+}
+
+func truncateActivityTail(value string, maxBytes int) string {
+	value = strings.TrimRight(value, "\n")
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	marker := strings.TrimPrefix(activityTruncationMarker, "\n") + "\n"
+	budget := maxBytes - len(marker)
+	if budget <= 0 {
+		return trimToUTF8Boundary(marker, maxBytes)
+	}
+	value = trimToTrailingUTF8Boundary(value, budget)
+	value = strings.TrimLeft(value, "\n")
+	if value == "" {
+		return trimToUTF8Boundary(marker, maxBytes)
+	}
+	return marker + value
+}
+
+func trimToUTF8Boundary(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	out := value[:maxBytes]
+	for len(out) > 0 && !utf8.ValidString(out) {
+		out = out[:len(out)-1]
+	}
+	return out
+}
+
+func trimToTrailingUTF8Boundary(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	start := len(value) - maxBytes
+	for start < len(value) && !utf8.ValidString(value[start:]) {
+		start++
+	}
+	return value[start:]
+}
+
+func truncateActivityValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return truncateActivityText(typed, activityPayloadValueMaxBytes)
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for i := range typed {
+			out[i] = truncateActivityValue(typed[i])
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			out[key] = truncateActivityValue(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func (s *Store) compactIssueActivityAttemptTx(tx *sql.Tx, issueID string, attempt int, eventType string) error {
+	switch strings.TrimSpace(eventType) {
+	case "turn.completed":
+		return s.compactIssueActivityAttemptSuccessTx(tx, issueID, attempt)
+	case "turn.failed", "turn.cancelled":
+		return s.compactIssueActivityAttemptDiagnosticTx(tx, issueID, attempt)
+	default:
+		return nil
+	}
+}
+
+func (s *Store) compactIssueActivityAttemptSuccessTx(tx *sql.Tx, issueID string, attempt int) error {
+	entries, err := s.listIssueActivityEntriesForAttemptTx(tx, issueID, attempt)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(entries))
+	substantiveID := ""
+	hasFinalAnswer := false
+	for _, entry := range entries {
+		if shouldKeepCompactedSuccessEntry(entry) {
+			keep[entry.ID] = struct{}{}
+		}
+		if entry.Tier != "primary" || entry.Kind == "status" {
+			continue
+		}
+		if isCompactedSuccessFinalAnswer(entry) {
+			substantiveID = entry.ID
+			hasFinalAnswer = true
+			continue
+		}
+		if !hasFinalAnswer {
+			substantiveID = entry.ID
+		}
+	}
+	if substantiveID != "" {
+		keep[substantiveID] = struct{}{}
+	}
+	if len(keep) == 0 {
+		keep[entries[len(entries)-1].ID] = struct{}{}
+	}
+	return s.deleteCompactedAttemptRowsTx(tx, issueID, attempt, entries, keep)
+}
+
+func (s *Store) compactIssueActivityAttemptDiagnosticTx(tx *sql.Tx, issueID string, attempt int) error {
+	entries, err := s.listIssueActivityEntriesForAttemptTx(tx, issueID, attempt)
+	if err != nil {
+		return err
+	}
+	if len(entries) <= activityDiagnosticTailLimit {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(entries))
+	primaryKept := 0
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if shouldAlwaysKeepCompactedStatus(entry) {
+			keep[entry.ID] = struct{}{}
+			continue
+		}
+		if entry.Tier == "primary" && primaryKept < activityDiagnosticTailLimit {
+			keep[entry.ID] = struct{}{}
+			primaryKept++
+		}
+	}
+	return s.deleteCompactedAttemptRowsTx(tx, issueID, attempt, entries, keep)
+}
+
+func (s *Store) listIssueActivityEntriesForAttemptTx(tx *sql.Tx, issueID string, attempt int) ([]IssueActivityEntry, error) {
+	rows, err := tx.Query(`
+		SELECT seq, logical_id, issue_id, identifier, attempt, thread_id, turn_id, item_id, kind, item_type, phase, entry_status, tier, title, summary, detail, tone, expandable, started_at, completed_at, created_at, updated_at, raw_payload_json
+		FROM issue_activity_entries
+		WHERE issue_id = ? AND attempt = ?
+		ORDER BY seq ASC`, issueID, attempt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []IssueActivityEntry
+	for rows.Next() {
+		var entry IssueActivityEntry
+		var raw string
+		var startedAt sql.NullTime
+		var completedAt sql.NullTime
+		if err := rows.Scan(
+			&entry.Seq,
+			&entry.ID,
+			&entry.IssueID,
+			&entry.Identifier,
+			&entry.Attempt,
+			&entry.ThreadID,
+			&entry.TurnID,
+			&entry.ItemID,
+			&entry.Kind,
+			&entry.ItemType,
+			&entry.Phase,
+			&entry.Status,
+			&entry.Tier,
+			&entry.Title,
+			&entry.Summary,
+			&entry.Detail,
+			&entry.Tone,
+			&entry.Expandable,
+			&startedAt,
+			&completedAt,
+			&entry.CreatedAt,
+			&entry.UpdatedAt,
+			&raw,
+		); err != nil {
+			return nil, err
+		}
+		if startedAt.Valid {
+			ts := startedAt.Time.UTC()
+			entry.StartedAt = &ts
+		}
+		if completedAt.Valid {
+			ts := completedAt.Time.UTC()
+			entry.CompletedAt = &ts
+		}
+		if raw != "" {
+			_ = json.Unmarshal([]byte(raw), &entry.RawPayload)
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+func deleteIssueActivityByIDsTx(tx *sql.Tx, table, issueID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, issueID)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := tx.Exec(`DELETE FROM `+table+` WHERE issue_id = ? AND `+map[string]string{
+		"issue_activity_entries": "logical_id",
+		"issue_activity_updates": "entry_id",
+	}[table]+` IN (`+placeholders+`)`, args...)
+	return err
+}
+
+func (s *Store) deleteCompactedAttemptRowsTx(tx *sql.Tx, issueID string, attempt int, entries []IssueActivityEntry, keep map[string]struct{}) error {
+	entryIDs := make([]string, 0, len(entries))
+	deleteIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		entryIDs = append(entryIDs, entry.ID)
+		if _, ok := keep[entry.ID]; !ok {
+			deleteIDs = append(deleteIDs, entry.ID)
+		}
+	}
+	if err := deleteIssueActivityByIDsTx(tx, "issue_activity_updates", issueID, entryIDs); err != nil {
+		return err
+	}
+	return deleteIssueActivityByIDsTx(tx, "issue_activity_entries", issueID, deleteIDs)
+}
+
+func shouldKeepCompactedSuccessEntry(entry IssueActivityEntry) bool {
+	if entry.Kind != "status" {
+		return false
+	}
+	if shouldAlwaysKeepCompactedStatus(entry) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(entry.Status), "completed") && strings.EqualFold(strings.TrimSpace(entry.Title), "Turn Completed")
+}
+
+func shouldAlwaysKeepCompactedStatus(entry IssueActivityEntry) bool {
+	if entry.Kind != "status" {
+		return false
+	}
+	switch strings.TrimSpace(entry.Title) {
+	case "Approval required", "User input required", "Approval resolved", "User input submitted":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCompactedSuccessFinalAnswer(entry IssueActivityEntry) bool {
+	return entry.Kind == "agent" && strings.EqualFold(strings.TrimSpace(entry.Phase), "final_answer")
 }
 
 func (s *Store) getIssueActivityEntryTx(tx *sql.Tx, logicalID string) (*IssueActivityEntry, error) {
@@ -658,10 +1004,10 @@ func activityRawPayload(event appserver.ActivityEvent) map[string]interface{} {
 		payload["exit_code"] = *event.ExitCode
 	}
 	if event.Item != nil {
-		payload["item"] = event.Item
+		payload["item"] = truncateActivityValue(event.Item)
 	}
 	if event.Raw != nil {
-		payload["raw"] = event.Raw
+		payload["raw"] = truncateActivityValue(event.Raw)
 	}
 	return payload
 }
@@ -690,6 +1036,54 @@ func buildCommandDetail(command, cwd, output string, exitCode *int) string {
 		parts = append(parts, fmt.Sprintf("exit code: %d", *exitCode))
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func truncateCommandDetail(detail string, maxBytes int) string {
+	detail = strings.TrimRight(detail, "\n")
+	if maxBytes <= 0 || len(detail) <= maxBytes {
+		return detail
+	}
+	command, cwd, output, exit := splitCommandDetail(detail)
+	prefixLines := []string{}
+	if command != "" {
+		prefixLines = append(prefixLines, "$ "+command)
+	}
+	if cwd != "" {
+		prefixLines = append(prefixLines, "cwd: "+cwd)
+	}
+	prefix := strings.Join(prefixLines, "\n")
+	result := formatCommandDetail(prefix, output, exit)
+	if len(result) <= maxBytes {
+		return result
+	}
+	minResult := formatCommandDetail(prefix, "", exit)
+	if len(minResult) >= maxBytes {
+		return truncateActivityTail(result, maxBytes)
+	}
+	outputBudget := maxBytes - len(minResult)
+	for outputBudget > 0 {
+		truncatedOutput := truncateActivityTail(output, outputBudget)
+		result = formatCommandDetail(prefix, truncatedOutput, exit)
+		if len(result) <= maxBytes {
+			return result
+		}
+		outputBudget -= len(result) - maxBytes
+	}
+	return truncateActivityTail(result, maxBytes)
+}
+
+func formatCommandDetail(prefix, output, exit string) string {
+	sections := []string{}
+	if strings.TrimSpace(prefix) != "" {
+		sections = append(sections, strings.TrimSpace(prefix))
+	}
+	if strings.TrimSpace(output) != "" {
+		sections = append(sections, strings.TrimSpace(output))
+	}
+	if strings.TrimSpace(exit) != "" {
+		sections = append(sections, strings.TrimSpace(exit))
+	}
+	return strings.TrimSpace(strings.Join(sections, "\n\n"))
 }
 
 func existingCommandOutput(detail string) string {
@@ -721,6 +1115,41 @@ func existingCommandOutput(detail string) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.Join(lines[start:end], "\n"))
+}
+
+func splitCommandDetail(detail string) (string, string, string, string) {
+	lines := strings.Split(strings.TrimSpace(detail), "\n")
+	if len(lines) == 0 {
+		return "", "", "", ""
+	}
+	start := 0
+	command := ""
+	if strings.HasPrefix(lines[start], "$ ") {
+		command = strings.TrimSpace(strings.TrimPrefix(lines[start], "$ "))
+		start++
+	}
+	cwd := ""
+	if start < len(lines) && strings.HasPrefix(lines[start], "cwd: ") {
+		cwd = strings.TrimSpace(strings.TrimPrefix(lines[start], "cwd: "))
+		start++
+	}
+	if start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	end := len(lines)
+	exit := ""
+	if end > start && strings.HasPrefix(strings.TrimSpace(lines[end-1]), "exit code: ") {
+		exit = strings.TrimSpace(lines[end-1])
+		end--
+		if end > start && strings.TrimSpace(lines[end-1]) == "" {
+			end--
+		}
+	}
+	output := ""
+	if start < end {
+		output = strings.TrimSpace(strings.Join(lines[start:end], "\n"))
+	}
+	return command, cwd, output, exit
 }
 
 func existingCommandFromDetail(detail string) string {

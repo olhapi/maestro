@@ -264,7 +264,6 @@ export interface Session {
   turns_completed: number;
   terminal: boolean;
   terminal_reason?: string;
-  history?: SessionEvent[];
 }
 
 export interface PendingApprovalDecision {
@@ -347,7 +346,6 @@ export interface SessionFeedEntry {
   turns_completed: number;
   terminal: boolean;
   terminal_reason?: string;
-  history?: SessionEvent[];
   error?: string;
 }
 

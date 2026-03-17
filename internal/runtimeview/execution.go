@@ -66,10 +66,12 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	var session interface{}
 	if liveSession != nil {
 		sessionSource = "live"
-		session = liveSession
+		summary := liveSession.Summary()
+		session = &summary
 	} else if persistedSession != nil {
 		sessionSource = "persisted"
-		session = persistedSession.AppSession
+		summary := persistedSession.AppSession.Summary()
+		session = summary
 	}
 
 	attempt := 0

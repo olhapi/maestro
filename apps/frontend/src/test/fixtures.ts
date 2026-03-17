@@ -215,7 +215,6 @@ export function makeBootstrapResponse(
           turns_started: 2,
           turns_completed: 1,
           terminal: false,
-          history: [],
         },
       },
       entries: [
@@ -237,7 +236,6 @@ export function makeBootstrapResponse(
           turns_started: 2,
           turns_completed: 1,
           terminal: false,
-          history: [],
         },
       ],
     },

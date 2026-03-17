@@ -224,6 +224,5 @@ type SessionFeedEntry struct {
 	TurnsCompleted   int                           `json:"turns_completed,omitempty"`
 	Terminal         bool                          `json:"terminal"`
 	TerminalReason   string                        `json:"terminal_reason,omitempty"`
-	History          []appserver.Event             `json:"history,omitempty"`
 	Error            string                        `json:"error,omitempty"`
 }

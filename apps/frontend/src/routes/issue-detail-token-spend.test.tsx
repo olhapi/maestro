@@ -69,7 +69,6 @@ describe("IssueDetailPage token spend", () => {
         turns_started: 1,
         turns_completed: 0,
         terminal: false,
-        history: [],
       },
       activity_groups: [],
       debug_activity_groups: [],

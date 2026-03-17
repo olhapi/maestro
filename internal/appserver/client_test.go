@@ -1549,6 +1549,105 @@ func TestRunLogsRawStreamsAtDebug(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotDuplicateTurnStartedAfterNoisyPreResponseEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-NOISY")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		threadID = "thread-noisy"
+		turnID   = "turn-noisy"
+	)
+
+	turnOutputs := []fakeappserver.Output{
+		{
+			JSON: map[string]interface{}{
+				"method": protocol.MethodTurnStarted,
+				"params": map[string]interface{}{
+					"threadId": threadID,
+					"turn":     map[string]interface{}{"id": turnID},
+				},
+			},
+		},
+	}
+	for i := 0; i < defaultSessionHistoryLimit+8; i++ {
+		turnOutputs = append(turnOutputs, fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": protocol.MethodThreadTokenUsageUpdated,
+				"params": map[string]interface{}{
+					"threadId": threadID,
+					"turnId":   turnID,
+					"tokenUsage": map[string]interface{}{
+						"last": map[string]interface{}{
+							"inputTokens":  i + 1,
+							"outputTokens": i + 2,
+							"totalTokens":  i + 3,
+						},
+					},
+				},
+			},
+		})
+	}
+	turnOutputs = append(turnOutputs,
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"id": 3,
+				"result": map[string]interface{}{
+					"turn": map[string]interface{}{"id": turnID},
+				},
+			},
+		},
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": protocol.MethodTurnCompleted,
+				"params": map[string]interface{}{
+					"threadId": threadID,
+					"turnId":   turnID,
+				},
+			},
+		},
+	)
+
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": threadID}}},
+				}},
+			},
+			{
+				Match:    fakeappserver.Match{Method: "turn/start"},
+				Emit:     turnOutputs,
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	res, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if res.Session == nil {
+		t.Fatal("expected session result")
+	}
+	if res.Session.TurnsStarted != 1 {
+		t.Fatalf("expected a single turn start, got %+v", res.Session)
+	}
+	if res.Session.SessionID != threadID+"-"+turnID || !res.Session.Terminal {
+		t.Fatalf("unexpected final session: %+v", res.Session)
+	}
+}
+
 func TestHelperDefaultsAndWorkspaceValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	root := filepath.Join(tmpDir, "workspaces")

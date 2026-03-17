@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ const (
 	interruptedRunPauseThreshold = 3
 	liveSessionPersistInterval   = 2 * time.Second
 	automaticRetryHistoryLimit   = 200
+	runtimeMaintenanceInterval   = 15 * time.Minute
 	gracefulShutdownStopReason   = "graceful_shutdown"
 	gracefulShutdownWaitTimeout  = 5 * time.Second
 	reviewPreviewPublishTimeout  = 15 * time.Second
@@ -133,6 +135,9 @@ type Orchestrator struct {
 	sessionWrites           map[string]sessionPersistenceState
 	tokenSpendMu            sync.Mutex
 	tokenSpends             map[string]issueTokenSpendState
+	lastMaintenanceAt       time.Time
+	lastCheckpointAt        time.Time
+	lastCheckpointResult    string
 	eventSeq                int64
 	events                  []map[string]interface{}
 	maxEvents               int
@@ -459,7 +464,50 @@ func (o *Orchestrator) tick(ctx context.Context) error {
 	o.processRetries(ctx)
 	o.processPendingRecurringReruns(ctx)
 	o.processDueRecurringIssues(ctx)
+	o.runMaintenanceIfDue()
 	return o.dispatch(ctx)
+}
+
+func (o *Orchestrator) runMaintenanceIfDue() {
+	o.mu.RLock()
+	lastRun := o.lastMaintenanceAt
+	protectedIssueIDs := o.maintenanceProtectedIssueIDsLocked()
+	o.mu.RUnlock()
+
+	if !lastRun.IsZero() && time.Since(lastRun) < runtimeMaintenanceInterval {
+		return
+	}
+
+	result, err := o.store.RunMaintenance(protectedIssueIDs)
+	if err != nil {
+		slog.Warn("Runtime maintenance failed", "error", err)
+		return
+	}
+
+	o.mu.Lock()
+	o.lastMaintenanceAt = result.StartedAt
+	o.lastCheckpointAt = result.CheckpointAt
+	o.lastCheckpointResult = result.CheckpointResult
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) maintenanceProtectedIssueIDsLocked() []string {
+	protectedIssueSet := make(map[string]struct{}, len(o.running)+len(o.retries)+len(o.paused))
+	for issueID := range o.running {
+		protectedIssueSet[issueID] = struct{}{}
+	}
+	for issueID := range o.retries {
+		protectedIssueSet[issueID] = struct{}{}
+	}
+	for issueID := range o.paused {
+		protectedIssueSet[issueID] = struct{}{}
+	}
+	protectedIssueIDs := make([]string, 0, len(protectedIssueSet))
+	for issueID := range protectedIssueSet {
+		protectedIssueIDs = append(protectedIssueIDs, issueID)
+	}
+	sort.Strings(protectedIssueIDs)
+	return protectedIssueIDs
 }
 
 func (o *Orchestrator) reconcile(ctx context.Context) {
@@ -619,6 +667,11 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
 		resumeThreadID, resumeMode := classifyOrphanedResume(workflow, persisted)
 		immediateResume := resumeMode != ""
 		o.persistExecutionSession(issue, phase, attempt, "run_interrupted", errText, false, "", session)
+		if err := o.store.CompactIssueActivityAttemptDiagnostic(issue.ID, attempt); err != nil {
+			slog.Warn("Failed to compact interrupted issue activity",
+				issueLogAttrs(issue, attempt, "phase", phase, "error", err)...,
+			)
+		}
 
 		o.mu.Lock()
 		if _, ok := o.running[issue.ID]; ok {
@@ -1287,6 +1340,11 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 	switch {
 	case err != nil:
 		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_failed", err.Error(), result)
+		if compactErr := o.store.CompactIssueActivityAttemptDiagnostic(current.ID, attempt); compactErr != nil {
+			slog.Warn("Failed to compact failed issue activity",
+				issueLogAttrs(current, attempt, "phase", phase, "error", compactErr)...,
+			)
+		}
 		next := o.handleFailedRun(workflow, current, phase, attempt, result, "run_failed", err.Error())
 		slog.Warn("Agent run failed",
 			issueLogAttrs(current, attempt, "error", err, "next_attempt", next, "phase", phase)...,
@@ -1297,12 +1355,22 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 			errText = result.Error.Error()
 		}
 		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_unsuccessful", errText, result)
+		if compactErr := o.store.CompactIssueActivityAttemptDiagnostic(current.ID, attempt); compactErr != nil {
+			slog.Warn("Failed to compact unsuccessful issue activity",
+				issueLogAttrs(current, attempt, "phase", phase, "error", compactErr)...,
+			)
+		}
 		next := o.handleFailedRun(workflow, current, phase, attempt, result, "run_unsuccessful", errText)
 		slog.Warn("Agent run completed unsuccessfully",
 			issueLogAttrs(current, attempt, "error", errText, "next_attempt", next, "phase", phase)...,
 		)
 	default:
 		o.persistExecutionSessionSnapshot(current, phase, attempt, "run_completed", "", result)
+		if compactErr := o.store.CompactIssueActivityAttemptSuccess(current.ID, attempt); compactErr != nil {
+			slog.Warn("Failed to compact completed issue activity",
+				issueLogAttrs(current, attempt, "phase", phase, "error", compactErr)...,
+			)
+		}
 		o.publishIssuePreviewAsync(current, phase, result)
 		next, scheduled := o.handleSuccessfulRun(workflow, current, phase, attempt, result)
 		extra := []interface{}{"phase", phase}
@@ -2299,6 +2367,13 @@ func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
 }
 
 func (o *Orchestrator) Status() map[string]interface{} {
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	dbStats, err := o.store.DBStats()
+	if err != nil {
+		slog.Warn("Failed to collect database stats", "error", err)
+	}
+
 	var workflow *config.Workflow
 	if !o.isSharedMode() {
 		workflow, _ = o.workflows.Current()
@@ -2358,7 +2433,19 @@ func (o *Orchestrator) Status() map[string]interface{} {
 			"successful": o.successfulRuns,
 			"failed":     o.failedRuns,
 		},
-		"live_sessions": o.copyLiveSessionsLocked(),
+		"live_sessions":          o.copyLiveSessionsLocked(),
+		"heap_alloc_bytes":       memStats.Alloc,
+		"heap_sys_bytes":         memStats.HeapSys,
+		"db_page_count":          dbStats.PageCount,
+		"db_page_size":           dbStats.PageSize,
+		"db_freelist_count":      dbStats.FreelistCount,
+		"last_checkpoint_result": o.lastCheckpointResult,
+	}
+	if !o.lastMaintenanceAt.IsZero() {
+		out["last_maintenance_at"] = o.lastMaintenanceAt.Format(time.RFC3339)
+	}
+	if !o.lastCheckpointAt.IsZero() {
+		out["last_checkpoint_at"] = o.lastCheckpointAt.Format(time.RFC3339)
 	}
 	if workflow != nil {
 		out["max_concurrent"] = workflow.Config.Agent.MaxConcurrentAgents
@@ -2683,8 +2770,7 @@ func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Sess
 	if session == nil {
 		return
 	}
-	cp := *session
-	cp.History = append([]appserver.Event(nil), session.History...)
+	cp := session.Clone()
 
 	o.mu.Lock()
 	entry, ok := o.running[issueID]
@@ -2843,7 +2929,7 @@ func (o *Orchestrator) copyLiveSessionsLocked() map[string]*appserver.Session {
 		if !ok || session == nil {
 			continue
 		}
-		cp := cloneSessionWithIssue(session, issueID, entry.issue.Identifier)
+		cp := summarizeSessionWithIssue(session, issueID, entry.issue.Identifier)
 		out[entry.issue.Identifier] = &cp
 	}
 	return out
@@ -3124,7 +3210,7 @@ func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban
 		UpdatedAt:      now,
 	}
 	if session != nil {
-		snapshot.AppSession = cloneSessionWithIssue(session, issue.ID, issue.Identifier)
+		snapshot.AppSession = summarizeSessionWithIssue(session, issue.ID, issue.Identifier)
 	} else {
 		if existing, err := o.store.GetIssueExecutionSession(issue.ID); err == nil && existing != nil {
 			snapshot.AppSession = existing.AppSession
@@ -3175,8 +3261,14 @@ func issueLogAttrs(issue *kanban.Issue, attempt int, extra ...interface{}) []int
 }
 
 func cloneSessionWithIssue(session *appserver.Session, issueID, identifier string) appserver.Session {
-	cp := *session
-	cp.History = append([]appserver.Event(nil), session.History...)
+	cp := session.Clone()
+	cp.IssueID = issueID
+	cp.IssueIdentifier = identifier
+	return cp
+}
+
+func summarizeSessionWithIssue(session *appserver.Session, issueID, identifier string) appserver.Session {
+	cp := session.Summary()
 	cp.IssueID = issueID
 	cp.IssueIdentifier = identifier
 	return cp

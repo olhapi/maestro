@@ -95,7 +95,7 @@ type Client struct {
 	waitCh  chan error
 
 	outputMu      sync.Mutex
-	output        bytes.Buffer
+	output        tailBuffer
 	threadResumed bool
 
 	requestMu sync.Mutex
@@ -232,8 +232,7 @@ func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
 }
 
 func (c *Client) Session() *Session {
-	cp := *c.session
-	cp.History = append([]Event(nil), c.session.History...)
+	cp := c.session.Clone()
 	return &cp
 }
 
@@ -1549,6 +1548,9 @@ func (c *Client) hasTurnStarted(turnID string) bool {
 	if c.session == nil || strings.TrimSpace(turnID) == "" {
 		return false
 	}
+	if c.session.startedTurnID == turnID {
+		return true
+	}
 	for i := len(c.session.History) - 1; i >= 0; i-- {
 		event := c.session.History[i]
 		if event.TurnID != turnID {
@@ -1564,8 +1566,7 @@ func (c *Client) applyEvent(evt Event) {
 	if c.cfg.OnSessionUpdate == nil {
 		return
 	}
-	cp := *c.session
-	cp.History = append([]Event(nil), c.session.History...)
+	cp := c.session.Clone()
 	c.cfg.OnSessionUpdate(&cp)
 }
 
@@ -1594,10 +1595,10 @@ func (c *Client) writeOutput(line string, stderr bool) {
 	c.outputMu.Lock()
 	defer c.outputMu.Unlock()
 	if stderr {
-		c.output.WriteString("[stderr] ")
+		_, _ = c.output.WriteString("[stderr] ")
 	}
-	c.output.WriteString(line)
-	c.output.WriteByte('\n')
+	_, _ = c.output.WriteString(line)
+	_ = c.output.WriteByte('\n')
 }
 
 func (c *Client) warnOnCodexVersionMismatch() {
