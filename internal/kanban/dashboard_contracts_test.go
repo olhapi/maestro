@@ -182,7 +182,7 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.AppSession.SessionID != "thread-runtime-turn-runtime" || len(snapshot.AppSession.History) != 2 {
+	if snapshot.AppSession.SessionID != "thread-runtime-turn-runtime" || len(snapshot.AppSession.History) != 0 {
 		t.Fatalf("unexpected execution snapshot payload: %#v", snapshot)
 	}
 }

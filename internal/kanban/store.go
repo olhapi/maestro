@@ -585,7 +585,7 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 			FOREIGN KEY (project_id) REFERENCES projects(id),
 			FOREIGN KEY (epic_id) REFERENCES epics(id)
 		)`,
-			`INSERT INTO issues_new (
+		`INSERT INTO issues_new (
 				id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description,
 				state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 			)
@@ -1403,11 +1403,11 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 		return nil, err
 	}
 
-		_, err = tx.Exec(`
+	_, err = tx.Exec(`
 			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, PermissionProfileDefault, priority, strings.TrimSpace(opts.AgentName), strings.TrimSpace(opts.AgentPrompt), now, now,
-		)
+		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, PermissionProfileDefault, priority, strings.TrimSpace(opts.AgentName), strings.TrimSpace(opts.AgentPrompt), now, now,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1483,10 +1483,10 @@ func scanIssueRecord(scanner issueScanner) (*Issue, error) {
 	var providerShadow int
 	var permissionProfile string
 
-		if err := scanner.Scan(
-			&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &issue.Priority,
-			&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
-		); err != nil {
+	if err := scanner.Scan(
+		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &issue.Priority,
+		&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+	); err != nil {
 		return nil, err
 	}
 
@@ -1545,7 +1545,7 @@ func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
 	}
 
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(order)), ",")
-		rows, err := s.db.Query(`
+	rows, err := s.db.Query(`
 			SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority,
 			       agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 			FROM issues
@@ -1664,11 +1664,11 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		if incoming.LastSyncedAt != nil {
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
-			_, err = tx.Exec(`
+		_, err = tx.Exec(`
 				INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
-			)
+			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -2568,7 +2568,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		orderBy = "i.state ASC, CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
 	}
 
-		rows, err := s.db.Query(`
+	rows, err := s.db.Query(`
 			SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.priority,
 			       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
 			       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
@@ -2594,11 +2594,11 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		var providerShadow int
 		var permissionProfile string
 		var projectDesc, epicDesc string
-			if err := rows.Scan(
-				&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &permissionProfile, &item.Priority,
-				&item.AgentName, &item.AgentPrompt, &branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
-				&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
-			); err != nil {
+		if err := rows.Scan(
+			&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &permissionProfile, &item.Priority,
+			&item.AgentName, &item.AgentPrompt, &branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
+		); err != nil {
 			return nil, 0, err
 		}
 		item.IssueType = NormalizeIssueType(string(item.IssueType))
@@ -3099,6 +3099,7 @@ func (s *Store) UpsertIssueExecutionSession(snapshot ExecutionSessionSnapshot) e
 	if snapshot.UpdatedAt.IsZero() {
 		snapshot.UpdatedAt = time.Now().UTC()
 	}
+	snapshot.AppSession = snapshot.AppSession.Summary()
 	body, err := json.Marshal(snapshot.AppSession)
 	if err != nil {
 		return err

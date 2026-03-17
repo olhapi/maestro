@@ -80,7 +80,6 @@ describe("IssueDetailPage", () => {
         turns_started: 1,
         turns_completed: 0,
         terminal: false,
-        history: [],
       },
       activity_groups: [],
       debug_activity_groups: [],
@@ -133,7 +132,6 @@ describe("IssueDetailPage", () => {
         turns_started: 1,
         turns_completed: 0,
         terminal: false,
-        history: [],
       },
       activity_groups: [],
       debug_activity_groups: [],
@@ -287,7 +285,6 @@ describe("IssueDetailPage", () => {
         turns_started: 2,
         turns_completed: 1,
         terminal: false,
-        history: [],
       },
       runtime_events: [
         {

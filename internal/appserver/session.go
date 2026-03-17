@@ -9,7 +9,7 @@ import (
 	"github.com/olhapi/maestro/internal/appserver/protocol"
 )
 
-const defaultSessionHistoryLimit = 200
+const defaultSessionHistoryLimit = 64
 
 // Event is a minimal app-server event envelope.
 type Event struct {
@@ -52,6 +52,25 @@ type Session struct {
 	TerminalReason  string    `json:"terminal_reason,omitempty"`
 	History         []Event   `json:"history,omitempty"`
 	MaxHistory      int       `json:"-"`
+	startedTurnID   string
+}
+
+func (s *Session) Clone() Session {
+	if s == nil {
+		return Session{}
+	}
+	cp := *s
+	cp.History = append([]Event(nil), s.History...)
+	return cp
+}
+
+func (s *Session) Summary() Session {
+	if s == nil {
+		return Session{}
+	}
+	cp := *s
+	cp.History = nil
+	return cp
 }
 
 func (s *Session) ApplyEvent(e Event) {
@@ -85,6 +104,7 @@ func (s *Session) ApplyEvent(e Event) {
 
 	switch e.Type {
 	case "turn.started":
+		s.startedTurnID = e.TurnID
 		s.TurnsStarted++
 	case "turn.completed":
 		s.TurnsCompleted++

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -1505,8 +1506,8 @@ func TestPendingInterruptRunPersistsLatestExecutionSessionSnapshot(t *testing.T)
 	if snapshot.AppSession.SessionID != "thread-approval-turn-approval" {
 		t.Fatalf("unexpected persisted session id: %+v", snapshot.AppSession)
 	}
-	if len(snapshot.AppSession.History) == 0 {
-		t.Fatalf("expected persisted session history, got %+v", snapshot.AppSession)
+	if len(snapshot.AppSession.History) != 0 {
+		t.Fatalf("expected persisted session summary without history, got %+v", snapshot.AppSession)
 	}
 	sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
 	if len(sessions) != 1 {
@@ -2222,6 +2223,56 @@ func TestStatusLiveSessionsUseIssueIdentifiers(t *testing.T) {
 	}
 	if session.IssueID != issue.ID || session.IssueIdentifier != issue.Identifier {
 		t.Fatalf("unexpected session metadata: %+v", session)
+	}
+}
+
+func TestStatusIncludesRuntimeAndMaintenanceMetadata(t *testing.T) {
+	orch, _, _, _ := setupTestOrchestrator(t, "cat")
+	orch.runMaintenanceIfDue()
+
+	status := orch.Status()
+	for _, key := range []string{
+		"heap_alloc_bytes",
+		"heap_sys_bytes",
+		"db_page_count",
+		"db_page_size",
+		"db_freelist_count",
+		"last_maintenance_at",
+		"last_checkpoint_at",
+		"last_checkpoint_result",
+	} {
+		if _, ok := status[key]; !ok {
+			t.Fatalf("expected status[%q], got %#v", key, status)
+		}
+	}
+}
+
+func TestMaintenanceProtectedIssueIDsIncludeRetryAndPausedIssues(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runningIssue, err := store.CreateIssue("", "", "Running maintenance issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue running: %v", err)
+	}
+	retryIssue, err := store.CreateIssue("", "", "Retry maintenance issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue retry: %v", err)
+	}
+	pausedIssue, err := store.CreateIssue("", "", "Paused maintenance issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue paused: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.running[runningIssue.ID] = runningEntry{issue: *runningIssue, cancel: func() {}}
+	orch.retries[retryIssue.ID] = retryEntry{Attempt: 2, Phase: "implementation", DueAt: time.Now().UTC().Add(time.Minute)}
+	orch.paused[pausedIssue.ID] = pausedEntry{Attempt: 3, Phase: "review", PausedAt: time.Now().UTC()}
+	ids := orch.maintenanceProtectedIssueIDsLocked()
+	orch.mu.Unlock()
+
+	expected := []string{pausedIssue.ID, retryIssue.ID, runningIssue.ID}
+	sort.Strings(expected)
+	if got, want := strings.Join(ids, ","), strings.Join(expected, ","); got != want {
+		t.Fatalf("maintenance protected issue IDs = %q, want %q", got, want)
 	}
 }
 

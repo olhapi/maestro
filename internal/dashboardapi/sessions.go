@@ -240,7 +240,6 @@ func buildLiveSessionFeedEntry(identifier string, session appserver.Session, run
 		TurnsCompleted:   session.TurnsCompleted,
 		Terminal:         session.Terminal,
 		TerminalReason:   session.TerminalReason,
-		History:          append([]appserver.Event(nil), session.History...),
 	}
 }
 
@@ -309,7 +308,6 @@ func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, re
 		TurnsCompleted:  session.TurnsCompleted,
 		Terminal:        session.Terminal,
 		TerminalReason:  session.TerminalReason,
-		History:         append([]appserver.Event(nil), session.History...),
 		Error:           errorText,
 	}
 }

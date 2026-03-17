@@ -593,14 +593,14 @@ func TestIssueExecutionPayloadGroupsPersistentActivityByAttempt(t *testing.T) {
 	if groups[0].Attempt != 1 || groups[0].Status != "completed" || groups[0].Phase != "implementation" {
 		t.Fatalf("unexpected group metadata: %#v", groups[0])
 	}
-	if len(groups[0].Entries) != 4 {
-		t.Fatalf("expected turn start, agent, command, turn completed entries, got %#v", groups[0].Entries)
+	if len(groups[0].Entries) != 2 {
+		t.Fatalf("expected compacted successful activity to keep the latest substantive row and completion status, got %#v", groups[0].Entries)
 	}
-	if groups[0].Entries[1].Summary != "Planning the fix" {
-		t.Fatalf("expected authoritative completed agent text, got %#v", groups[0].Entries[1])
+	if groups[0].Entries[0].Kind != "command" || groups[0].Entries[0].Title != "Command completed" {
+		t.Fatalf("expected compacted command row to remain visible, got %#v", groups[0].Entries[0])
 	}
-	if groups[0].Entries[2].Kind != "command" || groups[0].Entries[2].Title != "Command completed" {
-		t.Fatalf("expected completed command row, got %#v", groups[0].Entries[2])
+	if groups[0].Entries[1].Kind != "status" || groups[0].Entries[1].Title != "Turn Completed" {
+		t.Fatalf("expected compacted completion status row, got %#v", groups[0].Entries[1])
 	}
 }
 

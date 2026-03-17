@@ -82,8 +82,8 @@ func TestApplyIssueActivityEventPersistsSingleAgentEntryAcrossStreaming(t *testi
 	if entry.StartedAt == nil || entry.CompletedAt == nil {
 		t.Fatalf("expected started/completed timestamps, got %#v", entry)
 	}
-	if count := countIssueActivityUpdates(t, store, issue.ID); count != 3 {
-		t.Fatalf("expected 3 append-only activity updates, got %d", count)
+	if count := countIssueActivityUpdates(t, store, issue.ID); count != 2 {
+		t.Fatalf("expected started/completed activity updates only, got %d", count)
 	}
 }
 
@@ -185,8 +185,177 @@ func TestApplyIssueActivityEventPersistsSingleCommandEntryAcrossStreaming(t *tes
 	if entry.StartedAt == nil || entry.CompletedAt == nil {
 		t.Fatalf("expected started/completed timestamps, got %#v", entry)
 	}
-	if count := countIssueActivityUpdates(t, store, issue.ID); count != 5 {
-		t.Fatalf("expected 5 append-only activity updates, got %d", count)
+	if count := countIssueActivityUpdates(t, store, issue.ID); count != 2 {
+		t.Fatalf("expected started/completed command updates only, got %d", count)
+	}
+}
+
+func TestApplyIssueActivityEventTruncatesOversizedCommandDetail(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Oversized command timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	output := "prefix-marker\n" + strings.Repeat("x", activityDetailMaxBytes*2) + "\nlatest failure details"
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 1, appserver.ActivityEvent{
+		Type:             "item.completed",
+		ThreadID:         "thread-1",
+		TurnID:           "turn-1",
+		ItemID:           "cmd-1",
+		ItemType:         "commandExecution",
+		Command:          "pnpm test",
+		CWD:              "/repo",
+		Status:           "completed",
+		AggregatedOutput: output,
+		ExitCode:         intPtr(0),
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one entry, got %#v", entries)
+	}
+	if !strings.Contains(entries[0].Detail, "[truncated]") {
+		t.Fatalf("expected truncation marker, got %#v", entries[0].Detail)
+	}
+	if !strings.Contains(entries[0].Detail, "$ pnpm test") || !strings.Contains(entries[0].Detail, "cwd: /repo") {
+		t.Fatalf("expected command metadata to remain visible, got %#v", entries[0].Detail)
+	}
+	if !strings.Contains(entries[0].Detail, "latest failure details") {
+		t.Fatalf("expected newest command output to survive, got %#v", entries[0].Detail)
+	}
+	if strings.Contains(entries[0].Detail, "prefix-marker") {
+		t.Fatalf("expected oldest command output to be trimmed, got %#v", entries[0].Detail)
+	}
+	if len(entries[0].Detail) > activityDetailMaxBytes {
+		t.Fatalf("expected bounded detail size, got %d", len(entries[0].Detail))
+	}
+}
+
+func TestApplyIssueActivityEventKeepsNewestStreamingCommandOutputWhenTruncated(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Streaming command truncation", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	events := []appserver.ActivityEvent{
+		{
+			Type:     "item.started",
+			ThreadID: "thread-1",
+			TurnID:   "turn-1",
+			ItemID:   "cmd-1",
+			ItemType: "commandExecution",
+			Command:  "pnpm test",
+			CWD:      "/repo",
+		},
+		{
+			Type:     "item.commandExecution.outputDelta",
+			ThreadID: "thread-1",
+			TurnID:   "turn-1",
+			ItemID:   "cmd-1",
+			Delta:    "prefix-marker\n" + strings.Repeat("x", activityDetailMaxBytes),
+		},
+		{
+			Type:     "item.commandExecution.outputDelta",
+			ThreadID: "thread-1",
+			TurnID:   "turn-1",
+			ItemID:   "cmd-1",
+			Delta:    "\nlatest streaming line",
+		},
+	}
+	for _, event := range events {
+		if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 1, event); err != nil {
+			t.Fatalf("ApplyIssueActivityEvent(%s): %v", event.Type, err)
+		}
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one entry, got %#v", entries)
+	}
+	if !strings.Contains(entries[0].Detail, "latest streaming line") {
+		t.Fatalf("expected latest delta to survive truncation, got %#v", entries[0].Detail)
+	}
+	if strings.Contains(entries[0].Detail, "prefix-marker") {
+		t.Fatalf("expected oldest streaming output to be trimmed, got %#v", entries[0].Detail)
+	}
+}
+
+func TestTruncateActivityTailPreservesUtf8AndTinyBudgets(t *testing.T) {
+	got := truncateActivityTail("\n\n"+strings.Repeat("é", 10), len("[truncated]\n")+4)
+	if !strings.Contains(got, "[truncated]") {
+		t.Fatalf("expected truncation marker, got %q", got)
+	}
+	if !strings.HasPrefix(got, "...[truncated]") {
+		t.Fatalf("expected marker prefix, got %q", got)
+	}
+
+	got = truncateActivityTail(strings.Repeat("é", 6), 5)
+	if got == "" {
+		t.Fatal("expected non-empty tiny-budget truncation")
+	}
+}
+
+func TestTruncateCommandDetailFallsBackWhenMetadataConsumesBudget(t *testing.T) {
+	detail := buildCommandDetail("pnpm test", "/very/long/path/that/leaves/no-room", "older output\nlatest output", intPtr(1))
+	got := truncateCommandDetail(detail, len("$ pnpm test\n\nexit code: 1"))
+	if len(got) == 0 {
+		t.Fatal("expected truncated detail")
+	}
+	if !strings.Contains(got, "[truncated]") {
+		t.Fatalf("expected truncation marker, got %q", got)
+	}
+}
+
+func TestCompactIssueActivityAttemptHelpers(t *testing.T) {
+	store := setupTestStore(t)
+	successIssue, err := store.CreateIssue("", "", "Compaction success", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue success: %v", err)
+	}
+	for _, event := range []appserver.ActivityEvent{
+		{Type: "item.completed", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "cmd-1", ItemType: "commandExecution", Command: "pnpm test", CWD: "/repo", Status: "completed", AggregatedOutput: "ok", ExitCode: intPtr(0)},
+		{Type: "turn.completed", ThreadID: "thread-1", TurnID: "turn-1"},
+	} {
+		if err := store.ApplyIssueActivityEvent(successIssue.ID, successIssue.Identifier, 1, event); err != nil {
+			t.Fatalf("ApplyIssueActivityEvent success(%s): %v", event.Type, err)
+		}
+	}
+	if err := store.CompactIssueActivityAttemptSuccess(successIssue.ID, 1); err != nil {
+		t.Fatalf("CompactIssueActivityAttemptSuccess: %v", err)
+	}
+
+	diagnosticIssue, err := store.CreateIssue("", "", "Compaction diagnostic", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue diagnostic: %v", err)
+	}
+	for i := 0; i < activityDiagnosticTailLimit+5; i++ {
+		if err := store.ApplyIssueActivityEvent(diagnosticIssue.ID, diagnosticIssue.Identifier, 1, appserver.ActivityEvent{
+			Type:             "item.completed",
+			ThreadID:         "thread-2",
+			TurnID:           "turn-2",
+			ItemID:           "cmd-" + strings.Repeat("x", i%2) + string(rune('a'+(i%26))),
+			ItemType:         "commandExecution",
+			Command:          "echo line",
+			CWD:              "/repo",
+			Status:           "completed",
+			AggregatedOutput: strings.Repeat("line\n", i+1),
+			ExitCode:         intPtr(1),
+		}); err != nil {
+			t.Fatalf("ApplyIssueActivityEvent diagnostic(%d): %v", i, err)
+		}
+	}
+	if err := store.CompactIssueActivityAttemptDiagnostic(diagnosticIssue.ID, 1); err != nil {
+		t.Fatalf("CompactIssueActivityAttemptDiagnostic: %v", err)
 	}
 }
 
@@ -252,17 +421,14 @@ func TestApplyIssueActivityEventKeepsHistoricalAttemptsAndSecondaryRows(t *testi
 	if err != nil {
 		t.Fatalf("ListIssueActivityEntries: %v", err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("expected three retained activity entries, got %#v", entries)
+	if len(entries) != 2 {
+		t.Fatalf("expected compacted successful attempt plus historical attempt, got %#v", entries)
 	}
 	if entries[0].Attempt != 1 || entries[0].Summary != "Attempt one summary" {
 		t.Fatalf("expected attempt one history to stay visible, got %#v", entries[0])
 	}
-	if entries[1].Attempt != 2 || entries[1].Tier != "secondary" || entries[1].ItemType != "plan" {
-		t.Fatalf("expected plan item to stay secondary in attempt two, got %#v", entries[1])
-	}
-	if entries[2].Attempt != 2 || entries[2].Kind != "status" || entries[2].Status != "completed" {
-		t.Fatalf("expected turn status row in attempt two, got %#v", entries[2])
+	if entries[1].Attempt != 2 || entries[1].Kind != "status" || entries[1].Status != "completed" {
+		t.Fatalf("expected compacted turn status row in attempt two, got %#v", entries[1])
 	}
 }
 

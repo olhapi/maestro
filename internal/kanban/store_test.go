@@ -2788,7 +2788,7 @@ func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 	if !loaded.ResumeEligible || loaded.StopReason != "graceful_shutdown" {
 		t.Fatalf("expected resume metadata, got %+v", loaded)
 	}
-	if loaded.AppSession.SessionID != "thread-1-turn-1" || len(loaded.AppSession.History) != 2 {
+	if loaded.AppSession.SessionID != "thread-1-turn-1" || len(loaded.AppSession.History) != 0 {
 		t.Fatalf("unexpected session payload: %+v", loaded.AppSession)
 	}
 
@@ -2971,7 +2971,7 @@ func TestListRecentExecutionSessionsOrdersAndDecodesPayloads(t *testing.T) {
 	if snapshots[0].IssueID != newIssue.ID || snapshots[1].IssueID != oldIssue.ID {
 		t.Fatalf("expected newest-first ordering, got %#v", snapshots)
 	}
-	if snapshots[0].AppSession.LastMessage != "Finished review" || len(snapshots[0].AppSession.History) != 1 {
+	if snapshots[0].AppSession.LastMessage != "Finished review" || len(snapshots[0].AppSession.History) != 0 {
 		t.Fatalf("expected decoded app session payload, got %+v", snapshots[0].AppSession)
 	}
 
@@ -2981,6 +2981,145 @@ func TestListRecentExecutionSessionsOrdersAndDecodesPayloads(t *testing.T) {
 	}
 	if len(filtered) != 1 || filtered[0].IssueID != newIssue.ID {
 		t.Fatalf("expected recent filter to keep only newest snapshot, got %#v", filtered)
+	}
+}
+
+func TestRunMaintenancePrunesExpiredRowsButKeepsActiveIssueData(t *testing.T) {
+	store := setupTestStore(t)
+	oldIssue, err := store.CreateIssue("", "", "Old issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue old: %v", err)
+	}
+	activeIssue, err := store.CreateIssue("", "", "Active issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue active: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -(runtimeEventRetentionDays + 2))
+	activityTS := time.Now().UTC().AddDate(0, 0, -(issueActivityRetentionDays + 2))
+	sessionTS := time.Now().UTC().AddDate(0, 0, -(completedSessionRetentionDays + 2))
+
+	for _, issue := range []Issue{*oldIssue, *activeIssue} {
+		if _, err := store.db.Exec(`INSERT INTO runtime_events (kind, issue_id, identifier, event_ts, payload_json) VALUES (?, ?, ?, ?, '{}')`,
+			"run_failed", issue.ID, issue.Identifier, oldTS,
+		); err != nil {
+			t.Fatalf("insert runtime event: %v", err)
+		}
+		if _, err := store.db.Exec(`INSERT INTO issue_activity_entries (issue_id, identifier, logical_id, attempt, kind, title, summary, created_at, updated_at, raw_payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
+			issue.ID, issue.Identifier, issue.ID+"-entry", 1, "status", "Turn Failed", "failed", activityTS, activityTS,
+		); err != nil {
+			t.Fatalf("insert activity entry: %v", err)
+		}
+		if _, err := store.db.Exec(`INSERT INTO issue_activity_updates (issue_id, entry_id, event_type, event_ts, payload_json) VALUES (?, ?, ?, ?, '{}')`,
+			issue.ID, issue.ID+"-entry", "turn.failed", activityTS,
+		); err != nil {
+			t.Fatalf("insert activity update: %v", err)
+		}
+		if _, err := store.db.Exec(`INSERT INTO issue_execution_sessions (issue_id, identifier, phase, attempt, run_kind, error, resume_eligible, stop_reason, updated_at, session_json) VALUES (?, ?, '', 1, 'run_failed', '', 0, '', ?, '{}')`,
+			issue.ID, issue.Identifier, sessionTS,
+		); err != nil {
+			t.Fatalf("insert execution session: %v", err)
+		}
+	}
+	if _, err := store.db.Exec(`INSERT INTO change_events (entity_type, entity_id, action, event_ts, payload_json) VALUES ('runtime_event', ?, 'run_failed', ?, '{}')`,
+		oldIssue.ID, oldTS.AddDate(0, 0, -(changeEventRetentionDays))); err != nil {
+		t.Fatalf("insert change event: %v", err)
+	}
+
+	result, err := store.RunMaintenance([]string{activeIssue.ID})
+	if err != nil {
+		t.Fatalf("RunMaintenance: %v", err)
+	}
+	if result.CheckpointResult == "" || result.CheckpointAt.IsZero() {
+		t.Fatalf("expected checkpoint metadata, got %+v", result)
+	}
+
+	for _, tc := range []struct {
+		query string
+		args  []interface{}
+		want  int
+	}{
+		{query: `SELECT COUNT(*) FROM runtime_events WHERE issue_id = ?`, args: []interface{}{oldIssue.ID}, want: 0},
+		{query: `SELECT COUNT(*) FROM runtime_events WHERE issue_id = ?`, args: []interface{}{activeIssue.ID}, want: 1},
+		{query: `SELECT COUNT(*) FROM issue_activity_entries WHERE issue_id = ?`, args: []interface{}{oldIssue.ID}, want: 0},
+		{query: `SELECT COUNT(*) FROM issue_activity_entries WHERE issue_id = ?`, args: []interface{}{activeIssue.ID}, want: 1},
+		{query: `SELECT COUNT(*) FROM issue_activity_updates WHERE issue_id = ?`, args: []interface{}{oldIssue.ID}, want: 0},
+		{query: `SELECT COUNT(*) FROM issue_execution_sessions WHERE issue_id = ?`, args: []interface{}{oldIssue.ID}, want: 0},
+		{query: `SELECT COUNT(*) FROM change_events WHERE entity_id = ? AND action = ?`, args: []interface{}{oldIssue.ID, "run_failed"}, want: 0},
+	} {
+		var got int
+		if err := store.db.QueryRow(tc.query, tc.args...).Scan(&got); err != nil {
+			t.Fatalf("query %q: %v", tc.query, err)
+		}
+		if got != tc.want {
+			t.Fatalf("query %q = %d, want %d", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestRunMaintenancePrunesExpiredRunStartedStateForUnprotectedIssues(t *testing.T) {
+	store := setupTestStore(t)
+	oldIssue, err := store.CreateIssue("", "", "Old run started issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue old: %v", err)
+	}
+	protectedIssue, err := store.CreateIssue("", "", "Protected run started issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue protected: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -(runtimeEventRetentionDays + 2))
+	sessionTS := time.Now().UTC().AddDate(0, 0, -(completedSessionRetentionDays + 2))
+
+	for _, issue := range []Issue{*oldIssue, *protectedIssue} {
+		if _, err := store.db.Exec(`INSERT INTO runtime_events (kind, issue_id, identifier, event_ts, payload_json) VALUES (?, ?, ?, ?, '{}')`,
+			"run_started", issue.ID, issue.Identifier, oldTS,
+		); err != nil {
+			t.Fatalf("insert runtime event: %v", err)
+		}
+		if _, err := store.db.Exec(`INSERT INTO issue_execution_sessions (issue_id, identifier, phase, attempt, run_kind, error, resume_eligible, stop_reason, updated_at, session_json) VALUES (?, ?, '', 1, 'run_started', '', 0, '', ?, '{}')`,
+			issue.ID, issue.Identifier, sessionTS,
+		); err != nil {
+			t.Fatalf("insert execution session: %v", err)
+		}
+	}
+
+	if _, err := store.RunMaintenance([]string{protectedIssue.ID}); err != nil {
+		t.Fatalf("RunMaintenance: %v", err)
+	}
+
+	for _, tc := range []struct {
+		query string
+		args  []interface{}
+		want  int
+	}{
+		{query: `SELECT COUNT(*) FROM runtime_events WHERE issue_id = ?`, args: []interface{}{oldIssue.ID}, want: 0},
+		{query: `SELECT COUNT(*) FROM issue_execution_sessions WHERE issue_id = ?`, args: []interface{}{oldIssue.ID}, want: 0},
+		{query: `SELECT COUNT(*) FROM runtime_events WHERE issue_id = ?`, args: []interface{}{protectedIssue.ID}, want: 1},
+		{query: `SELECT COUNT(*) FROM issue_execution_sessions WHERE issue_id = ?`, args: []interface{}{protectedIssue.ID}, want: 1},
+	} {
+		var got int
+		if err := store.db.QueryRow(tc.query, tc.args...).Scan(&got); err != nil {
+			t.Fatalf("query %q: %v", tc.query, err)
+		}
+		if got != tc.want {
+			t.Fatalf("query %q = %d, want %d", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestDBStatsReturnsPageMetadata(t *testing.T) {
+	store := setupTestStore(t)
+
+	stats, err := store.DBStats()
+	if err != nil {
+		t.Fatalf("DBStats: %v", err)
+	}
+	if stats.PageCount <= 0 || stats.PageSize <= 0 {
+		t.Fatalf("expected positive page metadata, got %+v", stats)
+	}
+	if stats.FreelistCount < 0 {
+		t.Fatalf("expected non-negative freelist metadata, got %+v", stats)
 	}
 }
 

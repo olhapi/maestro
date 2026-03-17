@@ -51,7 +51,6 @@ function makeSessionsResponse() {
         turns_started: 4,
         turns_completed: 3,
         terminal: false,
-        history: [],
       },
       'RUN-LIVE-Z': {
         issue_id: 'issue-live-z',
@@ -69,7 +68,6 @@ function makeSessionsResponse() {
         turns_started: 2,
         turns_completed: 1,
         terminal: false,
-        history: [],
       },
     },
     entries: [
@@ -102,7 +100,6 @@ function makeSessionsResponse() {
         turns_started: 4,
         turns_completed: 3,
         terminal: false,
-        history: [],
         error: '',
       },
       {
@@ -123,7 +120,6 @@ function makeSessionsResponse() {
         turns_started: 2,
         turns_completed: 1,
         terminal: false,
-        history: [],
         error: '',
       },
       {
@@ -146,7 +142,6 @@ function makeSessionsResponse() {
         turns_completed: 2,
         terminal: false,
         terminal_reason: '',
-        history: [],
         error: 'stall_timeout',
       },
     ],
