@@ -34,6 +34,7 @@ vi.mock("@/lib/api", () => ({
     deleteIssue: vi.fn(),
     updateIssue: vi.fn(),
     setIssueState: vi.fn(),
+    setIssuePermissionProfile: vi.fn(),
     setIssueBlockers: vi.fn(),
     sendIssueCommand: vi.fn(),
     uploadIssueImage: vi.fn(),
@@ -187,6 +188,44 @@ describe("IssueDetailPage", () => {
     expect(within(breadcrumb).getAllByText(issue.identifier)).toHaveLength(1);
     expect(within(breadcrumb).getByText(issue.project_name!)).toBeInTheDocument();
     expect(within(breadcrumb).queryByText("Observability")).not.toBeInTheDocument();
+  });
+
+  it("updates the issue permission profile from the inline selector", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.setIssuePermissionProfile).mockResolvedValue({
+      ...issue,
+      permission_profile: "full-access",
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /agent permissions/i })).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/full access applies on the next turn/i)).toBeInTheDocument();
+
+    await selectOption(/agent permissions/i, /full access/i);
+
+    await waitFor(() => {
+      expect(api.setIssuePermissionProfile).toHaveBeenCalledWith("ISS-1", "full-access");
+    });
   });
 
   it("renders the shared progress-first activity feed for issue execution details", async () => {

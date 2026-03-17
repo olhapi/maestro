@@ -11,7 +11,6 @@ import { IssuePreviewSheet } from "@/components/dashboard/issue-preview-sheet";
 import { EpicDialog, IssueDialog } from "@/components/forms";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
@@ -32,11 +31,11 @@ import type {
   IssueDetail,
   IssueState,
   IssueSummary,
-  ProjectPermissionProfile,
+  PermissionProfile,
 } from "@/lib/types";
 import { formatCompactNumber, formatRelativeTime } from "@/lib/utils";
 
-const permissionProfileLabels: Record<ProjectPermissionProfile, string> = {
+const permissionProfileLabels: Record<PermissionProfile, string> = {
   default: "Default permissions",
   "full-access": "Full access",
 };
@@ -135,20 +134,17 @@ export function ProjectDetailPage() {
       await invalidate();
     },
   });
-  const updatePermissionProfile = useMutation({
-    mutationFn: (permissionProfile: ProjectPermissionProfile) =>
+  const permissionMutation = useMutation({
+    mutationFn: (permissionProfile: PermissionProfile) =>
       api.setProjectPermissionProfile(projectId, permissionProfile),
     onSuccess: async () => {
-      toast.success("Permissions updated");
+      toast.success("Project permissions updated");
       await invalidate();
     },
     onError: (error) => {
-      toast.error(
-        error instanceof Error ? `Unable to update permissions: ${error.message}` : "Unable to update permissions",
-      );
+      toast.error(error instanceof Error ? `Unable to update project permissions: ${error.message}` : "Unable to update project permissions");
     },
   });
-
   if (!bootstrap.data || !project.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
@@ -157,8 +153,6 @@ export function ProjectDetailPage() {
   const dispatchReady = isProjectDispatchReady(project.data.project);
   const isRunning = isProjectRunning(project.data.project);
   const togglePending = runProject.isPending || stopProject.isPending;
-  const permissionProfile = project.data.project.permission_profile ?? "default";
-
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
@@ -255,27 +249,29 @@ export function ProjectDetailPage() {
               </p>
             ) : null}
           </div>
-          <div className="grid min-w-[14rem] gap-2">
+          <div className="grid min-w-[240px] gap-2">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-              Agent permissions
+              Default agent permissions
             </p>
-            <Select
-              value={permissionProfile}
-              onValueChange={(value) => {
-                void updatePermissionProfile.mutateAsync(value as ProjectPermissionProfile);
+            <select
+              aria-label="Project agent permissions"
+              className="h-10 rounded-md border border-white/10 bg-white/5 px-3 text-sm text-white outline-none transition focus:border-[var(--accent)]"
+              disabled={permissionMutation.isPending}
+              value={project.data.project.permission_profile ?? "default"}
+              onChange={(event) => {
+                permissionMutation.mutate(event.target.value as PermissionProfile);
               }}
             >
-              <SelectTrigger aria-label="Agent permissions" disabled={updatePermissionProfile.isPending}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="default">{permissionProfileLabels.default}</SelectItem>
-                <SelectItem value="full-access">{permissionProfileLabels["full-access"]}</SelectItem>
-              </SelectContent>
-            </Select>
+              <option value="default" className="bg-slate-950 text-white">
+                {permissionProfileLabels.default}
+              </option>
+              <option value="full-access" className="bg-slate-950 text-white">
+                {permissionProfileLabels["full-access"]}
+              </option>
+            </select>
             <p className="text-xs text-[var(--muted-foreground)]">
-              Default follows `WORKFLOW.md`. Full access switches Codex to unrestricted filesystem and network access
-              for this project at run time.
+              New issues inherit this profile. Existing issues keep their own setting unless they are still on
+              the default profile.
             </p>
           </div>
           {!dispatchReady ? (

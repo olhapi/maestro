@@ -1,7 +1,7 @@
 export type IssueState = string;
 export type IssueType = "standard" | "recurring";
 export type ProjectState = "stopped" | "running";
-export type ProjectPermissionProfile = "default" | "full-access";
+export type PermissionProfile = "default" | "full-access";
 
 export type WorkflowPhase = "implementation" | "review" | "done" | "complete";
 
@@ -34,7 +34,7 @@ export interface Project {
   name: string;
   description?: string;
   state: ProjectState;
-  permission_profile?: ProjectPermissionProfile;
+  permission_profile?: PermissionProfile;
   repo_path?: string;
   workflow_path?: string;
   provider_kind?: string;
@@ -111,6 +111,7 @@ export interface Issue {
   description?: string;
   state: IssueState;
   workflow_phase: WorkflowPhase;
+  permission_profile?: PermissionProfile;
   priority: number;
   labels?: string[];
   agent_name?: string;
@@ -153,6 +154,7 @@ export interface IssueImage {
 export interface IssueDetail extends IssueSummary {
   project_description?: string;
   epic_description?: string;
+  project_permission_profile?: PermissionProfile;
   images: IssueImage[];
 }
 

@@ -24,8 +24,20 @@ import {
   summarizeIssueImageFailures,
 } from "@/lib/issue-images";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
-import type { AgentCommand, IssueState } from "@/lib/types";
+import type { AgentCommand, IssueState, PermissionProfile } from "@/lib/types";
 import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
+
+const permissionProfileLabels: Record<PermissionProfile, string> = {
+  default: "Default permissions",
+  "full-access": "Full access",
+};
+
+function permissionProfileHelpText(issuePermissionProfile: PermissionProfile | undefined, projectPermissionProfile: PermissionProfile | undefined) {
+  if ((issuePermissionProfile ?? "default") === "default" && (projectPermissionProfile ?? "default") === "full-access") {
+    return "Default currently inherits this project's full-access profile. Switching to full access keeps the issue pinned there even if the project default changes later."
+  }
+  return "Default follows the workflow sandbox. Full access applies on the next turn in the active run without restarting the thread."
+}
 
 function commandStatusMeta(status: AgentCommand["status"]) {
   switch (status) {
@@ -137,6 +149,17 @@ export function IssueDetailPage() {
       toast.success("Command queued for agent");
       setCommandDraft("");
       await invalidate();
+    },
+  });
+  const permissionMutation = useMutation({
+    mutationFn: (permissionProfile: PermissionProfile) =>
+      api.setIssuePermissionProfile(identifier, permissionProfile),
+    onSuccess: async () => {
+      toast.success("Permissions updated");
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to update permissions: ${error.message}` : "Unable to update permissions");
     },
   });
 
@@ -398,6 +421,26 @@ export function IssueDetailPage() {
                   ))}
                 </SelectContent>
               </Select>
+              <div className="grid gap-2">
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Agent permissions</p>
+                <Select
+                  value={issue.data.permission_profile ?? "default"}
+                  onValueChange={async (value) => {
+                    await permissionMutation.mutateAsync(value as PermissionProfile);
+                  }}
+                >
+                  <SelectTrigger aria-label="Agent permissions" disabled={permissionMutation.isPending}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">{permissionProfileLabels.default}</SelectItem>
+                    <SelectItem value="full-access">{permissionProfileLabels["full-access"]}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {permissionProfileHelpText(issue.data.permission_profile, issue.data.project_permission_profile)}
+                </p>
+              </div>
               <div className="grid grid-cols-3 gap-2.5" data-testid="issue-actions-row">
                 <Button
                   variant="secondary"

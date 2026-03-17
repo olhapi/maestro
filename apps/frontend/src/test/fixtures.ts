@@ -12,6 +12,7 @@ export function makeIssueSummary(
     description: "Track runtime retries",
     state: "ready",
     workflow_phase: "implementation",
+    permission_profile: "default",
     priority: 2,
     labels: ["api"],
     agent_name: "marketing",
@@ -35,6 +36,7 @@ export function makeIssueDetail(
   return {
     ...makeIssueSummary(),
     project_description: "Platform work",
+    project_permission_profile: "default",
     epic_description: "Observability improvements",
     branch_name: "feature/retries",
     pr_url: "https://example.com/pr/7",

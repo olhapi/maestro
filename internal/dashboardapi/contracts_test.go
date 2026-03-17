@@ -434,7 +434,7 @@ func TestProjectAndEpicEndpointsSupportCRUDContracts(t *testing.T) {
 	if invalidPermissions.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid permission profile expected 400, got %d", invalidPermissions.StatusCode)
 	}
-	if !strings.Contains(decodeResponse(t, invalidPermissions)["error"].(string), "invalid project permission profile") {
+	if !strings.Contains(decodeResponse(t, invalidPermissions)["error"].(string), "invalid permission profile") {
 		t.Fatal("expected validation error for invalid permission profile")
 	}
 
@@ -714,8 +714,32 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	if getIssue.StatusCode != http.StatusOK {
 		t.Fatalf("get issue expected 200, got %d", getIssue.StatusCode)
 	}
-	if decodeResponse(t, getIssue)["identifier"].(string) != identifier {
+	issuePayload := decodeResponse(t, getIssue)
+	if issuePayload["identifier"].(string) != identifier {
 		t.Fatal("expected issue detail payload")
+	}
+	if issuePayload["permission_profile"].(string) != "default" {
+		t.Fatalf("expected default issue permission profile, got %#v", issuePayload)
+	}
+
+	updateIssuePermissions := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/permissions", map[string]interface{}{
+		"permission_profile": "full-access",
+	})
+	if updateIssuePermissions.StatusCode != http.StatusOK {
+		t.Fatalf("update issue permissions expected 200, got %d", updateIssuePermissions.StatusCode)
+	}
+	if decodeResponse(t, updateIssuePermissions)["permission_profile"].(string) != "full-access" {
+		t.Fatal("expected updated issue permission profile")
+	}
+
+	invalidIssuePermissions := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/permissions", map[string]interface{}{
+		"permission_profile": "admin-mode",
+	})
+	if invalidIssuePermissions.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid issue permission profile expected 400, got %d", invalidIssuePermissions.StatusCode)
+	}
+	if !strings.Contains(decodeResponse(t, invalidIssuePermissions)["error"].(string), "invalid permission profile") {
+		t.Fatal("expected validation error for invalid issue permission profile")
 	}
 
 	uploadImage := requestMultipart(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/images", "file", "runtime.png", contractSamplePNGBytes())

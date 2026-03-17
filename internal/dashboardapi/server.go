@@ -295,7 +295,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			if !decodeJSON(w, r, &body) {
 				return
 			}
-			profile, err := kanban.ParseProjectPermissionProfile(body.PermissionProfile)
+			profile, err := kanban.ParsePermissionProfile(body.PermissionProfile)
 			if err != nil {
 				writeErrorStatus(w, appErrorStatus(err), err)
 				return
@@ -723,6 +723,33 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch parts[1] {
+	case "permissions":
+		var body struct {
+			PermissionProfile string `json:"permission_profile"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		profile, err := kanban.ParsePermissionProfile(body.PermissionProfile)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		issue, err := s.store.GetIssueByIdentifier(identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		if err := s.store.UpdateIssuePermissionProfile(issue.ID, profile); err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		detail, err := s.service.GetIssueDetailByIdentifier(r.Context(), identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, detail)
 	case "state":
 		var body struct {
 			State string `json:"state"`

@@ -169,6 +169,7 @@ func (s *Store) migrate() error {
 			description TEXT,
 			state TEXT NOT NULL DEFAULT 'backlog',
 			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
+			permission_profile TEXT NOT NULL DEFAULT 'default',
 			priority INTEGER DEFAULT 0,
 			agent_name TEXT NOT NULL DEFAULT '',
 			agent_prompt TEXT NOT NULL DEFAULT '',
@@ -378,6 +379,7 @@ func (s *Store) ensureIssueColumns() error {
 		`ALTER TABLE issues ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'kanban'`,
 		`ALTER TABLE issues ADD COLUMN provider_issue_ref TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE issues ADD COLUMN provider_shadow INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE issues ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'default'`,
 		`ALTER TABLE issues ADD COLUMN total_tokens_spent INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE issues ADD COLUMN last_synced_at DATETIME`,
 		`ALTER TABLE issues ADD COLUMN agent_name TEXT NOT NULL DEFAULT ''`,
@@ -568,6 +570,7 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 			description TEXT,
 			state TEXT NOT NULL DEFAULT 'backlog',
 			workflow_phase TEXT NOT NULL DEFAULT 'implementation',
+			permission_profile TEXT NOT NULL DEFAULT 'default',
 			priority INTEGER DEFAULT 0,
 			agent_name TEXT NOT NULL DEFAULT '',
 			agent_prompt TEXT NOT NULL DEFAULT '',
@@ -582,10 +585,10 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 			FOREIGN KEY (project_id) REFERENCES projects(id),
 			FOREIGN KEY (epic_id) REFERENCES epics(id)
 		)`,
-		`INSERT INTO issues_new (
-			id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description,
-			state, workflow_phase, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
-		)
+			`INSERT INTO issues_new (
+				id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description,
+				state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+			)
 		SELECT
 			legacy.id,
 			CASE
@@ -607,8 +610,8 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 				ELSE NULL
 			END,
 			legacy.identifier, legacy.issue_type, legacy.provider_kind, legacy.provider_issue_ref, legacy.provider_shadow, legacy.title, legacy.description,
-			legacy.state, legacy.workflow_phase, legacy.priority, COALESCE(legacy.agent_name, ''), COALESCE(legacy.agent_prompt, ''), legacy.branch_name, legacy.pr_url, legacy.created_at, legacy.updated_at, legacy.total_tokens_spent, legacy.started_at, legacy.completed_at, legacy.last_synced_at
-		FROM issues AS legacy`,
+			legacy.state, legacy.workflow_phase, COALESCE(NULLIF(TRIM(legacy.permission_profile), ''), 'default'), legacy.priority, COALESCE(legacy.agent_name, ''), COALESCE(legacy.agent_prompt, ''), legacy.branch_name, legacy.pr_url, legacy.created_at, legacy.updated_at, legacy.total_tokens_spent, legacy.started_at, legacy.completed_at, legacy.last_synced_at
+			FROM issues AS legacy`,
 		`DROP TABLE issues`,
 		`ALTER TABLE issues_new RENAME TO issues`,
 		`CREATE INDEX idx_issues_state ON issues(state)`,
@@ -939,7 +942,7 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 	_, err = s.db.Exec(`
 		INSERT INTO projects (id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, name, description, ProjectStateStopped, ProjectPermissionProfileDefault, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
+		id, name, description, ProjectStateStopped, PermissionProfileDefault, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -949,7 +952,7 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 		Name:               name,
 		Description:        description,
 		State:              ProjectStateStopped,
-		PermissionProfile:  ProjectPermissionProfileDefault,
+		PermissionProfile:  PermissionProfileDefault,
 		RepoPath:           repoPath,
 		WorkflowPath:       workflowPath,
 		ProviderKind:       providerKind,
@@ -975,7 +978,7 @@ func (s *Store) GetProject(id string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.PermissionProfile = NormalizeProjectPermissionProfile(string(p.PermissionProfile))
+	p.PermissionProfile = NormalizePermissionProfile(string(p.PermissionProfile))
 	p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 	hydrateProject(p)
 	return p, nil
@@ -995,7 +998,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.State, &p.PermissionProfile, &p.RepoPath, &p.WorkflowPath, &p.ProviderKind, &p.ProviderProjectRef, &providerConfigJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
-		p.PermissionProfile = NormalizeProjectPermissionProfile(string(p.PermissionProfile))
+		p.PermissionProfile = NormalizePermissionProfile(string(p.PermissionProfile))
 		p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 		hydrateProject(&p)
 		projects = append(projects, p)
@@ -1028,8 +1031,8 @@ func (s *Store) UpdateProjectWithProvider(id, name, description, repoPath, workf
 	return s.appendChange("project", id, "updated", map[string]interface{}{"name": name, "repo_path": repoPath, "provider_kind": providerKind, "provider_project_ref": providerProjectRef})
 }
 
-func (s *Store) UpdateProjectPermissionProfile(id string, profile ProjectPermissionProfile) error {
-	profile = NormalizeProjectPermissionProfile(string(profile))
+func (s *Store) UpdateProjectPermissionProfile(id string, profile PermissionProfile) error {
+	profile = NormalizePermissionProfile(string(profile))
 	res, err := s.db.Exec(`
 		UPDATE projects SET permission_profile = ?, updated_at = ?
 		WHERE id = ?`,
@@ -1044,6 +1047,21 @@ func (s *Store) UpdateProjectPermissionProfile(id string, profile ProjectPermiss
 	return s.appendChange("project", id, "permission_profile_updated", map[string]interface{}{"permission_profile": profile})
 }
 
+func (s *Store) UpdateIssuePermissionProfile(id string, profile PermissionProfile) error {
+	profile = NormalizePermissionProfile(string(profile))
+	res, err := s.db.Exec(`
+		UPDATE issues SET permission_profile = ?, updated_at = ?
+		WHERE id = ?`,
+		profile, time.Now().UTC(), id,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
+	}
+	return s.appendChange("issue", id, "permission_profile_updated", map[string]interface{}{"permission_profile": profile})
+}
 func (s *Store) UpdateProjectState(id string, state ProjectState) error {
 	state = NormalizeProjectState(string(state))
 	res, err := s.db.Exec(`
@@ -1358,6 +1376,9 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.defaultPermissionProfileForProjectID(projectID); err != nil {
+		return nil, err
+	}
 	issueType, err := ParseIssueType(string(opts.IssueType))
 	if err != nil {
 		return nil, err
@@ -1382,11 +1403,11 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 		return nil, err
 	}
 
-	_, err = tx.Exec(`
-		INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, agent_name, agent_prompt, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, priority, strings.TrimSpace(opts.AgentName), strings.TrimSpace(opts.AgentPrompt), now, now,
-	)
+		_, err = tx.Exec(`
+			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, PermissionProfileDefault, priority, strings.TrimSpace(opts.AgentName), strings.TrimSpace(opts.AgentPrompt), now, now,
+		)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,10 +1433,11 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 		_, _ = tx.Exec(`INSERT OR IGNORE INTO issue_labels (issue_id, label) VALUES (?, ?)`, id, label)
 	}
 	payload := map[string]interface{}{
-		"project_id": projectID,
-		"identifier": identifier,
-		"title":      title,
-		"issue_type": issueType,
+		"project_id":         projectID,
+		"identifier":         identifier,
+		"title":              title,
+		"issue_type":         issueType,
+		"permission_profile": PermissionProfileDefault,
 	}
 	if agentName := strings.TrimSpace(opts.AgentName); agentName != "" {
 		payload["agent_name"] = agentName
@@ -1438,6 +1460,18 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 	return s.GetIssue(id)
 }
 
+func (s *Store) defaultPermissionProfileForProjectID(projectID string) (PermissionProfile, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return PermissionProfileDefault, nil
+	}
+	project, err := s.GetProject(projectID)
+	if err != nil {
+		return "", err
+	}
+	return NormalizePermissionProfile(string(project.PermissionProfile)), nil
+}
+
 type issueScanner interface {
 	Scan(dest ...interface{}) error
 }
@@ -1447,15 +1481,17 @@ func scanIssueRecord(scanner issueScanner) (*Issue, error) {
 	var startedAt, completedAt, lastSyncedAt sql.NullTime
 	var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
 	var providerShadow int
+	var permissionProfile string
 
-	if err := scanner.Scan(
-		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &issue.Priority,
-		&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
-	); err != nil {
+		if err := scanner.Scan(
+			&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &issue.Priority,
+			&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+		); err != nil {
 		return nil, err
 	}
 
 	issue.IssueType = NormalizeIssueType(string(issue.IssueType))
+	issue.PermissionProfile = NormalizePermissionProfile(permissionProfile)
 	if !issue.WorkflowPhase.IsValid() {
 		issue.WorkflowPhase = DefaultWorkflowPhaseForState(issue.State)
 	}
@@ -1509,10 +1545,10 @@ func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
 	}
 
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(order)), ",")
-	rows, err := s.db.Query(`
-		SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority,
-		       agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
-		FROM issues
+		rows, err := s.db.Query(`
+			SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority,
+			       agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+			FROM issues
 		WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, err
@@ -1598,6 +1634,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 	if providerKind == ProviderKindKanban || providerIssueRef == "" {
 		return nil, validationErrorf("provider issue reference is required for provider-backed issues")
 	}
+	if _, err := s.defaultPermissionProfileForProjectID(projectID); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1625,11 +1664,11 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		if incoming.LastSyncedAt != nil {
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
-		_, err = tx.Exec(`
-			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
-		)
+			_, err = tx.Exec(`
+				INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
+			)
 		if err != nil {
 			return nil, err
 		}
@@ -2073,6 +2112,10 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	if prURL, ok := updates["pr_url"].(string); ok {
 		query += ", pr_url = ?"
 		args = append(args, prURL)
+	}
+	if permissionProfile, ok := updates["permission_profile"].(PermissionProfile); ok {
+		query += ", permission_profile = ?"
+		args = append(args, NormalizePermissionProfile(string(permissionProfile)))
 	}
 	if issueTypeSpecified {
 		query += ", issue_type = ?"
@@ -2525,10 +2568,10 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		orderBy = "i.state ASC, CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
 	}
 
-	rows, err := s.db.Query(`
-		SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.priority,
-		       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
-		       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
+		rows, err := s.db.Query(`
+			SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.priority,
+			       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
+			       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
 		FROM issues i
 		LEFT JOIN projects p ON p.id = i.project_id
@@ -2549,15 +2592,17 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
 		var startedAt, completedAt, lastRun, lastSyncedAt sql.NullTime
 		var providerShadow int
+		var permissionProfile string
 		var projectDesc, epicDesc string
-		if err := rows.Scan(
-			&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &item.Priority,
-			&item.AgentName, &item.AgentPrompt, &branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
-			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
-		); err != nil {
+			if err := rows.Scan(
+				&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &permissionProfile, &item.Priority,
+				&item.AgentName, &item.AgentPrompt, &branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+				&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
+			); err != nil {
 			return nil, 0, err
 		}
 		item.IssueType = NormalizeIssueType(string(item.IssueType))
+		item.PermissionProfile = NormalizePermissionProfile(permissionProfile)
 		if !item.WorkflowPhase.IsValid() {
 			item.WorkflowPhase = DefaultWorkflowPhaseForState(item.State)
 		}
@@ -2629,6 +2674,7 @@ func (s *Store) GetIssueDetailByIdentifier(identifier string) (*IssueDetail, err
 		case err == nil && project != nil:
 			detail.ProjectName = project.Name
 			detail.ProjectDescription = project.Description
+			detail.ProjectPermissionProfile = project.PermissionProfile
 		case err != nil && err != sql.ErrNoRows:
 			return nil, err
 		}

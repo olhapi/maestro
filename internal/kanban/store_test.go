@@ -3025,18 +3025,36 @@ func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 	if project.Name != "Project Updated" || project.RepoPath != updatedRepo || project.WorkflowPath != updatedWorkflow {
 		t.Fatalf("unexpected updated project: %+v", project)
 	}
-	if project.PermissionProfile != ProjectPermissionProfileDefault {
+	if project.PermissionProfile != PermissionProfileDefault {
 		t.Fatalf("expected default permission profile, got %q", project.PermissionProfile)
 	}
-	if err := store.UpdateProjectPermissionProfile(project.ID, ProjectPermissionProfileFullAccess); err != nil {
+	if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
 		t.Fatalf("UpdateProjectPermissionProfile failed: %v", err)
 	}
 	project, err = store.GetProject(project.ID)
 	if err != nil {
 		t.Fatalf("GetProject after permission update failed: %v", err)
 	}
-	if project.PermissionProfile != ProjectPermissionProfileFullAccess {
+	if project.PermissionProfile != PermissionProfileFullAccess {
 		t.Fatalf("expected full-access permission profile, got %q", project.PermissionProfile)
+	}
+
+	issue, err := store.CreateIssue(project.ID, "", "Issue permissions", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if issue.PermissionProfile != PermissionProfileDefault {
+		t.Fatalf("expected default issue permission profile, got %q", issue.PermissionProfile)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile failed: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after permission update failed: %v", err)
+	}
+	if issue.PermissionProfile != PermissionProfileFullAccess {
+		t.Fatalf("expected full-access issue permission profile, got %q", issue.PermissionProfile)
 	}
 
 	epic, err := store.CreateEpic(project.ID, "Epic", "desc")
@@ -3054,9 +3072,35 @@ func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 		t.Fatalf("unexpected updated epic: %+v", epic)
 	}
 
-	issue, err := store.CreateIssue(project.ID, epic.ID, "Tracked", "", 0, nil)
+	issue, err = store.CreateIssue(project.ID, epic.ID, "Tracked", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if issue.PermissionProfile != PermissionProfileDefault {
+		t.Fatalf("expected default issue permission profile, got %q", issue.PermissionProfile)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile failed: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after permission update failed: %v", err)
+	}
+	if issue.PermissionProfile != PermissionProfileFullAccess {
+		t.Fatalf("expected full-access issue permission profile, got %q", issue.PermissionProfile)
+	}
+	providerIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "EXT-1",
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "linear-1",
+		Title:            "Imported issue",
+		State:            StateBacklog,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue failed: %v", err)
+	}
+	if providerIssue.PermissionProfile != PermissionProfileDefault {
+		t.Fatalf("expected imported issue permission profile to remain default, got %q", providerIssue.PermissionProfile)
 	}
 	if err := store.UpdateIssueWorkflowPhase(issue.ID, WorkflowPhaseReview); err != nil {
 		t.Fatalf("UpdateIssueWorkflowPhase failed: %v", err)

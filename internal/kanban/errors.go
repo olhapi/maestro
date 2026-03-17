@@ -37,8 +37,8 @@ func invalidIssueTypeError(issueType IssueType) error {
 	return fmt.Errorf("%w: invalid issue type %q", ErrValidation, issueType)
 }
 
-func invalidProjectPermissionProfileError(profile ProjectPermissionProfile) error {
-	return fmt.Errorf("%w: invalid project permission profile %q", ErrValidation, profile)
+func invalidPermissionProfileError(profile PermissionProfile) error {
+	return fmt.Errorf("%w: invalid permission profile %q", ErrValidation, profile)
 }
 
 func blockedInProgressError(blockers []string) error {

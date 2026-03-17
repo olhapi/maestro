@@ -173,6 +173,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ state }),
     }),
+  setIssuePermissionProfile: (identifier: string, permissionProfile: string) =>
+    request<IssueDetail>(`/api/v1/app/issues/${identifier}/permissions`, {
+      method: "POST",
+      body: JSON.stringify({ permission_profile: permissionProfile }),
+    }),
   setIssueBlockers: (identifier: string, blockedBy: string[]) =>
     request<{ ok: boolean }>(`/api/v1/app/issues/${identifier}/blockers`, {
       method: "POST",
