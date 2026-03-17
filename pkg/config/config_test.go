@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/olhapi/maestro/internal/codexschema"
 )
 
 func assertContainsAll(t *testing.T, text string, wants ...string) {
@@ -22,6 +24,10 @@ func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
 		"The done phase owns merge-back and finalization for this issue from the current workspace.",
+		"Create a short video preview or walkthrough of the finished result whenever the change can be demonstrated locally.",
+		"Save the preview under .maestro/review-preview/ in the current workspace as a single .mp4, .webm, .mov, or .m4v file so Maestro can publish it automatically.",
+		"Use the available browser automation or local tooling to capture the preview, then attach it to an issue comment for reviewers when the tracker/provider tooling supports comments and attachments.",
+		"If a video preview is not possible because the result is not demoable locally or the required tooling is unavailable, report that blocker clearly and fall back to the strongest deterministic validation you can run.",
 		"Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.",
 		"Consider the work complete once the change is merged.",
 		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
@@ -34,6 +40,8 @@ func assertInitDonePromptSemantics(t *testing.T, prompt string) {
 	assertContainsAll(t, prompt,
 		"Finalize issue {{ issue.identifier }} from the current workspace.",
 		"The done phase owns merge-back and finalization.",
+		"Create a short video preview or walkthrough of the finished result whenever it can be demonstrated locally, save it under .maestro/review-preview/ in the current workspace as a single .mp4, .webm, .mov, or .m4v file, then attach it to an issue comment for reviewers when the available tracker/provider tooling supports comments and attachments.",
+		"If that preview is blocked by missing tooling or a non-demoable change, report the blocker clearly and fall back to deterministic validation.",
 		"Merge the issue branch back when possible, resolving merge conflicts when you can do so safely.",
 		"Consider the work complete once the change is merged.",
 		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
@@ -56,8 +64,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.Mode != AgentModeAppServer {
 		t.Fatalf("expected app_server mode, got %q", cfg.Agent.Mode)
 	}
-	if cfg.Codex.ExpectedVersion != "0.111.0" {
-		t.Fatalf("expected codex expected version 0.111.0, got %q", cfg.Codex.ExpectedVersion)
+	if cfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
+		t.Fatalf("expected codex expected version %s, got %q", codexschema.SupportedVersion, cfg.Codex.ExpectedVersion)
 	}
 	if cfg.Agent.MaxTurns != 4 || cfg.Agent.MaxRetryBackoffMs != 60000 || cfg.Agent.MaxAutomaticRetries != 8 {
 		t.Fatalf("unexpected agent defaults: %+v", cfg.Agent)
@@ -73,6 +81,10 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Codex.TurnSandboxPolicy["networkAccess"] != true {
 		t.Fatalf("expected default turn sandbox networkAccess=true, got %+v", cfg.Codex.TurnSandboxPolicy)
+	}
+	reject, ok := cfg.Codex.ApprovalPolicy.(map[string]interface{})["reject"].(map[string]interface{})
+	if !ok || reject["request_permissions"] != false {
+		t.Fatalf("expected default approval policy to reject permission requests, got %+v", cfg.Codex.ApprovalPolicy)
 	}
 	if !cfg.Phases.Review.Enabled || !strings.Contains(cfg.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected review phase defaults, got %+v", cfg.Phases.Review)
@@ -110,7 +122,7 @@ agent:
   mode: stdio
 codex:
   command: codex --model test app-server
-  expected_version: 0.111.0
+  expected_version: ` + codexschema.SupportedVersion + `
   approval_policy: never
   thread_sandbox: workspace-write
   read_timeout_ms: 9999
@@ -144,7 +156,7 @@ Issue {{ issue.identifier }}
 	if workflow.Config.Hooks.BeforeRemove != "echo cleanup" {
 		t.Fatalf("unexpected before_remove hook: %q", workflow.Config.Hooks.BeforeRemove)
 	}
-	if workflow.Config.Codex.ExpectedVersion != "0.111.0" {
+	if workflow.Config.Codex.ExpectedVersion != codexschema.SupportedVersion {
 		t.Fatalf("unexpected codex expected version: %q", workflow.Config.Codex.ExpectedVersion)
 	}
 	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
@@ -556,7 +568,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"mode: stdio",
 		"Other options: parallel, per_project_serial.",
 		"codex app-server --model test",
-		"expected_version: 0.111.0",
+		"expected_version: " + codexschema.SupportedVersion,
 		"approval_policy: never",
 		"initial_collaboration_mode: plan",
 		"on-request, on-failure, untrusted",

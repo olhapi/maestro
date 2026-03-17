@@ -603,6 +603,18 @@ func (s *Service) SetIssueState(ctx context.Context, identifier, state string) (
 	return s.store.GetIssueDetailByIdentifier(issue.Identifier)
 }
 
+func (s *Service) CreateIssueComment(ctx context.Context, identifier string, input IssueCommentInput) error {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	project, provider, err := s.resolveIssueProvider(issue)
+	if err != nil {
+		return err
+	}
+	return provider.CreateIssueComment(ctx, project, issue, input)
+}
+
 func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 	projects, err := s.store.ListProjects()
 	if err != nil {

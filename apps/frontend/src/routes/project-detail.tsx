@@ -274,8 +274,8 @@ export function ProjectDetailPage() {
               </SelectContent>
             </Select>
             <p className="text-xs text-[var(--muted-foreground)]">
-              Default follows `WORKFLOW.md`. Full access switches Codex to unrestricted filesystem access for this
-              project at run time.
+              Default follows `WORKFLOW.md`. Full access switches Codex to unrestricted filesystem and network access
+              for this project at run time.
             </p>
           </div>
           {!dispatchReady ? (

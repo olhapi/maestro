@@ -38,6 +38,7 @@ class MockWebSocket {
 describe('connectDashboardSocket', () => {
   const originalWebSocket = window.WebSocket
   const originalVisibilityState = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState')
+  let visibilityState: DocumentVisibilityState = 'visible'
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -49,8 +50,9 @@ describe('connectDashboardSocket', () => {
     })
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
-      get: () => 'visible',
+      get: () => visibilityState,
     })
+    visibilityState = 'visible'
   })
 
   afterEach(() => {
@@ -96,6 +98,31 @@ describe('connectDashboardSocket', () => {
     socket.message({ type: 'invalidate' })
 
     expect(onInvalidate).toHaveBeenCalledTimes(1)
+
+    handle.disconnect()
+  })
+  it('coalesces visibility and focus resume events into a single refresh', () => {
+    const onInvalidate = vi.fn()
+
+    const handle = connectDashboardSocket({ onInvalidate })
+
+    vi.advanceTimersByTime(500)
+    expect(MockWebSocket.instances).toHaveLength(1)
+
+    const initialSocket = MockWebSocket.instances[0]
+    initialSocket.open()
+
+    visibilityState = 'hidden'
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(onInvalidate).not.toHaveBeenCalled()
+
+    visibilityState = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+
+    expect(onInvalidate).toHaveBeenCalledTimes(1)
+    expect(initialSocket.close).toHaveBeenCalledTimes(1)
+    expect(MockWebSocket.instances).toHaveLength(2)
 
     handle.disconnect()
   })

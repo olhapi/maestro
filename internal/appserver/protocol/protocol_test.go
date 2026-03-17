@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/olhapi/maestro/internal/appserver/protocol/gen"
+	"github.com/olhapi/maestro/internal/codexschema"
 )
 
 func marshalJSON(t *testing.T, v interface{}) []byte {
@@ -146,6 +147,38 @@ func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 	}
 }
 
+func TestRejectApprovalPolicyPreservesRequestPermissions(t *testing.T) {
+	threadApproval, err := toThreadApprovalPolicy(map[string]interface{}{
+		"reject": map[string]interface{}{
+			"mcp_elicitations":    true,
+			"request_permissions": false,
+			"rules":               true,
+			"sandbox_approval":    true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("thread approval policy: %v", err)
+	}
+	if threadApproval == nil || threadApproval.PurpleRejectAskForApproval == nil || threadApproval.PurpleRejectAskForApproval.Reject.RequestPermissions == nil || *threadApproval.PurpleRejectAskForApproval.Reject.RequestPermissions {
+		t.Fatalf("expected thread reject request_permissions=false, got %+v", threadApproval)
+	}
+
+	turnApproval, err := toTurnApprovalPolicy(map[string]interface{}{
+		"reject": map[string]interface{}{
+			"mcp_elicitations":    true,
+			"request_permissions": true,
+			"rules":               false,
+			"sandbox_approval":    true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("turn approval policy: %v", err)
+	}
+	if turnApproval == nil || turnApproval.FluffyRejectAskForApproval == nil || turnApproval.FluffyRejectAskForApproval.Reject.RequestPermissions == nil || !*turnApproval.FluffyRejectAskForApproval.Reject.RequestPermissions {
+		t.Fatalf("expected turn reject request_permissions=true, got %+v", turnApproval)
+	}
+}
+
 func TestResponseBuildersWireShape(t *testing.T) {
 	approvalMsg, ok := DecodeMessage(string(marshalJSON(t, CommandExecutionApprovalResult(json.RawMessage("99"), gen.AcceptForSession))))
 	if !ok {
@@ -209,7 +242,7 @@ func TestResponseBuildersWireShape(t *testing.T) {
 }
 
 func TestThreadStartResponseDecodesStringSessionSource(t *testing.T) {
-	msg, ok := DecodeMessage(`{"id":2,"result":{"approvalPolicy":"on-request","cwd":"/tmp/work","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess","networkAccess":true},"thread":{"id":"thread-1","cliVersion":"0.111.0","createdAt":1,"cwd":"/tmp/work","ephemeral":false,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":2}}}`)
+	msg, ok := DecodeMessage(`{"id":2,"result":{"approvalPolicy":"on-request","cwd":"/tmp/work","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess","networkAccess":true},"thread":{"id":"thread-1","cliVersion":"` + codexschema.SupportedVersion + `","createdAt":1,"cwd":"/tmp/work","ephemeral":false,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":2}}}`)
 	if !ok {
 		t.Fatal("expected decode ok")
 	}
@@ -230,7 +263,7 @@ func TestThreadStartResponseDecodesStringSessionSource(t *testing.T) {
 }
 
 func TestThreadStartedNotificationDecodesNestedSubAgentSource(t *testing.T) {
-	msg, ok := DecodeMessage(`{"method":"thread/started","params":{"thread":{"id":"thread-2","cliVersion":"0.111.0","createdAt":1,"cwd":"/tmp/work","ephemeral":false,"modelProvider":"openai","preview":"","source":{"subAgent":"review"},"status":{"type":"active"},"turns":[],"updatedAt":2}}}`)
+	msg, ok := DecodeMessage(`{"method":"thread/started","params":{"thread":{"id":"thread-2","cliVersion":"` + codexschema.SupportedVersion + `","createdAt":1,"cwd":"/tmp/work","ephemeral":false,"modelProvider":"openai","preview":"","source":{"subAgent":"review"},"status":{"type":"active"},"turns":[],"updatedAt":2}}}`)
 	if !ok {
 		t.Fatal("expected decode ok")
 	}

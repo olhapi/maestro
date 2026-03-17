@@ -74,7 +74,7 @@ func TestApprovalPolicyUnmarshalJSON(t *testing.T) {
 
 	t.Run("turn start params reject object", func(t *testing.T) {
 		var got TurnStartParamsApprovalPolicy
-		if err := json.Unmarshal([]byte(`{"reject":{"mcp_elicitations":true,"rules":false,"sandbox_approval":true}}`), &got); err != nil {
+		if err := json.Unmarshal([]byte(`{"reject":{"mcp_elicitations":true,"request_permissions":false,"rules":false,"sandbox_approval":true}}`), &got); err != nil {
 			t.Fatalf("unmarshal reject approval policy: %v", err)
 		}
 		if got.Enum != nil {
@@ -86,6 +86,9 @@ func TestApprovalPolicyUnmarshalJSON(t *testing.T) {
 		reject := got.FluffyRejectAskForApproval.Reject
 		if !reject.MCPElicitations || reject.Rules || !reject.SandboxApproval {
 			t.Fatalf("unexpected reject payload: %+v", reject)
+		}
+		if reject.RequestPermissions == nil || *reject.RequestPermissions {
+			t.Fatalf("expected request_permissions=false, got %+v", reject.RequestPermissions)
 		}
 	})
 

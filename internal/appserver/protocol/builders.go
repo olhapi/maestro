@@ -307,6 +307,12 @@ func toThreadRejectApproval(raw map[string]interface{}) (*gen.PurpleRejectAskFor
 			MCPElicitations: boolValueOrFalse(rejectMap["mcp_elicitations"]),
 			Rules:           boolValueOrFalse(rejectMap["rules"]),
 			SandboxApproval: boolValueOrFalse(rejectMap["sandbox_approval"]),
+			RequestPermissions: func() *bool {
+				if v, ok := boolValue(rejectMap["request_permissions"]); ok {
+					return BoolPtr(v)
+				}
+				return nil
+			}(),
 		},
 	}, nil
 }
@@ -321,6 +327,12 @@ func toTurnRejectApproval(raw map[string]interface{}) (*gen.FluffyRejectAskForAp
 			MCPElicitations: boolValueOrFalse(rejectMap["mcp_elicitations"]),
 			Rules:           boolValueOrFalse(rejectMap["rules"]),
 			SandboxApproval: boolValueOrFalse(rejectMap["sandbox_approval"]),
+			RequestPermissions: func() *bool {
+				if v, ok := boolValue(rejectMap["request_permissions"]); ok {
+					return BoolPtr(v)
+				}
+				return nil
+			}(),
 		},
 	}, nil
 }

@@ -163,7 +163,7 @@ describe("ProjectDetailPage", () => {
       expect(screen.getByRole("combobox", { name: /agent permissions/i })).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/default follows `WORKFLOW\.md`/i)).toBeInTheDocument();
+    expect(screen.getByText(/default follows `WORKFLOW\.md`\. full access switches codex to unrestricted filesystem and network access/i)).toBeInTheDocument();
 
     await selectOption(/agent permissions/i, /full access/i);
 

@@ -17,6 +17,7 @@ export function connectDashboardSocket({ onInvalidate, onSignal, onStatusChange 
   let closed = false
   let retryDelay = 1_500
   let hasConnected = false
+  let lastResumeRefreshAt = 0
 
   const updateStatus = (status: DashboardSocketStatus) => {
     onStatusChange?.(status)
@@ -101,6 +102,11 @@ export function connectDashboardSocket({ onInvalidate, onSignal, onStatusChange 
     if (closed || document.visibilityState === 'hidden') {
       return
     }
+    const now = Date.now()
+    if (now - lastResumeRefreshAt < 250) {
+      return
+    }
+    lastResumeRefreshAt = now
     onInvalidate()
     reconnectNow()
   }

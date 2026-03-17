@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -288,6 +290,49 @@ mutation MaestroLinearUpdateIssueState($issueId: String!, $stateId: String!) {
 	return p.GetIssue(ctx, project, issue.Identifier)
 }
 
+func (p *LinearProvider) CreateIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, input IssueCommentInput) error {
+	body := strings.TrimSpace(input.Body)
+	if issue == nil || strings.TrimSpace(issue.ProviderIssueRef) == "" {
+		return fmt.Errorf("%w: linear issue ref is required", ErrUnsupportedCapability)
+	}
+	if body == "" && len(input.Attachments) == 0 {
+		return nil
+	}
+
+	if len(input.Attachments) > 0 {
+		uploaded := make([]string, 0, len(input.Attachments))
+		for _, attachment := range input.Attachments {
+			assetURL, err := p.uploadAttachment(ctx, project, attachment)
+			if err != nil {
+				return err
+			}
+			filename := filepath.Base(strings.TrimSpace(attachment.Path))
+			if filename == "." || filename == "" {
+				filename = "preview"
+			}
+			uploaded = append(uploaded, fmt.Sprintf("- [%s](%s)", filename, assetURL))
+		}
+		section := strings.Join(uploaded, "\n")
+		if body == "" {
+			body = "Reviewer preview artifacts:\n" + section
+		} else {
+			body += "\n\nReviewer preview artifacts:\n" + section
+		}
+	}
+
+	const gql = `
+mutation MaestroLinearCreateComment($issueId: String!, $body: String!) {
+  commentCreate(input: {issueId: $issueId, body: $body}) {
+    success
+  }
+}`
+	_, err := p.graphql(ctx, project, gql, map[string]interface{}{
+		"issueId": issue.ProviderIssueRef,
+		"body":    body,
+	})
+	return err
+}
+
 func (p *LinearProvider) endpoint(project *kanban.Project) string {
 	if project != nil {
 		if value, ok := project.ProviderConfig["endpoint"].(string); ok && strings.TrimSpace(value) != "" {
@@ -523,6 +568,78 @@ func nullableString(value string) interface{} {
 	return value
 }
 
+func (p *LinearProvider) uploadAttachment(ctx context.Context, project *kanban.Project, attachment IssueCommentAttachment) (string, error) {
+	path := strings.TrimSpace(attachment.Path)
+	if path == "" {
+		return "", fmt.Errorf("attachment path is required")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	filename := filepath.Base(path)
+	contentType := strings.TrimSpace(attachment.ContentType)
+	if contentType == "" {
+		contentType = mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	const gql = `
+mutation MaestroLinearFileUpload($contentType: String!, $filename: String!, $size: Int!) {
+  fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+    success
+    uploadFile {
+      uploadUrl
+      assetUrl
+      headers
+    }
+  }
+}`
+	body, err := p.graphql(ctx, project, gql, map[string]interface{}{
+		"contentType": contentType,
+		"filename":    filename,
+		"size":        int(info.Size()),
+	})
+	if err != nil {
+		return "", err
+	}
+	uploadFile, ok := getMap(body, "data", "fileUpload", "uploadFile")
+	if !ok {
+		return "", fmt.Errorf("linear file upload returned no upload target")
+	}
+	uploadURL := strings.TrimSpace(asString(uploadFile["uploadUrl"]))
+	assetURL := strings.TrimSpace(asString(uploadFile["assetUrl"]))
+	if uploadURL == "" || assetURL == "" {
+		return "", fmt.Errorf("linear file upload returned incomplete upload target")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, file)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", contentType)
+	for key, value := range flattenHeaders(uploadFile["headers"]) {
+		req.Header.Set(key, value)
+	}
+	resp, err := p.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("linear upload status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return assetURL, nil
+}
+
 func getMap(root map[string]interface{}, path ...string) (map[string]interface{}, bool) {
 	current := root
 	for _, key := range path {
@@ -581,6 +698,27 @@ func asStringNested(root map[string]interface{}, path ...string) string {
 		current = next
 	}
 	return ""
+}
+
+func flattenHeaders(value interface{}) map[string]string {
+	headers := map[string]string{}
+	rawHeaders, ok := value.([]interface{})
+	if !ok {
+		return headers
+	}
+	for _, raw := range rawHeaders {
+		header, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(asString(header["key"]))
+		val := strings.TrimSpace(asString(header["value"]))
+		if key == "" || val == "" {
+			continue
+		}
+		headers[key] = val
+	}
+	return headers
 }
 
 func asInt(value interface{}) int {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/olhapi/maestro/internal/codexschema"
 )
 
 func TestRunVerification(t *testing.T) {
@@ -55,7 +57,7 @@ tracker:
   kind: kanban
 codex:
   command: ` + codexPath + ` app-server
-  expected_version: 0.111.0
+  expected_version: ` + codexschema.SupportedVersion + `
 ---
 Issue {{ issue.identifier }}
 `
@@ -66,7 +68,7 @@ Issue {{ issue.identifier }}
 	if res.Checks["codex_version"] != "warn" {
 		t.Fatalf("expected codex warning, got %+v", res)
 	}
-	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "expected 0.111.0, found 9.9.9") {
+	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "expected "+codexschema.SupportedVersion+", found 9.9.9") {
 		t.Fatalf("unexpected warnings: %+v", res.Warnings)
 	}
 }

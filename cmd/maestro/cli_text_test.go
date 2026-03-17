@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
@@ -46,7 +47,7 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := setupRepo(t)
 	opsRepoPath := setupRepo(t)
-	codexPath := writeFakeCodexCLI(t, "0.111.0")
+	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
 
 	initRepo := t.TempDir()
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
@@ -340,7 +341,7 @@ func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
 func TestWorkflowInitSandboxProfileFlagWritesSecureConfig(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
-	codexPath := writeFakeCodexCLI(t, "0.111.0")
+	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
 
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", codexPath+" app-server", "--sandbox-profile", "secure")
 	if code != 0 {

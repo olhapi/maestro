@@ -157,6 +157,7 @@ Test prompt for {{ issue.identifier }}
 		"MAESTRO_MAIN_HELPER=1",
 		"MAESTRO_DAEMON_REGISTRY_DIR="+daemonRegistryDir,
 		"MAESTRO_RECORD_BROWSER_OPEN="+recordPath,
+		"MAESTRO_DAEMON_REGISTRY_DIR="+daemonRegistryDir,
 		"MAESTRO_MAIN_ARGS="+strings.Join([]string{
 			"run", "--workflow", workflowPath, "--db", dbPath, "--port", addr, "--" + strings.TrimPrefix(guardrailsAcknowledgementFlag, "--"), repoPath,
 		}, "\n"),

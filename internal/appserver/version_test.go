@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/olhapi/maestro/internal/codexschema"
 )
 
 func writeFakeCodex(t *testing.T, version string) string {
@@ -21,12 +23,12 @@ func writeFakeCodex(t *testing.T, version string) string {
 }
 
 func TestDetectCodexVersion(t *testing.T) {
-	path := writeFakeCodex(t, "0.111.0")
+	path := writeFakeCodex(t, codexschema.SupportedVersion)
 	status, err := DetectCodexVersion(path + " app-server")
 	if err != nil {
 		t.Fatalf("DetectCodexVersion: %v", err)
 	}
-	if status.Actual != "0.111.0" {
+	if status.Actual != codexschema.SupportedVersion {
 		t.Fatalf("unexpected version: %+v", status)
 	}
 	if status.ExecutablePath == "" {
@@ -40,7 +42,7 @@ func TestWarnOnCodexVersionMismatch(t *testing.T) {
 	client := &Client{
 		cfg: ClientConfig{
 			CodexCommand:    path + " app-server",
-			ExpectedVersion: "0.111.0",
+			ExpectedVersion: codexschema.SupportedVersion,
 			Workspace:       "/tmp/work",
 			Logger:          slog.New(slog.NewJSONHandler(buf, nil)),
 		},
@@ -57,7 +59,7 @@ func TestWarnOnCodexVersionMismatchSkipsNonCodexCommands(t *testing.T) {
 	client := &Client{
 		cfg: ClientConfig{
 			CodexCommand:    "/bin/sh -lc echo",
-			ExpectedVersion: "0.111.0",
+			ExpectedVersion: codexschema.SupportedVersion,
 			Workspace:       "/tmp/work",
 			Logger:          slog.New(slog.NewJSONHandler(buf, nil)),
 		},

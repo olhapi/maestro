@@ -28,6 +28,16 @@ type IssueCreateInput struct {
 	PRURL       string
 }
 
+type IssueCommentAttachment struct {
+	Path        string
+	ContentType string
+}
+
+type IssueCommentInput struct {
+	Body        string
+	Attachments []IssueCommentAttachment
+}
+
 type Provider interface {
 	Kind() string
 	Capabilities() kanban.ProviderCapabilities
@@ -38,6 +48,7 @@ type Provider interface {
 	UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
 	DeleteIssue(context.Context, *kanban.Project, *kanban.Issue) error
 	SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error)
+	CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error
 }
 
 func normalizeKind(kind string) string {

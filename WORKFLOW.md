@@ -59,7 +59,7 @@ phases:
       Project context:
       {{ project.description }}
       {% endif %}
-      Commit all changes to the feature branch, push it and create a PR with a description of changes and all implementation choices that took place.
+      Create a short video preview or walkthrough of the finished result whenever it can be demonstrated locally, then attach it to an issue comment for reviewers when the available tracker/provider tooling supports comments and attachments. If that preview is blocked by missing tooling or a non-demoable change, report the blocker clearly and fall back to deterministic validation. Commit all changes to the feature branch, push it and create a PR with a description of changes and all implementation choices that took place.
 
 # Agent runtime settings.
 agent:
@@ -81,7 +81,7 @@ codex:
   # Exact command Maestro launches for the agent.
   command: codex app-server
   # Expected codex --version. Mismatches warn but do not hard-fail.
-  expected_version: 0.111.0
+  expected_version: 0.114.0
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured reject object is also supported for per-category rejection policies.
   approval_policy: never

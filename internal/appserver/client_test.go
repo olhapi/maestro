@@ -15,6 +15,7 @@ import (
 
 	"github.com/olhapi/maestro/internal/appserver/protocol"
 	"github.com/olhapi/maestro/internal/appserver/protocol/gen"
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
 )
 
@@ -1271,7 +1272,7 @@ func TestRunAcceptsStringThreadSessionSource(t *testing.T) {
 							},
 							"thread": map[string]interface{}{
 								"id":            "thread-5a",
-								"cliVersion":    "0.111.0",
+								"cliVersion":    codexschema.SupportedVersion,
 								"createdAt":     1,
 								"cwd":           workspace,
 								"ephemeral":     false,
@@ -1562,7 +1563,7 @@ func TestHelperDefaultsAndWorkspaceValidation(t *testing.T) {
 
 	policy := defaultApprovalPolicy()
 	reject, ok := policy["reject"].(map[string]interface{})
-	if !ok || reject["sandbox_approval"] != true || reject["rules"] != true {
+	if !ok || reject["sandbox_approval"] != true || reject["rules"] != true || reject["request_permissions"] != false {
 		t.Fatalf("unexpected default approval policy: %#v", policy)
 	}
 
