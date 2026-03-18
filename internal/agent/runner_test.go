@@ -1387,7 +1387,7 @@ func TestRunAgentAppServerModeTracksSession(t *testing.T) {
 	}
 }
 
-func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
+func TestRunAgentAppServerStagesImageAssetsOnFirstFreshTurn(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
 
@@ -1403,15 +1403,18 @@ func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Issue images", "", 0, nil)
+	issue, _ := store.CreateIssue("", "", "Issue assets", "", 0, nil)
 
-	imageOne, err := store.CreateIssueImage(issue.ID, "screen-one.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	imageOne, err := store.CreateIssueAsset(issue.ID, "screen-one.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
-		t.Fatalf("CreateIssueImage imageOne: %v", err)
+		t.Fatalf("CreateIssueAsset imageOne: %v", err)
 	}
-	imageTwo, err := store.CreateIssueImage(issue.ID, "screen-two.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	imageTwo, err := store.CreateIssueAsset(issue.ID, "screen-two.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
-		t.Fatalf("CreateIssueImage imageTwo: %v", err)
+		t.Fatalf("CreateIssueAsset imageTwo: %v", err)
+	}
+	if _, err := store.CreateIssueAsset(issue.ID, "notes.txt", strings.NewReader("do not stage me")); err != nil {
+		t.Fatalf("CreateIssueAsset text: %v", err)
 	}
 
 	result, err := runner.Run(context.Background(), issue)
@@ -1426,8 +1429,8 @@ func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkspace: %v", err)
 	}
-	for _, image := range []kanban.IssueImage{*imageOne, *imageTwo} {
-		stagedPath := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueImageStageDir), image.ID+"-"+image.Filename)
+	for _, image := range []kanban.IssueAsset{*imageOne, *imageTwo} {
+		stagedPath := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueAssetStageDir), image.ID+"-"+image.Filename)
 		stagedBytes, err := os.ReadFile(stagedPath)
 		if err != nil {
 			t.Fatalf("expected staged image %s: %v", stagedPath, err)
@@ -1459,9 +1462,9 @@ func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
 	if firstInput["type"] != "text" {
 		t.Fatalf("unexpected first input: %#v", firstInput)
 	}
-	for idx, image := range []kanban.IssueImage{*imageOne, *imageTwo} {
+	for idx, image := range []kanban.IssueAsset{*imageOne, *imageTwo} {
 		item, _ := input[idx+1].(map[string]interface{})
-		expectedPath := filepath.ToSlash(filepath.Join(".maestro", "issue-images", image.ID+"-"+image.Filename))
+		expectedPath := filepath.ToSlash(filepath.Join(".maestro", "issue-assets", image.ID+"-"+image.Filename))
 		if item["type"] != "localImage" || item["path"] != expectedPath || item["name"] != image.Filename {
 			t.Fatalf("unexpected image input %d: %#v", idx, item)
 		}
@@ -1471,7 +1474,7 @@ func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
 	}
 }
 
-func TestRunAgentAppServerWithoutIssueImagesSendsTextOnly(t *testing.T) {
+func TestRunAgentAppServerWithoutImageAssetsSendsTextOnly(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
 
@@ -1487,7 +1490,7 @@ func TestRunAgentAppServerWithoutIssueImagesSendsTextOnly(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "No images", "", 0, nil)
+	issue, _ := store.CreateIssue("", "", "No assets", "", 0, nil)
 
 	result, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -1512,7 +1515,7 @@ func TestRunAgentAppServerWithoutIssueImagesSendsTextOnly(t *testing.T) {
 	}
 }
 
-func TestRunAgentAppServerFailsWhenIssueImageStagingFails(t *testing.T) {
+func TestRunAgentAppServerFailsWhenIssueAssetStagingFails(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
 
@@ -1534,13 +1537,13 @@ func TestRunAgentAppServerFailsWhenIssueImageStagingFails(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
 	issue, _ := store.CreateIssue("", "", "Missing image asset", "", 0, nil)
 
-	image, err := store.CreateIssueImage(issue.ID, "broken.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	image, err := store.CreateIssueAsset(issue.ID, "broken.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
-		t.Fatalf("CreateIssueImage: %v", err)
+		t.Fatalf("CreateIssueAsset: %v", err)
 	}
-	_, imagePath, err := store.GetIssueImageContent(issue.ID, image.ID)
+	_, imagePath, err := store.GetIssueAssetContent(issue.ID, image.ID)
 	if err != nil {
-		t.Fatalf("GetIssueImageContent: %v", err)
+		t.Fatalf("GetIssueAssetContent: %v", err)
 	}
 	if err := os.Remove(imagePath); err != nil {
 		t.Fatalf("remove image asset: %v", err)
@@ -1561,7 +1564,7 @@ func TestRunAgentAppServerFailsWhenIssueImageStagingFails(t *testing.T) {
 	}
 }
 
-func TestRunAgentAppServerDoesNotResendIssueImagesOnContinuationTurn(t *testing.T) {
+func TestRunAgentAppServerDoesNotResendImageAssetsOnContinuationTurn(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
 
@@ -1600,13 +1603,13 @@ func TestRunAgentAppServerDoesNotResendIssueImagesOnContinuationTurn(t *testing.
 	}
 	command, release := fakeappserver.CommandString(t, scenario)
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Continuation images", "", 0, nil)
+	issue, _ := store.CreateIssue("", "", "Continuation assets", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
 	issue, _ = store.GetIssue(issue.ID)
-	if _, err := store.CreateIssueImage(issue.ID, "continue.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
-		t.Fatalf("CreateIssueImage: %v", err)
+	if _, err := store.CreateIssueAsset(issue.ID, "continue.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
+		t.Fatalf("CreateIssueAsset: %v", err)
 	}
 
 	done := make(chan struct{})
@@ -1652,7 +1655,7 @@ func TestRunAgentAppServerDoesNotResendIssueImagesOnContinuationTurn(t *testing.
 	}
 }
 
-func TestRunAgentAppServerResumedThreadIncludesIssueImageInputsOnFirstTurn(t *testing.T) {
+func TestRunAgentAppServerResumedThreadIncludesIssueAssetInputsOnFirstTurn(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
 
@@ -1681,10 +1684,10 @@ func TestRunAgentAppServerResumedThreadIncludesIssueImageInputsOnFirstTurn(t *te
 	}
 	command, _ := fakeappserver.CommandString(t, scenario)
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Resumed images", "", 0, nil)
-	image, err := store.CreateIssueImage(issue.ID, "resume.png", bytes.NewReader(sampleRunnerPNGBytes()))
+	issue, _ := store.CreateIssue("", "", "Resumed assets", "", 0, nil)
+	image, err := store.CreateIssueAsset(issue.ID, "resume.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
-		t.Fatalf("CreateIssueImage: %v", err)
+		t.Fatalf("CreateIssueAsset: %v", err)
 	}
 	issue.ResumeThreadID = "thread-stale"
 
@@ -1700,7 +1703,7 @@ func TestRunAgentAppServerResumedThreadIncludesIssueImageInputsOnFirstTurn(t *te
 	if err != nil {
 		t.Fatalf("GetWorkspace: %v", err)
 	}
-	stagedPath := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueImageStageDir), image.ID+"-"+image.Filename)
+	stagedPath := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueAssetStageDir), image.ID+"-"+image.Filename)
 	stagedBytes, err := os.ReadFile(stagedPath)
 	if err != nil {
 		t.Fatalf("expected resumed run to stage issue image %s: %v", stagedPath, err)
@@ -1718,7 +1721,7 @@ func TestRunAgentAppServerResumedThreadIncludesIssueImageInputsOnFirstTurn(t *te
 		t.Fatalf("expected resumed thread to send text plus image input, got %#v", input)
 	}
 	imageInput, _ := input[1].(map[string]interface{})
-	expectedPath := filepath.ToSlash(filepath.Join(".maestro", "issue-images", image.ID+"-"+image.Filename))
+	expectedPath := filepath.ToSlash(filepath.Join(".maestro", "issue-assets", image.ID+"-"+image.Filename))
 	if imageInput["type"] != "localImage" || imageInput["path"] != expectedPath || imageInput["name"] != image.Filename {
 		t.Fatalf("unexpected resumed image input: %#v", imageInput)
 	}

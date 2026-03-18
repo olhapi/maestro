@@ -43,9 +43,9 @@ import {
 } from "@/lib/dashboard";
 import { describeFailureRuns } from "@/lib/execution";
 import {
-  applyIssueImageChanges,
-  summarizeIssueImageFailures,
-} from "@/lib/issue-images";
+  applyIssueAssetChanges,
+  summarizeIssueAssetFailures,
+} from "@/lib/issue-assets";
 import { appRoutes } from "@/lib/routes";
 import type {
   BootstrapResponse,
@@ -567,13 +567,13 @@ export function IssuePreviewSheet({
           availableIssues={bootstrap.issues.items}
           onSubmit={async (body, imageChanges) => {
             const issue = await api.updateIssue(activeIssue.identifier, body);
-            const result = await applyIssueImageChanges(
+            const result = await applyIssueAssetChanges(
               issue.identifier,
               imageChanges,
             );
             if (result.failures.length > 0) {
               toast.error(
-                `Issue updated, but ${summarizeIssueImageFailures(result)}`,
+                `Issue updated, but ${summarizeIssueAssetFailures(result)}`,
               );
             } else {
               toast.success("Issue updated");
@@ -589,7 +589,7 @@ export function IssuePreviewSheet({
           open={deleteDialogOpen}
           onOpenChange={setDeleteDialogOpen}
           title={`Delete ${activeIssue.identifier}?`}
-          description="This removes the issue from Maestro, including its local workspace, activity history, and attached images. Linked provider items may also be removed."
+          description="This removes the issue from Maestro, including its local workspace, activity history, and attached assets. Linked provider items may also be removed."
           confirmLabel="Delete issue"
           pendingLabel="Deleting issue..."
           onConfirm={async () => {

@@ -454,9 +454,9 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 		"list_issue_comments",
 		"update_issue",
 		"update_issue_comment",
-		"attach_issue_image",
+		"attach_issue_asset",
 		"delete_issue_comment",
-		"delete_issue_image",
+		"delete_issue_asset",
 		"set_issue_state",
 		"set_issue_workflow_phase",
 		"delete_issue",
@@ -486,12 +486,12 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")
-	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_image"), "identifier", "path")
+	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_asset"), "identifier", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue_comment"), "attachment_paths", "body", "identifier", "parent_comment_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issue_comments"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_issue_comment"), "attachment_paths", "body", "comment_id", "identifier", "remove_attachment_ids")
 	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_comment"), "comment_id", "identifier")
-	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_image"), "identifier", "image_id")
+	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_asset"), "asset_id", "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_epic"), "description", "id", "name", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_issue_execution"), "identifier")
@@ -738,22 +738,22 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	if err := os.WriteFile(imagePath, sampleMCPPNGBytes(), 0o644); err != nil {
 		t.Fatalf("write image fixture: %v", err)
 	}
-	attachIssueImageRes, err := client.CallTool(context.Background(), "attach_issue_image", map[string]interface{}{
+	attachIssueAssetRes, err := client.CallTool(context.Background(), "attach_issue_asset", map[string]interface{}{
 		"identifier": issueBIdentifier,
 		"path":       imagePath,
 	})
 	if err != nil {
-		t.Fatalf("attach_issue_image failed: %v", err)
+		t.Fatalf("attach_issue_asset failed: %v", err)
 	}
-	attachIssueImage := decodeEnvelope(t, attachIssueImageRes)["data"].(map[string]interface{})
-	image := attachIssueImage["image"].(map[string]interface{})
-	if image["content_type"] != "image/png" {
-		t.Fatalf("unexpected attach_issue_image payload: %#v", attachIssueImage)
+	attachIssueAsset := decodeEnvelope(t, attachIssueAssetRes)["data"].(map[string]interface{})
+	asset := attachIssueAsset["asset"].(map[string]interface{})
+	if asset["content_type"] != "image/png" {
+		t.Fatalf("unexpected attach_issue_asset payload: %#v", attachIssueAsset)
 	}
-	attachedImageID := asString(image["id"])
-	attachedIssue := attachIssueImage["issue"].(map[string]interface{})
-	if images, _ := attachedIssue["images"].([]interface{}); len(images) != 1 {
-		t.Fatalf("expected attached issue to expose image metadata, got %#v", attachedIssue["images"])
+	attachedAssetID := asString(asset["id"])
+	attachedIssue := attachIssueAsset["issue"].(map[string]interface{})
+	if assets, _ := attachedIssue["assets"].([]interface{}); len(assets) != 1 {
+		t.Fatalf("expected attached issue to expose asset metadata, got %#v", attachedIssue["assets"])
 	}
 
 	issueCRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
@@ -808,19 +808,19 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 		t.Fatalf("unexpected set_blockers payload: %#v", blockedBy)
 	}
 
-	deleteIssueImageRes, err := client.CallTool(context.Background(), "delete_issue_image", map[string]interface{}{
+	deleteIssueAssetRes, err := client.CallTool(context.Background(), "delete_issue_asset", map[string]interface{}{
 		"identifier": issueBIdentifier,
-		"image_id":   attachedImageID,
+		"asset_id":   attachedAssetID,
 	})
 	if err != nil {
-		t.Fatalf("delete_issue_image failed: %v", err)
+		t.Fatalf("delete_issue_asset failed: %v", err)
 	}
-	deleteIssueImage := decodeEnvelope(t, deleteIssueImageRes)["data"].(map[string]interface{})
-	if deleteIssueImage["deleted"] != true {
-		t.Fatalf("unexpected delete_issue_image payload: %#v", deleteIssueImage)
+	deleteIssueAsset := decodeEnvelope(t, deleteIssueAssetRes)["data"].(map[string]interface{})
+	if deleteIssueAsset["deleted"] != true {
+		t.Fatalf("unexpected delete_issue_asset payload: %#v", deleteIssueAsset)
 	}
-	if issueDetail, _ := deleteIssueImage["issue"].(map[string]interface{}); len(issueDetail["images"].([]interface{})) != 0 {
-		t.Fatalf("expected issue image list to be empty after delete, got %#v", issueDetail["images"])
+	if issueDetail, _ := deleteIssueAsset["issue"].(map[string]interface{}); len(issueDetail["assets"].([]interface{})) != 0 {
+		t.Fatalf("expected issue asset list to be empty after delete, got %#v", issueDetail["assets"])
 	}
 
 	deleteCommentRes, err := client.CallTool(context.Background(), "delete_issue_comment", map[string]interface{}{

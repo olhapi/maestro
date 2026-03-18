@@ -542,45 +542,45 @@ func (s *Service) GetIssueDetailByIdentifier(ctx context.Context, identifier str
 	return s.store.GetIssueDetailByIdentifier(issue.Identifier)
 }
 
-func (s *Service) ListIssueImages(ctx context.Context, identifier string) ([]kanban.IssueImage, error) {
+func (s *Service) ListIssueAssets(ctx context.Context, identifier string) ([]kanban.IssueAsset, error) {
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
 		return nil, err
 	}
-	return s.store.ListIssueImages(issue.ID)
+	return s.store.ListIssueAssets(issue.ID)
 }
 
-func (s *Service) AttachIssueImage(ctx context.Context, identifier, filename string, src io.Reader) (*kanban.IssueImage, error) {
+func (s *Service) AttachIssueAsset(ctx context.Context, identifier, filename string, src io.Reader) (*kanban.IssueAsset, error) {
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
 		return nil, err
 	}
-	return s.store.CreateIssueImage(issue.ID, filename, src)
+	return s.store.CreateIssueAsset(issue.ID, filename, src)
 }
 
-func (s *Service) AttachIssueImagePath(ctx context.Context, identifier, path string) (*kanban.IssueImage, error) {
+func (s *Service) AttachIssueAssetPath(ctx context.Context, identifier, path string) (*kanban.IssueAsset, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	return s.AttachIssueImage(ctx, identifier, filepath.Base(path), file)
+	return s.AttachIssueAsset(ctx, identifier, filepath.Base(path), file)
 }
 
-func (s *Service) GetIssueImageContent(ctx context.Context, identifier, imageID string) (*kanban.IssueImage, string, error) {
+func (s *Service) GetIssueAssetContent(ctx context.Context, identifier, assetID string) (*kanban.IssueAsset, string, error) {
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
 		return nil, "", err
 	}
-	return s.store.GetIssueImageContent(issue.ID, imageID)
+	return s.store.GetIssueAssetContent(issue.ID, assetID)
 }
 
-func (s *Service) DeleteIssueImage(ctx context.Context, identifier, imageID string) error {
+func (s *Service) DeleteIssueAsset(ctx context.Context, identifier, assetID string) error {
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
 		return err
 	}
-	return s.store.DeleteIssueImage(issue.ID, imageID)
+	return s.store.DeleteIssueAsset(issue.ID, assetID)
 }
 
 func (s *Service) ListIssueSummaries(ctx context.Context, query kanban.IssueQuery) ([]kanban.IssueSummary, int, error) {

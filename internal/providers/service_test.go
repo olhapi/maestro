@@ -961,7 +961,7 @@ func TestServiceGetIssueByIdentifierPropagatesParentDeadlineExceeded(t *testing.
 	}
 }
 
-func TestServiceProviderIssueImagesStayLocalAcrossRefresh(t *testing.T) {
+func TestServiceProviderIssueAssetsStayLocalAcrossRefresh(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -1002,16 +1002,16 @@ func TestServiceProviderIssueImagesStayLocalAcrossRefresh(t *testing.T) {
 		},
 	}
 
-	image, err := svc.AttachIssueImage(context.Background(), "LIN-1", "provider.png", bytes.NewReader(sampleProviderPNGBytes()))
+	asset, err := svc.AttachIssueAsset(context.Background(), "LIN-1", "provider.png", bytes.NewReader(sampleProviderPNGBytes()))
 	if err != nil {
-		t.Fatalf("AttachIssueImage: %v", err)
+		t.Fatalf("AttachIssueAsset: %v", err)
 	}
 	detail, err := svc.GetIssueDetailByIdentifier(context.Background(), "LIN-1")
 	if err != nil {
 		t.Fatalf("GetIssueDetailByIdentifier: %v", err)
 	}
-	if len(detail.Images) != 1 || detail.Images[0].ID != image.ID {
-		t.Fatalf("expected local image to persist across refresh, got %#v", detail.Images)
+	if len(detail.Assets) != 1 || detail.Assets[0].ID != asset.ID {
+		t.Fatalf("expected local asset to persist across refresh, got %#v", detail.Assets)
 	}
 	if detail.Title != "Fresh upstream issue" {
 		t.Fatalf("expected provider refresh to still apply, got %q", detail.Title)

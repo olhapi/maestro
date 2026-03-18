@@ -109,7 +109,7 @@ func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 
 	turnReq, err := TurnStartRequest(3, "thread-1", []gen.UserInputElement{
 		TextInput("fix it"),
-		LocalImageInput(".maestro/issue-images/img-1-screen.png", "screen.png"),
+		LocalImageInput(".maestro/issue-assets/img-1-screen.png", "screen.png"),
 	}, "/tmp/work", "on-request", map[string]interface{}{
 		"type":          "workspaceWrite",
 		"networkAccess": true,
@@ -138,7 +138,7 @@ func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 		t.Fatalf("unexpected first turn input: %+v", firstInput)
 	}
 	secondInput := input[1].(map[string]interface{})
-	if secondInput["type"] != string(gen.LocalImage) || secondInput["path"] != ".maestro/issue-images/img-1-screen.png" || secondInput["name"] != "screen.png" {
+	if secondInput["type"] != string(gen.LocalImage) || secondInput["path"] != ".maestro/issue-assets/img-1-screen.png" || secondInput["name"] != "screen.png" {
 		t.Fatalf("unexpected second turn input: %+v", secondInput)
 	}
 	sandboxPolicy := turnParams["sandboxPolicy"].(map[string]interface{})

@@ -7,7 +7,7 @@ import {
   makeBootstrapResponse,
   makeIssueComment,
   makeIssueDetail,
-  makeIssueImage,
+  makeIssueAsset,
 } from "@/test/fixtures";
 import { renderWithQueryClient, selectOption } from "@/test/test-utils";
 import { formatDateTime } from "@/lib/utils";
@@ -40,8 +40,8 @@ vi.mock("@/lib/api", () => ({
     approveIssuePlan: vi.fn(),
     setIssueBlockers: vi.fn(),
     sendIssueCommand: vi.fn(),
-    uploadIssueImage: vi.fn(),
-    deleteIssueImage: vi.fn(),
+    uploadIssueAsset: vi.fn(),
+    deleteIssueAsset: vi.fn(),
     createIssueComment: vi.fn(),
     updateIssueComment: vi.fn(),
     deleteIssueComment: vi.fn(),
@@ -459,10 +459,10 @@ describe("IssueDetailPage", () => {
     });
   });
 
-  it("renders issue images and supports direct upload and removal", async () => {
+  it("renders issue assets and supports direct upload and removal", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({
-      images: [makeIssueImage()],
+      assets: [makeIssueAsset()],
     });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
     vi.mocked(api.getIssue).mockResolvedValue(issue);
@@ -479,41 +479,38 @@ describe("IssueDetailPage", () => {
       runtime_events: [],
       agent_commands: [],
     });
-    vi.mocked(api.uploadIssueImage).mockResolvedValue(makeIssueImage({ id: "img-2" }));
-    vi.mocked(api.deleteIssueImage).mockResolvedValue({
+    vi.mocked(api.uploadIssueAsset).mockResolvedValue(makeIssueAsset({ id: "ast-2" }));
+    vi.mocked(api.deleteIssueAsset).mockResolvedValue({
       deleted: true,
       identifier: issue.identifier,
-      image_id: "img-1",
+      asset_id: "img-1",
     });
 
     renderWithQueryClient(<IssueDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("issue-images-card")).toBeInTheDocument();
+      expect(screen.getByTestId("issue-assets-card")).toBeInTheDocument();
     });
 
-    const imagesCard = screen.getByTestId("issue-images-card");
+    const assetsCard = screen.getByTestId("issue-assets-card");
     expect(
-      within(imagesCard).getByRole("button", { name: /attach images/i }),
+      within(assetsCard).getByRole("button", { name: /attach files/i }),
     ).toBeInTheDocument();
     expect(
-      within(imagesCard).queryByText(/drop files here/i),
-    ).not.toBeInTheDocument();
-    expect(
-      within(imagesCard).getByRole("button", { name: /open runtime\.png/i }),
+      within(assetsCard).getByRole("button", { name: /open runtime\.png/i }),
     ).toBeInTheDocument();
 
     const file = new File(["png"], "capture.png", { type: "image/png" });
-    fireEvent.change(within(imagesCard).getByLabelText(/attach images/i, { selector: "input" }), {
+    fireEvent.change(within(assetsCard).getByLabelText(/attach assets/i, { selector: "input" }), {
       target: { files: [file] },
     });
 
     await waitFor(() => {
-      expect(api.uploadIssueImage).toHaveBeenCalledWith(issue.identifier, file);
+      expect(api.uploadIssueAsset).toHaveBeenCalledWith(issue.identifier, file);
     });
 
     fireEvent.click(
-      within(imagesCard).getByRole("button", { name: /open runtime\.png/i }),
+      within(assetsCard).getByRole("button", { name: /open runtime\.png/i }),
     );
 
     await waitFor(() => {
@@ -522,19 +519,58 @@ describe("IssueDetailPage", () => {
     expect(screen.getByText("runtime.png")).toBeInTheDocument();
     expect(screen.getByText("image/png")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /remove image/i }));
-    expect(api.deleteIssueImage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /remove asset/i }));
+    expect(api.deleteIssueAsset).not.toHaveBeenCalled();
 
     const confirmDialog = await screen.findByRole("dialog", {
       name: /delete runtime\.png\?/i,
     });
     fireEvent.click(
-      within(confirmDialog).getByRole("button", { name: /delete image/i }),
+      within(confirmDialog).getByRole("button", { name: /delete asset/i }),
     );
 
     await waitFor(() => {
-      expect(api.deleteIssueImage).toHaveBeenCalledWith(issue.identifier, "img-1");
+      expect(api.deleteIssueAsset).toHaveBeenCalledWith(issue.identifier, "img-1");
     });
+  });
+
+  it("pastes files into the comment composer without blocking text-only paste", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.createIssueComment).mockResolvedValue(makeIssueComment());
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    const composer = await screen.findByPlaceholderText(/add context, ask for a change/i);
+    const pastedFile = new File(["hello"], "paste.txt", { type: "text/plain" });
+    fireEvent.paste(composer, {
+      clipboardData: {
+        items: [{ kind: "file", getAsFile: () => pastedFile }],
+        files: [pastedFile],
+      },
+    });
+
+    expect(await screen.findByRole("button", { name: /remove paste\.txt/i })).toBeInTheDocument();
+
+    fireEvent.paste(composer, {
+      clipboardData: { items: [], files: [] },
+    });
+    expect(screen.queryByRole("button", { name: /remove undefined/i })).not.toBeInTheDocument();
   });
 
   it("renders comments and supports create, reply, update, and delete flows", async () => {

@@ -53,7 +53,7 @@ func newMultipartRequest(t *testing.T, fields map[string][]string, files []multi
 	return req, httptest.NewRecorder()
 }
 
-func TestReadIssueImageUploadHelper(t *testing.T) {
+func TestReadIssueAssetUploadHelper(t *testing.T) {
 	req, _ := newMultipartRequest(t, map[string][]string{
 		"ignored": {"field"},
 	}, []multipartFilePayload{{
@@ -61,9 +61,9 @@ func TestReadIssueImageUploadHelper(t *testing.T) {
 		Filename:  "diagram.png",
 		Content:   []byte("png payload"),
 	}})
-	file, filename, err := readIssueImageUpload(req)
+	file, filename, err := readIssueAssetUpload(req)
 	if err != nil {
-		t.Fatalf("readIssueImageUpload: %v", err)
+		t.Fatalf("readIssueAssetUpload: %v", err)
 	}
 	data, err := io.ReadAll(file)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestReadIssueImageUploadHelper(t *testing.T) {
 	reqMissing, _ := newMultipartRequest(t, map[string][]string{
 		"body": {"no file"},
 	}, nil)
-	if _, _, err := readIssueImageUpload(reqMissing); err == nil || !strings.Contains(err.Error(), "file is required") {
+	if _, _, err := readIssueAssetUpload(reqMissing); err == nil || !strings.Contains(err.Error(), "file is required") {
 		t.Fatalf("expected missing file error, got %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestReadIssueImageUploadHelper(t *testing.T) {
 		Filename:  "",
 		Content:   []byte("payload"),
 	}})
-	if _, _, err := readIssueImageUpload(reqBlankName); err == nil || !strings.Contains(err.Error(), "file is required") {
+	if _, _, err := readIssueAssetUpload(reqBlankName); err == nil || !strings.Contains(err.Error(), "file is required") {
 		t.Fatalf("expected blank filename error, got %v", err)
 	}
 }
@@ -161,7 +161,7 @@ func TestReadIssueCommentMultipartHelper(t *testing.T) {
 	}
 }
 
-func TestIssueCommentAndImageRoutesRejectInvalidMethods(t *testing.T) {
+func TestIssueCommentAndAssetRoutesRejectInvalidMethods(t *testing.T) {
 	store, srv := setupDashboardServerTest(t, testProvider{})
 
 	issue, err := store.CreateIssue("", "", "Route coverage", "", 0, nil)
@@ -188,15 +188,15 @@ func TestIssueCommentAndImageRoutesRejectInvalidMethods(t *testing.T) {
 	}
 	_ = getCommentItem.Body.Close()
 
-	putImages := requestJSON(t, srv, http.MethodPut, "/api/v1/app/issues/"+issue.Identifier+"/images", nil)
-	if putImages.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("images collection expected 405, got %d", putImages.StatusCode)
+	putAssets := requestJSON(t, srv, http.MethodPut, "/api/v1/app/issues/"+issue.Identifier+"/assets", nil)
+	if putAssets.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("assets collection expected 405, got %d", putAssets.StatusCode)
 	}
-	_ = putImages.Body.Close()
+	_ = putAssets.Body.Close()
 
-	missingImage := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/images/missing/content", nil)
-	if missingImage.StatusCode != http.StatusNotFound {
-		t.Fatalf("missing image content expected 404, got %d", missingImage.StatusCode)
+	missingAsset := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/assets/missing/content", nil)
+	if missingAsset.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing asset content expected 404, got %d", missingAsset.StatusCode)
 	}
-	_ = decodeResponse(t, missingImage)
+	_ = decodeResponse(t, missingAsset)
 }

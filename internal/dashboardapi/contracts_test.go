@@ -379,14 +379,14 @@ func TestBootstrapContractsExposePortfolioAndRuntimeOverview(t *testing.T) {
 	}
 }
 
-func TestIssueImageUploadRejectsOversizedMultipartBodies(t *testing.T) {
+func TestIssueAssetUploadRejectsOversizedMultipartBodies(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	issue, err := store.CreateIssue("", "", "Oversized image", "", 0, nil)
+	issue, err := store.CreateIssue("", "", "Oversized asset", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
@@ -396,8 +396,8 @@ func TestIssueImageUploadRejectsOversizedMultipartBodies(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	oversized := append(contractSamplePNGBytes(), bytes.Repeat([]byte{0}, int(kanban.MaxIssueImageBytes))...)
-	resp := requestMultipart(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/images", "file", "too-large.png", oversized)
+	oversized := append(contractSamplePNGBytes(), bytes.Repeat([]byte{0}, int(kanban.MaxIssueAssetBytes))...)
+	resp := requestMultipart(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/assets", "file", "too-large.png", oversized)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized upload, got %d", resp.StatusCode)
 	}
@@ -1019,54 +1019,54 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 		t.Fatal("expected validation error for invalid issue permission profile")
 	}
 
-	uploadImage := requestMultipart(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/images", "file", "runtime.png", contractSamplePNGBytes())
-	if uploadImage.StatusCode != http.StatusCreated {
-		t.Fatalf("upload image expected 201, got %d", uploadImage.StatusCode)
+	uploadAsset := requestMultipart(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/assets", "file", "runtime.png", contractSamplePNGBytes())
+	if uploadAsset.StatusCode != http.StatusCreated {
+		t.Fatalf("upload asset expected 201, got %d", uploadAsset.StatusCode)
 	}
-	imagePayload := decodeResponse(t, uploadImage)
-	imageID := imagePayload["id"].(string)
-	if imagePayload["content_type"].(string) != "image/png" {
-		t.Fatalf("unexpected uploaded image payload: %#v", imagePayload)
-	}
-
-	getIssueWithImage := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
-	if getIssueWithImage.StatusCode != http.StatusOK {
-		t.Fatalf("get issue with image expected 200, got %d", getIssueWithImage.StatusCode)
-	}
-	issueWithImage := decodeResponse(t, getIssueWithImage)
-	images := issueWithImage["images"].([]interface{})
-	if len(images) != 1 {
-		t.Fatalf("expected one image in issue detail, got %#v", issueWithImage["images"])
+	assetPayload := decodeResponse(t, uploadAsset)
+	assetID := assetPayload["id"].(string)
+	if assetPayload["content_type"].(string) != "image/png" {
+		t.Fatalf("unexpected uploaded asset payload: %#v", assetPayload)
 	}
 
-	getImageContent := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier+"/images/"+imageID+"/content", nil)
-	if getImageContent.StatusCode != http.StatusOK {
-		t.Fatalf("image content expected 200, got %d", getImageContent.StatusCode)
+	getIssueWithAsset := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
+	if getIssueWithAsset.StatusCode != http.StatusOK {
+		t.Fatalf("get issue with asset expected 200, got %d", getIssueWithAsset.StatusCode)
 	}
-	imageBytes, err := io.ReadAll(getImageContent.Body)
+	issueWithAsset := decodeResponse(t, getIssueWithAsset)
+	assets := issueWithAsset["assets"].([]interface{})
+	if len(assets) != 1 {
+		t.Fatalf("expected one asset in issue detail, got %#v", issueWithAsset["assets"])
+	}
+
+	getAssetContent := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier+"/assets/"+assetID+"/content", nil)
+	if getAssetContent.StatusCode != http.StatusOK {
+		t.Fatalf("asset content expected 200, got %d", getAssetContent.StatusCode)
+	}
+	imageBytes, err := io.ReadAll(getAssetContent.Body)
 	if err != nil {
-		t.Fatalf("read image content: %v", err)
+		t.Fatalf("read asset content: %v", err)
 	}
-	_ = getImageContent.Body.Close()
+	_ = getAssetContent.Body.Close()
 	if !bytes.Equal(imageBytes, contractSamplePNGBytes()) {
-		t.Fatalf("unexpected image content: got %d bytes", len(imageBytes))
+		t.Fatalf("unexpected asset content: got %d bytes", len(imageBytes))
 	}
-	if contentType := getImageContent.Header.Get("Content-Type"); contentType != "image/png" {
-		t.Fatalf("unexpected image content type %q", contentType)
+	if contentType := getAssetContent.Header.Get("Content-Type"); contentType != "image/png" {
+		t.Fatalf("unexpected asset content type %q", contentType)
 	}
 
-	deleteImage := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+identifier+"/images/"+imageID, nil)
-	if deleteImage.StatusCode != http.StatusOK {
-		t.Fatalf("delete image expected 200, got %d", deleteImage.StatusCode)
+	deleteAsset := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+identifier+"/assets/"+assetID, nil)
+	if deleteAsset.StatusCode != http.StatusOK {
+		t.Fatalf("delete asset expected 200, got %d", deleteAsset.StatusCode)
 	}
-	_ = decodeResponse(t, deleteImage)
+	_ = decodeResponse(t, deleteAsset)
 
 	getIssueAfterDelete := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
 	if getIssueAfterDelete.StatusCode != http.StatusOK {
-		t.Fatalf("get issue after image delete expected 200, got %d", getIssueAfterDelete.StatusCode)
+		t.Fatalf("get issue after asset delete expected 200, got %d", getIssueAfterDelete.StatusCode)
 	}
-	if images := decodeResponse(t, getIssueAfterDelete)["images"].([]interface{}); len(images) != 0 {
-		t.Fatalf("expected no images after delete, got %#v", images)
+	if assets := decodeResponse(t, getIssueAfterDelete)["assets"].([]interface{}); len(assets) != 0 {
+		t.Fatalf("expected no assets after delete, got %#v", assets)
 	}
 
 	getExecution := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier+"/execution", nil)

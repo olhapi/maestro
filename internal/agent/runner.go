@@ -62,7 +62,7 @@ Execution guidance:
 `
 
 const activeThreadCommandPollWindow = 250 * time.Millisecond
-const appServerIssueImageStageDir = ".maestro/issue-images"
+const appServerIssueAssetStageDir = ".maestro/issue-assets"
 const planApprovalStopReason = "plan_approval_pending"
 
 var proposedPlanBlockPattern = regexp.MustCompile(`(?s)<proposed_plan>\s*(.*?)\s*</proposed_plan>`)
@@ -993,69 +993,76 @@ func (r *Runner) prepareAppServerTurnInput(workspacePath string, issue *kanban.I
 		return input, nil
 	}
 
-	imageInput, err := r.stageIssueImagesForAppServer(workspacePath, issue)
+	imageInput, err := r.stageIssueAssetsForAppServer(workspacePath, issue)
 	if err != nil {
 		return nil, err
 	}
 	return append(input, imageInput...), nil
 }
 
-func (r *Runner) stageIssueImagesForAppServer(workspacePath string, issue *kanban.Issue) ([]gen.UserInputElement, error) {
-	images, err := r.store.ListIssueImages(issue.ID)
+func (r *Runner) stageIssueAssetsForAppServer(workspacePath string, issue *kanban.Issue) ([]gen.UserInputElement, error) {
+	assets, err := r.store.ListIssueAssets(issue.ID)
 	if err != nil {
-		return nil, fmt.Errorf("load issue images for %s: %w", issue.Identifier, err)
+		return nil, fmt.Errorf("load issue assets for %s: %w", issue.Identifier, err)
 	}
-	if len(images) == 0 {
+	if len(assets) == 0 {
 		return nil, nil
 	}
 
-	stageDir := filepath.Join(workspacePath, filepath.FromSlash(appServerIssueImageStageDir))
+	stageDir := filepath.Join(workspacePath, filepath.FromSlash(appServerIssueAssetStageDir))
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create issue image staging directory for %s: %w", issue.Identifier, err)
+		return nil, fmt.Errorf("create issue asset staging directory for %s: %w", issue.Identifier, err)
 	}
 
-	input := make([]gen.UserInputElement, 0, len(images))
-	for _, image := range images {
-		_, srcPath, err := r.store.GetIssueImageContent(issue.ID, image.ID)
+	imageAssets := make([]kanban.IssueAsset, 0, len(assets))
+	for _, asset := range assets {
+		if !strings.HasPrefix(strings.TrimSpace(asset.ContentType), "image/") {
+			continue
+		}
+		imageAssets = append(imageAssets, asset)
+	}
+	input := make([]gen.UserInputElement, 0, len(imageAssets))
+	for _, asset := range imageAssets {
+		_, srcPath, err := r.store.GetIssueAssetContent(issue.ID, asset.ID)
 		if err != nil {
-			return nil, fmt.Errorf("stage issue image %s for %s: %w", image.ID, issue.Identifier, err)
+			return nil, fmt.Errorf("stage issue asset %s for %s: %w", asset.ID, issue.Identifier, err)
 		}
 
-		stagedName := stagedIssueImageFilename(image)
+		stagedName := stagedIssueAssetFilename(asset)
 		stagedPath := filepath.Join(stageDir, stagedName)
-		if err := copyIssueImageToWorkspace(srcPath, stagedPath, image.ID); err != nil {
-			return nil, fmt.Errorf("stage issue image %s for %s: %w", image.ID, issue.Identifier, err)
+		if err := copyIssueAssetToWorkspace(srcPath, stagedPath, asset.ID); err != nil {
+			return nil, fmt.Errorf("stage issue asset %s for %s: %w", asset.ID, issue.Identifier, err)
 		}
 
 		relPath, err := filepath.Rel(workspacePath, stagedPath)
 		if err != nil {
-			return nil, fmt.Errorf("stage issue image %s for %s: %w", image.ID, issue.Identifier, err)
+			return nil, fmt.Errorf("stage issue asset %s for %s: %w", asset.ID, issue.Identifier, err)
 		}
 		if relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
-			return nil, fmt.Errorf("stage issue image %s for %s: staged path escaped workspace", image.ID, issue.Identifier)
+			return nil, fmt.Errorf("stage issue asset %s for %s: staged path escaped workspace", asset.ID, issue.Identifier)
 		}
-		input = append(input, protocol.LocalImageInput(filepath.ToSlash(relPath), image.Filename))
+		input = append(input, protocol.LocalImageInput(filepath.ToSlash(relPath), asset.Filename))
 	}
 	return input, nil
 }
 
-func stagedIssueImageFilename(image kanban.IssueImage) string {
-	name := strings.TrimSpace(filepath.Base(image.Filename))
+func stagedIssueAssetFilename(asset kanban.IssueAsset) string {
+	name := strings.TrimSpace(filepath.Base(asset.Filename))
 	name = strings.NewReplacer("/", "_", "\\", "_").Replace(name)
 	if name == "" || name == "." {
 		name = "image"
 	}
-	return image.ID + "-" + name
+	return asset.ID + "-" + name
 }
 
-func copyIssueImageToWorkspace(srcPath, dstPath, imageID string) error {
+func copyIssueAssetToWorkspace(srcPath, dstPath, assetID string) error {
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
 		return err
 	}
 	defer srcFile.Close()
 
-	tmpFile, err := os.CreateTemp(filepath.Dir(dstPath), imageID+"-*.tmp")
+	tmpFile, err := os.CreateTemp(filepath.Dir(dstPath), assetID+"-*.tmp")
 	if err != nil {
 		return err
 	}

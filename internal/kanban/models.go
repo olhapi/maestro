@@ -273,7 +273,7 @@ type IssueRecurrence struct {
 	UpdatedAt      time.Time  `json:"updated_at,omitempty"`
 }
 
-type IssueImage struct {
+type IssueAsset struct {
 	ID          string    `json:"id"`
 	IssueID     string    `json:"issue_id"`
 	Filename    string    `json:"filename"`

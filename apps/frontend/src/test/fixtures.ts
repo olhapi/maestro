@@ -1,4 +1,4 @@
-import type { BootstrapResponse, IssueComment, IssueDetail, IssueImage, IssueSummary } from "@/lib/types";
+import type { BootstrapResponse, IssueAsset, IssueComment, IssueDetail, IssueSummary } from "@/lib/types";
 
 export function makeIssueSummary(
   overrides: Partial<IssueSummary> = {},
@@ -40,14 +40,14 @@ export function makeIssueDetail(
     epic_description: "Observability improvements",
     branch_name: "feature/retries",
     pr_url: "https://example.com/pr/7",
-    images: [],
+    assets: [],
     ...overrides,
   };
 }
 
-export function makeIssueImage(
-  overrides: Partial<IssueImage> = {},
-): IssueImage {
+export function makeIssueAsset(
+  overrides: Partial<IssueAsset> = {},
+): IssueAsset {
   return {
     id: "img-1",
     issue_id: "issue-1",

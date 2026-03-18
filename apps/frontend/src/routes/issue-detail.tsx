@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, RotateCcw, Send, Trash2, Upload } from "lucide-react";
+import { Pencil, RotateCcw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -12,19 +12,21 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { FilePicker } from "@/components/ui/file-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { extractClipboardFiles } from "@/lib/clipboard-files";
 import { appRoutes } from "@/lib/routes";
 import {
-  applyIssueImageChanges,
-  formatIssueImageSize,
-  issueImageContentURL,
-  issueImageInputAccept,
-  summarizeIssueImageFailures,
-} from "@/lib/issue-images";
+  applyIssueAssetChanges,
+  formatIssueAssetSize,
+  isIssueAssetImage,
+  issueAssetContentURL,
+  summarizeIssueAssetFailures,
+} from "@/lib/issue-assets";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
-import type { AgentCommand, IssueComment, IssueCommentAttachment, IssueState, PermissionProfile } from "@/lib/types";
+import type { AgentCommand, IssueAsset, IssueComment, IssueCommentAttachment, IssueState, PermissionProfile } from "@/lib/types";
 import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 
 const permissionProfileLabels: Record<PermissionProfile, string> = {
@@ -108,7 +110,26 @@ function IssueCommentAttachmentLink({
       rel="noreferrer"
       target="_blank"
     >
-      {attachment.filename} ({formatIssueImageSize(attachment.byte_size)})
+      {attachment.filename} ({formatIssueAssetSize(attachment.byte_size)})
+    </a>
+  );
+}
+
+function IssueAssetLink({
+  identifier,
+  asset,
+}: {
+  identifier: string;
+  asset: IssueAsset;
+}) {
+  return (
+    <a
+      className="text-sm text-white underline-offset-4 hover:underline"
+      href={issueAssetContentURL(identifier, asset.id)}
+      rel="noreferrer"
+      target="_blank"
+    >
+      {asset.filename}
     </a>
   );
 }
@@ -138,18 +159,45 @@ function CommentComposer({
         className="min-h-[110px] resize-y"
         placeholder={placeholder}
         onChange={(event) => setBody(event.target.value)}
+        onPaste={(event) => {
+          const pastedFiles = extractClipboardFiles(event.clipboardData);
+          if (pastedFiles.length === 0) {
+            return;
+          }
+          event.preventDefault();
+          setFiles((current) => [...current, ...pastedFiles]);
+        }}
       />
+      <FilePicker
+        compact
+        ariaLabel={`${submitLabel} attachments`}
+        buttonLabel="Attach files"
+        summary={
+          files.length === 0
+            ? "Attach files or paste with Cmd/Ctrl+V while this composer is focused."
+            : files.length === 1
+              ? files[0].name
+              : `${files.length} files queued`
+        }
+        multiple
+        onFilesSelected={(nextFiles) => setFiles((current) => [...current, ...nextFiles])}
+      />
+      {files.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {files.map((file, index) => (
+            <Button
+              key={`${file.name}-${file.size}-${index}`}
+              size="sm"
+              type="button"
+              variant="secondary"
+              onClick={() => setFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+            >
+              Remove {file.name}
+            </Button>
+          ))}
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          aria-label={`${submitLabel} attachments`}
-          className="text-xs text-[var(--muted-foreground)] file:mr-3 file:rounded-full file:border-0 file:bg-white/10 file:px-3 file:py-1.5 file:text-xs file:text-white"
-          multiple
-          type="file"
-          onChange={(event) => setFiles(Array.from(event.currentTarget.files ?? []))}
-        />
-        {files.length > 0 ? (
-          <span className="text-xs text-[var(--muted-foreground)]">{files.length} file(s) selected</span>
-        ) : null}
         <Button
           className="ml-auto"
           disabled={isPending || (!body.trim() && files.length === 0)}
@@ -348,12 +396,11 @@ export function IssueDetailPage() {
   const queryClient = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
   const [commandDraft, setCommandDraft] = useState("");
-  const [previewImageID, setPreviewImageID] = useState<string | null>(null);
+  const [selectedAssetID, setSelectedAssetID] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [deleteImageConfirmOpen, setDeleteImageConfirmOpen] = useState(false);
+  const [deleteAssetConfirmOpen, setDeleteAssetConfirmOpen] = useState(false);
   const [editingCommentID, setEditingCommentID] = useState<string | null>(null);
   const [replyParentID, setReplyParentID] = useState<string | null>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -456,38 +503,38 @@ export function IssueDetailPage() {
       toast.error(error instanceof Error ? `Unable to delete issue: ${error.message}` : "Unable to delete issue");
     },
   });
-  const uploadImagesMutation = useMutation({
+  const uploadAssetsMutation = useMutation({
     mutationFn: (files: File[]) =>
-      applyIssueImageChanges(identifier, {
-        newImages: files,
-        removeImageIDs: [],
+      applyIssueAssetChanges(identifier, {
+        newAssets: files,
+        removeAssetIDs: [],
       }),
     onSuccess: async (result, files) => {
       if (result.failures.length > 0) {
-        toast.error(`Upload finished with errors: ${summarizeIssueImageFailures(result)}`);
+        toast.error(`Upload finished with errors: ${summarizeIssueAssetFailures(result)}`);
       } else {
-        toast.success(files.length === 1 ? "Image attached" : `${files.length} images attached`);
+        toast.success(files.length === 1 ? "Asset attached" : `${files.length} assets attached`);
       }
       await invalidate();
     },
   });
-  const deleteImageMutation = useMutation({
-    mutationFn: (imageID: string) =>
-      applyIssueImageChanges(identifier, {
-        newImages: [],
-        removeImageIDs: [imageID],
+  const deleteAssetMutation = useMutation({
+    mutationFn: (assetID: string) =>
+      applyIssueAssetChanges(identifier, {
+        newAssets: [],
+        removeAssetIDs: [assetID],
       }),
     onSuccess: async (result) => {
       if (result.failures.length > 0) {
-        toast.error(`Unable to remove image: ${summarizeIssueImageFailures(result)}`);
+        toast.error(`Unable to remove asset: ${summarizeIssueAssetFailures(result)}`);
       } else {
-        setPreviewImageID(null);
-        toast.success("Image removed");
+        setSelectedAssetID(null);
+        toast.success("Asset removed");
       }
       await invalidate();
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? `Unable to remove image: ${error.message}` : "Unable to remove image");
+      toast.error(error instanceof Error ? `Unable to remove asset: ${error.message}` : "Unable to remove asset");
     },
   });
   const stateMutation = useMutation({
@@ -561,7 +608,10 @@ export function IssueDetailPage() {
 
   const commentItems = comments.data?.items ?? [];
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state]);
-  const previewImage = issue.data.images.find((image) => image.id === previewImageID) ?? null;
+  const selectedAsset = issue.data.assets.find((asset) => asset.id === selectedAssetID) ?? null;
+  const previewAsset = selectedAsset && isIssueAssetImage(selectedAsset.content_type) ? selectedAsset : null;
+  const imageAssets = issue.data.assets.filter((asset) => isIssueAssetImage(asset.content_type));
+  const fileAssets = issue.data.assets.filter((asset) => !isIssueAssetImage(asset.content_type));
   const crumbs: Array<{
     label: string;
     to?: string;
@@ -671,70 +721,96 @@ export function IssueDetailPage() {
             </CardContent>
           </Card>
 
-          <Card data-testid="issue-images-card">
+          <Card data-testid="issue-assets-card">
             <CardHeader className="flex-col gap-3 pb-2.5 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <CardTitle>Images</CardTitle>
+                <CardTitle>Assets</CardTitle>
                 <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                  Screenshots stay local to this Maestro database and are served through the issue API.
+                  Attach files locally to this issue. Image assets are previewable; other assets open directly.
                 </p>
-              </div>
-              <div className="flex w-full shrink-0 sm:w-auto sm:justify-end">
-                <input
-                  ref={imageInputRef}
-                  aria-label="Attach images"
-                  className="sr-only"
-                  accept={issueImageInputAccept}
-                  disabled={uploadImagesMutation.isPending}
-                  multiple
-                  type="file"
-                  onChange={(event) => {
-                    const files = Array.from(event.currentTarget.files ?? []);
-                    if (files.length > 0) {
-                      uploadImagesMutation.mutate(files);
-                    }
-                    event.currentTarget.value = "";
-                  }}
-                />
-                <Button
-                  type="button"
-                  className="w-full sm:w-auto"
-                  aria-label="Attach images"
-                  disabled={uploadImagesMutation.isPending}
-                  onClick={() => imageInputRef.current?.click()}
-                >
-                  <Upload className="size-4" />
-                  {uploadImagesMutation.isPending ? "Uploading..." : "Attach"}
-                </Button>
               </div>
             </CardHeader>
             <CardContent className="grid gap-4 pt-0">
-              {issue.data.images.length === 0 ? (
+              <FilePicker
+                compact
+                ariaLabel="Attach assets"
+                buttonLabel={uploadAssetsMutation.isPending ? "Uploading..." : "Attach files"}
+                disabled={uploadAssetsMutation.isPending}
+                summary="Drop files here or paste with Cmd/Ctrl+V while this picker is focused."
+                multiple
+                onFilesSelected={(files) => {
+                  if (files.length > 0) {
+                    uploadAssetsMutation.mutate(files);
+                  }
+                }}
+              />
+              {issue.data.assets.length === 0 ? (
                 <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 px-4 py-4">
-                  <p className="text-sm font-medium text-white">No images attached yet</p>
+                  <p className="text-sm font-medium text-white">No assets attached yet</p>
                   <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                    Add screenshots, mocks, or bug captures here without storing them outside the local Maestro asset
-                    root.
+                    Add screenshots, recordings, logs, docs, or any other issue-specific files here.
                   </p>
                 </div>
               ) : (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {issue.data.images.map((image) => (
-                    <button
-                      key={image.id}
-                      type="button"
-                      aria-label={`Open ${image.filename}`}
-                      className="group overflow-hidden rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 text-left transition hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                      onClick={() => setPreviewImageID(image.id)}
-                    >
-                      <img
-                        alt={image.filename}
-                        className="aspect-square w-full bg-black object-cover transition duration-300 group-hover:scale-[1.02]"
-                        loading="lazy"
-                        src={issueImageContentURL(identifier, image.id)}
-                      />
-                    </button>
-                  ))}
+                <div className="grid gap-4">
+                  {imageAssets.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {imageAssets.map((asset) => (
+                        <button
+                          key={asset.id}
+                          type="button"
+                          aria-label={`Open ${asset.filename}`}
+                          className="group overflow-hidden rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 text-left transition hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                          onClick={() => setSelectedAssetID(asset.id)}
+                        >
+                          <img
+                            alt={asset.filename}
+                            className="aspect-square w-full bg-black object-cover transition duration-300 group-hover:scale-[1.02]"
+                            loading="lazy"
+                            src={issueAssetContentURL(identifier, asset.id)}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {fileAssets.length > 0 ? (
+                    <div className="grid gap-3">
+                      {fileAssets.map((asset) => (
+                        <div
+                          key={asset.id}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 px-4 py-3"
+                        >
+                          <div className="min-w-0">
+                            <IssueAssetLink identifier={identifier} asset={asset} />
+                            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                              {formatIssueAssetSize(asset.byte_size)} · {asset.content_type}
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <a
+                              className="inline-flex h-9 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 text-sm font-medium text-white transition duration-200 hover:bg-white/10"
+                              href={issueAssetContentURL(identifier, asset.id)}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              Open
+                            </a>
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="destructive"
+                              onClick={() => {
+                                setSelectedAssetID(asset.id);
+                                setDeleteAssetConfirmOpen(true);
+                              }}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </CardContent>
@@ -958,11 +1034,11 @@ export function IssueDetailPage() {
         projects={bootstrap.data.projects}
         epics={bootstrap.data.epics}
         availableIssues={bootstrap.data.issues.items}
-        onSubmit={async (body, imageChanges) => {
+        onSubmit={async (body, assetChanges) => {
           const updated = await api.updateIssue(identifier, body);
-          const result = await applyIssueImageChanges(updated.identifier, imageChanges);
+          const result = await applyIssueAssetChanges(updated.identifier, assetChanges);
           if (result.failures.length > 0) {
-            toast.error(`Issue updated, but ${summarizeIssueImageFailures(result)}`);
+            toast.error(`Issue updated, but ${summarizeIssueAssetFailures(result)}`);
           } else {
             toast.success("Issue updated");
           }
@@ -974,7 +1050,7 @@ export function IssueDetailPage() {
         open={deleteConfirmOpen}
         onOpenChange={setDeleteConfirmOpen}
         title={`Delete ${issue.data.identifier}?`}
-        description="This removes the issue from Maestro, including its local workspace, activity history, and attached images. Linked provider items may also be removed."
+        description="This removes the issue from Maestro, including its local workspace, activity history, and attached assets. Linked provider items may also be removed."
         confirmLabel="Delete issue"
         pendingLabel="Deleting issue..."
         isPending={deleteMutation.isPending}
@@ -984,27 +1060,27 @@ export function IssueDetailPage() {
       />
 
       <Dialog
-        open={previewImage !== null}
+        open={previewAsset !== null}
         onOpenChange={(nextOpen) => {
           if (!nextOpen) {
-            setPreviewImageID(null);
-            setDeleteImageConfirmOpen(false);
+            setSelectedAssetID(null);
+            setDeleteAssetConfirmOpen(false);
           }
         }}
       >
-        {previewImage ? (
+        {previewAsset ? (
           <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(96vw,1100px)] overflow-y-auto p-0">
             <div className="grid lg:grid-cols-[minmax(0,1fr)_320px]">
               <div className="flex min-h-[320px] items-center justify-center bg-black p-4">
                 <img
-                  alt={previewImage.filename}
+                  alt={previewAsset.filename}
                   className="max-h-[78vh] w-full rounded-[calc(var(--panel-radius)-0.25rem)] object-contain"
-                  src={issueImageContentURL(identifier, previewImage.id)}
+                  src={issueAssetContentURL(identifier, previewAsset.id)}
                 />
               </div>
               <div className="grid content-start gap-5 p-6">
                 <div>
-                  <DialogTitle className="pr-10 text-xl font-semibold text-white">{previewImage.filename}</DialogTitle>
+                  <DialogTitle className="pr-10 text-xl font-semibold text-white">{previewAsset.filename}</DialogTitle>
                   <DialogDescription className="mt-2 pr-10 text-sm text-[var(--muted-foreground)]">
                     Stored locally for this issue and served by the Maestro dashboard API.
                   </DialogDescription>
@@ -1012,28 +1088,28 @@ export function IssueDetailPage() {
                 <div className="grid gap-3 text-sm">
                   <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
                     <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Size</p>
-                    <p className="mt-2 text-white">{formatIssueImageSize(previewImage.byte_size)}</p>
+                    <p className="mt-2 text-white">{formatIssueAssetSize(previewAsset.byte_size)}</p>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
                     <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Type</p>
-                    <p className="mt-2 text-white">{previewImage.content_type}</p>
+                    <p className="mt-2 text-white">{previewAsset.content_type}</p>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
                     <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Uploaded</p>
-                    <p className="mt-2 text-white">{formatRelativeTime(previewImage.created_at)}</p>
+                    <p className="mt-2 text-white">{formatRelativeTime(previewAsset.created_at)}</p>
                     <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                      {formatDateTime(previewImage.created_at)}
+                      {formatDateTime(previewAsset.created_at)}
                     </p>
                   </div>
                 </div>
                 <div className="flex justify-end">
                   <Button
                     variant="destructive"
-                    disabled={deleteImageMutation.isPending}
-                    onClick={() => setDeleteImageConfirmOpen(true)}
+                    disabled={deleteAssetMutation.isPending}
+                    onClick={() => setDeleteAssetConfirmOpen(true)}
                   >
                     <Trash2 className="size-4" />
-                    Remove image
+                    Remove asset
                   </Button>
                 </div>
               </div>
@@ -1043,18 +1119,18 @@ export function IssueDetailPage() {
       </Dialog>
 
       <ConfirmationDialog
-        open={deleteImageConfirmOpen && previewImage !== null}
-        onOpenChange={setDeleteImageConfirmOpen}
-        title={previewImage ? `Delete ${previewImage.filename}?` : "Delete image?"}
-        description="This permanently deletes the image attachment from the issue."
-        confirmLabel="Delete image"
-        pendingLabel="Deleting image..."
-        isPending={deleteImageMutation.isPending}
+        open={deleteAssetConfirmOpen && selectedAsset !== null}
+        onOpenChange={setDeleteAssetConfirmOpen}
+        title={selectedAsset ? `Delete ${selectedAsset.filename}?` : "Delete asset?"}
+        description="This permanently deletes the asset from the issue."
+        confirmLabel="Delete asset"
+        pendingLabel="Deleting asset..."
+        isPending={deleteAssetMutation.isPending}
         onConfirm={async () => {
-          if (!previewImage) {
+          if (!selectedAsset) {
             return;
           }
-          await deleteImageMutation.mutateAsync(previewImage.id);
+          await deleteAssetMutation.mutateAsync(selectedAsset.id);
         }}
       />
     </div>

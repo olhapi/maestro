@@ -144,7 +144,7 @@ export interface IssueSummary extends Issue {
   is_blocked: boolean;
 }
 
-export interface IssueImage {
+export interface IssueAsset {
   id: string;
   issue_id: string;
   filename: string;
@@ -190,7 +190,7 @@ export interface IssueDetail extends IssueSummary {
   project_description?: string;
   epic_description?: string;
   project_permission_profile?: PermissionProfile;
-  images: IssueImage[];
+  assets: IssueAsset[];
 }
 
 export interface TokenTotals {
