@@ -2471,6 +2471,36 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 	return s.loadIssuesByIDs(ids)
 }
 
+func (s *Store) CountIssuesByState(projectID string) (map[State]int, error) {
+	query := `SELECT state, COUNT(*) FROM issues`
+	args := []interface{}{}
+	if strings.TrimSpace(projectID) != "" {
+		query += ` WHERE project_id = ?`
+		args = append(args, projectID)
+	}
+	query += ` GROUP BY state`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[State]int)
+	for rows.Next() {
+		var state string
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, err
+		}
+		counts[State(state)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
 func (s *Store) UpdateIssueState(id string, state State) error {
 	return s.UpdateIssueStateAndPhase(id, state, DefaultWorkflowPhaseForState(state))
 }

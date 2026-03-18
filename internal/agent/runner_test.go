@@ -138,7 +138,7 @@ func TestGetOrCreateWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace, err := runner.getOrCreateWorkspace(workflow, issue)
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
 		t.Fatalf("Failed to create workspace: %v", err)
 	}
@@ -273,6 +273,43 @@ func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testi
 	}
 	if permissions.InitialCollaborationMode != config.InitialCollaborationModePlan {
 		t.Fatalf("expected plan collaboration mode, got %q", permissions.InitialCollaborationMode)
+	}
+}
+
+func TestRunAttemptCancelsAfterCreateHookWithRunContext(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Bootstrap workspace", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+	workflowContent, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	updated := strings.Replace(string(workflowContent), "hooks:\n  timeout_ms: 1000", "hooks:\n  timeout_ms: 5000\n  after_create: sleep 5", 1)
+	if err := os.WriteFile(workflowPath, []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err = runner.RunAttempt(ctx, issue, 0)
+	if err == nil {
+		t.Fatal("expected canceled run to fail")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("expected canceled after_create hook to stop promptly, took %s", elapsed)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		t.Fatalf("expected cancellation rather than timeout, got %v", err)
 	}
 }
 
@@ -1023,8 +1060,8 @@ func TestWorkspaceDeterministic(t *testing.T) {
 	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
-	ws1, _ := runner.getOrCreateWorkspace(workflow, issue)
-	ws2, _ := runner.getOrCreateWorkspace(workflow, issue)
+	ws1, _ := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	ws2, _ := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if ws1.Path != ws2.Path {
 		t.Error("Expected deterministic workspace path")
 	}
@@ -1056,7 +1093,7 @@ func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 	}
 
 	workflow, _ := runner.workflowProvider.Current()
-	ws, err := runner.getOrCreateWorkspace(workflow, issue)
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
 		t.Fatalf("expected workspace recovery, got err: %v", err)
 	}
@@ -1082,7 +1119,7 @@ func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
 	}
 
 	workflow, _ := runner.workflowProvider.Current()
-	ws, err := runner.getOrCreateWorkspace(workflow, issue)
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
 		t.Fatalf("expected missing workspace recovery, got err: %v", err)
 	}

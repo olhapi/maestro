@@ -2561,21 +2561,41 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		workflow, _ = o.workflows.Current()
 	}
 	o.mu.RLock()
-	defer o.mu.RUnlock()
+	runningEntries := make(map[string]runningEntry, len(o.running))
+	retryEntries := make(map[string]retryEntry, len(o.retries))
+	pausedEntries := make(map[string]pausedEntry, len(o.paused))
+	liveSessions := make(map[string]*appserver.Session, len(o.liveSessions))
+	for issueID, entry := range o.running {
+		runningEntries[issueID] = entry
+	}
+	for issueID, entry := range o.retries {
+		retryEntries[issueID] = entry
+	}
+	for issueID, entry := range o.paused {
+		pausedEntries[issueID] = entry
+	}
+	for issueID, session := range o.liveSessions {
+		if session == nil {
+			continue
+		}
+		cp := session.Clone()
+		liveSessions[issueID] = &cp
+	}
+	o.mu.RUnlock()
 
 	snapshot := observability.Snapshot{
 		GeneratedAt: time.Now().UTC(),
-		Running:     make([]observability.RunningEntry, 0, len(o.running)),
-		Retrying:    make([]observability.RetryEntry, 0, len(o.retries)),
-		Paused:      make([]observability.PausedEntry, 0, len(o.paused)),
+		Running:     make([]observability.RunningEntry, 0, len(runningEntries)),
+		Retrying:    make([]observability.RetryEntry, 0, len(retryEntries)),
+		Paused:      make([]observability.PausedEntry, 0, len(pausedEntries)),
 		RateLimits:  nil,
 	}
 	if workflow != nil {
 		snapshot.WorkspaceRoot = workflow.Config.Workspace.Root
 	}
 
-	for issueID, entry := range o.running {
-		session := o.liveSessions[issueID]
+	for issueID, entry := range runningEntries {
+		session := liveSessions[issueID]
 		running := observability.RunningEntry{
 			IssueID:    issueID,
 			Identifier: entry.issue.Identifier,
@@ -2610,11 +2630,11 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		snapshot.Running = append(snapshot.Running, running)
 	}
 
-	for issueID, entry := range o.retries {
+	for issueID, entry := range retryEntries {
 		identifier := issueID
-		if running, ok := o.running[issueID]; ok {
+		if running, ok := runningEntries[issueID]; ok {
 			identifier = running.issue.Identifier
-		} else if issue, err := o.refreshIssue(context.Background(), issueID); err == nil && issue != nil {
+		} else if issue, err := o.store.GetIssue(issueID); err == nil && issue != nil {
 			identifier = issue.Identifier
 		}
 		retry := observability.RetryEntry{
@@ -2630,11 +2650,11 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		snapshot.Retrying = append(snapshot.Retrying, retry)
 	}
 
-	for issueID, entry := range o.paused {
+	for issueID, entry := range pausedEntries {
 		identifier := issueID
-		if running, ok := o.running[issueID]; ok {
+		if running, ok := runningEntries[issueID]; ok {
 			identifier = running.issue.Identifier
-		} else if issue, err := o.refreshIssue(context.Background(), issueID); err == nil && issue != nil {
+		} else if issue, err := o.store.GetIssue(issueID); err == nil && issue != nil {
 			identifier = issue.Identifier
 		}
 		snapshot.Paused = append(snapshot.Paused, observability.PausedEntry{

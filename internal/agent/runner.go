@@ -105,7 +105,7 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	}
 	workflow = r.applyIssuePermissionProfile(workflow, issue)
 
-	workspace, err := r.getOrCreateWorkspace(workflow, issue)
+	workspace, err := r.getOrCreateWorkspace(ctx, workflow, issue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
@@ -236,7 +236,7 @@ func sanitizeWorkspaceKey(identifier string) string {
 	return out
 }
 
-func (r *Runner) getOrCreateWorkspace(workflow *config.Workflow, issue *kanban.Issue) (*kanban.Workspace, error) {
+func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue) (*kanban.Workspace, error) {
 	rootAbs, err := filepath.Abs(workflow.Config.Workspace.Root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
@@ -258,7 +258,7 @@ func (r *Runner) getOrCreateWorkspace(workflow *config.Workflow, issue *kanban.I
 			}
 		}
 		if createdNow {
-			if err := r.runHook(context.Background(), preparedPath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
+			if err := r.runHook(ctx, preparedPath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
 				return nil, err
 			}
 		}
@@ -279,7 +279,7 @@ func (r *Runner) getOrCreateWorkspace(workflow *config.Workflow, issue *kanban.I
 		}
 	}
 	if createdNow {
-		if err := r.runHook(context.Background(), preparedPath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
+		if err := r.runHook(ctx, preparedPath, workflow.Config.Hooks.AfterCreate, "after_create"); err != nil {
 			return nil, err
 		}
 	}

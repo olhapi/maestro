@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/providers"
 )
 
 type testClientOptions struct {
@@ -34,6 +36,58 @@ type testRuntimeProvider struct {
 
 type testMCPClient struct {
 	*mcpclient.Client
+}
+
+type testLookupProvider struct {
+	kind     string
+	listFunc func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
+	getFunc  func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
+}
+
+func (p *testLookupProvider) Kind() string {
+	return p.kind
+}
+
+func (p *testLookupProvider) Capabilities() kanban.ProviderCapabilities {
+	return kanban.DefaultCapabilities(p.kind)
+}
+
+func (p *testLookupProvider) ValidateProject(context.Context, *kanban.Project) error {
+	return nil
+}
+
+func (p *testLookupProvider) ListIssues(ctx context.Context, project *kanban.Project, query kanban.IssueQuery) ([]kanban.Issue, error) {
+	if p.listFunc != nil {
+		return p.listFunc(ctx, project, query)
+	}
+	return nil, nil
+}
+
+func (p *testLookupProvider) GetIssue(ctx context.Context, project *kanban.Project, identifier string) (*kanban.Issue, error) {
+	if p.getFunc != nil {
+		return p.getFunc(ctx, project, identifier)
+	}
+	return nil, kanban.ErrNotFound
+}
+
+func (p *testLookupProvider) CreateIssue(context.Context, *kanban.Project, providers.IssueCreateInput) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) DeleteIssue(context.Context, *kanban.Project, *kanban.Issue) error {
+	return providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+	return providers.ErrUnsupportedCapability
 }
 
 func (c *testMCPClient) CallTool(ctx context.Context, name string, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -980,6 +1034,129 @@ func TestStdioRecurringIssueTools(t *testing.T) {
 	}
 	if got := decodeEnvelope(t, runNowRes)["data"].(map[string]interface{})["status"]; got != "queued_now" {
 		t.Fatalf("unexpected run_issue_now payload: %#v", got)
+	}
+}
+
+func TestLookupIssueHonorsContextCancellation(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "maestro.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	project, err := store.CreateProjectWithProvider("Slow Provider", "", "", "", "stub", "stub-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		Identifier:       "STUB-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Title:            "Slow issue",
+		State:            kanban.StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	blocked := make(chan struct{}, 1)
+	server := NewServer(store)
+	server.service.RegisterProvider(&testLookupProvider{
+		kind: "stub",
+		getFunc: func(ctx context.Context, project *kanban.Project, identifier string) (*kanban.Issue, error) {
+			blocked <- struct{}{}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := server.lookupIssue(ctx, issue.Identifier)
+		errCh <- err
+	}()
+
+	select {
+	case <-blocked:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for provider refresh to start")
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context canceled, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lookupIssue did not honor cancellation")
+	}
+}
+
+func TestHandleBoardOverviewSyncsProviderIssuesAndReturnsCounts(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "maestro.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	project, err := store.CreateProjectWithProvider("Remote Board", "", "", "", "stub", "stub-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		Identifier:       "STUB-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Title:            "Old title",
+		State:            kanban.StateBacklog,
+	}); err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	server := NewServer(store)
+	server.service.RegisterProvider(&testLookupProvider{
+		kind: "stub",
+		listFunc: func(ctx context.Context, project *kanban.Project, query kanban.IssueQuery) ([]kanban.Issue, error) {
+			return []kanban.Issue{{
+				Identifier:       "STUB-1",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-1",
+				Title:            "Fresh title",
+				State:            kanban.StateInProgress,
+			}}, nil
+		},
+	})
+
+	res, err := server.handleBoardOverview(context.Background(), map[string]interface{}{"project_id": project.ID})
+	if err != nil {
+		t.Fatalf("handleBoardOverview: %v", err)
+	}
+	payload := decodeEnvelope(t, res)["data"].(map[string]interface{})
+	asCount := func(value interface{}) int {
+		switch typed := value.(type) {
+		case int:
+			return typed
+		case float64:
+			return int(typed)
+		default:
+			t.Fatalf("unexpected count type %T", value)
+			return 0
+		}
+	}
+	if got := asCount(payload["in_progress"]); got != 1 {
+		t.Fatalf("expected in_progress count to be 1, got %#v", payload)
+	}
+	if got := asCount(payload["backlog"]); got != 0 {
+		t.Fatalf("expected backlog count to be 0 after sync, got %#v", payload)
+	}
+	updated, err := store.GetIssueByIdentifier("STUB-1")
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier: %v", err)
+	}
+	if updated.State != kanban.StateInProgress {
+		t.Fatalf("expected synced issue state, got %s", updated.State)
 	}
 }
 
