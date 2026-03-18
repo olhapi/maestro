@@ -29,6 +29,7 @@ const (
 	liveSessionPersistInterval   = 2 * time.Second
 	automaticRetryHistoryLimit   = 200
 	runtimeMaintenanceInterval   = 15 * time.Minute
+	providerSyncMinInterval      = time.Second
 	gracefulShutdownStopReason   = "graceful_shutdown"
 	planApprovalStopReason       = "plan_approval_pending"
 	gracefulShutdownWaitTimeout  = 5 * time.Second
@@ -136,6 +137,7 @@ type Orchestrator struct {
 	sessionWrites           map[string]sessionPersistenceState
 	tokenSpendMu            sync.Mutex
 	tokenSpends             map[string]issueTokenSpendState
+	lastProviderSyncAt      time.Time
 	lastMaintenanceAt       time.Time
 	lastCheckpointAt        time.Time
 	lastCheckpointResult    string
@@ -235,9 +237,21 @@ func (o *Orchestrator) syncProviderIssues(ctx context.Context) {
 	if !o.isSharedMode() && o.workflows != nil {
 		repoPath = filepath.Dir(o.workflows.Path())
 	}
+
+	o.mu.RLock()
+	lastSyncAt := o.lastProviderSyncAt
+	o.mu.RUnlock()
+	if !lastSyncAt.IsZero() && time.Since(lastSyncAt) < providerSyncMinInterval {
+		return
+	}
+
 	if err := o.service.SyncForRepoPath(ctx, repoPath); err != nil {
 		slog.Warn("Provider issue sync failed", "repo_path", repoPath, "error", err)
 	}
+
+	o.mu.Lock()
+	o.lastProviderSyncAt = time.Now().UTC()
+	o.mu.Unlock()
 }
 
 func (o *Orchestrator) refreshIssue(ctx context.Context, issueID string) (*kanban.Issue, error) {

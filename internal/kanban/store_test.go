@@ -3420,6 +3420,80 @@ func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 	}
 }
 
+func TestProviderIssueLookupHelpers(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProjectWithProvider(
+		"Provider Project",
+		"",
+		"",
+		"",
+		ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issueA, err := store.UpsertProviderIssue(project.ID, &Issue{
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "linear-1",
+		Identifier:       "LIN-1",
+		Title:            "First provider issue",
+		State:            StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue issueA: %v", err)
+	}
+	issueB, err := store.UpsertProviderIssue(project.ID, &Issue{
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "linear-2",
+		Identifier:       "LIN-2",
+		Title:            "   ",
+		State:            StateDone,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue issueB: %v", err)
+	}
+
+	hasProviderIssues, err := store.HasProviderIssues(project.ID, " LINEAR ")
+	if err != nil {
+		t.Fatalf("HasProviderIssues existing project: %v", err)
+	}
+	if !hasProviderIssues {
+		t.Fatal("expected provider issues to be detected for normalized provider kind")
+	}
+	hasProviderIssues, err = store.HasProviderIssues("missing-project", ProviderKindLinear)
+	if err != nil {
+		t.Fatalf("HasProviderIssues missing project: %v", err)
+	}
+	if hasProviderIssues {
+		t.Fatal("expected missing project to report no provider issues")
+	}
+
+	titlesByID, titlesByIdentifier, err := store.LookupIssueTitles(
+		[]string{issueA.ID, issueA.ID, " ", issueB.ID},
+		[]string{"LIN-1", "LIN-1", "", "LIN-2"},
+	)
+	if err != nil {
+		t.Fatalf("LookupIssueTitles: %v", err)
+	}
+	if len(titlesByID) != 1 || titlesByID[issueA.ID] != "First provider issue" {
+		t.Fatalf("expected only non-empty titles by id, got %#v", titlesByID)
+	}
+	if len(titlesByIdentifier) != 1 || titlesByIdentifier["LIN-1"] != "First provider issue" {
+		t.Fatalf("expected only non-empty titles by identifier, got %#v", titlesByIdentifier)
+	}
+
+	emptyByID, emptyByIdentifier, err := store.LookupIssueTitles(nil, []string{"", " "})
+	if err != nil {
+		t.Fatalf("LookupIssueTitles empty inputs: %v", err)
+	}
+	if len(emptyByID) != 0 || len(emptyByIdentifier) != 0 {
+		t.Fatalf("expected empty lookup result for empty inputs, got ids=%#v identifiers=%#v", emptyByID, emptyByIdentifier)
+	}
+}
+
 func TestCreateProjectPersistsLegacyWorkflowFullAccessProfile(t *testing.T) {
 	store := setupTestStore(t)
 
