@@ -18,3 +18,21 @@ func TestPermissionProfilePlanThenFullAccessParsingAndNormalization(t *testing.T
 		t.Fatalf("expected parsed plan-first profile, got %q", profile)
 	}
 }
+
+func TestParsePermissionProfileRejectsUnknownProfile(t *testing.T) {
+	if _, err := ParsePermissionProfile("admin-mode"); err == nil {
+		t.Fatal("expected invalid permission profile error")
+	}
+}
+
+func TestNormalizeCollaborationModeOverrideSupportsKnownValues(t *testing.T) {
+	if got := NormalizeCollaborationModeOverride("plan"); got != CollaborationModeOverridePlan {
+		t.Fatalf("expected plan override, got %q", got)
+	}
+	if got := NormalizeCollaborationModeOverride("DEFAULT"); got != CollaborationModeOverrideDefault {
+		t.Fatalf("expected default override, got %q", got)
+	}
+	if got := NormalizeCollaborationModeOverride("unknown"); got != CollaborationModeOverrideNone {
+		t.Fatalf("expected unknown override to normalize to none, got %q", got)
+	}
+}
