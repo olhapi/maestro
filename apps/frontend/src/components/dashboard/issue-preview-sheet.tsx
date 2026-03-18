@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useMutation } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ExternalLink,
@@ -13,6 +14,7 @@ import {
 import { toast } from "sonner";
 
 import { IssueDialog } from "@/components/forms";
+import { MultiCombobox, type MultiComboboxOption } from "@/components/ui/multi-combobox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
@@ -31,7 +33,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import {
   getPausedForIssue,
@@ -54,6 +55,24 @@ import type {
 } from "@/lib/types";
 import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 
+const blockerSearchDebounceMs = 150;
+
+function issueOptionLabel(issue: IssueSummary) {
+  return issue.title ? `${issue.identifier} · ${issue.title}` : issue.identifier;
+}
+
+function dedupeIssues(issues: IssueSummary[]) {
+  const unique = new Map<string, IssueSummary>();
+
+  for (const issue of issues) {
+    if (!unique.has(issue.identifier)) {
+      unique.set(issue.identifier, issue);
+    }
+  }
+
+  return [...unique.values()];
+}
+
 export function IssuePreviewSheet({
   issue,
   bootstrap,
@@ -72,15 +91,35 @@ export function IssuePreviewSheet({
   onStateChange?: (identifier: string, state: IssueState) => Promise<void>;
 }) {
   const [detail, setDetail] = useState<IssueDetail>();
-  const [blockersDraft, setBlockersDraft] = useState<{
+  const [blockedByDraft, setBlockedByDraft] = useState<{
     identifier?: string;
-    value: string;
-  }>({ value: "" });
+    value: string[];
+  }>({ value: [] });
+  const [blockerSearch, setBlockerSearch] = useState("");
+  const [remoteBlockerIssues, setRemoteBlockerIssues] = useState<IssueSummary[]>([]);
+  const [loadingBlockerIssues, setLoadingBlockerIssues] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const navigate = useNavigate();
   const issueIdentifier = issue?.identifier;
   const currentIssueIdentifierRef = useRef<string | undefined>(issueIdentifier);
+
+  const syncIssueDetail = (next: IssueDetail) => {
+    setDetail(next);
+    setBlockedByDraft({
+      identifier: next.identifier,
+      value: next.blocked_by ?? [],
+    });
+    setBlockerSearch("");
+    setRemoteBlockerIssues([]);
+  };
+
+  const reloadIssueDetail = async (identifier: string) => {
+    const next = await api.getIssue(identifier);
+    if (currentIssueIdentifierRef.current === next.identifier) {
+      syncIssueDetail(next);
+    }
+  };
 
   useEffect(() => {
     currentIssueIdentifierRef.current = issueIdentifier;
@@ -97,11 +136,7 @@ export function IssuePreviewSheet({
         if (!active || currentIssueIdentifierRef.current !== next.identifier) {
           return;
         }
-        setDetail(next);
-        setBlockersDraft({
-          identifier: next.identifier,
-          value: next.blocked_by?.join(", ") ?? "",
-        });
+        syncIssueDetail(next);
       })
       .catch(() => undefined);
 
@@ -112,10 +147,10 @@ export function IssuePreviewSheet({
 
   const activeDetail = detail && detail.identifier === issueIdentifier ? detail : undefined;
   const activeIssue = activeDetail ?? issue;
-  const blockersValue =
-    blockersDraft.identifier === activeIssue?.identifier
-      ? blockersDraft.value
-      : activeIssue?.blocked_by?.join(", ") ?? "";
+  const blockedByValue =
+    blockedByDraft.identifier === activeIssue?.identifier
+      ? blockedByDraft.value
+      : activeIssue?.blocked_by ?? [];
   const session = activeIssue
     ? getSessionForIssue(bootstrap, activeIssue.id, activeIssue.identifier)
     : undefined;
@@ -130,6 +165,116 @@ export function IssuePreviewSheet({
         activeIssue.state,
       ])
     : [];
+  const localProjectIssues = useMemo(
+    () =>
+      dedupeIssues(
+        (bootstrap?.issues.items ?? []).filter(
+          (candidate) => candidate.project_id === activeIssue?.project_id,
+        ),
+      ),
+    [activeIssue?.project_id, bootstrap?.issues.items],
+  );
+  const visibleRemoteBlockerIssues = useMemo(
+    () => (open && blockerSearch.trim().length >= 2 ? remoteBlockerIssues : []),
+    [blockerSearch, open, remoteBlockerIssues],
+  );
+  const blockerSearchLoading = useMemo(
+    () => (open && blockerSearch.trim().length >= 2 ? loadingBlockerIssues : false),
+    [blockerSearch, loadingBlockerIssues, open],
+  );
+  const blockerOptions = useMemo<MultiComboboxOption[]>(
+    () =>
+      dedupeIssues([...localProjectIssues, ...visibleRemoteBlockerIssues])
+        .filter((candidate) => candidate.identifier !== activeIssue?.identifier)
+        .map((candidate) => ({
+          value: candidate.identifier,
+          label: issueOptionLabel(candidate),
+          keywords: [candidate.identifier, candidate.title],
+        })),
+    [activeIssue?.identifier, localProjectIssues, visibleRemoteBlockerIssues],
+  );
+
+  useEffect(() => {
+    if (!open || !activeIssue?.project_id || blockerSearch.trim().length < 2) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutID = window.setTimeout(() => {
+      setLoadingBlockerIssues(true);
+      api.listIssues(
+        {
+          project_id: activeIssue.project_id,
+          search: blockerSearch.trim(),
+          limit: 25,
+          sort: "updated_desc",
+        },
+        { signal: controller.signal },
+      )
+        .then((page) => {
+          if (!controller.signal.aborted) {
+            setRemoteBlockerIssues(page.items);
+          }
+        })
+        .catch((error: unknown) => {
+          if ((error as Error).name !== "AbortError") {
+            setRemoteBlockerIssues([]);
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setLoadingBlockerIssues(false);
+          }
+        });
+    }, blockerSearchDebounceMs);
+
+    return () => {
+      window.clearTimeout(timeoutID);
+      controller.abort();
+    };
+  }, [activeIssue?.project_id, blockerSearch, open]);
+
+  const blockerMutation = useMutation({
+    mutationFn: ({
+      identifier,
+      blockedBy,
+    }: {
+      identifier: string;
+      blockedBy: string[];
+    }) => api.setIssueBlockers(identifier, blockedBy),
+    onSuccess: async (_result, variables) => {
+      toast.success("Blockers updated");
+      await onInvalidate();
+      await reloadIssueDetail(variables.identifier);
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? `Unable to update blockers: ${error.message}` : "Unable to update blockers",
+      );
+    },
+  });
+  const retryMutation = useMutation({
+    mutationFn: (identifier: string) => api.retryIssue(identifier),
+    onSuccess: async () => {
+      toast.success("Retry requested");
+      await onInvalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to retry issue: ${error.message}` : "Unable to retry issue");
+    },
+  });
+  const runNowMutation = useMutation({
+    mutationFn: (identifier: string) => api.runIssueNow(identifier),
+    onSuccess: async () => {
+      toast.success("Recurring issue queued");
+      await onInvalidate();
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? `Unable to queue recurring issue: ${error.message}` : "Unable to queue recurring issue",
+      );
+    },
+  });
 
   if (!activeIssue) return null;
 
@@ -259,14 +404,7 @@ export function IssuePreviewSheet({
                       activeIssue.identifier,
                       value as IssueState,
                     );
-                    const next = await api.getIssue(activeIssue.identifier);
-                    if (currentIssueIdentifierRef.current === next.identifier) {
-                      setDetail(next);
-                      setBlockersDraft({
-                        identifier: next.identifier,
-                        value: next.blocked_by?.join(", ") ?? "",
-                      });
-                    }
+                    await reloadIssueDetail(activeIssue.identifier);
                   }}
                 >
                   <SelectTrigger aria-label="State">
@@ -286,41 +424,41 @@ export function IssuePreviewSheet({
                 <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Blockers
                 </span>
-                <Textarea
-                  value={blockersValue}
-                  onChange={(event) =>
-                    setBlockersDraft({
+                <MultiCombobox
+                  key={`preview-blockers-${activeIssue.identifier}`}
+                  ariaLabel="Blockers"
+                  value={blockedByValue}
+                  onChange={(nextValue) =>
+                    setBlockedByDraft({
                       identifier: activeIssue.identifier,
-                      value: event.target.value,
+                      value: nextValue,
                     })
                   }
-                  className="min-h-[96px]"
+                  onSearchChange={setBlockerSearch}
+                  options={blockerOptions}
+                  loading={blockerSearchLoading}
+                  placeholder="Select blocker issues"
+                  emptyText={
+                    activeIssue.project_id
+                      ? blockerSearch.trim().length >= 2
+                        ? "No blockers found in this project."
+                        : "Type at least 2 characters to search all project issues."
+                      : "Assign this issue to a project first."
+                  }
                 />
                 <Button
                   variant="secondary"
                   className="justify-center"
-                  onClick={async () => {
-                    await api.setIssueBlockers(
-                      activeIssue.identifier,
-                      blockersValue
-                        .split(",")
-                        .map((value) => value.trim())
-                        .filter(Boolean),
-                    );
-                    toast.success("Blockers updated");
-                    await onInvalidate();
-                    const next = await api.getIssue(activeIssue.identifier);
-                    if (currentIssueIdentifierRef.current === next.identifier) {
-                      setDetail(next);
-                      setBlockersDraft({
-                        identifier: next.identifier,
-                        value: next.blocked_by?.join(", ") ?? "",
-                      });
-                    }
+                  disabled={blockerMutation.isPending}
+                  onClick={() => {
+                    blockerMutation.mutate({
+                      identifier: activeIssue.identifier,
+                      blockedBy: blockedByValue,
+                    });
                   }}
                 >
                   <Save className="size-4" />
-                  Save blockers
+                  {blockerMutation.isPending ? "Saving blockers..." : "Save blockers"}
                 </Button>
               </div>
             </div>
@@ -370,12 +508,13 @@ export function IssuePreviewSheet({
               <Button
                 variant="secondary"
                 className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
-                onClick={() =>
-                  void api.retryIssue(activeIssue.identifier).then(onInvalidate)
-                }
+                disabled={retryMutation.isPending}
+                onClick={() => {
+                  retryMutation.mutate(activeIssue.identifier);
+                }}
               >
                 <RotateCcw className="size-4" />
-                Retry now
+                {retryMutation.isPending ? "Retrying..." : "Retry now"}
               </Button>
               {onDelete ? (
                 <Button
@@ -392,12 +531,13 @@ export function IssuePreviewSheet({
               {activeIssue.issue_type === "recurring" ? (
                 <Button
                   variant="secondary"
-                  onClick={() =>
-                    void api.runIssueNow(activeIssue.identifier).then(onInvalidate)
-                  }
+                  disabled={runNowMutation.isPending}
+                  onClick={() => {
+                    runNowMutation.mutate(activeIssue.identifier);
+                  }}
                 >
                   <RotateCcw className="size-4" />
-                  Run now
+                  {runNowMutation.isPending ? "Queueing..." : "Run now"}
                 </Button>
               ) : null}
               <Button
@@ -439,14 +579,7 @@ export function IssuePreviewSheet({
               toast.success("Issue updated");
             }
             await onInvalidate();
-            const next = await api.getIssue(activeIssue.identifier);
-            if (currentIssueIdentifierRef.current === next.identifier) {
-              setDetail(next);
-              setBlockersDraft({
-                identifier: next.identifier,
-                value: next.blocked_by?.join(", ") ?? "",
-              });
-            }
+            await reloadIssueDetail(activeIssue.identifier);
           }}
         />
       ) : null}

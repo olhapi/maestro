@@ -14,12 +14,14 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('sonner', () => ({
   toast: {
     success: vi.fn(),
+    error: vi.fn(),
   },
 }))
 
 vi.mock('@/lib/api', () => ({
   api: {
     getIssue: vi.fn(),
+    listIssues: vi.fn(),
     retryIssue: vi.fn(),
     runIssueNow: vi.fn(),
     setIssueBlockers: vi.fn(),
@@ -335,6 +337,34 @@ describe('IssuePreviewSheet', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Second issue detail')).toBeInTheDocument()
+    })
+  })
+
+  it('shows an error toast when saving invalid blockers fails', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const summary = makeIssueSummary()
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.setIssueBlockers).mockRejectedValue(new Error('unknown blocker'))
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /save blockers/i })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /save blockers/i }))
+
+    const { toast } = await import('sonner')
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('Unable to update blockers: unknown blocker')
     })
   })
 })

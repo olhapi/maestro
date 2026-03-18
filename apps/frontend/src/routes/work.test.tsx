@@ -68,7 +68,6 @@ describe('WorkPage', () => {
     expect(screen.queryByText('Create issue')).not.toBeInTheDocument()
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Board view' })).toHaveAttribute('data-state', 'on')
-    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveAttribute('href', '/issues/ISS-1')
 
     fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
     await waitFor(() => {

@@ -175,6 +175,32 @@ describe('AppShell', () => {
     expect(document.title).toContain('Sessions')
   })
 
+  it('invalidates only the active issue detail queries on nested issue routes', async () => {
+    pathname = '/issues/ISS-42'
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
+
+    const { queryClient } = renderWithQueryClient(<AppShell />)
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await waitFor(() => {
+      expect(screen.getByTestId('outlet')).toBeInTheDocument()
+    })
+
+    await act(async () => {
+      await invalidateSocket()
+    })
+
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['issue', 'ISS-42'],
+      refetchType: 'active',
+    })
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['issue-execution', 'ISS-42'],
+      refetchType: 'active',
+    })
+  })
+
   it('switches to the compact mobile shell below the desktop breakpoint', async () => {
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,

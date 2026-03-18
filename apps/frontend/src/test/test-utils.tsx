@@ -13,16 +13,19 @@ export function renderWithQueryClient(ui: ReactNode) {
       },
     },
   })
+  const Providers = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <GlobalDashboardProvider>{children}</GlobalDashboardProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
+  )
+  const rendered = render(<Providers>{ui}</Providers>)
 
   return {
     queryClient,
-    ...render(
-      <QueryClientProvider client={queryClient}>
-        <TooltipProvider delayDuration={0}>
-          <GlobalDashboardProvider>{ui}</GlobalDashboardProvider>
-        </TooltipProvider>
-      </QueryClientProvider>,
-    ),
+    ...rendered,
+    rerender: (nextUi: ReactNode) => rendered.rerender(<Providers>{nextUi}</Providers>),
   }
 }
 

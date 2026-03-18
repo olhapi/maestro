@@ -2,6 +2,11 @@ import type { QueryClient } from '@tanstack/react-query'
 
 import { appRoutes } from '@/lib/routes'
 
+function pathnameParam(pathname: string, prefix: string) {
+  const suffix = pathname.slice(prefix.length)
+  return suffix.split('/')[0] ?? ''
+}
+
 function queryKeysForPath(pathname: string) {
   if (pathname === appRoutes.work) {
     return [['bootstrap'], ['issues']] as const
@@ -12,15 +17,16 @@ function queryKeysForPath(pathname: string) {
   }
 
   if (pathname.startsWith('/projects/')) {
-    return [['bootstrap'], ['project']] as const
+    return [['bootstrap'], ['project', pathnameParam(pathname, '/projects/')]] as const
   }
 
   if (pathname.startsWith('/epics/')) {
-    return [['bootstrap'], ['epic']] as const
+    return [['bootstrap'], ['epic', pathnameParam(pathname, '/epics/')]] as const
   }
 
   if (pathname.startsWith('/issues/')) {
-    return [['bootstrap'], ['issue'], ['issue-execution']] as const
+    const identifier = pathnameParam(pathname, '/issues/')
+    return [['bootstrap'], ['issue', identifier], ['issue-execution', identifier]] as const
   }
 
   if (pathname === appRoutes.sessions || pathname.startsWith('/sessions/')) {
