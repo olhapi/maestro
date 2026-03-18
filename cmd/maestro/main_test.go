@@ -489,6 +489,154 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 	}
 }
 
+func TestIssueRepairTokensRecomputesFromFinalizedRuntimeEvents(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	project, err := store.CreateProject("Platform", "", setupRepo(t), "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Repair tokens", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.AddIssueTokenSpend(issue.ID, 999); err != nil {
+		t.Fatalf("AddIssueTokenSpend: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_completed", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"total_tokens": 42,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent run_completed: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_failed", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"total_tokens": 8,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent run_failed: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"error":        "plan_approval_pending",
+		"total_tokens": 5,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent retry_paused: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "issue", "repair-tokens", issue.Identifier, "--json")
+	if code != 0 {
+		t.Fatalf("issue repair-tokens failed: %d stderr=%s", code, stderr)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("decode issue repair-tokens: %v\n%s", err, stdout)
+	}
+	if payload["identifier"] != issue.Identifier || int(payload["total_tokens_spent"].(float64)) != 55 {
+		t.Fatalf("unexpected issue repair payload: %+v", payload)
+	}
+
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if reloaded.TotalTokensSpent != 55 {
+		t.Fatalf("expected recomputed issue total 55, got %d", reloaded.TotalTokensSpent)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "repair-tokens", "--project", project.ID, "--json")
+	if code != 0 {
+		t.Fatalf("project repair-tokens failed: %d stderr=%s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("decode project repair-tokens: %v\n%s", err, stdout)
+	}
+	if payload["scope"] != "project" || int(payload["recomputed"].(float64)) != 1 {
+		t.Fatalf("unexpected project repair payload: %+v", payload)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "repair-tokens", "--all", "--json")
+	if code != 0 {
+		t.Fatalf("global repair-tokens failed: %d stderr=%s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("decode global repair-tokens: %v\n%s", err, stdout)
+	}
+	if payload["scope"] != "all" || int(payload["recomputed"].(float64)) != 1 {
+		t.Fatalf("unexpected global repair payload: %+v", payload)
+	}
+}
+
+func TestIssueRepairTokensDeduplicatesCumulativeTotalsPerThread(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	project, err := store.CreateProject("Platform", "", setupRepo(t), "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Repair resumed tokens", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"error":        "plan_approval_pending",
+		"thread_id":    "thread-a",
+		"total_tokens": 7,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent retry_paused: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_completed", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"thread_id":    "thread-a",
+		"total_tokens": 20,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent run_completed: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_failed", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"thread_id":    "thread-b",
+		"total_tokens": 5,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent run_failed: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "issue", "repair-tokens", issue.Identifier, "--json")
+	if code != 0 {
+		t.Fatalf("issue repair-tokens failed: %d stderr=%s", code, stderr)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("decode issue repair-tokens: %v\n%s", err, stdout)
+	}
+	if payload["identifier"] != issue.Identifier || int(payload["total_tokens_spent"].(float64)) != 25 {
+		t.Fatalf("unexpected issue repair payload: %+v", payload)
+	}
+
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if reloaded.TotalTokensSpent != 25 {
+		t.Fatalf("expected recomputed issue total 25, got %d", reloaded.TotalTokensSpent)
+	}
+}
+
 func TestIssueCommentAddRejectsEmptyInputForLinearIssues(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	store, err := kanban.NewStore(dbPath)

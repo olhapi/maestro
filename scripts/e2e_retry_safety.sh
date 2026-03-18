@@ -29,6 +29,20 @@ require_cmd() {
   fi
 }
 
+init_git_repo() {
+  local repo_path="$1"
+  (
+    cd "$repo_path"
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
+    git init -q
+    git config user.name "Maestro E2E"
+    git config user.email "e2e@example.com"
+    git add WORKFLOW.md
+    git commit -q -m "test init"
+    git branch -M main
+  )
+}
+
 cleanup() {
   local exit_code="$?"
   if [[ -n "$ORCH_PID" ]] && kill -0 "$ORCH_PID" >/dev/null 2>&1; then
@@ -186,6 +200,7 @@ codex:
 ---
 Retry safety harness for {{ issue.identifier }}.
 EOF
+  init_git_repo "$repo_path"
 
   "$MAESTRO_BIN" project create "$name" \
     --repo "$repo_path" \
@@ -203,6 +218,7 @@ start_project() {
 
 require_cmd go
 require_cmd sqlite3
+require_cmd git
 
 mkdir -p "$BIN_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$REPOS_DIR" "$(dirname "$DB_PATH")"
 

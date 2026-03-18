@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -64,6 +65,48 @@ func samplePNGBytes() []byte {
 		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
 		0x44, 0xae, 0x42, 0x60, 0x82,
 	}
+}
+
+func runGitForStoreTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = gitStoreTestEnv()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func gitStoreTestEnv() []string {
+	env := os.Environ()
+	filtered := env[:0]
+	for _, value := range env {
+		switch {
+		case strings.HasPrefix(value, "GIT_DIR="):
+		case strings.HasPrefix(value, "GIT_WORK_TREE="):
+		case strings.HasPrefix(value, "GIT_INDEX_FILE="):
+		case strings.HasPrefix(value, "GIT_COMMON_DIR="):
+		case strings.HasPrefix(value, "GIT_PREFIX="):
+		default:
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func initGitRepoForStoreTest(t *testing.T, repoPath string) {
+	t.Helper()
+	runGitForStoreTest(t, repoPath, "init")
+	runGitForStoreTest(t, repoPath, "config", "user.email", "maestro-tests@example.com")
+	runGitForStoreTest(t, repoPath, "config", "user.name", "Maestro Tests")
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("repo\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile README.md: %v", err)
+	}
+	runGitForStoreTest(t, repoPath, "add", "README.md")
+	runGitForStoreTest(t, repoPath, "commit", "-m", "test init")
+	runGitForStoreTest(t, repoPath, "branch", "-M", "main")
 }
 
 func TestDefaultDBPathUsesHomeDir(t *testing.T) {
@@ -1545,6 +1588,193 @@ func TestAddIssueTokenSpendIncrementsWithoutTouchingUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestRecomputeIssueTokenSpendUsesFinalizedRuntimeTotals(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Token repair", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.AddIssueTokenSpend(issue.ID, 999); err != nil {
+		t.Fatalf("AddIssueTokenSpend: %v", err)
+	}
+	events := []struct {
+		kind   string
+		fields map[string]interface{}
+	}{
+		{
+			kind: "run_completed",
+			fields: map[string]interface{}{
+				"issue_id":     issue.ID,
+				"identifier":   issue.Identifier,
+				"thread_id":    "thread-a",
+				"total_tokens": 12,
+			},
+		},
+		{
+			kind: "retry_paused",
+			fields: map[string]interface{}{
+				"issue_id":     issue.ID,
+				"identifier":   issue.Identifier,
+				"thread_id":    "thread-a",
+				"error":        "plan_approval_pending",
+				"total_tokens": 20,
+			},
+		},
+		{
+			kind: "run_failed",
+			fields: map[string]interface{}{
+				"issue_id":     issue.ID,
+				"identifier":   issue.Identifier,
+				"thread_id":    "thread-b",
+				"total_tokens": 5,
+			},
+		},
+		{
+			kind: "run_unsuccessful",
+			fields: map[string]interface{}{
+				"issue_id":     issue.ID,
+				"identifier":   issue.Identifier,
+				"total_tokens": 7,
+			},
+		},
+		{
+			kind: "retry_paused",
+			fields: map[string]interface{}{
+				"issue_id":     issue.ID,
+				"identifier":   issue.Identifier,
+				"error":        "retry_limit_reached",
+				"total_tokens": 100,
+			},
+		},
+		{
+			kind: "run_started",
+			fields: map[string]interface{}{
+				"issue_id":     issue.ID,
+				"identifier":   issue.Identifier,
+				"thread_id":    "thread-c",
+				"total_tokens": 200,
+			},
+		},
+	}
+	for _, event := range events {
+		if err := store.AppendRuntimeEvent(event.kind, event.fields); err != nil {
+			t.Fatalf("AppendRuntimeEvent %s: %v", event.kind, err)
+		}
+	}
+
+	total, err := store.RecomputeIssueTokenSpend(issue.ID)
+	if err != nil {
+		t.Fatalf("RecomputeIssueTokenSpend: %v", err)
+	}
+	if total != 32 {
+		t.Fatalf("RecomputeIssueTokenSpend = %d, want 32", total)
+	}
+
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if reloaded.TotalTokensSpent != 32 {
+		t.Fatalf("TotalTokensSpent = %d, want 32", reloaded.TotalTokensSpent)
+	}
+
+	if _, err := store.RecomputeIssueTokenSpend("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows for missing issue, got %v", err)
+	}
+}
+
+func TestRecomputeProjectAndAllIssueTokenSpend(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProject("Platform", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	inProjectA, err := store.CreateIssue(project.ID, "", "Project issue A", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue inProjectA: %v", err)
+	}
+	inProjectB, err := store.CreateIssue(project.ID, "", "Project issue B", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue inProjectB: %v", err)
+	}
+	outsideProject, err := store.CreateIssue("", "", "Standalone issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue outsideProject: %v", err)
+	}
+	for _, event := range []struct {
+		issueID     string
+		identifier  string
+		threadID    string
+		totalTokens int
+	}{
+		{inProjectA.ID, inProjectA.Identifier, "thread-a", 9},
+		{inProjectB.ID, inProjectB.Identifier, "thread-b", 4},
+		{outsideProject.ID, outsideProject.Identifier, "thread-c", 11},
+	} {
+		if err := store.AppendRuntimeEvent("run_completed", map[string]interface{}{
+			"issue_id":     event.issueID,
+			"identifier":   event.identifier,
+			"thread_id":    event.threadID,
+			"total_tokens": event.totalTokens,
+		}); err != nil {
+			t.Fatalf("AppendRuntimeEvent run_completed for %s: %v", event.identifier, err)
+		}
+	}
+
+	recomputed, err := store.RecomputeProjectIssueTokenSpend(project.ID)
+	if err != nil {
+		t.Fatalf("RecomputeProjectIssueTokenSpend: %v", err)
+	}
+	if recomputed != 2 {
+		t.Fatalf("RecomputeProjectIssueTokenSpend count = %d, want 2", recomputed)
+	}
+
+	projectIssue, err := store.GetIssue(inProjectA.ID)
+	if err != nil {
+		t.Fatalf("GetIssue inProjectA: %v", err)
+	}
+	if projectIssue.TotalTokensSpent != 9 {
+		t.Fatalf("project issue token total = %d, want 9", projectIssue.TotalTokensSpent)
+	}
+	standaloneBefore, err := store.GetIssue(outsideProject.ID)
+	if err != nil {
+		t.Fatalf("GetIssue outsideProject before global repair: %v", err)
+	}
+	if standaloneBefore.TotalTokensSpent != 0 {
+		t.Fatalf("standalone issue token total before global repair = %d, want 0", standaloneBefore.TotalTokensSpent)
+	}
+
+	recomputed, err = store.RecomputeAllIssueTokenSpend()
+	if err != nil {
+		t.Fatalf("RecomputeAllIssueTokenSpend: %v", err)
+	}
+	if recomputed != 3 {
+		t.Fatalf("RecomputeAllIssueTokenSpend count = %d, want 3", recomputed)
+	}
+
+	standaloneAfter, err := store.GetIssue(outsideProject.ID)
+	if err != nil {
+		t.Fatalf("GetIssue outsideProject after global repair: %v", err)
+	}
+	if standaloneAfter.TotalTokensSpent != 11 {
+		t.Fatalf("standalone issue token total after global repair = %d, want 11", standaloneAfter.TotalTokensSpent)
+	}
+}
+
+func TestRuntimeEventThreadIDHandlesInvalidPayloads(t *testing.T) {
+	if got := runtimeEventThreadID(""); got != "" {
+		t.Fatalf("runtimeEventThreadID empty payload = %q, want empty", got)
+	}
+	if got := runtimeEventThreadID("{not-json"); got != "" {
+		t.Fatalf("runtimeEventThreadID invalid payload = %q, want empty", got)
+	}
+	if got := runtimeEventThreadID(`{"thread_id":"  thread-123  "}`); got != "thread-123" {
+		t.Fatalf("runtimeEventThreadID valid payload = %q, want thread-123", got)
+	}
+}
+
 func TestListIssues(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -2561,6 +2791,44 @@ func TestDeleteWorkspaceRemovesReadOnlyTree(t *testing.T) {
 	}
 	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
 		t.Fatalf("expected workspace path to be removed, got err=%v", err)
+	}
+}
+
+func TestDeleteWorkspaceRemovesGitWorktree(t *testing.T) {
+	store := setupTestStore(t)
+
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll repo: %v", err)
+	}
+	initGitRepoForStoreTest(t, repoPath)
+
+	issue, err := store.CreateIssue("", "", "Git worktree", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	runGitForStoreTest(t, repoPath, "worktree", "add", "-b", "codex/test-worktree", workspacePath, "HEAD")
+	if _, err := store.CreateWorkspace(issue.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	commonDir, err := gitCommonDirForWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("gitCommonDirForWorkspace: %v", err)
+	}
+	if filepath.Base(commonDir) != ".git" {
+		t.Fatalf("expected common dir ending in .git, got %q", commonDir)
+	}
+
+	if err := store.DeleteWorkspace(issue.ID); err != nil {
+		t.Fatalf("DeleteWorkspace: %v", err)
+	}
+	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree path to be removed, got err=%v", err)
+	}
+	if output := runGitForStoreTest(t, repoPath, "worktree", "list", "--porcelain"); strings.Contains(output, workspacePath) {
+		t.Fatalf("expected git worktree list to exclude %q, got %q", workspacePath, output)
 	}
 }
 

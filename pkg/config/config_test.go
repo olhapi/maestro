@@ -76,8 +76,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
 		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
-	if cfg.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
-		t.Fatalf("expected initial collaboration mode %q, got %q", InitialCollaborationModePlan, cfg.Codex.InitialCollaborationMode)
+	if cfg.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
+		t.Fatalf("expected initial collaboration mode %q, got %q", InitialCollaborationModeDefault, cfg.Codex.InitialCollaborationMode)
 	}
 	reject, ok := cfg.Codex.ApprovalPolicy.(map[string]interface{})["reject"].(map[string]interface{})
 	if !ok || reject["request_permissions"] != false {
@@ -156,7 +156,7 @@ Issue {{ issue.identifier }}
 	if workflow.Config.Codex.ExpectedVersion != codexschema.SupportedVersion {
 		t.Fatalf("unexpected codex expected version: %q", workflow.Config.Codex.ExpectedVersion)
 	}
-	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
 		t.Fatalf("expected default initial collaboration mode, got %q", workflow.Config.Codex.InitialCollaborationMode)
 	}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "review pass") {
@@ -567,7 +567,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"codex app-server --model test",
 		"expected_version: " + codexschema.SupportedVersion,
 		"approval_policy: never",
-		"initial_collaboration_mode: plan",
+		"initial_collaboration_mode: default",
 		"on-request, on-failure, untrusted",
 		"Ignored for stdio runs and resumed threads.",
 		"turn_timeout_ms: 1800000",
@@ -601,7 +601,7 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 		"root: ./workspaces",
 		"command: codex app-server",
 		"mode: app_server",
-		"initial_collaboration_mode: plan",
+		"initial_collaboration_mode: default",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
@@ -632,7 +632,7 @@ func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
 		"root: ./ws",
 		"command: codex exec --model test",
 		"mode: stdio",
-		"initial_collaboration_mode: plan",
+		"initial_collaboration_mode: default",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
@@ -663,7 +663,7 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 		"root: ./flag-ws",
 		"command: codex exec --model custom",
 		"mode: stdio",
-		"initial_collaboration_mode: plan",
+		"initial_collaboration_mode: default",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
@@ -709,7 +709,7 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	if workflow.Config.Codex.Command != "codex app-server --model test" {
 		t.Fatalf("unexpected codex command: %q", workflow.Config.Codex.Command)
 	}
-	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
 		t.Fatalf("unexpected initial collaboration mode: %q", workflow.Config.Codex.InitialCollaborationMode)
 	}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "Review the implementation for issue") {

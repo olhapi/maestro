@@ -67,6 +67,23 @@ const planApprovalStopReason = "plan_approval_pending"
 
 var proposedPlanBlockPattern = regexp.MustCompile(`(?s)<proposed_plan>\s*(.*?)\s*</proposed_plan>`)
 
+func gitCommandEnv() []string {
+	env := os.Environ()
+	filtered := env[:0]
+	for _, value := range env {
+		switch {
+		case strings.HasPrefix(value, "GIT_DIR="):
+		case strings.HasPrefix(value, "GIT_WORK_TREE="):
+		case strings.HasPrefix(value, "GIT_INDEX_FILE="):
+		case strings.HasPrefix(value, "GIT_COMMON_DIR="):
+		case strings.HasPrefix(value, "GIT_PREFIX="):
+		default:
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
 	return NewRunnerWithExtensions(provider, store, nil)
 }
@@ -153,7 +170,7 @@ type permissionConfig struct {
 func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy interface{}, initialCollaborationMode string) permissionConfig {
 	initialCollaborationMode = strings.TrimSpace(initialCollaborationMode)
 	if initialCollaborationMode == "" {
-		initialCollaborationMode = config.InitialCollaborationModePlan
+		initialCollaborationMode = config.InitialCollaborationModeDefault
 	}
 	if override := r.effectiveInitialCollaborationMode(issue); override != "" {
 		initialCollaborationMode = override
@@ -236,6 +253,354 @@ func sanitizeWorkspaceKey(identifier string) string {
 	return out
 }
 
+func deterministicIssueBranch(issue *kanban.Issue) string {
+	if issue == nil {
+		return "codex/issue"
+	}
+	if branch := strings.TrimSpace(issue.BranchName); branch != "" {
+		return branch
+	}
+	identifier := strings.TrimSpace(issue.Identifier)
+	if identifier == "" {
+		return "codex/issue"
+	}
+	return "codex/" + identifier
+}
+
+func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = gitCommandEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		if detail != "" {
+			return "", fmt.Errorf("%w: %s", err, detail)
+		}
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+func branchExists(ctx context.Context, repoPath, branch string) bool {
+	if strings.TrimSpace(branch) == "" {
+		return false
+	}
+	_, err := runGitCommand(ctx, repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
+func gitRefExists(ctx context.Context, repoPath, ref string) bool {
+	if strings.TrimSpace(ref) == "" {
+		return false
+	}
+	_, err := runGitCommand(ctx, repoPath, "show-ref", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+func listLocalBranches(ctx context.Context, repoPath string) ([]string, error) {
+	output, err := runGitCommand(ctx, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(output) == "" {
+		return nil, nil
+	}
+	return strings.Split(output, "\n"), nil
+}
+
+func resolveRepoDefaultBranch(ctx context.Context, repoPath string) (string, error) {
+	if repoPath == "" {
+		return "", fmt.Errorf("missing repo path")
+	}
+	if ref, err := runGitCommand(ctx, repoPath, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "origin/") && len(ref) > len("origin/") {
+			return strings.TrimSpace(strings.TrimPrefix(ref, "origin/")), nil
+		}
+	}
+	mainlineCandidates := []string{"main", "master", "trunk", "develop"}
+	for _, branch := range mainlineCandidates {
+		if branchExists(ctx, repoPath, branch) {
+			return branch, nil
+		}
+	}
+	localBranches, err := listLocalBranches(ctx, repoPath)
+	if err == nil && len(localBranches) == 1 && strings.TrimSpace(localBranches[0]) != "" {
+		return strings.TrimSpace(localBranches[0]), nil
+	}
+	for _, branch := range mainlineCandidates {
+		if gitRefExists(ctx, repoPath, "refs/remotes/origin/"+branch) {
+			return "origin/" + branch, nil
+		}
+	}
+	if branch, err := runGitCommand(ctx, repoPath, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		branch = strings.TrimSpace(branch)
+		if branch != "" {
+			return branch, nil
+		}
+	}
+	if branch, err := runGitCommand(ctx, repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		branch = strings.TrimSpace(branch)
+		if branch == "HEAD" {
+			return branch, nil
+		}
+		if branch != "" {
+			return branch, nil
+		}
+	}
+	return "", fmt.Errorf("unable to resolve repository default branch")
+}
+
+func gitCommonDir(ctx context.Context, dir string) (string, error) {
+	value, err := runGitCommand(ctx, dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(value) {
+		return canonicalPath(value), nil
+	}
+	return canonicalPath(filepath.Join(dir, value)), nil
+}
+
+func canonicalPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(abs)
+}
+
+func workspaceMatchesRepo(ctx context.Context, workspacePath, repoPath string) (bool, error) {
+	topLevel, err := runGitCommand(ctx, workspacePath, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false, nil
+	}
+	topLevelAbs := canonicalPath(strings.TrimSpace(topLevel))
+	workspaceAbs := canonicalPath(workspacePath)
+	if filepath.Clean(topLevelAbs) != filepath.Clean(workspaceAbs) {
+		linkedWorktree, err := isLinkedWorktree(ctx, workspacePath)
+		if err != nil {
+			return false, err
+		}
+		if !linkedWorktree {
+			return false, nil
+		}
+	}
+	workspaceCommonDir, err := gitCommonDir(ctx, workspacePath)
+	if err != nil {
+		return false, err
+	}
+	repoCommonDir, err := gitCommonDir(ctx, repoPath)
+	if err != nil {
+		return false, err
+	}
+	return filepath.Clean(workspaceCommonDir) == filepath.Clean(repoCommonDir), nil
+}
+
+func removeManagedWorkspace(ctx context.Context, workspacePath string) error {
+	commonDir, err := gitCommonDir(ctx, workspacePath)
+	if err == nil && filepath.Base(commonDir) == ".git" {
+		repoPath := filepath.Dir(commonDir)
+		if _, removeErr := runGitCommand(ctx, repoPath, "worktree", "remove", "--force", workspacePath); removeErr == nil {
+			return nil
+		}
+	}
+	if err := os.RemoveAll(workspacePath); err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func workspaceBootstrapBaseRef(ctx context.Context, workspacePath, repoPath string) (string, error) {
+	workspaceCommonDir, workspaceErr := gitCommonDir(ctx, workspacePath)
+	repoCommonDir, repoErr := gitCommonDir(ctx, repoPath)
+	if workspaceErr == nil && repoErr == nil && filepath.Clean(workspaceCommonDir) == filepath.Clean(repoCommonDir) {
+		if head, err := runGitCommand(ctx, workspacePath, "rev-parse", "HEAD"); err == nil && strings.TrimSpace(head) != "" {
+			return strings.TrimSpace(head), nil
+		}
+	}
+	return resolveRepoDefaultBranch(ctx, repoPath)
+}
+
+func isLinkedWorktree(ctx context.Context, workspacePath string) (bool, error) {
+	gitDir, err := runGitCommand(ctx, workspacePath, "rev-parse", "--git-dir")
+	if err != nil {
+		return false, nil
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir, err = filepath.Abs(filepath.Join(workspacePath, gitDir))
+		if err != nil {
+			return false, err
+		}
+	}
+	gitDir = filepath.Clean(gitDir)
+	needle := string(os.PathSeparator) + ".git" + string(os.PathSeparator) + "worktrees" + string(os.PathSeparator)
+	return strings.Contains(gitDir, needle), nil
+}
+
+func preserveWorkspaceContents(ctx context.Context, workspacePath string) (string, bool, error) {
+	linkedWorktree, err := isLinkedWorktree(ctx, workspacePath)
+	if err != nil {
+		return "", false, err
+	}
+	if linkedWorktree {
+		return "", false, nil
+	}
+	entries, err := os.ReadDir(workspacePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if len(entries) == 0 {
+		return "", false, nil
+	}
+	base := workspacePath + ".legacy-" + time.Now().UTC().Format("20060102-150405")
+	candidate := base
+	for attempt := 1; ; attempt++ {
+		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+			if err := os.Rename(workspacePath, candidate); err != nil {
+				return "", false, err
+			}
+			return candidate, true, nil
+		} else if err != nil {
+			return "", false, err
+		}
+		candidate = fmt.Sprintf("%s-%d", base, attempt)
+	}
+}
+
+func (r *Runner) resolveRepoPathForIssue(workflow *config.Workflow, issue *kanban.Issue) (string, error) {
+	if issue != nil && strings.TrimSpace(issue.ProjectID) != "" && r.store != nil {
+		project, err := r.store.GetProject(issue.ProjectID)
+		if err == nil && strings.TrimSpace(project.RepoPath) != "" {
+			return filepath.Abs(project.RepoPath)
+		}
+		if err != nil && !kanban.IsNotFound(err) {
+			return "", err
+		}
+	}
+	if workflow != nil && strings.TrimSpace(workflow.Path) != "" {
+		return filepath.Abs(filepath.Dir(workflow.Path))
+	}
+	return "", fmt.Errorf("missing repository path for issue workspace bootstrap")
+}
+
+func (r *Runner) recordWorkspaceRuntimeEvent(issue *kanban.Issue, kind string, fields map[string]interface{}) {
+	if r.store == nil || issue == nil {
+		return
+	}
+	event := map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+	}
+	for key, value := range fields {
+		event[key] = value
+	}
+	_ = r.store.AppendRuntimeEvent(kind, event)
+}
+
+func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, workspacePath, rootAbs string) (bool, string, error) {
+	repoPath, err := r.resolveRepoPathForIssue(workflow, issue)
+	if err != nil {
+		return false, "", err
+	}
+	if _, err := runGitCommand(ctx, repoPath, "rev-parse", "--show-toplevel"); err != nil {
+		return false, "", fmt.Errorf("repo validation failed: %w", err)
+	}
+	branchName := deterministicIssueBranch(issue)
+	if issue != nil && strings.TrimSpace(issue.BranchName) != branchName && r.store != nil {
+		if err := r.store.UpdateIssue(issue.ID, map[string]interface{}{"branch_name": branchName}); err == nil {
+			issue.BranchName = branchName
+		}
+	}
+
+	preparedPath, _, err := prepareWorkspaceDir(workspacePath, rootAbs)
+	if err != nil {
+		return false, "", err
+	}
+	if matched, err := workspaceMatchesRepo(ctx, preparedPath, repoPath); err != nil {
+		return false, "", err
+	} else if matched {
+		currentBranch, branchErr := runGitCommand(ctx, preparedPath, "branch", "--show-current")
+		if branchErr != nil {
+			return false, "", branchErr
+		}
+		currentBranch = strings.TrimSpace(currentBranch)
+		if currentBranch != branchName {
+			if !branchExists(ctx, repoPath, branchName) {
+				if currentBranch != "" {
+					if _, err := runGitCommand(ctx, preparedPath, "branch", "-m", branchName); err != nil {
+						return false, "", fmt.Errorf("rename workspace branch %s to %s: %w", currentBranch, branchName, err)
+					}
+				} else {
+					if _, err := runGitCommand(ctx, preparedPath, "switch", "-c", branchName); err != nil {
+						return false, "", fmt.Errorf("switch workspace branch %s: %w", branchName, err)
+					}
+				}
+			} else {
+				if _, err := runGitCommand(ctx, preparedPath, "switch", branchName); err != nil {
+					return false, "", fmt.Errorf("switch workspace branch %s: %w", branchName, err)
+				}
+			}
+		}
+		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_reused", map[string]interface{}{
+			"path":   preparedPath,
+			"branch": branchName,
+		})
+		return false, preparedPath, nil
+	}
+
+	preservedPath, preserved, err := preserveWorkspaceContents(ctx, preparedPath)
+	if err != nil {
+		return false, "", fmt.Errorf("preserve workspace contents %s: %w", preparedPath, err)
+	}
+	if preserved {
+		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_preserved", map[string]interface{}{
+			"path":           preparedPath,
+			"preserved_path": preservedPath,
+		})
+	}
+	if err := removeManagedWorkspace(ctx, preparedPath); err != nil {
+		return false, "", fmt.Errorf("remove stale workspace %s: %w", preparedPath, err)
+	}
+	args := []string{"worktree", "add"}
+	if branchExists(ctx, repoPath, branchName) {
+		args = append(args, preparedPath, branchName)
+	} else {
+		baseRef, err := workspaceBootstrapBaseRef(ctx, preparedPath, repoPath)
+		if err != nil {
+			return false, "", err
+		}
+		args = append(args, "-b", branchName, preparedPath, baseRef)
+	}
+	if _, err := runGitCommand(ctx, repoPath, args...); err != nil {
+		return false, "", fmt.Errorf("create git worktree %s on %s: %w", preparedPath, branchName, err)
+	}
+	baseRef := branchName
+	if len(args) > 4 {
+		baseRef = args[len(args)-1]
+	}
+	r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_created", map[string]interface{}{
+		"path":      preparedPath,
+		"branch":    branchName,
+		"repo_path": repoPath,
+		"base_ref":  baseRef,
+	})
+	return true, preparedPath, nil
+}
+
 func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue) (*kanban.Workspace, error) {
 	rootAbs, err := filepath.Abs(workflow.Config.Workspace.Root)
 	if err != nil {
@@ -247,9 +612,13 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 
 	workspacePath := filepath.Join(rootAbs, sanitizeWorkspaceKey(issue.Identifier))
 	if existing, err := r.store.GetWorkspace(issue.ID); err == nil {
-		preparedPath, createdNow, err := prepareWorkspaceDir(existing.Path, rootAbs)
+		createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, existing.Path, rootAbs)
 		if err != nil {
-			return nil, err
+			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
+				"path":  existing.Path,
+				"error": err.Error(),
+			})
+			return nil, fmt.Errorf("workspace_bootstrap: %w", err)
 		}
 		if preparedPath != existing.Path {
 			existing, err = r.store.UpdateWorkspacePath(issue.ID, preparedPath)
@@ -265,9 +634,13 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 		return existing, nil
 	}
 
-	preparedPath, createdNow, err := prepareWorkspaceDir(workspacePath, rootAbs)
+	createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, workspacePath, rootAbs)
 	if err != nil {
-		return nil, err
+		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
+			"path":  workspacePath,
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("workspace_bootstrap: %w", err)
 	}
 
 	workspace, err := r.store.CreateWorkspace(issue.ID, preparedPath)

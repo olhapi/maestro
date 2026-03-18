@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,45 @@ import (
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
 	"github.com/olhapi/maestro/pkg/config"
 )
+
+func runGitForTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = gitTestEnv()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func gitTestEnv() []string {
+	env := os.Environ()
+	filtered := env[:0]
+	for _, value := range env {
+		switch {
+		case strings.HasPrefix(value, "GIT_DIR="):
+		case strings.HasPrefix(value, "GIT_WORK_TREE="):
+		case strings.HasPrefix(value, "GIT_INDEX_FILE="):
+		case strings.HasPrefix(value, "GIT_COMMON_DIR="):
+		case strings.HasPrefix(value, "GIT_PREFIX="):
+		default:
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func initGitRepoForTest(t *testing.T, repoPath string) {
+	t.Helper()
+	runGitForTest(t, repoPath, "init")
+	runGitForTest(t, repoPath, "config", "user.email", "maestro-tests@example.com")
+	runGitForTest(t, repoPath, "config", "user.name", "Maestro Tests")
+	runGitForTest(t, repoPath, "add", ".")
+	runGitForTest(t, repoPath, "commit", "-m", "test init")
+	runGitForTest(t, repoPath, "branch", "-M", "main")
+}
 
 func setupTestRunner(t *testing.T, command string, mode string) (*Runner, *kanban.Store, *config.Manager, string, string) {
 	tmpDir := t.TempDir()
@@ -58,6 +98,7 @@ Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt 
 	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
 		t.Fatalf("Failed to write workflow: %v", err)
 	}
+	initGitRepoForTest(t, tmpDir)
 
 	manager, err := config.NewManager(tmpDir)
 	if err != nil {
@@ -146,6 +187,19 @@ func TestGetOrCreateWorkspace(t *testing.T) {
 	expectedPath := filepath.Join(workspaceRoot, issue.Identifier)
 	if workspace.Path != expectedPath {
 		t.Errorf("Expected path %s, got %s", expectedPath, workspace.Path)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, ".git")); err != nil {
+		t.Fatalf("expected git worktree metadata in workspace: %v", err)
+	}
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
+		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	}
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if reloaded.BranchName != "codex/"+issue.Identifier {
+		t.Fatalf("expected branch name to persist on issue, got %q", reloaded.BranchName)
 	}
 }
 
@@ -1060,8 +1114,14 @@ func TestWorkspaceDeterministic(t *testing.T) {
 	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
-	ws1, _ := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
-	ws2, _ := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	ws1, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace first call: %v", err)
+	}
+	ws2, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace second call: %v", err)
+	}
 	if ws1.Path != ws2.Path {
 		t.Error("Expected deterministic workspace path")
 	}
@@ -1101,6 +1161,9 @@ func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 	if err != nil || !fi.IsDir() {
 		t.Fatalf("expected workspace dir at %s", ws.Path)
 	}
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
+		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	}
 }
 
 func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
@@ -1129,6 +1192,163 @@ func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
 	fi, err := os.Stat(ws.Path)
 	if err != nil || !fi.IsDir() {
 		t.Fatalf("expected recreated workspace dir at %s", ws.Path)
+	}
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
+		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	}
+}
+
+func TestWorkspaceBootstrapDetachedHeadUsesHEADBase(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, _ := store.CreateIssue("", "", "Detached head workspace", "", 0, nil)
+	workflow, _ := runner.workflowProvider.Current()
+
+	head := runGitForTest(t, repoPath, "rev-parse", "HEAD")
+	runGitForTest(t, repoPath, "checkout", "--detach", head)
+
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("expected detached-head workspace bootstrap to succeed, got: %v", err)
+	}
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
+		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	}
+}
+
+func TestResolveRepoDefaultBranchPrefersMainlineOverCurrentFeatureBranch(t *testing.T) {
+	_, _, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	runGitForTest(t, repoPath, "checkout", "-qb", "feature")
+
+	branch, err := resolveRepoDefaultBranch(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("resolveRepoDefaultBranch: %v", err)
+	}
+	if branch != "main" {
+		t.Fatalf("expected default branch main, got %q", branch)
+	}
+}
+
+func TestResolveRepoDefaultBranchFallsBackToCurrentCustomBranch(t *testing.T) {
+	_, _, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	runGitForTest(t, repoPath, "branch", "-M", "release")
+	runGitForTest(t, repoPath, "checkout", "release")
+
+	branch, err := resolveRepoDefaultBranch(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("resolveRepoDefaultBranch: %v", err)
+	}
+	if branch != "release" {
+		t.Fatalf("expected current custom branch release, got %q", branch)
+	}
+}
+
+func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
+	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, _ := store.CreateIssue("", "", "Legacy workspace", "", 0, nil)
+	legacyPath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+
+	if err := os.MkdirAll(legacyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyPath, "legacy.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, legacyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, _ := runner.workflowProvider.Current()
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("expected legacy workspace recovery, got err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Path, ".git")); err != nil {
+		t.Fatalf("expected recovered git worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Path, "legacy.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected stale legacy content to be removed, got err=%v", err)
+	}
+	preserved, err := filepath.Glob(legacyPath + ".legacy-*")
+	if err != nil {
+		t.Fatalf("Glob preserved workspace: %v", err)
+	}
+	if len(preserved) != 1 {
+		t.Fatalf("expected one preserved workspace, got %v", preserved)
+	}
+	if data, err := os.ReadFile(filepath.Join(preserved[0], "legacy.txt")); err != nil || string(data) != "stale" {
+		t.Fatalf("expected preserved legacy content, got data=%q err=%v", string(data), err)
+	}
+}
+
+func TestCleanupWorkspaceRemovesGitWorktree(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Cleanup workspace", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, _ := runner.workflowProvider.Current()
+
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+	if err := runner.CleanupWorkspace(context.Background(), issue); err != nil {
+		t.Fatalf("CleanupWorkspace: %v", err)
+	}
+	if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected workspace path to be removed, got err=%v", err)
+	}
+	if output := runGitForTest(t, repoPath, "worktree", "list", "--porcelain"); strings.Contains(output, workspace.Path) {
+		t.Fatalf("expected worktree to be removed from repo listing, got %q", output)
+	}
+}
+
+func TestWorkspaceReusedBranchRenameCreatesMissingBranch(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, err := store.CreateIssue("", "", "Renamed branch workspace", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, _ := runner.workflowProvider.Current()
+
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace initial: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.Path, "rename.txt"), []byte("kept"), 0o644); err != nil {
+		t.Fatalf("WriteFile rename.txt: %v", err)
+	}
+	runGitForTest(t, workspace.Path, "add", "rename.txt")
+	runGitForTest(t, workspace.Path, "commit", "-m", "preserve workspace history")
+	originalHead := runGitForTest(t, workspace.Path, "rev-parse", "HEAD")
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"branch_name": "feature/renamed"}); err != nil {
+		t.Fatalf("UpdateIssue branch_name: %v", err)
+	}
+	updatedIssue, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	reused, err := runner.getOrCreateWorkspace(context.Background(), workflow, updatedIssue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace renamed branch: %v", err)
+	}
+	if reused.Path != workspace.Path {
+		t.Fatalf("expected reused workspace path %s, got %s", workspace.Path, reused.Path)
+	}
+	if got := runGitForTest(t, reused.Path, "branch", "--show-current"); got != "feature/renamed" {
+		t.Fatalf("expected renamed workspace branch feature/renamed, got %q", got)
+	}
+	if got := runGitForTest(t, reused.Path, "rev-parse", "HEAD"); got != originalHead {
+		t.Fatalf("expected renamed branch HEAD %s, got %s", originalHead, got)
+	}
+	if output := runGitForTest(t, reused.Path, "show", "--stat", "--oneline", "--format=%s", "HEAD"); !strings.Contains(output, "preserve workspace history") {
+		t.Fatalf("expected renamed branch to keep prior commit, got %q", output)
 	}
 }
 
@@ -1227,7 +1447,7 @@ func TestRunAgentAppServerStagesIssueImagesOnFirstFreshTurn(t *testing.T) {
 	}
 	threadParams, _ := threadStarts[0]["params"].(map[string]interface{})
 	threadConfig, _ := threadParams["config"].(map[string]interface{})
-	if threadConfig["initial_collaboration_mode"] != config.InitialCollaborationModePlan {
+	if threadConfig["initial_collaboration_mode"] != config.InitialCollaborationModeDefault {
 		t.Fatalf("unexpected thread/start config: %#v", threadConfig)
 	}
 	params, _ := turnStarts[0]["params"].(map[string]interface{})

@@ -135,7 +135,7 @@ func DefaultConfig() Config {
 					"request_permissions": false,
 				},
 			},
-			InitialCollaborationMode: InitialCollaborationModePlan,
+			InitialCollaborationMode: InitialCollaborationModeDefault,
 			TurnTimeoutMs:            1800000,
 			ReadTimeoutMs:            10000,
 			StallTimeoutMs:           300000,

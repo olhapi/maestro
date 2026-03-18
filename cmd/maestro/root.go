@@ -315,6 +315,7 @@ func (a *cliApp) newIssueCmd() *cobra.Command {
 		a.newIssueShowCmd(),
 		a.newIssueMoveCmd(),
 		a.newIssueUpdateCmd(),
+		a.newIssueRepairTokensCmd(),
 		a.newIssueDeleteCmd(),
 		a.newIssueExecutionCmd(),
 		a.newIssueRetryCmd(),
@@ -325,6 +326,78 @@ func (a *cliApp) newIssueCmd() *cobra.Command {
 		a.newIssueCommentsCmd(),
 		a.newIssueImagesCmd(),
 	)
+	return cmd
+}
+
+func (a *cliApp) newIssueRepairTokensCmd() *cobra.Command {
+	var projectID string
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:   "repair-tokens [identifier]",
+		Short: "Recompute persisted issue token totals from finalized runtime events",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch {
+			case all && projectID != "":
+				return usageErrorf("use either --all or --project, not both")
+			case !all && projectID == "" && len(args) == 0:
+				return usageErrorf("specify an issue identifier, --project, or --all")
+			}
+
+			store, err := openStore(a.opts.dbPath)
+			if err != nil {
+				return wrapRuntime(err, "failed to open database")
+			}
+			defer store.Close()
+
+			payload := map[string]interface{}{}
+			switch {
+			case all:
+				recomputed, err := store.RecomputeAllIssueTokenSpend()
+				if err != nil {
+					return wrapRuntime(err, "failed to recompute token totals")
+				}
+				payload["scope"] = "all"
+				payload["recomputed"] = recomputed
+			case projectID != "":
+				recomputed, err := store.RecomputeProjectIssueTokenSpend(projectID)
+				if err != nil {
+					return wrapRuntime(err, "failed to recompute project token totals")
+				}
+				payload["scope"] = "project"
+				payload["project_id"] = projectID
+				payload["recomputed"] = recomputed
+			default:
+				issue, err := store.GetIssueByIdentifier(args[0])
+				if err != nil {
+					return notFoundErrorf("issue not found: %s", args[0])
+				}
+				total, err := store.RecomputeIssueTokenSpend(issue.ID)
+				if err != nil {
+					return wrapRuntime(err, "failed to recompute issue token total")
+				}
+				payload["scope"] = "issue"
+				payload["identifier"] = issue.Identifier
+				payload["total_tokens_spent"] = total
+			}
+
+			if a.opts.mode.json {
+				return writeJSON(a.stdout, payload)
+			}
+			switch payload["scope"] {
+			case "all":
+				_, _ = fmt.Fprintf(a.stdout, "Recomputed token totals for %v issues\n", payload["recomputed"])
+			case "project":
+				_, _ = fmt.Fprintf(a.stdout, "Recomputed token totals for %v issues in project %v\n", payload["recomputed"], payload["project_id"])
+			default:
+				_, _ = fmt.Fprintf(a.stdout, "Recomputed %v token total to %v\n", payload["identifier"], payload["total_tokens_spent"])
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID to recompute")
+	cmd.Flags().BoolVar(&all, "all", false, "Recompute token totals for every issue")
 	return cmd
 }
 

@@ -1,6 +1,7 @@
 package kanban
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -34,6 +36,23 @@ const (
 	qualifiedIssueSelectColumns = `i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.collaboration_mode_override, i.plan_approval_pending, i.pending_plan_markdown, i.pending_plan_requested_at, i.priority,
 	       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at`
 )
+
+func gitCommandEnv() []string {
+	env := os.Environ()
+	filtered := env[:0]
+	for _, value := range env {
+		switch {
+		case strings.HasPrefix(value, "GIT_DIR="):
+		case strings.HasPrefix(value, "GIT_WORK_TREE="):
+		case strings.HasPrefix(value, "GIT_INDEX_FILE="):
+		case strings.HasPrefix(value, "GIT_COMMON_DIR="):
+		case strings.HasPrefix(value, "GIT_PREFIX="):
+		default:
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
 
 func nullableStringValue(value string) interface{} {
 	if strings.TrimSpace(value) == "" {
@@ -3110,6 +3129,16 @@ func (s *Store) DeleteWorkspace(issueID string) error {
 }
 
 func removeWorkspaceTree(path string) error {
+	if commonDir, err := gitCommonDirForWorkspace(path); err == nil && filepath.Base(commonDir) == ".git" {
+		repoPath := filepath.Dir(commonDir)
+		cmd := exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", path)
+		cmd.Env = gitCommandEnv()
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
 	err := os.RemoveAll(path)
 	if err == nil || os.IsNotExist(err) {
 		return nil
@@ -3124,6 +3153,29 @@ func removeWorkspaceTree(path string) error {
 		return err
 	}
 	return nil
+}
+
+func gitCommonDirForWorkspace(path string) (string, error) {
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir")
+	cmd.Env = gitCommandEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		if detail != "" {
+			return "", fmt.Errorf("%w: %s", err, detail)
+		}
+		return "", err
+	}
+	value := strings.TrimSpace(stdout.String())
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value), nil
+	}
+	return filepath.Abs(filepath.Join(path, value))
 }
 
 func makeTreeUserWritable(root string) error {
@@ -3504,6 +3556,114 @@ func (s *Store) AddIssueTokenSpend(issueID string, delta int) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (s *Store) RecomputeIssueTokenSpend(issueID string) (int, error) {
+	rows, err := s.db.Query(`
+		SELECT total_tokens, payload_json
+		FROM runtime_events
+		WHERE issue_id = ?
+		  AND (
+			kind IN ('run_completed', 'run_failed', 'run_unsuccessful', 'run_interrupted')
+			OR (kind = 'retry_paused' AND error = 'plan_approval_pending')
+		  )`,
+		issueID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	total := 0
+	threadTotals := map[string]int{}
+	for rows.Next() {
+		var (
+			eventTotal int
+			rawPayload string
+		)
+		if err := rows.Scan(&eventTotal, &rawPayload); err != nil {
+			return 0, err
+		}
+		threadID := runtimeEventThreadID(rawPayload)
+		if threadID == "" {
+			total += eventTotal
+			continue
+		}
+		if current := threadTotals[threadID]; eventTotal > current {
+			threadTotals[threadID] = eventTotal
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, eventTotal := range threadTotals {
+		total += eventTotal
+	}
+	res, err := s.db.Exec(`UPDATE issues SET total_tokens_spent = ? WHERE id = ?`, total, issueID)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected == 0 {
+		return 0, sql.ErrNoRows
+	}
+	return total, nil
+}
+
+func runtimeEventThreadID(rawPayload string) string {
+	if strings.TrimSpace(rawPayload) == "" {
+		return ""
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(asString(payload["thread_id"]))
+}
+
+func (s *Store) RecomputeProjectIssueTokenSpend(projectID string) (int, error) {
+	rows, err := s.db.Query(`SELECT id FROM issues WHERE project_id = ?`, projectID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	recomputed := 0
+	for rows.Next() {
+		var issueID string
+		if err := rows.Scan(&issueID); err != nil {
+			return recomputed, err
+		}
+		if _, err := s.RecomputeIssueTokenSpend(issueID); err != nil {
+			return recomputed, err
+		}
+		recomputed++
+	}
+	return recomputed, rows.Err()
+}
+
+func (s *Store) RecomputeAllIssueTokenSpend() (int, error) {
+	rows, err := s.db.Query(`SELECT id FROM issues`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	recomputed := 0
+	for rows.Next() {
+		var issueID string
+		if err := rows.Scan(&issueID); err != nil {
+			return recomputed, err
+		}
+		if _, err := s.RecomputeIssueTokenSpend(issueID); err != nil {
+			return recomputed, err
+		}
+		recomputed++
+	}
+	return recomputed, rows.Err()
 }
 
 func (s *Store) issueRelations(issueIDs []string) (map[string][]string, map[string][]string, map[string]bool, error) {

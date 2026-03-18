@@ -20,7 +20,7 @@ import (
 	"github.com/olhapi/maestro/internal/appserver/protocol/gen"
 )
 
-const defaultInitialCollaborationMode = "plan"
+const defaultInitialCollaborationMode = "default"
 
 type ToolExecutor func(ctx context.Context, name string, arguments interface{}) map[string]interface{}
 
