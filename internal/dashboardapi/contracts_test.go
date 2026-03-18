@@ -912,6 +912,70 @@ func TestRecurringIssueContractsExposeRecurringFieldsAndRunNow(t *testing.T) {
 	}
 }
 
+func TestIssueApprovePlanContractsPromoteAndRedispatch(t *testing.T) {
+	provider := &retryTrackingProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Approve plan", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 12, 30, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/approve-plan", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve plan expected 200, got %d", resp.StatusCode)
+	}
+	payload := decodeResponse(t, resp)
+	if payload["ok"] != true {
+		t.Fatalf("expected ok response, got %#v", payload)
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch for %s, got %v", issue.Identifier, provider.retried)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PermissionProfile != kanban.PermissionProfileFullAccess {
+		t.Fatalf("expected full-access after approval, got %q", updated.PermissionProfile)
+	}
+	if updated.CollaborationModeOverride != kanban.CollaborationModeOverrideDefault {
+		t.Fatalf("expected default collaboration override, got %q", updated.CollaborationModeOverride)
+	}
+	if updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to clear, got %+v", updated)
+	}
+}
+
+func TestIssueApprovePlanContractsRejectWhenNoPendingPlanExists(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	issue, err := store.CreateIssue("", "", "Nothing to approve", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/approve-plan", nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("approve plan without pending request expected 409, got %d", resp.StatusCode)
+	}
+	if decodeResponse(t, resp)["error"].(string) != "no pending plan approval" {
+		t.Fatal("expected no pending plan approval error")
+	}
+}
+
 func TestCreateIssueAndEpicRequireProject(t *testing.T) {
 	_, srv := setupDashboardServerTest(t, testProvider{})
 

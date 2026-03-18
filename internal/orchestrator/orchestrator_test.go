@@ -798,6 +798,40 @@ func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(
 	}
 }
 
+func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Pending plan approval", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"plan_approval_pending":     true,
+		"pending_plan_markdown":     "Review the plan.",
+		"pending_plan_requested_at": &requestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	dispatchable, reason, phase := orch.isDispatchable(workflow, issue)
+	if dispatchable {
+		t.Fatal("expected pending plan approval to block dispatch")
+	}
+	if reason != "plan_approval_pending" {
+		t.Fatalf("expected plan_approval_pending reason, got %q", reason)
+	}
+	if phase != issue.WorkflowPhase {
+		t.Fatalf("expected workflow phase %q, got %q", issue.WorkflowPhase, phase)
+	}
+}
+
 func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	runner := &countingPhaseRunner{

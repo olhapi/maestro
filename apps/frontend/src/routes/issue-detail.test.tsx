@@ -35,6 +35,7 @@ vi.mock("@/lib/api", () => ({
     updateIssue: vi.fn(),
     setIssueState: vi.fn(),
     setIssuePermissionProfile: vi.fn(),
+    approveIssuePlan: vi.fn(),
     setIssueBlockers: vi.fn(),
     sendIssueCommand: vi.fn(),
     uploadIssueImage: vi.fn(),
@@ -219,10 +220,71 @@ describe("IssueDetailPage", () => {
 
     expect(screen.getByText(/default inherits the project permission profile/i)).toBeInTheDocument();
 
-    await selectOption(/agent permissions/i, /full access/i);
+    await selectOption(/agent permissions/i, /^full access$/i);
 
     await waitFor(() => {
       expect(api.setIssuePermissionProfile).toHaveBeenCalledWith("ISS-1", "full-access");
+    });
+  });
+
+  it("shows inherited plan-first help text and can approve the extracted plan", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      project_permission_profile: "plan-then-full-access",
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 2,
+      retry_state: "none",
+      session_source: "persisted",
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: "thread-plan-turn-plan",
+        thread_id: "thread-plan",
+        turn_id: "turn-plan",
+        last_event: "turn.completed",
+        last_timestamp: "2026-03-18T12:00:00Z",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        events_processed: 1,
+        turns_started: 1,
+        turns_completed: 1,
+        terminal: true,
+      },
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+      plan_approval: {
+        markdown: "Review findings and then continue.",
+        requested_at: "2026-03-18T12:00:00Z",
+        attempt: 2,
+      },
+    });
+    vi.mocked(api.approveIssuePlan).mockResolvedValue({
+      ok: true,
+      issue: { ...issue, permission_profile: "full-access" },
+      dispatch: { status: "queued_now", issue: issue.identifier },
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/project's plan-first profile/i)).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Plan ready for approval")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /approve plan and continue/i }));
+
+    await waitFor(() => {
+      expect(api.approveIssuePlan).toHaveBeenCalledWith("ISS-1");
     });
   });
 

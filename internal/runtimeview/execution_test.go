@@ -150,6 +150,61 @@ func TestIssueExecutionPayloadIncludesPendingInterruptMetadata(t *testing.T) {
 	}
 }
 
+func TestIssueExecutionPayloadIncludesPlanApprovalMetadata(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Plan approval issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"plan_approval_pending":     true,
+		"pending_plan_markdown":     "Check the repo, then continue.",
+		"pending_plan_requested_at": &requestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    5,
+		RunKind:    "run_completed",
+		UpdatedAt:  requestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+	approval, ok := payload["plan_approval"].(kanban.IssuePlanApproval)
+	if !ok {
+		t.Fatalf("expected plan_approval payload, got %#v", payload["plan_approval"])
+	}
+	if approval.Markdown != "Check the repo, then continue." || approval.Attempt != 5 {
+		t.Fatalf("unexpected plan approval payload: %+v", approval)
+	}
+	if !approval.RequestedAt.Equal(requestedAt) {
+		t.Fatalf("unexpected plan approval requested_at: %+v", approval.RequestedAt)
+	}
+}
+
 func TestIssueExecutionPayloadFallsBackToPersistedDataWithoutProvider(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

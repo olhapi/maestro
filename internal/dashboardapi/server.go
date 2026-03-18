@@ -750,6 +750,49 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, detail)
+	case "approve-plan":
+		issue, err := s.store.GetIssueByIdentifier(identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		if !issue.PlanApprovalPending || strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
+			writeJSONStatus(w, http.StatusConflict, map[string]interface{}{"error": "no pending plan approval"})
+			return
+		}
+		if err := s.store.ApproveIssuePlan(issue.ID); err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		approvedAt := time.Now().UTC()
+		if err := s.store.AppendRuntimeEvent("plan_approved", map[string]interface{}{
+			"issue_id":    issue.ID,
+			"identifier":  issue.Identifier,
+			"phase":       string(issue.WorkflowPhase),
+			"approved_at": approvedAt.Format(time.RFC3339),
+		}); err != nil {
+			writeErrorStatus(w, http.StatusInternalServerError, err)
+			return
+		}
+		if err := s.store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 0, appserver.ActivityEvent{
+			Type: "plan.approved",
+			Raw: map[string]interface{}{
+				"approved_at": approvedAt.Format(time.RFC3339),
+			},
+		}); err != nil {
+			writeErrorStatus(w, http.StatusInternalServerError, err)
+			return
+		}
+		detail, err := s.service.GetIssueDetailByIdentifier(r.Context(), identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"ok":       true,
+			"issue":    detail,
+			"dispatch": s.provider.RetryIssueNow(identifier),
+		})
 	case "state":
 		var body struct {
 			State string `json:"state"`

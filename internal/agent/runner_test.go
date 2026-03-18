@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
@@ -226,7 +227,7 @@ func TestPermissionConfigForIssueUsesFullAccessForIssueOverride(t *testing.T) {
 		t.Fatalf("Current: %v", err)
 	}
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy)
+	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
@@ -235,6 +236,43 @@ func TestPermissionConfigForIssueUsesFullAccessForIssueOverride(t *testing.T) {
 	}
 	if workflow.Config.Codex.Command == "" {
 		t.Fatal("expected workflow to remain available")
+	}
+}
+
+func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Plan-first override", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	if permissions.ApprovalPolicy != "never" {
+		t.Fatalf("expected approval policy never, got %#v", permissions.ApprovalPolicy)
+	}
+	if permissions.ThreadSandbox != "workspace-write" {
+		t.Fatalf("expected workspace-write thread sandbox, got %q", permissions.ThreadSandbox)
+	}
+	if permissions.TurnSandboxPolicy != nil {
+		t.Fatalf("expected nil turn sandbox policy, got %#v", permissions.TurnSandboxPolicy)
+	}
+	if permissions.InitialCollaborationMode != config.InitialCollaborationModePlan {
+		t.Fatalf("expected plan collaboration mode, got %q", permissions.InitialCollaborationMode)
 	}
 }
 
@@ -263,7 +301,7 @@ func TestPermissionConfigForIssueFallsBackToProjectProfile(t *testing.T) {
 		t.Fatalf("Current: %v", err)
 	}
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy)
+	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected inherited danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
@@ -288,12 +326,74 @@ func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
 		t.Fatalf("Current: %v", err)
 	}
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy)
+	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "workspace-write" {
 		t.Fatalf("expected workspace-write thread sandbox, got %q", permissions.ThreadSandbox)
 	}
 	if permissions.TurnSandboxPolicy != nil {
 		t.Fatalf("expected nil turn sandbox policy for safe baseline, got %#v", permissions.TurnSandboxPolicy)
+	}
+}
+
+func TestCapturePendingPlanApprovalPersistsPlanRequest(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Capture proposed plan", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	session := &appserver.Session{
+		History: []appserver.Event{{
+			Type:      "item.completed",
+			ItemType:  "agentMessage",
+			ItemPhase: "final_answer",
+			Message:   "<proposed_plan>\nShip the thing safely.\n</proposed_plan>",
+		}},
+	}
+
+	requested, err := runner.capturePendingPlanApproval(issue, 3, session)
+	if err != nil {
+		t.Fatalf("capturePendingPlanApproval: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected pending plan approval to be requested")
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after capture: %v", err)
+	}
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval, got %+v", updated)
+	}
+	if updated.PendingPlanMarkdown != "Ship the thing safely." {
+		t.Fatalf("unexpected pending plan markdown %q", updated.PendingPlanMarkdown)
+	}
+	if updated.PendingPlanRequestedAt == nil {
+		t.Fatal("expected pending plan requested timestamp")
+	}
+
+	events, err := store.ListRuntimeEvents(0, 20)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected runtime events")
+	}
+	latest := events[0]
+	if latest.Kind != "plan_approval_requested" || latest.Attempt != 3 {
+		t.Fatalf("unexpected runtime event: %+v", latest)
 	}
 }
 func TestBuildTurnPromptIncludesProjectContextInDefaultPhasePrompts(t *testing.T) {

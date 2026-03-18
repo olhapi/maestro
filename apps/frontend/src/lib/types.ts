@@ -1,7 +1,10 @@
 export type IssueState = string;
 export type IssueType = "standard" | "recurring";
 export type ProjectState = "stopped" | "running";
-export type PermissionProfile = "default" | "full-access";
+export type PermissionProfile =
+  | "default"
+  | "full-access"
+  | "plan-then-full-access";
 
 export type WorkflowPhase = "implementation" | "review" | "done" | "complete";
 
@@ -325,6 +328,12 @@ export interface PendingInterruptsResponse {
   current?: PendingInterrupt;
 }
 
+export interface PlanApproval {
+  markdown: string;
+  requested_at: string;
+  attempt: number;
+}
+
 export interface SessionFeedEntry {
   issue_id: string;
   issue_identifier: string;
@@ -409,6 +418,7 @@ export interface IssueExecutionDetail {
   debug_activity_groups?: ActivityGroup[];
   agent_commands: AgentCommand[];
   pending_interrupt?: PendingInterrupt;
+  plan_approval?: PlanApproval;
 }
 
 export interface BootstrapResponse {

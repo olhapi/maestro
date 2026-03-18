@@ -1901,6 +1901,9 @@ func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.I
 	if paused {
 		return false, "paused", phase
 	}
+	if issue.PlanApprovalPending {
+		return false, "plan_approval_pending", phase
+	}
 	switch phase {
 	case kanban.WorkflowPhaseComplete:
 		if o.isTerminalState(workflow, string(issue.State)) {

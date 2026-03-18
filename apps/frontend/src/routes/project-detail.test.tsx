@@ -208,4 +208,29 @@ describe("ProjectDetailPage", () => {
       expect(api.setProjectPermissionProfile).toHaveBeenCalledWith("project-1", "full-access");
     });
   });
+
+  it("offers the plan-first project permission option", async () => {
+    const bootstrap = makeBootstrapResponse();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getProject).mockResolvedValue({
+      project: bootstrap.projects[0],
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+    });
+    vi.mocked(api.setProjectPermissionProfile).mockResolvedValue({
+      ...bootstrap.projects[0],
+      permission_profile: "plan-then-full-access",
+    });
+
+    renderWithQueryClient(<ProjectDetailPage />);
+
+    const select = await screen.findByLabelText(/project agent permissions/i);
+    expect(screen.getByRole("option", { name: /plan, then full access/i })).toBeInTheDocument();
+
+    fireEvent.change(select, { target: { value: "plan-then-full-access" } });
+
+    await waitFor(() => {
+      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith("project-1", "plan-then-full-access");
+    });
+  });
 });

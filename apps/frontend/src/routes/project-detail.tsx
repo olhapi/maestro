@@ -38,6 +38,7 @@ import { formatCompactNumber, formatRelativeTime } from "@/lib/utils";
 const permissionProfileLabels: Record<PermissionProfile, string> = {
   default: "Default permissions",
   "full-access": "Full access",
+  "plan-then-full-access": "Plan, then full access",
 };
 
 function ProjectStat({
@@ -268,10 +269,12 @@ export function ProjectDetailPage() {
               <option value="full-access" className="bg-slate-950 text-white">
                 {permissionProfileLabels["full-access"]}
               </option>
+              <option value="plan-then-full-access" className="bg-slate-950 text-white">
+                {permissionProfileLabels["plan-then-full-access"]}
+              </option>
             </select>
             <p className="text-xs text-[var(--muted-foreground)]">
-              Issues on the default profile inherit this setting. Switching an issue to full access pins it there
-              even if the project default changes later.
+              Issues on the default profile inherit this setting. Plan-first issues can inspect the repo and research during planning, but only gain full access after you approve the final plan. Switching an issue to full access pins it there even if the project default changes later.
             </p>
           </div>
           {!dispatchReady ? (
