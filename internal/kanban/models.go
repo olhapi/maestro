@@ -251,6 +251,17 @@ func (i Issue) IsRecurring() bool {
 	return NormalizeIssueType(string(i.IssueType)) == IssueTypeRecurring
 }
 
+type IssueDispatchState struct {
+	ProjectExists         bool         `json:"project_exists"`
+	ProjectState          ProjectState `json:"project_state"`
+	HasUnresolvedBlockers bool         `json:"has_unresolved_blockers"`
+}
+
+type DispatchIssue struct {
+	Issue
+	DispatchState IssueDispatchState `json:"dispatch_state"`
+}
+
 type IssueRecurrence struct {
 	IssueID        string     `json:"issue_id,omitempty"`
 	Cron           string     `json:"cron"`

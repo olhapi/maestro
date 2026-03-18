@@ -938,18 +938,15 @@ func (o *Orchestrator) dispatchWithProviderSync(ctx context.Context, syncProvide
 		states = o.dispatchCandidateStates(workflow)
 	}
 
-	issues, err := o.store.ListIssues(map[string]interface{}{
-		"states": states,
-	})
+	issues, err := o.store.ListDispatchIssues(states)
 	if err != nil {
 		return err
 	}
-	sort.SliceStable(issues, func(i, j int) bool {
-		return issuePriorityLess(&issues[i], &issues[j])
-	})
 
 	now := time.Now().UTC()
-	for _, issue := range issues {
+	for i := range issues {
+		issue := issues[i].Issue
+		dispatchState := issues[i].DispatchState
 		runtime, workflow, err := o.runtimeForIssue(&issue)
 		if err != nil {
 			slog.Warn("Skipping issue dispatch because runtime resolution failed",
@@ -960,7 +957,7 @@ func (o *Orchestrator) dispatchWithProviderSync(ctx context.Context, syncProvide
 		if !o.hasProjectCapacity(workflow, issue.ProjectID) {
 			continue
 		}
-		dispatchable, reason, phase := o.isDispatchable(workflow, &issue)
+		dispatchable, reason, phase := o.isDispatchableWithState(workflow, &issue, &dispatchState)
 		if !dispatchable {
 			if reason != "terminal_state" {
 				slog.Debug("Skipping issue dispatch because it is not dispatchable",
@@ -988,7 +985,15 @@ func (o *Orchestrator) dispatchWithProviderSync(ctx context.Context, syncProvide
 			continue
 		}
 		slog.Info("Issue claim accepted", issueLogAttrs(&issue, 0)...)
-		if ok, reason, _ := o.isDispatchable(workflow, &issue); !ok {
+		currentDispatchState, stateErr := o.issueDispatchState(&issue)
+		if stateErr != nil {
+			slog.Info("Releasing issue claim because dispatch state refresh failed",
+				issueLogAttrs(&issue, 0, "error", stateErr)...,
+			)
+			o.releaseClaim(issue.ID)
+			continue
+		}
+		if ok, reason, _ := o.isDispatchableWithState(workflow, &issue, currentDispatchState); !ok {
 			slog.Info("Releasing issue claim because issue is no longer dispatchable",
 				issueLogAttrs(&issue, 0, "reason", reason)...,
 			)
@@ -1471,6 +1476,11 @@ func findReviewPreviewVideo(workspacePath string) (string, error) {
 		}
 		return "", err
 	}
+	var (
+		bestPath    string
+		bestName    string
+		bestModTime time.Time
+	)
 	for _, entry := range entries {
 		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			continue
@@ -1485,10 +1495,16 @@ func findReviewPreviewVideo(workspacePath string) (string, error) {
 		ext := strings.ToLower(filepath.Ext(entry.Name()))
 		switch ext {
 		case ".mp4", ".webm", ".mov", ".m4v":
-			return filepath.Join(previewDir, entry.Name()), nil
+			candidatePath := filepath.Join(previewDir, entry.Name())
+			modTime := info.ModTime().UTC()
+			if bestPath == "" || modTime.After(bestModTime) || (modTime.Equal(bestModTime) && entry.Name() < bestName) {
+				bestPath = candidatePath
+				bestName = entry.Name()
+				bestModTime = modTime
+			}
 		}
 	}
-	return "", nil
+	return bestPath, nil
 }
 
 func buildIssuePreviewCommentBody(issue *kanban.Issue, result *agent.RunResult, previewPath string) string {
@@ -1928,8 +1944,23 @@ func (o *Orchestrator) shouldCleanupTerminalIssue(workflow *config.Workflow, iss
 }
 
 func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.Issue) (bool, string, kanban.WorkflowPhase) {
+	return o.isDispatchableWithState(workflow, issue, nil)
+}
+
+func (o *Orchestrator) issueDispatchState(issue *kanban.Issue) (*kanban.IssueDispatchState, error) {
+	if issue == nil {
+		return nil, fmt.Errorf("issue is required")
+	}
+	state, err := o.store.GetIssueDispatchState(issue.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func (o *Orchestrator) isDispatchableWithState(workflow *config.Workflow, issue *kanban.Issue, dispatchState *kanban.IssueDispatchState) (bool, string, kanban.WorkflowPhase) {
 	phase := o.executionPhase(workflow, issue)
-	if allowed, reason := o.projectAllowsDispatch(issue); !allowed {
+	if allowed, reason := o.projectAllowsDispatch(issue, dispatchState); !allowed {
 		return false, reason, phase
 	}
 	o.mu.RLock()
@@ -1959,15 +1990,29 @@ func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.I
 		if issue.State == kanban.StateInReview && !workflow.Config.Phases.Review.Enabled {
 			return false, "review_disabled", phase
 		}
-		if o.isBlocked(workflow, *issue) {
+		blocked, err := o.isBlocked(issue, dispatchState)
+		if err != nil {
+			slog.Warn("Failed to determine issue blocker status", issueLogAttrs(issue, 0, "error", err)...)
+			return false, "blocked_state_unknown", phase
+		}
+		if blocked {
 			return false, "blocked", phase
 		}
 		return true, "", phase
 	}
 }
 
-func (o *Orchestrator) projectAllowsDispatch(issue *kanban.Issue) (bool, string) {
+func (o *Orchestrator) projectAllowsDispatch(issue *kanban.Issue, dispatchState *kanban.IssueDispatchState) (bool, string) {
 	if issue == nil || strings.TrimSpace(issue.ProjectID) == "" {
+		return true, ""
+	}
+	if dispatchState != nil {
+		if !dispatchState.ProjectExists {
+			return false, "project_missing"
+		}
+		if dispatchState.ProjectState != kanban.ProjectStateRunning {
+			return false, "project_stopped"
+		}
 		return true, ""
 	}
 	project, err := o.store.GetProject(issue.ProjectID)
@@ -2320,17 +2365,18 @@ func (o *Orchestrator) clearPausedState(issueID string) {
 	delete(o.paused, issueID)
 }
 
-func (o *Orchestrator) isBlocked(workflow *config.Workflow, issue kanban.Issue) bool {
-	for _, blocker := range issue.BlockedBy {
-		blockerIssue, err := o.store.GetIssueByIdentifier(blocker)
-		if err != nil {
-			continue
-		}
-		if !o.isTerminalState(workflow, string(blockerIssue.State)) {
-			return true
-		}
+func (o *Orchestrator) isBlocked(issue *kanban.Issue, dispatchState *kanban.IssueDispatchState) (bool, error) {
+	if issue == nil {
+		return false, nil
 	}
-	return false
+	if dispatchState != nil {
+		return dispatchState.HasUnresolvedBlockers, nil
+	}
+	state, err := o.issueDispatchState(issue)
+	if err != nil {
+		return false, err
+	}
+	return state.HasUnresolvedBlockers, nil
 }
 
 func (o *Orchestrator) isActiveState(workflow *config.Workflow, state string) bool {

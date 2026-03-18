@@ -943,6 +943,91 @@ func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 	}
 }
 
+func TestDispatchBlocksIssueWithMissingBlockerIdentifier(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runner := newRetryTestRunner()
+	orch.runner = runner
+
+	blocker, err := store.CreateIssue("", "", "Deleted blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	issue, err := store.CreateIssue("", "", "Blocked issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue issue: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+	if err := store.DeleteIssue(blocker.ID); err != nil {
+		t.Fatalf("DeleteIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	select {
+	case identifier := <-runner.runCalls:
+		t.Fatalf("expected blocked issue not to dispatch, got run for %s", identifier)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestDispatchHydratesIssueRelationsForRunner(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	seen := make(chan kanban.Issue, 1)
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseImplementation: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				select {
+				case seen <- *issue:
+				default:
+				}
+				return &agent.RunResult{Success: true}, nil
+			},
+		},
+	}
+
+	blocker, err := store.CreateIssue("", "", "Resolved blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	issue, err := store.CreateIssue("", "", "Tagged issue", "", 0, []string{"ops"})
+	if err != nil {
+		t.Fatalf("CreateIssue issue: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState issue: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	select {
+	case dispatched := <-seen:
+		if len(dispatched.Labels) != 1 || dispatched.Labels[0] != "ops" {
+			t.Fatalf("expected dispatched labels [ops], got %#v", dispatched.Labels)
+		}
+		if len(dispatched.BlockedBy) != 1 || dispatched.BlockedBy[0] != blocker.Identifier {
+			t.Fatalf("expected dispatched blockers [%s], got %#v", blocker.Identifier, dispatched.BlockedBy)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected issue dispatch to reach runner")
+	}
+}
+
 func TestPlanApprovalStopDoesNotAdvanceImplementationPhase(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)
@@ -3764,6 +3849,38 @@ func TestFindReviewPreviewVideoSkipsSymlinkArtifacts(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("expected symlink preview to be ignored, got %s", got)
+	}
+}
+
+func TestFindReviewPreviewVideoReturnsNewestArtifact(t *testing.T) {
+	workspace := t.TempDir()
+	previewDir := filepath.Join(workspace, ".maestro", "review-preview")
+	if err := os.MkdirAll(previewDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldest := filepath.Join(previewDir, "older.mp4")
+	newest := filepath.Join(previewDir, "newer.webm")
+	if err := os.WriteFile(oldest, []byte("old"), 0o644); err != nil {
+		t.Fatalf("WriteFile older: %v", err)
+	}
+	if err := os.WriteFile(newest, []byte("new"), 0o644); err != nil {
+		t.Fatalf("WriteFile newer: %v", err)
+	}
+	base := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(oldest, base, base); err != nil {
+		t.Fatalf("Chtimes older: %v", err)
+	}
+	newerTime := base.Add(2 * time.Minute)
+	if err := os.Chtimes(newest, newerTime, newerTime); err != nil {
+		t.Fatalf("Chtimes newer: %v", err)
+	}
+
+	got, err := findReviewPreviewVideo(workspace)
+	if err != nil {
+		t.Fatalf("findReviewPreviewVideo: %v", err)
+	}
+	if got != newest {
+		t.Fatalf("expected newest artifact %s, got %s", newest, got)
 	}
 }
 
