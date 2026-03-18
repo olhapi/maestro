@@ -22,6 +22,7 @@ import (
 	"github.com/olhapi/maestro/internal/agent"
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -47,6 +48,60 @@ func (r *blockingRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, at
 
 func (r *blockingRunner) CleanupWorkspace(context.Context, *kanban.Issue) error {
 	return nil
+}
+
+type countingProvider struct {
+	mu        sync.Mutex
+	listCalls int
+}
+
+func (p *countingProvider) Kind() string {
+	return kanban.ProviderKindLinear
+}
+
+func (p *countingProvider) Capabilities() kanban.ProviderCapabilities {
+	return kanban.DefaultCapabilities(kanban.ProviderKindLinear)
+}
+
+func (p *countingProvider) ValidateProject(context.Context, *kanban.Project) error {
+	return nil
+}
+
+func (p *countingProvider) ListIssues(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listCalls++
+	return nil, nil
+}
+
+func (p *countingProvider) GetIssue(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
+	return nil, kanban.ErrNotFound
+}
+
+func (p *countingProvider) CreateIssue(context.Context, *kanban.Project, providers.IssueCreateInput) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) DeleteIssue(context.Context, *kanban.Project, *kanban.Issue) error {
+	return providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+	return providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) Calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.listCalls
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
@@ -3539,6 +3594,33 @@ func TestFindReviewPreviewVideoReturnsKnownMediaExtensions(t *testing.T) {
 	}
 	if got != expected {
 		t.Fatalf("expected %s, got %s", expected, got)
+	}
+}
+
+func TestTickSyncsProviderIssuesOnlyOnce(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "codex")
+	repoPath := filepath.Dir(manager.Path())
+
+	if _, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		repoPath,
+		manager.Path(),
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	); err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+
+	provider := &countingProvider{}
+	orch.service.RegisterProvider(provider)
+
+	if err := orch.tick(context.Background()); err != nil {
+		t.Fatalf("tick failed: %v", err)
+	}
+	if calls := provider.Calls(); calls != 1 {
+		t.Fatalf("expected one provider sync per tick, got %d", calls)
 	}
 }
 

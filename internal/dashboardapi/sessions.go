@@ -135,22 +135,29 @@ func loadIssueTitlesByIdentifier(store *kanban.Store, live map[string]appserver.
 		}
 	}
 
+	issueIDs := make([]string, 0, len(refs))
+	identifiers := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref.issueID != "" {
+			issueIDs = append(issueIDs, ref.issueID)
+		}
+		if ref.identifier != "" {
+			identifiers = append(identifiers, ref.identifier)
+		}
+	}
+
+	titlesByID, titlesByIdentifier, err := store.LookupIssueTitles(issueIDs, identifiers)
+	if err != nil {
+		return map[string]string{}
+	}
+
 	out := make(map[string]string, len(refs))
 	for identifier, ref := range refs {
-		var issue *kanban.Issue
-		var err error
 		switch {
-		case ref.issueID != "":
-			issue, err = store.GetIssue(ref.issueID)
-		case ref.identifier != "":
-			issue, err = store.GetIssueByIdentifier(ref.identifier)
-		}
-		if err != nil || issue == nil {
-			continue
-		}
-		title := strings.TrimSpace(issue.Title)
-		if title != "" {
-			out[identifier] = title
+		case ref.issueID != "" && strings.TrimSpace(titlesByID[ref.issueID]) != "":
+			out[identifier] = titlesByID[ref.issueID]
+		case ref.identifier != "" && strings.TrimSpace(titlesByIdentifier[ref.identifier]) != "":
+			out[identifier] = titlesByIdentifier[ref.identifier]
 		}
 	}
 	return out
