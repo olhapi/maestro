@@ -69,15 +69,15 @@ export function IssueCard({
     || (session?.last_event ? toTitleCase(session.last_event.replaceAll(".", "_")) : null);
 
   const content = (
-    <Link
+    <button
       className={cn(
         "group block w-full rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))] p-[var(--panel-padding-tight)] text-left transition hover:border-white/20 hover:bg-white/[0.08]",
         compact ? "min-h-[var(--issue-card-min-height-compact)]" : "min-h-[var(--issue-card-min-height)]",
         className,
       )}
       draggable={false}
-      params={{ identifier: issue.identifier }}
-      to={appRoutes.issueDetail}
+      type="button"
+      onClick={() => onOpen(issue)}
     >
       <div className="flex items-start justify-between gap-2.5">
         <div className="space-y-1.5">
@@ -163,7 +163,7 @@ export function IssueCard({
           {formatCompactNumber(issue.total_tokens_spent)} tokens
         </span>
       </div>
-    </Link>
+    </button>
   );
 
   const hoverPreview = (

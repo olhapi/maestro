@@ -30,7 +30,7 @@ import {
   summarizeIssueImageFailures,
 } from "@/lib/issue-images";
 import { appRoutes } from "@/lib/routes";
-import type { BootstrapResponse, IssueDetail, IssueState, IssueSummary } from "@/lib/types";
+import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
 
 const allProjectsValue = "__all-projects__";
@@ -85,43 +85,11 @@ export function WorkPage() {
     ]);
   };
 
-  const patchIssueState = (payload: { identifier: string; nextState: IssueState }) => {
-    const cached = queryClient.getQueryData<{ items: IssueSummary[]; total: number; limit: number; offset: number }>(
-      issuesKey,
-    );
-    const nextItems = cached?.items.map((item) =>
-      item.identifier === payload.identifier
-        ? { ...item, state: payload.nextState, updated_at: new Date().toISOString() }
-        : item,
-    );
-    if (cached && nextItems) {
-      queryClient.setQueryData(issuesKey, { ...cached, items: nextItems });
-    }
-    const cachedBootstrap = queryClient.getQueryData<BootstrapResponse>(["bootstrap"]);
-    if (cachedBootstrap) {
-      queryClient.setQueryData(["bootstrap"], {
-        ...cachedBootstrap,
-        issues: {
-          ...cachedBootstrap.issues,
-          items: cachedBootstrap.issues.items.map((item) =>
-            item.identifier === payload.identifier
-              ? { ...item, state: payload.nextState, updated_at: new Date().toISOString() }
-              : item,
-          ),
-        },
-      });
-    }
-    return { cached, cachedBootstrap };
-  };
-
   const stateMutation = useMutation({
     mutationFn: ({ identifier, nextState }: { identifier: string; nextState: IssueState }) =>
       api.setIssueState(identifier, nextState),
-    onMutate: async (payload) => patchIssueState(payload),
-    onError: (_error, _vars, context) => {
-      if (context?.cached) queryClient.setQueryData(issuesKey, context.cached);
-      if (context?.cachedBootstrap) queryClient.setQueryData(["bootstrap"], context.cachedBootstrap);
-      toast.error("Unable to move issue");
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to move issue: ${error.message}` : "Unable to move issue");
     },
     onSuccess: async () => {
       await invalidate();

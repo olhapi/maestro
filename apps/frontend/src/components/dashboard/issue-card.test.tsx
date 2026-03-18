@@ -39,6 +39,7 @@ describe('IssueCard', () => {
 
   it('renders a paused badge when retries are paused for an issue', () => {
     const issue = makeIssueSummary()
+    const onOpen = vi.fn()
     const bootstrap = makeBootstrapResponse({
       overview: {
         ...makeBootstrapResponse().overview,
@@ -59,10 +60,11 @@ describe('IssueCard', () => {
         },
       },
     })
-    renderWithQueryClient(<IssueCard issue={issue} bootstrap={bootstrap} onOpen={vi.fn()} />)
+    renderWithQueryClient(<IssueCard issue={issue} bootstrap={bootstrap} onOpen={onOpen} />)
 
     expect(screen.getByText('Paused')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveAttribute('href', '/issues/ISS-1')
+    fireEvent.click(screen.getByRole('button', { name: /investigate retries/i }))
+    expect(onOpen).toHaveBeenCalledWith(issue)
   })
 
   it('keeps key metadata visible in compact mode', () => {
@@ -82,13 +84,16 @@ describe('IssueCard', () => {
   it('allows draggable surfaces to override the card cursor affordance', () => {
     renderWithQueryClient(<IssueCard issue={makeIssueSummary()} className="cursor-grab active:cursor-grabbing" onOpen={vi.fn()} />)
 
-    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveClass('cursor-grab', 'active:cursor-grabbing')
+    expect(screen.getByRole('button', { name: /investigate retries/i })).toHaveClass('cursor-grab', 'active:cursor-grabbing')
   })
 
-  it('links the card to the issue detail page', () => {
-    renderWithQueryClient(<IssueCard issue={makeIssueSummary()} onOpen={vi.fn()} />)
+  it('opens the quick preview from the primary card action', () => {
+    const issue = makeIssueSummary()
+    const onOpen = vi.fn()
+    renderWithQueryClient(<IssueCard issue={issue} onOpen={onOpen} />)
 
-    expect(screen.getByRole('link', { name: /investigate retries/i })).toHaveAttribute('href', '/issues/ISS-1')
+    fireEvent.click(screen.getByRole('button', { name: /investigate retries/i }))
+    expect(onOpen).toHaveBeenCalledWith(issue)
   })
 
   it('renders recurring metadata when the issue is scheduled', () => {
@@ -122,10 +127,10 @@ describe('IssueCard', () => {
 
     renderWithQueryClient(<IssueCard issue={issue} bootstrap={makeBootstrapResponse()} onOpen={vi.fn()} />)
 
-    const link = screen.getByRole('link', { name: /investigate retries/i })
+    const trigger = screen.getByRole('button', { name: /investigate retries/i })
     await act(async () => {
-      fireEvent.pointerEnter(link, { pointerType: 'mouse' })
-      fireEvent.mouseEnter(link)
+      fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+      fireEvent.mouseEnter(trigger)
       await vi.advanceTimersByTimeAsync(150)
     })
 

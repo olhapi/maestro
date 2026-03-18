@@ -698,6 +698,40 @@ describe("IssueDetailPage", () => {
     });
   });
 
+  it("shows an error toast when a state transition is rejected", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "backlog" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.setIssueState).mockRejectedValue(new Error("blocked transition"));
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Issue actions")).toBeInTheDocument();
+    });
+
+    await selectOption(/issue state/i, /ready/i);
+
+    const { toast } = await import("sonner");
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Unable to update state: blocked transition");
+    });
+  });
+
   it("renders edit, retry, and delete in a single icon action row", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({ state: "backlog" });

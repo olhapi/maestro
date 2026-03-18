@@ -21,6 +21,7 @@ import {
 import type { EpicSummary, IssueDetail, IssueSummary, IssueType, ProjectSummary } from "@/lib/types";
 
 const noEpicValue = "__no-epic__";
+const blockerSearchDebounceMs = 150;
 
 function Field({
   label,
@@ -429,43 +430,51 @@ export function IssueDialog({
 
   useEffect(() => {
     if (!open || !projectID || blockerSearch.trim().length < 2) {
-      setRemoteBlockerIssues([]);
-      setLoadingBlockerIssues(false);
       return;
     }
 
     const controller = new AbortController();
-
-    setLoadingBlockerIssues(true);
-    api.listIssues(
-      {
-        project_id: projectID,
-        search: blockerSearch.trim(),
-        limit: 25,
-        sort: "updated_desc",
-      },
-      { signal: controller.signal },
-    )
-      .then((page) => {
-        if (controller.signal.aborted) return;
-        setRemoteBlockerIssues(page.items);
-      })
-      .catch((error: unknown) => {
-        if ((error as Error).name === "AbortError") {
-          return;
-        }
-        setRemoteBlockerIssues([]);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setLoadingBlockerIssues(false);
-        }
-      });
+    const timeoutID = window.setTimeout(() => {
+      setLoadingBlockerIssues(true);
+      api.listIssues(
+        {
+          project_id: projectID,
+          search: blockerSearch.trim(),
+          limit: 25,
+          sort: "updated_desc",
+        },
+        { signal: controller.signal },
+      )
+        .then((page) => {
+          if (controller.signal.aborted) return;
+          setRemoteBlockerIssues(page.items);
+        })
+        .catch((error: unknown) => {
+          if ((error as Error).name === "AbortError") {
+            return;
+          }
+          setRemoteBlockerIssues([]);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setLoadingBlockerIssues(false);
+          }
+        });
+    }, blockerSearchDebounceMs);
 
     return () => {
+      window.clearTimeout(timeoutID);
       controller.abort();
     };
   }, [blockerSearch, open, projectID]);
+  const visibleRemoteBlockerIssues = useMemo(
+    () => (open && blockerSearch.trim().length >= 2 ? remoteBlockerIssues : []),
+    [blockerSearch, open, remoteBlockerIssues],
+  );
+  const blockerSearchLoading = useMemo(
+    () => (open && blockerSearch.trim().length >= 2 ? loadingBlockerIssues : false),
+    [blockerSearch, loadingBlockerIssues, open],
+  );
 
   const localProjectIssues = useMemo(
     () => dedupeIssues(availableIssues.filter((issue) => issue.project_id === projectID)),
@@ -505,14 +514,14 @@ export function IssueDialog({
 
   const blockerOptions = useMemo<MultiComboboxOption[]>(
     () =>
-      dedupeIssues([...localProjectIssues, ...remoteBlockerIssues])
+      dedupeIssues([...localProjectIssues, ...visibleRemoteBlockerIssues])
         .filter((issue) => issue.identifier !== initial?.identifier)
         .map((issue) => ({
           value: issue.identifier,
           label: issueOptionLabel(issue),
           keywords: [issue.identifier, issue.title],
         })),
-    [initial?.identifier, localProjectIssues, remoteBlockerIssues],
+    [initial?.identifier, localProjectIssues, visibleRemoteBlockerIssues],
   );
 
   const visibleExistingImages = (initial?.images ?? []).filter(
@@ -701,7 +710,7 @@ export function IssueDialog({
                   onChange={setBlockedBy}
                   onSearchChange={setBlockerSearch}
                   options={blockerOptions}
-                  loading={loadingBlockerIssues}
+                  loading={blockerSearchLoading}
                   placeholder="Select blocker issues"
                   emptyText={
                     projectID

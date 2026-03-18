@@ -50,15 +50,19 @@ export function SessionsPage() {
   const sessions = useQuery({
     queryKey: ['sessions'],
     queryFn: api.listSessions,
-    refetchInterval: (query) => (query.state.data?.entries?.some((entry) => entry.active) ? 2000 : false),
-    refetchIntervalInBackground: true,
+    refetchInterval: (query) => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return false
+      }
+      return query.state.data?.entries?.some((entry) => entry.active) ? 2000 : false
+    },
   })
   const hasActiveEntries = sessions.data?.entries?.some((entry) => entry.active) ?? false
   const events = useQuery({
     queryKey: ['runtime-events'],
     queryFn: api.listRuntimeEvents,
-    refetchInterval: hasActiveEntries ? 5000 : false,
-    refetchIntervalInBackground: true,
+    refetchInterval:
+      hasActiveEntries && (typeof document === 'undefined' || document.visibilityState === 'visible') ? 5000 : false,
   })
 
   if (!sessions.data || !events.data) {

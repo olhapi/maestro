@@ -111,6 +111,9 @@ export function IssueDetailPage() {
     queryKey: ["issue-execution", identifier],
     queryFn: () => api.getIssueExecution(identifier),
     refetchInterval: (query) => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return false;
+      }
       if (query.state.data?.active) {
         return 1500;
       }
@@ -119,7 +122,6 @@ export function IssueDetailPage() {
       }
       return false;
     },
-    refetchIntervalInBackground: true,
   });
 
   const invalidate = async () => {
@@ -225,6 +227,16 @@ export function IssueDetailPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? `Unable to remove image: ${error.message}` : "Unable to remove image");
+    },
+  });
+  const stateMutation = useMutation({
+    mutationFn: (nextState: IssueState) => api.setIssueState(identifier, nextState),
+    onSuccess: async () => {
+      toast.success("State updated");
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to update state: ${error.message}` : "Unable to update state");
     },
   });
 
@@ -430,10 +442,9 @@ export function IssueDetailPage() {
             <CardContent className="grid gap-2.5">
               <Select
                 value={issue.data.state}
-                onValueChange={async (value) => {
-                  await api.setIssueState(identifier, value as IssueState);
-                  toast.success("State updated");
-                  await invalidate();
+                disabled={stateMutation.isPending}
+                onValueChange={(value) => {
+                  stateMutation.mutate(value as IssueState);
                 }}
               >
                 <SelectTrigger aria-label="Issue state">
