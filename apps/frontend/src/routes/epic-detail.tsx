@@ -14,9 +14,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { api } from '@/lib/api'
 import { getStateMeta, groupIssuesByState, issueStatesFor } from '@/lib/dashboard'
 import {
-  applyIssueImageChanges,
-  summarizeIssueImageFailures,
-} from '@/lib/issue-images'
+  applyIssueAssetChanges,
+  summarizeIssueAssetFailures,
+} from '@/lib/issue-assets'
 import { summaryActiveCount, summaryDoneCount } from '@/lib/projects'
 import { appRoutes } from '@/lib/routes'
 import type { IssueDetail, IssueState, IssueSummary } from '@/lib/types'
@@ -198,9 +198,9 @@ export function EpicDetailPage() {
         availableIssues={epic.data.issues.items}
         onSubmit={async (body, imageChanges) => {
           const issue = await api.createIssue(body)
-          const result = await applyIssueImageChanges(issue.identifier, imageChanges)
+          const result = await applyIssueAssetChanges(issue.identifier, imageChanges)
           if (result.failures.length > 0) {
-            toast.error(`Issue created, but ${summarizeIssueImageFailures(result)}`)
+            toast.error(`Issue created, but ${summarizeIssueAssetFailures(result)}`)
           } else {
             toast.success('Issue created')
           }

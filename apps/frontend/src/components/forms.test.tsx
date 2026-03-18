@@ -7,7 +7,7 @@ import { MockSpeechRecognition } from '@/test/mock-speech-recognition'
 import {
   makeBootstrapResponse,
   makeIssueDetail,
-  makeIssueImage,
+  makeIssueAsset,
   makeIssueSummary,
 } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
@@ -88,8 +88,8 @@ describe('IssueDialog', () => {
           blocked_by: ['ISS-2'],
         }),
         {
-          newImages: [],
-          removeImageIDs: [],
+          newAssets: [],
+          removeAssetIDs: [],
         },
       )
     })
@@ -104,7 +104,7 @@ describe('IssueDialog', () => {
       <IssueDialog
         open
         onOpenChange={vi.fn()}
-        initial={makeIssueDetail({ images: [makeIssueImage()] })}
+        initial={makeIssueDetail({ assets: [makeIssueAsset()] })}
         projects={bootstrap.projects}
         epics={bootstrap.epics}
         availableIssues={bootstrap.issues.items}
@@ -115,7 +115,7 @@ describe('IssueDialog', () => {
     fireEvent.change(screen.getByLabelText(/title/i), {
       target: { value: 'Capture failing layout' },
     })
-    fireEvent.change(screen.getByLabelText(/images/i, { selector: 'input' }), {
+    fireEvent.change(screen.getByLabelText(/assets/i, { selector: 'input' }), {
       target: { files: [file] },
     })
     await waitFor(() => {
@@ -133,8 +133,8 @@ describe('IssueDialog', () => {
           title: 'Capture failing layout',
         }),
         {
-          newImages: [file],
-          removeImageIDs: ['img-1'],
+          newAssets: [file],
+          removeAssetIDs: ['img-1'],
         },
       )
     })
@@ -170,8 +170,8 @@ describe('IssueDialog', () => {
           agent_prompt: 'Review the hero and CTA copy for clarity.',
         }),
         {
-          newImages: [],
-          removeImageIDs: [],
+          newAssets: [],
+          removeAssetIDs: [],
         },
       )
     })
@@ -375,11 +375,38 @@ describe('IssueDialog', () => {
           description: 'Initial note dictated detail',
         }),
         {
-          newImages: [],
-          removeImageIDs: [],
+          newAssets: [],
+          removeAssetIDs: [],
         },
       )
     })
+  })
+
+  it('queues pasted files in the issue asset picker', async () => {
+    const bootstrap = makeBootstrapResponse()
+
+    renderWithQueryClient(
+      <IssueDialog
+        open
+        onOpenChange={vi.fn()}
+        projects={bootstrap.projects}
+        epics={bootstrap.epics}
+        availableIssues={bootstrap.issues.items}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    const picker = screen.getByText(/choose files to upload after save/i).closest('div[tabindex="0"]')
+    expect(picker).not.toBeNull()
+    const file = new File(['asset'], 'paste.log', { type: 'text/plain' })
+    fireEvent.paste(picker!, {
+      clipboardData: {
+        items: [{ kind: 'file', getAsFile: () => file }],
+        files: [file],
+      },
+    })
+
+    expect((await screen.findAllByText('paste.log')).length).toBeGreaterThan(0)
   })
 
   it('preserves draft input while open when parent rerenders with refreshed issue props', async () => {

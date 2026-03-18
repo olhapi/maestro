@@ -26,9 +26,9 @@ import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
 import { useGlobalDashboardContext } from "@/lib/global-dashboard-context";
 import {
-  applyIssueImageChanges,
-  summarizeIssueImageFailures,
-} from "@/lib/issue-images";
+  applyIssueAssetChanges,
+  summarizeIssueAssetFailures,
+} from "@/lib/issue-assets";
 import { appRoutes } from "@/lib/routes";
 import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
@@ -368,7 +368,7 @@ export function WorkPage() {
           }
         }}
         title={issuePendingDelete ? `Delete ${issuePendingDelete.identifier}?` : "Delete issue?"}
-        description="This removes the issue from Maestro, including its local workspace, activity history, and attached images. Linked provider items may also be removed."
+        description="This removes the issue from Maestro, including its local workspace, activity history, and attached assets. Linked provider items may also be removed."
         confirmLabel="Delete issue"
         pendingLabel="Deleting issue..."
         isPending={deleteMutation.isPending}
@@ -390,17 +390,17 @@ export function WorkPage() {
         onSubmit={async (body, imageChanges) => {
           if (editing) {
             const issue = await api.updateIssue(editing.identifier, body);
-            const result = await applyIssueImageChanges(issue.identifier, imageChanges);
+            const result = await applyIssueAssetChanges(issue.identifier, imageChanges);
             if (result.failures.length > 0) {
-              toast.error(`Issue updated, but ${summarizeIssueImageFailures(result)}`);
+              toast.error(`Issue updated, but ${summarizeIssueAssetFailures(result)}`);
             } else {
               toast.success("Issue updated");
             }
           } else {
             const issue = await api.createIssue(body);
-            const result = await applyIssueImageChanges(issue.identifier, imageChanges);
+            const result = await applyIssueAssetChanges(issue.identifier, imageChanges);
             if (result.failures.length > 0) {
-              toast.error(`Issue created, but ${summarizeIssueImageFailures(result)}`);
+              toast.error(`Issue created, but ${summarizeIssueAssetFailures(result)}`);
             } else {
               toast.success("Issue created");
             }

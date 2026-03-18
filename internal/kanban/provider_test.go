@@ -374,7 +374,7 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 		t.Fatalf("MkdirAll workspace: %v", err)
 	}
-	if _, err := store.CreateIssueImage(stale.ID, "preview.png", bytes.NewReader([]byte{
+	if _, err := store.CreateIssueAsset(stale.ID, "preview.png", bytes.NewReader([]byte{
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
 		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
@@ -385,7 +385,7 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
 		0x44, 0xae, 0x42, 0x60, 0x82,
 	})); err != nil {
-		t.Fatalf("CreateIssueImage stale failed: %v", err)
+		t.Fatalf("CreateIssueAsset stale failed: %v", err)
 	}
 
 	lastSyncedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)

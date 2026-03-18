@@ -3,9 +3,9 @@ import type {
   Epic,
   EpicDetailResponse,
   EpicSummary,
+  IssueAsset,
   IssueComment,
   IssueDetail,
-  IssueImage,
   IssueExecutionDetail,
   PendingInterruptsResponse,
   IssueSummary,
@@ -152,17 +152,17 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
-  uploadIssueImage: (identifier: string, file: File) => {
+  uploadIssueAsset: (identifier: string, file: File) => {
     const formData = new FormData();
     formData.set("file", file);
-    return request<IssueImage>(`/api/v1/app/issues/${identifier}/images`, {
+    return request<IssueAsset>(`/api/v1/app/issues/${identifier}/assets`, {
       method: "POST",
       body: formData,
     });
   },
-  deleteIssueImage: (identifier: string, imageID: string) =>
-    request<{ deleted: boolean; identifier: string; image_id: string }>(
-      `/api/v1/app/issues/${identifier}/images/${imageID}`,
+  deleteIssueAsset: (identifier: string, assetID: string) =>
+    request<{ deleted: boolean; identifier: string; asset_id: string }>(
+      `/api/v1/app/issues/${identifier}/assets/${assetID}`,
       {
         method: "DELETE",
       },

@@ -92,7 +92,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 			ProjectName: "Platform",
 			EpicName:    "CLI",
 		},
-		Images: []kanban.IssueImage{
+		Assets: []kanban.IssueAsset{
 			{
 				ID:          "img-1",
 				IssueID:     "issue-1",
@@ -152,7 +152,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 		var out bytes.Buffer
 		printIssueDetail(&out, detail)
 		text := out.String()
-		for _, want := range []string{"Type:", "Description:", "Labels:", "Branch:", "PR:", "Blocked By:", "Images:", "Image:", "Cron:", "Schedule:", "Next Run:", "Last Enqueued:", "Pending Rerun:"} {
+		for _, want := range []string{"Type:", "Description:", "Labels:", "Branch:", "PR:", "Blocked By:", "Assets:", "Asset:", "Cron:", "Schedule:", "Next Run:", "Last Enqueued:", "Pending Rerun:"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("expected %q in issue detail %q", want, text)
 			}

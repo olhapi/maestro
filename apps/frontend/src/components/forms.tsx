@@ -14,10 +14,10 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { getStateMeta, issueStates } from "@/lib/dashboard";
 import {
-  formatIssueImageSize,
-  issueImageInputAccept,
-  type IssueImageChangeSet,
-} from "@/lib/issue-images";
+  formatIssueAssetSize,
+  issueAssetInputAccept,
+  type IssueAssetChangeSet,
+} from "@/lib/issue-assets";
 import type { EpicSummary, IssueDetail, IssueSummary, IssueType, ProjectSummary } from "@/lib/types";
 
 const noEpicValue = "__no-epic__";
@@ -370,7 +370,7 @@ export function IssueDialog({
   projects: ProjectSummary[];
   epics: EpicSummary[];
   availableIssues?: IssueSummary[];
-  onSubmit: (body: Record<string, unknown>, images: IssueImageChangeSet) => Promise<void>;
+  onSubmit: (body: Record<string, unknown>, assets: IssueAssetChangeSet) => Promise<void>;
 }) {
   const isEditing = Boolean(initial?.identifier);
   const defaultProjectID = initial?.project_id ?? projects[0]?.id ?? "";
@@ -389,8 +389,8 @@ export function IssueDialog({
   const [blockedBy, setBlockedBy] = useState(initial?.blocked_by ?? []);
   const [branchName, setBranchName] = useState(initial?.branch_name ?? "");
   const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
-  const [newImages, setNewImages] = useState<File[]>([]);
-  const [removedImageIDs, setRemovedImageIDs] = useState<string[]>([]);
+  const [newAssets, setNewAssets] = useState<File[]>([]);
+  const [removedAssetIDs, setRemovedAssetIDs] = useState<string[]>([]);
   const [blockerSearch, setBlockerSearch] = useState("");
   const [remoteBlockerIssues, setRemoteBlockerIssues] = useState<IssueSummary[]>([]);
   const [loadingBlockerIssues, setLoadingBlockerIssues] = useState(false);
@@ -415,8 +415,8 @@ export function IssueDialog({
     setBlockedBy(initial?.blocked_by ?? []);
     setBranchName(initial?.branch_name ?? "");
     setPrURL(initial?.pr_url ?? "");
-    setNewImages([]);
-    setRemovedImageIDs([]);
+    setNewAssets([]);
+    setRemovedAssetIDs([]);
     setBlockerSearch("");
     setRemoteBlockerIssues([]);
   });
@@ -524,8 +524,8 @@ export function IssueDialog({
     [initial?.identifier, localProjectIssues, visibleRemoteBlockerIssues],
   );
 
-  const visibleExistingImages = (initial?.images ?? []).filter(
-    (image) => !removedImageIDs.includes(image.id),
+  const visibleExistingAssets = (initial?.assets ?? []).filter(
+    (asset) => !removedAssetIDs.includes(asset.id),
   );
 
   return (
@@ -756,49 +756,49 @@ export function IssueDialog({
               />
             )}
           </Field>
-          <Field label="Images">
+          <Field label="Assets">
             {({ labelId }) => (
               <div aria-labelledby={labelId} className="grid gap-3">
                 <FilePicker
-                  accept={issueImageInputAccept}
-                  ariaLabel="Images"
+                  accept={issueAssetInputAccept}
+                  ariaLabel="Assets"
                   buttonLabel="Choose files"
                   summary={
-                    newImages.length === 0
-                      ? "Choose screenshots or mocks to upload after save."
-                      : newImages.length === 1
-                        ? newImages[0].name
-                        : `${newImages.length} images queued for upload`
+                    newAssets.length === 0
+                      ? "Choose files to upload after save."
+                      : newAssets.length === 1
+                        ? newAssets[0].name
+                        : `${newAssets.length} assets queued for upload`
                   }
                   multiple
                   onFilesSelected={(files) => {
-                    setNewImages((current) => [...current, ...files]);
+                    setNewAssets((current) => [...current, ...files]);
                   }}
                 />
                 <p className="text-xs text-[var(--muted-foreground)]">
-                  PNG, JPEG, WEBP, and GIF up to 10 MiB each. Images stay local to this Maestro database.
+                  Any file type up to 100 MiB per asset. Assets stay local to this Maestro database.
                 </p>
-                {visibleExistingImages.length > 0 ? (
+                {visibleExistingAssets.length > 0 ? (
                   <div className="grid gap-2">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                       Attached now
                     </p>
-                    {visibleExistingImages.map((image) => (
+                    {visibleExistingAssets.map((asset) => (
                       <div
-                        key={image.id}
+                        key={asset.id}
                         className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3"
                       >
                         <div className="min-w-0">
-                          <p className="truncate text-sm text-white">{image.filename}</p>
+                          <p className="truncate text-sm text-white">{asset.filename}</p>
                           <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                            {formatIssueImageSize(image.byte_size)} · {image.content_type}
+                            {formatIssueAssetSize(asset.byte_size)} · {asset.content_type}
                           </p>
                         </div>
                         <Button
                           type="button"
                           variant="secondary"
                           onClick={() =>
-                            setRemovedImageIDs((current) => [...current, image.id])
+                            setRemovedAssetIDs((current) => [...current, asset.id])
                           }
                         >
                           Remove
@@ -807,20 +807,20 @@ export function IssueDialog({
                     ))}
                   </div>
                 ) : null}
-                {removedImageIDs.length > 0 ? (
+                {removedAssetIDs.length > 0 ? (
                   <div className="grid gap-2">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                       Removing on save
                     </p>
-                    {(initial?.images ?? [])
-                      .filter((image) => removedImageIDs.includes(image.id))
-                      .map((image) => (
+                    {(initial?.assets ?? [])
+                      .filter((asset) => removedAssetIDs.includes(asset.id))
+                      .map((asset) => (
                         <div
-                          key={image.id}
+                          key={asset.id}
                           className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3"
                         >
                           <div className="min-w-0">
-                            <p className="truncate text-sm text-white">{image.filename}</p>
+                            <p className="truncate text-sm text-white">{asset.filename}</p>
                             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
                               Will be deleted after save
                             </p>
@@ -829,8 +829,8 @@ export function IssueDialog({
                             type="button"
                             variant="secondary"
                             onClick={() =>
-                              setRemovedImageIDs((current) =>
-                                current.filter((value) => value !== image.id),
+                              setRemovedAssetIDs((current) =>
+                                current.filter((value) => value !== asset.id),
                               )
                             }
                           >
@@ -840,12 +840,12 @@ export function IssueDialog({
                       ))}
                   </div>
                 ) : null}
-                {newImages.length > 0 ? (
+                {newAssets.length > 0 ? (
                   <div className="grid gap-2">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                       Queued uploads
                     </p>
-                    {newImages.map((file, index) => (
+                    {newAssets.map((file, index) => (
                       <div
                         key={`${file.name}-${file.size}-${index}`}
                         className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3"
@@ -853,14 +853,14 @@ export function IssueDialog({
                         <div className="min-w-0">
                           <p className="truncate text-sm text-white">{file.name}</p>
                           <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                            {formatIssueImageSize(file.size)} · {file.type || "Detected on upload"}
+                            {formatIssueAssetSize(file.size)} · {file.type || "Detected on upload"}
                           </p>
                         </div>
                         <Button
                           type="button"
                           variant="secondary"
                           onClick={() =>
-                            setNewImages((current) =>
+                            setNewAssets((current) =>
                               current.filter((_, currentIndex) => currentIndex !== index),
                             )
                           }
@@ -903,8 +903,8 @@ export function IssueDialog({
                     body.enabled = enabled;
                   }
                   await onSubmit(body, {
-                    newImages,
-                    removeImageIDs: removedImageIDs,
+                    newAssets,
+                    removeAssetIDs: removedAssetIDs,
                   });
                   onOpenChange(false);
                 } finally {

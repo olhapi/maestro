@@ -242,7 +242,7 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (issue_id, blocked_by),
 			FOREIGN KEY (issue_id) REFERENCES issues(id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS issue_images (
+		`CREATE TABLE IF NOT EXISTS issue_assets (
 			id TEXT PRIMARY KEY,
 			issue_id TEXT NOT NULL,
 			filename TEXT NOT NULL,
@@ -406,7 +406,7 @@ func (s *Store) migrate() error {
 	if err := s.ensureIssueExecutionSessionColumns(); err != nil {
 		return err
 	}
-	if err := s.ensureIssueImageTables(); err != nil {
+	if err := s.ensureIssueAssetTables(); err != nil {
 		return err
 	}
 	if err := s.ensureIssueCommentTables(); err != nil {
@@ -516,9 +516,9 @@ func (s *Store) ensureIssueExecutionSessionColumns() error {
 	return nil
 }
 
-func (s *Store) ensureIssueImageTables() error {
+func (s *Store) ensureIssueAssetTables() error {
 	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS issue_images (
+		`CREATE TABLE IF NOT EXISTS issue_assets (
 			id TEXT PRIMARY KEY,
 			issue_id TEXT NOT NULL,
 			filename TEXT NOT NULL,
@@ -529,7 +529,7 @@ func (s *Store) ensureIssueImageTables() error {
 			updated_at DATETIME NOT NULL,
 			FOREIGN KEY (issue_id) REFERENCES issues(id)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_issue_images_issue_created ON issue_images(issue_id, created_at ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_assets_issue_created ON issue_assets(issue_id, created_at ASC)`,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
@@ -2121,21 +2121,21 @@ func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues [
 		currentProjectShadowByRef[providerIssueRef] = id
 	}
 
-	var imagePaths []string
+	var assetPaths []string
 	var commentAttachments []IssueCommentAttachment
-	issueImageDirs := make(map[string]struct{})
+	issueAssetDirs := make(map[string]struct{})
 	for providerIssueRef, issueID := range currentProjectShadowByRef {
 		if _, ok := seenRefs[providerIssueRef]; ok {
 			continue
 		}
-		removedPaths, removedCommentAttachments, issueImageDir, err := s.deleteIssueTx(tx, issueID)
+		removedPaths, removedCommentAttachments, issueAssetDir, err := s.deleteIssueTx(tx, issueID)
 		if err != nil {
 			return err
 		}
-		imagePaths = append(imagePaths, removedPaths...)
+		assetPaths = append(assetPaths, removedPaths...)
 		commentAttachments = append(commentAttachments, removedCommentAttachments...)
-		if issueImageDir != "" {
-			issueImageDirs[issueImageDir] = struct{}{}
+		if issueAssetDir != "" {
+			issueAssetDirs[issueAssetDir] = struct{}{}
 		}
 	}
 
@@ -2144,10 +2144,10 @@ func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues [
 	}
 	tx = nil
 
-	s.cleanupIssueImagePaths(imagePaths)
+	s.cleanupIssueAssetPaths(assetPaths)
 	s.cleanupIssueCommentAttachmentPaths(commentAttachments)
-	for issueImageDir := range issueImageDirs {
-		_ = os.Remove(issueImageDir)
+	for issueAssetDir := range issueAssetDirs {
+		_ = os.Remove(issueAssetDir)
 	}
 	return nil
 }
@@ -2969,7 +2969,7 @@ func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAt
 	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
 		return nil, nil, "", err
 	}
-	imagePaths, err := s.deleteIssueImagesTx(tx, id)
+	assetPaths, err := s.deleteIssueAssetsTx(tx, id)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -3010,7 +3010,7 @@ func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAt
 	if err := s.appendChangeTx(tx, "issue", id, "deleted", nil); err != nil {
 		return nil, nil, "", err
 	}
-	return imagePaths, commentAttachments, filepath.Join(s.IssueImageAssetRoot(), id), nil
+	return assetPaths, commentAttachments, filepath.Join(s.IssueAssetRoot(), id), nil
 }
 
 func (s *Store) DeleteIssue(id string) error {
@@ -3019,7 +3019,7 @@ func (s *Store) DeleteIssue(id string) error {
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	issueImageDir := filepath.Join(s.IssueImageAssetRoot(), id)
+	issueAssetDir := filepath.Join(s.IssueAssetRoot(), id)
 	if workspace != nil {
 		if err := removeWorkspaceTree(workspace.Path); err != nil {
 			return err
@@ -3034,7 +3034,7 @@ func (s *Store) DeleteIssue(id string) error {
 			_ = tx.Rollback()
 		}
 	}()
-	imagePaths, commentAttachments, _, err := s.deleteIssueTx(tx, id)
+	assetPaths, commentAttachments, _, err := s.deleteIssueTx(tx, id)
 	if err != nil {
 		return err
 	}
@@ -3042,9 +3042,9 @@ func (s *Store) DeleteIssue(id string) error {
 		return err
 	}
 	tx = nil
-	s.cleanupIssueImagePaths(imagePaths)
+	s.cleanupIssueAssetPaths(assetPaths)
 	s.cleanupIssueCommentAttachmentPaths(commentAttachments)
-	_ = os.Remove(issueImageDir)
+	_ = os.Remove(issueAssetDir)
 	return nil
 }
 
@@ -3532,11 +3532,11 @@ func (s *Store) GetIssueDetailByIdentifier(identifier string) (*IssueDetail, err
 	if detail.IsBlocked, err = s.isIssueBlocked(issue.ID); err != nil {
 		return nil, err
 	}
-	images, err := s.ListIssueImages(issue.ID)
+	assets, err := s.ListIssueAssets(issue.ID)
 	if err != nil {
 		return nil, err
 	}
-	detail.Images = images
+	detail.Assets = assets
 	return detail, nil
 }
 

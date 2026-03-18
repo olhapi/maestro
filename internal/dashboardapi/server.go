@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,18 @@ const (
 	dashboardWSWriteTimeout = 5 * time.Second
 	dashboardWSPingInterval = 30 * time.Second
 )
+
+var inlineRenderableContentTypes = map[string]struct{}{
+	"image/apng":               {},
+	"image/avif":               {},
+	"image/bmp":                {},
+	"image/gif":                {},
+	"image/jpeg":               {},
+	"image/png":                {},
+	"image/vnd.microsoft.icon": {},
+	"image/webp":               {},
+	"image/x-icon":             {},
+}
 
 func NewServer(store *kanban.Store, provider Provider) *Server {
 	return &Server{
@@ -113,6 +126,23 @@ func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
 		return nil
 	}
 	return fmt.Errorf("repo_path must match the current server scope (%s)", scopedRepoPath)
+}
+
+func contentDispositionHeader(filename, contentType string) string {
+	disposition := "attachment"
+	if isInlineRenderableContentType(contentType) {
+		disposition = "inline"
+	}
+	return mime.FormatMediaType(disposition, map[string]string{"filename": filename})
+}
+
+func isInlineRenderableContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		mediaType = strings.TrimSpace(contentType)
+	}
+	_, ok := inlineRenderableContentTypes[strings.ToLower(mediaType)]
+	return ok
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -619,8 +649,8 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(parts) >= 2 && parts[1] == "images" {
-		s.handleIssueImages(w, r, identifier, parts[2:])
+	if len(parts) >= 2 && parts[1] == "assets" {
+		s.handleIssueAssets(w, r, identifier, parts[2:])
 		return
 	}
 	if len(parts) >= 2 && parts[1] == "comments" {
@@ -879,31 +909,31 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleIssueImages(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
+func (s *Server) handleIssueAssets(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
 	if len(rest) == 0 {
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, kanban.MaxIssueImageBytes+(1<<20))
-		file, filename, err := readIssueImageUpload(r)
+		r.Body = http.MaxBytesReader(w, r.Body, kanban.MaxIssueAssetBytes+(1<<20))
+		file, filename, err := readIssueAssetUpload(r)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		defer file.Close()
 
-		image, err := s.service.AttachIssueImage(r.Context(), identifier, filename, file)
+		asset, err := s.service.AttachIssueAsset(r.Context(), identifier, filename, file)
 		if err != nil {
 			writeError(w, appErrorStatus(err), err)
 			return
 		}
-		writeJSONStatus(w, http.StatusCreated, image)
+		writeJSONStatus(w, http.StatusCreated, asset)
 		return
 	}
 
 	if len(rest) == 2 && rest[1] == "content" && r.Method == http.MethodGet {
-		image, path, err := s.service.GetIssueImageContent(r.Context(), identifier, rest[0])
+		asset, path, err := s.service.GetIssueAssetContent(r.Context(), identifier, rest[0])
 		if err != nil {
 			writeError(w, appErrorStatus(err), err)
 			return
@@ -914,18 +944,20 @@ func (s *Server) handleIssueImages(w http.ResponseWriter, r *http.Request, ident
 			return
 		}
 		defer file.Close()
-		w.Header().Set("Content-Type", image.ContentType)
-		w.Header().Set("Content-Length", strconv.FormatInt(image.ByteSize, 10))
-		http.ServeContent(w, r, image.Filename, image.UpdatedAt, file)
+		w.Header().Set("Content-Type", asset.ContentType)
+		w.Header().Set("Content-Disposition", contentDispositionHeader(asset.Filename, asset.ContentType))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Length", strconv.FormatInt(asset.ByteSize, 10))
+		http.ServeContent(w, r, asset.Filename, asset.UpdatedAt, file)
 		return
 	}
 
 	if len(rest) == 1 && r.Method == http.MethodDelete {
-		if err := s.service.DeleteIssueImage(r.Context(), identifier, rest[0]); err != nil {
+		if err := s.service.DeleteIssueAsset(r.Context(), identifier, rest[0]); err != nil {
 			writeError(w, appErrorStatus(err), err)
 			return
 		}
-		writeJSON(w, map[string]interface{}{"deleted": true, "identifier": identifier, "image_id": rest[0]})
+		writeJSON(w, map[string]interface{}{"deleted": true, "identifier": identifier, "asset_id": rest[0]})
 		return
 	}
 
@@ -969,7 +1001,8 @@ func (s *Server) handleIssueComments(w http.ResponseWriter, r *http.Request, ide
 		}
 		defer content.Content.Close()
 		w.Header().Set("Content-Type", content.Attachment.ContentType)
-		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", content.Attachment.Filename))
+		w.Header().Set("Content-Disposition", contentDispositionHeader(content.Attachment.Filename, content.Attachment.ContentType))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if content.Attachment.ByteSize > 0 {
 			w.Header().Set("Content-Length", strconv.FormatInt(content.Attachment.ByteSize, 10))
 		}
@@ -1007,7 +1040,7 @@ func (s *Server) handleIssueComments(w http.ResponseWriter, r *http.Request, ide
 	}
 }
 
-func readIssueImageUpload(r *http.Request) (io.ReadCloser, string, error) {
+func readIssueAssetUpload(r *http.Request) (io.ReadCloser, string, error) {
 	reader, err := r.MultipartReader()
 	if err != nil {
 		return nil, "", err
@@ -1136,7 +1169,7 @@ func readIssueCommentMultipart(w http.ResponseWriter, r *http.Request, source st
 	return input, cleanup, nil
 }
 
-const MaxIssueCommentMultipartBytes int64 = 26 * 1024 * 1024
+const MaxIssueCommentMultipartBytes int64 = 256 * 1024 * 1024
 
 func (s *Server) handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

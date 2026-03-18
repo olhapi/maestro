@@ -90,7 +90,7 @@ type IssueDetail struct {
 	ProjectDescription       string            `json:"project_description,omitempty"`
 	EpicDescription          string            `json:"epic_description,omitempty"`
 	ProjectPermissionProfile PermissionProfile `json:"project_permission_profile,omitempty"`
-	Images                   []IssueImage      `json:"images"`
+	Assets                   []IssueAsset      `json:"assets"`
 }
 
 type IssueQuery struct {

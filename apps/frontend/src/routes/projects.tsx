@@ -13,7 +13,7 @@ import { ButtonGroup } from "@/components/ui/button-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { api } from "@/lib/api";
-import { applyIssueImageChanges, summarizeIssueImageFailures } from "@/lib/issue-images";
+import { applyIssueAssetChanges, summarizeIssueAssetFailures } from "@/lib/issue-assets";
 import {
   isProjectDispatchReady,
   isProjectRunning,
@@ -232,7 +232,7 @@ export function ProjectsPage() {
           }
         }}
         title={projectPendingDelete ? `Delete ${projectPendingDelete.name}?` : "Delete project?"}
-        description="This permanently removes the project from Maestro, including its epics, issues, workspaces, images, and activity history."
+        description="This permanently removes the project from Maestro, including its epics, issues, workspaces, assets, and activity history."
         confirmLabel="Delete project"
         pendingLabel="Deleting project..."
         isPending={deleteProject.isPending}
@@ -285,9 +285,9 @@ export function ProjectsPage() {
         availableIssues={bootstrap.data.issues.items}
         onSubmit={async (body, imageChanges) => {
           const issue = await api.createIssue(body);
-          const result = await applyIssueImageChanges(issue.identifier, imageChanges);
+          const result = await applyIssueAssetChanges(issue.identifier, imageChanges);
           if (result.failures.length > 0) {
-            toast.error(`Issue created, but ${summarizeIssueImageFailures(result)}`);
+            toast.error(`Issue created, but ${summarizeIssueAssetFailures(result)}`);
           } else {
             toast.success("Issue created");
           }

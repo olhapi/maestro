@@ -15,9 +15,9 @@ import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
 import {
-  applyIssueImageChanges,
-  summarizeIssueImageFailures,
-} from "@/lib/issue-images";
+  applyIssueAssetChanges,
+  summarizeIssueAssetFailures,
+} from "@/lib/issue-assets";
 import {
   isProjectDispatchReady,
   isProjectRunning,
@@ -427,13 +427,13 @@ export function ProjectDetailPage() {
         availableIssues={project.data.issues.items}
         onSubmit={async (body, imageChanges) => {
           const issue = await api.createIssue(body);
-          const result = await applyIssueImageChanges(
+          const result = await applyIssueAssetChanges(
             issue.identifier,
             imageChanges,
           );
           if (result.failures.length > 0) {
             toast.error(
-              `Issue created, but ${summarizeIssueImageFailures(result)}`,
+              `Issue created, but ${summarizeIssueAssetFailures(result)}`,
             );
           } else {
             toast.success("Issue created");

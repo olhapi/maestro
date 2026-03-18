@@ -324,7 +324,7 @@ func (a *cliApp) newIssueCmd() *cobra.Command {
 		a.newIssueBlockCmd(),
 		a.newIssueBlockersCmd(),
 		a.newIssueCommentsCmd(),
-		a.newIssueImagesCmd(),
+		a.newIssueAssetsCmd(),
 	)
 	return cmd
 }
@@ -937,15 +937,15 @@ func (a *cliApp) newIssueBlockersCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *cliApp) newIssueImagesCmd() *cobra.Command {
+func (a *cliApp) newIssueAssetsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "images",
-		Short: "Manage issue images",
+		Use:   "assets",
+		Short: "Manage issue assets",
 	}
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "add <identifier> <path>",
-			Short: "Attach an image to an issue",
+			Short: "Attach an asset to an issue",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				store, svc, err := openProviderService(a.opts.dbPath)
@@ -954,24 +954,24 @@ func (a *cliApp) newIssueImagesCmd() *cobra.Command {
 				}
 				defer store.Close()
 
-				image, err := svc.AttachIssueImagePath(context.Background(), args[0], args[1])
+				asset, err := svc.AttachIssueAssetPath(context.Background(), args[0], args[1])
 				if err != nil {
 					return err
 				}
 				if a.opts.mode.json {
-					return writeJSON(a.stdout, image)
+					return writeJSON(a.stdout, asset)
 				}
 				if a.opts.mode.quiet {
-					_, _ = fmt.Fprintln(a.stdout, image.ID)
+					_, _ = fmt.Fprintln(a.stdout, asset.ID)
 					return nil
 				}
-				_, _ = fmt.Fprintf(a.stdout, "Attached image %s to %s\n", image.ID, args[0])
+				_, _ = fmt.Fprintf(a.stdout, "Attached asset %s to %s\n", asset.ID, args[0])
 				return nil
 			},
 		},
 		&cobra.Command{
 			Use:   "list <identifier>",
-			Short: "List images attached to an issue",
+			Short: "List assets attached to an issue",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				store, svc, err := openProviderService(a.opts.dbPath)
@@ -980,20 +980,20 @@ func (a *cliApp) newIssueImagesCmd() *cobra.Command {
 				}
 				defer store.Close()
 
-				images, err := svc.ListIssueImages(context.Background(), args[0])
+				assets, err := svc.ListIssueAssets(context.Background(), args[0])
 				if err != nil {
 					return err
 				}
 				if a.opts.mode.json {
-					return writeJSON(a.stdout, map[string]interface{}{"items": images})
+					return writeJSON(a.stdout, map[string]interface{}{"items": assets})
 				}
-				printIssueImageTable(a.stdout, images, a.opts.mode)
+				printIssueAssetTable(a.stdout, assets, a.opts.mode)
 				return nil
 			},
 		},
 		&cobra.Command{
-			Use:   "remove <identifier> <image_id>",
-			Short: "Remove an image attached to an issue",
+			Use:   "remove <identifier> <asset_id>",
+			Short: "Remove an asset attached to an issue",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				store, svc, err := openProviderService(a.opts.dbPath)
@@ -1002,10 +1002,10 @@ func (a *cliApp) newIssueImagesCmd() *cobra.Command {
 				}
 				defer store.Close()
 
-				if err := svc.DeleteIssueImage(context.Background(), args[0], args[1]); err != nil {
+				if err := svc.DeleteIssueAsset(context.Background(), args[0], args[1]); err != nil {
 					return err
 				}
-				payload := map[string]interface{}{"deleted": true, "identifier": args[0], "image_id": args[1]}
+				payload := map[string]interface{}{"deleted": true, "identifier": args[0], "asset_id": args[1]}
 				if a.opts.mode.json {
 					return writeJSON(a.stdout, payload)
 				}
@@ -1013,7 +1013,7 @@ func (a *cliApp) newIssueImagesCmd() *cobra.Command {
 					_, _ = fmt.Fprintln(a.stdout, args[1])
 					return nil
 				}
-				_, _ = fmt.Fprintf(a.stdout, "Removed image %s from %s\n", args[1], args[0])
+				_, _ = fmt.Fprintf(a.stdout, "Removed asset %s from %s\n", args[1], args[0])
 				return nil
 			},
 		},

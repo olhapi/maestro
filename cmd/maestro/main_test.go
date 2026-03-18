@@ -357,43 +357,43 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 		t.Fatalf("unexpected issue update payload: %+v", updated)
 	}
 
-	imagePath := filepath.Join(t.TempDir(), "coverage.png")
-	if err := os.WriteFile(imagePath, sampleMainPNGBytes(), 0o644); err != nil {
-		t.Fatalf("write image fixture: %v", err)
+	assetPath := filepath.Join(t.TempDir(), "coverage.png")
+	if err := os.WriteFile(assetPath, sampleMainPNGBytes(), 0o644); err != nil {
+		t.Fatalf("write asset fixture: %v", err)
 	}
 
-	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "add", created.Identifier, imagePath, "--json")
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "assets", "add", created.Identifier, assetPath, "--json")
 	if code != 0 {
-		t.Fatalf("issue image add failed: %d stderr=%s", code, stderr)
+		t.Fatalf("issue asset add failed: %d stderr=%s", code, stderr)
 	}
-	var image kanban.IssueImage
-	if err := json.Unmarshal([]byte(stdout), &image); err != nil {
-		t.Fatalf("decode issue image add: %v\n%s", err, stdout)
+	var asset kanban.IssueAsset
+	if err := json.Unmarshal([]byte(stdout), &asset); err != nil {
+		t.Fatalf("decode issue asset add: %v\n%s", err, stdout)
 	}
-	if image.ContentType != "image/png" {
-		t.Fatalf("unexpected issue image payload: %+v", image)
+	if asset.ContentType != "image/png" {
+		t.Fatalf("unexpected issue asset payload: %+v", asset)
 	}
 
-	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "list", created.Identifier, "--json")
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "assets", "list", created.Identifier, "--json")
 	if code != 0 {
-		t.Fatalf("issue image list failed: %d stderr=%s", code, stderr)
+		t.Fatalf("issue asset list failed: %d stderr=%s", code, stderr)
 	}
-	var imageList struct {
-		Items []kanban.IssueImage `json:"items"`
+	var assetList struct {
+		Items []kanban.IssueAsset `json:"items"`
 	}
-	if err := json.Unmarshal([]byte(stdout), &imageList); err != nil {
-		t.Fatalf("decode issue image list: %v\n%s", err, stdout)
+	if err := json.Unmarshal([]byte(stdout), &assetList); err != nil {
+		t.Fatalf("decode issue asset list: %v\n%s", err, stdout)
 	}
-	if len(imageList.Items) != 1 || imageList.Items[0].ID != image.ID {
-		t.Fatalf("unexpected issue image list payload: %+v", imageList)
+	if len(assetList.Items) != 1 || assetList.Items[0].ID != asset.ID {
+		t.Fatalf("unexpected issue asset list payload: %+v", assetList)
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "show", created.Identifier)
 	if code != 0 {
-		t.Fatalf("issue show with images failed: %d stderr=%s", code, stderr)
+		t.Fatalf("issue show with assets failed: %d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "Images:") || !strings.Contains(stdout, image.ID) {
-		t.Fatalf("expected image metadata in issue show output, got %q", stdout)
+	if !strings.Contains(stdout, "Assets:") || !strings.Contains(stdout, asset.ID) {
+		t.Fatalf("expected asset metadata in issue show output, got %q", stdout)
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "comments", "add", created.Identifier, "--body", "First comment", "--json")
@@ -441,12 +441,12 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 		t.Fatalf("unexpected issue comment delete payload: %s", stdout)
 	}
 
-	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "remove", created.Identifier, image.ID, "--json")
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "assets", "remove", created.Identifier, asset.ID, "--json")
 	if code != 0 {
-		t.Fatalf("issue image remove failed: %d stderr=%s", code, stderr)
+		t.Fatalf("issue asset remove failed: %d stderr=%s", code, stderr)
 	}
 	if !strings.Contains(stdout, "\"deleted\":true") {
-		t.Fatalf("unexpected issue image remove payload: %s", stdout)
+		t.Fatalf("unexpected issue asset remove payload: %s", stdout)
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "list", "--project", project.ID, "--json")
