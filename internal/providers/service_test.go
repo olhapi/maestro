@@ -12,19 +12,20 @@ import (
 )
 
 type stubProvider struct {
-	kind        string
-	issues      []kanban.Issue
-	lastQuery   kanban.IssueQuery
-	listErr     error
-	listGate    <-chan struct{}
-	listFunc    func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
-	getIssue    *kanban.Issue
-	getErr      error
-	getGate     <-chan struct{}
-	getFunc     func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
-	createFunc  func(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error)
-	updateFunc  func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
-	commentFunc func(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error
+	kind         string
+	validateFunc func(context.Context, *kanban.Project) error
+	issues       []kanban.Issue
+	lastQuery    kanban.IssueQuery
+	listErr      error
+	listGate     <-chan struct{}
+	listFunc     func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
+	getIssue     *kanban.Issue
+	getErr       error
+	getGate      <-chan struct{}
+	getFunc      func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
+	createFunc   func(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error)
+	updateFunc   func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
+	commentFunc  func(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error
 }
 
 func sampleProviderPNGBytes() []byte {
@@ -49,7 +50,10 @@ func (p *stubProvider) Capabilities() kanban.ProviderCapabilities {
 	return kanban.DefaultCapabilities(p.kind)
 }
 
-func (p *stubProvider) ValidateProject(context.Context, *kanban.Project) error {
+func (p *stubProvider) ValidateProject(ctx context.Context, project *kanban.Project) error {
+	if p.validateFunc != nil {
+		return p.validateFunc(ctx, project)
+	}
 	return nil
 }
 
@@ -101,6 +105,80 @@ func withProviderReadTimeout(t *testing.T, timeout time.Duration) {
 	t.Cleanup(func() {
 		providerReadSyncTimeout = previous
 	})
+}
+
+func TestServiceCreateProjectDoesNotPersistOnValidationFailure(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	validateErr := errors.New("invalid project config")
+	svc := NewService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
+		validateFunc: func(_ context.Context, project *kanban.Project) error {
+			if project.ProviderKind != "stub" {
+				t.Fatalf("expected stub provider kind, got %q", project.ProviderKind)
+			}
+			return validateErr
+		},
+	}
+
+	_, err = svc.CreateProject(context.Background(), "Broken", "", "", "", "stub", "stub-ref", map[string]interface{}{"mode": "broken"})
+	if !errors.Is(err, validateErr) {
+		t.Fatalf("expected validation failure, got %v", err)
+	}
+
+	projects, err := store.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("expected no projects to be persisted after validation failure, got %#v", projects)
+	}
+}
+
+func TestServiceUpdateProjectDoesNotPersistOnValidationFailure(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProject("Existing", "stable", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	validateErr := errors.New("provider rejects update")
+	svc := NewService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
+		validateFunc: func(_ context.Context, candidate *kanban.Project) error {
+			if candidate.ID != project.ID {
+				t.Fatalf("expected project ID %q, got %q", project.ID, candidate.ID)
+			}
+			if candidate.Name != "Changed" {
+				t.Fatalf("expected candidate name to reflect update, got %q", candidate.Name)
+			}
+			return validateErr
+		},
+	}
+
+	err = svc.UpdateProject(context.Background(), project.ID, "Changed", "desc", "", "", "stub", "stub-ref", map[string]interface{}{"mode": "broken"})
+	if !errors.Is(err, validateErr) {
+		t.Fatalf("expected validation failure, got %v", err)
+	}
+
+	unchanged, err := store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if unchanged.Name != project.Name || unchanged.ProviderKind != kanban.ProviderKindKanban || unchanged.ProviderProjectRef != "" {
+		t.Fatalf("expected persisted project to remain unchanged, got %+v", unchanged)
+	}
 }
 
 func (p *stubProvider) CreateIssue(ctx context.Context, project *kanban.Project, input IssueCreateInput) (*kanban.Issue, error) {
@@ -726,7 +804,7 @@ func TestServiceUpdateIssueStoresLocalAgentMetadataForProviderBackedIssue(t *tes
 	}
 }
 
-func TestServiceListIssueSummariesBestEffortContinuesAcrossProjects(t *testing.T) {
+func TestServiceListIssueSummariesReturnsErrorWhenAnyProjectLacksCache(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -779,12 +857,17 @@ func TestServiceListIssueSummariesBestEffortContinuesAcrossProjects(t *testing.T
 		},
 	}
 
-	items, total, err := svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{})
+	_, _, err = svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected provider error for uncached project failure, got %v", err)
+	}
+
+	items, total, err := store.ListIssueSummaries(kanban.IssueQuery{})
 	if err != nil {
-		t.Fatalf("ListIssueSummaries: %v", err)
+		t.Fatalf("store.ListIssueSummaries: %v", err)
 	}
 	if total != 1 || len(items) != 1 {
-		t.Fatalf("expected the healthy project to sync, got total=%d items=%#v", total, items)
+		t.Fatalf("expected the healthy project to still sync before returning the error, got total=%d items=%#v", total, items)
 	}
 	if items[0].Identifier != "LIN-FAST-1" || items[0].ProjectID != fastProject.ID {
 		t.Fatalf("unexpected synced issue payload: %#v", items[0])

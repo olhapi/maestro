@@ -104,6 +104,10 @@ func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, 
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
+	if err := store.backfillLegacyProjectPermissionProfiles(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to backfill legacy project permissions: %w", err)
+	}
 
 	return store, nil
 }
@@ -825,6 +829,19 @@ func normalizeProviderKind(kind string) string {
 	}
 }
 
+func legacyWorkflowPermissionProfile(repoPath, workflowPath string) PermissionProfile {
+	repoPath = strings.TrimSpace(repoPath)
+	workflowPath = strings.TrimSpace(workflowPath)
+	if repoPath == "" && workflowPath == "" {
+		return PermissionProfileDefault
+	}
+	usesFullAccess, err := config.LegacyWorkflowUsesFullAccess(config.ResolveWorkflowPath(repoPath, workflowPath))
+	if err != nil || !usesFullAccess {
+		return PermissionProfileDefault
+	}
+	return PermissionProfileFullAccess
+}
+
 func cloneProviderConfig(config map[string]interface{}) map[string]interface{} {
 	if len(config) == 0 {
 		return map[string]interface{}{}
@@ -951,11 +968,12 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 	providerKind = normalizeProviderKind(providerKind)
 	providerProjectRef = strings.TrimSpace(providerProjectRef)
 	providerConfigJSON := encodeProviderConfig(providerConfig)
+	permissionProfile := legacyWorkflowPermissionProfile(repoPath, workflowPath)
 
 	_, err = s.db.Exec(`
 		INSERT INTO projects (id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, name, description, ProjectStateStopped, PermissionProfileDefault, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
+		id, name, description, ProjectStateStopped, permissionProfile, repoPath, workflowPath, providerKind, providerProjectRef, providerConfigJSON, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -965,7 +983,7 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 		Name:               name,
 		Description:        description,
 		State:              ProjectStateStopped,
-		PermissionProfile:  PermissionProfileDefault,
+		PermissionProfile:  permissionProfile,
 		RepoPath:           repoPath,
 		WorkflowPath:       workflowPath,
 		ProviderKind:       providerKind,
@@ -981,28 +999,43 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 	return project, nil
 }
 
-func (s *Store) backfillLegacyProjectPermissionProfile(project *Project) error {
-	if project == nil {
-		return nil
-	}
-	if NormalizePermissionProfile(string(project.PermissionProfile)) != PermissionProfileDefault {
-		return nil
-	}
-	if strings.TrimSpace(project.RepoPath) == "" && strings.TrimSpace(project.WorkflowPath) == "" {
-		return nil
-	}
-
-	workflowPath := config.ResolveWorkflowPath(project.RepoPath, project.WorkflowPath)
-	usesFullAccess, err := config.LegacyWorkflowUsesFullAccess(workflowPath)
-	if err != nil || !usesFullAccess {
-		return nil
-	}
-	if err := s.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
+func (s *Store) backfillLegacyProjectPermissionProfiles() error {
+	rows, err := s.db.Query(`SELECT id, repo_path, workflow_path, permission_profile FROM projects`)
+	if err != nil {
 		return err
 	}
-	project.PermissionProfile = PermissionProfileFullAccess
-	project.UpdatedAt = time.Now().UTC()
-	hydrateProject(project)
+	defer rows.Close()
+
+	type candidate struct {
+		id      string
+		profile PermissionProfile
+	}
+	var updates []candidate
+	for rows.Next() {
+		var (
+			id                string
+			repoPath          string
+			workflowPath      string
+			permissionProfile string
+		)
+		if err := rows.Scan(&id, &repoPath, &workflowPath, &permissionProfile); err != nil {
+			return err
+		}
+		if NormalizePermissionProfile(permissionProfile) != PermissionProfileDefault {
+			continue
+		}
+		if profile := legacyWorkflowPermissionProfile(repoPath, workflowPath); profile != PermissionProfileDefault {
+			updates = append(updates, candidate{id: id, profile: profile})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, update := range updates {
+		if err := s.UpdateProjectPermissionProfile(update.id, update.profile); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1019,9 +1052,6 @@ func (s *Store) GetProject(id string) (*Project, error) {
 	p.PermissionProfile = NormalizePermissionProfile(string(p.PermissionProfile))
 	p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 	hydrateProject(p)
-	if err := s.backfillLegacyProjectPermissionProfile(p); err != nil {
-		return nil, err
-	}
 	return p, nil
 }
 
@@ -1042,9 +1072,6 @@ func (s *Store) ListProjects() ([]Project, error) {
 		p.PermissionProfile = NormalizePermissionProfile(string(p.PermissionProfile))
 		p.ProviderConfig = decodeProviderConfig(providerConfigJSON)
 		hydrateProject(&p)
-		if err := s.backfillLegacyProjectPermissionProfile(&p); err != nil {
-			return nil, err
-		}
 		projects = append(projects, p)
 	}
 	return projects, nil
@@ -1055,16 +1082,24 @@ func (s *Store) UpdateProject(id, name, description, repoPath, workflowPath stri
 }
 
 func (s *Store) UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) error {
-	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
+	current, err := s.GetProject(id)
+	if err != nil {
+		return err
+	}
+	repoPath, workflowPath, err = normalizeProjectPaths(repoPath, workflowPath)
 	if err != nil {
 		return err
 	}
 	providerKind = normalizeProviderKind(providerKind)
 	providerProjectRef = strings.TrimSpace(providerProjectRef)
+	permissionProfile := current.PermissionProfile
+	if NormalizePermissionProfile(string(permissionProfile)) == PermissionProfileDefault {
+		permissionProfile = legacyWorkflowPermissionProfile(repoPath, workflowPath)
+	}
 	res, err := s.db.Exec(`
-		UPDATE projects SET name = ?, description = ?, repo_path = ?, workflow_path = ?, provider_kind = ?, provider_project_ref = ?, provider_config_json = ?, updated_at = ?
+		UPDATE projects SET name = ?, description = ?, permission_profile = ?, repo_path = ?, workflow_path = ?, provider_kind = ?, provider_project_ref = ?, provider_config_json = ?, updated_at = ?
 		WHERE id = ?`,
-		name, description, repoPath, workflowPath, providerKind, providerProjectRef, encodeProviderConfig(providerConfig), time.Now(), id,
+		name, description, permissionProfile, repoPath, workflowPath, providerKind, providerProjectRef, encodeProviderConfig(providerConfig), time.Now(), id,
 	)
 	if err != nil {
 		return err
@@ -1765,6 +1800,95 @@ func (s *Store) GetIssueByProviderRef(providerKind, providerIssueRef string) (*I
 		return nil, err
 	}
 	return s.GetIssue(id)
+}
+
+func (s *Store) HasProviderIssues(projectID, providerKind string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM issues WHERE project_id = ? AND provider_kind = ? LIMIT 1)`,
+		strings.TrimSpace(projectID),
+		normalizeProviderKind(providerKind),
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *Store) LookupIssueTitles(issueIDs, identifiers []string) (map[string]string, map[string]string, error) {
+	seen := make(map[string]struct{}, len(issueIDs)+len(identifiers))
+	cleanIDs := make([]string, 0, len(issueIDs))
+	for _, issueID := range issueIDs {
+		issueID = strings.TrimSpace(issueID)
+		if issueID == "" {
+			continue
+		}
+		key := "id:" + issueID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleanIDs = append(cleanIDs, issueID)
+	}
+	cleanIdentifiers := make([]string, 0, len(identifiers))
+	for _, identifier := range identifiers {
+		identifier = strings.TrimSpace(identifier)
+		if identifier == "" {
+			continue
+		}
+		key := "identifier:" + identifier
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleanIdentifiers = append(cleanIdentifiers, identifier)
+	}
+	if len(cleanIDs) == 0 && len(cleanIdentifiers) == 0 {
+		return map[string]string{}, map[string]string{}, nil
+	}
+
+	clauses := make([]string, 0, 2)
+	args := make([]interface{}, 0, len(cleanIDs)+len(cleanIdentifiers))
+	if len(cleanIDs) > 0 {
+		clauses = append(clauses, "id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(cleanIDs)), ",")+")")
+		for _, issueID := range cleanIDs {
+			args = append(args, issueID)
+		}
+	}
+	if len(cleanIdentifiers) > 0 {
+		clauses = append(clauses, "identifier IN ("+strings.TrimSuffix(strings.Repeat("?,", len(cleanIdentifiers)), ",")+")")
+		for _, identifier := range cleanIdentifiers {
+			args = append(args, identifier)
+		}
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, identifier, title FROM issues WHERE `+strings.Join(clauses, " OR "),
+		args...,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	titlesByID := make(map[string]string, len(cleanIDs))
+	titlesByIdentifier := make(map[string]string, len(cleanIdentifiers))
+	for rows.Next() {
+		var id, identifier, title string
+		if err := rows.Scan(&id, &identifier, &title); err != nil {
+			return nil, nil, err
+		}
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		titlesByID[id] = title
+		titlesByIdentifier[identifier] = title
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return titlesByID, titlesByIdentifier, nil
 }
 
 func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, error) {

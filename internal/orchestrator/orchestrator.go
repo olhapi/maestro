@@ -461,12 +461,13 @@ func (o *Orchestrator) tick(ctx context.Context) error {
 	o.appendEventLocked("tick", map[string]interface{}{})
 	o.mu.Unlock()
 
-	o.reconcile(ctx)
+	o.syncProviderIssues(ctx)
+	o.reconcileWithProviderSync(ctx, false)
 	o.processRetries(ctx)
 	o.processPendingRecurringReruns(ctx)
 	o.processDueRecurringIssues(ctx)
 	o.runMaintenanceIfDue()
-	return o.dispatch(ctx)
+	return o.dispatchWithProviderSync(ctx, false)
 }
 
 func (o *Orchestrator) runMaintenanceIfDue() {
@@ -512,6 +513,10 @@ func (o *Orchestrator) maintenanceProtectedIssueIDsLocked() []string {
 }
 
 func (o *Orchestrator) reconcile(ctx context.Context) {
+	o.reconcileWithProviderSync(ctx, true)
+}
+
+func (o *Orchestrator) reconcileWithProviderSync(ctx context.Context, syncProvider bool) {
 	o.reconcilePausedRuns(ctx)
 
 	o.mu.RLock()
@@ -571,7 +576,7 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 		}
 	}
 
-	o.reconcileOrphanedRuns(ctx)
+	o.reconcileOrphanedRuns(ctx, syncProvider)
 }
 
 func (o *Orchestrator) reconcilePausedRuns(ctx context.Context) {
@@ -623,8 +628,10 @@ func (o *Orchestrator) reconcilePausedRuns(ctx context.Context) {
 	}
 }
 
-func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context) {
-	o.syncProviderIssues(ctx)
+func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context, syncProvider bool) {
+	if syncProvider {
+		o.syncProviderIssues(ctx)
+	}
 	issues, err := o.store.ListIssues(map[string]interface{}{
 		"states": []string{"ready", "in_progress", "in_review", "done"},
 	})
@@ -901,7 +908,13 @@ func (o *Orchestrator) isClaimed(issueID string) bool {
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context) error {
-	o.syncProviderIssues(ctx)
+	return o.dispatchWithProviderSync(ctx, true)
+}
+
+func (o *Orchestrator) dispatchWithProviderSync(ctx context.Context, syncProvider bool) error {
+	if syncProvider {
+		o.syncProviderIssues(ctx)
+	}
 	states := []string{"ready", "in_progress", "in_review", "done"}
 	if !o.isSharedMode() {
 		workflow, err := o.workflows.Current()
