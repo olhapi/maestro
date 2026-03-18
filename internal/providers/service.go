@@ -16,7 +16,10 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
-var providerReadSyncTimeout = 2 * time.Second
+var (
+	providerReadSyncTimeout    = 2 * time.Second
+	providerProjectSyncTimeout = 5 * time.Second
+)
 
 type syncMode int
 
@@ -334,6 +337,14 @@ func (s *Service) syncIssues(ctx context.Context, query kanban.IssueQuery) error
 }
 
 func (s *Service) newReadSyncContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	return newBoundedContext(ctx, providerReadSyncTimeout)
+}
+
+func (s *Service) newProjectSyncContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	return newBoundedContext(ctx, providerProjectSyncTimeout)
+}
+
+func newBoundedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -341,11 +352,11 @@ func (s *Service) newReadSyncContext(ctx context.Context) (context.Context, cont
 		child, cancel := context.WithCancel(ctx)
 		return child, cancel, true
 	}
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= providerReadSyncTimeout {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= timeout {
 		child, cancel := context.WithDeadline(ctx, deadline)
 		return child, cancel, true
 	}
-	child, cancel := context.WithTimeout(ctx, providerReadSyncTimeout)
+	child, cancel := context.WithTimeout(ctx, timeout)
 	return child, cancel, false
 }
 
@@ -737,6 +748,7 @@ func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 	if err != nil {
 		return err
 	}
+	var firstErr error
 	for i := range projects {
 		project := projects[i]
 		if repoPath != "" && project.RepoPath != repoPath {
@@ -749,15 +761,28 @@ func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 		query := kanban.IssueQuery{
 			Assignee: strings.TrimSpace(providerConfigString(project.ProviderConfig, "assignee")),
 		}
-		issues, err := provider.ListIssues(ctx, &project, query)
+		projectCtx, cancel, propagateParentContext := s.newProjectSyncContext(ctx)
+		issues, err := provider.ListIssues(projectCtx, &project, query)
+		cancel()
 		if err != nil {
-			return err
+			if shouldPropagateReadSyncError(ctx, err, propagateParentContext) {
+				return err
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Warn("Provider sync failed; continuing to next project",
+				"project_id", project.ID,
+				"provider_kind", provider.Kind(),
+				"error", err,
+			)
+			continue
 		}
 		if err := s.reconcileProviderIssues(project.ID, provider.Kind(), issues); err != nil {
 			return err
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func buildProjectCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {

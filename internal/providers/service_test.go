@@ -108,6 +108,15 @@ func withProviderReadTimeout(t *testing.T, timeout time.Duration) {
 	})
 }
 
+func withProviderProjectSyncTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	previous := providerProjectSyncTimeout
+	providerProjectSyncTimeout = timeout
+	t.Cleanup(func() {
+		providerProjectSyncTimeout = previous
+	})
+}
+
 func TestServiceCreateProjectDoesNotPersistOnValidationFailure(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -327,6 +336,80 @@ func TestServiceSyncForRepoPathPassesProviderAssigneeFilter(t *testing.T) {
 	}
 	if _, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-keep"); err != nil {
 		t.Fatalf("expected synced issue for project %s: %v", project.ID, err)
+	}
+}
+
+func TestServiceSyncForRepoPathAppliesTimeoutPerProject(t *testing.T) {
+	withProviderProjectSyncTimeout(t, 20*time.Millisecond)
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	slowProject, err := store.CreateProjectWithProvider(
+		"Slow Project",
+		"",
+		t.TempDir(),
+		"",
+		kanban.ProviderKindLinear,
+		"slow-proj",
+		map[string]interface{}{"project_slug": "slow-proj"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider slow: %v", err)
+	}
+	fastProject, err := store.CreateProjectWithProvider(
+		"Fast Project",
+		"",
+		t.TempDir(),
+		"",
+		kanban.ProviderKindLinear,
+		"fast-proj",
+		map[string]interface{}{"project_slug": "fast-proj"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider fast: %v", err)
+	}
+
+	svc := NewService(store)
+	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+		kind: kanban.ProviderKindLinear,
+		listFunc: func(ctx context.Context, project *kanban.Project, _ kanban.IssueQuery) ([]kanban.Issue, error) {
+			switch project.ProviderProjectRef {
+			case slowProject.ProviderProjectRef:
+				<-ctx.Done()
+				return nil, ctx.Err()
+			case fastProject.ProviderProjectRef:
+				return []kanban.Issue{{
+					ProviderKind:     kanban.ProviderKindLinear,
+					ProviderIssueRef: "linear-fast-1",
+					Identifier:       "LIN-FAST-1",
+					Title:            "Fast issue",
+					State:            kanban.StateReady,
+				}}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+
+	start := time.Now()
+	err = svc.SyncForRepoPath(context.Background(), "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected first timed out project error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("expected per-project timeout rather than repo-wide starvation, took %v", elapsed)
+	}
+
+	fastIssue, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-fast-1")
+	if err != nil {
+		t.Fatalf("expected later project to sync despite earlier timeout: %v", err)
+	}
+	if fastIssue.ProjectID != fastProject.ID {
+		t.Fatalf("expected synced issue to belong to fast project, got %#v", fastIssue)
 	}
 }
 

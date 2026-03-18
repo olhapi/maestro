@@ -30,7 +30,6 @@ const (
 	automaticRetryHistoryLimit   = 200
 	runtimeMaintenanceInterval   = 15 * time.Minute
 	providerSyncMinInterval      = time.Second
-	providerSyncTimeout          = 5 * time.Second
 	gracefulShutdownStopReason   = "graceful_shutdown"
 	planApprovalStopReason       = "plan_approval_pending"
 	gracefulShutdownWaitTimeout  = 5 * time.Second
@@ -246,14 +245,7 @@ func (o *Orchestrator) syncProviderIssues(ctx context.Context) {
 		return
 	}
 
-	syncCtx := ctx
-	cancel := func() {}
-	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > providerSyncTimeout {
-		syncCtx, cancel = context.WithTimeout(ctx, providerSyncTimeout)
-	}
-	defer cancel()
-
-	if err := o.service.SyncForRepoPath(syncCtx, repoPath); err != nil {
+	if err := o.service.SyncForRepoPath(ctx, repoPath); err != nil {
 		slog.Warn("Provider issue sync failed", "repo_path", repoPath, "error", err)
 	}
 
