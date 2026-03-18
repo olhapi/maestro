@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,18 @@ const (
 	dashboardWSWriteTimeout = 5 * time.Second
 	dashboardWSPingInterval = 30 * time.Second
 )
+
+var inlineRenderableContentTypes = map[string]struct{}{
+	"image/apng":               {},
+	"image/avif":               {},
+	"image/bmp":                {},
+	"image/gif":                {},
+	"image/jpeg":               {},
+	"image/png":                {},
+	"image/vnd.microsoft.icon": {},
+	"image/webp":               {},
+	"image/x-icon":             {},
+}
 
 func NewServer(store *kanban.Store, provider Provider) *Server {
 	return &Server{
@@ -113,6 +126,23 @@ func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
 		return nil
 	}
 	return fmt.Errorf("repo_path must match the current server scope (%s)", scopedRepoPath)
+}
+
+func contentDispositionHeader(filename, contentType string) string {
+	disposition := "attachment"
+	if isInlineRenderableContentType(contentType) {
+		disposition = "inline"
+	}
+	return mime.FormatMediaType(disposition, map[string]string{"filename": filename})
+}
+
+func isInlineRenderableContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		mediaType = strings.TrimSpace(contentType)
+	}
+	_, ok := inlineRenderableContentTypes[strings.ToLower(mediaType)]
+	return ok
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -915,7 +945,8 @@ func (s *Server) handleIssueAssets(w http.ResponseWriter, r *http.Request, ident
 		}
 		defer file.Close()
 		w.Header().Set("Content-Type", asset.ContentType)
-		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", asset.Filename))
+		w.Header().Set("Content-Disposition", contentDispositionHeader(asset.Filename, asset.ContentType))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Length", strconv.FormatInt(asset.ByteSize, 10))
 		http.ServeContent(w, r, asset.Filename, asset.UpdatedAt, file)
 		return
@@ -970,7 +1001,8 @@ func (s *Server) handleIssueComments(w http.ResponseWriter, r *http.Request, ide
 		}
 		defer content.Content.Close()
 		w.Header().Set("Content-Type", content.Attachment.ContentType)
-		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", content.Attachment.Filename))
+		w.Header().Set("Content-Disposition", contentDispositionHeader(content.Attachment.Filename, content.Attachment.ContentType))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if content.Attachment.ByteSize > 0 {
 			w.Header().Set("Content-Length", strconv.FormatInt(content.Attachment.ByteSize, 10))
 		}

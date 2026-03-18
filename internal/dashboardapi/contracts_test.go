@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -245,6 +246,21 @@ func requestMultipartForm(t *testing.T, srv *httptest.Server, method, path strin
 	return resp
 }
 
+func assertContentDisposition(t *testing.T, resp *http.Response, wantType, wantFilename string) {
+	t.Helper()
+	got := resp.Header.Get("Content-Disposition")
+	mediaType, params, err := mime.ParseMediaType(got)
+	if err != nil {
+		t.Fatalf("parse content disposition %q: %v", got, err)
+	}
+	if mediaType != wantType {
+		t.Fatalf("content disposition type = %q, want %q", mediaType, wantType)
+	}
+	if params["filename"] != wantFilename {
+		t.Fatalf("content disposition filename = %q, want %q", params["filename"], wantFilename)
+	}
+}
+
 func contractSamplePNGBytes() []byte {
 	return []byte{
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -466,6 +482,10 @@ func TestIssueCommentEndpointsSupportCRUDContracts(t *testing.T) {
 	if contentType := contentResp.Header.Get("Content-Type"); contentType != "text/plain" {
 		t.Fatalf("unexpected attachment content type %q", contentType)
 	}
+	assertContentDisposition(t, contentResp, "attachment", "note.txt")
+	if got := contentResp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("unexpected attachment X-Content-Type-Options header %q", got)
+	}
 
 	updateResp := requestMultipartForm(t, srv, http.MethodPatch, "/api/v1/app/issues/"+issue.Identifier+"/comments/"+commentID, map[string][]string{
 		"body":                  {"Updated UI comment"},
@@ -558,6 +578,7 @@ func TestIssueCommentEndpointsPreserveDuplicateAttachmentBasenames(t *testing.T)
 		if err != nil {
 			t.Fatalf("read attachment content: %v", err)
 		}
+		assertContentDisposition(t, contentResp, "inline", "screenshot.png")
 		_ = contentResp.Body.Close()
 		contents = append(contents, string(data))
 	}
@@ -1054,12 +1075,42 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	if contentType := getAssetContent.Header.Get("Content-Type"); contentType != "image/png" {
 		t.Fatalf("unexpected asset content type %q", contentType)
 	}
+	assertContentDisposition(t, getAssetContent, "inline", "runtime.png")
+	if got := getAssetContent.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("unexpected X-Content-Type-Options header %q", got)
+	}
+
+	htmlAsset := requestMultipartForm(t, srv, http.MethodPost, "/api/v1/app/issues/"+identifier+"/assets", nil, []multipartFilePayload{{
+		FieldName:   "file",
+		Filename:    "payload.html",
+		ContentType: "text/html",
+		Content:     []byte("<script>alert(1)</script>"),
+	}})
+	if htmlAsset.StatusCode != http.StatusCreated {
+		t.Fatalf("upload html asset expected 201, got %d", htmlAsset.StatusCode)
+	}
+	htmlAssetID := decodeResponse(t, htmlAsset)["id"].(string)
+
+	getHTMLAssetContent := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier+"/assets/"+htmlAssetID+"/content", nil)
+	if getHTMLAssetContent.StatusCode != http.StatusOK {
+		t.Fatalf("html asset content expected 200, got %d", getHTMLAssetContent.StatusCode)
+	}
+	assertContentDisposition(t, getHTMLAssetContent, "attachment", "payload.html")
+	if got := getHTMLAssetContent.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("unexpected html asset X-Content-Type-Options header %q", got)
+	}
+	_ = getHTMLAssetContent.Body.Close()
 
 	deleteAsset := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+identifier+"/assets/"+assetID, nil)
 	if deleteAsset.StatusCode != http.StatusOK {
 		t.Fatalf("delete asset expected 200, got %d", deleteAsset.StatusCode)
 	}
 	_ = decodeResponse(t, deleteAsset)
+	deleteHTMLAsset := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+identifier+"/assets/"+htmlAssetID, nil)
+	if deleteHTMLAsset.StatusCode != http.StatusOK {
+		t.Fatalf("delete html asset expected 200, got %d", deleteHTMLAsset.StatusCode)
+	}
+	_ = decodeResponse(t, deleteHTMLAsset)
 
 	getIssueAfterDelete := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
 	if getIssueAfterDelete.StatusCode != http.StatusOK {
