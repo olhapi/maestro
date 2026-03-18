@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -251,8 +252,9 @@ func TestLinearProviderCreateIssueCommentCreatesPlainComment(t *testing.T) {
 	provider.http = server.Client()
 	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
 	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-1"}
+	body := "Review preview is ready."
 
-	if err := provider.CreateIssueComment(context.Background(), project, issue, IssueCommentInput{Body: "Review preview is ready."}); err != nil {
+	if _, err := provider.CreateIssueComment(context.Background(), project, issue, IssueCommentInput{Body: &body}); err != nil {
 		t.Fatalf("CreateIssueComment: %v", err)
 	}
 
@@ -263,6 +265,19 @@ func TestLinearProviderCreateIssueCommentCreatesPlainComment(t *testing.T) {
 	variables := mutationBody["variables"].(map[string]interface{})
 	if variables["issueId"] != "linear-issue-1" || variables["body"] != "Review preview is ready." {
 		t.Fatalf("unexpected comment mutation variables: %#v", variables)
+	}
+}
+
+func TestLinearProviderCreateIssueCommentRejectsEmptyInput(t *testing.T) {
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	project := &kanban.Project{}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-1"}
+
+	comment, err := provider.CreateIssueComment(context.Background(), project, issue, IssueCommentInput{})
+	if !errors.Is(err, kanban.ErrValidation) {
+		t.Fatalf("expected validation error, got comment=%#v err=%v", comment, err)
 	}
 }
 
@@ -336,9 +351,10 @@ func TestLinearProviderCreateIssueCommentUploadsAttachmentsAndAppendsLinks(t *te
 	provider.http = server.Client()
 	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
 	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-2"}
+	body := "Attached reviewer preview."
 
-	err := provider.CreateIssueComment(context.Background(), project, issue, IssueCommentInput{
-		Body: "Attached reviewer preview.",
+	_, err := provider.CreateIssueComment(context.Background(), project, issue, IssueCommentInput{
+		Body: &body,
 		Attachments: []IssueCommentAttachment{
 			{Path: attachmentPath, ContentType: "video/mp4"},
 		},
@@ -357,8 +373,389 @@ func TestLinearProviderCreateIssueCommentUploadsAttachmentsAndAppendsLinks(t *te
 		t.Fatalf("unexpected uploaded body %q", uploadedBody)
 	}
 	commentVars := requests[1].Variables
-	body, _ := commentVars["body"].(string)
-	if !strings.Contains(body, "Attached reviewer preview.") || !strings.Contains(body, "https://linear.example/assets/preview.mp4") {
-		t.Fatalf("expected comment body to include uploaded asset link, got %q", body)
+	renderedBody, _ := commentVars["body"].(string)
+	if !strings.Contains(renderedBody, "Attached reviewer preview.") || !strings.Contains(renderedBody, "https://linear.example/assets/preview.mp4") {
+		t.Fatalf("expected comment body to include uploaded asset link, got %q", renderedBody)
+	}
+	plainBody, attachments := parseLinearCommentBody(renderedBody)
+	if plainBody != "Attached reviewer preview." {
+		t.Fatalf("expected plain body to round-trip, got %q", plainBody)
+	}
+	if len(attachments) != 1 || attachments[0].ByteSize != int64(len("preview-bytes")) {
+		t.Fatalf("expected attachment byte size to round-trip, got %#v", attachments)
+	}
+}
+
+func TestExtractLinearMarkdownAttachmentsUsesStableIDs(t *testing.T) {
+	body := strings.Join([]string{
+		"Legacy preview artifacts:",
+		"- [screenshot.png](https://linear.example/assets/one)",
+		"- [screenshot.png](https://linear.example/assets/two)",
+	}, "\n")
+
+	first := extractLinearMarkdownAttachments(body)
+	second := extractLinearMarkdownAttachments(body)
+
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("expected two attachments, got %#v and %#v", first, second)
+	}
+	if first[0].ID != second[0].ID || first[1].ID != second[1].ID {
+		t.Fatalf("expected stable attachment ids, got %#v and %#v", first, second)
+	}
+	if first[0].ID == first[1].ID {
+		t.Fatalf("expected unique attachment ids, got %#v", first)
+	}
+}
+
+func TestParseLinearCommentBodyIgnoresUnmanagedMarkdownLinks(t *testing.T) {
+	body := strings.Join([]string{
+		"Deployment notes:",
+		"- [runbook](https://example.com/runbook)",
+	}, "\n")
+
+	plain, attachments := parseLinearCommentBody(body)
+
+	if plain != body {
+		t.Fatalf("expected unmanaged body to remain unchanged, got %q", plain)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("expected unmanaged markdown links to stay in the body, got %#v", attachments)
+	}
+}
+
+func TestParseLinearCommentBodyRecognizesLegacyMaestroAttachments(t *testing.T) {
+	body := strings.Join([]string{
+		"Preview is ready.",
+		"",
+		"Reviewer preview artifacts:",
+		"- [preview.mp4](https://linear.example/assets/preview.mp4)",
+	}, "\n")
+
+	plain, attachments := parseLinearCommentBody(body)
+
+	if plain != "Preview is ready." {
+		t.Fatalf("expected legacy attachment section to be stripped from the body, got %q", plain)
+	}
+	if len(attachments) != 1 || attachments[0].Filename != "preview.mp4" {
+		t.Fatalf("expected one parsed legacy attachment, got %#v", attachments)
+	}
+}
+
+func TestLinearProviderListIssueCommentsPaginates(t *testing.T) {
+	var afterValues []interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		query, _ := body["query"].(string)
+		if !strings.Contains(query, "MaestroLinearIssueComments") {
+			t.Fatalf("unexpected graphql query: %s", query)
+		}
+		variables, _ := body["variables"].(map[string]interface{})
+		after := variables["after"]
+		afterValues = append(afterValues, after)
+		switch after {
+		case nil:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issue": map[string]interface{}{
+						"comments": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{
+									"id":        "cmt-1",
+									"body":      "first page",
+									"createdAt": "2026-03-10T10:00:00Z",
+									"updatedAt": "2026-03-10T10:00:00Z",
+									"user":      map[string]interface{}{"displayName": "Reviewer"},
+								},
+							},
+							"pageInfo": map[string]interface{}{
+								"hasNextPage": true,
+								"endCursor":   "cursor-1",
+							},
+						},
+					},
+				},
+			})
+		case "cursor-1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issue": map[string]interface{}{
+						"comments": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{
+									"id":        "cmt-2",
+									"body":      "second page",
+									"createdAt": "2026-03-10T11:00:00Z",
+									"updatedAt": "2026-03-10T11:00:00Z",
+									"user":      map[string]interface{}{"displayName": "Reviewer"},
+								},
+							},
+							"pageInfo": map[string]interface{}{
+								"hasNextPage": false,
+								"endCursor":   "",
+							},
+						},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected pagination cursor: %#v", after)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-3"}
+
+	comments, err := provider.ListIssueComments(context.Background(), project, issue)
+	if err != nil {
+		t.Fatalf("ListIssueComments: %v", err)
+	}
+
+	if len(comments) != 2 {
+		t.Fatalf("expected both pages of comments, got %#v", comments)
+	}
+	if len(afterValues) != 2 || afterValues[0] != nil || afterValues[1] != "cursor-1" {
+		t.Fatalf("unexpected pagination cursors: %#v", afterValues)
+	}
+}
+
+func TestLinearProviderDeleteIssueCommentRejectsCommentOutsideIssue(t *testing.T) {
+	var requestCount int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		query, _ := body["query"].(string)
+		if !strings.Contains(query, "MaestroLinearIssueComments") {
+			t.Fatalf("unexpected graphql query: %s", query)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"comments": map[string]interface{}{
+						"nodes": []interface{}{},
+						"pageInfo": map[string]interface{}{
+							"hasNextPage": false,
+							"endCursor":   "",
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-4"}
+
+	err := provider.DeleteIssueComment(context.Background(), project, issue, "cmt-missing")
+	if !errors.Is(err, kanban.ErrNotFound) {
+		t.Fatalf("expected not found, got %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected only ownership lookup request, got %d", requestCount)
+	}
+}
+
+func TestLinearProviderGetIssueCommentAttachmentContentDoesNotForwardAuthHeader(t *testing.T) {
+	var attachmentAuthHeader string
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/asset":
+			attachmentAuthHeader = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte("attachment-bytes"))
+		default:
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			query, _ := body["query"].(string)
+			if !strings.Contains(query, "MaestroLinearIssueComments") {
+				t.Fatalf("unexpected graphql query: %s", query)
+			}
+			renderedBody := renderLinearCommentBody("Preview", []kanban.IssueCommentAttachment{{
+				ID:       "att-1",
+				Filename: "preview.txt",
+				URL:      server.URL + "/asset",
+			}})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issue": map[string]interface{}{
+						"comments": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{
+									"id":        "cmt-1",
+									"body":      renderedBody,
+									"createdAt": "2026-03-10T10:00:00Z",
+									"updatedAt": "2026-03-10T10:00:00Z",
+									"user":      map[string]interface{}{"displayName": "Reviewer"},
+								},
+							},
+							"pageInfo": map[string]interface{}{
+								"hasNextPage": false,
+								"endCursor":   "",
+							},
+						},
+					},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-5"}
+
+	content, err := provider.GetIssueCommentAttachmentContent(context.Background(), project, issue, "cmt-1", "att-1")
+	if err != nil {
+		t.Fatalf("GetIssueCommentAttachmentContent: %v", err)
+	}
+	defer content.Content.Close()
+
+	data, err := io.ReadAll(content.Content)
+	if err != nil {
+		t.Fatalf("read attachment content: %v", err)
+	}
+	if string(data) != "attachment-bytes" {
+		t.Fatalf("unexpected attachment body %q", string(data))
+	}
+	if attachmentAuthHeader != "" {
+		t.Fatalf("expected no Authorization header on attachment request, got %q", attachmentAuthHeader)
+	}
+}
+
+func TestLinearProviderGetIssueCommentAttachmentContentRejectsUntrustedHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		query, _ := body["query"].(string)
+		if !strings.Contains(query, "MaestroLinearIssueComments") {
+			t.Fatalf("unexpected graphql query: %s", query)
+		}
+		renderedBody := renderLinearCommentBody("Preview", []kanban.IssueCommentAttachment{{
+			ID:       "att-1",
+			Filename: "preview.txt",
+			URL:      "https://example.com/asset",
+		}})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"comments": map[string]interface{}{
+						"nodes": []map[string]interface{}{
+							{
+								"id":        "cmt-1",
+								"body":      renderedBody,
+								"createdAt": "2026-03-10T10:00:00Z",
+								"updatedAt": "2026-03-10T10:00:00Z",
+								"user":      map[string]interface{}{"displayName": "Reviewer"},
+							},
+						},
+						"pageInfo": map[string]interface{}{
+							"hasNextPage": false,
+							"endCursor":   "",
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-6"}
+
+	content, err := provider.GetIssueCommentAttachmentContent(context.Background(), project, issue, "cmt-1", "att-1")
+	if !errors.Is(err, kanban.ErrValidation) {
+		t.Fatalf("expected validation error, got content=%#v err=%v", content, err)
+	}
+}
+
+func TestLinearProviderUpdateIssueCommentRejectsRemovingAllContent(t *testing.T) {
+	var requestCount int
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		query, _ := body["query"].(string)
+		if !strings.Contains(query, "MaestroLinearIssueComments") {
+			t.Fatalf("unexpected graphql query: %s", query)
+		}
+		renderedBody := renderLinearCommentBody("Preview", []kanban.IssueCommentAttachment{{
+			ID:       "att-1",
+			Filename: "preview.txt",
+			URL:      server.URL + "/asset",
+		}})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"comments": map[string]interface{}{
+						"nodes": []map[string]interface{}{
+							{
+								"id":        "cmt-1",
+								"body":      renderedBody,
+								"createdAt": "2026-03-10T10:00:00Z",
+								"updatedAt": "2026-03-10T10:00:00Z",
+								"user":      map[string]interface{}{"displayName": "Reviewer"},
+							},
+						},
+						"pageInfo": map[string]interface{}{
+							"hasNextPage": false,
+							"endCursor":   "",
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{ProviderConfig: map[string]interface{}{"endpoint": server.URL}}
+	issue := &kanban.Issue{ProviderIssueRef: "linear-issue-7"}
+	emptyBody := ""
+
+	comment, err := provider.UpdateIssueComment(context.Background(), project, issue, "cmt-1", IssueCommentInput{
+		Body:                &emptyBody,
+		RemoveAttachmentIDs: []string{"att-1"},
+	})
+	if !errors.Is(err, kanban.ErrValidation) {
+		t.Fatalf("expected validation error, got comment=%#v err=%v", comment, err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected only the ownership lookup request, got %d", requestCount)
 	}
 }

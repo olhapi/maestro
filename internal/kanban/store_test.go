@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -2336,6 +2337,32 @@ func TestDeleteIssue(t *testing.T) {
 	}
 }
 
+func TestDeleteIssueRemovesReadOnlyWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only directory permissions behave differently on Windows")
+	}
+
+	store := setupTestStore(t)
+
+	issue, _ := store.CreateIssue("", "", "To Delete", "", 0, nil)
+	workspacePath := filepath.Join(t.TempDir(), issue.Identifier)
+	makeReadOnlyWorkspaceTree(t, workspacePath)
+	if _, err := store.CreateWorkspace(issue.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	if err := store.DeleteIssue(issue.ID); err != nil {
+		t.Fatalf("DeleteIssue: %v", err)
+	}
+
+	if _, err := store.GetWorkspace(issue.ID); err == nil {
+		t.Fatal("expected workspace record to be deleted")
+	}
+	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("expected workspace path to be removed, got err=%v", err)
+	}
+}
+
 func TestDeleteIssueReturnsNotFound(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -2508,6 +2535,72 @@ func TestDeleteWorkspace(t *testing.T) {
 	}
 	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
 		t.Fatalf("expected workspace path to be removed, got err=%v", err)
+	}
+}
+
+func TestDeleteWorkspaceRemovesReadOnlyTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only directory permissions behave differently on Windows")
+	}
+
+	store := setupTestStore(t)
+
+	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	makeReadOnlyWorkspaceTree(t, workspacePath)
+	if _, err := store.CreateWorkspace(issue.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	if err := store.DeleteWorkspace(issue.ID); err != nil {
+		t.Fatalf("DeleteWorkspace: %v", err)
+	}
+
+	if _, err := store.GetWorkspace(issue.ID); err == nil {
+		t.Fatal("expected workspace record to be deleted")
+	}
+	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("expected workspace path to be removed, got err=%v", err)
+	}
+}
+
+func makeReadOnlyWorkspaceTree(t *testing.T, root string) {
+	t.Helper()
+
+	moduleDir := filepath.Join(root, ".maestro", "tmp", "go-mod", "gopkg.in", "yaml.v3@v3.0.1")
+	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll module dir: %v", err)
+	}
+
+	testFile := filepath.Join(moduleDir, "decode_test.go")
+	if err := os.WriteFile(testFile, []byte("package yaml\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile decode_test.go: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if info == nil {
+				return nil
+			}
+			if info.IsDir() {
+				_ = os.Chmod(path, 0o700)
+				return nil
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				_ = os.Chmod(path, 0o600)
+			}
+			return nil
+		})
+	})
+
+	if err := os.Chmod(testFile, 0o444); err != nil {
+		t.Fatalf("Chmod decode_test.go: %v", err)
+	}
+	if err := os.Chmod(moduleDir, 0o555); err != nil {
+		t.Fatalf("Chmod module dir: %v", err)
 	}
 }
 

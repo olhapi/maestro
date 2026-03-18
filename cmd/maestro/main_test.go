@@ -396,6 +396,51 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 		t.Fatalf("expected image metadata in issue show output, got %q", stdout)
 	}
 
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "comments", "add", created.Identifier, "--body", "First comment", "--json")
+	if code != 0 {
+		t.Fatalf("issue comment add failed: %d stderr=%s", code, stderr)
+	}
+	var comment kanban.IssueComment
+	if err := json.Unmarshal([]byte(stdout), &comment); err != nil {
+		t.Fatalf("decode issue comment add: %v\n%s", err, stdout)
+	}
+	if comment.Body != "First comment" {
+		t.Fatalf("unexpected issue comment payload: %+v", comment)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "comments", "update", created.Identifier, comment.ID, "--body", "Updated comment", "--json")
+	if code != 0 {
+		t.Fatalf("issue comment update failed: %d stderr=%s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &comment); err != nil {
+		t.Fatalf("decode issue comment update: %v\n%s", err, stdout)
+	}
+	if comment.Body != "Updated comment" {
+		t.Fatalf("unexpected updated issue comment payload: %+v", comment)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "comments", "list", created.Identifier, "--json")
+	if code != 0 {
+		t.Fatalf("issue comment list failed: %d stderr=%s", code, stderr)
+	}
+	var commentList struct {
+		Items []kanban.IssueComment `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &commentList); err != nil {
+		t.Fatalf("decode issue comment list: %v\n%s", err, stdout)
+	}
+	if len(commentList.Items) != 1 || commentList.Items[0].ID != comment.ID {
+		t.Fatalf("unexpected issue comment list payload: %+v", commentList)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "comments", "delete", created.Identifier, comment.ID, "--json")
+	if code != 0 {
+		t.Fatalf("issue comment delete failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\"deleted\":true") {
+		t.Fatalf("unexpected issue comment delete payload: %s", stdout)
+	}
+
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "remove", created.Identifier, image.ID, "--json")
 	if code != 0 {
 		t.Fatalf("issue image remove failed: %d stderr=%s", code, stderr)
@@ -441,6 +486,48 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "\"columns\"") || !strings.Contains(stdout, "\"counts\"") {
 		t.Fatalf("unexpected board payload: %s", stdout)
+	}
+}
+
+func TestIssueCommentAddRejectsEmptyInputForLinearIssues(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     kanban.ProviderKindLinear,
+		ProviderIssueRef: "linear-issue-1",
+		Identifier:       "LIN-1",
+		Title:            "Provider issue",
+		State:            kanban.StateBacklog,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	code, _, stderr := runCLI(t, "--db", dbPath, "issue", "comments", "add", issue.Identifier)
+	if code == 0 {
+		t.Fatalf("expected issue comment add to fail without body or attachments")
+	}
+	if !strings.Contains(stderr, "comment body or attachments are required") {
+		t.Fatalf("expected validation error, got %q", stderr)
 	}
 }
 

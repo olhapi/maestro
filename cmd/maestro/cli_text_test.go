@@ -226,6 +226,18 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 		t.Fatalf("unexpected issue show output %q", stdout)
 	}
 
+	code, _, stderr = runCLI(t, "--db", dbPath, "issue", "comments", "add", issue.Identifier, "--body", "CLI note")
+	if code != 0 {
+		t.Fatalf("issue comment add failed: %d stderr=%s", code, stderr)
+	}
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "show", issue.Identifier)
+	if code != 0 {
+		t.Fatalf("issue show with comments failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Comments:\t1") || !strings.Contains(stdout, "CLI note") {
+		t.Fatalf("expected comment metadata in issue show output %q", stdout)
+	}
+
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "move", issue.Identifier, "done", "--quiet")
 	if code != 0 {
 		t.Fatalf("issue move failed: %d stderr=%s", code, stderr)

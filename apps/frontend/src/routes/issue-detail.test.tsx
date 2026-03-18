@@ -5,6 +5,7 @@ import { vi } from "vitest";
 import { IssueDetailPage } from "@/routes/issue-detail";
 import {
   makeBootstrapResponse,
+  makeIssueComment,
   makeIssueDetail,
   makeIssueImage,
 } from "@/test/fixtures";
@@ -28,6 +29,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     bootstrap: vi.fn(),
     getIssue: vi.fn(),
+    listIssueComments: vi.fn(),
     getIssueExecution: vi.fn(),
     retryIssue: vi.fn(),
     runIssueNow: vi.fn(),
@@ -40,6 +42,9 @@ vi.mock("@/lib/api", () => ({
     sendIssueCommand: vi.fn(),
     uploadIssueImage: vi.fn(),
     deleteIssueImage: vi.fn(),
+    createIssueComment: vi.fn(),
+    updateIssueComment: vi.fn(),
+    deleteIssueComment: vi.fn(),
   },
 }));
 
@@ -48,6 +53,7 @@ const { api } = await import("@/lib/api");
 describe("IssueDetailPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.listIssueComments).mockResolvedValue({ items: [] });
   });
 
   it("shows interrupted persisted session details instead of an idle no-session view", async () => {
@@ -529,6 +535,230 @@ describe("IssueDetailPage", () => {
     await waitFor(() => {
       expect(api.deleteIssueImage).toHaveBeenCalledWith(issue.identifier, "img-1");
     });
+  });
+
+  it("renders comments and supports create, reply, update, and delete flows", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    const reply = makeIssueComment({
+      id: "cmt-2",
+      parent_comment_id: "cmt-1",
+      body: "I checked it in the latest run.",
+      author: { type: "source", name: "CLI" },
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.listIssueComments).mockResolvedValue({
+      items: [makeIssueComment({ replies: [reply] })],
+    });
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.createIssueComment).mockResolvedValue(makeIssueComment({ id: "cmt-3" }));
+    vi.mocked(api.updateIssueComment).mockResolvedValue(makeIssueComment({ body: "Updated comment" }));
+    vi.mocked(api.deleteIssueComment).mockResolvedValue({
+      deleted: true,
+      identifier: issue.identifier,
+      comment_id: "cmt-1",
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("issue-comments-card")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Please verify the retry threshold before merge.")).toBeInTheDocument();
+    expect(screen.getByText("I checked it in the latest run.")).toBeInTheDocument();
+
+    const commentBody = screen.getByPlaceholderText(/add context, ask for a change/i);
+    fireEvent.change(commentBody, { target: { value: "New comment body" } });
+    fireEvent.click(screen.getByRole("button", { name: /post comment/i }));
+    await waitFor(() => {
+      expect(api.createIssueComment).toHaveBeenCalledWith(issue.identifier, {
+        body: "New comment body",
+        parent_comment_id: undefined,
+        files: [],
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^reply$/i }));
+    fireEvent.change(screen.getByPlaceholderText(/write a reply/i), { target: { value: "Reply body" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^reply$/i })[1]);
+    await waitFor(() => {
+      expect(api.createIssueComment).toHaveBeenCalledWith(issue.identifier, {
+        body: "Reply body",
+        parent_comment_id: "cmt-1",
+        files: [],
+      });
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /edit/i })[0]);
+    fireEvent.change(screen.getByDisplayValue("Please verify the retry threshold before merge."), {
+      target: { value: "Updated comment" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => {
+      expect(api.updateIssueComment).toHaveBeenCalledWith(issue.identifier, "cmt-1", {
+        body: "Updated comment",
+        files: [],
+        remove_attachment_ids: [],
+      });
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^delete$/i })[0]);
+    await waitFor(() => {
+      expect(api.deleteIssueComment).toHaveBeenCalledWith(issue.identifier, "cmt-1");
+    });
+  });
+
+  it("disables the reply composer while a reply is being created", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    let resolveCreate!: (value: ReturnType<typeof makeIssueComment>) => void;
+    const createPromise = new Promise<ReturnType<typeof makeIssueComment>>((resolve) => {
+      resolveCreate = resolve;
+    });
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.listIssueComments).mockResolvedValue({
+      items: [makeIssueComment()],
+    });
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.createIssueComment).mockImplementation(() => createPromise);
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("issue-comments-card")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^reply$/i }));
+    fireEvent.change(screen.getByPlaceholderText(/write a reply/i), { target: { value: "Reply body" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^reply$/i })[1]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /replying/i })).toBeDisabled();
+    });
+
+    resolveCreate(makeIssueComment({ id: "cmt-2", parent_comment_id: "cmt-1", body: "Reply body" }));
+
+    await waitFor(() => {
+      expect(api.createIssueComment).toHaveBeenCalledWith(issue.identifier, {
+        body: "Reply body",
+        parent_comment_id: "cmt-1",
+        files: [],
+      });
+    });
+  });
+
+  it("clears pending attachment removals when edit is cancelled", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    const attachment = {
+      id: "att-1",
+      comment_id: "cmt-1",
+      filename: "note.txt",
+      content_type: "text/plain",
+      byte_size: 12,
+      created_at: "2026-03-09T11:40:00Z",
+      updated_at: "2026-03-09T11:40:00Z",
+    };
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.listIssueComments).mockResolvedValue({
+      items: [makeIssueComment({ attachments: [attachment] })],
+    });
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.updateIssueComment).mockResolvedValue(makeIssueComment({ attachments: [attachment] }));
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("issue-comments-card")).toBeInTheDocument();
+    });
+
+    const commentsCard = screen.getByTestId("issue-comments-card");
+
+    fireEvent.click(within(commentsCard).getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(within(commentsCard).getByRole("button", { name: /remove note.txt/i }));
+    fireEvent.click(within(commentsCard).getByRole("button", { name: /^cancel$/i }));
+
+    fireEvent.click(within(commentsCard).getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(within(commentsCard).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(api.updateIssueComment).toHaveBeenCalledWith(issue.identifier, "cmt-1", {
+        body: "Please verify the retry threshold before merge.",
+        files: [],
+        remove_attachment_ids: [],
+      });
+    });
+  });
+
+  it("keeps the issue page usable when comments fail to load", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.listIssueComments).mockRejectedValue(new Error("comments unavailable"));
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(issue.title)).toBeInTheDocument();
+    });
+    expect(screen.getByText("Comments are temporarily unavailable")).toBeInTheDocument();
+    expect(screen.getByText("comments unavailable")).toBeInTheDocument();
   });
 
   it("confirms issue deletion before deleting the issue", async () => {

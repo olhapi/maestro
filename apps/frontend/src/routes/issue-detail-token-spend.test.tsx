@@ -23,6 +23,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     bootstrap: vi.fn(),
     getIssue: vi.fn(),
+    listIssueComments: vi.fn(),
     getIssueExecution: vi.fn(),
     retryIssue: vi.fn(),
     deleteIssue: vi.fn(),
@@ -38,6 +39,7 @@ const { api } = await import("@/lib/api");
 describe("IssueDetailPage token spend", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.listIssueComments).mockResolvedValue({ items: [] });
   });
 
   it("shows live session tokens separately from the lifetime issue total", async () => {

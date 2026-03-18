@@ -3,7 +3,9 @@ package kanban
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -232,6 +234,34 @@ func (s *Store) migrate() error {
 			updated_at DATETIME NOT NULL,
 			FOREIGN KEY (issue_id) REFERENCES issues(id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS issue_comments (
+			id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			parent_comment_id TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL DEFAULT '',
+			author_json TEXT NOT NULL DEFAULT '{}',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_comment_ref TEXT NOT NULL DEFAULT '',
+			deleted_at DATETIME,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (issue_id) REFERENCES issues(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_comments_issue_created ON issue_comments(issue_id, created_at ASC, id ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_comments_issue_parent_created ON issue_comments(issue_id, parent_comment_id, created_at ASC, id ASC)`,
+		`CREATE TABLE IF NOT EXISTS issue_comment_attachments (
+			id TEXT PRIMARY KEY,
+			comment_id TEXT NOT NULL,
+			filename TEXT NOT NULL,
+			content_type TEXT NOT NULL,
+			byte_size INTEGER NOT NULL,
+			url TEXT NOT NULL DEFAULT '',
+			storage_path TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (comment_id) REFERENCES issue_comments(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_comment_attachments_comment_created ON issue_comment_attachments(comment_id, created_at ASC, id ASC)`,
 		`CREATE TABLE IF NOT EXISTS workspaces (
 			issue_id TEXT PRIMARY KEY,
 			path TEXT NOT NULL,
@@ -358,6 +388,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.ensureIssueImageTables(); err != nil {
+		return err
+	}
+	if err := s.ensureIssueCommentTables(); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_projects_repo_path_unique`); err != nil {
@@ -2070,16 +2103,18 @@ func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues [
 	}
 
 	var imagePaths []string
+	var commentAttachments []IssueCommentAttachment
 	issueImageDirs := make(map[string]struct{})
 	for providerIssueRef, issueID := range currentProjectShadowByRef {
 		if _, ok := seenRefs[providerIssueRef]; ok {
 			continue
 		}
-		removedPaths, issueImageDir, err := s.deleteIssueTx(tx, issueID)
+		removedPaths, removedCommentAttachments, issueImageDir, err := s.deleteIssueTx(tx, issueID)
 		if err != nil {
 			return err
 		}
 		imagePaths = append(imagePaths, removedPaths...)
+		commentAttachments = append(commentAttachments, removedCommentAttachments...)
 		if issueImageDir != "" {
 			issueImageDirs[issueImageDir] = struct{}{}
 		}
@@ -2091,6 +2126,7 @@ func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues [
 	tx = nil
 
 	s.cleanupIssueImagePaths(imagePaths)
+	s.cleanupIssueCommentAttachmentPaths(commentAttachments)
 	for issueImageDir := range issueImageDirs {
 		_ = os.Remove(issueImageDir)
 	}
@@ -2897,7 +2933,7 @@ func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, e
 	return persisted, nil
 }
 
-func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, string, error) {
+func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAttachment, string, error) {
 	var workspacePath string
 	err := tx.QueryRow(`SELECT path FROM workspaces WHERE issue_id = ?`, id).Scan(&workspacePath)
 	switch {
@@ -2905,53 +2941,57 @@ func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, string, error) {
 	case err == sql.ErrNoRows:
 		workspacePath = ""
 	default:
-		return nil, "", err
+		return nil, nil, "", err
 	}
 
 	if _, err := tx.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	imagePaths, err := s.deleteIssueImagesTx(tx, id)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
+	}
+	commentAttachments, err := s.deleteIssueCommentsTx(tx, id)
+	if err != nil {
+		return nil, nil, "", err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_recurrences WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_activity_updates WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_activity_entries WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if _, err := tx.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	res, err := tx.Exec(`DELETE FROM issues WHERE id = ?`, id)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
-		return nil, "", notFoundError("issue", id)
+		return nil, nil, "", notFoundError("issue", id)
 	}
 	if workspacePath != "" {
 		if err := s.appendChangeTx(tx, "workspace", id, "deleted", map[string]interface{}{"path": workspacePath}); err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 	}
 	if err := s.appendChangeTx(tx, "issue", id, "deleted", nil); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	return imagePaths, filepath.Join(s.IssueImageAssetRoot(), id), nil
+	return imagePaths, commentAttachments, filepath.Join(s.IssueImageAssetRoot(), id), nil
 }
 
 func (s *Store) DeleteIssue(id string) error {
@@ -2962,7 +3002,7 @@ func (s *Store) DeleteIssue(id string) error {
 	}
 	issueImageDir := filepath.Join(s.IssueImageAssetRoot(), id)
 	if workspace != nil {
-		if err := os.RemoveAll(workspace.Path); err != nil {
+		if err := removeWorkspaceTree(workspace.Path); err != nil {
 			return err
 		}
 	}
@@ -2975,7 +3015,7 @@ func (s *Store) DeleteIssue(id string) error {
 			_ = tx.Rollback()
 		}
 	}()
-	imagePaths, _, err := s.deleteIssueTx(tx, id)
+	imagePaths, commentAttachments, _, err := s.deleteIssueTx(tx, id)
 	if err != nil {
 		return err
 	}
@@ -2984,6 +3024,7 @@ func (s *Store) DeleteIssue(id string) error {
 	}
 	tx = nil
 	s.cleanupIssueImagePaths(imagePaths)
+	s.cleanupIssueCommentAttachmentPaths(commentAttachments)
 	_ = os.Remove(issueImageDir)
 	return nil
 }
@@ -3058,7 +3099,7 @@ func (s *Store) DeleteWorkspace(issueID string) error {
 		}
 		return err
 	}
-	if err := os.RemoveAll(workspace.Path); err != nil {
+	if err := removeWorkspaceTree(workspace.Path); err != nil {
 		return err
 	}
 	_, err = s.db.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, issueID)
@@ -3066,6 +3107,58 @@ func (s *Store) DeleteWorkspace(issueID string) error {
 		return err
 	}
 	return s.appendChange("workspace", issueID, "deleted", map[string]interface{}{"path": workspace.Path})
+}
+
+func removeWorkspaceTree(path string) error {
+	err := os.RemoveAll(path)
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	if err := makeTreeUserWritable(path); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func makeTreeUserWritable(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		perm := info.Mode().Perm()
+		want := perm | 0o600
+		if info.IsDir() {
+			want |= 0o100
+		}
+		if want == perm {
+			return nil
+		}
+		if err := os.Chmod(path, want); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {

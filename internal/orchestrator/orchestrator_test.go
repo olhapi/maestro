@@ -101,8 +101,24 @@ func (p *countingProvider) SetIssueState(context.Context, *kanban.Project, *kanb
 	return nil, providers.ErrUnsupportedCapability
 }
 
-func (p *countingProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+func (p *countingProvider) ListIssueComments(context.Context, *kanban.Project, *kanban.Issue) ([]kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) UpdateIssueComment(context.Context, *kanban.Project, *kanban.Issue, string, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) DeleteIssueComment(context.Context, *kanban.Project, *kanban.Issue, string) error {
 	return providers.ErrUnsupportedCapability
+}
+
+func (p *countingProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
+	return nil, providers.ErrUnsupportedCapability
 }
 
 func (p *countingProvider) Calls() int {
@@ -157,8 +173,24 @@ func (p *blockingIssueProvider) SetIssueState(context.Context, *kanban.Project, 
 	return nil, providers.ErrUnsupportedCapability
 }
 
-func (p *blockingIssueProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+func (p *blockingIssueProvider) ListIssueComments(context.Context, *kanban.Project, *kanban.Issue) ([]kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) UpdateIssueComment(context.Context, *kanban.Project, *kanban.Issue, string, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) DeleteIssueComment(context.Context, *kanban.Project, *kanban.Issue, string) error {
 	return providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
+	return nil, providers.ErrUnsupportedCapability
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {

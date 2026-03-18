@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 
 import { IssueCard } from '@/components/dashboard/issue-card'
 import { PageHeader } from '@/components/dashboard/page-header'
-import { IssuePreviewSheet } from '@/components/dashboard/issue-preview-sheet'
+import { IssuePreviewBoundary } from '@/components/dashboard/issue-preview-boundary'
 import { IssueDialog } from '@/components/forms'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -208,7 +208,7 @@ export function EpicDetailPage() {
         }}
       />
 
-      <IssuePreviewSheet
+      <IssuePreviewBoundary
         issue={previewIssue}
         bootstrap={bootstrap.data}
         open={Boolean(previewIssue)}

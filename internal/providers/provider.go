@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/olhapi/maestro/internal/kanban"
@@ -34,8 +35,16 @@ type IssueCommentAttachment struct {
 }
 
 type IssueCommentInput struct {
-	Body        string
-	Attachments []IssueCommentAttachment
+	Body                *string
+	ParentCommentID     string
+	Attachments         []IssueCommentAttachment
+	RemoveAttachmentIDs []string
+	Author              kanban.IssueCommentAuthor
+}
+
+type IssueCommentAttachmentContent struct {
+	Attachment kanban.IssueCommentAttachment
+	Content    io.ReadCloser
 }
 
 type Provider interface {
@@ -48,7 +57,11 @@ type Provider interface {
 	UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
 	DeleteIssue(context.Context, *kanban.Project, *kanban.Issue) error
 	SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error)
-	CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error
+	ListIssueComments(context.Context, *kanban.Project, *kanban.Issue) ([]kanban.IssueComment, error)
+	CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) (*kanban.IssueComment, error)
+	UpdateIssueComment(context.Context, *kanban.Project, *kanban.Issue, string, IssueCommentInput) (*kanban.IssueComment, error)
+	DeleteIssueComment(context.Context, *kanban.Project, *kanban.Issue, string) error
+	GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*IssueCommentAttachmentContent, error)
 }
 
 func normalizeKind(kind string) string {

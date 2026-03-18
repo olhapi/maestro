@@ -6,6 +6,7 @@ import { Activity, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RotateC
 import { CommandPalette } from '@/components/command-palette'
 import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
 import { Badge } from '@/components/ui/badge'
+import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
 import { api } from '@/lib/api'
@@ -325,19 +326,25 @@ export function AppShell() {
               </button>
             </div>
           </header>
-          <GlobalInterruptPanel
-            count={interrupts.data?.count ?? 0}
-            current={interrupts.data?.current}
-            hiddenCurrentId={effectiveHiddenInterruptId}
-            isSubmitting={respondToInterrupt.isPending}
-            onRespond={({ interruptId, ...body }) => {
-              const current = interrupts.data?.current
-              if (!current || current.id !== interruptId) {
-                return
-              }
-              respondToInterrupt.mutate({ id: interruptId, body })
-            }}
-          />
+          <ComponentErrorBoundary
+            label="interrupt panel"
+            resetKeys={[interrupts.data?.current?.id ?? '', interrupts.data?.count ?? 0, effectiveHiddenInterruptId ?? '']}
+            scope="widget"
+          >
+            <GlobalInterruptPanel
+              count={interrupts.data?.count ?? 0}
+              current={interrupts.data?.current}
+              hiddenCurrentId={effectiveHiddenInterruptId}
+              isSubmitting={respondToInterrupt.isPending}
+              onRespond={({ interruptId, ...body }) => {
+                const current = interrupts.data?.current
+                if (!current || current.id !== interruptId) {
+                  return
+                }
+                respondToInterrupt.mutate({ id: interruptId, body })
+              }}
+            />
+          </ComponentErrorBoundary>
           <div
             className={cn(
               'flex-1 min-w-0 p-[var(--shell-padding)]',
@@ -373,7 +380,9 @@ export function AppShell() {
           })}
         </div>
       </nav>
-      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+      <ComponentErrorBoundary label="command palette" resetKeys={[paletteOpen]} scope="widget">
+        {paletteOpen ? <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} /> : null}
+      </ComponentErrorBoundary>
     </div>
   )
 }

@@ -1445,7 +1445,7 @@ func (o *Orchestrator) publishIssuePreviewAsync(issue *kanban.Issue, phase kanba
 		ctx, cancel := context.WithTimeout(context.Background(), reviewPreviewPublishTimeout)
 		defer cancel()
 		if err := o.service.CreateIssueComment(ctx, issue.Identifier, providers.IssueCommentInput{
-			Body: commentBody,
+			Body: &commentBody,
 			Attachments: []providers.IssueCommentAttachment{{
 				Path: previewPath,
 			}},
