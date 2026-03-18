@@ -366,6 +366,7 @@ func TestBridgeSurvivesDaemonRestartWithoutRestartingBridge(t *testing.T) {
 
 	var stdout bytes.Buffer
 	bridge := newStdioBridge(dbPath, bytes.NewBuffer(nil), &stdout, &bytes.Buffer{})
+	bridge.newRemote = testBridgeRemoteFactory
 	if err := bridge.connect(ctx); err != nil {
 		t.Fatalf("bridge.connect failed: %v", err)
 	}
@@ -404,6 +405,7 @@ func TestBridgeReconnectWaitsForReplacementDaemon(t *testing.T) {
 
 	var stdout bytes.Buffer
 	bridge := newStdioBridge(dbPath, bytes.NewBuffer(nil), &stdout, &bytes.Buffer{})
+	bridge.newRemote = testBridgeRemoteFactory
 	bridge.reconnectWindow = 800 * time.Millisecond
 	bridge.reconnectPollInterval = 20 * time.Millisecond
 	if err := bridge.connect(ctx); err != nil {
@@ -457,6 +459,7 @@ func TestBridgeReconnectFailsCleanlyWhenDaemonDoesNotReturn(t *testing.T) {
 
 	var stdout bytes.Buffer
 	bridge := newStdioBridge(dbPath, bytes.NewBuffer(nil), &stdout, &bytes.Buffer{})
+	bridge.newRemote = testBridgeRemoteFactory
 	bridge.reconnectWindow = 150 * time.Millisecond
 	bridge.reconnectPollInterval = 20 * time.Millisecond
 	if err := bridge.connect(ctx); err != nil {
@@ -598,6 +601,14 @@ func fakeBridgeResponse(id mcpapi.RequestId, body string) *transport.JSONRPCResp
 		ID:      id,
 		Result:  json.RawMessage(body),
 	}
+}
+
+func testBridgeRemoteFactory(entry DaemonEntry) (transport.BidirectionalInterface, error) {
+	return transport.NewStreamableHTTP(entry.BaseURL,
+		transport.WithHTTPHeaders(map[string]string{
+			"Authorization": "Bearer " + entry.BearerToken,
+		}),
+	)
 }
 
 func initializeBridgeSession(t *testing.T, bridge *stdioBridge, stdout *bytes.Buffer) {
