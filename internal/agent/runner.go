@@ -42,6 +42,7 @@ type RunResult struct {
 	Success    bool
 	Output     string
 	Error      error
+	StopReason string
 	AppSession *appserver.Session
 }
 
@@ -62,6 +63,9 @@ Execution guidance:
 
 const activeThreadCommandPollWindow = 250 * time.Millisecond
 const appServerIssueImageStageDir = ".maestro/issue-images"
+const planApprovalStopReason = "plan_approval_pending"
+
+var proposedPlanBlockPattern = regexp.MustCompile(`(?s)<proposed_plan>\s*(.*?)\s*</proposed_plan>`)
 
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
 	return NewRunnerWithExtensions(provider, store, nil)
@@ -133,18 +137,27 @@ func (r *Runner) applyIssuePermissionProfile(workflow *config.Workflow, issue *k
 	cloned := *workflow
 	cloned.Config = workflow.Config
 	cloned.Config.Codex = workflow.Config.Codex
-	config := r.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy)
-	cloned.Config.Codex.ApprovalPolicy = config.ApprovalPolicy
+	permissionConfig := r.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	cloned.Config.Codex.ApprovalPolicy = permissionConfig.ApprovalPolicy
+	cloned.Config.Codex.InitialCollaborationMode = permissionConfig.InitialCollaborationMode
 	return &cloned
 }
 
 type permissionConfig struct {
-	ApprovalPolicy    interface{}
-	ThreadSandbox     string
-	TurnSandboxPolicy map[string]interface{}
+	ApprovalPolicy           interface{}
+	ThreadSandbox            string
+	TurnSandboxPolicy        map[string]interface{}
+	InitialCollaborationMode string
 }
 
-func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy interface{}) permissionConfig {
+func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy interface{}, initialCollaborationMode string) permissionConfig {
+	initialCollaborationMode = strings.TrimSpace(initialCollaborationMode)
+	if initialCollaborationMode == "" {
+		initialCollaborationMode = config.InitialCollaborationModePlan
+	}
+	if override := r.effectiveInitialCollaborationMode(issue); override != "" {
+		initialCollaborationMode = override
+	}
 	switch r.effectivePermissionProfile(issue) {
 	case kanban.PermissionProfileFullAccess:
 		return permissionConfig{
@@ -154,12 +167,21 @@ func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy in
 				"type":          "dangerFullAccess",
 				"networkAccess": true,
 			},
+			InitialCollaborationMode: initialCollaborationMode,
+		}
+	case kanban.PermissionProfilePlanThenFullAccess:
+		return permissionConfig{
+			ApprovalPolicy:           "never",
+			ThreadSandbox:            "workspace-write",
+			TurnSandboxPolicy:        nil,
+			InitialCollaborationMode: config.InitialCollaborationModePlan,
 		}
 	default:
 		return permissionConfig{
-			ApprovalPolicy:    approvalPolicy,
-			ThreadSandbox:     "workspace-write",
-			TurnSandboxPolicy: nil,
+			ApprovalPolicy:           approvalPolicy,
+			ThreadSandbox:            "workspace-write",
+			TurnSandboxPolicy:        nil,
+			InitialCollaborationMode: initialCollaborationMode,
 		}
 	}
 }
@@ -181,6 +203,13 @@ func (r *Runner) effectivePermissionProfile(issue *kanban.Issue) kanban.Permissi
 		return kanban.PermissionProfileDefault
 	}
 	return kanban.NormalizePermissionProfile(string(project.PermissionProfile))
+}
+
+func (r *Runner) effectiveInitialCollaborationMode(issue *kanban.Issue) string {
+	if issue == nil {
+		return ""
+	}
+	return string(kanban.NormalizeCollaborationModeOverride(string(issue.CollaborationModeOverride)))
 }
 func (r *Runner) CleanupWorkspace(ctx context.Context, issue *kanban.Issue) error {
 	workflow, err := r.workflowProvider.Current()
@@ -366,7 +395,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		return nil, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy)
+	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
 	var client *appserver.Client
 	clientConfig := appserver.ClientConfig{
 		Executable:               "sh",
@@ -379,7 +408,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		CodexCommand:             activeWorkflow.Config.Codex.Command,
 		ExpectedVersion:          activeWorkflow.Config.Codex.ExpectedVersion,
 		ApprovalPolicy:           permissions.ApprovalPolicy,
-		InitialCollaborationMode: activeWorkflow.Config.Codex.InitialCollaborationMode,
+		InitialCollaborationMode: permissions.InitialCollaborationMode,
 		ThreadSandbox:            permissions.ThreadSandbox,
 		TurnSandboxPolicy:        permissions.TurnSandboxPolicy,
 		ReadTimeout:              time.Duration(activeWorkflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
@@ -426,7 +455,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			return nil, err
 		}
 		issue = refreshedIssue
-		permissions = r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy)
+		permissions = r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
 		client.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
 		prepared, err := r.prepareTurnPrompt(activeWorkflow, issue, attempt, turn)
 		if err != nil {
@@ -464,6 +493,23 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 				AppSession: client.Session(),
 			}, nil
 		}
+		requestedPlanApproval, err := r.capturePendingPlanApproval(issue, attempt, client.Session())
+		if err != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+		if requestedPlanApproval {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				StopReason: planApprovalStopReason,
+				AppSession: client.Session(),
+			}, nil
+		}
 		deliveredManualCommands, err := r.runPendingCommandsInActiveThread(ctx, client, workflow, issue, attempt, title)
 		if err != nil {
 			return &RunResult{
@@ -488,6 +534,70 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		issue = refreshed
 	}
 	return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+}
+
+func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, session *appserver.Session) (bool, error) {
+	if issue == nil || r.effectivePermissionProfile(issue) != kanban.PermissionProfilePlanThenFullAccess {
+		return false, nil
+	}
+	planMarkdown := extractProposedPlanMarkdown(finalAnswerFromSession(session))
+	if planMarkdown == "" {
+		return false, nil
+	}
+	requestedAt := time.Now().UTC()
+	if err := r.store.SetIssuePendingPlanApproval(issue.ID, planMarkdown, requestedAt); err != nil {
+		return false, err
+	}
+	if err := r.store.AppendRuntimeEvent("plan_approval_requested", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"phase":        string(issue.WorkflowPhase),
+		"attempt":      attempt,
+		"requested_at": requestedAt.Format(time.RFC3339),
+		"markdown":     planMarkdown,
+	}); err != nil {
+		return false, err
+	}
+	return true, r.store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, attempt, appserver.ActivityEvent{
+		Type: "plan.approvalRequested",
+		Raw: map[string]interface{}{
+			"markdown":     planMarkdown,
+			"requested_at": requestedAt.Format(time.RFC3339),
+		},
+	})
+}
+
+func finalAnswerFromSession(session *appserver.Session) string {
+	if session == nil {
+		return ""
+	}
+	for i := len(session.History) - 1; i >= 0; i-- {
+		event := session.History[i]
+		if event.Type != "item.completed" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(event.ItemType), "agentMessage") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(event.ItemPhase), "final_answer") {
+			continue
+		}
+		if strings.TrimSpace(event.Message) != "" {
+			return event.Message
+		}
+	}
+	if strings.Contains(session.LastMessage, "<proposed_plan>") {
+		return session.LastMessage
+	}
+	return ""
+}
+
+func extractProposedPlanMarkdown(message string) string {
+	matches := proposedPlanBlockPattern.FindStringSubmatch(message)
+	if len(matches) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
 }
 
 func (r *Runner) currentWorkflowIssue(workflow *config.Workflow, issue *kanban.Issue) (*config.Workflow, *kanban.Issue, error) {
@@ -852,7 +962,7 @@ func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, client *a
 		return false, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy)
+	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
 	client.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
 	var deliverErr error
 	if err := client.RunTurnWithStartCallback(ctx, buildOperatorFollowUpPrompt(commands), title, func(session *appserver.Session) {

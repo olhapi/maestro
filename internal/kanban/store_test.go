@@ -94,6 +94,145 @@ func TestResolveDBPathPreservesExplicitPath(t *testing.T) {
 	}
 }
 
+func TestIssuePlanApprovalLifecyclePersistsAndPromotes(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan approval lifecycle", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 9, 30, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Investigate, then implement.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	pending, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue pending: %v", err)
+	}
+	if !pending.PlanApprovalPending || pending.PendingPlanMarkdown != "Investigate, then implement." {
+		t.Fatalf("expected pending plan approval state, got %+v", pending)
+	}
+	if pending.PendingPlanRequestedAt == nil || !pending.PendingPlanRequestedAt.Equal(requestedAt) {
+		t.Fatalf("unexpected requested_at: %+v", pending.PendingPlanRequestedAt)
+	}
+
+	if err := store.ApproveIssuePlan(issue.ID); err != nil {
+		t.Fatalf("ApproveIssuePlan: %v", err)
+	}
+
+	approved, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue approved: %v", err)
+	}
+	if approved.PermissionProfile != PermissionProfileFullAccess {
+		t.Fatalf("expected full-access after approval, got %q", approved.PermissionProfile)
+	}
+	if approved.CollaborationModeOverride != CollaborationModeOverrideDefault {
+		t.Fatalf("expected default collaboration override after approval, got %q", approved.CollaborationModeOverride)
+	}
+	if approved.PlanApprovalPending || approved.PendingPlanMarkdown != "" || approved.PendingPlanRequestedAt != nil {
+		t.Fatalf("expected cleared pending approval state, got %+v", approved)
+	}
+}
+
+func TestUpdateProjectPermissionProfileClearsInheritedPendingPlanApproval(t *testing.T) {
+	store := setupTestStore(t)
+	project, err := store.CreateProject("Demo", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Inherited plan approval", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile plan-first: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 10, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override": CollaborationModeOverridePlan,
+		"plan_approval_pending":       true,
+		"pending_plan_markdown":       "Approve me",
+		"pending_plan_requested_at":   &requestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue pending plan state: %v", err)
+	}
+
+	if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile full-access: %v", err)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PlanApprovalPending || updated.PendingPlanMarkdown != "" || updated.PendingPlanRequestedAt != nil {
+		t.Fatalf("expected inherited pending approval cleared, got %+v", updated)
+	}
+	if updated.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected collaboration override cleared, got %q", updated.CollaborationModeOverride)
+	}
+}
+
+func TestIssuePlanApprovalHelpersValidateAndClearOverrideState(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan helper validation", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := store.SetIssuePendingPlanApproval("", "plan", time.Now().UTC()); err == nil {
+		t.Fatal("expected validation error for missing issue id")
+	}
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "   ", time.Now().UTC()); err == nil {
+		t.Fatal("expected validation error for empty markdown")
+	}
+	if err := store.SetIssuePendingPlanApproval("missing", "plan", time.Now().UTC()); !IsNotFound(err) {
+		t.Fatalf("expected missing issue error, got %v", err)
+	}
+	if err := store.ApproveIssuePlan(""); err == nil {
+		t.Fatal("expected validation error for missing issue id")
+	}
+	if err := store.ApproveIssuePlan("missing"); !IsNotFound(err) {
+		t.Fatalf("expected missing issue error, got %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 13, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override": CollaborationModeOverridePlan,
+		"plan_approval_pending":       true,
+		"pending_plan_markdown":       "Draft plan",
+		"pending_plan_requested_at":   &requestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+
+	if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileDefault); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected collaboration override cleared, got %q", updated.CollaborationModeOverride)
+	}
+	if updated.PlanApprovalPending || updated.PendingPlanMarkdown != "" || updated.PendingPlanRequestedAt != nil {
+		t.Fatalf("expected pending plan state cleared, got %+v", updated)
+	}
+
+	if err := store.UpdateIssuePermissionProfile("missing", PermissionProfileFullAccess); !IsNotFound(err) {
+		t.Fatalf("expected missing issue error, got %v", err)
+	}
+	if err := store.UpdateProjectPermissionProfile("missing", PermissionProfileFullAccess); !IsNotFound(err) {
+		t.Fatalf("expected missing project error, got %v", err)
+	}
+}
+
 func TestUpdateProjectStateNormalizesAndPersists(t *testing.T) {
 	store := setupTestStore(t)
 	project, err := store.CreateProject("Demo", "", "", "")

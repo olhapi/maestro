@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { vi } from 'vitest'
 
 import { SessionExecutionCard } from '@/components/dashboard/session-execution-card'
 import type { ActivityEntry, IssueExecutionDetail, RuntimeEvent } from '@/lib/types'
@@ -80,5 +81,30 @@ describe('SessionExecutionCard', () => {
     const scrollContainer = screen.getByTestId('debug-signals-scroll')
     expect(scrollContainer).toHaveClass('max-h-[520px]')
     expect(scrollContainer).toHaveClass('overflow-y-auto')
+  })
+
+  it('renders the pending plan approval card and triggers approval', () => {
+    const onApprovePlan = vi.fn()
+
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the plan before execution.',
+            requested_at: '2026-03-18T12:00:00Z',
+            attempt: 2,
+          },
+        })}
+        issueTotalTokens={120}
+        onApprovePlan={onApprovePlan}
+      />,
+    )
+
+    expect(screen.getByText('Plan ready for approval')).toBeInTheDocument()
+    expect(screen.getByText('Review the plan before execution.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /approve plan and continue/i }))
+
+    expect(onApprovePlan).toHaveBeenCalledTimes(1)
   })
 })

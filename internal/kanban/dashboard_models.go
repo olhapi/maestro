@@ -170,6 +170,12 @@ type RuntimeSeriesPoint struct {
 	Tokens        int    `json:"tokens"`
 }
 
+type IssuePlanApproval struct {
+	Markdown    string    `json:"markdown"`
+	RequestedAt time.Time `json:"requested_at"`
+	Attempt     int       `json:"attempt"`
+}
+
 type ExecutionSessionSnapshot struct {
 	IssueID        string            `json:"issue_id"`
 	Identifier     string            `json:"identifier"`

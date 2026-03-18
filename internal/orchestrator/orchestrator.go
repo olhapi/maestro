@@ -30,6 +30,7 @@ const (
 	automaticRetryHistoryLimit   = 200
 	runtimeMaintenanceInterval   = 15 * time.Minute
 	gracefulShutdownStopReason   = "graceful_shutdown"
+	planApprovalStopReason       = "plan_approval_pending"
 	gracefulShutdownWaitTimeout  = 5 * time.Second
 	reviewPreviewPublishTimeout  = 15 * time.Second
 	reviewPreviewDir             = ".maestro/review-preview"
@@ -1349,6 +1350,15 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		slog.Warn("Agent run failed",
 			issueLogAttrs(current, attempt, "error", err, "next_attempt", next, "phase", phase)...,
 		)
+	case result != nil && result.StopReason == planApprovalStopReason:
+		next := nextAttempt(attempt)
+		o.mu.Lock()
+		o.pauseRetryLocked(current, next, phase, planApprovalStopReason)
+		o.mu.Unlock()
+		o.persistExecutionSession(current, phase, next, "retry_paused", planApprovalStopReason, false, planApprovalStopReason, result.AppSession)
+		slog.Info("Agent run paused pending plan approval",
+			issueLogAttrs(current, attempt, "phase", phase, "next_attempt", next)...,
+		)
 	case result != nil && !result.Success:
 		errText := "unsuccessful"
 		if result.Error != nil {
@@ -1900,6 +1910,9 @@ func (o *Orchestrator) isDispatchable(workflow *config.Workflow, issue *kanban.I
 	o.mu.RUnlock()
 	if paused {
 		return false, "paused", phase
+	}
+	if issue.PlanApprovalPending {
+		return false, "plan_approval_pending", phase
 	}
 	switch phase {
 	case kanban.WorkflowPhaseComplete:

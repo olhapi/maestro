@@ -30,11 +30,18 @@ import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 const permissionProfileLabels: Record<PermissionProfile, string> = {
   default: "Default permissions",
   "full-access": "Full access",
+  "plan-then-full-access": "Plan, then full access",
 };
 
 function permissionProfileHelpText(issuePermissionProfile: PermissionProfile | undefined, projectPermissionProfile: PermissionProfile | undefined) {
   if ((issuePermissionProfile ?? "default") === "default" && (projectPermissionProfile ?? "default") === "full-access") {
     return "Default currently inherits this project's full-access profile. Switching to full access keeps the issue pinned there even if the project default changes later."
+  }
+  if ((issuePermissionProfile ?? "default") === "default" && (projectPermissionProfile ?? "default") === "plan-then-full-access") {
+    return "Default currently inherits this project's plan-first profile. The agent can inspect the repo and research during planning, but full-access execution only starts after you approve the final plan."
+  }
+  if ((issuePermissionProfile ?? "default") === "plan-then-full-access") {
+    return "Planning runs stay in plan mode with workspace-scoped permissions until you approve the final plan. Approval then promotes this issue to normal execution with full access."
   }
   return "Default inherits the project permission profile. Full access applies on the next turn in the active run without restarting the thread."
 }
@@ -125,6 +132,8 @@ export function IssueDetailPage() {
       }),
       queryClient.invalidateQueries({ queryKey: ["project"] }),
       queryClient.invalidateQueries({ queryKey: ["epic"] }),
+      queryClient.invalidateQueries({ queryKey: ["interrupts"] }),
+      queryClient.invalidateQueries({ queryKey: ["sessions"] }),
     ]);
   };
 
@@ -160,6 +169,16 @@ export function IssueDetailPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? `Unable to update permissions: ${error.message}` : "Unable to update permissions");
+    },
+  });
+  const approvePlanMutation = useMutation({
+    mutationFn: () => api.approveIssuePlan(identifier),
+    onSuccess: async () => {
+      toast.success("Plan approved");
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to approve plan: ${error.message}` : "Unable to approve plan");
     },
   });
 
@@ -393,7 +412,14 @@ export function IssueDetailPage() {
             </CardContent>
           </Card>
 
-          <SessionExecutionCard execution={execution.data} issueTotalTokens={issue.data.total_tokens_spent} />
+          <SessionExecutionCard
+            approvingPlan={approvePlanMutation.isPending}
+            execution={execution.data}
+            issueTotalTokens={issue.data.total_tokens_spent}
+            onApprovePlan={() => {
+              approvePlanMutation.mutate();
+            }}
+          />
         </div>
 
         <div className="grid content-start gap-[var(--section-gap)]" data-testid="issue-control-rail">
@@ -435,6 +461,7 @@ export function IssueDetailPage() {
                   <SelectContent>
                     <SelectItem value="default">{permissionProfileLabels.default}</SelectItem>
                     <SelectItem value="full-access">{permissionProfileLabels["full-access"]}</SelectItem>
+                    <SelectItem value="plan-then-full-access">{permissionProfileLabels["plan-then-full-access"]}</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-[var(--muted-foreground)]">

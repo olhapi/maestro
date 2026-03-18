@@ -144,6 +144,13 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if pendingInterrupt != nil {
 		payload["pending_interrupt"] = pendingInterrupt
 	}
+	if issue.PlanApprovalPending && strings.TrimSpace(issue.PendingPlanMarkdown) != "" && issue.PendingPlanRequestedAt != nil {
+		payload["plan_approval"] = kanban.IssuePlanApproval{
+			Markdown:    issue.PendingPlanMarkdown,
+			RequestedAt: issue.PendingPlanRequestedAt.UTC(),
+			Attempt:     attempt,
+		}
+	}
 	return payload, nil
 }
 

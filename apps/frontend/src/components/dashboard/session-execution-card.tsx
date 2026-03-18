@@ -1,6 +1,7 @@
 import { AlertTriangle, ChevronDown } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
 import { describeFailureRuns, failureStatusLabel } from '@/lib/execution'
@@ -12,11 +13,15 @@ export function SessionExecutionCard({
   issueTotalTokens,
   title = 'Execution triage',
   pausedActionHint = 'Use Retry now after checking the workspace or runtime conditions.',
+  onApprovePlan,
+  approvingPlan = false,
 }: {
   execution: IssueExecutionDetail
   issueTotalTokens: number
   title?: string
   pausedActionHint?: string
+  onApprovePlan?: () => void
+  approvingPlan?: boolean
 }) {
   const session = execution.session
   const activityGroups = execution.activity_groups ?? []
@@ -27,6 +32,7 @@ export function SessionExecutionCard({
   const failureSummaryReason =
     execution.pause_reason || execution.failure_class || execution.current_error
   const pendingInterrupt = execution.pending_interrupt
+  const pendingPlanApproval = execution.plan_approval
   const pausedRunSummary = describeFailureRuns(
     execution.consecutive_failures,
     failureSummaryReason,
@@ -98,6 +104,34 @@ export function SessionExecutionCard({
                 <p className="mt-2 text-amber-100/80">
                   Respond from the global interrupt panel to let this thread continue on the same session.
                 </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {pendingPlanApproval ? (
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/25 bg-sky-400/10 p-3.5 text-sm text-sky-50">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 size-4 text-sky-200" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-sky-100">Plan ready for approval</p>
+                <p className="mt-2 text-sky-50/90">
+                  Maestro paused execution after the planning turn. Approve the plan to switch this issue into normal execution with full access.
+                </p>
+                <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-sky-200/15 bg-black/25 p-3 text-xs leading-5 text-sky-50/92">
+                  {pendingPlanApproval.markdown}
+                </pre>
+                {onApprovePlan ? (
+                  <Button
+                    className="mt-3"
+                    disabled={approvingPlan}
+                    onClick={onApprovePlan}
+                    type="button"
+                    variant="secondary"
+                  >
+                    Approve plan and continue
+                  </Button>
+                ) : null}
               </div>
             </div>
           </div>

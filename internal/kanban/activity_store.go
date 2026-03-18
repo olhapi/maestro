@@ -650,6 +650,10 @@ func projectIssueActivityEntry(issueID, identifier, logicalID string, attempt in
 		return projectInputStatus(entry, now, event), true
 	case "item.tool.userInputSubmitted":
 		return projectInputResolved(entry, now, event), true
+	case "plan.approvalRequested":
+		return projectPlanApprovalRequested(entry, now, event), true
+	case "plan.approved":
+		return projectPlanApproved(entry, now, event), true
 	default:
 		return IssueActivityEntry{}, false
 	}
@@ -904,6 +908,38 @@ func projectInputResolved(entry IssueActivityEntry, now time.Time, event appserv
 	return entry
 }
 
+func projectPlanApprovalRequested(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "status"
+	entry.Tier = "primary"
+	entry.Status = "plan_approval_pending"
+	entry.Title = "Plan ready for approval"
+	entry.Summary = firstNonEmptyString(planApprovalMarkdown(event.Raw), "The agent produced a final plan for approval.")
+	entry.Detail = planApprovalDetail(event.Raw)
+	entry.Tone = "default"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	entry.StartedAt = &ts
+	entry.CompletedAt = nil
+	return entry
+}
+
+func projectPlanApproved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "status"
+	entry.Tier = "primary"
+	entry.Status = "plan_approved"
+	entry.Title = "Plan approved"
+	entry.Summary = "Operator approved the plan and resumed execution."
+	entry.Detail = planApprovalDetail(event.Raw)
+	entry.Tone = "success"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	if entry.StartedAt == nil {
+		entry.StartedAt = &ts
+	}
+	entry.CompletedAt = &ts
+	return entry
+}
+
 func projectSecondaryItem(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent, status string) IssueActivityEntry {
 	entry.Kind = "secondary"
 	entry.Tier = "secondary"
@@ -953,6 +989,8 @@ func issueActivityLogicalID(attempt int, event appserver.ActivityEvent) (string,
 			return "", false
 		}
 		return fmt.Sprintf("attempt:%d:status:%s:%s:%s", attempt, threadID, turnID, suffix), true
+	case "plan.approvalRequested", "plan.approved":
+		return fmt.Sprintf("attempt:%d:status:plan-approval", attempt), true
 	default:
 		return "", false
 	}
@@ -1281,6 +1319,25 @@ func inputRequestDetail(raw map[string]interface{}) string {
 		return ""
 	}
 	body, err := json.MarshalIndent(params, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(body)
+}
+
+func planApprovalMarkdown(raw map[string]interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	value, _ := raw["markdown"].(string)
+	return cleanActivityText(value)
+}
+
+func planApprovalDetail(raw map[string]interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	body, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return ""
 	}

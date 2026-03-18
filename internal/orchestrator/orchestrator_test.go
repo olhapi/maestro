@@ -798,6 +798,91 @@ func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(
 	}
 }
 
+func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Pending plan approval", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"plan_approval_pending":     true,
+		"pending_plan_markdown":     "Review the plan.",
+		"pending_plan_requested_at": &requestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	dispatchable, reason, phase := orch.isDispatchable(workflow, issue)
+	if dispatchable {
+		t.Fatal("expected pending plan approval to block dispatch")
+	}
+	if reason != "plan_approval_pending" {
+		t.Fatalf("expected plan_approval_pending reason, got %q", reason)
+	}
+	if phase != issue.WorkflowPhase {
+		t.Fatalf("expected workflow phase %q, got %q", issue.WorkflowPhase, phase)
+	}
+}
+
+func TestPlanApprovalStopDoesNotAdvanceImplementationPhase(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	orch.runner = &phaseScriptRunner{
+		store: store,
+		handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+			kanban.WorkflowPhaseImplementation: func(issue *kanban.Issue) (*agent.RunResult, error) {
+				return &agent.RunResult{
+					Success:    false,
+					StopReason: planApprovalStopReason,
+				}, nil
+			},
+		},
+	}
+
+	issue, err := store.CreateIssue("", "", "Plan approval pause", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForNoRunning(t, orch, time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.State != kanban.StateInProgress || updated.WorkflowPhase != kanban.WorkflowPhaseImplementation {
+		t.Fatalf("expected issue to remain in implementation, got %s/%s", updated.State, updated.WorkflowPhase)
+	}
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	_, retryOK := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !pausedOK {
+		t.Fatal("expected issue to pause pending plan approval")
+	}
+	if retryOK {
+		t.Fatal("did not expect automatic retry scheduling for pending plan approval")
+	}
+	if paused.Error != planApprovalStopReason || paused.Phase != string(kanban.WorkflowPhaseImplementation) || paused.Attempt != 1 {
+		t.Fatalf("unexpected paused payload: %+v", paused)
+	}
+}
+
 func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	runner := &countingPhaseRunner{
