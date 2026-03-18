@@ -118,6 +118,15 @@ func withProviderProjectSyncTimeout(t *testing.T, timeout time.Duration) {
 	})
 }
 
+func withProviderListSyncMinInterval(t *testing.T, interval time.Duration) {
+	t.Helper()
+	previous := providerListSyncMinInterval
+	providerListSyncMinInterval = interval
+	t.Cleanup(func() {
+		providerListSyncMinInterval = previous
+	})
+}
+
 func TestServiceCreateProjectDoesNotPersistOnValidationFailure(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -711,6 +720,59 @@ func TestServiceListIssueSummariesPropagatesParentDeadlineExceeded(t *testing.T)
 	_, _, err = svc.ListIssueSummaries(ctx, kanban.IssueQuery{ProjectID: project.ID})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected parent deadline to be propagated, got %v", err)
+	}
+}
+
+func TestServiceListIssueSummariesSkipsRepeatedBestEffortSyncWithinInterval(t *testing.T) {
+	withProviderListSyncMinInterval(t, time.Minute)
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+
+	var calls atomic.Int32
+	svc := NewService(store)
+	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+		kind: kanban.ProviderKindLinear,
+		listFunc: func(ctx context.Context, project *kanban.Project, query kanban.IssueQuery) ([]kanban.Issue, error) {
+			calls.Add(1)
+			return []kanban.Issue{{
+				ProviderKind:     kanban.ProviderKindLinear,
+				ProviderIssueRef: "linear-1",
+				Identifier:       "LIN-1",
+				Title:            "Synced issue",
+				State:            kanban.StateReady,
+			}}, nil
+		},
+	}
+
+	for i := 0; i < 2; i++ {
+		items, total, err := svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{ProjectID: project.ID})
+		if err != nil {
+			t.Fatalf("ListIssueSummaries call %d: %v", i, err)
+		}
+		if total != 1 || len(items) != 1 || items[0].Identifier != "LIN-1" {
+			t.Fatalf("unexpected list payload on call %d: total=%d items=%#v", i, total, items)
+		}
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected one provider sync within throttle interval, got %d", got)
 	}
 }
 

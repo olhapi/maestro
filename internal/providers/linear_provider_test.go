@@ -171,6 +171,60 @@ func TestLinearProviderResolveAssigneeMatcherForViewer(t *testing.T) {
 	}
 }
 
+func TestLinearProviderListIssuesPushesAssigneeAndStateFiltersToGraphQL(t *testing.T) {
+	var requestBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{},
+					"pageInfo": map[string]interface{}{
+						"hasNextPage": false,
+						"endCursor":   "",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{
+		ProviderProjectRef: "proj-slug",
+		ProviderConfig: map[string]interface{}{
+			"endpoint": server.URL,
+		},
+	}
+
+	if _, err := provider.ListIssues(context.Background(), project, kanban.IssueQuery{
+		Assignee: "worker-1",
+		State:    "ready",
+	}); err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+
+	query, _ := requestBody["query"].(string)
+	if !strings.Contains(query, "assignee: {id: {eq: $assigneeID}}") {
+		t.Fatalf("expected assignee filter in query, got %q", query)
+	}
+	if !strings.Contains(query, "state: {name: {eq: $stateName}}") {
+		t.Fatalf("expected state filter in query, got %q", query)
+	}
+	variables := requestBody["variables"].(map[string]interface{})
+	if variables["assigneeID"] != "worker-1" {
+		t.Fatalf("expected assigneeID variable, got %#v", variables)
+	}
+	if variables["stateName"] != "ready" {
+		t.Fatalf("expected stateName variable, got %#v", variables)
+	}
+}
+
 func TestLinearProviderCreateIssueCommentCreatesPlainComment(t *testing.T) {
 	var mutationBody map[string]interface{}
 	var server *httptest.Server

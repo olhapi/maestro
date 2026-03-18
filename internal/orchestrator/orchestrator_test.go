@@ -22,6 +22,7 @@ import (
 	"github.com/olhapi/maestro/internal/agent"
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
 	"github.com/olhapi/maestro/pkg/config"
@@ -2698,6 +2699,59 @@ func TestRetryNowAndRefreshHandleAdditionalControlPaths(t *testing.T) {
 	}
 	if len(events) < 3 {
 		t.Fatalf("expected retry/refresh events, got %#v", events)
+	}
+}
+
+func TestSnapshotDoesNotRefreshProviderIssuesWhileHoldingRuntimeState(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	project, err := store.CreateProjectWithProvider("Slow Provider", "", "", "", "stub", "stub-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		Identifier:       "STUB-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Title:            "Slow issue",
+		State:            kanban.StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	provider := &blockingIssueProvider{
+		issue:      *issue,
+		getStarted: make(chan struct{}, 1),
+		getRelease: make(chan struct{}),
+	}
+	orch.service.RegisterProvider(provider)
+
+	orch.mu.Lock()
+	orch.retries[issue.ID] = retryEntry{
+		Attempt: 1,
+		Phase:   string(kanban.WorkflowPhaseImplementation),
+		DueAt:   time.Now().UTC().Add(time.Minute),
+	}
+	orch.mu.Unlock()
+
+	done := make(chan observability.Snapshot, 1)
+	go func() {
+		done <- orch.Snapshot()
+	}()
+
+	select {
+	case snapshot := <-done:
+		if len(snapshot.Retrying) != 1 || snapshot.Retrying[0].Identifier != issue.Identifier {
+			t.Fatalf("unexpected snapshot payload: %+v", snapshot)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Snapshot blocked on provider refresh")
+	}
+
+	select {
+	case <-provider.getStarted:
+		t.Fatal("Snapshot should not call provider GetIssue for retry metadata")
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 

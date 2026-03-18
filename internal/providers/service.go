@@ -18,9 +18,10 @@ import (
 )
 
 var (
-	providerReadSyncTimeout    = 2 * time.Second
-	providerProjectSyncTimeout = 5 * time.Second
-	ErrAmbiguousProviderIssue  = errors.New("ambiguous provider issue identifier")
+	providerReadSyncTimeout     = 2 * time.Second
+	providerProjectSyncTimeout  = 5 * time.Second
+	providerListSyncMinInterval = time.Second
+	ErrAmbiguousProviderIssue   = errors.New("ambiguous provider issue identifier")
 )
 
 type syncMode int
@@ -33,6 +34,8 @@ const (
 type Service struct {
 	store     *kanban.Store
 	providers map[string]Provider
+	syncMu    sync.Mutex
+	lastSync  map[string]time.Time
 }
 
 func NewService(store *kanban.Store) *Service {
@@ -42,6 +45,7 @@ func NewService(store *kanban.Store) *Service {
 			kanban.ProviderKindKanban: NewKanbanProvider(store),
 			kanban.ProviderKindLinear: NewLinearProvider(),
 		},
+		lastSync: make(map[string]time.Time),
 	}
 }
 
@@ -580,10 +584,18 @@ func (s *Service) DeleteIssueImage(ctx context.Context, identifier, imageID stri
 }
 
 func (s *Service) ListIssueSummaries(ctx context.Context, query kanban.IssueQuery) ([]kanban.IssueSummary, int, error) {
-	if err := s.syncIssuesWithMode(ctx, query, syncModeBestEffort); err != nil {
+	if err := s.syncIssueListIfNeeded(ctx, query); err != nil {
 		return nil, 0, err
 	}
 	return s.store.ListIssueSummaries(query)
+}
+
+func (s *Service) BoardOverview(ctx context.Context, projectID string) (map[kanban.State]int, error) {
+	query := kanban.IssueQuery{ProjectID: strings.TrimSpace(projectID)}
+	if err := s.syncIssueListIfNeeded(ctx, query); err != nil {
+		return nil, err
+	}
+	return s.store.CountIssuesByState(query.ProjectID)
 }
 
 func (s *Service) CreateIssue(ctx context.Context, input IssueCreateInput) (*kanban.IssueDetail, error) {
@@ -795,6 +807,43 @@ func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 		}
 	}
 	return firstErr
+}
+
+func (s *Service) syncIssueListIfNeeded(ctx context.Context, query kanban.IssueQuery) error {
+	syncQuery := authoritativeProviderSyncQuery(query)
+	if !s.shouldSyncListQuery(syncQuery) {
+		return nil
+	}
+	if err := s.syncIssuesWithMode(ctx, query, syncModeBestEffort); err != nil {
+		return err
+	}
+	s.recordListSync(syncQuery)
+	return nil
+}
+
+func (s *Service) shouldSyncListQuery(query kanban.IssueQuery) bool {
+	key := s.listSyncKey(query)
+
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	lastAt, ok := s.lastSync[key]
+	if !ok {
+		return true
+	}
+	return time.Since(lastAt) >= providerListSyncMinInterval
+}
+
+func (s *Service) recordListSync(query kanban.IssueQuery) {
+	key := s.listSyncKey(query)
+
+	s.syncMu.Lock()
+	s.lastSync[key] = time.Now().UTC()
+	s.syncMu.Unlock()
+}
+
+func (s *Service) listSyncKey(query kanban.IssueQuery) string {
+	return strings.TrimSpace(query.ProjectID) + "|" + strings.TrimSpace(query.Assignee)
 }
 
 func buildProjectCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {

@@ -55,9 +55,26 @@ func (p *LinearProvider) ListIssues(ctx context.Context, project *kanban.Project
 	if err != nil {
 		return nil, err
 	}
-	const gql = `
-query MaestroLinearIssues($projectSlug: String!, $first: Int!, $after: String) {
-  issues(filter: {project: {slugId: {eq: $projectSlug}}}, first: $first, after: $after) {
+	filterParts := []string{`project: {slugId: {eq: $projectSlug}}`}
+	varDecls := []string{"$projectSlug: String!", "$first: Int!", "$after: String"}
+	variables := map[string]interface{}{
+		"projectSlug": p.projectSlug(project),
+		"first":       100,
+		"after":       nil,
+	}
+	if assigneeID := linearAssigneeFilterValue(assigneeMatcher); assigneeID != "" {
+		varDecls = append(varDecls, "$assigneeID: String!")
+		filterParts = append(filterParts, `assignee: {id: {eq: $assigneeID}}`)
+		variables["assigneeID"] = assigneeID
+	}
+	if stateName := strings.TrimSpace(query.State); stateName != "" {
+		varDecls = append(varDecls, "$stateName: String!")
+		filterParts = append(filterParts, `state: {name: {eq: $stateName}}`)
+		variables["stateName"] = stateName
+	}
+	gql := fmt.Sprintf(`
+query MaestroLinearIssues(%s) {
+  issues(filter: {%s}, first: $first, after: $after) {
     nodes {
       id
       identifier
@@ -84,15 +101,12 @@ query MaestroLinearIssues($projectSlug: String!, $first: Int!, $after: String) {
       endCursor
     }
   }
-}`
+}`, strings.Join(varDecls, ", "), strings.Join(filterParts, ", "))
 	var out []kanban.Issue
 	after := ""
 	for {
-		body, err := p.graphql(ctx, project, gql, map[string]interface{}{
-			"projectSlug": p.projectSlug(project),
-			"first":       100,
-			"after":       nullableString(after),
-		})
+		variables["after"] = nullableString(after)
+		body, err := p.graphql(ctx, project, gql, variables)
 		if err != nil {
 			return nil, err
 		}
@@ -494,6 +508,16 @@ func matchesAssigneeRaw(raw map[string]interface{}, matcher *linearAssigneeMatch
 	}
 	_, ok := matcher.matchValues[assigneeID]
 	return ok
+}
+
+func linearAssigneeFilterValue(matcher *linearAssigneeMatcher) string {
+	if matcher == nil || len(matcher.matchValues) != 1 {
+		return ""
+	}
+	for value := range matcher.matchValues {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func isBlocksRelation(relation map[string]interface{}) bool {

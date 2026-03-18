@@ -1571,6 +1571,63 @@ func TestListIssues(t *testing.T) {
 	}
 }
 
+func TestCountIssuesByState(t *testing.T) {
+	store := setupTestStore(t)
+
+	projectA, err := store.CreateProject("Project A", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject A: %v", err)
+	}
+	projectB, err := store.CreateProject("Project B", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject B: %v", err)
+	}
+
+	backlog, err := store.CreateIssue(projectA.ID, "", "Backlog", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue backlog: %v", err)
+	}
+	ready, err := store.CreateIssue(projectA.ID, "", "Ready", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue ready: %v", err)
+	}
+	done, err := store.CreateIssue(projectB.ID, "", "Done", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue done: %v", err)
+	}
+
+	if err := store.UpdateIssueState(ready.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState ready: %v", err)
+	}
+	if err := store.UpdateIssueState(done.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+
+	counts, err := store.CountIssuesByState("")
+	if err != nil {
+		t.Fatalf("CountIssuesByState all: %v", err)
+	}
+	if counts[StateBacklog] != 1 || counts[StateReady] != 1 || counts[StateDone] != 1 {
+		t.Fatalf("unexpected global counts: %#v", counts)
+	}
+
+	projectCounts, err := store.CountIssuesByState(projectA.ID)
+	if err != nil {
+		t.Fatalf("CountIssuesByState project: %v", err)
+	}
+	if projectCounts[StateBacklog] != 1 || projectCounts[StateReady] != 1 || projectCounts[StateDone] != 0 {
+		t.Fatalf("unexpected project counts: %#v", projectCounts)
+	}
+
+	backlogIssue, err := store.GetIssue(backlog.ID)
+	if err != nil {
+		t.Fatalf("GetIssue backlog: %v", err)
+	}
+	if backlogIssue.State != StateBacklog {
+		t.Fatalf("expected backlog issue to remain backlog, got %s", backlogIssue.State)
+	}
+}
+
 func TestListIssuesAndSummariesSupportIssueTypeFilter(t *testing.T) {
 	store := setupTestStore(t)
 

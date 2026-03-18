@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -477,7 +479,7 @@ func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interfac
 }
 
 func (s *Server) handleGetIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("get_issue", err.Error()), nil
 	}
@@ -522,7 +524,7 @@ func (s *Server) handleListIssues(ctx context.Context, args map[string]interface
 }
 
 func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("update_issue", err.Error()), nil
 	}
@@ -539,7 +541,7 @@ func (s *Server) handleUpdateIssue(ctx context.Context, args map[string]interfac
 }
 
 func (s *Server) handleAttachIssueImage(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("attach_issue_image", err.Error()), nil
 	}
@@ -558,7 +560,7 @@ func (s *Server) handleAttachIssueImage(ctx context.Context, args map[string]int
 }
 
 func (s *Server) handleDeleteIssueImage(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("delete_issue_image", err.Error()), nil
 	}
@@ -578,7 +580,7 @@ func (s *Server) handleDeleteIssueImage(ctx context.Context, args map[string]int
 }
 
 func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("set_issue_state", err.Error()), nil
 	}
@@ -590,7 +592,7 @@ func (s *Server) handleSetIssueState(ctx context.Context, args map[string]interf
 }
 
 func (s *Server) handleSetIssueWorkflowPhase(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("set_issue_workflow_phase", err.Error()), nil
 	}
@@ -609,7 +611,7 @@ func (s *Server) handleSetIssueWorkflowPhase(ctx context.Context, args map[strin
 }
 
 func (s *Server) handleDeleteIssue(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("delete_issue", err.Error()), nil
 	}
@@ -650,7 +652,7 @@ func (s *Server) handleStopProject(ctx context.Context, args map[string]interfac
 }
 
 func (s *Server) handleGetIssueExecution(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("get_issue_execution", err.Error()), nil
 	}
@@ -676,18 +678,9 @@ func (s *Server) handleRunIssueNow(ctx context.Context, args map[string]interfac
 }
 
 func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	filter := map[string]interface{}{}
-	if projectID := asString(args["project_id"]); projectID != "" {
-		filter["project_id"] = projectID
-	}
-	issues, err := s.store.ListIssues(filter)
+	counts, err := s.service.BoardOverview(ctx, asString(args["project_id"]))
 	if err != nil {
 		return s.toolError("board_overview", fmt.Sprintf("Failed to get board overview: %v", err)), nil
-	}
-
-	counts := make(map[kanban.State]int)
-	for _, issue := range issues {
-		counts[issue.State]++
 	}
 	return s.toolResult("board_overview", map[string]int{
 		string(kanban.StateBacklog):    counts[kanban.StateBacklog],
@@ -700,7 +693,7 @@ func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interf
 }
 
 func (s *Server) handleSetBlockers(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	issue, err := s.lookupIssue(asString(args["identifier"]))
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
 	if err != nil {
 		return s.toolError("set_blockers", err.Error()), nil
 	}
@@ -916,16 +909,22 @@ func decodeEnvelopeResult(result *mcpapi.CallToolResult) (*responseEnvelope, err
 	return &envelope, nil
 }
 
-func (s *Server) lookupIssue(identifier string) (*kanban.Issue, error) {
-	issue, err := s.store.GetIssue(identifier)
+func (s *Server) lookupIssue(ctx context.Context, identifier string) (*kanban.Issue, error) {
+	issue, err := s.service.GetIssueByIdentifier(ctx, identifier)
 	if err == nil {
 		return issue, nil
 	}
-	issue, err = s.service.GetIssueByIdentifier(context.Background(), identifier)
-	if err != nil {
-		return nil, fmt.Errorf("Issue not found: %s", identifier)
+	if !errors.Is(err, kanban.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
 	}
-	return issue, nil
+	issue, fallbackErr := s.store.GetIssue(identifier)
+	if fallbackErr == nil {
+		return issue, nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	return nil, fmt.Errorf("Issue not found: %s", identifier)
 }
 
 func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) map[string]interface{} {
