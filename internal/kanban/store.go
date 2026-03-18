@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,10 @@ type Store struct {
 const (
 	sqliteMaxOpenConns = 8
 	sqliteMaxIdleConns = 4
+	issueSelectColumns = `id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, priority,
+	       agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at`
+	qualifiedIssueSelectColumns = `i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.collaboration_mode_override, i.plan_approval_pending, i.pending_plan_markdown, i.pending_plan_requested_at, i.priority,
+	       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at`
 )
 
 func nullableStringValue(value string) interface{} {
@@ -1705,6 +1710,139 @@ func scanIssueRecord(scanner issueScanner) (*Issue, error) {
 	return issue, nil
 }
 
+func normalizeProviderIncomingIssue(incoming *Issue) (WorkflowPhase, time.Time, time.Time, time.Time) {
+	now := time.Now().UTC()
+	workflowPhase := incoming.WorkflowPhase
+	if !workflowPhase.IsValid() {
+		workflowPhase = DefaultWorkflowPhaseForState(incoming.State)
+	}
+	updatedAt := incoming.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+	createdAt := incoming.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	lastSyncedAt := now
+	if incoming.LastSyncedAt != nil {
+		lastSyncedAt = incoming.LastSyncedAt.UTC()
+	}
+	return workflowPhase, updatedAt, createdAt, lastSyncedAt
+}
+
+func (s *Store) listDispatchIssuesForQuery(query string, args ...interface{}) ([]DispatchIssue, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]DispatchIssue, 0)
+	for rows.Next() {
+		record, err := scanDispatchIssueRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+
+	issueIDs := make([]string, 0, len(out))
+	for i := range out {
+		if strings.TrimSpace(out[i].ID) == "" {
+			continue
+		}
+		issueIDs = append(issueIDs, out[i].ID)
+	}
+	labelMap, blockerMap, _, err := s.issueRelations(issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	recurrenceMap, err := s.issueRecurrenceMap(issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Labels = labelMap[out[i].ID]
+		out[i].BlockedBy = blockerMap[out[i].ID]
+		if recurrence, ok := recurrenceMap[out[i].ID]; ok {
+			applyRecurrenceToIssue(&out[i].Issue, &recurrence)
+		}
+	}
+	return out, nil
+}
+
+func scanDispatchIssueRow(rows *sql.Rows) (*DispatchIssue, error) {
+	issue := &Issue{}
+	var startedAt, completedAt, lastSyncedAt, pendingPlanRequestedAt sql.NullTime
+	var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
+	var providerShadow, planApprovalPending int
+	var permissionProfile, collaborationModeOverride string
+	var projectExists int
+	var rawProjectState string
+	var unresolved int
+
+	if err := rows.Scan(
+		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &collaborationModeOverride, &planApprovalPending, &issue.PendingPlanMarkdown, &pendingPlanRequestedAt, &issue.Priority,
+		&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
+		&projectExists, &rawProjectState, &unresolved,
+	); err != nil {
+		return nil, err
+	}
+
+	issue.IssueType = NormalizeIssueType(string(issue.IssueType))
+	issue.PermissionProfile = NormalizePermissionProfile(permissionProfile)
+	issue.CollaborationModeOverride = NormalizeCollaborationModeOverride(collaborationModeOverride)
+	issue.PlanApprovalPending = planApprovalPending != 0
+	if !issue.WorkflowPhase.IsValid() {
+		issue.WorkflowPhase = DefaultWorkflowPhaseForState(issue.State)
+	}
+	issue.ProviderKind = normalizeProviderKind(issue.ProviderKind)
+	if projectID.Valid {
+		issue.ProjectID = projectID.String
+	}
+	if epicID.Valid {
+		issue.EpicID = epicID.String
+	}
+	if providerIssueRef.Valid {
+		issue.ProviderIssueRef = providerIssueRef.String
+	}
+	issue.ProviderShadow = providerShadow != 0
+	if branchName.Valid {
+		issue.BranchName = branchName.String
+	}
+	if prURL.Valid {
+		issue.PRURL = prURL.String
+	}
+	if startedAt.Valid {
+		issue.StartedAt = &startedAt.Time
+	}
+	if completedAt.Valid {
+		issue.CompletedAt = &completedAt.Time
+	}
+	if lastSyncedAt.Valid {
+		issue.LastSyncedAt = &lastSyncedAt.Time
+	}
+	if pendingPlanRequestedAt.Valid {
+		issue.PendingPlanRequestedAt = &pendingPlanRequestedAt.Time
+	}
+
+	return &DispatchIssue{
+		Issue: *issue,
+		DispatchState: IssueDispatchState{
+			ProjectExists:         projectExists != 0,
+			ProjectState:          NormalizeProjectState(rawProjectState),
+			HasUnresolvedBlockers: unresolved != 0,
+		},
+	}, nil
+}
+
 func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
 	order := make([]string, 0, len(issueIDs))
 	seen := make(map[string]struct{}, len(issueIDs))
@@ -1727,8 +1865,7 @@ func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
 
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(order)), ",")
 	rows, err := s.db.Query(`
-			SELECT id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, priority,
-			       agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+			SELECT `+issueSelectColumns+`
 			FROM issues
 		WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
@@ -1813,6 +1950,208 @@ func (s *Store) HasProviderIssues(projectID, providerKind string) (bool, error) 
 		return false, err
 	}
 	return exists, nil
+}
+
+func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues []Issue) error {
+	projectID = strings.TrimSpace(projectID)
+	providerKind = normalizeProviderKind(providerKind)
+	if projectID == "" {
+		return validationErrorf("project_id is required")
+	}
+	if providerKind == "" || providerKind == ProviderKindKanban {
+		return validationErrorf("provider_kind must be a non-kanban provider")
+	}
+	if _, err := s.defaultPermissionProfileForProjectID(projectID); err != nil {
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.Query(`SELECT id, project_id, provider_issue_ref, provider_shadow FROM issues WHERE provider_kind = ? AND provider_issue_ref <> ''`, providerKind)
+	if err != nil {
+		return err
+	}
+	existingByRef := make(map[string]string, len(issues))
+	currentProjectShadowByRef := make(map[string]string, len(issues))
+	for rows.Next() {
+		var id, providerIssueRef string
+		var existingProjectID sql.NullString
+		var providerShadow int
+		if err := rows.Scan(&id, &existingProjectID, &providerIssueRef, &providerShadow); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		trimmedRef := strings.TrimSpace(providerIssueRef)
+		existingByRef[trimmedRef] = id
+		if providerShadow != 0 && existingProjectID.Valid && strings.TrimSpace(existingProjectID.String) == projectID {
+			currentProjectShadowByRef[trimmedRef] = id
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	seenRefs := make(map[string]struct{}, len(issues))
+	for i := range issues {
+		incoming := &issues[i]
+		normalizedProviderKind := normalizeProviderKind(incoming.ProviderKind)
+		if normalizedProviderKind == "" {
+			normalizedProviderKind = providerKind
+		}
+		providerIssueRef := strings.TrimSpace(incoming.ProviderIssueRef)
+		if normalizedProviderKind != providerKind || providerIssueRef == "" {
+			return validationErrorf("provider issue reference is required for provider-backed issues")
+		}
+		seenRefs[providerIssueRef] = struct{}{}
+
+		workflowPhase, updatedAt, createdAt, lastSyncedAt := normalizeProviderIncomingIssue(incoming)
+		if currentID, ok := existingByRef[providerIssueRef]; ok {
+			res, err := tx.Exec(`
+				UPDATE issues
+				SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, workflow_phase = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
+				WHERE id = ?`,
+				projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, workflowPhase, incoming.Priority, providerKind, providerIssueRef, updatedAt, lastSyncedAt, currentID,
+			)
+			if err != nil {
+				return err
+			}
+			if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+				return notFoundError("issue", currentID)
+			}
+			if err := replaceIssueLabelsTx(tx, currentID, incoming.Labels); err != nil {
+				return err
+			}
+			if err := replaceIssueBlockersRawTx(tx, currentID, incoming.BlockedBy); err != nil {
+				return err
+			}
+			if err := deleteIssueRecurrenceTx(tx, currentID); err != nil {
+				return err
+			}
+			if err := s.appendChangeTx(tx, "issue", currentID, "updated", map[string]interface{}{"identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
+				return err
+			}
+			continue
+		}
+
+		id := generateID("iss")
+		_, err = tx.Exec(`
+			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, workflowPhase, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
+		)
+		if err != nil {
+			return err
+		}
+		if err := replaceIssueLabelsTx(tx, id, incoming.Labels); err != nil {
+			return err
+		}
+		if err := replaceIssueBlockersRawTx(tx, id, incoming.BlockedBy); err != nil {
+			return err
+		}
+		if err := deleteIssueRecurrenceTx(tx, id); err != nil {
+			return err
+		}
+		if err := s.appendChangeTx(tx, "issue", id, "created", map[string]interface{}{"project_id": projectID, "identifier": incoming.Identifier, "provider_kind": providerKind, "provider_issue_ref": providerIssueRef}); err != nil {
+			return err
+		}
+		existingByRef[providerIssueRef] = id
+		currentProjectShadowByRef[providerIssueRef] = id
+	}
+
+	var imagePaths []string
+	issueImageDirs := make(map[string]struct{})
+	for providerIssueRef, issueID := range currentProjectShadowByRef {
+		if _, ok := seenRefs[providerIssueRef]; ok {
+			continue
+		}
+		removedPaths, issueImageDir, err := s.deleteIssueTx(tx, issueID)
+		if err != nil {
+			return err
+		}
+		imagePaths = append(imagePaths, removedPaths...)
+		if issueImageDir != "" {
+			issueImageDirs[issueImageDir] = struct{}{}
+		}
+	}
+
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+
+	s.cleanupIssueImagePaths(imagePaths)
+	for issueImageDir := range issueImageDirs {
+		_ = os.Remove(issueImageDir)
+	}
+	return nil
+}
+
+func (s *Store) ListDispatchIssues(states []string) ([]DispatchIssue, error) {
+	cleanStates := make([]string, 0, len(states))
+	for _, state := range states {
+		state = strings.TrimSpace(state)
+		if state == "" {
+			continue
+		}
+		cleanStates = append(cleanStates, state)
+	}
+	if len(cleanStates) == 0 {
+		return []DispatchIssue{}, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(cleanStates)), ",")
+	args := make([]interface{}, 0, len(cleanStates))
+	for _, state := range cleanStates {
+		args = append(args, state)
+	}
+	query := `
+		SELECT ` + qualifiedIssueSelectColumns + `,
+		       CASE WHEN p.id IS NULL THEN 0 ELSE 1 END,
+		       COALESCE(p.state, ''),
+		       CASE WHEN ` + unresolvedBlockerExistsClause("i") + ` THEN 1 ELSE 0 END
+		FROM issues i
+		LEFT JOIN projects p ON p.id = i.project_id
+		WHERE i.state IN (` + placeholders + `)
+		ORDER BY CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.created_at ASC, i.identifier ASC`
+	return s.listDispatchIssuesForQuery(query, args...)
+}
+
+func (s *Store) GetIssueDispatchState(issueID string) (IssueDispatchState, error) {
+	if strings.TrimSpace(issueID) == "" {
+		return IssueDispatchState{}, notFoundError("issue", issueID)
+	}
+	var projectExists int
+	var projectState string
+	var unresolved int
+	err := s.db.QueryRow(`
+		SELECT CASE WHEN p.id IS NULL THEN 0 ELSE 1 END,
+		       COALESCE(p.state, ''),
+		       CASE WHEN `+unresolvedBlockerExistsClause("i")+` THEN 1 ELSE 0 END
+		FROM issues i
+		LEFT JOIN projects p ON p.id = i.project_id
+		WHERE i.id = ?`, issueID).Scan(&projectExists, &projectState, &unresolved)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return IssueDispatchState{}, notFoundError("issue", issueID)
+		}
+		return IssueDispatchState{}, err
+	}
+	return IssueDispatchState{
+		ProjectExists:         projectExists != 0,
+		ProjectState:          NormalizeProjectState(projectState),
+		HasUnresolvedBlockers: unresolved != 0,
+	}, nil
 }
 
 func (s *Store) LookupIssueTitles(issueIDs, identifiers []string) (map[string]string, map[string]string, error) {
@@ -2528,6 +2867,63 @@ func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, e
 	return persisted, nil
 }
 
+func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, string, error) {
+	var workspacePath string
+	err := tx.QueryRow(`SELECT path FROM workspaces WHERE issue_id = ?`, id).Scan(&workspacePath)
+	switch {
+	case err == nil:
+	case err == sql.ErrNoRows:
+		workspacePath = ""
+	default:
+		return nil, "", err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	imagePaths, err := s.deleteIssueImagesTx(tx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_recurrences WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_activity_updates WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_activity_entries WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id); err != nil {
+		return nil, "", err
+	}
+	res, err := tx.Exec(`DELETE FROM issues WHERE id = ?`, id)
+	if err != nil {
+		return nil, "", err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return nil, "", notFoundError("issue", id)
+	}
+	if workspacePath != "" {
+		if err := s.appendChangeTx(tx, "workspace", id, "deleted", map[string]interface{}{"path": workspacePath}); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := s.appendChangeTx(tx, "issue", id, "deleted", nil); err != nil {
+		return nil, "", err
+	}
+	return imagePaths, filepath.Join(s.IssueImageAssetRoot(), id), nil
+}
+
 func (s *Store) DeleteIssue(id string) error {
 	var workspace *Workspace
 	workspace, err := s.GetWorkspace(id)
@@ -2549,47 +2945,8 @@ func (s *Store) DeleteIssue(id string) error {
 			_ = tx.Rollback()
 		}
 	}()
-	if _, err := tx.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	imagePaths, err := s.deleteIssueImagesTx(tx, id)
+	imagePaths, _, err := s.deleteIssueTx(tx, id)
 	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM issue_recurrences WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM issue_activity_updates WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM issue_activity_entries WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id); err != nil {
-		return err
-	}
-	res, err := tx.Exec(`DELETE FROM issues WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
-		return notFoundError("issue", id)
-	}
-	if workspace != nil {
-		if err := s.appendChangeTx(tx, "workspace", id, "deleted", map[string]interface{}{"path": workspace.Path}); err != nil {
-			return err
-		}
-	}
-	if err := s.appendChangeTx(tx, "issue", id, "deleted", nil); err != nil {
 		return err
 	}
 	if err := s.commitTx(tx, true); err != nil {
@@ -3330,12 +3687,17 @@ func (s *Store) ListRuntimeEvents(since int64, limit int) ([]RuntimeEvent, error
 			return nil, err
 		}
 		if rawPayload != "" {
-			_ = json.Unmarshal([]byte(rawPayload), &event.Payload)
+			if err := json.Unmarshal([]byte(rawPayload), &event.Payload); err != nil {
+				slog.Warn("Failed to decode runtime event payload", "seq", event.Seq, "kind", event.Kind, "error", err)
+			}
 		}
 		if event.Payload != nil {
 			event.Phase = asString(event.Payload["phase"])
 		}
 		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
@@ -3378,12 +3740,17 @@ func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEven
 			return nil, err
 		}
 		if rawPayload != "" {
-			_ = json.Unmarshal([]byte(rawPayload), &event.Payload)
+			if err := json.Unmarshal([]byte(rawPayload), &event.Payload); err != nil {
+				slog.Warn("Failed to decode issue runtime event payload", "seq", event.Seq, "issue_id", event.IssueID, "kind", event.Kind, "error", err)
+			}
 		}
 		if event.Payload != nil {
 			event.Phase = asString(event.Payload["phase"])
 		}
 		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]

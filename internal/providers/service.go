@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 var (
 	providerReadSyncTimeout    = 2 * time.Second
 	providerProjectSyncTimeout = 5 * time.Second
+	ErrAmbiguousProviderIssue  = errors.New("ambiguous provider issue identifier")
 )
 
 type syncMode int
@@ -374,14 +376,7 @@ func shouldPropagateReadSyncError(parent context.Context, err error, propagatePa
 }
 
 func (s *Service) reconcileProviderIssues(projectID, providerKind string, issues []kanban.Issue) error {
-	refs := make([]string, 0, len(issues))
-	for i := range issues {
-		refs = append(refs, strings.TrimSpace(issues[i].ProviderIssueRef))
-		if _, err := s.store.UpsertProviderIssue(projectID, &issues[i]); err != nil {
-			return err
-		}
-	}
-	return s.store.DeleteProviderIssuesExcept(projectID, providerKind, refs)
+	return s.store.ReconcileProviderIssues(projectID, providerKind, issues)
 }
 
 func (s *Service) hasCachedProviderIssues(projectID, providerKind string) (bool, error) {
@@ -501,7 +496,10 @@ func (s *Service) lookupProviderIssueByIdentifier(ctx context.Context, projects 
 		close(results)
 	}()
 
-	var firstProviderErr error
+	var (
+		firstProviderErr error
+		matches          []lookupResult
+	)
 	for result := range results {
 		if shouldPropagateReadSyncError(ctx, result.err, propagateParentContext) {
 			return nil, result.err
@@ -512,8 +510,19 @@ func (s *Service) lookupProviderIssueByIdentifier(ctx context.Context, projects 
 			}
 			continue
 		}
-		cancel()
-		return s.store.UpsertProviderIssue(result.projectID, result.issue)
+		matches = append(matches, result)
+	}
+	switch len(matches) {
+	case 1:
+		return s.store.UpsertProviderIssue(matches[0].projectID, matches[0].issue)
+	case 0:
+	default:
+		projectIDs := make([]string, 0, len(matches))
+		for _, match := range matches {
+			projectIDs = append(projectIDs, match.projectID)
+		}
+		sort.Strings(projectIDs)
+		return nil, fmt.Errorf("%w: identifier %q matched multiple provider projects (%s)", ErrAmbiguousProviderIssue, identifier, strings.Join(projectIDs, ", "))
 	}
 	if firstProviderErr != nil {
 		return nil, firstProviderErr

@@ -1,6 +1,7 @@
 package kanban
 
 import (
+	"bytes"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -327,5 +328,196 @@ func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
 	}
 	if refreshedReview.UpdatedAt.IsZero() {
 		t.Fatalf("expected zero UpdatedAt payload to be normalized on update, got %#v", refreshedReview)
+	}
+}
+
+func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStaleData(t *testing.T) {
+	store := setupTestStore(t)
+	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", ProviderKindLinear, "LIN-PROJ", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider failed: %v", err)
+	}
+
+	keep, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "LIN-KEEP",
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "LIN-KEEP",
+		Title:            "Old title",
+		State:            StateBacklog,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue keep failed: %v", err)
+	}
+	if err := store.UpdateIssue(keep.ID, map[string]interface{}{
+		"agent_name":   "codex",
+		"agent_prompt": "preserve",
+		"branch_name":  "codex/LIN-KEEP",
+		"pr_url":       "https://example.com/pr/1",
+	}); err != nil {
+		t.Fatalf("UpdateIssue keep failed: %v", err)
+	}
+
+	stale, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "LIN-STALE",
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "LIN-STALE",
+		Title:            "Stale issue",
+		State:            StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue stale failed: %v", err)
+	}
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	if _, err := store.CreateWorkspace(stale.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace stale failed: %v", err)
+	}
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	if _, err := store.CreateIssueImage(stale.ID, "preview.png", bytes.NewReader([]byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	})); err != nil {
+		t.Fatalf("CreateIssueImage stale failed: %v", err)
+	}
+
+	lastSyncedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.ReconcileProviderIssues(project.ID, ProviderKindLinear, []Issue{
+		{
+			Identifier:       "LIN-KEEP",
+			ProviderKind:     ProviderKindLinear,
+			ProviderIssueRef: "LIN-KEEP",
+			Title:            "Refreshed title",
+			Description:      "Refreshed description",
+			State:            StateDone,
+			Priority:         1,
+			Labels:           []string{"synced"},
+			UpdatedAt:        time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC),
+			LastSyncedAt:     &lastSyncedAt,
+		},
+		{
+			Identifier:       "LIN-NEW",
+			ProviderKind:     ProviderKindLinear,
+			ProviderIssueRef: "LIN-NEW",
+			Title:            "New issue",
+			State:            StateReady,
+			Labels:           []string{"new"},
+		},
+	}); err != nil {
+		t.Fatalf("ReconcileProviderIssues failed: %v", err)
+	}
+
+	updatedKeep, err := store.GetIssue(keep.ID)
+	if err != nil {
+		t.Fatalf("GetIssue keep failed: %v", err)
+	}
+	if updatedKeep.Title != "Refreshed title" || updatedKeep.Description != "Refreshed description" || updatedKeep.State != StateDone || updatedKeep.Priority != 1 {
+		t.Fatalf("expected provider fields to refresh, got %#v", updatedKeep)
+	}
+	if updatedKeep.AgentName != "codex" || updatedKeep.AgentPrompt != "preserve" || updatedKeep.BranchName != "codex/LIN-KEEP" || updatedKeep.PRURL != "https://example.com/pr/1" {
+		t.Fatalf("expected local fields to be preserved, got %#v", updatedKeep)
+	}
+	if !reflect.DeepEqual(updatedKeep.Labels, []string{"synced"}) {
+		t.Fatalf("expected updated labels, got %#v", updatedKeep.Labels)
+	}
+	if updatedKeep.LastSyncedAt == nil || !updatedKeep.LastSyncedAt.Equal(lastSyncedAt) {
+		t.Fatalf("expected last_synced_at to persist, got %#v", updatedKeep.LastSyncedAt)
+	}
+
+	if _, err := store.GetIssue(stale.ID); !IsNotFound(err) {
+		t.Fatalf("expected stale issue to be removed, got %v", err)
+	}
+	if _, err := store.GetWorkspace(stale.ID); err == nil {
+		t.Fatal("expected stale workspace to be removed")
+	}
+	if _, err := store.GetIssueByProviderRef(ProviderKindLinear, "LIN-NEW"); err != nil {
+		t.Fatalf("expected new provider issue to be inserted, got %v", err)
+	}
+}
+
+func TestDispatchIssueStateQueriesReflectProjectAndBlockerStatus(t *testing.T) {
+	store := setupTestStore(t)
+	project, err := store.CreateProject("Dispatch Project", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	if err := store.UpdateProjectState(project.ID, ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState failed: %v", err)
+	}
+	blocker, err := store.CreateIssue(project.ID, "", "Active blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker failed: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker failed: %v", err)
+	}
+	blocked, err := store.CreateIssue(project.ID, "", "Blocked issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked failed: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers failed: %v", err)
+	}
+	if err := store.UpdateIssueState(blocked.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocked failed: %v", err)
+	}
+
+	freeIssue, err := store.CreateIssue("", "", "Free issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue free failed: %v", err)
+	}
+	if err := store.UpdateIssueState(freeIssue.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState free failed: %v", err)
+	}
+
+	dispatchIssues, err := store.ListDispatchIssues([]string{string(StateReady)})
+	if err != nil {
+		t.Fatalf("ListDispatchIssues failed: %v", err)
+	}
+	if len(dispatchIssues) != 3 {
+		t.Fatalf("expected 3 ready issues, got %d", len(dispatchIssues))
+	}
+
+	foundBlocked := false
+	foundFree := false
+	for _, item := range dispatchIssues {
+		switch item.Identifier {
+		case blocked.Identifier:
+			foundBlocked = true
+			if !item.DispatchState.ProjectExists || item.DispatchState.ProjectState != ProjectStateRunning || !item.DispatchState.HasUnresolvedBlockers {
+				t.Fatalf("unexpected blocked dispatch state: %#v", item.DispatchState)
+			}
+		case freeIssue.Identifier:
+			foundFree = true
+			if item.DispatchState.ProjectExists || item.DispatchState.ProjectState != ProjectStateStopped || item.DispatchState.HasUnresolvedBlockers {
+				t.Fatalf("unexpected free issue dispatch state: %#v", item.DispatchState)
+			}
+		}
+	}
+	if !foundBlocked || !foundFree {
+		t.Fatalf("expected blocked and free issues in dispatch list, got %#v", dispatchIssues)
+	}
+
+	state, err := store.GetIssueDispatchState(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssueDispatchState blocked failed: %v", err)
+	}
+	if !state.ProjectExists || state.ProjectState != ProjectStateRunning || !state.HasUnresolvedBlockers {
+		t.Fatalf("unexpected blocked issue dispatch state: %#v", state)
+	}
+
+	freeState, err := store.GetIssueDispatchState(freeIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueDispatchState free failed: %v", err)
+	}
+	if freeState.ProjectExists || freeState.ProjectState != ProjectStateStopped || freeState.HasUnresolvedBlockers {
+		t.Fatalf("unexpected free issue dispatch state: %#v", freeState)
 	}
 }

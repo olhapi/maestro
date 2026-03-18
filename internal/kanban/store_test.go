@@ -2878,6 +2878,56 @@ func TestListIssueRuntimeEventsFiltersAndOrdersExecutionEvents(t *testing.T) {
 	}
 }
 
+func TestRuntimeEventReadersTolerateMalformedPayloadJSON(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Runtime issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := store.db.Exec(`
+		INSERT INTO runtime_events (kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"run_started",
+		issue.ID,
+		issue.Identifier,
+		issue.Title,
+		1,
+		"",
+		0,
+		0,
+		0,
+		"",
+		now,
+		"{",
+	); err != nil {
+		t.Fatalf("insert malformed runtime event: %v", err)
+	}
+
+	events, err := store.ListRuntimeEvents(0, 10)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 runtime event, got %d", len(events))
+	}
+	if events[0].Payload != nil {
+		t.Fatalf("expected malformed payload to be ignored, got %#v", events[0].Payload)
+	}
+
+	issueEvents, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents failed: %v", err)
+	}
+	if len(issueEvents) != 1 {
+		t.Fatalf("expected 1 issue runtime event, got %d", len(issueEvents))
+	}
+	if issueEvents[0].Payload != nil {
+		t.Fatalf("expected malformed issue payload to be ignored, got %#v", issueEvents[0].Payload)
+	}
+}
+
 func TestIssueExecutionSessionSnapshotRoundTrip(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Session issue", "", 0, nil)
