@@ -68,7 +68,8 @@ jobs:
           node-version: 24
       - name: Set up MSYS2
         if: matrix.needs_msys2
-        uses: msys2/setup-msys2@v2
+        # Pin the first upstream commit that switches the action runtime to Node 24.
+        uses: msys2/setup-msys2@40d24f6fcda1dbb53b570dd6d6136b02a7c682c3
         with:
           msystem: UCRT64
           update: true

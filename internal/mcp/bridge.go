@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	transport "github.com/mark3labs/mcp-go/client/transport"
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
@@ -15,12 +18,45 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
+const (
+	bridgeReconnectWindow       = 5 * time.Second
+	bridgeReconnectPollInterval = 100 * time.Millisecond
+	initializedNotificationName = "notifications/initialized"
+)
+
+type daemonDiscoverFunc func(context.Context, string) (*DaemonEntry, error)
+
+type bridgeRemoteFactory func(DaemonEntry) (transport.BidirectionalInterface, error)
+
+type handshakeReplayMode int
+
+const (
+	replayHandshakeNone handshakeReplayMode = iota
+	replayHandshakeInitializeOnly
+	replayHandshakeFull
+)
+
 type stdioBridge struct {
-	remote  transport.Interface
-	stdin   io.Reader
-	stdout  io.Writer
-	stderr  io.Writer
+	dbPath string
+	stdin  io.Reader
+	stdout io.Writer
+	stderr io.Writer
+
+	discover              daemonDiscoverFunc
+	newRemote             bridgeRemoteFactory
+	reconnectWindow       time.Duration
+	reconnectPollInterval time.Duration
+
 	writeMu sync.Mutex
+
+	remoteMu    sync.RWMutex
+	remote      transport.BidirectionalInterface
+	remoteEntry *DaemonEntry
+	reconnectMu sync.Mutex
+
+	handshakeMu             sync.Mutex
+	initializeRequest       *transport.JSONRPCRequest
+	initializedNotification *mcpapi.JSONRPCNotification
 
 	pendingMu        sync.Mutex
 	pendingResponses map[string]chan *transport.JSONRPCResponse
@@ -50,36 +86,67 @@ func ServeBridgeStdioPath(ctx context.Context, dbPath string, stdin io.Reader, s
 		return fmt.Errorf("stdout is required")
 	}
 
-	entry, err := DiscoverDaemonForDBPath(ctx, dbPath)
-	if err != nil {
+	bridge := newStdioBridge(dbPath, stdin, stdout, stderr)
+	if err := bridge.connect(ctx); err != nil {
 		return err
 	}
+	defer bridge.closeRemote()
+	return bridge.serve(ctx)
+}
 
-	remote, err := transport.NewStreamableHTTP(entry.BaseURL,
+func newStdioBridge(dbPath string, stdin io.Reader, stdout, stderr io.Writer) *stdioBridge {
+	return &stdioBridge{
+		dbPath:                dbPath,
+		stdin:                 stdin,
+		stdout:                stdout,
+		stderr:                stderr,
+		discover:              DiscoverDaemonForDBPath,
+		newRemote:             newBridgeRemote,
+		reconnectWindow:       bridgeReconnectWindow,
+		reconnectPollInterval: bridgeReconnectPollInterval,
+		pendingResponses:      map[string]chan *transport.JSONRPCResponse{},
+	}
+}
+
+func newBridgeRemote(entry DaemonEntry) (transport.BidirectionalInterface, error) {
+	return transport.NewStreamableHTTP(entry.BaseURL,
 		transport.WithContinuousListening(),
 		transport.WithHTTPHeaders(map[string]string{
 			"Authorization": "Bearer " + entry.BearerToken,
 		}),
 	)
+}
+
+func (b *stdioBridge) connect(ctx context.Context) error {
+	entry, err := b.discover(ctx, b.dbPath)
 	if err != nil {
 		return err
 	}
-	defer remote.Close()
 
-	bridge := &stdioBridge{
-		remote:           remote,
-		stdin:            stdin,
-		stdout:           stdout,
-		stderr:           stderr,
-		pendingResponses: map[string]chan *transport.JSONRPCResponse{},
-	}
-	remote.SetNotificationHandler(bridge.handleRemoteNotification)
-	remote.SetRequestHandler(bridge.handleRemoteRequest)
-
-	if err := remote.Start(ctx); err != nil {
+	remote, err := b.openRemote(ctx, *entry)
+	if err != nil {
 		return err
 	}
-	return bridge.serve(ctx)
+
+	old := b.swapRemote(remote, entry)
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
+}
+
+func (b *stdioBridge) openRemote(ctx context.Context, entry DaemonEntry) (transport.BidirectionalInterface, error) {
+	remote, err := b.newRemote(entry)
+	if err != nil {
+		return nil, err
+	}
+	remote.SetNotificationHandler(b.handleRemoteNotification)
+	remote.SetRequestHandler(b.handleRemoteRequest)
+	if err := remote.Start(ctx); err != nil {
+		_ = remote.Close()
+		return nil, err
+	}
+	return remote, nil
 }
 
 func (b *stdioBridge) serve(ctx context.Context) error {
@@ -120,21 +187,16 @@ func (b *stdioBridge) handleIncomingMessage(ctx context.Context, data []byte) er
 }
 
 func (b *stdioBridge) forwardClientRequest(ctx context.Context, message rawJSONRPCMessage) error {
-	id, err := parseRequestID(message.ID)
+	request, err := bridgeRequestFromMessage(message)
 	if err != nil {
 		return err
 	}
 
-	response, err := b.remote.SendRequest(ctx, transport.JSONRPCRequest{
-		JSONRPC: normalizeJSONRPCVersion(message.JSONRPC),
-		ID:      id,
-		Method:  message.Method,
-		Params:  rawParams(message.Params),
-	})
+	response, err := b.sendRequest(ctx, request, replayModeForMethod(message.Method))
 	if err != nil {
 		return b.writeJSON(map[string]any{
 			"jsonrpc": mcpapi.JSONRPC_VERSION,
-			"id":      id.Value(),
+			"id":      request.ID.Value(),
 			"error": map[string]any{
 				"code":    -32603,
 				"message": err.Error(),
@@ -144,29 +206,32 @@ func (b *stdioBridge) forwardClientRequest(ctx context.Context, message rawJSONR
 	if response.Error != nil {
 		return b.writeJSON(map[string]any{
 			"jsonrpc": mcpapi.JSONRPC_VERSION,
-			"id":      id.Value(),
+			"id":      request.ID.Value(),
 			"error":   response.Error,
 		})
 	}
+	if message.Method == string(mcpapi.MethodInitialize) {
+		b.cacheInitializeRequest(request)
+	}
 	return b.writeJSON(map[string]any{
 		"jsonrpc": mcpapi.JSONRPC_VERSION,
-		"id":      id.Value(),
+		"id":      request.ID.Value(),
 		"result":  rawParams(response.Result),
 	})
 }
 
 func (b *stdioBridge) forwardClientNotification(ctx context.Context, message rawJSONRPCMessage) error {
-	params, err := notificationParams(message.Params)
+	notification, err := bridgeNotificationFromMessage(message)
 	if err != nil {
 		return err
 	}
-	return b.remote.SendNotification(ctx, mcpapi.JSONRPCNotification{
-		JSONRPC: normalizeJSONRPCVersion(message.JSONRPC),
-		Notification: mcpapi.Notification{
-			Method: message.Method,
-			Params: params,
-		},
-	})
+	if err := b.sendNotification(ctx, notification, replayModeForMethod(message.Method)); err != nil {
+		return err
+	}
+	if message.Method == initializedNotificationName {
+		b.cacheInitializedNotification(notification)
+	}
+	return nil
 }
 
 func (b *stdioBridge) completePendingResponse(message rawJSONRPCMessage) error {
@@ -230,6 +295,183 @@ func (b *stdioBridge) handleRemoteRequest(ctx context.Context, request transport
 	}
 }
 
+func (b *stdioBridge) sendRequest(ctx context.Context, request transport.JSONRPCRequest, replayMode handshakeReplayMode) (*transport.JSONRPCResponse, error) {
+	remote := b.currentRemote()
+	if remote == nil {
+		if err := b.reconnect(ctx, nil, replayMode); err != nil {
+			return nil, err
+		}
+		remote = b.currentRemote()
+	}
+
+	response, err := remote.SendRequest(ctx, request)
+	if err == nil || !shouldReconnect(err) {
+		return response, err
+	}
+	if err := b.reconnect(ctx, remote, replayMode); err != nil {
+		return nil, err
+	}
+	return b.currentRemote().SendRequest(ctx, request)
+}
+
+func (b *stdioBridge) sendNotification(ctx context.Context, notification mcpapi.JSONRPCNotification, replayMode handshakeReplayMode) error {
+	remote := b.currentRemote()
+	if remote == nil {
+		if err := b.reconnect(ctx, nil, replayMode); err != nil {
+			return err
+		}
+		remote = b.currentRemote()
+	}
+
+	err := remote.SendNotification(ctx, notification)
+	if err == nil || !shouldReconnect(err) {
+		return err
+	}
+	if err := b.reconnect(ctx, remote, replayMode); err != nil {
+		return err
+	}
+	return b.currentRemote().SendNotification(ctx, notification)
+}
+
+func (b *stdioBridge) reconnect(ctx context.Context, failed transport.BidirectionalInterface, replayMode handshakeReplayMode) error {
+	b.reconnectMu.Lock()
+	defer b.reconnectMu.Unlock()
+
+	current := b.currentRemote()
+	if current != nil && failed != nil && current != failed {
+		return nil
+	}
+
+	deadline := time.Now().Add(b.reconnectWindow)
+	var lastErr error
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return lastErr
+			}
+			return fmt.Errorf("timed out waiting for a live Maestro daemon for %s", b.dbPath)
+		}
+
+		entry, err := b.discover(ctx, b.dbPath)
+		if err == nil {
+			remote, openErr := b.openRemote(ctx, *entry)
+			if openErr == nil {
+				replayErr := b.replayHandshake(ctx, remote, replayMode)
+				if replayErr == nil {
+					old := b.swapRemote(remote, entry)
+					if old != nil {
+						_ = old.Close()
+					}
+					return nil
+				}
+				lastErr = replayErr
+				_ = remote.Close()
+			} else {
+				lastErr = openErr
+			}
+		} else {
+			lastErr = err
+		}
+
+		timer := time.NewTimer(b.reconnectPollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (b *stdioBridge) replayHandshake(ctx context.Context, remote transport.BidirectionalInterface, replayMode handshakeReplayMode) error {
+	if replayMode == replayHandshakeNone {
+		return nil
+	}
+
+	initializeRequest, initializedNotification := b.cachedHandshake()
+	if initializeRequest == nil {
+		return nil
+	}
+
+	response, err := remote.SendRequest(ctx, *initializeRequest)
+	if err != nil {
+		return err
+	}
+	if response == nil {
+		return fmt.Errorf("initialize replay returned no response")
+	}
+	if response.Error != nil {
+		return response.Error.AsError()
+	}
+	if replayMode != replayHandshakeFull || initializedNotification == nil {
+		return nil
+	}
+	return remote.SendNotification(ctx, *initializedNotification)
+}
+
+func (b *stdioBridge) cacheInitializeRequest(request transport.JSONRPCRequest) {
+	cloned := cloneJSONRPCRequest(request)
+	b.handshakeMu.Lock()
+	defer b.handshakeMu.Unlock()
+	b.initializeRequest = &cloned
+	b.initializedNotification = nil
+}
+
+func (b *stdioBridge) cacheInitializedNotification(notification mcpapi.JSONRPCNotification) {
+	cloned := notification
+	b.handshakeMu.Lock()
+	defer b.handshakeMu.Unlock()
+	b.initializedNotification = &cloned
+}
+
+func (b *stdioBridge) cachedHandshake() (*transport.JSONRPCRequest, *mcpapi.JSONRPCNotification) {
+	b.handshakeMu.Lock()
+	defer b.handshakeMu.Unlock()
+
+	var initializeRequest *transport.JSONRPCRequest
+	if b.initializeRequest != nil {
+		cloned := cloneJSONRPCRequest(*b.initializeRequest)
+		initializeRequest = &cloned
+	}
+
+	var initializedNotification *mcpapi.JSONRPCNotification
+	if b.initializedNotification != nil {
+		cloned := *b.initializedNotification
+		initializedNotification = &cloned
+	}
+	return initializeRequest, initializedNotification
+}
+
+func (b *stdioBridge) currentRemote() transport.BidirectionalInterface {
+	b.remoteMu.RLock()
+	defer b.remoteMu.RUnlock()
+	return b.remote
+}
+
+func (b *stdioBridge) swapRemote(remote transport.BidirectionalInterface, entry *DaemonEntry) transport.BidirectionalInterface {
+	b.remoteMu.Lock()
+	defer b.remoteMu.Unlock()
+	old := b.remote
+	b.remote = remote
+	if entry == nil {
+		b.remoteEntry = nil
+	} else {
+		cloned := *entry
+		b.remoteEntry = &cloned
+	}
+	return old
+}
+
+func (b *stdioBridge) closeRemote() {
+	old := b.swapRemote(nil, nil)
+	if old != nil {
+		_ = old.Close()
+	}
+}
+
 func (b *stdioBridge) writeJSON(value any) error {
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -276,11 +518,75 @@ func notificationParams(raw json.RawMessage) (mcpapi.NotificationParams, error) 
 	return params, nil
 }
 
+func bridgeRequestFromMessage(message rawJSONRPCMessage) (transport.JSONRPCRequest, error) {
+	id, err := parseRequestID(message.ID)
+	if err != nil {
+		return transport.JSONRPCRequest{}, err
+	}
+	return transport.JSONRPCRequest{
+		JSONRPC: normalizeJSONRPCVersion(message.JSONRPC),
+		ID:      id,
+		Method:  message.Method,
+		Params:  cloneRawParams(message.Params),
+	}, nil
+}
+
+func bridgeNotificationFromMessage(message rawJSONRPCMessage) (mcpapi.JSONRPCNotification, error) {
+	params, err := notificationParams(message.Params)
+	if err != nil {
+		return mcpapi.JSONRPCNotification{}, err
+	}
+	return mcpapi.JSONRPCNotification{
+		JSONRPC: normalizeJSONRPCVersion(message.JSONRPC),
+		Notification: mcpapi.Notification{
+			Method: message.Method,
+			Params: params,
+		},
+	}, nil
+}
+
 func rawParams(raw json.RawMessage) any {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
 	return raw
+}
+
+func cloneRawParams(raw json.RawMessage) any {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
+}
+
+func cloneJSONRPCRequest(request transport.JSONRPCRequest) transport.JSONRPCRequest {
+	cloned := request
+	if raw, ok := request.Params.(json.RawMessage); ok {
+		cloned.Params = append(json.RawMessage(nil), raw...)
+	}
+	return cloned
+}
+
+func replayModeForMethod(method string) handshakeReplayMode {
+	switch method {
+	case string(mcpapi.MethodInitialize):
+		return replayHandshakeNone
+	case initializedNotificationName:
+		return replayHandshakeInitializeOnly
+	default:
+		return replayHandshakeFull
+	}
+}
+
+func shouldReconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, transport.ErrSessionTerminated) {
+		return true
+	}
+	var requestErr *url.Error
+	return errors.As(err, &requestErr)
 }
 
 func normalizeJSONRPCVersion(version string) string {

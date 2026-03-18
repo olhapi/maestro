@@ -7,6 +7,7 @@ packages=(
   "./internal/dashboardapi:80"
   "./internal/httpserver:80"
   "./internal/kanban:80"
+  "./internal/mcp:75"
   "./internal/orchestrator:80"
 )
 
