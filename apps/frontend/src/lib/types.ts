@@ -154,6 +154,38 @@ export interface IssueImage {
   updated_at: string;
 }
 
+export interface IssueCommentAuthor {
+  type?: string;
+  name?: string;
+  email?: string;
+}
+
+export interface IssueCommentAttachment {
+  id: string;
+  comment_id: string;
+  filename: string;
+  content_type: string;
+  byte_size: number;
+  url?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueComment {
+  id: string;
+  issue_id: string;
+  parent_comment_id?: string;
+  body?: string;
+  author: IssueCommentAuthor;
+  provider_kind?: string;
+  provider_comment_ref?: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string;
+  attachments: IssueCommentAttachment[];
+  replies: IssueComment[];
+}
+
 export interface IssueDetail extends IssueSummary {
   project_description?: string;
   epic_description?: string;

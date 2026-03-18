@@ -27,7 +27,7 @@ type stubProvider struct {
 	getFunc      func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
 	createFunc   func(context.Context, *kanban.Project, IssueCreateInput) (*kanban.Issue, error)
 	updateFunc   func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
-	commentFunc  func(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error
+	commentFunc  func(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) (*kanban.IssueComment, error)
 }
 
 func sampleProviderPNGBytes() []byte {
@@ -223,11 +223,27 @@ func (p *stubProvider) SetIssueState(context.Context, *kanban.Project, *kanban.I
 	return nil, ErrUnsupportedCapability
 }
 
-func (p *stubProvider) CreateIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, input IssueCommentInput) error {
+func (p *stubProvider) ListIssueComments(context.Context, *kanban.Project, *kanban.Issue) ([]kanban.IssueComment, error) {
+	return nil, ErrUnsupportedCapability
+}
+
+func (p *stubProvider) CreateIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, input IssueCommentInput) (*kanban.IssueComment, error) {
 	if p.commentFunc != nil {
 		return p.commentFunc(ctx, project, issue, input)
 	}
+	return nil, ErrUnsupportedCapability
+}
+
+func (p *stubProvider) UpdateIssueComment(context.Context, *kanban.Project, *kanban.Issue, string, IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, ErrUnsupportedCapability
+}
+
+func (p *stubProvider) DeleteIssueComment(context.Context, *kanban.Project, *kanban.Issue, string) error {
 	return ErrUnsupportedCapability
+}
+
+func (p *stubProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*IssueCommentAttachmentContent, error) {
+	return nil, ErrUnsupportedCapability
 }
 
 func TestServiceSyncIssuesPrunesStaleProviderShadowIssues(t *testing.T) {
@@ -604,7 +620,7 @@ func TestServiceCreateIssueCommentDelegatesToProvider(t *testing.T) {
 			ProviderIssueRef: "linear-1",
 			Identifier:       "LIN-1",
 		},
-		commentFunc: func(_ context.Context, gotProject *kanban.Project, issue *kanban.Issue, input IssueCommentInput) error {
+		commentFunc: func(_ context.Context, gotProject *kanban.Project, issue *kanban.Issue, input IssueCommentInput) (*kanban.IssueComment, error) {
 			if gotProject == nil || gotProject.ID != project.ID {
 				t.Fatalf("unexpected project context: %#v", gotProject)
 			}
@@ -612,12 +628,13 @@ func TestServiceCreateIssueCommentDelegatesToProvider(t *testing.T) {
 				t.Fatalf("unexpected issue %q", issue.Identifier)
 			}
 			got = input
-			return nil
+			return nil, nil
 		},
 	}
 
+	body := "Done pass preview"
 	input := IssueCommentInput{
-		Body: "Done pass preview",
+		Body: &body,
 		Attachments: []IssueCommentAttachment{{
 			Path: "/tmp/preview.mp4",
 		}},

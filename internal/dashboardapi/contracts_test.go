@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,8 +111,24 @@ func (p *blockerRejectingIssueProvider) SetIssueState(context.Context, *kanban.P
 	return nil, providers.ErrUnsupportedCapability
 }
 
-func (p *blockerRejectingIssueProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+func (p *blockerRejectingIssueProvider) ListIssueComments(context.Context, *kanban.Project, *kanban.Issue) ([]kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockerRejectingIssueProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockerRejectingIssueProvider) UpdateIssueComment(context.Context, *kanban.Project, *kanban.Issue, string, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockerRejectingIssueProvider) DeleteIssueComment(context.Context, *kanban.Project, *kanban.Issue, string) error {
 	return providers.ErrUnsupportedCapability
+}
+
+func (p *blockerRejectingIssueProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
+	return nil, providers.ErrUnsupportedCapability
 }
 
 func requestJSON(t *testing.T, srv *httptest.Server, method, path string, body interface{}) *http.Response {
@@ -167,14 +184,51 @@ func requestWebhookJSON(t *testing.T, srv *httptest.Server, token string, body i
 
 func requestMultipart(t *testing.T, srv *httptest.Server, method, path, fieldName, filename string, content []byte) *http.Response {
 	t.Helper()
+	resp := requestMultipartForm(t, srv, method, path, nil, []multipartFilePayload{{
+		FieldName: fieldName,
+		Filename:  filename,
+		Content:   content,
+	}})
+	return resp
+}
+
+type multipartFilePayload struct {
+	FieldName   string
+	Filename    string
+	ContentType string
+	Content     []byte
+}
+
+func requestMultipartForm(t *testing.T, srv *httptest.Server, method, path string, fields map[string][]string, files []multipartFilePayload) *http.Response {
+	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile(fieldName, filename)
-	if err != nil {
-		t.Fatalf("create form file: %v", err)
+	for name, values := range fields {
+		for _, value := range values {
+			if err := writer.WriteField(name, value); err != nil {
+				t.Fatalf("write multipart field %s: %v", name, err)
+			}
+		}
 	}
-	if _, err := part.Write(content); err != nil {
-		t.Fatalf("write multipart content: %v", err)
+	for _, file := range files {
+		var (
+			part io.Writer
+			err  error
+		)
+		if strings.TrimSpace(file.ContentType) != "" {
+			header := make(textproto.MIMEHeader)
+			header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, file.FieldName, file.Filename))
+			header.Set("Content-Type", file.ContentType)
+			part, err = writer.CreatePart(header)
+		} else {
+			part, err = writer.CreateFormFile(file.FieldName, file.Filename)
+		}
+		if err != nil {
+			t.Fatalf("create form file: %v", err)
+		}
+		if _, err := part.Write(file.Content); err != nil {
+			t.Fatalf("write multipart content: %v", err)
+		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
@@ -351,6 +405,174 @@ func TestIssueImageUploadRejectsOversizedMultipartBodies(t *testing.T) {
 	if !strings.Contains(body["error"].(string), "too large") && !strings.Contains(body["error"].(string), "exceeds") {
 		t.Fatalf("expected size validation error, got %#v", body)
 	}
+}
+
+func TestIssueCommentEndpointsSupportCRUDContracts(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	issue, err := store.CreateIssue("", "", "Comment contracts", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	createResp := requestMultipartForm(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/comments", map[string][]string{
+		"body": {"Initial UI comment"},
+	}, []multipartFilePayload{{
+		FieldName:   "files",
+		Filename:    "note.txt",
+		ContentType: "text/plain",
+		Content:     []byte("alpha attachment"),
+	}})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create comment expected 201, got %d", createResp.StatusCode)
+	}
+	created := decodeResponse(t, createResp)
+	if created["body"].(string) != "Initial UI comment" {
+		t.Fatalf("unexpected created comment body: %#v", created)
+	}
+	author := created["author"].(map[string]interface{})
+	if author["name"].(string) != "UI" {
+		t.Fatalf("expected UI author, got %#v", author)
+	}
+	attachments := created["attachments"].([]interface{})
+	if len(attachments) != 1 {
+		t.Fatalf("expected one attachment, got %#v", attachments)
+	}
+	commentID := created["id"].(string)
+	attachmentID := attachments[0].(map[string]interface{})["id"].(string)
+
+	listResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/comments", nil)
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list comments expected 200, got %d", listResp.StatusCode)
+	}
+	listPayload := decodeResponse(t, listResp)
+	items := listPayload["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected one listed comment, got %#v", items)
+	}
+
+	contentResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/comments/"+commentID+"/attachments/"+attachmentID+"/content", nil)
+	if contentResp.StatusCode != http.StatusOK {
+		t.Fatalf("attachment content expected 200, got %d", contentResp.StatusCode)
+	}
+	contentBytes, err := io.ReadAll(contentResp.Body)
+	if err != nil {
+		t.Fatalf("read attachment content: %v", err)
+	}
+	_ = contentResp.Body.Close()
+	if string(contentBytes) != "alpha attachment" {
+		t.Fatalf("unexpected attachment content %q", string(contentBytes))
+	}
+	if contentType := contentResp.Header.Get("Content-Type"); contentType != "text/plain" {
+		t.Fatalf("unexpected attachment content type %q", contentType)
+	}
+
+	updateResp := requestMultipartForm(t, srv, http.MethodPatch, "/api/v1/app/issues/"+issue.Identifier+"/comments/"+commentID, map[string][]string{
+		"body":                  {"Updated UI comment"},
+		"remove_attachment_ids": {attachmentID},
+	}, []multipartFilePayload{{
+		FieldName:   "files",
+		Filename:    "followup.txt",
+		ContentType: "text/plain",
+		Content:     []byte("beta attachment"),
+	}})
+	if updateResp.StatusCode != http.StatusOK {
+		t.Fatalf("update comment expected 200, got %d", updateResp.StatusCode)
+	}
+	updated := decodeResponse(t, updateResp)
+	if updated["body"].(string) != "Updated UI comment" {
+		t.Fatalf("unexpected updated comment body: %#v", updated)
+	}
+	updatedAttachments := updated["attachments"].([]interface{})
+	if len(updatedAttachments) != 1 {
+		t.Fatalf("expected one attachment after update, got %#v", updatedAttachments)
+	}
+	newAttachmentID := updatedAttachments[0].(map[string]interface{})["id"].(string)
+	if newAttachmentID == attachmentID {
+		t.Fatalf("expected replacement attachment id, got %q", newAttachmentID)
+	}
+
+	deleteResp := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+issue.Identifier+"/comments/"+commentID, nil)
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete comment expected 200, got %d", deleteResp.StatusCode)
+	}
+	_ = decodeResponse(t, deleteResp)
+
+	listAfterDelete := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/comments", nil)
+	if listAfterDelete.StatusCode != http.StatusOK {
+		t.Fatalf("list comments after delete expected 200, got %d", listAfterDelete.StatusCode)
+	}
+	if items := decodeResponse(t, listAfterDelete)["items"].([]interface{}); len(items) != 0 {
+		t.Fatalf("expected no comments after delete, got %#v", items)
+	}
+
+	missingAttachment := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/comments/"+commentID+"/attachments/"+newAttachmentID+"/content", nil)
+	if missingAttachment.StatusCode != http.StatusNotFound {
+		t.Fatalf("deleted attachment content expected 404, got %d", missingAttachment.StatusCode)
+	}
+	_ = decodeResponse(t, missingAttachment)
+}
+
+func TestIssueCommentEndpointsPreserveDuplicateAttachmentBasenames(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	issue, err := store.CreateIssue("", "", "Duplicate filenames", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	createResp := requestMultipartForm(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/comments", map[string][]string{
+		"body": {"Two screenshots"},
+	}, []multipartFilePayload{
+		{
+			FieldName:   "files",
+			Filename:    "screenshot.png",
+			ContentType: "image/png",
+			Content:     []byte("alpha-image"),
+		},
+		{
+			FieldName:   "files",
+			Filename:    "screenshot.png",
+			ContentType: "image/png",
+			Content:     []byte("beta-image"),
+		},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create comment expected 201, got %d", createResp.StatusCode)
+	}
+	created := decodeResponse(t, createResp)
+	commentID := created["id"].(string)
+	attachments := created["attachments"].([]interface{})
+	if len(attachments) != 2 {
+		t.Fatalf("expected two attachments, got %#v", attachments)
+	}
+
+	var contents []string
+	for _, raw := range attachments {
+		attachmentID := raw.(map[string]interface{})["id"].(string)
+		contentResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/comments/"+commentID+"/attachments/"+attachmentID+"/content", nil)
+		if contentResp.StatusCode != http.StatusOK {
+			t.Fatalf("attachment content expected 200, got %d", contentResp.StatusCode)
+		}
+		data, err := io.ReadAll(contentResp.Body)
+		if err != nil {
+			t.Fatalf("read attachment content: %v", err)
+		}
+		_ = contentResp.Body.Close()
+		contents = append(contents, string(data))
+	}
+	if !(sliceContains(contents, "alpha-image") && sliceContains(contents, "beta-image")) {
+		t.Fatalf("expected distinct attachment contents, got %#v", contents)
+	}
+}
+
+func sliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBootstrapContractsMarkProjectsOutOfScopeForScopedServer(t *testing.T) {

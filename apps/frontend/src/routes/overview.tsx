@@ -3,10 +3,12 @@ import { Link } from '@tanstack/react-router'
 import { Activity, FolderKanban, RotateCcw, Rocket, TimerReset } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
+import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
+import type { BootstrapResponse } from '@/lib/types'
 import { formatCompactNumber, formatNumber, formatRelativeTime } from '@/lib/utils'
 
 function Metric({
@@ -35,6 +37,31 @@ function Metric({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+function ThroughputChart({ series }: { series: BootstrapResponse['overview']['series'] }) {
+  return (
+    <ResponsiveContainer width="100%" height={320}>
+      <AreaChart data={series}>
+        <defs>
+          <linearGradient id="runsCompleted" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="5%" stopColor="#c4ff57" stopOpacity={0.7} />
+            <stop offset="95%" stopColor="#c4ff57" stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="retries" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="5%" stopColor="#53d9ff" stopOpacity={0.6} />
+            <stop offset="95%" stopColor="#53d9ff" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid stroke="rgba(255,255,255,.08)" vertical={false} />
+        <XAxis dataKey="bucket" stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} />
+        <YAxis stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} />
+        <Tooltip contentStyle={{ background: '#101114', border: '1px solid rgba(255,255,255,.08)', borderRadius: 16 }} />
+        <Area type="monotone" dataKey="runs_completed" stroke="#c4ff57" fill="url(#runsCompleted)" strokeWidth={2} />
+        <Area type="monotone" dataKey="retries" stroke="#53d9ff" fill="url(#retries)" strokeWidth={2} />
+      </AreaChart>
+    </ResponsiveContainer>
   )
 }
 
@@ -73,28 +100,11 @@ export function OverviewPage() {
               <CardDescription>Run starts, completions, failures, retries, and token burn across the last 24 hours.</CardDescription>
             </div>
           </CardHeader>
-          <CardContent className="min-w-0">
-            <ResponsiveContainer width="100%" height={320}>
-              <AreaChart data={data.overview.series}>
-                <defs>
-                  <linearGradient id="runsCompleted" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="5%" stopColor="#c4ff57" stopOpacity={0.7} />
-                    <stop offset="95%" stopColor="#c4ff57" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="retries" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="5%" stopColor="#53d9ff" stopOpacity={0.6} />
-                    <stop offset="95%" stopColor="#53d9ff" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="rgba(255,255,255,.08)" vertical={false} />
-                <XAxis dataKey="bucket" stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} />
-                <YAxis stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} />
-                <Tooltip contentStyle={{ background: '#101114', border: '1px solid rgba(255,255,255,.08)', borderRadius: 16 }} />
-                <Area type="monotone" dataKey="runs_completed" stroke="#c4ff57" fill="url(#runsCompleted)" strokeWidth={2} />
-                <Area type="monotone" dataKey="retries" stroke="#53d9ff" fill="url(#retries)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </CardContent>
+          <ComponentErrorBoundary className="min-h-[320px]" label="overview throughput chart" resetKeys={[data.generated_at]} scope="widget">
+            <CardContent className="min-w-0">
+              <ThroughputChart series={data.overview.series} />
+            </CardContent>
+          </ComponentErrorBoundary>
         </Card>
       </section>
 

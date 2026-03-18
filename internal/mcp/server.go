@@ -143,6 +143,9 @@ func (s *Server) registerTools() {
 		objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 		}),
+		objectTool("list_issue_comments", "List comments for an issue", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+		}),
 		objectTool("list_issues", "List issues with filters, search, sort, and pagination", map[string]interface{}{
 			"project_id": stringProperty("Filter by project ID"),
 			"epic_id":    stringProperty("Filter by epic ID"),
@@ -171,6 +174,23 @@ func (s *Server) registerTools() {
 		objectTool("attach_issue_image", "Attach an image to an issue from a local file path", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"path":       stringProperty("Absolute or relative local file path"),
+		}),
+		objectTool("create_issue_comment", "Create a comment on an issue", map[string]interface{}{
+			"identifier":        stringProperty("Issue ID or identifier"),
+			"body":              stringProperty("Comment body"),
+			"parent_comment_id": stringProperty("Parent comment ID"),
+			"attachment_paths":  stringArrayProperty("Attachment file paths"),
+		}),
+		objectTool("update_issue_comment", "Update an existing issue comment", map[string]interface{}{
+			"identifier":            stringProperty("Issue ID or identifier"),
+			"comment_id":            stringProperty("Comment ID"),
+			"body":                  stringProperty("Updated comment body"),
+			"attachment_paths":      stringArrayProperty("Attachment file paths"),
+			"remove_attachment_ids": stringArrayProperty("Attachment IDs to remove"),
+		}),
+		objectTool("delete_issue_comment", "Delete an issue comment", map[string]interface{}{
+			"identifier": stringProperty("Issue ID or identifier"),
+			"comment_id": stringProperty("Comment ID"),
 		}),
 		objectTool("delete_issue_image", "Delete an attached issue image", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
@@ -273,12 +293,20 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 		return s.handleCreateIssue(ctx, args)
 	case "get_issue":
 		return s.handleGetIssue(ctx, args)
+	case "list_issue_comments":
+		return s.handleListIssueComments(ctx, args)
 	case "list_issues":
 		return s.handleListIssues(ctx, args)
 	case "update_issue":
 		return s.handleUpdateIssue(ctx, args)
 	case "attach_issue_image":
 		return s.handleAttachIssueImage(ctx, args)
+	case "create_issue_comment":
+		return s.handleCreateIssueComment(ctx, args)
+	case "update_issue_comment":
+		return s.handleUpdateIssueComment(ctx, args)
+	case "delete_issue_comment":
+		return s.handleDeleteIssueComment(ctx, args)
 	case "delete_issue_image":
 		return s.handleDeleteIssueImage(ctx, args)
 	case "set_issue_state":
@@ -490,6 +518,21 @@ func (s *Server) handleGetIssue(ctx context.Context, args map[string]interface{}
 	return s.toolResult("get_issue", detail), nil
 }
 
+func (s *Server) handleListIssueComments(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("list_issue_comments", err.Error()), nil
+	}
+	comments, err := s.service.ListIssueComments(ctx, issue.Identifier)
+	if err != nil {
+		return s.toolError("list_issue_comments", fmt.Sprintf("Failed to list issue comments: %v", err)), nil
+	}
+	return s.toolResult("list_issue_comments", map[string]interface{}{
+		"identifier": issue.Identifier,
+		"items":      comments,
+	}), nil
+}
+
 func (s *Server) handleListIssues(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	query := kanban.IssueQuery{
 		ProjectID: asString(args["project_id"]),
@@ -556,6 +599,51 @@ func (s *Server) handleAttachIssueImage(ctx context.Context, args map[string]int
 	return s.toolResult("attach_issue_image", map[string]interface{}{
 		"image": image,
 		"issue": detail,
+	}), nil
+}
+
+func (s *Server) handleCreateIssueComment(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("create_issue_comment", err.Error()), nil
+	}
+	input := issueCommentMutationArgs(args)
+	input.Author = kanban.IssueCommentAuthor{Type: "source", Name: "MCP"}
+	comment, err := s.service.CreateIssueCommentWithResult(ctx, issue.Identifier, input)
+	if err != nil {
+		return s.toolError("create_issue_comment", fmt.Sprintf("Failed to create issue comment: %v", err)), nil
+	}
+	return s.toolResult("create_issue_comment", comment), nil
+}
+
+func (s *Server) handleUpdateIssueComment(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("update_issue_comment", err.Error()), nil
+	}
+	commentID := asString(args["comment_id"])
+	input := issueCommentMutationArgs(args)
+	input.Author = kanban.IssueCommentAuthor{Type: "source", Name: "MCP"}
+	comment, err := s.service.UpdateIssueComment(ctx, issue.Identifier, commentID, input)
+	if err != nil {
+		return s.toolError("update_issue_comment", fmt.Sprintf("Failed to update issue comment: %v", err)), nil
+	}
+	return s.toolResult("update_issue_comment", comment), nil
+}
+
+func (s *Server) handleDeleteIssueComment(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	issue, err := s.lookupIssue(ctx, asString(args["identifier"]))
+	if err != nil {
+		return s.toolError("delete_issue_comment", err.Error()), nil
+	}
+	commentID := asString(args["comment_id"])
+	if err := s.service.DeleteIssueComment(ctx, issue.Identifier, commentID); err != nil {
+		return s.toolError("delete_issue_comment", fmt.Sprintf("Failed to delete issue comment: %v", err)), nil
+	}
+	return s.toolResult("delete_issue_comment", map[string]interface{}{
+		"deleted":    true,
+		"identifier": issue.Identifier,
+		"comment_id": commentID,
 	}), nil
 }
 
@@ -968,6 +1056,21 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 		updates["pr_url"] = asString(value)
 	}
 	return updates
+}
+
+func issueCommentMutationArgs(args map[string]interface{}) providers.IssueCommentInput {
+	input := providers.IssueCommentInput{
+		ParentCommentID:     asString(args["parent_comment_id"]),
+		RemoveAttachmentIDs: stringListArg(args, "remove_attachment_ids"),
+	}
+	if value, ok := args["body"]; ok {
+		body := asString(value)
+		input.Body = &body
+	}
+	for _, path := range stringListArg(args, "attachment_paths") {
+		input.Attachments = append(input.Attachments, providers.IssueCommentAttachment{Path: path})
+	}
+	return input
 }
 
 func extensionToolInputSchema(spec map[string]interface{}) mcpapi.ToolInputSchema {

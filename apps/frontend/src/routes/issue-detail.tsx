@@ -24,7 +24,7 @@ import {
   summarizeIssueImageFailures,
 } from "@/lib/issue-images";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
-import type { AgentCommand, IssueState, PermissionProfile } from "@/lib/types";
+import type { AgentCommand, IssueComment, IssueCommentAttachment, IssueState, PermissionProfile } from "@/lib/types";
 import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 
 const permissionProfileLabels: Record<PermissionProfile, string> = {
@@ -88,6 +88,260 @@ function AgentCommandEntry({ command }: { command: AgentCommand }) {
   );
 }
 
+function issueCommentAttachmentContentURL(identifier: string, commentID: string, attachmentID: string) {
+  return `/api/v1/app/issues/${encodeURIComponent(identifier)}/comments/${encodeURIComponent(commentID)}/attachments/${encodeURIComponent(attachmentID)}/content`;
+}
+
+function IssueCommentAttachmentLink({
+  identifier,
+  commentID,
+  attachment,
+}: {
+  identifier: string;
+  commentID: string;
+  attachment: IssueCommentAttachment;
+}) {
+  return (
+    <a
+      className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white transition hover:border-white/20 hover:bg-white/10"
+      href={issueCommentAttachmentContentURL(identifier, commentID, attachment.id)}
+      rel="noreferrer"
+      target="_blank"
+    >
+      {attachment.filename} ({formatIssueImageSize(attachment.byte_size)})
+    </a>
+  );
+}
+
+function CommentComposer({
+  submitLabel,
+  pendingLabel,
+  isPending,
+  placeholder,
+  initialBody = "",
+  onSubmit,
+}: {
+  submitLabel: string;
+  pendingLabel: string;
+  isPending: boolean;
+  placeholder: string;
+  initialBody?: string;
+  onSubmit: (body: string, files: File[]) => Promise<void>;
+}) {
+  const [body, setBody] = useState(initialBody);
+  const [files, setFiles] = useState<File[]>([]);
+
+  return (
+    <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 p-3">
+      <Textarea
+        value={body}
+        className="min-h-[110px] resize-y"
+        placeholder={placeholder}
+        onChange={(event) => setBody(event.target.value)}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          aria-label={`${submitLabel} attachments`}
+          className="text-xs text-[var(--muted-foreground)] file:mr-3 file:rounded-full file:border-0 file:bg-white/10 file:px-3 file:py-1.5 file:text-xs file:text-white"
+          multiple
+          type="file"
+          onChange={(event) => setFiles(Array.from(event.currentTarget.files ?? []))}
+        />
+        {files.length > 0 ? (
+          <span className="text-xs text-[var(--muted-foreground)]">{files.length} file(s) selected</span>
+        ) : null}
+        <Button
+          className="ml-auto"
+          disabled={isPending || (!body.trim() && files.length === 0)}
+          onClick={async () => {
+            await onSubmit(body, files);
+            setBody("");
+            setFiles([]);
+          }}
+          type="button"
+        >
+          <Send className="size-4" />
+          {isPending ? pendingLabel : submitLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function IssueCommentEntry({
+  identifier,
+  comment,
+  level,
+  editingCommentID,
+  updatePending,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onDelete,
+  replyParentID,
+  replyPending,
+  onStartReply,
+  onCancelReply,
+  onSaveReply,
+}: {
+  identifier: string;
+  comment: IssueComment;
+  level: number;
+  editingCommentID: string | null;
+  updatePending: boolean;
+  onStartEdit: (comment: IssueComment) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (commentID: string, body: string, files: File[], removeAttachmentIDs: string[]) => Promise<void>;
+  onDelete: (commentID: string) => Promise<void>;
+  replyParentID: string | null;
+  replyPending: boolean;
+  onStartReply: (commentID: string) => void;
+  onCancelReply: () => void;
+  onSaveReply: (parentCommentID: string, body: string, files: File[]) => Promise<void>;
+}) {
+  const isEditing = editingCommentID === comment.id;
+  const isReplying = replyParentID === comment.id;
+  const [removeAttachmentIDs, setRemoveAttachmentIDs] = useState<string[]>([]);
+
+  return (
+    <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge className="border-white/10 bg-white/5 text-white">{comment.author?.name || "Unknown"}</Badge>
+        <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(comment.created_at)}</span>
+        {level > 0 ? <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">Reply</Badge> : null}
+      </div>
+      {!isEditing ? (
+        <>
+          <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
+            {comment.deleted_at ? "[deleted]" : comment.body || "No text"}
+          </p>
+          {comment.attachments.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {comment.attachments.map((attachment) => (
+                <IssueCommentAttachmentLink
+                  key={attachment.id}
+                  identifier={identifier}
+                  commentID={comment.id}
+                  attachment={attachment}
+                />
+              ))}
+            </div>
+          ) : null}
+          {!comment.deleted_at ? (
+            <div className="flex flex-wrap gap-2">
+              {level === 0 ? (
+                <Button size="sm" type="button" variant="secondary" onClick={() => onStartReply(comment.id)}>
+                  Reply
+                </Button>
+              ) : null}
+              <Button size="sm" type="button" variant="secondary" onClick={() => onStartEdit(comment)}>
+                <Pencil className="size-4" />
+                Edit
+              </Button>
+              <Button size="sm" type="button" variant="destructive" onClick={() => void onDelete(comment.id)}>
+                <Trash2 className="size-4" />
+                Delete
+              </Button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="grid gap-3">
+          <CommentComposer
+            initialBody={comment.body || ""}
+            isPending={updatePending}
+            pendingLabel="Saving..."
+            placeholder="Update the comment"
+            submitLabel="Save"
+            onSubmit={async (body, files) => {
+              await onSaveEdit(comment.id, body, files, removeAttachmentIDs);
+              setRemoveAttachmentIDs([]);
+            }}
+          />
+          {comment.attachments.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {comment.attachments.map((attachment) => {
+                const removed = removeAttachmentIDs.includes(attachment.id);
+                return (
+                  <Button
+                    key={attachment.id}
+                    size="sm"
+                    type="button"
+                    variant={removed ? "destructive" : "secondary"}
+                    onClick={() =>
+                      setRemoveAttachmentIDs((current) =>
+                        current.includes(attachment.id)
+                          ? current.filter((id) => id !== attachment.id)
+                          : [...current, attachment.id],
+                      )
+                    }
+                  >
+                    {removed ? "Restore" : "Remove"} {attachment.filename}
+                  </Button>
+                );
+              })}
+            </div>
+          ) : null}
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setRemoveAttachmentIDs([]);
+                onCancelEdit();
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {isReplying ? (
+        <CommentComposer
+          isPending={replyPending}
+          pendingLabel="Replying..."
+          placeholder="Write a reply"
+          submitLabel="Reply"
+          onSubmit={async (body, files) => {
+            await onSaveReply(comment.id, body, files);
+          }}
+        />
+      ) : null}
+      {isReplying ? (
+        <div className="flex justify-end">
+          <Button size="sm" type="button" variant="secondary" onClick={onCancelReply}>
+            Cancel
+          </Button>
+        </div>
+      ) : null}
+      {comment.replies.length > 0 ? (
+        <div className="grid gap-3 border-l border-white/10 pl-4">
+          {comment.replies.map((reply) => (
+            <IssueCommentEntry
+              key={reply.id}
+              identifier={identifier}
+              comment={reply}
+              editingCommentID={editingCommentID}
+              level={level + 1}
+              onCancelEdit={onCancelEdit}
+              onCancelReply={onCancelReply}
+              onDelete={onDelete}
+              onSaveEdit={onSaveEdit}
+              onSaveReply={onSaveReply}
+              onStartEdit={onStartEdit}
+              onStartReply={onStartReply}
+              replyParentID={replyParentID}
+              replyPending={replyPending}
+              updatePending={updatePending}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function IssueDetailPage() {
   const { identifier } = useParams({ from: "/issues/$identifier" });
   const navigate = useNavigate();
@@ -97,6 +351,8 @@ export function IssueDetailPage() {
   const [previewImageID, setPreviewImageID] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteImageConfirmOpen, setDeleteImageConfirmOpen] = useState(false);
+  const [editingCommentID, setEditingCommentID] = useState<string | null>(null);
+  const [replyParentID, setReplyParentID] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const bootstrap = useQuery({
@@ -123,12 +379,17 @@ export function IssueDetailPage() {
       return false;
     },
   });
+  const comments = useQuery({
+    queryKey: ["issue-comments", identifier],
+    queryFn: () => api.listIssueComments(identifier),
+  });
 
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
       queryClient.invalidateQueries({ queryKey: ["issues"] }),
       queryClient.invalidateQueries({ queryKey: ["issue", identifier] }),
+      queryClient.invalidateQueries({ queryKey: ["issue-comments", identifier] }),
       queryClient.invalidateQueries({
         queryKey: ["issue-execution", identifier],
       }),
@@ -239,11 +500,66 @@ export function IssueDetailPage() {
       toast.error(error instanceof Error ? `Unable to update state: ${error.message}` : "Unable to update state");
     },
   });
+  const createCommentMutation = useMutation({
+    mutationFn: ({ body, parentCommentID, files }: { body: string; parentCommentID?: string; files: File[] }) =>
+      api.createIssueComment(identifier, {
+        body,
+        parent_comment_id: parentCommentID,
+        files,
+      }),
+    onSuccess: async () => {
+      toast.success("Comment added");
+      setReplyParentID(null);
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to add comment: ${error.message}` : "Unable to add comment");
+    },
+  });
+  const updateCommentMutation = useMutation({
+    mutationFn: ({
+      commentID,
+      body,
+      files,
+      removeAttachmentIDs,
+    }: {
+      commentID: string;
+      body: string;
+      files: File[];
+      removeAttachmentIDs: string[];
+    }) =>
+      api.updateIssueComment(identifier, commentID, {
+        body,
+        files,
+        remove_attachment_ids: removeAttachmentIDs,
+      }),
+    onSuccess: async () => {
+      toast.success("Comment updated");
+      setEditingCommentID(null);
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to update comment: ${error.message}` : "Unable to update comment");
+    },
+  });
+  const deleteCommentMutation = useMutation({
+    mutationFn: (commentID: string) => api.deleteIssueComment(identifier, commentID),
+    onSuccess: async () => {
+      toast.success("Comment deleted");
+      setEditingCommentID(null);
+      setReplyParentID(null);
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to delete comment: ${error.message}` : "Unable to delete comment");
+    },
+  });
 
   if (!bootstrap.data || !issue.data || !execution.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
+  const commentItems = comments.data?.items ?? [];
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state]);
   const previewImage = issue.data.images.find((image) => image.id === previewImageID) ?? null;
   const crumbs: Array<{
@@ -418,6 +734,76 @@ export function IssueDetailPage() {
                         src={issueImageContentURL(identifier, image.id)}
                       />
                     </button>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card data-testid="issue-comments-card">
+            <CardHeader className="pb-2.5">
+              <CardTitle>Comments</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4 pt-0">
+              <CommentComposer
+                isPending={createCommentMutation.isPending}
+                pendingLabel="Posting..."
+                placeholder="Add context, ask for a change, or leave review notes."
+                submitLabel="Post comment"
+                onSubmit={async (body, files) => {
+                  await createCommentMutation.mutateAsync({ body, files });
+                }}
+              />
+              {comments.isPending ? (
+                <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 px-4 py-4">
+                  <p className="text-sm font-medium text-white">Loading comments…</p>
+                </div>
+              ) : comments.isError ? (
+                <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/[0.06] px-4 py-4">
+                  <p className="text-sm font-medium text-white">Comments are temporarily unavailable</p>
+                  <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                    {comments.error instanceof Error ? comments.error.message : "Unable to load comments right now."}
+                  </p>
+                </div>
+              ) : commentItems.length === 0 ? (
+                <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 px-4 py-4">
+                  <p className="text-sm font-medium text-white">No comments yet</p>
+                  <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                    Use comments for review notes, decisions, and issue-specific follow-ups.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {commentItems.map((comment) => (
+                    <IssueCommentEntry
+                      key={comment.id}
+                      identifier={identifier}
+                      comment={comment}
+                      editingCommentID={editingCommentID}
+                      level={0}
+                      onCancelEdit={() => setEditingCommentID(null)}
+                      onCancelReply={() => setReplyParentID(null)}
+                      onDelete={async (commentID) => {
+                        await deleteCommentMutation.mutateAsync(commentID);
+                      }}
+                      onSaveEdit={async (commentID, body, files, removeAttachmentIDs) => {
+                        await updateCommentMutation.mutateAsync({ commentID, body, files, removeAttachmentIDs });
+                      }}
+                      onSaveReply={async (parentCommentID, body, files) => {
+                        await createCommentMutation.mutateAsync({ body, parentCommentID, files });
+                      }}
+                      onStartEdit={(comment) => {
+                        setReplyParentID(null);
+                        setEditingCommentID(comment.id);
+                      }}
+                      onStartReply={(commentID) => {
+                        setEditingCommentID(null);
+                        setReplyParentID(commentID);
+                      }}
+                      replyParentID={replyParentID}
+                      replyPending={createCommentMutation.isPending}
+                      updatePending={updateCommentMutation.isPending}
+                    />
                   ))}
                 </div>
               )}

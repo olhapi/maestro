@@ -623,6 +623,10 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		s.handleIssueImages(w, r, identifier, parts[2:])
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "comments" {
+		s.handleIssueComments(w, r, identifier, parts[2:])
+		return
+	}
 
 	if len(parts) == 1 {
 		switch r.Method {
@@ -928,6 +932,81 @@ func (s *Server) handleIssueImages(w http.ResponseWriter, r *http.Request, ident
 	methodNotAllowed(w)
 }
 
+func (s *Server) handleIssueComments(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
+	if len(rest) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			comments, err := s.service.ListIssueComments(r.Context(), identifier)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			writeJSON(w, map[string]interface{}{"items": comments})
+		case http.MethodPost:
+			input, cleanup, err := readIssueCommentMultipart(w, r, "UI")
+			defer cleanup()
+			if err != nil {
+				writeErrorStatus(w, http.StatusBadRequest, err)
+				return
+			}
+			comment, err := s.service.CreateIssueCommentWithResult(r.Context(), identifier, input)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			writeJSONStatus(w, http.StatusCreated, comment)
+		default:
+			methodNotAllowed(w)
+		}
+		return
+	}
+
+	if len(rest) == 4 && rest[1] == "attachments" && rest[2] != "" && rest[3] == "content" && r.Method == http.MethodGet {
+		content, err := s.service.GetIssueCommentAttachmentContent(r.Context(), identifier, rest[0], rest[2])
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		defer content.Content.Close()
+		w.Header().Set("Content-Type", content.Attachment.ContentType)
+		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", content.Attachment.Filename))
+		if content.Attachment.ByteSize > 0 {
+			w.Header().Set("Content-Length", strconv.FormatInt(content.Attachment.ByteSize, 10))
+		}
+		_, _ = io.Copy(w, content.Content)
+		return
+	}
+
+	if len(rest) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPatch:
+		input, cleanup, err := readIssueCommentMultipart(w, r, "UI")
+		defer cleanup()
+		if err != nil {
+			writeErrorStatus(w, http.StatusBadRequest, err)
+			return
+		}
+		comment, err := s.service.UpdateIssueComment(r.Context(), identifier, rest[0], input)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, comment)
+	case http.MethodDelete:
+		if err := s.service.DeleteIssueComment(r.Context(), identifier, rest[0]); err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"deleted": true, "identifier": identifier, "comment_id": rest[0]})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
 func readIssueImageUpload(r *http.Request) (io.ReadCloser, string, error) {
 	reader, err := r.MultipartReader()
 	if err != nil {
@@ -955,6 +1034,109 @@ func readIssueImageUpload(r *http.Request) (io.ReadCloser, string, error) {
 	}
 	return nil, "", fmt.Errorf("file is required")
 }
+
+func readIssueCommentMultipart(w http.ResponseWriter, r *http.Request, source string) (providers.IssueCommentInput, func(), error) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxIssueCommentMultipartBytes)
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return providers.IssueCommentInput{}, func() {}, err
+	}
+
+	tempDir, err := os.MkdirTemp("", "maestro-comment-*")
+	if err != nil {
+		return providers.IssueCommentInput{}, func() {}, err
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(tempDir)
+	}
+
+	input := providers.IssueCommentInput{
+		Author: kanban.IssueCommentAuthor{
+			Type: "source",
+			Name: source,
+		},
+	}
+	var bodySet bool
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			cleanup()
+			return providers.IssueCommentInput{}, func() {}, err
+		}
+		name := strings.TrimSpace(part.FormName())
+		filename := strings.TrimSpace(part.FileName())
+		switch {
+		case name == "body":
+			data, err := io.ReadAll(part)
+			_ = part.Close()
+			if err != nil {
+				cleanup()
+				return providers.IssueCommentInput{}, func() {}, err
+			}
+			value := string(data)
+			input.Body = &value
+			bodySet = true
+		case name == "parent_comment_id":
+			data, err := io.ReadAll(part)
+			_ = part.Close()
+			if err != nil {
+				cleanup()
+				return providers.IssueCommentInput{}, func() {}, err
+			}
+			input.ParentCommentID = strings.TrimSpace(string(data))
+		case name == "remove_attachment_ids":
+			data, err := io.ReadAll(part)
+			_ = part.Close()
+			if err != nil {
+				cleanup()
+				return providers.IssueCommentInput{}, func() {}, err
+			}
+			if value := strings.TrimSpace(string(data)); value != "" {
+				input.RemoveAttachmentIDs = append(input.RemoveAttachmentIDs, value)
+			}
+		case name == "files" && filename != "":
+			partDir, err := os.MkdirTemp(tempDir, "attachment-*")
+			if err != nil {
+				_ = part.Close()
+				cleanup()
+				return providers.IssueCommentInput{}, func() {}, err
+			}
+			tempPath := filepath.Join(partDir, filepath.Base(filename))
+			file, err := os.Create(tempPath)
+			if err != nil {
+				_ = part.Close()
+				cleanup()
+				return providers.IssueCommentInput{}, func() {}, err
+			}
+			if _, err := io.Copy(file, part); err != nil {
+				_ = file.Close()
+				_ = part.Close()
+				cleanup()
+				return providers.IssueCommentInput{}, func() {}, err
+			}
+			_ = file.Close()
+			_ = part.Close()
+			input.Attachments = append(input.Attachments, providers.IssueCommentAttachment{
+				Path:        tempPath,
+				ContentType: strings.TrimSpace(part.Header.Get("Content-Type")),
+			})
+		default:
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+		}
+	}
+
+	if !bodySet {
+		input.Body = nil
+	}
+	return input, cleanup, nil
+}
+
+const MaxIssueCommentMultipartBytes int64 = 26 * 1024 * 1024
 
 func (s *Server) handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

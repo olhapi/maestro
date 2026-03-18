@@ -322,6 +322,7 @@ func (a *cliApp) newIssueCmd() *cobra.Command {
 		a.newIssueUnblockCmd(),
 		a.newIssueBlockCmd(),
 		a.newIssueBlockersCmd(),
+		a.newIssueCommentsCmd(),
 		a.newIssueImagesCmd(),
 	)
 	return cmd
@@ -482,6 +483,10 @@ func (a *cliApp) newIssueShowCmd() *cobra.Command {
 				return writeJSON(a.stdout, detail)
 			}
 			printIssueDetail(a.stdout, detail)
+			comments, err := svc.ListIssueComments(context.Background(), args[0])
+			if err == nil {
+				printIssueComments(a.stdout, comments, a.opts.mode)
+			}
 			return nil
 		},
 	}
@@ -940,6 +945,166 @@ func (a *cliApp) newIssueImagesCmd() *cobra.Command {
 			},
 		},
 	)
+	return cmd
+}
+
+func (a *cliApp) newIssueCommentsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "comments",
+		Short: "Manage issue comments",
+	}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "list <identifier>",
+			Short: "List comments for an issue",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, svc, err := openProviderService(a.opts.dbPath)
+				if err != nil {
+					return wrapRuntime(err, "failed to open database")
+				}
+				defer store.Close()
+				comments, err := svc.ListIssueComments(context.Background(), args[0])
+				if err != nil {
+					return err
+				}
+				if a.opts.mode.json {
+					return writeJSON(a.stdout, map[string]interface{}{"items": comments})
+				}
+				printIssueComments(a.stdout, comments, a.opts.mode)
+				return nil
+			},
+		},
+		a.newIssueCommentAddCmd(),
+		a.newIssueCommentUpdateCmd(),
+		&cobra.Command{
+			Use:   "delete <identifier> <comment_id>",
+			Short: "Delete an issue comment",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, svc, err := openProviderService(a.opts.dbPath)
+				if err != nil {
+					return wrapRuntime(err, "failed to open database")
+				}
+				defer store.Close()
+				if err := svc.DeleteIssueComment(context.Background(), args[0], args[1]); err != nil {
+					return err
+				}
+				payload := map[string]interface{}{"deleted": true, "identifier": args[0], "comment_id": args[1]}
+				if a.opts.mode.json {
+					return writeJSON(a.stdout, payload)
+				}
+				if a.opts.mode.quiet {
+					_, _ = fmt.Fprintln(a.stdout, args[1])
+					return nil
+				}
+				_, _ = fmt.Fprintf(a.stdout, "Deleted comment %s from %s\n", args[1], args[0])
+				return nil
+			},
+		},
+	)
+	return cmd
+}
+
+func (a *cliApp) newIssueCommentAddCmd() *cobra.Command {
+	var body string
+	var parentID string
+	var attachPaths []string
+	cmd := &cobra.Command{
+		Use:   "add <identifier>",
+		Short: "Add an issue comment",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, svc, err := openProviderService(a.opts.dbPath)
+			if err != nil {
+				return wrapRuntime(err, "failed to open database")
+			}
+			defer store.Close()
+			if strings.TrimSpace(body) == "" && len(attachPaths) == 0 {
+				return fmt.Errorf("comment body or attachments are required")
+			}
+			input := providers.IssueCommentInput{
+				ParentCommentID: strings.TrimSpace(parentID),
+				Author: kanban.IssueCommentAuthor{
+					Type: "source",
+					Name: "CLI",
+				},
+			}
+			if cmd.Flags().Changed("body") {
+				input.Body = &body
+			}
+			for _, path := range attachPaths {
+				input.Attachments = append(input.Attachments, providers.IssueCommentAttachment{Path: path})
+			}
+			comment, err := svc.CreateIssueCommentWithResult(context.Background(), args[0], input)
+			if err != nil {
+				return err
+			}
+			if comment == nil {
+				return fmt.Errorf("provider returned no issue comment")
+			}
+			if a.opts.mode.json {
+				return writeJSON(a.stdout, comment)
+			}
+			if a.opts.mode.quiet {
+				_, _ = fmt.Fprintln(a.stdout, comment.ID)
+				return nil
+			}
+			_, _ = fmt.Fprintf(a.stdout, "Added comment %s to %s\n", comment.ID, args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&body, "body", "", "Comment body")
+	cmd.Flags().StringVar(&parentID, "parent", "", "Parent comment ID")
+	cmd.Flags().StringArrayVar(&attachPaths, "attach", nil, "Attachment path")
+	return cmd
+}
+
+func (a *cliApp) newIssueCommentUpdateCmd() *cobra.Command {
+	var body string
+	var attachPaths []string
+	var removeAttachmentIDs []string
+	cmd := &cobra.Command{
+		Use:   "update <identifier> <comment_id>",
+		Short: "Update an issue comment",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, svc, err := openProviderService(a.opts.dbPath)
+			if err != nil {
+				return wrapRuntime(err, "failed to open database")
+			}
+			defer store.Close()
+			input := providers.IssueCommentInput{
+				RemoveAttachmentIDs: append([]string(nil), removeAttachmentIDs...),
+				Author: kanban.IssueCommentAuthor{
+					Type: "source",
+					Name: "CLI",
+				},
+			}
+			if cmd.Flags().Changed("body") {
+				input.Body = &body
+			}
+			for _, path := range attachPaths {
+				input.Attachments = append(input.Attachments, providers.IssueCommentAttachment{Path: path})
+			}
+			comment, err := svc.UpdateIssueComment(context.Background(), args[0], args[1], input)
+			if err != nil {
+				return err
+			}
+			if a.opts.mode.json {
+				return writeJSON(a.stdout, comment)
+			}
+			if a.opts.mode.quiet {
+				_, _ = fmt.Fprintln(a.stdout, comment.ID)
+				return nil
+			}
+			_, _ = fmt.Fprintf(a.stdout, "Updated comment %s on %s\n", comment.ID, args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&body, "body", "", "Updated comment body")
+	cmd.Flags().StringArrayVar(&attachPaths, "attach", nil, "Attachment path")
+	cmd.Flags().StringArrayVar(&removeAttachmentIDs, "remove-attachment", nil, "Attachment ID to remove")
 	return cmd
 }
 

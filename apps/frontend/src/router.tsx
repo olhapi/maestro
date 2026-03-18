@@ -1,32 +1,50 @@
-import { Suspense, lazy, type ComponentType } from 'react'
+import { Suspense, lazy, useMemo, useState, type ComponentType } from 'react'
 import {
   createRootRoute,
   createRoute,
   createRouter,
+  useRouterState,
 } from '@tanstack/react-router'
 
 import { AppShell } from '@/components/app-shell'
+import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Card } from '@/components/ui/card'
 
-function lazyPage<T extends Record<string, ComponentType>>(loader: () => Promise<T>, key: keyof T) {
-  const Component = lazy(async () => ({ default: (await loader())[key] as ComponentType }))
+function lazyPage<T extends Record<string, ComponentType>>(loader: () => Promise<T>, key: keyof T, label: string) {
   return function LazyComponent() {
+    const [retryNonce, setRetryNonce] = useState(0)
+    const pathname = useRouterState({
+      select: (state) => state.location.pathname,
+    })
+    const Component = useMemo(
+      () => lazy(async () => ({ default: (await loader())[key] as ComponentType })),
+      [pathname, retryNonce],
+    )
+
     return (
-      <Suspense fallback={<Card className="h-[420px] animate-pulse bg-white/5" />}>
-        <Component />
-      </Suspense>
+      <ComponentErrorBoundary
+        className="min-h-[420px]"
+        label={label}
+        onRecover={() => setRetryNonce((current) => current + 1)}
+        resetKeys={[pathname]}
+        scope="page"
+      >
+        <Suspense fallback={<Card className="h-[420px] animate-pulse bg-white/5" />}>
+          <Component />
+        </Suspense>
+      </ComponentErrorBoundary>
     )
   }
 }
 
-const OverviewPage = lazyPage(() => import('@/routes/overview'), 'OverviewPage')
-const WorkPage = lazyPage(() => import('@/routes/work'), 'WorkPage')
-const ProjectsPage = lazyPage(() => import('@/routes/projects'), 'ProjectsPage')
-const ProjectDetailPage = lazyPage(() => import('@/routes/project-detail'), 'ProjectDetailPage')
-const EpicDetailPage = lazyPage(() => import('@/routes/epic-detail'), 'EpicDetailPage')
-const IssueDetailPage = lazyPage(() => import('@/routes/issue-detail'), 'IssueDetailPage')
-const SessionsPage = lazyPage(() => import('@/routes/sessions'), 'SessionsPage')
-const SessionDetailPage = lazyPage(() => import('@/routes/session-detail'), 'SessionDetailPage')
+const OverviewPage = lazyPage(() => import('@/routes/overview'), 'OverviewPage', 'overview page')
+const WorkPage = lazyPage(() => import('@/routes/work'), 'WorkPage', 'work page')
+const ProjectsPage = lazyPage(() => import('@/routes/projects'), 'ProjectsPage', 'projects page')
+const ProjectDetailPage = lazyPage(() => import('@/routes/project-detail'), 'ProjectDetailPage', 'project page')
+const EpicDetailPage = lazyPage(() => import('@/routes/epic-detail'), 'EpicDetailPage', 'epic page')
+const IssueDetailPage = lazyPage(() => import('@/routes/issue-detail'), 'IssueDetailPage', 'issue page')
+const SessionsPage = lazyPage(() => import('@/routes/sessions'), 'SessionsPage', 'sessions page')
+const SessionDetailPage = lazyPage(() => import('@/routes/session-detail'), 'SessionDetailPage', 'session page')
 
 const rootRoute = createRootRoute({
   component: AppShell,

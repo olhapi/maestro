@@ -1,4 +1,4 @@
-import type { BootstrapResponse, IssueDetail, IssueImage, IssueSummary } from "@/lib/types";
+import type { BootstrapResponse, IssueComment, IssueDetail, IssueImage, IssueSummary } from "@/lib/types";
 
 export function makeIssueSummary(
   overrides: Partial<IssueSummary> = {},
@@ -56,6 +56,26 @@ export function makeIssueImage(
     byte_size: 128,
     created_at: "2026-03-09T11:30:00Z",
     updated_at: "2026-03-09T11:30:00Z",
+    ...overrides,
+  };
+}
+
+export function makeIssueComment(
+  overrides: Partial<IssueComment> = {},
+): IssueComment {
+  return {
+    id: "cmt-1",
+    issue_id: "issue-1",
+    body: "Please verify the retry threshold before merge.",
+    author: {
+      type: "source",
+      name: "UI",
+    },
+    provider_kind: "kanban",
+    created_at: "2026-03-09T11:40:00Z",
+    updated_at: "2026-03-09T11:40:00Z",
+    attachments: [],
+    replies: [],
     ...overrides,
   };
 }

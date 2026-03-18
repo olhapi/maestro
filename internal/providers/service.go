@@ -756,6 +756,54 @@ func (s *Service) SetIssueState(ctx context.Context, identifier, state string) (
 }
 
 func (s *Service) CreateIssueComment(ctx context.Context, identifier string, input IssueCommentInput) error {
+	_, err := s.CreateIssueCommentWithResult(ctx, identifier, input)
+	return err
+}
+
+func (s *Service) ListIssueComments(ctx context.Context, identifier string) ([]kanban.IssueComment, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	project, provider, err := s.resolveIssueProvider(issue)
+	if err != nil {
+		return nil, err
+	}
+	comments, err := provider.ListIssueComments(ctx, project, issue)
+	if err != nil {
+		return nil, err
+	}
+	if comments == nil {
+		return []kanban.IssueComment{}, nil
+	}
+	return comments, nil
+}
+
+func (s *Service) CreateIssueCommentWithResult(ctx context.Context, identifier string, input IssueCommentInput) (*kanban.IssueComment, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	project, provider, err := s.resolveIssueProvider(issue)
+	if err != nil {
+		return nil, err
+	}
+	return provider.CreateIssueComment(ctx, project, issue, input)
+}
+
+func (s *Service) UpdateIssueComment(ctx context.Context, identifier, commentID string, input IssueCommentInput) (*kanban.IssueComment, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	project, provider, err := s.resolveIssueProvider(issue)
+	if err != nil {
+		return nil, err
+	}
+	return provider.UpdateIssueComment(ctx, project, issue, commentID, input)
+}
+
+func (s *Service) DeleteIssueComment(ctx context.Context, identifier, commentID string) error {
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
 		return err
@@ -764,7 +812,19 @@ func (s *Service) CreateIssueComment(ctx context.Context, identifier string, inp
 	if err != nil {
 		return err
 	}
-	return provider.CreateIssueComment(ctx, project, issue, input)
+	return provider.DeleteIssueComment(ctx, project, issue, commentID)
+}
+
+func (s *Service) GetIssueCommentAttachmentContent(ctx context.Context, identifier, commentID, attachmentID string) (*IssueCommentAttachmentContent, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	project, provider, err := s.resolveIssueProvider(issue)
+	if err != nil {
+		return nil, err
+	}
+	return provider.GetIssueCommentAttachmentContent(ctx, project, issue, commentID, attachmentID)
 }
 
 func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {

@@ -3,6 +3,7 @@ import type {
   Epic,
   EpicDetailResponse,
   EpicSummary,
+  IssueComment,
   IssueDetail,
   IssueImage,
   IssueExecutionDetail,
@@ -142,6 +143,8 @@ export const api = {
     }),
   getIssue: (identifier: string) =>
     request<IssueDetail>(`/api/v1/app/issues/${identifier}`),
+  listIssueComments: (identifier: string) =>
+    request<{ items: IssueComment[] }>(`/api/v1/app/issues/${identifier}/comments`),
   getIssueExecution: (identifier: string) =>
     request<IssueExecutionDetail>(`/api/v1/app/issues/${identifier}/execution`),
   updateIssue: (identifier: string, body: Record<string, unknown>) =>
@@ -160,6 +163,53 @@ export const api = {
   deleteIssueImage: (identifier: string, imageID: string) =>
     request<{ deleted: boolean; identifier: string; image_id: string }>(
       `/api/v1/app/issues/${identifier}/images/${imageID}`,
+      {
+        method: "DELETE",
+      },
+    ),
+  createIssueComment: (identifier: string, body: {
+    body?: string;
+    parent_comment_id?: string;
+    files?: File[];
+  }) => {
+    const formData = new FormData();
+    if (body.body !== undefined) {
+      formData.set("body", body.body);
+    }
+    if (body.parent_comment_id) {
+      formData.set("parent_comment_id", body.parent_comment_id);
+    }
+    for (const file of body.files ?? []) {
+      formData.append("files", file);
+    }
+    return request<IssueComment>(`/api/v1/app/issues/${identifier}/comments`, {
+      method: "POST",
+      body: formData,
+    });
+  },
+  updateIssueComment: (identifier: string, commentID: string, body: {
+    body?: string;
+    files?: File[];
+    remove_attachment_ids?: string[];
+  }) => {
+    const formData = new FormData();
+    if (body.body !== undefined) {
+      formData.set("body", body.body);
+    }
+    for (const file of body.files ?? []) {
+      formData.append("files", file);
+    }
+    for (const attachmentID of body.remove_attachment_ids ?? []) {
+      formData.append("remove_attachment_ids", attachmentID);
+    }
+    return request<IssueComment>(`/api/v1/app/issues/${identifier}/comments/${commentID}`, {
+      method: "PATCH",
+      body: formData,
+    });
+  },
+  deleteIssueComment: (identifier: string, commentID: string) =>
+    request<{ deleted: boolean; identifier: string; comment_id: string }>(
+      `/api/v1/app/issues/${identifier}/comments/${commentID}`,
       {
         method: "DELETE",
       },

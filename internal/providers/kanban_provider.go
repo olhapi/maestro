@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"os"
 
 	"github.com/olhapi/maestro/internal/kanban"
 )
@@ -96,6 +97,50 @@ func (p *KanbanProvider) SetIssueState(_ context.Context, _ *kanban.Project, iss
 	return p.store.GetIssue(issue.ID)
 }
 
-func (p *KanbanProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, IssueCommentInput) error {
-	return ErrUnsupportedCapability
+func (p *KanbanProvider) ListIssueComments(_ context.Context, _ *kanban.Project, issue *kanban.Issue) ([]kanban.IssueComment, error) {
+	return p.store.ListIssueComments(issue.ID)
+}
+
+func (p *KanbanProvider) CreateIssueComment(_ context.Context, _ *kanban.Project, issue *kanban.Issue, input IssueCommentInput) (*kanban.IssueComment, error) {
+	return p.store.CreateIssueComment(issue.ID, toKanbanIssueCommentInput(input))
+}
+
+func (p *KanbanProvider) UpdateIssueComment(_ context.Context, _ *kanban.Project, issue *kanban.Issue, commentID string, input IssueCommentInput) (*kanban.IssueComment, error) {
+	return p.store.UpdateIssueComment(issue.ID, commentID, toKanbanIssueCommentInput(input))
+}
+
+func (p *KanbanProvider) DeleteIssueComment(_ context.Context, _ *kanban.Project, issue *kanban.Issue, commentID string) error {
+	return p.store.DeleteIssueComment(issue.ID, commentID)
+}
+
+func (p *KanbanProvider) GetIssueCommentAttachmentContent(_ context.Context, _ *kanban.Project, issue *kanban.Issue, commentID, attachmentID string) (*IssueCommentAttachmentContent, error) {
+	attachment, path, err := p.store.GetIssueCommentAttachmentContent(issue.ID, commentID, attachmentID)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return &IssueCommentAttachmentContent{
+		Attachment: *attachment,
+		Content:    file,
+	}, nil
+}
+
+func toKanbanIssueCommentInput(input IssueCommentInput) kanban.IssueCommentInput {
+	attachments := make([]kanban.IssueCommentAttachmentInput, 0, len(input.Attachments))
+	for _, attachment := range input.Attachments {
+		attachments = append(attachments, kanban.IssueCommentAttachmentInput{
+			Path:        attachment.Path,
+			ContentType: attachment.ContentType,
+		})
+	}
+	return kanban.IssueCommentInput{
+		Body:                input.Body,
+		ParentCommentID:     input.ParentCommentID,
+		Attachments:         attachments,
+		RemoveAttachmentIDs: append([]string(nil), input.RemoveAttachmentIDs...),
+		Author:              input.Author,
+	}
 }

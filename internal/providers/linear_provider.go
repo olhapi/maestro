@@ -3,11 +3,13 @@ package providers
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,47 +306,241 @@ mutation MaestroLinearUpdateIssueState($issueId: String!, $stateId: String!) {
 	return p.GetIssue(ctx, project, issue.Identifier)
 }
 
-func (p *LinearProvider) CreateIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, input IssueCommentInput) error {
-	body := strings.TrimSpace(input.Body)
+func (p *LinearProvider) ListIssueComments(ctx context.Context, project *kanban.Project, issue *kanban.Issue) ([]kanban.IssueComment, error) {
+	if issue == nil || strings.TrimSpace(issue.ProviderIssueRef) == "" {
+		return nil, fmt.Errorf("%w: linear issue ref is required", ErrUnsupportedCapability)
+	}
+	return p.listIssueComments(ctx, project, issue.ProviderIssueRef)
+}
+
+func (p *LinearProvider) CreateIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, input IssueCommentInput) (*kanban.IssueComment, error) {
+	if issue == nil || strings.TrimSpace(issue.ProviderIssueRef) == "" {
+		return nil, fmt.Errorf("%w: linear issue ref is required", ErrUnsupportedCapability)
+	}
+	body := strings.TrimSpace(commentBodyValue(input.Body))
+	if body == "" && len(input.Attachments) == 0 {
+		return nil, fmt.Errorf("%w: comment body or attachments are required", kanban.ErrValidation)
+	}
+	attachments, err := p.uploadLinearCommentAttachments(ctx, project, input.Attachments)
+	if err != nil {
+		return nil, err
+	}
+	renderedBody := renderLinearCommentBody(body, attachments)
+
+	const gql = `
+mutation MaestroLinearCreateComment($issueId: String!, $body: String!, $parentCommentId: String) {
+  commentCreate(input: {issueId: $issueId, body: $body, parentCommentId: $parentCommentId}) {
+    success
+    comment {
+      id
+      body
+      createdAt
+      updatedAt
+      parent { id }
+      user { name displayName email }
+    }
+  }
+}`
+	bodyMap, err := p.graphql(ctx, project, gql, map[string]interface{}{
+		"issueId":         issue.ProviderIssueRef,
+		"body":            renderedBody,
+		"parentCommentId": nullableString(input.ParentCommentID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if raw, ok := getMap(bodyMap, "data", "commentCreate", "comment"); ok {
+		comment := p.normalizeIssueComment(raw)
+		comment.IssueID = issue.ID
+		comment.Attachments = attachments
+		comment.ProviderKind = kanban.ProviderKindLinear
+		return &comment, nil
+	}
+	return &kanban.IssueComment{
+		IssueID:         issue.ID,
+		ParentCommentID: strings.TrimSpace(input.ParentCommentID),
+		Body:            body,
+		ProviderKind:    kanban.ProviderKindLinear,
+		Attachments:     attachments,
+	}, nil
+}
+
+func (p *LinearProvider) UpdateIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, commentID string, input IssueCommentInput) (*kanban.IssueComment, error) {
+	if issue == nil || strings.TrimSpace(issue.ProviderIssueRef) == "" {
+		return nil, fmt.Errorf("%w: linear issue ref is required", ErrUnsupportedCapability)
+	}
+	current, err := p.getLinearIssueComment(ctx, project, issue.ProviderIssueRef, commentID)
+	if err != nil {
+		return nil, err
+	}
+	body := current.Body
+	if input.Body != nil {
+		body = strings.TrimSpace(commentBodyValue(input.Body))
+	}
+	attachments := append([]kanban.IssueCommentAttachment(nil), current.Attachments...)
+	if len(input.RemoveAttachmentIDs) > 0 {
+		filtered := attachments[:0]
+		for _, attachment := range attachments {
+			if containsString(input.RemoveAttachmentIDs, attachment.ID) {
+				continue
+			}
+			filtered = append(filtered, attachment)
+		}
+		attachments = filtered
+	}
+	if body == "" && len(attachments)+len(input.Attachments) == 0 {
+		return nil, fmt.Errorf("%w: comment body or attachments are required", kanban.ErrValidation)
+	}
+	addedAttachments, err := p.uploadLinearCommentAttachments(ctx, project, input.Attachments)
+	if err != nil {
+		return nil, err
+	}
+	attachments = append(attachments, addedAttachments...)
+	renderedBody := renderLinearCommentBody(body, attachments)
+
+	const gql = `
+mutation MaestroLinearUpdateComment($commentId: String!, $body: String!) {
+  commentUpdate(id: $commentId, input: {body: $body}) {
+    success
+    comment {
+      id
+      body
+      createdAt
+      updatedAt
+      parent { id }
+      user { name displayName email }
+    }
+  }
+}`
+	bodyMap, err := p.graphql(ctx, project, gql, map[string]interface{}{
+		"commentId": commentID,
+		"body":      renderedBody,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if raw, ok := getMap(bodyMap, "data", "commentUpdate", "comment"); ok {
+		comment := p.normalizeIssueComment(raw)
+		comment.IssueID = issue.ID
+		comment.Attachments = attachments
+		comment.ProviderKind = kanban.ProviderKindLinear
+		return &comment, nil
+	}
+	updated, err := p.getLinearIssueComment(ctx, project, issue.ProviderIssueRef, commentID)
+	if err != nil {
+		return nil, err
+	}
+	updated.IssueID = issue.ID
+	return updated, nil
+}
+
+func (p *LinearProvider) DeleteIssueComment(ctx context.Context, project *kanban.Project, issue *kanban.Issue, commentID string) error {
 	if issue == nil || strings.TrimSpace(issue.ProviderIssueRef) == "" {
 		return fmt.Errorf("%w: linear issue ref is required", ErrUnsupportedCapability)
 	}
-	if body == "" && len(input.Attachments) == 0 {
-		return nil
+	if _, err := p.getLinearIssueComment(ctx, project, issue.ProviderIssueRef, commentID); err != nil {
+		return err
 	}
-
-	if len(input.Attachments) > 0 {
-		uploaded := make([]string, 0, len(input.Attachments))
-		for _, attachment := range input.Attachments {
-			assetURL, err := p.uploadAttachment(ctx, project, attachment)
-			if err != nil {
-				return err
-			}
-			filename := filepath.Base(strings.TrimSpace(attachment.Path))
-			if filename == "." || filename == "" {
-				filename = "preview"
-			}
-			uploaded = append(uploaded, fmt.Sprintf("- [%s](%s)", filename, assetURL))
-		}
-		section := strings.Join(uploaded, "\n")
-		if body == "" {
-			body = "Reviewer preview artifacts:\n" + section
-		} else {
-			body += "\n\nReviewer preview artifacts:\n" + section
-		}
-	}
-
-	const gql = `
-mutation MaestroLinearCreateComment($issueId: String!, $body: String!) {
-  commentCreate(input: {issueId: $issueId, body: $body}) {
+	mutations := []string{
+		`
+mutation MaestroLinearDeleteComment($commentId: String!) {
+  commentDelete(id: $commentId) {
     success
   }
-}`
-	_, err := p.graphql(ctx, project, gql, map[string]interface{}{
-		"issueId": issue.ProviderIssueRef,
-		"body":    body,
-	})
-	return err
+}`,
+		`
+mutation MaestroLinearArchiveComment($commentId: String!) {
+  commentArchive(id: $commentId) {
+    success
+  }
+}`,
+	}
+	var lastErr error
+	for _, gql := range mutations {
+		if _, err := p.graphql(ctx, project, gql, map[string]interface{}{"commentId": commentID}); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func (p *LinearProvider) GetIssueCommentAttachmentContent(ctx context.Context, project *kanban.Project, issue *kanban.Issue, commentID, attachmentID string) (*IssueCommentAttachmentContent, error) {
+	if issue == nil || strings.TrimSpace(issue.ProviderIssueRef) == "" {
+		return nil, fmt.Errorf("%w: linear issue ref is required", ErrUnsupportedCapability)
+	}
+	comment, err := p.getLinearIssueComment(ctx, project, issue.ProviderIssueRef, commentID)
+	if err != nil {
+		return nil, err
+	}
+	for _, attachment := range comment.Attachments {
+		if attachment.ID != attachmentID {
+			continue
+		}
+		attachmentURL, err := p.trustedIssueCommentAttachmentURL(project, attachment.URL)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, attachmentURL.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := p.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 400 {
+			data, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("linear attachment status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		}
+		return &IssueCommentAttachmentContent{
+			Attachment: attachment,
+			Content:    resp.Body,
+		}, nil
+	}
+	return nil, kanban.ErrNotFound
+}
+
+func (p *LinearProvider) trustedIssueCommentAttachmentURL(project *kanban.Project, raw string) (*url.URL, error) {
+	attachmentURL, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid linear attachment url", kanban.ErrValidation)
+	}
+	if attachmentURL.Scheme == "" || attachmentURL.Host == "" {
+		return nil, fmt.Errorf("%w: invalid linear attachment url", kanban.ErrValidation)
+	}
+
+	endpointURL, err := url.Parse(p.endpoint(project))
+	if err != nil {
+		return nil, err
+	}
+	if !isTrustedLinearAttachmentHost(endpointURL, attachmentURL) {
+		return nil, fmt.Errorf("%w: untrusted linear attachment host %q", kanban.ErrValidation, attachmentURL.Host)
+	}
+	if isLinearOwnedHost(attachmentURL.Hostname()) && !strings.EqualFold(attachmentURL.Scheme, "https") {
+		return nil, fmt.Errorf("%w: invalid linear attachment scheme %q", kanban.ErrValidation, attachmentURL.Scheme)
+	}
+	if strings.EqualFold(attachmentURL.Scheme, "http") || strings.EqualFold(attachmentURL.Scheme, "https") {
+		return attachmentURL, nil
+	}
+	return nil, fmt.Errorf("%w: invalid linear attachment scheme %q", kanban.ErrValidation, attachmentURL.Scheme)
+}
+
+func isTrustedLinearAttachmentHost(endpointURL, attachmentURL *url.URL) bool {
+	if endpointURL == nil || attachmentURL == nil {
+		return false
+	}
+	if strings.EqualFold(endpointURL.Host, attachmentURL.Host) {
+		return true
+	}
+	return isLinearOwnedHost(endpointURL.Hostname()) && isLinearOwnedHost(attachmentURL.Hostname())
+}
+
+func isLinearOwnedHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	return host == "linear.app" || strings.HasSuffix(host, ".linear.app")
 }
 
 func (p *LinearProvider) endpoint(project *kanban.Project) string {
@@ -592,6 +788,131 @@ func nullableString(value string) interface{} {
 	return value
 }
 
+func (p *LinearProvider) listIssueComments(ctx context.Context, project *kanban.Project, issueID string) ([]kanban.IssueComment, error) {
+	const gql = `
+query MaestroLinearIssueComments($issueId: String!, $after: String) {
+  issue(id: $issueId) {
+    comments(first: 200, after: $after) {
+      nodes {
+        id
+        body
+        createdAt
+        updatedAt
+        parent { id }
+        user { name displayName email }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}`
+	var comments []kanban.IssueComment
+	after := ""
+	for {
+		body, err := p.graphql(ctx, project, gql, map[string]interface{}{
+			"issueId": issueID,
+			"after":   nullableString(after),
+		})
+		if err != nil {
+			return nil, err
+		}
+		nodes, _ := getMapSlice(body, "data", "issue", "comments", "nodes")
+		for _, node := range nodes {
+			comment := p.normalizeIssueComment(node)
+			comments = append(comments, comment)
+		}
+		pageInfo, _ := getMap(body, "data", "issue", "comments", "pageInfo")
+		hasNext, _ := pageInfo["hasNextPage"].(bool)
+		next, _ := pageInfo["endCursor"].(string)
+		if !hasNext || strings.TrimSpace(next) == "" {
+			return kanbanCommentsNested(comments), nil
+		}
+		after = next
+	}
+}
+
+func (p *LinearProvider) getLinearIssueComment(ctx context.Context, project *kanban.Project, issueID, commentID string) (*kanban.IssueComment, error) {
+	comments, err := p.listIssueComments(ctx, project, issueID)
+	if err != nil {
+		return nil, err
+	}
+	var walk func(items []kanban.IssueComment) *kanban.IssueComment
+	walk = func(items []kanban.IssueComment) *kanban.IssueComment {
+		for i := range items {
+			if items[i].ID == commentID {
+				cp := items[i]
+				return &cp
+			}
+			if result := walk(items[i].Replies); result != nil {
+				return result
+			}
+		}
+		return nil
+	}
+	if comment := walk(comments); comment != nil {
+		return comment, nil
+	}
+	return nil, kanban.ErrNotFound
+}
+
+func (p *LinearProvider) uploadLinearCommentAttachments(ctx context.Context, project *kanban.Project, attachments []IssueCommentAttachment) ([]kanban.IssueCommentAttachment, error) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	out := make([]kanban.IssueCommentAttachment, 0, len(attachments))
+	now := time.Now().UTC()
+	for _, attachment := range attachments {
+		assetURL, err := p.uploadAttachment(ctx, project, attachment)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(strings.TrimSpace(attachment.Path))
+		if err != nil {
+			return nil, err
+		}
+		filename := filepath.Base(strings.TrimSpace(attachment.Path))
+		if filename == "." || filename == "" {
+			filename = "attachment"
+		}
+		out = append(out, kanban.IssueCommentAttachment{
+			ID:          generateLinearManagedAttachmentID(filename),
+			Filename:    filename,
+			ContentType: strings.TrimSpace(attachment.ContentType),
+			ByteSize:    info.Size(),
+			URL:         assetURL,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		})
+	}
+	return out, nil
+}
+
+func (p *LinearProvider) normalizeIssueComment(raw map[string]interface{}) kanban.IssueComment {
+	plainBody, attachments := parseLinearCommentBody(asString(raw["body"]))
+	comment := kanban.IssueComment{
+		ID:                 asString(raw["id"]),
+		Body:               plainBody,
+		ParentCommentID:    asStringNested(raw, "parent", "id"),
+		ProviderKind:       kanban.ProviderKindLinear,
+		ProviderCommentRef: asString(raw["id"]),
+		Attachments:        attachments,
+		Author: kanban.IssueCommentAuthor{
+			Type:  "user",
+			Name:  firstNonEmpty(asStringNested(raw, "user", "displayName"), asStringNested(raw, "user", "name")),
+			Email: asStringNested(raw, "user", "email"),
+		},
+	}
+	if createdAt, err := time.Parse(time.RFC3339, asString(raw["createdAt"])); err == nil {
+		comment.CreatedAt = createdAt
+	}
+	if updatedAt, err := time.Parse(time.RFC3339, asString(raw["updatedAt"])); err == nil {
+		comment.UpdatedAt = updatedAt
+	}
+	return comment
+}
+
 func (p *LinearProvider) uploadAttachment(ctx context.Context, project *kanban.Project, attachment IssueCommentAttachment) (string, error) {
 	path := strings.TrimSpace(attachment.Path)
 	if path == "" {
@@ -758,6 +1079,189 @@ func asInt(value interface{}) int {
 	default:
 		return 0
 	}
+}
+
+type linearManagedAttachment struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type,omitempty"`
+	ByteSize    int64  `json:"byte_size,omitempty"`
+	URL         string `json:"url"`
+}
+
+func renderLinearCommentBody(body string, attachments []kanban.IssueCommentAttachment) string {
+	body = strings.TrimSpace(body)
+	if len(attachments) == 0 {
+		return body
+	}
+	metadata := make([]linearManagedAttachment, 0, len(attachments))
+	lines := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		metadata = append(metadata, linearManagedAttachment{
+			ID:          attachment.ID,
+			Filename:    attachment.Filename,
+			ContentType: attachment.ContentType,
+			ByteSize:    attachment.ByteSize,
+			URL:         attachment.URL,
+		})
+		lines = append(lines, fmt.Sprintf("- [%s](%s)", attachment.Filename, attachment.URL))
+	}
+	encoded, _ := json.Marshal(metadata)
+	section := "<!-- maestro:attachments " + string(encoded) + " -->\nAttachments:\n" + strings.Join(lines, "\n")
+	if body == "" {
+		return section
+	}
+	return body + "\n\n" + section
+}
+
+func parseLinearCommentBody(body string) (string, []kanban.IssueCommentAttachment) {
+	body = strings.TrimSpace(body)
+	const prefix = "<!-- maestro:attachments "
+	if idx := strings.Index(body, prefix); idx >= 0 {
+		metaStart := idx + len(prefix)
+		metaEnd := strings.Index(body[metaStart:], " -->")
+		if metaEnd >= 0 {
+			metaJSON := body[metaStart : metaStart+metaEnd]
+			var metadata []linearManagedAttachment
+			if err := json.Unmarshal([]byte(metaJSON), &metadata); err == nil {
+				attachments := make([]kanban.IssueCommentAttachment, 0, len(metadata))
+				for _, item := range metadata {
+					attachments = append(attachments, kanban.IssueCommentAttachment{
+						ID:          item.ID,
+						Filename:    item.Filename,
+						ContentType: item.ContentType,
+						ByteSize:    item.ByteSize,
+						URL:         item.URL,
+					})
+				}
+				return strings.TrimSpace(body[:idx]), attachments
+			}
+		}
+	}
+	return parseLinearLegacyCommentBody(body)
+}
+
+func parseLinearLegacyCommentBody(body string) (string, []kanban.IssueCommentAttachment) {
+	const heading = "Reviewer preview artifacts:\n"
+	switch {
+	case strings.HasPrefix(body, heading):
+		attachments := extractLinearMarkdownAttachments(body)
+		if len(attachments) == 0 {
+			return body, nil
+		}
+		return "", attachments
+	case strings.Contains(body, "\n\n"+heading):
+		idx := strings.Index(body, "\n\n"+heading)
+		attachments := extractLinearMarkdownAttachments(body[idx+2:])
+		if len(attachments) == 0 {
+			return body, nil
+		}
+		return strings.TrimSpace(body[:idx]), attachments
+	default:
+		return body, nil
+	}
+}
+
+func extractLinearMarkdownAttachments(body string) []kanban.IssueCommentAttachment {
+	lines := strings.Split(body, "\n")
+	attachments := make([]kanban.IssueCommentAttachment, 0, len(lines))
+	for index, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- [") {
+			continue
+		}
+		closeLabel := strings.Index(line, "](")
+		if closeLabel <= 3 {
+			continue
+		}
+		closeURL := strings.LastIndex(line, ")")
+		if closeURL <= closeLabel+2 {
+			continue
+		}
+		filename := line[3:closeLabel]
+		url := line[closeLabel+2 : closeURL]
+		if strings.TrimSpace(url) == "" {
+			continue
+		}
+		attachments = append(attachments, kanban.IssueCommentAttachment{
+			ID:       generateLinearLegacyAttachmentID(filename, strings.TrimSpace(url), index),
+			Filename: filename,
+			URL:      strings.TrimSpace(url),
+		})
+	}
+	return attachments
+}
+
+func generateLinearLegacyAttachmentID(filename, url string, index int) string {
+	sum := sha1.Sum([]byte(fmt.Sprintf("%d:%s:%s", index, strings.TrimSpace(filename), strings.TrimSpace(url))))
+	return fmt.Sprintf("lca-legacy-%x", sum[:8])
+}
+
+func generateLinearManagedAttachmentID(filename string) string {
+	base := strings.ToLower(strings.TrimSpace(filename))
+	base = strings.ReplaceAll(base, " ", "-")
+	base = strings.ReplaceAll(base, "/", "-")
+	if base == "" {
+		base = "attachment"
+	}
+	return fmt.Sprintf("lca-%d-%s", time.Now().UnixNano(), base)
+}
+
+func commentBodyValue(body *string) string {
+	if body == nil {
+		return ""
+	}
+	return *body
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == strings.TrimSpace(needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func kanbanCommentsNested(flat []kanban.IssueComment) []kanban.IssueComment {
+	if len(flat) == 0 {
+		return nil
+	}
+	byParent := map[string][]kanban.IssueComment{}
+	exists := map[string]struct{}{}
+	for _, comment := range flat {
+		exists[comment.ID] = struct{}{}
+	}
+	for _, comment := range flat {
+		parent := strings.TrimSpace(comment.ParentCommentID)
+		if parent != "" {
+			if _, ok := exists[parent]; !ok {
+				parent = ""
+				comment.ParentCommentID = ""
+			}
+		}
+		byParent[parent] = append(byParent[parent], comment)
+	}
+	var build func(parent string) []kanban.IssueComment
+	build = func(parent string) []kanban.IssueComment {
+		items := byParent[parent]
+		out := make([]kanban.IssueComment, 0, len(items))
+		for _, item := range items {
+			item.Replies = build(item.ID)
+			out = append(out, item)
+		}
+		return out
+	}
+	return build("")
 }
 
 func isZeroValue(value interface{}) bool {

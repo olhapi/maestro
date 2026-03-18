@@ -284,6 +284,52 @@ type IssueImage struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type IssueCommentAuthor struct {
+	Type  string `json:"type,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+type IssueCommentAttachment struct {
+	ID          string    `json:"id"`
+	CommentID   string    `json:"comment_id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	ByteSize    int64     `json:"byte_size"`
+	URL         string    `json:"url,omitempty"`
+	StoragePath string    `json:"-"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type IssueComment struct {
+	ID                 string                   `json:"id"`
+	IssueID            string                   `json:"issue_id"`
+	ParentCommentID    string                   `json:"parent_comment_id,omitempty"`
+	Body               string                   `json:"body,omitempty"`
+	Author             IssueCommentAuthor       `json:"author"`
+	ProviderKind       string                   `json:"provider_kind,omitempty"`
+	ProviderCommentRef string                   `json:"provider_comment_ref,omitempty"`
+	CreatedAt          time.Time                `json:"created_at"`
+	UpdatedAt          time.Time                `json:"updated_at"`
+	DeletedAt          *time.Time               `json:"deleted_at,omitempty"`
+	Attachments        []IssueCommentAttachment `json:"attachments,omitempty"`
+	Replies            []IssueComment           `json:"replies,omitempty"`
+}
+
+type IssueCommentAttachmentInput struct {
+	Path        string `json:"-"`
+	ContentType string `json:"content_type,omitempty"`
+}
+
+type IssueCommentInput struct {
+	Body                *string                       `json:"body,omitempty"`
+	ParentCommentID     string                        `json:"parent_comment_id,omitempty"`
+	Attachments         []IssueCommentAttachmentInput `json:"attachments,omitempty"`
+	RemoveAttachmentIDs []string                      `json:"remove_attachment_ids,omitempty"`
+	Author              IssueCommentAuthor            `json:"author,omitempty"`
+}
+
 // Workspace represents an isolated working directory for an issue
 type Workspace struct {
 	IssueID   string     `json:"issue_id"`

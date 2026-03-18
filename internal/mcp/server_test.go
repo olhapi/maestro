@@ -86,8 +86,24 @@ func (p *testLookupProvider) SetIssueState(context.Context, *kanban.Project, *ka
 	return nil, providers.ErrUnsupportedCapability
 }
 
-func (p *testLookupProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+func (p *testLookupProvider) ListIssueComments(context.Context, *kanban.Project, *kanban.Issue) ([]kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) UpdateIssueComment(context.Context, *kanban.Project, *kanban.Issue, string, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) DeleteIssueComment(context.Context, *kanban.Project, *kanban.Issue, string) error {
 	return providers.ErrUnsupportedCapability
+}
+
+func (p *testLookupProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
+	return nil, providers.ErrUnsupportedCapability
 }
 
 func (c *testMCPClient) CallTool(ctx context.Context, name string, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -432,10 +448,14 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 		"list_epics",
 		"delete_epic",
 		"create_issue",
+		"create_issue_comment",
 		"get_issue",
 		"list_issues",
+		"list_issue_comments",
 		"update_issue",
+		"update_issue_comment",
 		"attach_issue_image",
+		"delete_issue_comment",
 		"delete_issue_image",
 		"set_issue_state",
 		"set_issue_workflow_phase",
@@ -467,6 +487,10 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_image"), "identifier", "path")
+	assertToolProperties(t, findTool(t, tools.Tools, "create_issue_comment"), "attachment_paths", "body", "identifier", "parent_comment_id")
+	assertToolProperties(t, findTool(t, tools.Tools, "list_issue_comments"), "identifier")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_issue_comment"), "attachment_paths", "body", "comment_id", "identifier", "remove_attachment_ids")
+	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_comment"), "comment_id", "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_image"), "identifier", "image_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_epic"), "description", "id", "name", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
@@ -674,6 +698,42 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 		t.Fatalf("unexpected update_issue payload: %#v", updateIssue)
 	}
 
+	createCommentRes, err := client.CallTool(context.Background(), "create_issue_comment", map[string]interface{}{
+		"identifier": issueBIdentifier,
+		"body":       "MCP comment",
+	})
+	if err != nil {
+		t.Fatalf("create_issue_comment failed: %v", err)
+	}
+	createdComment := decodeEnvelope(t, createCommentRes)["data"].(map[string]interface{})
+	commentID := asString(createdComment["id"])
+	if createdComment["body"] != "MCP comment" {
+		t.Fatalf("unexpected create_issue_comment payload: %#v", createdComment)
+	}
+
+	listCommentsRes, err := client.CallTool(context.Background(), "list_issue_comments", map[string]interface{}{
+		"identifier": issueBIdentifier,
+	})
+	if err != nil {
+		t.Fatalf("list_issue_comments failed: %v", err)
+	}
+	listComments := decodeEnvelope(t, listCommentsRes)["data"].(map[string]interface{})
+	if len(listComments["items"].([]interface{})) != 1 {
+		t.Fatalf("unexpected list_issue_comments payload: %#v", listComments)
+	}
+
+	updateCommentRes, err := client.CallTool(context.Background(), "update_issue_comment", map[string]interface{}{
+		"identifier": issueBIdentifier,
+		"comment_id": commentID,
+		"body":       "Updated MCP comment",
+	})
+	if err != nil {
+		t.Fatalf("update_issue_comment failed: %v", err)
+	}
+	if got := decodeEnvelope(t, updateCommentRes)["data"].(map[string]interface{})["body"]; got != "Updated MCP comment" {
+		t.Fatalf("unexpected update_issue_comment payload: %#v", got)
+	}
+
 	imagePath := filepath.Join(t.TempDir(), "mcp.png")
 	if err := os.WriteFile(imagePath, sampleMCPPNGBytes(), 0o644); err != nil {
 		t.Fatalf("write image fixture: %v", err)
@@ -761,6 +821,17 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	}
 	if issueDetail, _ := deleteIssueImage["issue"].(map[string]interface{}); len(issueDetail["images"].([]interface{})) != 0 {
 		t.Fatalf("expected issue image list to be empty after delete, got %#v", issueDetail["images"])
+	}
+
+	deleteCommentRes, err := client.CallTool(context.Background(), "delete_issue_comment", map[string]interface{}{
+		"identifier": issueBIdentifier,
+		"comment_id": commentID,
+	})
+	if err != nil {
+		t.Fatalf("delete_issue_comment failed: %v", err)
+	}
+	if deleteComment := decodeEnvelope(t, deleteCommentRes)["data"].(map[string]interface{}); deleteComment["deleted"] != true {
+		t.Fatalf("unexpected delete_issue_comment payload: %#v", deleteComment)
 	}
 
 	issueBStore, err := store.GetIssueByIdentifier(issueBIdentifier)

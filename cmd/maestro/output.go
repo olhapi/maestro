@@ -161,6 +161,64 @@ func printIssueDetail(out io.Writer, issue *kanban.IssueDetail) {
 	}
 }
 
+func printIssueComments(out io.Writer, comments []kanban.IssueComment, mode outputMode) {
+	if mode.quiet {
+		for _, comment := range flattenIssueComments(comments) {
+			fmt.Fprintln(out, comment.ID)
+		}
+		return
+	}
+	if len(comments) == 0 {
+		fmt.Fprintln(out, "Comments:\t0")
+		return
+	}
+	flat := flattenIssueComments(comments)
+	fmt.Fprintf(out, "Comments:\t%d\n", len(flat))
+	for _, comment := range comments {
+		printIssueCommentTree(out, comment, 0)
+	}
+}
+
+func printIssueCommentTree(out io.Writer, comment kanban.IssueComment, depth int) {
+	indent := strings.Repeat("  ", depth)
+	label := comment.Author.Name
+	if label == "" {
+		label = "Unknown"
+	}
+	if comment.DeletedAt != nil {
+		label += " (deleted)"
+	}
+	fmt.Fprintf(out, "%s- %s %s %s\n", indent, comment.ID, label, comment.CreatedAt.UTC().Format(time.RFC3339))
+	body := strings.TrimSpace(comment.Body)
+	if body == "" && comment.DeletedAt != nil {
+		body = "[deleted]"
+	}
+	if body != "" {
+		for _, line := range strings.Split(body, "\n") {
+			fmt.Fprintf(out, "%s  %s\n", indent, line)
+		}
+	}
+	for _, attachment := range comment.Attachments {
+		fmt.Fprintf(out, "%s  Attachment: %s %s (%d bytes)\n", indent, attachment.ID, attachment.Filename, attachment.ByteSize)
+	}
+	for _, reply := range comment.Replies {
+		printIssueCommentTree(out, reply, depth+1)
+	}
+}
+
+func flattenIssueComments(comments []kanban.IssueComment) []kanban.IssueComment {
+	out := make([]kanban.IssueComment, 0, len(comments))
+	var walk func(items []kanban.IssueComment)
+	walk = func(items []kanban.IssueComment) {
+		for _, item := range items {
+			out = append(out, item)
+			walk(item.Replies)
+		}
+	}
+	walk(comments)
+	return out
+}
+
 func printIssueImageTable(out io.Writer, images []kanban.IssueImage, mode outputMode) {
 	if mode.quiet {
 		for _, image := range images {
