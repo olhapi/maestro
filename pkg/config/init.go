@@ -327,7 +327,7 @@ codex:
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured reject object is also supported for per-category rejection policies.
   approval_policy: %v
-  # Initial collaboration mode for fresh app_server threads. Other option: default.
+  # Initial collaboration mode for fresh app_server threads. Other option: plan.
   # Ignored for stdio runs and resumed threads.
   initial_collaboration_mode: %s
   # Maximum total runtime for one turn before Maestro cancels it.

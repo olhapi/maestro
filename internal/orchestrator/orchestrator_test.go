@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -37,6 +38,27 @@ type blockingRunner struct {
 	started      chan struct{}
 	ctxCancelled chan struct{}
 	release      chan struct{}
+}
+
+func runGitForTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func initGitRepoForTest(t *testing.T, repoPath string) {
+	t.Helper()
+	runGitForTest(t, repoPath, "init")
+	runGitForTest(t, repoPath, "config", "user.email", "maestro-tests@example.com")
+	runGitForTest(t, repoPath, "config", "user.name", "Maestro Tests")
+	runGitForTest(t, repoPath, "add", ".")
+	runGitForTest(t, repoPath, "commit", "-m", "test init")
+	runGitForTest(t, repoPath, "branch", "-M", "main")
 }
 
 func (r *blockingRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
@@ -261,6 +283,7 @@ Test prompt for {{ issue.identifier }}
 	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
 		t.Fatalf("Failed to write workflow: %v", err)
 	}
+	initGitRepoForTest(t, tmpDir)
 
 	manager, err := config.NewManager(tmpDir)
 	if err != nil {
@@ -679,7 +702,7 @@ func TestDispatchCreatesWorkspace(t *testing.T) {
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	waitForNoRunning(t, orch, time.Second)
 
 	workspace, err := store.GetWorkspace(issue.ID)
 	if err != nil {
@@ -688,7 +711,6 @@ func TestDispatchCreatesWorkspace(t *testing.T) {
 	if workspace.RunCount < 1 {
 		t.Fatalf("expected run count >= 1, got %d", workspace.RunCount)
 	}
-	waitForNoRunning(t, orch, time.Second)
 }
 
 func TestFailureRetryScheduling(t *testing.T) {
@@ -1071,6 +1093,7 @@ func TestPlanApprovalStopDoesNotAdvanceImplementationPhase(t *testing.T) {
 				return &agent.RunResult{
 					Success:    false,
 					StopReason: planApprovalStopReason,
+					AppSession: &appserver.Session{ThreadID: "thread-plan", SessionID: "thread-plan-turn-1", TotalTokens: 7},
 				}, nil
 			},
 		},
@@ -1109,6 +1132,21 @@ func TestPlanApprovalStopDoesNotAdvanceImplementationPhase(t *testing.T) {
 	}
 	if paused.Error != planApprovalStopReason || paused.Phase != string(kanban.WorkflowPhaseImplementation) || paused.Attempt != 1 {
 		t.Fatalf("unexpected paused payload: %+v", paused)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected runtime events for paused plan approval")
+	}
+	latest := events[len(events)-1]
+	if latest.Kind != "retry_paused" || latest.Error != planApprovalStopReason || latest.TotalTokens != 7 {
+		t.Fatalf("unexpected latest runtime event: %+v", latest)
+	}
+	if latest.Payload["thread_id"] != "thread-plan" || latest.Payload["session_id"] != "thread-plan-turn-1" {
+		t.Fatalf("expected thread identifiers on runtime event payload, got %+v", latest.Payload)
 	}
 }
 
@@ -3123,6 +3161,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 			t.Fatalf("MkdirAll repo: %v", err)
 		}
 		writeSharedAppServerWorkflow(t, workflowPath, workspaceRoot, command, reviewEnabled, 8, turnTimeoutMs, stallTimeoutMs)
+		initGitRepoForTest(t, repoPath)
 		project, err := adminStore.CreateProject(name, "", repoPath, workflowPath)
 		if err != nil {
 			t.Fatalf("CreateProject %s: %v", name, err)

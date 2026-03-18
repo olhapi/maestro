@@ -297,6 +297,8 @@ func normalizeFailureClass(value string) string {
 	switch {
 	case value == "":
 		return ""
+	case strings.Contains(value, "workspace_bootstrap"):
+		return "workspace_bootstrap"
 	case strings.Contains(value, "approval_required"):
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):

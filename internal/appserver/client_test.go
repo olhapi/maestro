@@ -204,7 +204,7 @@ func TestRunAutoApprovesCommandExecutionWhenNever(t *testing.T) {
 		}
 		if id, ok := asInt(payload["id"]); ok && id == 2 {
 			if nestedStringMap(payload, "method") == "thread/start" && nestedStringMap(payload, "params", "cwd") != "" &&
-				nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "plan" {
+				nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "default" {
 				foundThreadStart = true
 			}
 		}
@@ -354,7 +354,7 @@ func TestRunFallsBackToThreadStartWhenResumeFails(t *testing.T) {
 		case "thread/resume":
 			foundResume = true
 		case "thread/start":
-			foundStart = nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "plan"
+			foundStart = nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "default"
 		}
 	}
 	if !foundResume || !foundStart {
@@ -392,7 +392,7 @@ func TestRunWithoutResumeConfigStartsFreshThread(t *testing.T) {
 		case "thread/resume":
 			foundResume = true
 		case "thread/start":
-			foundStart = nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "plan"
+			foundStart = nestedStringMap(payload, "params", "config", "initial_collaboration_mode") == "default"
 		}
 	}
 	if foundResume {
@@ -472,6 +472,7 @@ func TestRunWaitsForApprovalResponseAndResumesTurnInPlanMode(t *testing.T) {
 		ExitCode: fakeappserver.Int(0),
 	})
 	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.InitialCollaborationMode = "plan"
 	cfg = withTrace(cfg, traceFile)
 	interrupts := make(chan PendingInteraction, 1)
 	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
