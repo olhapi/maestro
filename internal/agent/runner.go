@@ -42,6 +42,7 @@ type RunResult struct {
 	Success    bool
 	Output     string
 	Error      error
+	StopReason string
 	AppSession *appserver.Session
 }
 
@@ -62,6 +63,7 @@ Execution guidance:
 
 const activeThreadCommandPollWindow = 250 * time.Millisecond
 const appServerIssueImageStageDir = ".maestro/issue-images"
+const planApprovalStopReason = "plan_approval_pending"
 
 var proposedPlanBlockPattern = regexp.MustCompile(`(?s)<proposed_plan>\s*(.*?)\s*</proposed_plan>`)
 
@@ -502,8 +504,9 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		}
 		if requestedPlanApproval {
 			return &RunResult{
-				Success:    true,
+				Success:    false,
 				Output:     client.Output(),
+				StopReason: planApprovalStopReason,
 				AppSession: client.Session(),
 			}, nil
 		}
