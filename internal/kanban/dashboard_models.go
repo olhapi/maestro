@@ -24,19 +24,26 @@ type StateBucket struct {
 }
 
 func (c *IssueStateCounts) Add(state State) {
+	c.AddCount(state, 1)
+}
+
+func (c *IssueStateCounts) AddCount(state State, count int) {
+	if count <= 0 {
+		return
+	}
 	switch state {
 	case StateBacklog:
-		c.Backlog++
+		c.Backlog += count
 	case StateReady:
-		c.Ready++
+		c.Ready += count
 	case StateInProgress:
-		c.InProgress++
+		c.InProgress += count
 	case StateInReview:
-		c.InReview++
+		c.InReview += count
 	case StateDone:
-		c.Done++
+		c.Done += count
 	case StateCancelled:
-		c.Cancelled++
+		c.Cancelled += count
 	}
 }
 

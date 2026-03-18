@@ -1,6 +1,7 @@
 package dashboardapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -57,7 +58,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, result, err := s.dispatchWebhook(body)
+	status, result, err := s.dispatchWebhook(r.Context(), body)
 	if err != nil {
 		writeJSONStatus(w, status, map[string]interface{}{
 			"event":       body.Event,
@@ -75,21 +76,21 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) dispatchWebhook(body webhookRequest) (int, map[string]interface{}, error) {
+func (s *Server) dispatchWebhook(ctx context.Context, body webhookRequest) (int, map[string]interface{}, error) {
 	switch body.Event {
 	case "issue.retry":
 		identifier, err := webhookString(body.Payload, "issue_identifier")
 		if err != nil {
 			return http.StatusBadRequest, nil, err
 		}
-		result := s.provider.RetryIssueNow(identifier)
+		result := s.provider.RetryIssueNow(ctx, identifier)
 		return webhookResponseStatus(result), result, nil
 	case "issue.run_now":
 		identifier, err := webhookString(body.Payload, "issue_identifier")
 		if err != nil {
 			return http.StatusBadRequest, nil, err
 		}
-		result := s.provider.RunRecurringIssueNow(identifier)
+		result := s.provider.RunRecurringIssueNow(ctx, identifier)
 		return webhookResponseStatus(result), result, nil
 	case "project.run":
 		projectID, err := webhookString(body.Payload, "project_id")

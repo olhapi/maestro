@@ -1908,6 +1908,14 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		return nil, err
 	}
 	now := time.Now().UTC()
+	workflowPhase := incoming.WorkflowPhase
+	if !workflowPhase.IsValid() {
+		workflowPhase = DefaultWorkflowPhaseForState(incoming.State)
+	}
+	updatedAt := incoming.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1926,10 +1934,6 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		if createdAt.IsZero() {
 			createdAt = now
 		}
-		updatedAt := incoming.UpdatedAt
-		if updatedAt.IsZero() {
-			updatedAt = now
-		}
 		lastSyncedAt := now
 		if incoming.LastSyncedAt != nil {
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
@@ -1937,7 +1941,7 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		_, err = tx.Exec(`
 				INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, WorkflowPhaseImplementation, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
+			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, workflowPhase, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -1968,9 +1972,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		}
 		res, err := tx.Exec(`
 			UPDATE issues
-			SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
+			SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, workflow_phase = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
 			WHERE id = ?`,
-			projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, incoming.Priority, providerKind, providerIssueRef, incoming.UpdatedAt, lastSyncedAt, currentID,
+			projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, workflowPhase, incoming.Priority, providerKind, providerIssueRef, updatedAt, lastSyncedAt, currentID,
 		)
 		if err != nil {
 			return nil, err
@@ -2699,9 +2703,7 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 		}
 		projectKey := stringFromNull(projectID)
 		counts := countsByProject[projectKey]
-		for i := 0; i < count; i++ {
-			counts.Add(state)
-		}
+		counts.AddCount(state, count)
 		countsByProject[projectKey] = counts
 		if stateCountsByProject[projectKey] == nil {
 			stateCountsByProject[projectKey] = map[string]int{}
@@ -2774,9 +2776,7 @@ func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 			continue
 		}
 		counts := countsByEpic[epicID]
-		for i := 0; i < count; i++ {
-			counts.Add(State(state.String))
-		}
+		counts.AddCount(State(state.String), count)
 		countsByEpic[epicID] = counts
 		if stateCountsByEpic[epicID] == nil {
 			stateCountsByEpic[epicID] = map[string]int{}

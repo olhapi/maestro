@@ -65,11 +65,11 @@ func (testProvider) StopProjectRuns(projectID string) map[string]interface{} {
 	return map[string]interface{}{"status": "stopped", "project_id": projectID, "stopped_runs": 0}
 }
 
-func (testProvider) RetryIssueNow(identifier string) map[string]interface{} {
+func (testProvider) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
-func (testProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
+func (testProvider) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 

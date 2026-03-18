@@ -113,11 +113,11 @@ func (p testRuntimeProvider) StopProjectRuns(projectID string) map[string]interf
 	}
 }
 
-func (p testRuntimeProvider) RetryIssueNow(identifier string) map[string]interface{} {
+func (p testRuntimeProvider) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
-func (p testRuntimeProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
+func (p testRuntimeProvider) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 

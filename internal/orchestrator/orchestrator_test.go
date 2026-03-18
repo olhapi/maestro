@@ -55,6 +55,12 @@ type countingProvider struct {
 	listCalls int
 }
 
+type blockingIssueProvider struct {
+	issue      kanban.Issue
+	getStarted chan struct{}
+	getRelease chan struct{}
+}
+
 func (p *countingProvider) Kind() string {
 	return kanban.ProviderKindLinear
 }
@@ -102,6 +108,56 @@ func (p *countingProvider) Calls() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.listCalls
+}
+
+func (p *blockingIssueProvider) Kind() string {
+	return "stub"
+}
+
+func (p *blockingIssueProvider) Capabilities() kanban.ProviderCapabilities {
+	return kanban.DefaultCapabilities("stub")
+}
+
+func (p *blockingIssueProvider) ValidateProject(context.Context, *kanban.Project) error {
+	return nil
+}
+
+func (p *blockingIssueProvider) ListIssues(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+	return nil, nil
+}
+
+func (p *blockingIssueProvider) GetIssue(ctx context.Context, project *kanban.Project, identifier string) (*kanban.Issue, error) {
+	select {
+	case p.getStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.getRelease:
+	}
+	cp := p.issue
+	return &cp, nil
+}
+
+func (p *blockingIssueProvider) CreateIssue(context.Context, *kanban.Project, providers.IssueCreateInput) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) DeleteIssue(context.Context, *kanban.Project, *kanban.Issue) error {
+	return providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockingIssueProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+	return providers.ErrUnsupportedCapability
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
@@ -690,7 +746,7 @@ func TestManualRetryResetsAutomaticRetryLimit(t *testing.T) {
 	}
 	orch.mu.RUnlock()
 
-	result := orch.RetryIssueNow(issue.Identifier)
+	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
 	if result["status"] != "queued_now" {
 		t.Fatalf("unexpected RetryIssueNow result: %#v", result)
 	}
@@ -2490,7 +2546,7 @@ func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
 		t.Fatalf("unexpected live session payload: %+v", session)
 	}
 
-	result := orch.RetryIssueNow(doneIssue.Identifier)
+	result := orch.RetryIssueNow(context.Background(), doneIssue.Identifier)
 	if result["status"] != "queued_now" {
 		t.Fatalf("unexpected retry-now result: %#v", result)
 	}
@@ -2518,7 +2574,7 @@ func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
 func TestRetryNowAndRefreshHandleAdditionalControlPaths(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 
-	if result := orch.RetryIssueNow("ISS-404"); result["status"] != "not_found" {
+	if result := orch.RetryIssueNow(context.Background(), "ISS-404"); result["status"] != "not_found" {
 		t.Fatalf("expected not_found retry result, got %#v", result)
 	}
 
@@ -2529,7 +2585,7 @@ func TestRetryNowAndRefreshHandleAdditionalControlPaths(t *testing.T) {
 	if err := store.UpdateIssueState(readyIssue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState ready: %v", err)
 	}
-	if result := orch.RetryIssueNow(readyIssue.Identifier); result["status"] != "refresh_requested" {
+	if result := orch.RetryIssueNow(context.Background(), readyIssue.Identifier); result["status"] != "refresh_requested" {
 		t.Fatalf("expected refresh_requested for ready issue, got %#v", result)
 	}
 
@@ -2543,7 +2599,7 @@ func TestRetryNowAndRefreshHandleAdditionalControlPaths(t *testing.T) {
 	if err := store.UpdateIssueWorkflowPhase(doneIssue.ID, kanban.WorkflowPhaseDone); err != nil {
 		t.Fatalf("UpdateIssueWorkflowPhase done: %v", err)
 	}
-	if result := orch.RetryIssueNow(doneIssue.Identifier); result["status"] != "queued_now" {
+	if result := orch.RetryIssueNow(context.Background(), doneIssue.Identifier); result["status"] != "queued_now" {
 		t.Fatalf("expected queued_now for done issue, got %#v", result)
 	}
 
@@ -2571,7 +2627,7 @@ func TestRunRecurringIssueNowQueuesIdleRecurringIssue(t *testing.T) {
 		t.Fatalf("CreateIssueWithOptions: %v", err)
 	}
 
-	result := orch.RunRecurringIssueNow(issue.Identifier)
+	result := orch.RunRecurringIssueNow(context.Background(), issue.Identifier)
 	if result["status"] != "queued_now" {
 		t.Fatalf("expected queued_now, got %#v", result)
 	}
@@ -2617,7 +2673,7 @@ func TestRunRecurringIssueNowCoalescesOccupiedRecurringIssue(t *testing.T) {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
 
-	result := orch.RunRecurringIssueNow(issue.Identifier)
+	result := orch.RunRecurringIssueNow(context.Background(), issue.Identifier)
 	if result["status"] != "pending_rerun_recorded" {
 		t.Fatalf("expected pending_rerun_recorded, got %#v", result)
 	}
@@ -2630,7 +2686,7 @@ func TestRunRecurringIssueNowCoalescesOccupiedRecurringIssue(t *testing.T) {
 		t.Fatalf("expected pending rerun to be recorded, got %+v", updated)
 	}
 
-	result = orch.RunRecurringIssueNow(issue.Identifier)
+	result = orch.RunRecurringIssueNow(context.Background(), issue.Identifier)
 	if result["status"] != "pending_rerun_already_set" {
 		t.Fatalf("expected pending_rerun_already_set, got %#v", result)
 	}
@@ -3621,6 +3677,70 @@ func TestTickSyncsProviderIssuesOnlyOnce(t *testing.T) {
 	}
 	if calls := provider.Calls(); calls != 1 {
 		t.Fatalf("expected one provider sync per tick, got %d", calls)
+	}
+}
+
+func TestRetryIssueNowDoesNotHoldMutexAcrossProviderLookupAndHonorsCancellation(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	project, err := store.CreateProjectWithProvider("Slow Provider", "", "", "", "stub", "stub-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		Identifier:       "STUB-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Title:            "Slow issue",
+		State:            kanban.StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	provider := &blockingIssueProvider{
+		issue:      *issue,
+		getStarted: make(chan struct{}, 1),
+		getRelease: make(chan struct{}),
+	}
+	orch.service.RegisterProvider(provider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan map[string]interface{}, 1)
+	go func() {
+		resultCh <- orch.RetryIssueNow(ctx, issue.Identifier)
+	}()
+
+	select {
+	case <-provider.getStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for provider lookup to start")
+	}
+
+	refreshDone := make(chan map[string]interface{}, 1)
+	go func() {
+		refreshDone <- orch.RequestRefresh()
+	}()
+
+	select {
+	case result := <-refreshDone:
+		if result["status"] != "accepted" {
+			t.Fatalf("unexpected refresh result while retry lookup is blocked: %#v", result)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("expected RequestRefresh to acquire orchestrator mutex while retry lookup is blocked")
+	}
+
+	cancel()
+	select {
+	case result := <-resultCh:
+		if result["status"] != "error" {
+			t.Fatalf("expected canceled retry to report error status, got %#v", result)
+		}
+		if !strings.Contains(fmt.Sprint(result["error"]), context.Canceled.Error()) {
+			t.Fatalf("expected canceled retry error, got %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for canceled retry result")
 	}
 }
 

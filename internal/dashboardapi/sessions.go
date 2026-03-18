@@ -1,7 +1,6 @@
 package dashboardapi
 
 import (
-	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -172,27 +171,7 @@ func sessionFeedSortKey(title, identifier string) string {
 }
 
 func decodeLiveSessions(raw map[string]interface{}) map[string]appserver.Session {
-	out := make(map[string]appserver.Session, len(raw))
-	for key, value := range raw {
-		switch session := value.(type) {
-		case appserver.Session:
-			out[key] = session
-		case *appserver.Session:
-			if session != nil {
-				out[key] = *session
-			}
-		case map[string]interface{}:
-			body, err := json.Marshal(session)
-			if err != nil {
-				continue
-			}
-			var decoded appserver.Session
-			if err := json.Unmarshal(body, &decoded); err == nil {
-				out[key] = decoded
-			}
-		}
-	}
-	return out
+	return appserver.SessionsFromMap(raw)
 }
 
 func buildLiveSessionFeedEntry(identifier string, session appserver.Session, running observability.RunningEntry, issueTitle string, pendingInterrupt *appserver.PendingInteraction) kanban.SessionFeedEntry {
