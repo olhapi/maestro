@@ -59,7 +59,7 @@ describe('GlobalInterruptPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
 
-    expect(onRespond).toHaveBeenCalledWith({ decision: 'approved_once' })
+    expect(onRespond).toHaveBeenCalledWith({ interruptId: 'interrupt-approval', decision: 'approved_once' })
   })
 
   it('uses decision payload when approval options provide structured responses', () => {
@@ -101,6 +101,7 @@ describe('GlobalInterruptPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /persist allow rule/i }))
 
     expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-approval-structured',
       decision_payload: {
         applyNetworkPolicyAmendment: {
           network_policy_amendment: {
@@ -144,6 +145,7 @@ describe('GlobalInterruptPanel', () => {
     fireEvent.click(screen.getByText('Staging').closest('button')!)
 
     expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-options',
       answers: {
         environment: ['Staging'],
       },
@@ -186,6 +188,45 @@ describe('GlobalInterruptPanel', () => {
 
     expect(onRespond).not.toHaveBeenCalled()
     expect(submitButton).toBeEnabled()
+  })
+
+  it('disables actions while the panel is exiting so stale approvals cannot be submitted', () => {
+    vi.useFakeTimers()
+    const onRespond = vi.fn()
+
+    const interrupt = {
+      id: 'interrupt-exiting',
+      kind: 'approval' as const,
+      issue_identifier: 'ISS-10',
+      issue_title: 'Approve command',
+      requested_at: '2026-03-16T10:00:00Z',
+      approval: {
+        command: 'gh pr view',
+        decisions: [{ value: 'approved', label: 'Approve once' }],
+      },
+    }
+
+    const { rerender } = render(
+      <GlobalInterruptPanel count={1} current={interrupt} isSubmitting={false} onRespond={onRespond} />,
+    )
+
+    rerender(
+      <GlobalInterruptPanel
+        count={1}
+        current={interrupt}
+        hiddenCurrentId="interrupt-exiting"
+        isSubmitting={false}
+        onRespond={onRespond}
+      />,
+    )
+
+    const staleApprovalButton = screen.getByRole('button', { name: /approve once/i })
+    expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'exiting')
+    expect(staleApprovalButton).toBeDisabled()
+
+    fireEvent.click(staleApprovalButton)
+
+    expect(onRespond).not.toHaveBeenCalled()
   })
 
   it('applies the closing state before unmounting when the current interrupt is hidden', () => {

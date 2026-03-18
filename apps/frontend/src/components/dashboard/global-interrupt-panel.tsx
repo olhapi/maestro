@@ -115,6 +115,13 @@ type PanelAction =
   | { type: 'select-decision'; interruptId: string; decision: string }
   | { type: 'set-draft-answer'; interruptId: string; questionId: string; value: string }
 
+type InterruptResponsePayload = {
+  interruptId: string
+  decision?: string
+  decision_payload?: Record<string, unknown>
+  answers?: Record<string, string[]>
+}
+
 function createInitialPanelState(targetCurrent: PendingInterrupt | undefined, targetCount: number): PanelState {
   return {
     renderedCurrent: targetCurrent,
@@ -218,11 +225,7 @@ export function GlobalInterruptPanel({
   count: number
   hiddenCurrentId?: string | null
   isSubmitting: boolean
-  onRespond: (payload: {
-    decision?: string
-    decision_payload?: Record<string, unknown>
-    answers?: Record<string, string[]>
-  }) => void
+  onRespond: (payload: InterruptResponsePayload) => void
 }) {
   const targetCurrent = current && current.id !== hiddenCurrentId ? current : undefined
   const targetCount = targetCurrent ? count : Math.max(0, count - (hiddenCurrentId ? 1 : 0))
@@ -368,6 +371,14 @@ export function GlobalInterruptPanel({
     renderedCurrent.kind === 'approval'
       ? approvalDecisionGroups(renderedCurrent.approval?.decisions ?? [])
       : null
+  const interactionLocked = isSubmitting || visibility !== 'visible'
+
+  const respondToRenderedCurrent = (payload: Omit<InterruptResponsePayload, 'interruptId'>) => {
+    if (interactionLocked) {
+      return
+    }
+    onRespond({ interruptId: renderedCurrent.id, ...payload })
+  }
 
   return (
     <section
@@ -431,7 +442,7 @@ export function GlobalInterruptPanel({
             className="mt-4 grid gap-4 rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]"
             onSubmit={(event) => {
               event.preventDefault()
-              if (!valid || isSubmitting) {
+              if (!valid || interactionLocked) {
                 return
               }
               if (renderedCurrent.kind === 'approval') {
@@ -440,13 +451,13 @@ export function GlobalInterruptPanel({
                   return
                 }
                 if (selectedDecision.decision_payload) {
-                  onRespond({ decision_payload: selectedDecision.decision_payload })
+                  respondToRenderedCurrent({ decision_payload: selectedDecision.decision_payload })
                   return
                 }
-                onRespond({ decision: selectedDecision.value })
+                respondToRenderedCurrent({ decision: selectedDecision.value })
                 return
               }
-              onRespond({ answers })
+              respondToRenderedCurrent({ answers })
             }}
           >
             {renderedCurrent.kind === 'approval' ? (
@@ -497,9 +508,10 @@ export function GlobalInterruptPanel({
                                   ? 'border-[var(--accent)]/70 bg-[linear-gradient(135deg,rgba(196,255,87,.28),rgba(255,255,255,.08))] text-white shadow-[0_12px_40px_rgba(196,255,87,.15)]'
                                   : 'border-[var(--accent)]/20 bg-[linear-gradient(135deg,rgba(196,255,87,.16),rgba(255,255,255,.04))] text-white hover:border-[var(--accent)]/45 hover:bg-[linear-gradient(135deg,rgba(196,255,87,.22),rgba(255,255,255,.06))]',
                               )}
+                              disabled={interactionLocked}
                               type="button"
                               onClick={() => {
-                                if (isSubmitting) {
+                                if (interactionLocked) {
                                   return
                                 }
                                 dispatch({
@@ -508,10 +520,10 @@ export function GlobalInterruptPanel({
                                   decision: option.value,
                                 })
                                 if (option.decision_payload) {
-                                  onRespond({ decision_payload: option.decision_payload })
+                                  respondToRenderedCurrent({ decision_payload: option.decision_payload })
                                   return
                                 }
-                                onRespond({ decision: option.value })
+                                respondToRenderedCurrent({ decision: option.value })
                               }}
                             >
                               <p className="text-base font-medium">{option.label}</p>
@@ -537,9 +549,10 @@ export function GlobalInterruptPanel({
                                   ? 'border-white/25 bg-white/10 text-white'
                                   : 'border-white/12 bg-white/[0.04] text-white hover:border-white/18 hover:bg-white/[0.07]',
                               )}
+                              disabled={interactionLocked}
                               type="button"
                               onClick={() => {
-                                if (isSubmitting) {
+                                if (interactionLocked) {
                                   return
                                 }
                                 dispatch({
@@ -548,10 +561,10 @@ export function GlobalInterruptPanel({
                                   decision: option.value,
                                 })
                                 if (option.decision_payload) {
-                                  onRespond({ decision_payload: option.decision_payload })
+                                  respondToRenderedCurrent({ decision_payload: option.decision_payload })
                                   return
                                 }
-                                onRespond({ decision: option.value })
+                                respondToRenderedCurrent({ decision: option.value })
                               }}
                             >
                               <p className="text-base font-medium">{option.label}</p>
@@ -580,9 +593,10 @@ export function GlobalInterruptPanel({
                                 ? 'border-red-400/45 bg-red-500/15 text-white'
                                 : 'border-white/10 bg-black/20 text-white hover:border-red-300/30 hover:bg-red-500/10',
                             )}
+                            disabled={interactionLocked}
                             type="button"
                             onClick={() => {
-                              if (isSubmitting) {
+                              if (interactionLocked) {
                                 return
                               }
                               dispatch({
@@ -591,10 +605,10 @@ export function GlobalInterruptPanel({
                                 decision: option.value,
                               })
                               if (option.decision_payload) {
-                                onRespond({ decision_payload: option.decision_payload })
+                                respondToRenderedCurrent({ decision_payload: option.decision_payload })
                                 return
                               }
-                              onRespond({ decision: option.value })
+                              respondToRenderedCurrent({ decision: option.value })
                             }}
                           >
                             <p className="text-base font-medium">{option.label}</p>
@@ -646,9 +660,10 @@ export function GlobalInterruptPanel({
                                     ? 'border-[var(--accent)]/50 bg-[var(--accent)]/10 text-white'
                                     : 'border-white/10 bg-black/20 text-[var(--muted-foreground)] hover:border-white/20 hover:text-white',
                                 )}
+                                disabled={interactionLocked}
                                 type="button"
                                 onClick={() => {
-                                  if (isSubmitting) {
+                                  if (interactionLocked) {
                                     return
                                   }
                                   const nextDraftAnswers = {
@@ -672,7 +687,7 @@ export function GlobalInterruptPanel({
                                         (nextAnswers[currentQuestion.id]?.[0] ?? '').trim().length > 0,
                                     )
                                   if (readyToSubmit) {
-                                    onRespond({ answers: nextAnswers })
+                                    respondToRenderedCurrent({ answers: nextAnswers })
                                   }
                                 }}
                               >
@@ -688,6 +703,7 @@ export function GlobalInterruptPanel({
                       {!question.options?.length || question.is_other ? (
                         <input
                           className="h-11 rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-white outline-none transition focus:border-[var(--accent)]/50"
+                          disabled={interactionLocked}
                           placeholder={question.is_secret ? 'Enter response' : 'Type response'}
                           type={question.is_secret ? 'password' : 'text'}
                           value={draftAnswers[question.id] ?? ''}
@@ -712,11 +728,11 @@ export function GlobalInterruptPanel({
                 <button
                   className={cn(
                     'inline-flex h-11 items-center rounded-2xl border px-4 text-sm font-medium transition',
-                    valid && !isSubmitting
+                    valid && !interactionLocked
                       ? 'border-[var(--accent)]/45 bg-[linear-gradient(135deg,rgba(196,255,87,.24),rgba(255,255,255,.06))] text-white hover:border-[var(--accent)]/60'
                       : 'border-white/10 bg-white/5 text-white/45',
                   )}
-                  disabled={!valid || isSubmitting}
+                  disabled={!valid || interactionLocked}
                   type="submit"
                 >
                   {isSubmitting ? 'Submitting...' : 'Submit response'}

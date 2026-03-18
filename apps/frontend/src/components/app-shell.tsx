@@ -330,12 +330,12 @@ export function AppShell() {
             current={interrupts.data?.current}
             hiddenCurrentId={effectiveHiddenInterruptId}
             isSubmitting={respondToInterrupt.isPending}
-            onRespond={(body) => {
+            onRespond={({ interruptId, ...body }) => {
               const current = interrupts.data?.current
-              if (!current) {
+              if (!current || current.id !== interruptId) {
                 return
               }
-              respondToInterrupt.mutate({ id: current.id, body })
+              respondToInterrupt.mutate({ id: interruptId, body })
             }}
           />
           <div

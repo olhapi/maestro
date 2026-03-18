@@ -429,6 +429,9 @@ describe('AppShell', () => {
     await waitFor(() => {
       expect(screen.getByText('Review migrations')).toBeInTheDocument()
     })
+    await waitFor(() => {
+      expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'visible')
+    })
 
     fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
 
@@ -490,5 +493,52 @@ describe('AppShell', () => {
       expect(screen.getByText('Approve deployment')).toBeInTheDocument()
     })
     expect(screen.getAllByText('deploy production').length).toBeGreaterThan(0)
+  })
+
+  it('disables stale interrupt actions while the previous panel is exiting', async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts)
+      .mockResolvedValueOnce({
+        count: 1,
+        current: {
+          id: 'interrupt-1',
+          kind: 'approval',
+          issue_identifier: 'ISS-1',
+          issue_title: 'Review migrations',
+          requested_at: '2026-03-16T10:00:00Z',
+          approval: {
+            command: 'gh pr view',
+            decisions: [{ value: 'approved', label: 'Approve once' }],
+          },
+        },
+      })
+      .mockResolvedValue({
+        count: 1,
+        current: {
+          id: 'interrupt-2',
+          kind: 'approval',
+          issue_identifier: 'ISS-2',
+          issue_title: 'Approve deployment',
+          requested_at: '2026-03-16T10:02:00Z',
+          approval: {
+            command: 'deploy production',
+            decisions: [{ value: 'approved', label: 'Approve once' }],
+          },
+        },
+      })
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Review migrations')).toBeInTheDocument()
+    })
+
+    await act(async () => {
+      await invalidateSocket()
+    })
+
+    const staleApprovalButton = screen.getByRole('button', { name: /approve once/i })
+    expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'exiting')
+    expect(staleApprovalButton).toBeDisabled()
   })
 })
