@@ -122,6 +122,9 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	if len(projectSummaries) != 1 || projectSummaries[0].Counts.Ready != 1 || projectSummaries[0].Counts.Done != 1 {
 		t.Fatalf("unexpected project summaries: %#v", projectSummaries)
 	}
+	if projectSummaries[0].TotalCount != 2 || projectSummaries[0].ActiveCount != 1 || projectSummaries[0].TerminalCount != 1 {
+		t.Fatalf("unexpected aggregated project counts: %#v", projectSummaries[0])
+	}
 	if projectSummaries[0].State != ProjectStateStopped {
 		t.Fatalf("expected stopped project state in summary, got %#v", projectSummaries[0].State)
 	}
@@ -135,6 +138,9 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 	}
 	if len(epicSummaries) != 1 || epicSummaries[0].Counts.Ready != 1 || epicSummaries[0].Counts.Done != 1 {
 		t.Fatalf("unexpected epic summaries: %#v", epicSummaries)
+	}
+	if epicSummaries[0].TotalCount != 2 || epicSummaries[0].ActiveCount != 1 || epicSummaries[0].TerminalCount != 1 {
+		t.Fatalf("unexpected aggregated epic counts: %#v", epicSummaries[0])
 	}
 
 	issueSummaries, total, err := store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "updated_desc", Limit: 10})

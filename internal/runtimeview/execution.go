@@ -2,7 +2,6 @@ package runtimeview
 
 import (
 	"database/sql"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -216,27 +215,7 @@ func findLiveSession(all map[string]interface{}, identifier string) (appserver.S
 	if !ok {
 		return appserver.Session{}, false
 	}
-	switch session := raw.(type) {
-	case appserver.Session:
-		return session, true
-	case *appserver.Session:
-		if session == nil {
-			return appserver.Session{}, false
-		}
-		return *session, true
-	case map[string]interface{}:
-		body, err := json.Marshal(session)
-		if err != nil {
-			return appserver.Session{}, false
-		}
-		var decoded appserver.Session
-		if err := json.Unmarshal(body, &decoded); err != nil {
-			return appserver.Session{}, false
-		}
-		return decoded, true
-	default:
-		return appserver.Session{}, false
-	}
+	return appserver.SessionFromAny(raw)
 }
 
 func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {

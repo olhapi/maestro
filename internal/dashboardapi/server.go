@@ -32,8 +32,8 @@ type Provider interface {
 	PendingInterrupts() appserver.PendingInteractionSnapshot
 	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
 	RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error
-	RetryIssueNow(identifier string) map[string]interface{}
-	RunRecurringIssueNow(identifier string) map[string]interface{}
+	RetryIssueNow(ctx context.Context, identifier string) map[string]interface{}
+	RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{}
 	RequestProjectRefresh(projectID string) map[string]interface{}
 	StopProjectRuns(projectID string) map[string]interface{}
 }
@@ -791,7 +791,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{
 			"ok":       true,
 			"issue":    detail,
-			"dispatch": s.provider.RetryIssueNow(identifier),
+			"dispatch": s.provider.RetryIssueNow(r.Context(), identifier),
 		})
 	case "state":
 		var body struct {
@@ -813,20 +813,16 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		issue, err := s.store.GetIssueByIdentifier(identifier)
+		detail, err := s.service.UpdateIssue(r.Context(), identifier, map[string]interface{}{"blocked_by": body.BlockedBy})
 		if err != nil {
-			writeErrorStatus(w, http.StatusNotFound, err)
-			return
-		}
-		if err := s.store.UpdateIssue(issue.ID, map[string]interface{}{"blocked_by": body.BlockedBy}); err != nil {
 			writeError(w, appErrorStatus(err), err)
 			return
 		}
-		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "blocked_by": body.BlockedBy})
+		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "blocked_by": detail.BlockedBy})
 	case "retry":
-		writeJSON(w, s.provider.RetryIssueNow(identifier))
+		writeJSON(w, s.provider.RetryIssueNow(r.Context(), identifier))
 	case "run-now":
-		writeJSON(w, s.provider.RunRecurringIssueNow(identifier))
+		writeJSON(w, s.provider.RunRecurringIssueNow(r.Context(), identifier))
 	case "commands":
 		var body struct {
 			Command string `json:"command"`

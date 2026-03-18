@@ -73,6 +73,276 @@ func (s *Session) Summary() Session {
 	return cp
 }
 
+func SessionFromAny(value interface{}) (Session, bool) {
+	switch session := value.(type) {
+	case Session:
+		return session, true
+	case *Session:
+		if session == nil {
+			return Session{}, false
+		}
+		return *session, true
+	case map[string]interface{}:
+		return sessionFromMap(session)
+	default:
+		return Session{}, false
+	}
+}
+
+func SessionsFromMap(raw map[string]interface{}) map[string]Session {
+	out := make(map[string]Session, len(raw))
+	for key, value := range raw {
+		if session, ok := SessionFromAny(value); ok {
+			out[key] = session
+		}
+	}
+	return out
+}
+
+func sessionFromMap(raw map[string]interface{}) (Session, bool) {
+	var session Session
+	parsed := false
+
+	if value, ok := stringValue(raw["issue_id"]); ok {
+		session.IssueID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["issue_identifier"]); ok {
+		session.IssueIdentifier = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["session_id"]); ok {
+		session.SessionID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["thread_id"]); ok {
+		session.ThreadID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["turn_id"]); ok {
+		session.TurnID = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["codex_app_server_pid"]); ok {
+		session.AppServerPID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["last_event"]); ok {
+		session.LastEvent = value
+		parsed = true
+	}
+	if value, ok := timeValue(raw["last_timestamp"]); ok {
+		session.LastTimestamp = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["last_message"]); ok {
+		session.LastMessage = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["input_tokens"]); ok {
+		session.InputTokens = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["output_tokens"]); ok {
+		session.OutputTokens = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["total_tokens"]); ok {
+		session.TotalTokens = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["events_processed"]); ok {
+		session.EventsProcessed = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["turns_started"]); ok {
+		session.TurnsStarted = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["turns_completed"]); ok {
+		session.TurnsCompleted = value
+		parsed = true
+	}
+	if value, ok := boolValue(raw["terminal"]); ok {
+		session.Terminal = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["terminal_reason"]); ok {
+		session.TerminalReason = value
+		parsed = true
+	}
+	if history, ok := eventsValue(raw["history"]); ok {
+		session.History = history
+		parsed = true
+	}
+
+	return session, parsed
+}
+
+func eventsValue(value interface{}) ([]Event, bool) {
+	switch typed := value.(type) {
+	case []Event:
+		return append([]Event(nil), typed...), true
+	case []interface{}:
+		out := make([]Event, 0, len(typed))
+		parsed := false
+		for _, item := range typed {
+			event, ok := eventFromAny(item)
+			if !ok {
+				continue
+			}
+			out = append(out, event)
+			parsed = true
+		}
+		return out, parsed
+	default:
+		return nil, false
+	}
+}
+
+func eventFromAny(value interface{}) (Event, bool) {
+	switch event := value.(type) {
+	case Event:
+		return event, true
+	case *Event:
+		if event == nil {
+			return Event{}, false
+		}
+		return *event, true
+	case map[string]interface{}:
+		return eventRecordFromMap(event)
+	default:
+		return Event{}, false
+	}
+}
+
+func eventRecordFromMap(raw map[string]interface{}) (Event, bool) {
+	var event Event
+	parsed := false
+
+	if value, ok := stringValue(raw["type"]); ok {
+		event.Type = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["thread_id"]); ok {
+		event.ThreadID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["turn_id"]); ok {
+		event.TurnID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["call_id"]); ok {
+		event.CallID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["item_id"]); ok {
+		event.ItemID = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["item_type"]); ok {
+		event.ItemType = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["item_phase"]); ok {
+		event.ItemPhase = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["stream"]); ok {
+		event.Stream = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["command"]); ok {
+		event.Command = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["cwd"]); ok {
+		event.CWD = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["chunk"]); ok {
+		event.Chunk = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["exit_code"]); ok {
+		event.ExitCode = &value
+		parsed = true
+	}
+	if value, ok := intValue(raw["input_tokens"]); ok {
+		event.InputTokens = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["output_tokens"]); ok {
+		event.OutputTokens = value
+		parsed = true
+	}
+	if value, ok := intValue(raw["total_tokens"]); ok {
+		event.TotalTokens = value
+		parsed = true
+	}
+	if value, ok := stringValue(raw["message"]); ok {
+		event.Message = value
+		parsed = true
+	}
+
+	return event, parsed
+}
+
+func stringValue(value interface{}) (string, bool) {
+	typed, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(typed), true
+}
+
+func intValue(value interface{}) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int8:
+		return int(typed), true
+	case int16:
+		return int(typed), true
+	case int32:
+		return int(typed), true
+	case int64:
+		return int(typed), true
+	case float32:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case json.Number:
+		n, err := typed.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+func boolValue(value interface{}) (bool, bool) {
+	typed, ok := value.(bool)
+	return typed, ok
+}
+
+func timeValue(value interface{}) (time.Time, bool) {
+	switch typed := value.(type) {
+	case time.Time:
+		return typed, true
+	case string:
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(typed))
+		if err != nil {
+			return time.Time{}, false
+		}
+		return parsed, true
+	default:
+		return time.Time{}, false
+	}
+}
+
 func (s *Session) ApplyEvent(e Event) {
 	if s.MaxHistory <= 0 {
 		s.MaxHistory = defaultSessionHistoryLimit

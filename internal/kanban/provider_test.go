@@ -259,3 +259,73 @@ func TestProviderIssueLifecycle(t *testing.T) {
 		t.Fatalf("expected fallback provider phase to preserve current phase, got %#v", afterFallback)
 	}
 }
+
+func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
+	store := setupTestStore(t)
+	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", ProviderKindLinear, "LIN-PROJ", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider failed: %v", err)
+	}
+
+	doneIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "LIN-DONE",
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "LIN-DONE",
+		Title:            "Imported done",
+		State:            StateDone,
+		WorkflowPhase:    WorkflowPhaseDone,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue done failed: %v", err)
+	}
+	if doneIssue.WorkflowPhase != WorkflowPhaseDone {
+		t.Fatalf("expected explicit done phase to be preserved, got %#v", doneIssue)
+	}
+
+	reviewIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "LIN-REVIEW",
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "LIN-REVIEW",
+		Title:            "Imported review",
+		State:            StateInReview,
+		WorkflowPhase:    WorkflowPhaseReview,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue review failed: %v", err)
+	}
+	if reviewIssue.WorkflowPhase != WorkflowPhaseReview {
+		t.Fatalf("expected explicit review phase to be preserved, got %#v", reviewIssue)
+	}
+
+	derivedIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "LIN-DERIVED",
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "LIN-DERIVED",
+		Title:            "Imported derived",
+		State:            StateCancelled,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue derived failed: %v", err)
+	}
+	if derivedIssue.WorkflowPhase != WorkflowPhaseComplete {
+		t.Fatalf("expected cancelled provider issue to derive complete phase, got %#v", derivedIssue)
+	}
+
+	refreshedReview, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "LIN-REVIEW",
+		ProviderKind:     ProviderKindLinear,
+		ProviderIssueRef: "LIN-REVIEW",
+		Title:            "Imported review refreshed",
+		State:            StateInReview,
+		WorkflowPhase:    WorkflowPhaseReview,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue refreshed review failed: %v", err)
+	}
+	if refreshedReview.WorkflowPhase != WorkflowPhaseReview {
+		t.Fatalf("expected refreshed provider issue to retain review phase, got %#v", refreshedReview)
+	}
+	if refreshedReview.UpdatedAt.IsZero() {
+		t.Fatalf("expected zero UpdatedAt payload to be normalized on update, got %#v", refreshedReview)
+	}
+}

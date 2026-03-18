@@ -27,8 +27,8 @@ type RuntimeProvider interface {
 	observability.SessionProvider
 	RequestProjectRefresh(projectID string) map[string]interface{}
 	StopProjectRuns(projectID string) map[string]interface{}
-	RetryIssueNow(identifier string) map[string]interface{}
-	RunRecurringIssueNow(identifier string) map[string]interface{}
+	RetryIssueNow(ctx context.Context, identifier string) map[string]interface{}
+	RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{}
 	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
 }
 
@@ -665,14 +665,14 @@ func (s *Server) handleRetryIssue(ctx context.Context, args map[string]interface
 	if s.provider == nil {
 		return s.runtimeUnavailable("retry_issue"), nil
 	}
-	return s.toolResult("retry_issue", s.provider.RetryIssueNow(asString(args["identifier"]))), nil
+	return s.toolResult("retry_issue", s.provider.RetryIssueNow(ctx, asString(args["identifier"]))), nil
 }
 
 func (s *Server) handleRunIssueNow(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	if s.provider == nil {
 		return s.runtimeUnavailable("run_issue_now"), nil
 	}
-	return s.toolResult("run_issue_now", s.provider.RunRecurringIssueNow(asString(args["identifier"]))), nil
+	return s.toolResult("run_issue_now", s.provider.RunRecurringIssueNow(ctx, asString(args["identifier"]))), nil
 }
 
 func (s *Server) handleBoardOverview(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {

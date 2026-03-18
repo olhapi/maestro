@@ -385,7 +385,7 @@ func TestInterruptedFailuresPauseAutomaticRetriesAfterThreshold(t *testing.T) {
 		t.Fatalf("expected paused issue not to redispatch, got %d calls", runner.calls)
 	}
 
-	resp := orch.RetryIssueNow(issue.Identifier)
+	resp := orch.RetryIssueNow(context.Background(), issue.Identifier)
 	if resp["status"] != "queued_now" {
 		t.Fatalf("unexpected retry response: %#v", resp)
 	}

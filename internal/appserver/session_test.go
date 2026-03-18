@@ -1,8 +1,10 @@
 package appserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/olhapi/maestro/internal/appserver/protocol"
 )
@@ -236,6 +238,241 @@ func TestSessionApplyEventUsesFailedAndCancelledTurnMessagesForLastMessage(t *te
 			}
 		})
 	}
+}
+
+func TestSessionSummaryAndCoercionHelpers(t *testing.T) {
+	timestamp := time.Date(2026, time.March, 18, 10, 15, 0, 0, time.UTC)
+	exitCode := 7
+
+	event := Event{
+		Type:         "item.completed",
+		ThreadID:     "thread-1",
+		TurnID:       "turn-1",
+		CallID:       "call-1",
+		ItemID:       "item-1",
+		ItemType:     "commandExecution",
+		ItemPhase:    "completed",
+		Stream:       "stderr",
+		Command:      "go test ./...",
+		CWD:          "/repo",
+		Chunk:        "boom",
+		ExitCode:     &exitCode,
+		InputTokens:  3,
+		OutputTokens: 4,
+		TotalTokens:  7,
+		Message:      "failed",
+	}
+	session := Session{
+		IssueID:         "42",
+		IssueIdentifier: "MAE-42",
+		SessionID:       "session-1",
+		ThreadID:        "thread-1",
+		TurnID:          "turn-1",
+		AppServerPID:    99,
+		LastEvent:       "turn.completed",
+		LastTimestamp:   timestamp,
+		LastMessage:     "all done",
+		InputTokens:     11,
+		OutputTokens:    12,
+		TotalTokens:     23,
+		EventsProcessed: 5,
+		TurnsStarted:    2,
+		TurnsCompleted:  2,
+		Terminal:        true,
+		TerminalReason:  "turn.completed",
+		History:         []Event{event},
+		MaxHistory:      4,
+	}
+
+	summary := session.Summary()
+	if len(summary.History) != 0 {
+		t.Fatalf("expected summary to drop history, got %+v", summary)
+	}
+	if summary.LastMessage != session.LastMessage || summary.SessionID != session.SessionID {
+		t.Fatalf("expected summary to preserve metadata, got %+v", summary)
+	}
+
+	clone := session.Clone()
+	clone.History[0].Message = "mutated"
+	if session.History[0].Message != "failed" {
+		t.Fatalf("expected clone to copy history slice, got %+v", session.History)
+	}
+
+	fromSession, ok := SessionFromAny(session)
+	if !ok || fromSession.SessionID != session.SessionID {
+		t.Fatalf("expected SessionFromAny(Session) to succeed, got %+v ok=%v", fromSession, ok)
+	}
+
+	fromPointer, ok := SessionFromAny(&session)
+	if !ok || fromPointer.ThreadID != session.ThreadID {
+		t.Fatalf("expected SessionFromAny(*Session) to succeed, got %+v ok=%v", fromPointer, ok)
+	}
+
+	if _, ok := SessionFromAny((*Session)(nil)); ok {
+		t.Fatal("expected nil *Session to fail coercion")
+	}
+	if _, ok := SessionFromAny("invalid"); ok {
+		t.Fatal("expected invalid session value to fail coercion")
+	}
+
+	rawSession := map[string]interface{}{
+		"issue_id":              "42 ",
+		"issue_identifier":      " MAE-42",
+		"session_id":            "session-1",
+		"thread_id":             "thread-1",
+		"turn_id":               "turn-1",
+		"codex_app_server_pid":  int64(99),
+		"last_event":            "turn.completed",
+		"last_timestamp":        timestamp.Format(time.RFC3339),
+		"last_message":          "all done",
+		"input_tokens":          jsonNumber("11"),
+		"output_tokens":         float64(12),
+		"total_tokens":          int32(23),
+		"events_processed":      int16(5),
+		"turns_started":         int8(2),
+		"turns_completed":       int(2),
+		"terminal":              true,
+		"terminal_reason":       "turn.completed",
+		"history":               []interface{}{event, &event, map[string]interface{}{"type": "turn.completed", "thread_id": "thread-1", "turn_id": "turn-1", "message": "done", "exit_code": float64(0)}, "skip"},
+		"ignored_extra_payload": "ignored",
+	}
+
+	fromMap, ok := SessionFromAny(rawSession)
+	if !ok {
+		t.Fatal("expected SessionFromAny(map) to succeed")
+	}
+	if fromMap.IssueID != "42" || fromMap.IssueIdentifier != "MAE-42" {
+		t.Fatalf("expected trimmed identifiers, got %+v", fromMap)
+	}
+	if fromMap.LastTimestamp != timestamp || len(fromMap.History) != 3 {
+		t.Fatalf("expected parsed timestamp/history, got %+v", fromMap)
+	}
+	if fromMap.History[2].ExitCode == nil || *fromMap.History[2].ExitCode != 0 {
+		t.Fatalf("expected parsed exit code from history map, got %+v", fromMap.History[2])
+	}
+
+	sessions := SessionsFromMap(map[string]interface{}{
+		"typed":   session,
+		"pointer": &session,
+		"raw":     rawSession,
+		"bad":     false,
+		"nil":     (*Session)(nil),
+	})
+	if len(sessions) != 3 {
+		t.Fatalf("expected only coercible sessions, got %+v", sessions)
+	}
+	if sessions["raw"].LastTimestamp != timestamp {
+		t.Fatalf("expected parsed raw timestamp, got %+v", sessions["raw"])
+	}
+
+	if history, ok := eventsValue([]Event{event}); !ok || len(history) != 1 || history[0].Message != "failed" {
+		t.Fatalf("expected []Event to clone successfully, got %+v ok=%v", history, ok)
+	}
+	if history, ok := eventsValue([]interface{}{event, &event, rawSession["history"].([]interface{})[2], nil}); !ok || len(history) != 3 {
+		t.Fatalf("expected []interface{} history coercion, got %+v ok=%v", history, ok)
+	}
+	if _, ok := eventsValue("bad"); ok {
+		t.Fatal("expected invalid history value to fail coercion")
+	}
+
+	if parsedEvent, ok := eventFromAny(event); !ok || parsedEvent.Type != event.Type {
+		t.Fatalf("expected typed event coercion, got %+v ok=%v", parsedEvent, ok)
+	}
+	if parsedEvent, ok := eventFromAny(&event); !ok || parsedEvent.CallID != event.CallID {
+		t.Fatalf("expected pointer event coercion, got %+v ok=%v", parsedEvent, ok)
+	}
+	if _, ok := eventFromAny((*Event)(nil)); ok {
+		t.Fatal("expected nil *Event to fail coercion")
+	}
+	if _, ok := eventFromAny(123); ok {
+		t.Fatal("expected invalid event to fail coercion")
+	}
+
+	parsedEvent, ok := eventRecordFromMap(map[string]interface{}{
+		"type":          " item.completed ",
+		"thread_id":     "thread-1",
+		"turn_id":       "turn-1",
+		"call_id":       "call-1",
+		"item_id":       "item-1",
+		"item_type":     "commandExecution",
+		"item_phase":    "completed",
+		"stream":        "stderr",
+		"command":       "go test ./...",
+		"cwd":           "/repo",
+		"chunk":         "boom",
+		"exit_code":     jsonNumber("7"),
+		"input_tokens":  float32(3),
+		"output_tokens": int64(4),
+		"total_tokens":  int16(7),
+		"message":       " failed ",
+	})
+	if !ok {
+		t.Fatal("expected eventRecordFromMap to succeed")
+	}
+	if parsedEvent.Type != "item.completed" || parsedEvent.Message != "failed" {
+		t.Fatalf("expected trimmed event fields, got %+v", parsedEvent)
+	}
+	if parsedEvent.ExitCode == nil || *parsedEvent.ExitCode != 7 {
+		t.Fatalf("expected parsed exit code, got %+v", parsedEvent)
+	}
+	if _, ok := eventRecordFromMap(map[string]interface{}{"ignored": true}); ok {
+		t.Fatal("expected empty event map to fail coercion")
+	}
+
+	if value, ok := stringValue("  ready "); !ok || value != "ready" {
+		t.Fatalf("expected trimmed string value, got %q ok=%v", value, ok)
+	}
+	if _, ok := stringValue(5); ok {
+		t.Fatal("expected non-string value to fail stringValue")
+	}
+
+	intTests := []struct {
+		name  string
+		value interface{}
+		want  int
+	}{
+		{name: "int", value: int(5), want: 5},
+		{name: "int8", value: int8(6), want: 6},
+		{name: "int16", value: int16(7), want: 7},
+		{name: "int32", value: int32(8), want: 8},
+		{name: "int64", value: int64(9), want: 9},
+		{name: "float32", value: float32(10), want: 10},
+		{name: "float64", value: float64(11), want: 11},
+		{name: "json-number", value: jsonNumber("12"), want: 12},
+	}
+	for _, tc := range intTests {
+		value, ok := intValue(tc.value)
+		if !ok || value != tc.want {
+			t.Fatalf("expected %s to parse as %d, got %d ok=%v", tc.name, tc.want, value, ok)
+		}
+	}
+	if _, ok := intValue(jsonNumber("12.5")); ok {
+		t.Fatal("expected fractional json.Number to fail intValue")
+	}
+	if _, ok := intValue("bad"); ok {
+		t.Fatal("expected invalid int value to fail coercion")
+	}
+
+	if value, ok := boolValue(true); !ok || !value {
+		t.Fatalf("expected true bool value, got %v ok=%v", value, ok)
+	}
+	if _, ok := boolValue("true"); ok {
+		t.Fatal("expected non-bool value to fail boolValue")
+	}
+
+	if value, ok := timeValue(timestamp); !ok || !value.Equal(timestamp) {
+		t.Fatalf("expected time.Time coercion, got %v ok=%v", value, ok)
+	}
+	if value, ok := timeValue(" " + timestamp.Format(time.RFC3339) + " "); !ok || !value.Equal(timestamp) {
+		t.Fatalf("expected RFC3339 string coercion, got %v ok=%v", value, ok)
+	}
+	if _, ok := timeValue("not-a-time"); ok {
+		t.Fatal("expected invalid RFC3339 string to fail timeValue")
+	}
+}
+
+func jsonNumber(value string) interface{} {
+	return json.Number(value)
 }
 
 func TestSessionApplyEventIgnoresStreamingAgentMessageDeltasForLastMessage(t *testing.T) {

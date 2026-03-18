@@ -3073,17 +3073,36 @@ func (o *Orchestrator) StopProjectRuns(projectID string) map[string]interface{} 
 	}
 }
 
-func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	issue, err := o.service.GetIssueByIdentifier(context.Background(), identifier)
+func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
+	issue, err := o.service.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
+		status := "error"
+		if errors.Is(err, sql.ErrNoRows) || kanban.IsNotFound(err) {
+			status = "not_found"
+		}
 		return map[string]interface{}{
-			"status": "not_found",
+			"status": status,
 			"issue":  identifier,
+			"error":  err.Error(),
 		}
 	}
+
+	if issue.State == kanban.StateDone || issue.State == kanban.StateCancelled {
+		if issue.WorkflowPhase != kanban.WorkflowPhaseDone || issue.State != kanban.StateDone {
+			detail, err := o.service.SetIssueState(ctx, issue.Identifier, string(kanban.StateReady))
+			if err != nil {
+				return map[string]interface{}{
+					"status": "error",
+					"error":  err.Error(),
+					"issue":  identifier,
+				}
+			}
+			issue = &detail.Issue
+		}
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
 
 	if entry, ok := o.retries[issue.ID]; ok {
 		entry.DueAt = time.Now().UTC()
@@ -3145,16 +3164,6 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 		}
 	}
 
-	if issue.State == kanban.StateDone || issue.State == kanban.StateCancelled {
-		if _, err := o.service.SetIssueState(context.Background(), issue.Identifier, string(kanban.StateReady)); err != nil {
-			return map[string]interface{}{
-				"status": "error",
-				"error":  err.Error(),
-				"issue":  identifier,
-			}
-		}
-	}
-
 	o.appendEventLocked("manual_retry_requested", map[string]interface{}{
 		"issue_id":   issue.ID,
 		"identifier": issue.Identifier,
@@ -3166,12 +3175,17 @@ func (o *Orchestrator) RetryIssueNow(identifier string) map[string]interface{} {
 	}
 }
 
-func (o *Orchestrator) RunRecurringIssueNow(identifier string) map[string]interface{} {
-	issue, err := o.service.GetIssueByIdentifier(context.Background(), identifier)
+func (o *Orchestrator) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
+	issue, err := o.service.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
+		status := "error"
+		if errors.Is(err, sql.ErrNoRows) || kanban.IsNotFound(err) {
+			status = "not_found"
+		}
 		return map[string]interface{}{
-			"status": "not_found",
+			"status": status,
 			"issue":  identifier,
+			"error":  err.Error(),
 		}
 	}
 	if !issue.IsRecurring() {

@@ -361,11 +361,14 @@ func newBoundedContext(ctx context.Context, timeout time.Duration) (context.Cont
 }
 
 func shouldPropagateReadSyncError(parent context.Context, err error, propagateParentContext bool) bool {
-	if err == nil || !propagateParentContext {
+	if err == nil {
 		return false
 	}
 	if parent != nil && parent.Err() != nil && errors.Is(err, parent.Err()) {
 		return true
+	}
+	if !propagateParentContext {
+		return false
 	}
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }

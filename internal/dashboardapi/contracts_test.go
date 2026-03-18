@@ -2,7 +2,9 @@ package dashboardapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/providers"
 )
 
 type retryTrackingProvider struct {
@@ -24,12 +27,12 @@ type retryTrackingProvider struct {
 	runNow  []string
 }
 
-func (p *retryTrackingProvider) RetryIssueNow(identifier string) map[string]interface{} {
+func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	p.retried = append(p.retried, identifier)
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
-func (p *retryTrackingProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
+func (p *retryTrackingProvider) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	p.runNow = append(p.runNow, identifier)
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
@@ -42,12 +45,12 @@ type webhookTrackingProvider struct {
 	projectStops     []string
 }
 
-func (p *webhookTrackingProvider) RetryIssueNow(identifier string) map[string]interface{} {
+func (p *webhookTrackingProvider) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	p.retried = append(p.retried, identifier)
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
-func (p *webhookTrackingProvider) RunRecurringIssueNow(identifier string) map[string]interface{} {
+func (p *webhookTrackingProvider) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	p.runNow = append(p.runNow, identifier)
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
@@ -60,6 +63,55 @@ func (p *webhookTrackingProvider) RequestProjectRefresh(projectID string) map[st
 func (p *webhookTrackingProvider) StopProjectRuns(projectID string) map[string]interface{} {
 	p.projectStops = append(p.projectStops, projectID)
 	return map[string]interface{}{"status": "stopped", "project_id": projectID, "state": "stopped", "stopped_runs": 0}
+}
+
+type blockerRejectingIssueProvider struct {
+	issue kanban.Issue
+}
+
+func (p *blockerRejectingIssueProvider) Kind() string {
+	return "stub"
+}
+
+func (p *blockerRejectingIssueProvider) Capabilities() kanban.ProviderCapabilities {
+	return kanban.DefaultCapabilities("stub")
+}
+
+func (p *blockerRejectingIssueProvider) ValidateProject(context.Context, *kanban.Project) error {
+	return nil
+}
+
+func (p *blockerRejectingIssueProvider) ListIssues(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+	return []kanban.Issue{p.issue}, nil
+}
+
+func (p *blockerRejectingIssueProvider) GetIssue(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
+	cp := p.issue
+	return &cp, nil
+}
+
+func (p *blockerRejectingIssueProvider) CreateIssue(context.Context, *kanban.Project, providers.IssueCreateInput) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockerRejectingIssueProvider) UpdateIssue(ctx context.Context, project *kanban.Project, issue *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
+	if _, ok := updates["blocked_by"]; ok {
+		return nil, fmt.Errorf("%w: stub blocked_by updates are unsupported", providers.ErrUnsupportedCapability)
+	}
+	cp := p.issue
+	return &cp, nil
+}
+
+func (p *blockerRejectingIssueProvider) DeleteIssue(context.Context, *kanban.Project, *kanban.Issue) error {
+	return providers.ErrUnsupportedCapability
+}
+
+func (p *blockerRejectingIssueProvider) SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *blockerRejectingIssueProvider) CreateIssueComment(context.Context, *kanban.Project, *kanban.Issue, providers.IssueCommentInput) error {
+	return providers.ErrUnsupportedCapability
 }
 
 func requestJSON(t *testing.T, srv *httptest.Server, method, path string, body interface{}) *http.Response {
@@ -1285,6 +1337,59 @@ func TestCreateIssueRejectsBlockedInProgressWithConflict(t *testing.T) {
 	body := decodeResponse(t, resp)
 	if !strings.Contains(body["error"].(string), "cannot move issue to in_progress: blocked by "+blocker.Identifier) {
 		t.Fatalf("unexpected error payload: %#v", body)
+	}
+}
+
+func TestProviderBackedIssueBlockersRouteRejectsUnsupportedMutation(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	server := NewServer(store, testProvider{})
+	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", "stub", "stub-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	blocker, err := store.CreateIssue("", "", "Local blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		Identifier:       "STUB-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Title:            "Provider issue",
+		State:            kanban.StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+	server.service.RegisterProvider(&blockerRejectingIssueProvider{issue: *issue})
+
+	mux := http.NewServeMux()
+	server.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/blockers", map[string]interface{}{
+		"blocked_by": []string{blocker.Identifier},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	if !strings.Contains(body["error"].(string), "unsupported") {
+		t.Fatalf("unexpected error payload: %#v", body)
+	}
+
+	persisted, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if len(persisted.BlockedBy) != 0 {
+		t.Fatalf("expected provider-backed blocker update to be rejected without local mutation, got %#v", persisted.BlockedBy)
 	}
 }
 
