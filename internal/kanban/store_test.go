@@ -3420,7 +3420,7 @@ func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 	}
 }
 
-func TestGetProjectBackfillsLegacyWorkflowFullAccessProfile(t *testing.T) {
+func TestCreateProjectPersistsLegacyWorkflowFullAccessProfile(t *testing.T) {
 	store := setupTestStore(t)
 
 	repoPath := t.TempDir()
@@ -3441,16 +3441,8 @@ codex:
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if project.PermissionProfile != PermissionProfileDefault {
-		t.Fatalf("expected initial default permission profile, got %q", project.PermissionProfile)
-	}
-
-	project, err = store.GetProject(project.ID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
 	if project.PermissionProfile != PermissionProfileFullAccess {
-		t.Fatalf("expected backfilled full-access permission profile, got %q", project.PermissionProfile)
+		t.Fatalf("expected persisted full-access permission profile, got %q", project.PermissionProfile)
 	}
 
 	var stored string
@@ -3459,6 +3451,121 @@ codex:
 	}
 	if stored != string(PermissionProfileFullAccess) {
 		t.Fatalf("expected persisted full-access permission profile, got %q", stored)
+	}
+}
+
+func TestNewStoreBackfillsLegacyWorkflowFullAccessProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "legacy.db")
+	repoPath := filepath.Join(tmpDir, "repo")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll repo: %v", err)
+	}
+	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte(`---
+tracker:
+  kind: kanban
+codex:
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy:
+    type: dangerFullAccess
+---
+`), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT,
+			state TEXT NOT NULL DEFAULT 'stopped',
+			permission_profile TEXT NOT NULL DEFAULT 'default',
+			repo_path TEXT NOT NULL DEFAULT '',
+			workflow_path TEXT NOT NULL DEFAULT '',
+			provider_kind TEXT NOT NULL DEFAULT 'kanban',
+			provider_project_ref TEXT NOT NULL DEFAULT '',
+			provider_config_json TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+	); err != nil {
+		t.Fatalf("create projects table: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		INSERT INTO projects (id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"proj-legacy", "Legacy", "", ProjectStateStopped, PermissionProfileDefault, repoPath, workflowPath, ProviderKindKanban, "", "{}", now, now,
+	); err != nil {
+		t.Fatalf("insert legacy project: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	var stored string
+	if err := store.db.QueryRow(`SELECT permission_profile FROM projects WHERE id = ?`, "proj-legacy").Scan(&stored); err != nil {
+		t.Fatalf("query permission_profile: %v", err)
+	}
+	if stored != string(PermissionProfileFullAccess) {
+		t.Fatalf("expected startup backfill to persist full-access, got %q", stored)
+	}
+}
+
+func TestGetProjectDoesNotBackfillLegacyProfileDuringRead(t *testing.T) {
+	store := setupTestStore(t)
+
+	repoPath := t.TempDir()
+	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte(`---
+tracker:
+  kind: kanban
+codex:
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy:
+    type: dangerFullAccess
+---
+`), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := store.db.Exec(`
+		INSERT INTO projects (id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"proj-manual", "Manual", "", ProjectStateStopped, PermissionProfileDefault, repoPath, workflowPath, ProviderKindKanban, "", "{}", now, now,
+	); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	before, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq before read: %v", err)
+	}
+	project, err := store.GetProject("proj-manual")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if project.PermissionProfile != PermissionProfileDefault {
+		t.Fatalf("expected read path to preserve stored profile, got %q", project.PermissionProfile)
+	}
+	after, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq after read: %v", err)
+	}
+	if after != before {
+		t.Fatalf("expected project reads to avoid mutating change state, before=%d after=%d", before, after)
 	}
 }
 
@@ -3505,7 +3612,7 @@ codex:
 	}
 }
 
-func TestGetProjectIgnoresLegacyWorkflowParseErrorsDuringBackfill(t *testing.T) {
+func TestCreateProjectIgnoresLegacyWorkflowParseErrorsDuringPermissionDetection(t *testing.T) {
 	store := setupTestStore(t)
 
 	repoPath := t.TempDir()
@@ -3523,10 +3630,6 @@ codex:
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	project, err = store.GetProject(project.ID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
 	if project.PermissionProfile != PermissionProfileDefault {
 		t.Fatalf("expected malformed legacy workflow to leave permission profile unchanged, got %q", project.PermissionProfile)
 	}

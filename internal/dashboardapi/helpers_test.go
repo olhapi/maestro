@@ -284,6 +284,45 @@ func TestIssueExecutionHelperSelectionPaths(t *testing.T) {
 	}
 }
 
+func TestLoadIssueTitlesByIdentifierResolvesBatchRefs(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	first, err := store.CreateIssue("", "", "First title", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue first: %v", err)
+	}
+	second, err := store.CreateIssue("", "", "Second title", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue second: %v", err)
+	}
+
+	live := map[string]appserver.Session{
+		first.Identifier: {
+			IssueID:         first.ID,
+			IssueIdentifier: first.Identifier,
+		},
+	}
+	recent := []kanban.ExecutionSessionSnapshot{
+		{
+			IssueID:    second.ID,
+			Identifier: second.Identifier,
+			AppSession: appserver.Session{IssueIdentifier: second.Identifier},
+		},
+	}
+
+	titles := loadIssueTitlesByIdentifier(store, live, recent)
+	if titles[first.Identifier] != first.Title {
+		t.Fatalf("expected live issue title %q, got %#v", first.Title, titles)
+	}
+	if titles[second.Identifier] != second.Title {
+		t.Fatalf("expected persisted issue title %q, got %#v", second.Title, titles)
+	}
+}
+
 func TestDashboardAPIAdditionalSuccessPaths(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
