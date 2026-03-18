@@ -115,6 +115,7 @@ describe('AppShell', () => {
       value: MockAudioContext,
     })
     window.dispatchEvent(new Event('resize'))
+    vi.useRealTimers()
   })
 
   it('renders navigation and reacts to live updates', async () => {
@@ -396,5 +397,98 @@ describe('AppShell', () => {
     await waitFor(() => {
       expect(context.close).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('optimistically hides the interrupt with an exit state while the response is in flight', async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts).mockResolvedValue({
+      count: 1,
+      current: {
+        id: 'interrupt-1',
+        kind: 'approval',
+        issue_identifier: 'ISS-1',
+        issue_title: 'Review migrations',
+        requested_at: '2026-03-16T10:00:00Z',
+        approval: {
+          command: 'gh pr view',
+          decisions: [{ value: 'approved', label: 'Approve once' }],
+        },
+      },
+    })
+
+    let resolveResponse: ((value: { id: string; status: string }) => void) | undefined
+    vi.mocked(api.respondToInterrupt).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveResponse = resolve
+        }),
+    )
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Review migrations')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
+
+    await waitFor(() => {
+      expect(api.respondToInterrupt).toHaveBeenCalledWith('interrupt-1', { decision: 'approved' })
+    })
+    expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'exiting')
+
+    await act(async () => {
+      resolveResponse?.({ id: 'interrupt-1', status: 'ok' })
+    })
+  })
+
+  it('shows the next interrupt after the previous one is replaced', async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.listInterrupts)
+      .mockResolvedValueOnce({
+        count: 1,
+        current: {
+          id: 'interrupt-1',
+          kind: 'approval',
+          issue_identifier: 'ISS-1',
+          issue_title: 'Review migrations',
+          requested_at: '2026-03-16T10:00:00Z',
+          approval: {
+            command: 'gh pr view',
+            decisions: [{ value: 'approved', label: 'Approve once' }],
+          },
+        },
+      })
+      .mockResolvedValue({
+        count: 1,
+        current: {
+          id: 'interrupt-2',
+          kind: 'approval',
+          issue_identifier: 'ISS-2',
+          issue_title: 'Approve deployment',
+          requested_at: '2026-03-16T10:02:00Z',
+          approval: {
+            command: 'deploy production',
+            decisions: [{ value: 'approved', label: 'Approve once' }],
+          },
+        },
+      })
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Review migrations')).toBeInTheDocument()
+    })
+
+    await act(async () => {
+      await invalidateSocket()
+    })
+
+    expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'exiting')
+
+    await waitFor(() => {
+      expect(screen.getByText('Approve deployment')).toBeInTheDocument()
+    })
+    expect(screen.getAllByText('deploy production').length).toBeGreaterThan(0)
   })
 })

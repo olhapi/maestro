@@ -326,7 +326,6 @@ export function AppShell() {
             </div>
           </header>
           <GlobalInterruptPanel
-            key={interrupts.data?.current?.id ?? 'interrupt-panel'}
             count={interrupts.data?.count ?? 0}
             current={interrupts.data?.current}
             hiddenCurrentId={effectiveHiddenInterruptId}
