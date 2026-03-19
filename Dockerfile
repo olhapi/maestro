@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.23.2
+ARG GO_VERSION=1.25.0
 ARG DEBIAN_SUITE=bookworm
 
 FROM golang:${GO_VERSION}-${DEBIAN_SUITE} AS builder
