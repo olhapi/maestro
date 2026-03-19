@@ -311,6 +311,9 @@ func (b *stdioBridge) sendRequest(ctx context.Context, request transport.JSONRPC
 	if err := b.reconnect(ctx, remote, replayMode); err != nil {
 		return nil, err
 	}
+	if !canReplayRequestMethod(request.Method) {
+		return nil, fmt.Errorf("request %q may have been delivered before disconnect; session restored without replay: %w", request.Method, err)
+	}
 	return b.currentRemote().SendRequest(ctx, request)
 }
 
@@ -329,6 +332,9 @@ func (b *stdioBridge) sendNotification(ctx context.Context, notification mcpapi.
 	}
 	if err := b.reconnect(ctx, remote, replayMode); err != nil {
 		return err
+	}
+	if !canReplayNotificationMethod(notification.Method) {
+		return fmt.Errorf("notification %q may have been delivered before disconnect; session restored without replay: %w", notification.Method, err)
 	}
 	return b.currentRemote().SendNotification(ctx, notification)
 }
@@ -355,12 +361,14 @@ func (b *stdioBridge) reconnect(ctx context.Context, failed transport.Bidirectio
 			return fmt.Errorf("timed out waiting for a live Maestro daemon for %s", b.dbPath)
 		}
 
-		entry, err := b.discover(ctx, b.dbPath)
+		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
+		entry, err := b.discover(attemptCtx, b.dbPath)
 		if err == nil {
-			remote, openErr := b.openRemote(ctx, *entry)
+			remote, openErr := b.openRemote(attemptCtx, *entry)
 			if openErr == nil {
-				replayErr := b.replayHandshake(ctx, remote, replayMode)
+				replayErr := b.replayHandshake(attemptCtx, remote, replayMode)
 				if replayErr == nil {
+					cancel()
 					old := b.swapRemote(remote, entry)
 					if old != nil {
 						_ = old.Close()
@@ -375,6 +383,7 @@ func (b *stdioBridge) reconnect(ctx context.Context, failed transport.Bidirectio
 		} else {
 			lastErr = err
 		}
+		cancel()
 
 		timer := time.NewTimer(b.reconnectPollInterval)
 		select {
@@ -576,6 +585,31 @@ func replayModeForMethod(method string) handshakeReplayMode {
 	default:
 		return replayHandshakeFull
 	}
+}
+
+func canReplayRequestMethod(method string) bool {
+	switch method {
+	case string(mcpapi.MethodInitialize),
+		string(mcpapi.MethodPing),
+		string(mcpapi.MethodResourcesList),
+		string(mcpapi.MethodResourcesTemplatesList),
+		string(mcpapi.MethodResourcesRead),
+		string(mcpapi.MethodPromptsList),
+		string(mcpapi.MethodPromptsGet),
+		string(mcpapi.MethodToolsList),
+		string(mcpapi.MethodListRoots),
+		string(mcpapi.MethodTasksGet),
+		string(mcpapi.MethodTasksList),
+		string(mcpapi.MethodTasksResult),
+		string(mcpapi.MethodCompletionComplete):
+		return true
+	default:
+		return false
+	}
+}
+
+func canReplayNotificationMethod(method string) bool {
+	return method == initializedNotificationName
 }
 
 func shouldReconnect(err error) bool {

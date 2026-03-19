@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -351,6 +352,106 @@ func TestBridgeReconnectRetriesInitializedNotification(t *testing.T) {
 	}
 }
 
+func TestBridgeReconnectDoesNotReplayNonIdempotentRequests(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+
+	entryA := DaemonEntry{StoreID: "store-a", DBPath: dbPath, BaseURL: "http://daemon-a/mcp", BearerToken: "token-a"}
+	entryB := DaemonEntry{StoreID: "store-b", DBPath: dbPath, BaseURL: "http://daemon-b/mcp", BearerToken: "token-b"}
+
+	var discoverCalls int
+	remoteB := &fakeBridgeRemote{
+		sendRequestFunc: func(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+			switch request.Method {
+			case string(mcpapi.MethodInitialize):
+				return fakeBridgeResponse(request.ID, `{"protocolVersion":"`+mcpapi.LATEST_PROTOCOL_VERSION+`"}`), nil
+			case "tools/list":
+				return fakeBridgeResponse(request.ID, `{"tools":[{"name":"server_info"}]}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote B request %q", request.Method)
+			}
+		},
+		sendNotificationFunc: func(ctx context.Context, notification mcpapi.JSONRPCNotification) error {
+			if notification.Method != initializedNotificationName {
+				return fmt.Errorf("unexpected remote B notification %q", notification.Method)
+			}
+			return nil
+		},
+	}
+
+	remoteA := &fakeBridgeRemote{
+		sendRequestFunc: func(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+			switch request.Method {
+			case string(mcpapi.MethodInitialize):
+				return fakeBridgeResponse(request.ID, `{"protocolVersion":"`+mcpapi.LATEST_PROTOCOL_VERSION+`"}`), nil
+			case string(mcpapi.MethodToolsCall):
+				return nil, fmt.Errorf("request failed: %w", transport.ErrSessionTerminated)
+			default:
+				return nil, fmt.Errorf("unexpected remote A request %q", request.Method)
+			}
+		},
+		sendNotificationFunc: func(ctx context.Context, notification mcpapi.JSONRPCNotification) error {
+			if notification.Method != initializedNotificationName {
+				return fmt.Errorf("unexpected remote A notification %q", notification.Method)
+			}
+			return nil
+		},
+	}
+
+	bridge := newStdioBridge(dbPath, bytes.NewBuffer(nil), &bytes.Buffer{}, &bytes.Buffer{})
+	bridge.discover = func(ctx context.Context, gotDBPath string) (*DaemonEntry, error) {
+		discoverCalls++
+		if gotDBPath != dbPath {
+			return nil, fmt.Errorf("unexpected db path %q", gotDBPath)
+		}
+		if discoverCalls == 1 {
+			return &entryA, nil
+		}
+		return &entryB, nil
+	}
+	bridge.newRemote = func(entry DaemonEntry) (transport.BidirectionalInterface, error) {
+		switch entry.BaseURL {
+		case entryA.BaseURL:
+			return remoteA, nil
+		case entryB.BaseURL:
+			return remoteB, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote entry %#v", entry)
+		}
+	}
+
+	if err := bridge.connect(ctx); err != nil {
+		t.Fatalf("bridge.connect failed: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	bridge.stdout = &stdout
+	sendBridgeMessage(t, bridge, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+mcpapi.LATEST_PROTOCOL_VERSION+`","clientInfo":{"name":"bridge-test","version":"1.0.0"},"capabilities":{}}}`, &stdout)
+	sendBridgeMessage(t, bridge, `{"method":"notifications/initialized","params":{}}`, &stdout)
+
+	responses := sendBridgeMessage(t, bridge, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"server_info","arguments":{}}}`, &stdout)
+	errPayload, ok := responseByID(t, responses, float64(2))["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tools/call reconnect error, got %#v", responses)
+	}
+	message, _ := errPayload["message"].(string)
+	if !strings.Contains(message, "session restored without replay") {
+		t.Fatalf("expected non-replayed reconnect error, got %q", message)
+	}
+	if remoteA.requestCount(string(mcpapi.MethodToolsCall)) != 1 {
+		t.Fatalf("expected one tools/call attempt on remote A, got %d", remoteA.requestCount(string(mcpapi.MethodToolsCall)))
+	}
+	if remoteB.requestCount(string(mcpapi.MethodToolsCall)) != 0 {
+		t.Fatalf("expected no tools/call replay on remote B, got %d", remoteB.requestCount(string(mcpapi.MethodToolsCall)))
+	}
+
+	responses = sendBridgeMessage(t, bridge, `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`, &stdout)
+	tools := responseByID(t, responses, float64(3))["result"].(map[string]any)["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected tools/list to succeed after reconnect, got %#v", responses)
+	}
+}
+
 func TestBridgeSurvivesDaemonRestartWithoutRestartingBridge(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 
@@ -482,6 +583,86 @@ func TestBridgeReconnectFailsCleanlyWhenDaemonDoesNotReturn(t *testing.T) {
 	message, _ := errPayload["message"].(string)
 	if !bytes.Contains([]byte(message), []byte("no live Maestro daemon found")) {
 		t.Fatalf("expected reconnect failure message, got %q", message)
+	}
+}
+
+func TestBridgeReconnectDiscoveryUsesRemainingDeadline(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+
+	entryA := DaemonEntry{StoreID: "store-a", DBPath: dbPath, BaseURL: "http://daemon-a/mcp", BearerToken: "token-a"}
+
+	var (
+		discoverCalls int
+		discoverCtx   context.Context
+	)
+
+	remoteA := &fakeBridgeRemote{
+		sendRequestFunc: func(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+			switch request.Method {
+			case string(mcpapi.MethodInitialize):
+				return fakeBridgeResponse(request.ID, `{"protocolVersion":"`+mcpapi.LATEST_PROTOCOL_VERSION+`"}`), nil
+			case string(mcpapi.MethodToolsList):
+				return nil, fmt.Errorf("request failed: %w", transport.ErrSessionTerminated)
+			default:
+				return nil, fmt.Errorf("unexpected remote A request %q", request.Method)
+			}
+		},
+		sendNotificationFunc: func(ctx context.Context, notification mcpapi.JSONRPCNotification) error {
+			if notification.Method != initializedNotificationName {
+				return fmt.Errorf("unexpected remote A notification %q", notification.Method)
+			}
+			return nil
+		},
+	}
+
+	bridge := newStdioBridge(dbPath, bytes.NewBuffer(nil), &bytes.Buffer{}, &bytes.Buffer{})
+	bridge.reconnectWindow = 80 * time.Millisecond
+	bridge.reconnectPollInterval = 10 * time.Millisecond
+	bridge.discover = func(ctx context.Context, gotDBPath string) (*DaemonEntry, error) {
+		discoverCalls++
+		if discoverCalls == 1 {
+			return &entryA, nil
+		}
+		discoverCtx = ctx
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	bridge.newRemote = func(entry DaemonEntry) (transport.BidirectionalInterface, error) {
+		return remoteA, nil
+	}
+
+	if err := bridge.connect(ctx); err != nil {
+		t.Fatalf("bridge.connect failed: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	bridge.stdout = &stdout
+	sendBridgeMessage(t, bridge, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+mcpapi.LATEST_PROTOCOL_VERSION+`","clientInfo":{"name":"bridge-test","version":"1.0.0"},"capabilities":{}}}`, &stdout)
+	sendBridgeMessage(t, bridge, `{"method":"notifications/initialized","params":{}}`, &stdout)
+
+	start := time.Now()
+	responses := sendBridgeMessage(t, bridge, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, &stdout)
+	elapsed := time.Since(start)
+	if discoverCtx == nil {
+		t.Fatal("expected reconnect discovery to capture a bounded context")
+	}
+	if deadline, ok := discoverCtx.Deadline(); !ok {
+		t.Fatal("expected reconnect discovery context to have a deadline")
+	} else if remaining := time.Until(deadline); remaining > 120*time.Millisecond {
+		t.Fatalf("expected reconnect discovery deadline to stay within reconnect window, got %s", remaining)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("expected reconnect failure to respect reconnect window, took %s", elapsed)
+	}
+
+	errPayload, ok := responseByID(t, responses, float64(2))["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reconnect timeout error, got %#v", responses)
+	}
+	message, _ := errPayload["message"].(string)
+	if !strings.Contains(message, context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected bounded reconnect error, got %q", message)
 	}
 }
 
