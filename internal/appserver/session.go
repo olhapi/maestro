@@ -73,6 +73,22 @@ func (s *Session) Summary() Session {
 	return cp
 }
 
+func (s *Session) ResetThreadState() {
+	if s == nil {
+		return
+	}
+	maxHistory := s.MaxHistory
+	issueID := s.IssueID
+	issueIdentifier := s.IssueIdentifier
+	appServerPID := s.AppServerPID
+	*s = Session{
+		IssueID:         issueID,
+		IssueIdentifier: issueIdentifier,
+		AppServerPID:    appServerPID,
+		MaxHistory:      maxHistory,
+	}
+}
+
 func SessionFromAny(value interface{}) (Session, bool) {
 	switch session := value.(type) {
 	case Session:

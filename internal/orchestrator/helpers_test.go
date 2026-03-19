@@ -853,6 +853,57 @@ func TestUpdateLiveSessionDoesNotPersistTokenSpendFromSnapshots(t *testing.T) {
 	waitForNoRunning(t, orch, time.Second)
 }
 
+func TestPersistFinalIssueTokenSpendDeduplicatesAcrossLiveThreadSwitches(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Token thread switches", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+		ThreadID:    "thread-a",
+		SessionID:   "thread-a-turn-1",
+		TotalTokens: 10,
+	})
+	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+		ThreadID:    "thread-b",
+		SessionID:   "thread-b-turn-1",
+		TotalTokens: 4,
+	})
+	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+		ThreadID:    "thread-a",
+		SessionID:   "thread-a-turn-2",
+		TotalTokens: 12,
+	})
+	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+		ThreadID:    "thread-b",
+		SessionID:   "thread-b-turn-2",
+		TotalTokens: 7,
+	})
+
+	current, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue before final flush: %v", err)
+	}
+	if current.TotalTokensSpent != 0 {
+		t.Fatalf("TotalTokensSpent before final flush = %d, want 0", current.TotalTokensSpent)
+	}
+
+	orch.persistFinalIssueTokenSpend(issue.ID, &appserver.Session{
+		ThreadID:    "thread-a",
+		SessionID:   "thread-a-turn-2",
+		TotalTokens: 12,
+	})
+
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after final flush: %v", err)
+	}
+	if current.TotalTokensSpent != 19 {
+		t.Fatalf("TotalTokensSpent after final flush = %d, want 19", current.TotalTokensSpent)
+	}
+}
+
 func TestPersistFinalIssueTokenSpendUsesFinalizedRunTotals(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	issue, err := store.CreateIssue("", "", "Token terminal", "", 0, nil)
@@ -885,5 +936,53 @@ func TestPersistFinalIssueTokenSpendUsesFinalizedRunTotals(t *testing.T) {
 	}
 	if current.TotalTokensSpent != 51 {
 		t.Fatalf("TotalTokensSpent after third finalized total = %d, want 51", current.TotalTokensSpent)
+	}
+}
+
+func TestIssueTokenSpendHelpersTrackRunKeysAndResetState(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Token helper state", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if got := issueTokenSpendRunKey(nil); got != "" {
+		t.Fatalf("issueTokenSpendRunKey(nil) = %q, want empty", got)
+	}
+	if got := issueTokenSpendRunKey(&appserver.Session{ThreadID: " thread-a ", SessionID: "session-a"}); got != "thread:thread-a" {
+		t.Fatalf("issueTokenSpendRunKey(thread) = %q, want thread:thread-a", got)
+	}
+	if got := issueTokenSpendRunKey(&appserver.Session{SessionID: " session-b "}); got != "session:session-b" {
+		t.Fatalf("issueTokenSpendRunKey(session) = %q, want session:session-b", got)
+	}
+
+	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{TotalTokens: 2})
+	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{TotalTokens: 7})
+	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{TotalTokens: 5})
+	orch.restoreIssueTokenSpend(issue.ID, 4)
+
+	orch.tokenSpendMu.Lock()
+	state := orch.tokenSpends[issue.ID]
+	orch.tokenSpendMu.Unlock()
+	if state.PendingDelta != 11 {
+		t.Fatalf("PendingDelta = %d, want 11", state.PendingDelta)
+	}
+	if state.LastUnnamedTotal != 7 {
+		t.Fatalf("LastUnnamedTotal = %d, want 7", state.LastUnnamedTotal)
+	}
+	if !state.LastFlushedAt.IsZero() {
+		t.Fatalf("LastFlushedAt = %v, want zero", state.LastFlushedAt)
+	}
+
+	orch.clearIssueTokenSpendState(issue.ID)
+	orch.tokenSpendMu.Lock()
+	_, ok := orch.tokenSpends[issue.ID]
+	orch.tokenSpendMu.Unlock()
+	if ok {
+		t.Fatal("expected clearIssueTokenSpendState to remove the tracked issue")
+	}
+
+	if got := issueTokenSpendRunKey(&appserver.Session{}); got != "" {
+		t.Fatalf("issueTokenSpendRunKey(empty session) = %q, want empty", got)
 	}
 }

@@ -14,7 +14,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -519,6 +521,71 @@ func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for condition")
+}
+
+func testProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return exec.Command("/bin/sh", "-lc", fmt.Sprintf("kill -0 %d", pid)).Run() == nil
+}
+
+func testProcessGroupAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return exec.Command("/bin/sh", "-lc", fmt.Sprintf("kill -0 -- -%d", pid)).Run() == nil
+}
+
+func startLingeringProcessGroup(t *testing.T, childPIDPath string) (*exec.Cmd, int) {
+	t.Helper()
+
+	cmd := exec.Command("/usr/bin/python3", "-c", `
+import os
+import signal
+import subprocess
+import sys
+import time
+
+os.setsid()
+child = subprocess.Popen(["/bin/sh", "-lc", 'trap "" TERM INT; while :; do sleep 1; done'])
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    fh.write(str(child.pid))
+
+def shutdown(*_args):
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
+while True:
+    time.sleep(1)
+`, childPIDPath)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start lingering process group: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = appserver.CleanupLingeringAppServerProcess(cmd.Process.Pid)
+		_ = cmd.Wait()
+	})
+
+	waitForCondition(t, time.Second, func() bool {
+		data, err := os.ReadFile(childPIDPath)
+		return err == nil && strings.TrimSpace(string(data)) != ""
+	})
+	childPIDText, err := os.ReadFile(childPIDPath)
+	if err != nil {
+		t.Fatalf("ReadFile child pid: %v", err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(childPIDText)))
+	if err != nil {
+		t.Fatalf("Atoi child pid: %v", err)
+	}
+	if !testProcessAlive(childPID) || !testProcessGroupAlive(cmd.Process.Pid) {
+		t.Fatalf("expected lingering process group to be alive: leader=%d child=%d", cmd.Process.Pid, childPID)
+	}
+	return cmd, childPID
 }
 
 func waitForRunningCount(t *testing.T, orch *Orchestrator, expected int, timeout time.Duration) {
@@ -1973,6 +2040,25 @@ func TestRunWaitsForActiveRunsDuringShutdown(t *testing.T) {
 	}
 }
 
+func TestSharedOrchestratorInitializesRetiredAppServerTracking(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := kanban.NewStore(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	orch := NewSharedWithExtensions(store, nil, "", "")
+	orch.markAppServerRetired("issue-1")
+	if !orch.appServerRetired("issue-1") {
+		t.Fatal("expected shared orchestrator to track retired app-server issues")
+	}
+	orch.unmarkAppServerRetired("issue-1")
+	if orch.appServerRetired("issue-1") {
+		t.Fatal("expected shared orchestrator to clear retired app-server issues")
+	}
+}
+
 func TestOrphanedGracefulAppServerRunSchedulesImmediateResumeRetry(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	writeAppServerWorkflow(t, manager, workspaceRoot, "cat", "never", 3000, 0)
@@ -2174,6 +2260,58 @@ func TestProcessRetriesResumesOrphanedAppServerRunAndFallsBackToFreshStart(t *te
 	if retry := orch.retries[issue.ID]; retry.ResumeThreadID != "" {
 		orch.mu.RUnlock()
 		t.Fatalf("expected resume hint to be cleared after fallback run, got %+v", retry)
+	}
+	orch.mu.RUnlock()
+}
+
+func TestProcessRetriesFallsBackToFreshStartWhenResumedThreadDisappearsBeforeTurnStart(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/resume"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-resumed"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 3, "error": map[string]interface{}{"code": -32600, "message": "thread not found: thread-resumed"}}}}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-fresh"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-fresh"}}}},
+				{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-fresh", "turn": map[string]interface{}{"id": "turn-fresh"}}}},
+			}, ExitCode: fakeappserver.Int(0)},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 0)
+
+	issue, err := store.CreateIssue("", "", "Turn-start fallback", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.claimed[issue.ID] = struct{}{}
+	orch.retries[issue.ID] = retryEntry{
+		Attempt:        2,
+		Phase:          string(kanban.WorkflowPhaseImplementation),
+		DueAt:          time.Now().UTC(),
+		DelayType:      "failure",
+		Error:          "run_interrupted",
+		ResumeThreadID: "thread-stale",
+	}
+	orch.mu.Unlock()
+
+	orch.processRetries(context.Background())
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	snapshot := waitForExecutionSnapshot(t, store, issue.ID, 3*time.Second)
+	if snapshot.AppSession.ThreadID != "thread-fresh" {
+		t.Fatalf("expected turn/start fallback to persist fresh thread, got %+v", snapshot)
+	}
+	orch.mu.RLock()
+	if retry := orch.retries[issue.ID]; retry.ResumeThreadID != "" {
+		orch.mu.RUnlock()
+		t.Fatalf("expected resume hint to be cleared after fresh-thread recovery, got %+v", retry)
 	}
 	orch.mu.RUnlock()
 }
@@ -2437,6 +2575,166 @@ func TestCompletedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	}
 	if snapshot.AppSession.SessionID != "thread-complete-turn-complete" || snapshot.AppSession.TerminalReason != "turn.completed" {
 		t.Fatalf("unexpected persisted completed session: %+v", snapshot.AppSession)
+	}
+}
+
+func TestCleanupTerminalAppServerProcessKillsLiveSessionProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group cleanup test is Unix-specific")
+	}
+
+	orch, store, _, workspaceRoot := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Terminal cleanup kills live appserver", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	workspacePath := filepath.Join(workspaceRoot, issue.Identifier)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	childPIDPath := filepath.Join(workspaceRoot, issue.Identifier+"-live-child.pid")
+	cmd, childPID := startLingeringProcessGroup(t, childPIDPath)
+
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseComplete),
+		RunKind:    "run_completed",
+		UpdatedAt:  time.Now().UTC(),
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			AppServerPID:    cmd.Process.Pid,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	orch.liveSessions[issue.ID] = &appserver.Session{
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		AppServerPID:    cmd.Process.Pid,
+	}
+
+	orch.cleanupTerminalAppServerProcess(issue)
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return !testProcessGroupAlive(cmd.Process.Pid) && !testProcessAlive(childPID)
+	})
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.AppSession.AppServerPID != 0 {
+		t.Fatalf("expected terminal cleanup to retire app-server pid, got %+v", snapshot.AppSession)
+	}
+}
+
+func TestCleanupTerminalWorkspacesRetiresPersistedPIDWithoutKillingUnknownProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group cleanup test is Unix-specific")
+	}
+
+	orch, store, _, workspaceRoot := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Terminal cleanup retires persisted pid safely", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	workspacePath := filepath.Join(workspaceRoot, issue.Identifier)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	childPIDPath := filepath.Join(workspaceRoot, issue.Identifier+"-persisted-child.pid")
+	cmd, childPID := startLingeringProcessGroup(t, childPIDPath)
+
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		Phase:          string(kanban.WorkflowPhaseComplete),
+		RunKind:        "run_started",
+		ResumeEligible: true,
+		StopReason:     gracefulShutdownStopReason,
+		UpdatedAt:      time.Now().UTC(),
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			AppServerPID:    cmd.Process.Pid,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	orch.cleanupTerminalWorkspaces(context.Background())
+
+	if !testProcessGroupAlive(cmd.Process.Pid) || !testProcessAlive(childPID) {
+		t.Fatalf("expected persisted-only cleanup to avoid signaling unknown processes: leader=%d child=%d", cmd.Process.Pid, childPID)
+	}
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.ResumeEligible || snapshot.AppSession.AppServerPID != 0 {
+		t.Fatalf("expected terminal cleanup to retire graceful-shutdown metadata, got %+v", snapshot)
+	}
+	if _, err := store.GetWorkspace(issue.ID); err == nil {
+		t.Fatal("expected terminal workspace cleanup to delete the workspace")
+	}
+}
+
+func TestCleanupTerminalAppServerProcessKeepsPidRetiredAcrossLaterPersistence(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Terminal cleanup retires pid across late persistence", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		Phase:          string(kanban.WorkflowPhaseComplete),
+		RunKind:        "run_completed",
+		ResumeEligible: true,
+		UpdatedAt:      time.Now().UTC(),
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			ThreadID:        "thread-terminal",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	orch.cleanupTerminalAppServerProcess(issue)
+
+	orch.persistExecutionSession(issue, kanban.WorkflowPhaseComplete, 1, "run_completed", "", false, "", &appserver.Session{
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		ThreadID:        "thread-terminal",
+		AppServerPID:    4242,
+	})
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.AppSession.AppServerPID != 0 {
+		t.Fatalf("expected retired app-server pid to remain cleared, got %+v", snapshot.AppSession)
 	}
 }
 

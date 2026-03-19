@@ -150,6 +150,7 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 
 	cmd := exec.CommandContext(ctx, cfg.Executable, args...)
 	cmd.Dir = cfg.Workspace
+	configureManagedProcess(cmd)
 	if len(cfg.Env) > 0 {
 		cmd.Env = cfg.Env
 	} else {
@@ -271,16 +272,16 @@ func (c *Client) Close() error {
 			_ = c.stdin.Close()
 		}
 		if c.cmd != nil && c.cmd.Process != nil {
+			pid := c.cmd.Process.Pid
+			if err := terminateManagedProcessTree(pid, managedProcessTerminateWait, managedProcessKillWait); err != nil {
+				closeErr = err
+			}
 			select {
 			case err := <-c.waitCh:
-				closeErr = err
-			case <-time.After(100 * time.Millisecond):
-				_ = c.cmd.Process.Kill()
-				select {
-				case err := <-c.waitCh:
+				if closeErr == nil {
 					closeErr = err
-				case <-time.After(500 * time.Millisecond):
 				}
+			case <-time.After(managedProcessKillWait):
 			}
 		}
 	})
@@ -344,53 +345,104 @@ func (c *Client) RunTurnWithInputs(ctx context.Context, input []gen.UserInputEle
 }
 
 func (c *Client) RunTurnWithInputsAndStartCallback(ctx context.Context, input []gen.UserInputElement, title string, onStarted func(*Session)) error {
-	if err := c.ensureThreadForTurn(ctx); err != nil {
-		return err
-	}
-	requestID := c.nextRequestID()
-	approvalPolicy, _, turnSandboxPolicy := c.permissionConfig()
-	req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, input, filepath.Clean(c.cfg.Workspace), approvalPolicy, turnSandboxPolicy)
-	if err != nil {
-		return err
-	}
-	if err := c.sendMessage(req); err != nil {
-		return err
-	}
-	resp, err := c.awaitResponse(ctx, requestID)
-	if err != nil {
-		return err
-	}
-	var result gen.TurnStartResponse
-	if err := resp.UnmarshalResult(&result); err != nil {
-		return fmt.Errorf("decode turn/start response: %w", err)
-	}
-	turnID := strings.TrimSpace(result.Turn.ID)
-	if turnID == "" {
-		return fmt.Errorf("invalid turn/start response: missing turn.id")
-	}
-	if !c.hasTurnStarted(turnID) {
-		c.applyEvent(Event{Type: "turn.started", ThreadID: c.session.ThreadID, TurnID: turnID})
-		c.emitActivityEvent(ActivityEvent{
-			Type:     "turn.started",
-			ThreadID: c.session.ThreadID,
-			TurnID:   turnID,
+	retriedMissingThread := false
+	for {
+		if err := c.ensureThreadForTurn(ctx); err != nil {
+			return err
+		}
+		requestID := c.nextRequestID()
+		approvalPolicy, _, turnSandboxPolicy := c.permissionConfig()
+		req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, input, filepath.Clean(c.cfg.Workspace), approvalPolicy, turnSandboxPolicy)
+		if err != nil {
+			return err
+		}
+		if err := c.sendMessage(req); err != nil {
+			return err
+		}
+		resp, err := c.awaitResponse(ctx, requestID)
+		if err != nil {
+			if !retriedMissingThread && c.shouldRestartTurnWithFreshThread(err) {
+				retriedMissingThread = true
+				if restartErr := c.restartTurnThread(ctx); restartErr == nil {
+					continue
+				}
+			}
+			return err
+		}
+		var result gen.TurnStartResponse
+		if err := resp.UnmarshalResult(&result); err != nil {
+			return fmt.Errorf("decode turn/start response: %w", err)
+		}
+		turnID := strings.TrimSpace(result.Turn.ID)
+		if turnID == "" {
+			return fmt.Errorf("invalid turn/start response: missing turn.id")
+		}
+		if !c.hasTurnStarted(turnID) {
+			c.applyEvent(Event{Type: "turn.started", ThreadID: c.session.ThreadID, TurnID: turnID})
+			c.emitActivityEvent(ActivityEvent{
+				Type:     "turn.started",
+				ThreadID: c.session.ThreadID,
+				TurnID:   turnID,
+			})
+		}
+		c.logger.Info("Codex turn started",
+			"session_id", c.session.SessionID,
+			"thread_id", c.session.ThreadID,
+			"turn_id", turnID,
+			"title", title,
+		)
+		c.emitMessage("session_started", map[string]interface{}{
+			"session_id": c.session.SessionID,
+			"thread_id":  c.session.ThreadID,
+			"turn_id":    turnID,
 		})
+		if onStarted != nil {
+			onStarted(c.Session())
+		}
+		return c.awaitTurnCompletion(ctx)
 	}
-	c.logger.Info("Codex turn started",
-		"session_id", c.session.SessionID,
-		"thread_id", c.session.ThreadID,
-		"turn_id", turnID,
-		"title", title,
+}
+
+func (c *Client) shouldRestartTurnWithFreshThread(err error) bool {
+	if strings.TrimSpace(c.session.ThreadID) == "" {
+		return false
+	}
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != "response_error" {
+		return false
+	}
+	if runErr.Payload != nil {
+		if raw, ok := runErr.Payload["error"].(map[string]interface{}); ok {
+			if message, _ := raw["message"].(string); strings.Contains(strings.ToLower(strings.TrimSpace(message)), "thread not found") {
+				return true
+			}
+		}
+	}
+	return strings.Contains(strings.ToLower(runErr.Error()), "thread not found")
+}
+
+func (c *Client) restartTurnThread(ctx context.Context) error {
+	staleThreadID := strings.TrimSpace(c.session.ThreadID)
+	if staleThreadID == "" {
+		return fmt.Errorf("missing active thread")
+	}
+	c.logger.Warn("Codex turn thread missing; restarting with a fresh thread",
+		"thread_id", staleThreadID,
+		"source", strings.TrimSpace(c.cfg.ResumeSource),
 	)
-	c.emitMessage("session_started", map[string]interface{}{
-		"session_id": c.session.SessionID,
-		"thread_id":  c.session.ThreadID,
-		"turn_id":    turnID,
-	})
-	if onStarted != nil {
-		onStarted(c.Session())
+	c.clearActiveThread()
+	return c.ensureThreadForTurn(ctx)
+}
+
+func (c *Client) clearActiveThread() {
+	if c.session != nil {
+		c.session.ResetThreadState()
 	}
-	return c.awaitTurnCompletion(ctx)
+	c.threadResumed = false
+
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	c.activeThreadSandbox = ""
 }
 
 func (c *Client) initialize(ctx context.Context) error {
