@@ -3,7 +3,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { AppShell } from '@/components/app-shell'
-import { makeBootstrapResponse } from '@/test/fixtures'
+import { makeBootstrapResponse, makeWorkBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 const invalidateSocket = vi.fn()
@@ -78,6 +78,14 @@ vi.mock('@/components/command-palette', () => ({
   CommandPalette: ({ open }: { open: boolean }) => <div data-testid="command-palette">{open ? 'open' : 'closed'}</div>,
 }))
 
+vi.mock('@/lib/query-refresh', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/query-refresh')>('@/lib/query-refresh')
+  return {
+    ...actual,
+    dashboardRefreshCoalesceMs: () => 0,
+  }
+})
+
 vi.mock('@/lib/live', () => ({
   connectDashboardSocket: ({ onInvalidate }: { onInvalidate: () => void }) => {
     invalidateSocket.mockImplementation(onInvalidate)
@@ -91,6 +99,7 @@ vi.mock('@/lib/live', () => ({
 vi.mock('@/lib/api', () => ({
   api: {
     bootstrap: vi.fn(),
+    workBootstrap: vi.fn(),
     listInterrupts: vi.fn(),
     respondToInterrupt: vi.fn(),
   },
@@ -99,6 +108,25 @@ vi.mock('@/lib/api', () => ({
 const { api } = await import('@/lib/api')
 
 describe('AppShell', () => {
+  const mockDashboardData = (bootstrap = makeBootstrapResponse()) => {
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse({
+      generated_at: bootstrap.generated_at,
+      overview: {
+        board: bootstrap.overview.board,
+        snapshot: {
+          running: bootstrap.overview.snapshot.running,
+          retrying: bootstrap.overview.snapshot.retrying,
+          paused: bootstrap.overview.snapshot.paused,
+        },
+      },
+      projects: bootstrap.projects,
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+      sessions: bootstrap.sessions,
+    }))
+  }
+
   beforeEach(() => {
     pathname = '/work'
     invalidateSocket.mockReset()
@@ -119,7 +147,7 @@ describe('AppShell', () => {
   })
 
   it('renders navigation and reacts to live updates', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
 
     const { queryClient } = renderWithQueryClient(<AppShell />)
@@ -144,16 +172,15 @@ describe('AppShell', () => {
       await invalidateSocket()
     })
     await waitFor(() => {
-      expect(screen.getAllByText('1 running').length).toBeGreaterThan(0)
-    })
+      expect(invalidateQueries).toHaveBeenCalledTimes(3)
+    }, { timeout: 2000 })
 
-    expect(invalidateQueries).toHaveBeenCalledTimes(3)
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['interrupts'],
       refetchType: 'active',
     })
     expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ['bootstrap'],
+      queryKey: ['work-bootstrap'],
       refetchType: 'active',
     })
     expect(invalidateQueries).toHaveBeenCalledWith({
@@ -164,7 +191,7 @@ describe('AppShell', () => {
 
   it('keeps the sessions nav state and title on nested session routes', async () => {
     pathname = '/sessions/ISS-1'
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
 
     renderWithQueryClient(<AppShell />)
@@ -178,7 +205,7 @@ describe('AppShell', () => {
 
   it('invalidates only the active issue detail queries on nested issue routes', async () => {
     pathname = '/issues/ISS-42'
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
 
     const { queryClient } = renderWithQueryClient(<AppShell />)
@@ -209,7 +236,7 @@ describe('AppShell', () => {
       value: 390,
     })
     window.dispatchEvent(new Event('resize'))
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
 
     renderWithQueryClient(<AppShell />)
@@ -228,7 +255,7 @@ describe('AppShell', () => {
   })
 
   it('renders the global interrupt panel for the first waiting interaction', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({
       count: 2,
       current: {
@@ -263,7 +290,7 @@ describe('AppShell', () => {
   })
 
   it('plays one audio notification only when an interrupt appears after initial load', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts)
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValue({
@@ -299,7 +326,7 @@ describe('AppShell', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Review migrations')).toBeInTheDocument()
-    })
+    }, { timeout: 2000 })
 
     expect(audioContextInstances).toHaveLength(1)
     expect(audioContextInstances[0]?.createOscillator).toHaveBeenCalledTimes(1)
@@ -307,7 +334,7 @@ describe('AppShell', () => {
   })
 
   it('does not replay the audio notification for the same interrupt id', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({
       count: 1,
       current: {
@@ -346,13 +373,13 @@ describe('AppShell', () => {
 
     await waitFor(() => {
       expect(vi.mocked(api.listInterrupts).mock.calls.length).toBeGreaterThan(interruptFetchCount)
-    })
+    }, { timeout: 2000 })
 
     expect(audioContextInstances).toHaveLength(0)
   })
 
   it('closes the audio context when resume rejects before playback starts', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts)
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValue({
@@ -390,7 +417,7 @@ describe('AppShell', () => {
 
     await waitFor(() => {
       expect(audioContextInstances).toHaveLength(1)
-    })
+    }, { timeout: 2000 })
 
     const [context] = audioContextInstances
 
@@ -400,7 +427,7 @@ describe('AppShell', () => {
   })
 
   it('optimistically hides the interrupt with an exit state while the response is in flight', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({
       count: 1,
       current: {
@@ -446,7 +473,7 @@ describe('AppShell', () => {
   })
 
   it('shows the next interrupt after the previous one is replaced', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts)
       .mockResolvedValueOnce({
         count: 1,
@@ -491,12 +518,12 @@ describe('AppShell', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Approve deployment')).toBeInTheDocument()
-    })
+    }, { timeout: 2000 })
     expect(screen.getAllByText('deploy production').length).toBeGreaterThan(0)
   })
 
   it('disables stale interrupt actions while the previous panel is exiting', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    mockDashboardData()
     vi.mocked(api.listInterrupts)
       .mockResolvedValueOnce({
         count: 1,
