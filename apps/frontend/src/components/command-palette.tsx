@@ -30,7 +30,11 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const navigate = useNavigate()
   const { location } = useRouterState()
   const queryClient = useQueryClient()
-  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const useWorkBootstrap = (location.pathname || appRoutes.overview) === appRoutes.work
+  const bootstrap = useQuery({
+    queryKey: useWorkBootstrap ? ['work-bootstrap'] : ['bootstrap'],
+    queryFn: useWorkBootstrap ? api.workBootstrap : api.bootstrap,
+  })
   const inputRef = useRef<HTMLInputElement>(null)
   const recentIssues = useMemo(() => bootstrap.data?.issues.items.slice(0, 8) ?? [], [bootstrap.data?.issues.items])
 

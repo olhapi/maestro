@@ -562,6 +562,22 @@ func forceRetryDue(t *testing.T, orch *Orchestrator, issueID string) {
 	orch.retries[issueID] = entry
 }
 
+func waitForRetryEntry(t *testing.T, orch *Orchestrator, issueID string, timeout time.Duration) retryEntry {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		orch.mu.RLock()
+		entry, ok := orch.retries[issueID]
+		orch.mu.RUnlock()
+		if ok {
+			return entry
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for retry entry for %s", issueID)
+	return retryEntry{}
+}
+
 func waitForIssuePauseReason(t *testing.T, store *kanban.Store, issueID, reason string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -721,14 +737,7 @@ func TestFailureRetryScheduling(t *testing.T) {
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
-
-	orch.mu.RLock()
-	retry, ok := orch.retries[issue.ID]
-	orch.mu.RUnlock()
-	if !ok {
-		t.Fatal("expected retry entry")
-	}
+	retry := waitForRetryEntry(t, orch, issue.ID, time.Second)
 	if retry.Attempt != 1 {
 		t.Fatalf("expected retry attempt 1, got %d", retry.Attempt)
 	}
@@ -833,14 +842,7 @@ func TestContinuationRetryAfterSuccess(t *testing.T) {
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
-
-	orch.mu.RLock()
-	retry, ok := orch.retries[issue.ID]
-	orch.mu.RUnlock()
-	if !ok {
-		t.Fatal("expected continuation retry entry")
-	}
+	retry := waitForRetryEntry(t, orch, issue.ID, time.Second)
 	if retry.DelayType != "continuation" {
 		t.Fatalf("expected continuation retry, got %s", retry.DelayType)
 	}

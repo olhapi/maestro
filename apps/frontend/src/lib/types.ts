@@ -395,6 +395,30 @@ export interface SessionsResponse {
   entries: SessionFeedEntry[];
 }
 
+export interface DashboardRuntimeSource {
+  overview: {
+    snapshot: Pick<Snapshot, "retrying" | "paused">;
+  };
+  sessions: SessionsResponse;
+}
+
+export interface DashboardWorkSource extends DashboardRuntimeSource {
+  generated_at: string;
+  overview: {
+    board: IssueStateCounts;
+    snapshot: Pick<Snapshot, "running" | "retrying" | "paused">;
+  };
+  projects: ProjectSummary[];
+  epics: EpicSummary[];
+  issues: {
+    items: IssueSummary[];
+    total: number;
+    limit: number;
+    offset: number;
+  };
+  sessions: SessionsResponse;
+}
+
 export interface ActivityEntry {
   id: string;
   kind: "agent" | "command" | "status" | "secondary";
@@ -475,3 +499,7 @@ export interface BootstrapResponse {
   };
   sessions: SessionsResponse;
 }
+
+export type WorkBootstrapResponse = DashboardWorkSource;
+
+export type DashboardIssueLookupSource = DashboardWorkSource;

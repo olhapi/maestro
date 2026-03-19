@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { CommandPalette } from '@/components/command-palette'
-import { makeBootstrapResponse } from '@/test/fixtures'
+import { makeWorkBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 const navigate = vi.fn()
@@ -22,6 +22,7 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/lib/api', () => ({
   api: {
     bootstrap: vi.fn(),
+    workBootstrap: vi.fn(),
   },
 }))
 
@@ -42,7 +43,7 @@ describe('CommandPalette', () => {
   })
 
   it('focuses the search input when the palette opens', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse())
 
     const onOpenChange = vi.fn()
     renderWithQueryClient(<CommandPalette open={true} onOpenChange={onOpenChange} />)
@@ -55,7 +56,7 @@ describe('CommandPalette', () => {
   })
 
   it('refreshes only the visible route data from the action list', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse())
 
     const onOpenChange = vi.fn()
     const { queryClient } = renderWithQueryClient(<CommandPalette open={true} onOpenChange={onOpenChange} />)
@@ -68,7 +69,7 @@ describe('CommandPalette', () => {
     })
     expect(invalidateQueries).toHaveBeenCalledTimes(2)
     expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ['bootstrap'],
+      queryKey: ['work-bootstrap'],
       refetchType: 'active',
     })
     expect(invalidateQueries).toHaveBeenCalledWith({

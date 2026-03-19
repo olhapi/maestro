@@ -301,7 +301,7 @@ export function EpicDialog({
           <div className="grid gap-4">
             <Field label="Project">
               {({ labelId }) => (
-                <Select value={projectID || undefined} onValueChange={setProjectID}>
+                <Select value={projectID} onValueChange={setProjectID}>
                   <SelectTrigger aria-labelledby={labelId}>
                     <SelectValue placeholder="Select project" />
                   </SelectTrigger>
@@ -544,7 +544,7 @@ export function IssueDialog({
             <Field label="Project">
               {({ labelId }) => (
                 <Select
-                  value={projectID || undefined}
+                  value={projectID}
                   onValueChange={(nextProjectID) => {
                     setProjectID(nextProjectID);
                     if (nextProjectID !== projectID) {

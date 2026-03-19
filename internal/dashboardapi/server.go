@@ -148,6 +148,7 @@ func isInlineRenderableContentType(contentType string) bool {
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/webhooks", s.handleWebhook)
 	mux.HandleFunc("/api/v1/app/bootstrap", s.handleBootstrap)
+	mux.HandleFunc("/api/v1/app/work", s.handleWork)
 	mux.HandleFunc("/api/v1/app/projects", s.handleProjects)
 	mux.HandleFunc("/api/v1/app/projects/", s.handleProject)
 	mux.HandleFunc("/api/v1/app/epics", s.handleEpics)
@@ -218,6 +219,63 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			"issue_count":   total,
 			"series":        series,
 			"recent_events": runtimeEvents,
+		},
+		"projects": projects,
+		"epics":    epics,
+		"issues": map[string]interface{}{
+			"items":  issues,
+			"total":  total,
+			"limit":  100,
+			"offset": 0,
+		},
+		"sessions": s.provider.LiveSessions(),
+	})
+}
+
+func (s *Server) handleWork(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	status := s.provider.Status()
+	scopedRepoPath := scopedRepoPathFromStatus(status)
+	projects, err := s.service.ListProjectSummaries()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	projects = decorateProjectSummaries(projects, scopedRepoPath)
+	epics, err := s.service.ListEpicSummaries("")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
+		Limit:  100,
+		Offset: 0,
+		Sort:   "updated_desc",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	snapshot := s.provider.Snapshot()
+	board := kanban.IssueStateCounts{}
+	for _, issue := range issues {
+		board.Add(issue.State)
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"overview": map[string]interface{}{
+			"snapshot": map[string]interface{}{
+				"running":  snapshot.Running,
+				"retrying": snapshot.Retrying,
+				"paused":   snapshot.Paused,
+			},
+			"board": board,
 		},
 		"projects": projects,
 		"epics":    epics,

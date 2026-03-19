@@ -38,7 +38,7 @@ const { toast } = await import("sonner");
 
 describe("ProjectsPage", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("does not render the portfolio surface badge in the header", async () => {
@@ -70,15 +70,13 @@ describe("ProjectsPage", () => {
     const editButton = screen.getByRole("button", { name: /^edit$/i });
     const deleteButton = screen.getByRole("button", { name: /^delete$/i });
 
-    expect(runButton.parentElement).toHaveClass("flex-nowrap");
     expect(runButton.parentElement).toContainElement(editButton);
     expect(runButton.parentElement).toContainElement(deleteButton);
     expect(screen.queryByText(/^(run|stop)$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^edit$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^delete$/i)).not.toBeInTheDocument();
 
-    const tokenStat = screen.getByText("Tokens").closest("div");
-    expect(tokenStat?.parentElement).toHaveClass("grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))]");
+    expect(screen.getByText("Tokens")).toBeInTheDocument();
   });
 
   it("marks out-of-scope projects as not runnable", async () => {

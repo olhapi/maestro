@@ -2,6 +2,12 @@ import type { QueryClient } from '@tanstack/react-query'
 
 import { appRoutes } from '@/lib/routes'
 
+export const workDashboardRefreshCoalesceMs = 750
+
+export function dashboardRefreshCoalesceMs(pathname: string) {
+  return pathname === appRoutes.work ? workDashboardRefreshCoalesceMs : 0
+}
+
 function pathnameParam(pathname: string, prefix: string) {
   const suffix = pathname.slice(prefix.length)
   return suffix.split('/')[0] ?? ''
@@ -9,7 +15,7 @@ function pathnameParam(pathname: string, prefix: string) {
 
 function queryKeysForPath(pathname: string) {
   if (pathname === appRoutes.work) {
-    return [['bootstrap'], ['issues']] as const
+    return [['work-bootstrap'], ['issues']] as const
   }
 
   if (pathname === appRoutes.projects) {

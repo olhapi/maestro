@@ -68,7 +68,7 @@ export function WorkPage() {
   const [issuePendingDelete, setIssuePendingDelete] = useState<IssueSummary | null>(null);
 
   const issuesKey = ["issues", deferredSearch, projectID, state, issueType, sort] as const;
-  const bootstrap = useQuery({ queryKey: ["bootstrap"], queryFn: api.bootstrap });
+  const bootstrap = useQuery({ queryKey: ["work-bootstrap"], queryFn: api.workBootstrap });
   const issues = useQuery({
     queryKey: issuesKey,
     queryFn: () => api.listIssues({ search: deferredSearch, project_id: projectID, state, issue_type: issueType, sort, limit: 200 }),
@@ -81,7 +81,7 @@ export function WorkPage() {
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["issues"] }),
-      queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+      queryClient.invalidateQueries({ queryKey: ["work-bootstrap"] }),
     ]);
   };
 

@@ -59,7 +59,7 @@ phases:
       Project context:
       {{ project.description }}
       {% endif %}
-      Create a short video preview or walkthrough of the finished result whenever it can be demonstrated locally, then attach it to an issue comment for reviewers when the available tracker/provider tooling supports comments and attachments. If that preview is blocked by missing tooling or a non-demoable change, report the blocker clearly and fall back to deterministic validation. Commit all changes to the feature branch, push it and create a PR with a description of changes and all implementation choices that took place.
+      Commit all changes to the feature branch, then merge it to main. Resolve conflicts if needed, then merge.
 
 # Agent runtime settings.
 agent:
@@ -74,7 +74,7 @@ agent:
   # Agent transport. Other options: app_server, stdio.
   mode: app_server
   # Scheduling behavior. Other options: parallel, per_project_serial.
-  dispatch_mode: parallel
+  dispatch_mode: per_project_serial
 
 # Codex CLI launch and collaboration settings.
 codex:

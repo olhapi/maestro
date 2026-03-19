@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=./lib/npm_safe_env.sh
+. "$ROOT_DIR/scripts/lib/npm_safe_env.sh"
 ROOT_PACKAGE_TEMPLATE="$ROOT_DIR/packaging/npm/root.package.json.tmpl"
 ROOT_PACKAGE_SOURCE_DIR="$ROOT_DIR/packaging/npm/root"
 FRONTEND_APP_DIR="$ROOT_DIR/apps/frontend"
@@ -169,7 +171,7 @@ pack_package_dir() {
   local pack_output
   pack_output="$(
     cd "$package_dir"
-    npm pack --pack-destination "$PACK_DIR" --json
+    run_clean_npm pack --pack-destination "$PACK_DIR" --json
   )"
   node -e 'const data = JSON.parse(process.argv[1]); process.stdout.write(data[0].filename);' "$pack_output"
 }

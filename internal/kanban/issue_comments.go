@@ -388,7 +388,11 @@ func (s *Store) listIssueCommentsFlat(issueID string) ([]IssueComment, error) {
 		return nil, err
 	}
 	for i := range comments {
-		comments[i].Attachments = attachments[comments[i].ID]
+		commentAttachments := attachments[comments[i].ID]
+		if commentAttachments == nil {
+			commentAttachments = []IssueCommentAttachment{}
+		}
+		comments[i].Attachments = commentAttachments
 	}
 	return comments, nil
 }
@@ -411,7 +415,12 @@ func (s *Store) getIssueCommentFlat(issueID, commentID string) (*IssueComment, e
 	if err != nil {
 		return nil, err
 	}
-	comment.Attachments = attachments[comment.ID]
+	commentAttachments := attachments[comment.ID]
+	if commentAttachments == nil {
+		commentAttachments = []IssueCommentAttachment{}
+	}
+	comment.Attachments = commentAttachments
+	comment.Replies = []IssueComment{}
 	return comment, nil
 }
 
@@ -722,7 +731,7 @@ func scanIssueCommentAttachment(scanner interface {
 
 func nestIssueComments(flat []IssueComment) []IssueComment {
 	if len(flat) == 0 {
-		return nil
+		return []IssueComment{}
 	}
 	exists := make(map[string]struct{}, len(flat))
 	for _, comment := range flat {

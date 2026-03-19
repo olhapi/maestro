@@ -134,6 +134,14 @@ function IssueAssetLink({
   );
 }
 
+function normalizeIssueComment(comment: IssueComment): IssueComment {
+  return {
+    ...comment,
+    attachments: Array.isArray(comment.attachments) ? comment.attachments : [],
+    replies: Array.isArray(comment.replies) ? comment.replies.map(normalizeIssueComment) : [],
+  };
+}
+
 function CommentComposer({
   submitLabel,
   pendingLabel,
@@ -247,6 +255,7 @@ function IssueCommentEntry({
   onCancelReply: () => void;
   onSaveReply: (parentCommentID: string, body: string, files: File[]) => Promise<void>;
 }) {
+  const normalizedComment = normalizeIssueComment(comment);
   const isEditing = editingCommentID === comment.id;
   const isReplying = replyParentID === comment.id;
   const [removeAttachmentIDs, setRemoveAttachmentIDs] = useState<string[]>([]);
@@ -254,39 +263,39 @@ function IssueCommentEntry({
   return (
     <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge className="border-white/10 bg-white/5 text-white">{comment.author?.name || "Unknown"}</Badge>
-        <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(comment.created_at)}</span>
+        <Badge className="border-white/10 bg-white/5 text-white">{normalizedComment.author?.name || "Unknown"}</Badge>
+        <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(normalizedComment.created_at)}</span>
         {level > 0 ? <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">Reply</Badge> : null}
       </div>
       {!isEditing ? (
         <>
           <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
-            {comment.deleted_at ? "[deleted]" : comment.body || "No text"}
+            {normalizedComment.deleted_at ? "[deleted]" : normalizedComment.body || "No text"}
           </p>
-          {comment.attachments.length > 0 ? (
+          {normalizedComment.attachments.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {comment.attachments.map((attachment) => (
+              {normalizedComment.attachments.map((attachment) => (
                 <IssueCommentAttachmentLink
                   key={attachment.id}
                   identifier={identifier}
-                  commentID={comment.id}
+                  commentID={normalizedComment.id}
                   attachment={attachment}
                 />
               ))}
             </div>
           ) : null}
-          {!comment.deleted_at ? (
+          {!normalizedComment.deleted_at ? (
             <div className="flex flex-wrap gap-2">
               {level === 0 ? (
-                <Button size="sm" type="button" variant="secondary" onClick={() => onStartReply(comment.id)}>
+                <Button size="sm" type="button" variant="secondary" onClick={() => onStartReply(normalizedComment.id)}>
                   Reply
                 </Button>
               ) : null}
-              <Button size="sm" type="button" variant="secondary" onClick={() => onStartEdit(comment)}>
+              <Button size="sm" type="button" variant="secondary" onClick={() => onStartEdit(normalizedComment)}>
                 <Pencil className="size-4" />
                 Edit
               </Button>
-              <Button size="sm" type="button" variant="destructive" onClick={() => void onDelete(comment.id)}>
+              <Button size="sm" type="button" variant="destructive" onClick={() => void onDelete(normalizedComment.id)}>
                 <Trash2 className="size-4" />
                 Delete
               </Button>
@@ -296,19 +305,19 @@ function IssueCommentEntry({
       ) : (
         <div className="grid gap-3">
           <CommentComposer
-            initialBody={comment.body || ""}
+            initialBody={normalizedComment.body || ""}
             isPending={updatePending}
             pendingLabel="Saving..."
             placeholder="Update the comment"
             submitLabel="Save"
             onSubmit={async (body, files) => {
-              await onSaveEdit(comment.id, body, files, removeAttachmentIDs);
+              await onSaveEdit(normalizedComment.id, body, files, removeAttachmentIDs);
               setRemoveAttachmentIDs([]);
             }}
           />
-          {comment.attachments.length > 0 ? (
+          {normalizedComment.attachments.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {comment.attachments.map((attachment) => {
+              {normalizedComment.attachments.map((attachment) => {
                 const removed = removeAttachmentIDs.includes(attachment.id);
                 return (
                   <Button
@@ -352,7 +361,7 @@ function IssueCommentEntry({
           placeholder="Write a reply"
           submitLabel="Reply"
           onSubmit={async (body, files) => {
-            await onSaveReply(comment.id, body, files);
+            await onSaveReply(normalizedComment.id, body, files);
           }}
         />
       ) : null}
@@ -363,9 +372,9 @@ function IssueCommentEntry({
           </Button>
         </div>
       ) : null}
-      {comment.replies.length > 0 ? (
+      {normalizedComment.replies.length > 0 ? (
         <div className="grid gap-3 border-l border-white/10 pl-4">
-          {comment.replies.map((reply) => (
+          {normalizedComment.replies.map((reply) => (
             <IssueCommentEntry
               key={reply.id}
               identifier={identifier}
@@ -606,7 +615,7 @@ export function IssueDetailPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
-  const commentItems = comments.data?.items ?? [];
+  const commentItems = (comments.data?.items ?? []).map(normalizeIssueComment);
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state]);
   const selectedAsset = issue.data.assets.find((asset) => asset.id === selectedAssetID) ?? null;
   const previewAsset = selectedAsset && isIssueAssetImage(selectedAsset.content_type) ? selectedAsset : null;

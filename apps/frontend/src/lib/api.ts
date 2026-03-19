@@ -15,6 +15,7 @@ import type {
   RuntimeEvent,
   RuntimeSeriesPoint,
   SessionsResponse,
+  WorkBootstrapResponse,
 } from "@/lib/types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -65,6 +66,7 @@ export interface ProjectInput {
 
 export const api = {
   bootstrap: () => request<BootstrapResponse>("/api/v1/app/bootstrap"),
+  workBootstrap: () => request<WorkBootstrapResponse>("/api/v1/app/work"),
   listProjects: () =>
     request<{ items: ProjectSummary[] }>("/api/v1/app/projects"),
   getProject: (id: string) =>

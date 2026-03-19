@@ -7,11 +7,10 @@ import TableOfContents from "../components/TableOfContents.astro";
 import BaseLayout from "./BaseLayout.astro";
 import { getDocHref, groupDocs } from "../lib/docs";
 
-const { title, description, path, sectionTitle, headings = [], currentHref } = Astro.props as {
+const { title, description, path, headings = [], currentHref } = Astro.props as {
   title: string;
   description: string;
   path: string;
-  sectionTitle: string;
   headings?: MarkdownHeading[];
   currentHref: string;
 };

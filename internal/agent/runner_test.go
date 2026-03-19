@@ -1069,7 +1069,7 @@ done
 		errCh <- err
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForTurnStartCount(t, traceFile, 1)
 	if _, err := store.CreateIssueAgentCommand(issue.ID, "Handle the missed merge step.", kanban.IssueAgentCommandPending); err != nil {
 		t.Fatal(err)
 	}

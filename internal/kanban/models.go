@@ -313,8 +313,8 @@ type IssueComment struct {
 	CreatedAt          time.Time                `json:"created_at"`
 	UpdatedAt          time.Time                `json:"updated_at"`
 	DeletedAt          *time.Time               `json:"deleted_at,omitempty"`
-	Attachments        []IssueCommentAttachment `json:"attachments,omitempty"`
-	Replies            []IssueComment           `json:"replies,omitempty"`
+	Attachments        []IssueCommentAttachment `json:"attachments"`
+	Replies            []IssueComment           `json:"replies"`
 }
 
 type IssueCommentAttachmentInput struct {

@@ -16,9 +16,13 @@ function lazyPage<T extends Record<string, ComponentType>>(loader: () => Promise
     const pathname = useRouterState({
       select: (state) => state.location.pathname,
     })
+    const componentVersion = `${pathname}:${retryNonce}`
     const Component = useMemo(
-      () => lazy(async () => ({ default: (await loader())[key] as ComponentType })),
-      [pathname, retryNonce],
+      () => {
+        void componentVersion
+        return lazy(async () => ({ default: (await loader())[key] as ComponentType }))
+      },
+      [componentVersion],
     )
 
     return (

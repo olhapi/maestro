@@ -4,30 +4,42 @@ Maestro is a local-first orchestration runtime for agent-driven software work.
 
 Website: [maestro.olhapi.com](https://maestro.olhapi.com/)
 Repository: [github.com/olhapi/maestro](https://github.com/olhapi/maestro)
+Docs: [maestro.olhapi.com/docs](https://maestro.olhapi.com/docs)
 
 It combines a SQLite-backed tracker, an orchestrator that reads `WORKFLOW.md`, a private MCP daemon bridged by `maestro mcp`, and an HTTP server that serves the embedded dashboard plus JSON/WebSocket APIs.
 
 Maestro stays local-first even when a project syncs issues from Linear. Provider-backed issues are synchronized into the local store, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces as local kanban issues.
 
+## Docs Website
+
+The docs site is organized around the same operator flow the product uses:
+
+- [Install](https://maestro.olhapi.com/docs/install)
+- [Quickstart](https://maestro.olhapi.com/docs/quickstart)
+- [Architecture](https://maestro.olhapi.com/docs/architecture)
+- [Control center](https://maestro.olhapi.com/docs/control-center)
+- [Workflow config](https://maestro.olhapi.com/docs/workflow-config)
+- [Operations and observability](https://maestro.olhapi.com/docs/operations)
+- [CLI reference](https://maestro.olhapi.com/docs/cli-reference)
+- [Real Codex E2E harness](https://maestro.olhapi.com/docs/advanced/e2e-harness)
+
 ## Install
 
 ### npm
 
-Current public prerelease install on supported platforms:
+Current public npm install on supported platforms:
 
 ```bash
-npm install -g @olhapi/maestro@next
+npm install -g @olhapi/maestro
 ```
 
-Refresh an existing prerelease install:
+Install the newest prerelease instead:
 
 ```bash
 npm install -g @olhapi/maestro@next
 ```
 
 The installed command name is still `maestro`.
-
-Until the first stable release ships, the npm prerelease channel is published on `next`. After `v0.1.0`, `npm install -g @olhapi/maestro` will follow the stable `latest` channel.
 
 Official npm builds currently cover:
 

@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=./lib/npm_safe_env.sh
+. "$ROOT_DIR/scripts/lib/npm_safe_env.sh"
 PACK_DIR="${PACK_DIR:-$ROOT_DIR/dist/npm}"
 ROOT_PACKAGE_NAME="@olhapi/maestro"
 REGISTRY_PORT="${REGISTRY_PORT:-4873}"
@@ -123,8 +125,8 @@ strict-ssl=false
 EOF
 
 echo "Starting temporary npm registry on $REGISTRY_URL"
-npx --yes "$VERDACCIO_PACKAGE" --version >/dev/null
-npx --yes "$VERDACCIO_PACKAGE" --config "$VERDACCIO_CONFIG" --listen "${REGISTRY_HOST}:${REGISTRY_PORT}" >"$VERDACCIO_LOG" 2>&1 &
+run_clean_npx --yes "$VERDACCIO_PACKAGE" --version >/dev/null
+run_clean_npx --yes "$VERDACCIO_PACKAGE" --config "$VERDACCIO_CONFIG" --listen "${REGISTRY_HOST}:${REGISTRY_PORT}" >"$VERDACCIO_LOG" 2>&1 &
 VERDACCIO_PID=$!
 
 if ! node -e '
@@ -161,7 +163,7 @@ export NPM_CONFIG_USERCONFIG="$NPM_CONFIG_FILE"
 
 echo "Publishing npm tarballs to temporary registry"
 for tarball in "${LEAF_TARBALLS[@]}" "$ROOT_TARBALL"; do
-  npm publish --registry "$REGISTRY_URL" --access public --tag "$PUBLISH_TAG" "$tarball" >/dev/null
+  run_clean_npm publish --registry "$REGISTRY_URL" --access public --tag "$PUBLISH_TAG" "$tarball" >/dev/null
 done
 
 EXPECTED_LEAF_PACKAGE="$(leaf_package_name "$TARGET")"
@@ -169,8 +171,8 @@ EXPECTED_LEAF_PACKAGE="$(leaf_package_name "$TARGET")"
 echo "Smoke testing registry-backed install of $ROOT_PACKAGE_NAME on $TARGET"
 (
   cd "$TMP_DIR"
-  npm init -y >/dev/null 2>&1
-  npm install --registry "$REGISTRY_URL" --no-package-lock "${ROOT_PACKAGE_NAME}@${VERSION}" >/dev/null
+  run_clean_npm init -y >/dev/null 2>&1
+  run_clean_npm install --registry "$REGISTRY_URL" --no-package-lock "${ROOT_PACKAGE_NAME}@${VERSION}" >/dev/null
 
   node -e '
 const assert = require("node:assert/strict");
@@ -179,16 +181,16 @@ const pkg = require(require.resolve(`${expected}/package.json`, { paths: [proces
 assert.equal(pkg.name, expected);
 ' "$EXPECTED_LEAF_PACKAGE"
 
-  VERSION_OUTPUT="$(npx --no-install maestro version)"
+  VERSION_OUTPUT="$(run_clean_npx --no-install maestro version)"
   if [[ "$VERSION_OUTPUT" != "maestro $VERSION" ]]; then
     echo "unexpected version output: $VERSION_OUTPUT" >&2
     exit 1
   fi
 
-  npx --no-install maestro --help >/dev/null
+  run_clean_npx --no-install maestro --help >/dev/null
 
   set +e
-  npx --no-install maestro does-not-exist >/dev/null 2>&1
+  run_clean_npx --no-install maestro does-not-exist >/dev/null 2>&1
   STATUS=$?
   set -e
   if [[ "$STATUS" -eq 0 ]]; then
