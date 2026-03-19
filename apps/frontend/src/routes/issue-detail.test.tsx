@@ -160,6 +160,42 @@ describe("IssueDetailPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders comments when attachments and replies are omitted from the payload", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.listIssueComments).mockResolvedValue({
+      items: [
+        {
+          ...makeIssueComment({
+            body: "Missing arrays should not crash the page",
+          }),
+          attachments: undefined,
+          replies: undefined,
+        } as unknown as ReturnType<typeof makeIssueComment>,
+      ],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    expect(await screen.findByText("Missing arrays should not crash the page")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reply/i })).toBeInTheDocument();
+  });
+
   it("renders the issue identifier only once in breadcrumbs when no epic is attached", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({

@@ -454,6 +454,9 @@ func TestIssueCommentEndpointsSupportCRUDContracts(t *testing.T) {
 	if len(attachments) != 1 {
 		t.Fatalf("expected one attachment, got %#v", attachments)
 	}
+	if replies := created["replies"].([]interface{}); len(replies) != 0 {
+		t.Fatalf("expected created comment to include empty replies array, got %#v", replies)
+	}
 	commentID := created["id"].(string)
 	attachmentID := attachments[0].(map[string]interface{})["id"].(string)
 
@@ -465,6 +468,10 @@ func TestIssueCommentEndpointsSupportCRUDContracts(t *testing.T) {
 	items := listPayload["items"].([]interface{})
 	if len(items) != 1 {
 		t.Fatalf("expected one listed comment, got %#v", items)
+	}
+	listedComment := items[0].(map[string]interface{})
+	if replies := listedComment["replies"].([]interface{}); len(replies) != 0 {
+		t.Fatalf("expected listed comment to include empty replies array, got %#v", replies)
 	}
 
 	contentResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/comments/"+commentID+"/attachments/"+attachmentID+"/content", nil)
