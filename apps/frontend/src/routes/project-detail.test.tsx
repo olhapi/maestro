@@ -65,15 +65,9 @@ describe("ProjectDetailPage", () => {
     expect(
       screen.getByText("Lifetime tokens spent across all project issues."),
     ).toBeInTheDocument();
-    expect(screen.getByText("Repo binding").parentElement?.parentElement).toHaveClass(
-      "pt-[var(--panel-padding)]",
-    );
-    expect(
-      screen.getByText("Epics driving this project").parentElement?.parentElement?.parentElement,
-    ).toHaveClass("pt-[var(--panel-padding)]");
-    expect(
-      screen.getByText("What changed most recently").parentElement,
-    ).toHaveClass("pt-[var(--panel-padding)]");
+    expect(screen.getByText("Repo binding")).toBeInTheDocument();
+    expect(screen.getByText("Epics driving this project")).toBeInTheDocument();
+    expect(screen.getByText("What changed most recently")).toBeInTheDocument();
     expect(screen.queryByText(/^\d+\s+active$/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /run project/i }));

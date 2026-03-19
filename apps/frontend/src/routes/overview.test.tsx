@@ -24,14 +24,18 @@ vi.mock('recharts', () => ({
       throw new Error('chart crashed')
     }
 
-    return <div data-testid="overview-chart">{children}</div>
+    return (
+      <svg data-testid="overview-chart" role="img" aria-label="Overview throughput chart">
+        {children}
+      </svg>
+    )
   },
-  AreaChart: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  Area: () => null,
-  CartesianGrid: () => null,
+  AreaChart: ({ children }: { children: ReactNode }) => <>{children}</>,
+  Area: () => <path />,
+  CartesianGrid: () => <g />,
   Tooltip: () => null,
-  XAxis: () => null,
-  YAxis: () => null,
+  XAxis: () => <g />,
+  YAxis: () => <g />,
 }))
 
 vi.mock('@/lib/api', () => ({

@@ -4,7 +4,7 @@ import { vi } from 'vitest'
 
 import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
 import { WorkPage } from '@/routes/work'
-import { makeBootstrapResponse, makeIssueDetail, makeIssueSummary } from '@/test/fixtures'
+import { makeBootstrapResponse, makeIssueDetail, makeIssueSummary, makeWorkBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient, selectOption } from '@/test/test-utils'
 
 const initialInnerWidth = window.innerWidth
@@ -23,6 +23,7 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/lib/api', () => ({
   api: {
     bootstrap: vi.fn(),
+    workBootstrap: vi.fn(),
     listIssues: vi.fn(),
     setIssueState: vi.fn(),
     deleteIssue: vi.fn(),
@@ -36,6 +37,24 @@ vi.mock('@/lib/api', () => ({
 const { api } = await import('@/lib/api')
 
 describe('WorkPage', () => {
+  const mockWorkBootstrap = (bootstrap = makeBootstrapResponse()) => {
+    vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse({
+      generated_at: bootstrap.generated_at,
+      overview: {
+        board: bootstrap.overview.board,
+        snapshot: {
+          running: bootstrap.overview.snapshot.running,
+          retrying: bootstrap.overview.snapshot.retrying,
+          paused: bootstrap.overview.snapshot.paused,
+        },
+      },
+      projects: bootstrap.projects,
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+      sessions: bootstrap.sessions,
+    }))
+  }
+
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
@@ -47,7 +66,7 @@ describe('WorkPage', () => {
 
   it('renders board data from bootstrap and issues queries', async () => {
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,
@@ -84,7 +103,7 @@ describe('WorkPage', () => {
 
   it('filters issues by project from the work toolbar', async () => {
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,
@@ -128,7 +147,7 @@ describe('WorkPage', () => {
         ],
       },
     })
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,
@@ -183,7 +202,7 @@ describe('WorkPage', () => {
         ],
       },
     })
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,
@@ -260,7 +279,7 @@ describe('WorkPage', () => {
     window.dispatchEvent(new Event('resize'))
 
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,
@@ -283,7 +302,7 @@ describe('WorkPage', () => {
 
   it('confirms issue deletion from the list view before calling the API', async () => {
     const bootstrap = makeBootstrapResponse()
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
     vi.mocked(api.listIssues).mockResolvedValue({
       items: bootstrap.issues.items,

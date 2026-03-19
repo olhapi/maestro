@@ -12,7 +12,7 @@ import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
 import { api } from '@/lib/api'
 import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
-import { refreshDashboardQueries } from '@/lib/query-refresh'
+import { dashboardRefreshCoalesceMs, refreshDashboardQueries } from '@/lib/query-refresh'
 import { cn, formatRelativeTimeCompact } from '@/lib/utils'
 
 const nav = [
@@ -91,15 +91,21 @@ function getPageTitle(pathname: string) {
 
 export function AppShell() {
   const { location } = useRouterState()
+  const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
   const queryClient = useQueryClient()
   const isMobileLayout = useIsMobileLayout()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
   const [hiddenInterruptId, setHiddenInterruptId] = useState<string | null>(null)
   const lastObservedInterruptId = useRef<string | null | undefined>(undefined)
-  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const refreshTimerRef = useRef<number | null>(null)
+  const latestPathRef = useRef(activePath)
+  const useWorkBootstrap = activePath === appRoutes.work
+  const dashboardQuery = useQuery({
+    queryKey: useWorkBootstrap ? ['work-bootstrap'] : ['bootstrap'],
+    queryFn: useWorkBootstrap ? api.workBootstrap : api.bootstrap,
+  })
   const interrupts = useQuery({ queryKey: ['interrupts'], queryFn: api.listInterrupts })
-  const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
   const respondToInterrupt = useMutation({
     mutationFn: ({
       id,
@@ -134,16 +140,39 @@ export function AppShell() {
     setLastRefresh(new Date().toISOString())
   })
 
-  const handleSocketInvalidate = useEffectEvent(() => {
+  const flushSocketRefresh = useEffectEvent(async () => {
     handleSocketSignal()
-    void Promise.all([
+    await Promise.all([
       queryClient.invalidateQueries({
         queryKey: ['interrupts'],
         refetchType: 'active',
       }),
-      refreshDashboardQueries(queryClient, activePath),
+      refreshDashboardQueries(queryClient, latestPathRef.current),
     ])
   })
+
+  const scheduleSocketRefresh = useEffectEvent(() => {
+    const delay = dashboardRefreshCoalesceMs(latestPathRef.current)
+    if (delay === 0) {
+      void flushSocketRefresh()
+      return
+    }
+    if (refreshTimerRef.current !== null) {
+      return
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null
+      void flushSocketRefresh()
+    }, delay)
+  })
+
+  const handleSocketInvalidate = useEffectEvent(() => {
+    scheduleSocketRefresh()
+  })
+
+  useEffect(() => {
+    latestPathRef.current = activePath
+  }, [activePath])
 
   useEffect(() => {
     const socket = connectDashboardSocket({
@@ -152,6 +181,10 @@ export function AppShell() {
     })
     return () => {
       socket.disconnect()
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current)
+        refreshTimerRef.current = null
+      }
     }
   }, [])
 
@@ -167,8 +200,8 @@ export function AppShell() {
   }, [])
 
   const pageTitle = getPageTitle(activePath) || SIDEBAR_TITLE
-  const runningCount = bootstrap.data?.overview.snapshot.running.length ?? 0
-  const retryCount = bootstrap.data?.overview.snapshot.retrying.length ?? 0
+  const runningCount = dashboardQuery.data?.overview.snapshot.running.length ?? 0
+  const retryCount = dashboardQuery.data?.overview.snapshot.retrying.length ?? 0
   const currentInterruptId = interrupts.data?.current?.id ?? null
   const effectiveHiddenInterruptId = interrupts.data?.current?.id === hiddenInterruptId ? hiddenInterruptId : null
 
@@ -251,11 +284,11 @@ export function AppShell() {
             <div className="grid gap-2 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-[var(--muted-foreground)]">Active runs</span>
-                <span className="text-white">{bootstrap.data?.overview.snapshot.running.length ?? 0}</span>
+                <span className="text-white">{dashboardQuery.data?.overview.snapshot.running.length ?? 0}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[var(--muted-foreground)]">Queued retries</span>
-                <span className="text-white">{bootstrap.data?.overview.snapshot.retrying.length ?? 0}</span>
+                <span className="text-white">{dashboardQuery.data?.overview.snapshot.retrying.length ?? 0}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[var(--muted-foreground)]">Last signal</span>

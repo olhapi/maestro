@@ -48,7 +48,7 @@ import {
 } from "@/lib/issue-assets";
 import { appRoutes } from "@/lib/routes";
 import type {
-  BootstrapResponse,
+  DashboardIssueLookupSource,
   IssueDetail,
   IssueState,
   IssueSummary,
@@ -83,7 +83,7 @@ export function IssuePreviewSheet({
   onStateChange,
 }: {
   issue?: IssueSummary;
-  bootstrap?: BootstrapResponse;
+  bootstrap?: DashboardIssueLookupSource;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInvalidate: () => Promise<void>;

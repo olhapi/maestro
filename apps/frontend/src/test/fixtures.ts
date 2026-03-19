@@ -1,4 +1,4 @@
-import type { BootstrapResponse, IssueAsset, IssueComment, IssueDetail, IssueSummary } from "@/lib/types";
+import type { BootstrapResponse, IssueAsset, IssueComment, IssueDetail, IssueSummary, WorkBootstrapResponse } from "@/lib/types";
 
 export function makeIssueSummary(
   overrides: Partial<IssueSummary> = {},
@@ -259,6 +259,29 @@ export function makeBootstrapResponse(
         },
       ],
     },
+    ...overrides,
+  };
+}
+
+export function makeWorkBootstrapResponse(
+  overrides: Partial<WorkBootstrapResponse> = {},
+): WorkBootstrapResponse {
+  const bootstrap = makeBootstrapResponse();
+
+  return {
+    generated_at: bootstrap.generated_at,
+    overview: {
+      board: bootstrap.overview.board,
+      snapshot: {
+        running: bootstrap.overview.snapshot.running,
+        retrying: bootstrap.overview.snapshot.retrying,
+        paused: bootstrap.overview.snapshot.paused,
+      },
+    },
+    projects: bootstrap.projects,
+    epics: bootstrap.epics,
+    issues: bootstrap.issues,
+    sessions: bootstrap.sessions,
     ...overrides,
   };
 }

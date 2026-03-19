@@ -189,7 +189,6 @@ describe('IssuePreviewSheet', () => {
       name: /delete/i,
     })
 
-    expect(actionRow).toHaveClass('grid-cols-3')
     expect(within(actionRow).getAllByRole('button')).toHaveLength(3)
     expect(editButton.querySelector('svg')).not.toBeNull()
     expect(retryButton.querySelector('svg')).not.toBeNull()

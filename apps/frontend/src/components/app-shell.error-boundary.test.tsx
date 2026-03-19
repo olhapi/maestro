@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AppShell } from '@/components/app-shell'
-import { makeBootstrapResponse } from '@/test/fixtures'
+import { makeWorkBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
 let pathname = '/work'
@@ -58,6 +58,7 @@ vi.mock('@/lib/live', () => ({
 vi.mock('@/lib/api', () => ({
   api: {
     bootstrap: vi.fn(),
+    workBootstrap: vi.fn(),
     listInterrupts: vi.fn(),
     respondToInterrupt: vi.fn(),
   },
@@ -81,7 +82,7 @@ describe('AppShell error boundaries', () => {
   })
 
   it('contains command palette crashes and reloads the palette subtree', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse())
     vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
     shouldThrowCommandPalette = true
 
@@ -104,7 +105,7 @@ describe('AppShell error boundaries', () => {
   })
 
   it('contains interrupt panel crashes and reloads the panel subtree', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse())
     vi.mocked(api.listInterrupts).mockResolvedValue({
       count: 1,
       current: {

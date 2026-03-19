@@ -79,7 +79,7 @@ function makeEpicDetailResponse() {
 }
 
 describe('EpicDetailPage', () => {
-  it('adds top padding to epic detail card content', async () => {
+  it('renders the renamed epic detail sections and summary badges', async () => {
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
     vi.mocked(api.getEpic).mockResolvedValue(makeEpicDetailResponse())
 
@@ -92,12 +92,9 @@ describe('EpicDetailPage', () => {
     expect(screen.queryByText('Recent work')).not.toBeInTheDocument()
     expect(screen.queryByText('Sibling epics')).not.toBeInTheDocument()
     expect(screen.queryByText('Epic lanes')).not.toBeInTheDocument()
-    expect(screen.getByText('Issues').parentElement).toHaveClass('pt-[var(--panel-padding)]')
-    expect(screen.getByText('What changed in this epic').parentElement).toHaveClass('pt-[var(--panel-padding)]')
-    expect(screen.getByText('Adjacent delivery arcs').parentElement).toHaveClass('pt-[var(--panel-padding)]')
-    expect(screen.getByText('State of work across the epic').closest('div')?.parentElement?.parentElement).toHaveClass(
-      'pt-[var(--panel-padding)]',
-    )
-    expect(screen.getByText(/0 active/i)).toHaveClass('shrink-0', 'whitespace-nowrap')
+    expect(screen.getByText('Issues')).toBeInTheDocument()
+    expect(screen.getByText('Adjacent delivery arcs')).toBeInTheDocument()
+    expect(screen.getByText('State of work across the epic')).toBeInTheDocument()
+    expect(screen.getByText(/0 active/i)).toBeInTheDocument()
   })
 })

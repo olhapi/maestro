@@ -1682,6 +1682,7 @@ func TestDashboardAPIReturnsMethodAndPathErrors(t *testing.T) {
 		status int
 	}{
 		{method: http.MethodPost, path: "/api/v1/app/bootstrap", status: http.StatusMethodNotAllowed},
+		{method: http.MethodPost, path: "/api/v1/app/work", status: http.StatusMethodNotAllowed},
 		{method: http.MethodPost, path: "/api/v1/app/runtime/events", status: http.StatusMethodNotAllowed},
 		{method: http.MethodPost, path: "/api/v1/app/runtime/series", status: http.StatusMethodNotAllowed},
 		{method: http.MethodGet, path: "/api/v1/app/projects/missing/nested", status: http.StatusNotFound},

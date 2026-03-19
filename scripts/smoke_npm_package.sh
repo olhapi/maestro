@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=./lib/npm_safe_env.sh
+. "$ROOT_DIR/scripts/lib/npm_safe_env.sh"
 PACK_DIR="${PACK_DIR:-$ROOT_DIR/dist/npm}"
 ROOT_PACKAGE_NAME="@olhapi/maestro"
 
@@ -70,19 +72,19 @@ trap cleanup EXIT
 echo "Smoke testing $ROOT_PACKAGE_NAME with $LEAF_PACKAGE_NAME"
 (
   cd "$TMP_DIR"
-  npm init -y >/dev/null 2>&1
-  npm install --no-package-lock "$LEAF_TARBALL" "$ROOT_TARBALL" >/dev/null
+  run_clean_npm init -y >/dev/null 2>&1
+  run_clean_npm install --no-package-lock "$LEAF_TARBALL" "$ROOT_TARBALL" >/dev/null
 
-  VERSION_OUTPUT="$(npx --no-install maestro version)"
+  VERSION_OUTPUT="$(run_clean_npx --no-install maestro version)"
   if [[ "$VERSION_OUTPUT" != "maestro $VERSION" ]]; then
     echo "unexpected version output: $VERSION_OUTPUT" >&2
     exit 1
   fi
 
-  npx --no-install maestro --help >/dev/null
+  run_clean_npx --no-install maestro --help >/dev/null
 
   set +e
-  npx --no-install maestro does-not-exist >/dev/null 2>&1
+  run_clean_npx --no-install maestro does-not-exist >/dev/null 2>&1
   STATUS=$?
   set -e
   if [[ "$STATUS" -eq 0 ]]; then

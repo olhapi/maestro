@@ -26,7 +26,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
-import type { BootstrapResponse, IssueState, IssueSummary } from "@/lib/types";
+import type { DashboardWorkSource, IssueState, IssueSummary } from "@/lib/types";
 import {
   getPausedForIssue,
   getRetryForIssue,
@@ -48,7 +48,7 @@ export function IssueCard({
   className,
 }: {
   issue: IssueSummary;
-  bootstrap?: BootstrapResponse;
+  bootstrap?: DashboardWorkSource;
   compact?: boolean;
   onOpen: (issue: IssueSummary) => void;
   onStateChange?: (issue: IssueSummary, state: IssueState) => void;

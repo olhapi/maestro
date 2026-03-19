@@ -278,6 +278,67 @@ func TestBootstrapReturnsCompletedLiveSummaryInsteadOfStreamingDelta(t *testing.
 	}
 }
 
+func TestWorkEndpointReturnsBoundedPayload(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Work payload", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	provider := testProvider{
+		snapshot: observability.Snapshot{
+			Running: []observability.RunningEntry{{
+				IssueID:    issue.ID,
+				Identifier: issue.Identifier,
+				State:      "in_progress",
+			}},
+		},
+		sessions: map[string]interface{}{
+			issue.Identifier: appserver.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				SessionID:       "thread-live-turn-live",
+				ThreadID:        "thread-live",
+				TurnID:          "turn-live",
+				LastEvent:       "turn.started",
+				LastTimestamp:   time.Now().UTC(),
+			},
+		},
+	}
+	mux := http.NewServeMux()
+	NewServer(store, provider).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/work", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	payload := decodeResponse(t, resp)
+	overview := payload["overview"].(map[string]interface{})
+	if _, ok := overview["status"]; ok {
+		t.Fatalf("expected work payload to omit status, got %#v", overview)
+	}
+	if _, ok := overview["series"]; ok {
+		t.Fatalf("expected work payload to omit series, got %#v", overview)
+	}
+	if _, ok := overview["recent_events"]; ok {
+		t.Fatalf("expected work payload to omit recent_events, got %#v", overview)
+	}
+	snapshot := overview["snapshot"].(map[string]interface{})
+	if _, ok := snapshot["running"]; !ok {
+		t.Fatalf("expected work payload to include running snapshot, got %#v", snapshot)
+	}
+	if _, ok := payload["sessions"]; !ok {
+		t.Fatalf("expected work payload to include sessions, got %#v", payload)
+	}
+}
+
 func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
 	provider := &interruptProvider{
 		interrupts: appserver.PendingInteractionSnapshot{

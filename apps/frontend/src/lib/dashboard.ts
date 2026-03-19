@@ -1,4 +1,4 @@
-import type { BootstrapResponse, IssueState, IssueSummary, PausedEntry, RetryEntry, Session } from '@/lib/types'
+import type { DashboardRuntimeSource, IssueState, IssueSummary, PausedEntry, RetryEntry, Session } from '@/lib/types'
 
 export const issueStates: IssueState[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled']
 
@@ -49,7 +49,7 @@ function matchesIssue(issueID: string, issueIdentifier: string | undefined, cand
 }
 
 export function getSessionForIssue(
-  bootstrap: BootstrapResponse | undefined,
+  bootstrap: DashboardRuntimeSource | undefined,
   issueID: string,
   issueIdentifier?: string,
 ): Session | undefined {
@@ -64,7 +64,7 @@ export function getSessionForIssue(
 }
 
 export function getRetryForIssue(
-  bootstrap: BootstrapResponse | undefined,
+  bootstrap: DashboardRuntimeSource | undefined,
   issueID: string,
   issueIdentifier?: string,
 ): RetryEntry | undefined {
@@ -72,7 +72,7 @@ export function getRetryForIssue(
 }
 
 export function getPausedForIssue(
-  bootstrap: BootstrapResponse | undefined,
+  bootstrap: DashboardRuntimeSource | undefined,
   issueID: string,
   issueIdentifier?: string,
 ): PausedEntry | undefined {

@@ -4,7 +4,7 @@ import { Plus } from 'lucide-react'
 import { IssueCard } from '@/components/dashboard/issue-card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { BootstrapResponse, IssueState, IssueSummary } from '@/lib/types'
+import type { DashboardWorkSource, IssueState, IssueSummary } from '@/lib/types'
 import { getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { cn } from '@/lib/utils'
 
@@ -19,7 +19,7 @@ export function KanbanBoard({
   mode = 'board',
 }: {
   items: IssueSummary[]
-  bootstrap?: BootstrapResponse
+  bootstrap?: DashboardWorkSource
   onOpenIssue: (issue: IssueSummary) => void
   onMoveIssue: (issue: IssueSummary, nextState: IssueState) => void
   onCreateIssue?: (state?: IssueState) => void
