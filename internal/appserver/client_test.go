@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +90,70 @@ func baseScenario(threadID, turnID string, afterTurnStart ...fakeappserver.Outpu
 	}
 }
 
+func waitForClientTestCondition(t *testing.T, timeout time.Duration, check func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if check() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for condition")
+}
+
+func startOrphanedManagedProcessGroup(t *testing.T) (int, int) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	childPIDPath := filepath.Join(tmpDir, "child.pid")
+	cmd := exec.Command("/usr/bin/python3", "-c", `
+import os
+import subprocess
+import sys
+
+os.setsid()
+child = subprocess.Popen(
+    ["/bin/sh", "-lc", 'trap "" TERM INT; while :; do sleep 1; done'],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    fh.write(str(child.pid))
+`, childPIDPath)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start orphaned managed process group: %v", err)
+	}
+	leaderPID := cmd.Process.Pid
+
+	waitForClientTestCondition(t, time.Second, func() bool {
+		data, err := os.ReadFile(childPIDPath)
+		return err == nil && strings.TrimSpace(string(data)) != ""
+	})
+	childPIDText, err := os.ReadFile(childPIDPath)
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(childPIDText)))
+	if err != nil {
+		t.Fatalf("parse child pid: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait orphaned managed process group leader: %v", err)
+	}
+
+	waitForClientTestCondition(t, time.Second, func() bool {
+		return !managedProcessExists(leaderPID) && managedProcessGroupExists(leaderPID) && managedProcessExists(childPID)
+	})
+	t.Cleanup(func() {
+		_ = terminateManagedProcessTree(leaderPID, managedProcessTerminateWait, managedProcessKillWait)
+	})
+	return leaderPID, childPID
+}
+
 func TestRunRejectsInvalidWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")
@@ -121,6 +189,101 @@ func TestRunRejectsInvalidWorkspace(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected outside workspace rejection")
 	}
+}
+
+func TestClientCloseTerminatesManagedProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group cleanup test is Unix-specific")
+	}
+
+	tmpDir := t.TempDir()
+	childPIDPath := filepath.Join(tmpDir, "child.pid")
+	cmd := exec.Command("/bin/sh", "-lc",
+		fmt.Sprintf("trap 'exit 0' TERM INT; sh -c 'trap \"\" TERM INT; while :; do sleep 1; done' & child=$!; echo $child > %q; while :; do sleep 1; done", childPIDPath),
+	)
+	configureManagedProcess(cmd)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start managed process: %v", err)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	waitForClientTestCondition(t, time.Second, func() bool {
+		data, err := os.ReadFile(childPIDPath)
+		return err == nil && strings.TrimSpace(string(data)) != ""
+	})
+	childPIDText, err := os.ReadFile(childPIDPath)
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(childPIDText)))
+	if err != nil {
+		t.Fatalf("parse child pid: %v", err)
+	}
+	if !managedProcessExists(childPID) {
+		t.Fatalf("expected child process %d to be running", childPID)
+	}
+
+	client := &Client{
+		cmd:    cmd,
+		waitCh: waitCh,
+	}
+	_ = client.Close()
+
+	waitForClientTestCondition(t, 2*time.Second, func() bool {
+		return !managedProcessGroupExists(cmd.Process.Pid) && !managedProcessExists(childPID)
+	})
+}
+
+func TestClientCloseIgnoresAlreadyExitedManagedProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group cleanup test is Unix-specific")
+	}
+
+	cmd := exec.Command("/bin/sh", "-lc", "exit 0")
+	configureManagedProcess(cmd)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start managed process: %v", err)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	waitForClientTestCondition(t, time.Second, func() bool {
+		return !managedProcessLeaderExists(cmd.Process.Pid)
+	})
+
+	client := &Client{
+		cmd:    cmd,
+		waitCh: waitCh,
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close returned error for exited process: %v", err)
+	}
+}
+
+func TestCleanupLingeringAppServerProcessSkipsOrphanedGroupAfterLeaderExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group cleanup test is Unix-specific")
+	}
+
+	leaderPID, childPID := startOrphanedManagedProcessGroup(t)
+	if err := CleanupLingeringAppServerProcess(leaderPID); err != nil {
+		t.Fatalf("CleanupLingeringAppServerProcess: %v", err)
+	}
+
+	waitForClientTestCondition(t, 200*time.Millisecond, func() bool {
+		return managedProcessGroupExists(leaderPID) && managedProcessExists(childPID)
+	})
 }
 
 func TestRunApprovalRequiredByDefault(t *testing.T) {
@@ -359,6 +522,204 @@ func TestRunFallsBackToThreadStartWhenResumeFails(t *testing.T) {
 	}
 	if !foundResume || !foundStart {
 		t.Fatalf("expected resume attempt and fallback thread/start, got %#v", lines)
+	}
+}
+
+func TestRunFallsBackToFreshThreadWhenTurnStartThreadIsMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-TURN-FALLBACK")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/resume"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-resumed"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 3, "error": map[string]interface{}{"code": -32600, "message": "thread not found: thread-resumed"}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-fresh"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-fresh"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-fresh", "turn": map[string]interface{}{"id": "turn-fresh"}}}},
+				},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.ResumeThreadID = "thread-stale"
+	cfg.ResumeSource = "required"
+	cfg = withTrace(cfg, traceFile)
+
+	res, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if res.Session == nil || res.Session.ThreadID != "thread-fresh" {
+		t.Fatalf("expected fresh thread after turn/start fallback, got %+v", res.Session)
+	}
+
+	lines := readTraceLines(t, traceFile)
+	turnThreads := make([]string, 0, 2)
+	threadStarts := 0
+	for _, payload := range lines {
+		switch nestedStringMap(payload, "method") {
+		case "turn/start":
+			turnThreads = append(turnThreads, nestedStringMap(payload, "params", "threadId"))
+		case "thread/start":
+			threadStarts++
+		}
+	}
+	if threadStarts != 1 {
+		t.Fatalf("expected one fallback thread/start, got %d from %#v", threadStarts, lines)
+	}
+	if len(turnThreads) != 2 || turnThreads[0] != "thread-resumed" || turnThreads[1] != "thread-fresh" {
+		t.Fatalf("expected turn/start to retry on a fresh thread, got %#v", turnThreads)
+	}
+}
+
+func TestRunTurnFallbackToFreshThreadResetsSessionState(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-TURN-RESET")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-original"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-original"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-original", "turn": map[string]interface{}{"id": "turn-original"}}}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 4, "error": map[string]interface{}{"code": -32600, "message": "thread not found: thread-original"}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-fresh"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 6, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-fresh"}}}},
+					{JSON: map[string]interface{}{
+						"id":     90,
+						"method": "item/commandExecution/requestApproval",
+						"params": map[string]interface{}{
+							"threadId": "thread-fresh",
+							"turnId":   "turn-fresh",
+							"itemId":   "approval-item-fresh",
+							"command":  "git status",
+						},
+					}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{ID: fakeappserver.Int(90)},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"method": "turn/completed",
+						"params": map[string]interface{}{"threadId": "thread-fresh", "turnId": "turn-fresh"},
+					},
+				}},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.InitialCollaborationMode = "default"
+	interrupts := make(chan PendingInteraction, 1)
+	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction != nil {
+			interrupts <- interaction.Clone()
+		}
+	}
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.RunTurn(context.Background(), cfg.Prompt, cfg.Title); err != nil {
+		t.Fatalf("first run turn failed: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	var interaction PendingInteraction
+	select {
+	case interaction = <-interrupts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected pending interaction on fresh fallback thread")
+	}
+	if interaction.CollaborationMode != "default" {
+		t.Fatalf("expected fresh fallback thread to restore default collaboration mode, got %+v", interaction)
+	}
+	if err := client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+		Decision: "acceptForSession",
+	}); err != nil {
+		t.Fatalf("respond to interaction: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("second run turn failed: %v", err)
+	}
+	if err := client.Wait(); err != nil {
+		t.Fatalf("wait failed: %v", err)
+	}
+
+	session := client.Session()
+	if session.ThreadID != "thread-fresh" || session.TurnsStarted != 1 {
+		t.Fatalf("expected reset session state on fresh thread fallback, got %+v", session)
+	}
+	for _, event := range session.History {
+		if event.ThreadID == "thread-original" {
+			t.Fatalf("expected stale thread history to be cleared, got %+v", session.History)
+		}
 	}
 }
 

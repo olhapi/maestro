@@ -43,6 +43,7 @@ type runningEntry struct {
 	phase     kanban.WorkflowPhase
 	attempt   int
 	startedAt time.Time
+	done      chan struct{}
 }
 
 type pendingInteractionEntry struct {
@@ -79,10 +80,10 @@ type sessionPersistenceState struct {
 }
 
 type issueTokenSpendState struct {
-	SessionID     string
-	LastSeenTotal int
-	PendingDelta  int
-	LastFlushedAt time.Time
+	LastSeenTotals   map[string]int
+	LastUnnamedTotal int
+	PendingDelta     int
+	LastFlushedAt    time.Time
 }
 
 type orchestratorTestHooks struct {
@@ -133,6 +134,8 @@ type Orchestrator struct {
 	successfulRuns          int
 	failedRuns              int
 	liveSessions            map[string]*appserver.Session
+	retiredAppServerMu      sync.RWMutex
+	retiredAppServerIssues  map[string]struct{}
 	sessionWriteMu          sync.Mutex
 	sessionWrites           map[string]sessionPersistenceState
 	tokenSpendMu            sync.Mutex
@@ -157,20 +160,21 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 		registry = extensions.EmptyRegistry()
 	}
 	o := &Orchestrator{
-		store:               store,
-		service:             providers.NewService(store),
-		extensions:          registry,
-		projectRuntimes:     make(map[string]*projectRuntime),
-		running:             make(map[string]runningEntry),
-		claimed:             make(map[string]struct{}),
-		retries:             make(map[string]retryEntry),
-		paused:              make(map[string]pausedEntry),
-		pendingInteractions: make(map[string]pendingInteractionEntry),
-		startedAt:           time.Now().UTC(),
-		liveSessions:        make(map[string]*appserver.Session),
-		sessionWrites:       make(map[string]sessionPersistenceState),
-		tokenSpends:         make(map[string]issueTokenSpendState),
-		maxEvents:           500,
+		store:                  store,
+		service:                providers.NewService(store),
+		extensions:             registry,
+		projectRuntimes:        make(map[string]*projectRuntime),
+		running:                make(map[string]runningEntry),
+		claimed:                make(map[string]struct{}),
+		retries:                make(map[string]retryEntry),
+		paused:                 make(map[string]pausedEntry),
+		pendingInteractions:    make(map[string]pendingInteractionEntry),
+		startedAt:              time.Now().UTC(),
+		liveSessions:           make(map[string]*appserver.Session),
+		retiredAppServerIssues: make(map[string]struct{}),
+		sessionWrites:          make(map[string]sessionPersistenceState),
+		tokenSpends:            make(map[string]issueTokenSpendState),
+		maxEvents:              500,
 	}
 	o.workflows = workflows
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
@@ -200,22 +204,23 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 		}
 	}
 	o := &Orchestrator{
-		store:               store,
-		service:             providers.NewService(store),
-		extensions:          registry,
-		scopedRepoPath:      scopedRepoPath,
-		scopedWorkflowPath:  scopedWorkflowPath,
-		projectRuntimes:     make(map[string]*projectRuntime),
-		running:             make(map[string]runningEntry),
-		claimed:             make(map[string]struct{}),
-		retries:             make(map[string]retryEntry),
-		paused:              make(map[string]pausedEntry),
-		pendingInteractions: make(map[string]pendingInteractionEntry),
-		startedAt:           time.Now().UTC(),
-		liveSessions:        make(map[string]*appserver.Session),
-		sessionWrites:       make(map[string]sessionPersistenceState),
-		tokenSpends:         make(map[string]issueTokenSpendState),
-		maxEvents:           500,
+		store:                  store,
+		service:                providers.NewService(store),
+		extensions:             registry,
+		scopedRepoPath:         scopedRepoPath,
+		scopedWorkflowPath:     scopedWorkflowPath,
+		projectRuntimes:        make(map[string]*projectRuntime),
+		running:                make(map[string]runningEntry),
+		claimed:                make(map[string]struct{}),
+		retries:                make(map[string]retryEntry),
+		paused:                 make(map[string]pausedEntry),
+		pendingInteractions:    make(map[string]pendingInteractionEntry),
+		startedAt:              time.Now().UTC(),
+		liveSessions:           make(map[string]*appserver.Session),
+		retiredAppServerIssues: make(map[string]struct{}),
+		sessionWrites:          make(map[string]sessionPersistenceState),
+		tokenSpends:            make(map[string]issueTokenSpendState),
+		maxEvents:              500,
 	}
 	o.runnerFactory = func(manager *config.Manager) runnerExecutor {
 		runner := agent.NewRunnerWithExtensions(manager, store, registry)
@@ -567,6 +572,7 @@ func (o *Orchestrator) reconcileWithProviderSync(ctx context.Context, syncProvid
 				issueLogAttrs(issue, -1, "reason", "terminal_state")...,
 			)
 			o.stopRun(issueID)
+			o.cleanupTerminalAppServerProcess(issue)
 			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
 				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
 			} else {
@@ -735,6 +741,7 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context, syncProvider b
 			continue
 		}
 		if o.shouldCleanupTerminalIssue(workflow, issue) {
+			o.cleanupTerminalAppServerProcess(issue)
 			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
 				slog.Warn("Failed to cleanup terminal workspace after orphaned run recovery", "issue", issue.Identifier, "error", err)
 			}
@@ -1060,6 +1067,7 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			slog.Info("Dropping retry because issue reached terminal state",
 				issueLogAttrs(issue, entry.Attempt)...,
 			)
+			o.cleanupTerminalAppServerProcess(issue)
 			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
 				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
 			} else {
@@ -1290,13 +1298,16 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 	runIssue := *issue
 	runIssue.WorkflowPhase = phase
 	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	entry := runningEntry{
 		cancel:    cancel,
 		issue:     runIssue,
 		phase:     phase,
 		attempt:   attempt,
 		startedAt: time.Now().UTC(),
+		done:      done,
 	}
+	o.unmarkAppServerRetired(runIssue.ID)
 	o.mu.Lock()
 	delete(o.liveSessions, runIssue.ID)
 	delete(o.paused, runIssue.ID)
@@ -1322,6 +1333,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 	o.runWG.Add(1)
 	go func() {
 		defer o.runWG.Done()
+		defer close(done)
 		result, err := runner.RunAttempt(runCtx, &runIssue, attempt)
 		o.finishRun(workflow, &runIssue, phase, attempt, result, err)
 	}()
@@ -2252,6 +2264,7 @@ func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
 		if !o.shouldCleanupTerminalIssue(workflow, &issues[i]) {
 			continue
 		}
+		o.cleanupTerminalAppServerProcess(&issues[i])
 		if err := runtime.runner.CleanupWorkspace(ctx, &issues[i]); err != nil {
 			slog.Warn("Failed to cleanup terminal workspace", "issue", issues[i].Identifier, "error", err)
 		} else {
@@ -2260,6 +2273,61 @@ func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
 			)
 		}
 	}
+}
+
+func (o *Orchestrator) cleanupTerminalAppServerProcess(issue *kanban.Issue) {
+	if issue == nil {
+		return
+	}
+	snapshot, err := o.store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			slog.Warn("Failed to load execution session before terminal cleanup",
+				issueLogAttrs(issue, -1, "error", err)...,
+			)
+		}
+		return
+	}
+	if snapshot == nil {
+		return
+	}
+	pid, hasLivePID := o.liveAppServerPID(issue.ID)
+	shouldRetire := hasLivePID || snapshot.AppSession.AppServerPID > 0 || snapshot.ResumeEligible
+	if !shouldRetire {
+		return
+	}
+	o.markAppServerRetired(issue.ID)
+	if hasLivePID {
+		if err := appserver.CleanupLingeringAppServerProcess(pid); err != nil {
+			o.unmarkAppServerRetired(issue.ID)
+			slog.Warn("Failed to cleanup lingering app-server process",
+				issueLogAttrs(issue, -1, "pid", pid, "error", err)...,
+			)
+			return
+		}
+	}
+	snapshot.ResumeEligible = false
+	snapshot.AppSession.AppServerPID = 0
+	snapshot.UpdatedAt = time.Now().UTC()
+	if err := o.store.UpsertIssueExecutionSession(*snapshot); err != nil {
+		slog.Warn("Failed to retire app-server process metadata after terminal cleanup",
+			issueLogAttrs(issue, -1, "pid", pid, "error", err)...,
+		)
+	}
+}
+
+func (o *Orchestrator) liveAppServerPID(issueID string) (int, bool) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return 0, false
+	}
+	o.mu.RLock()
+	session := o.liveSessions[issueID]
+	o.mu.RUnlock()
+	if session == nil || session.AppServerPID <= 0 {
+		return 0, false
+	}
+	return session.AppServerPID, true
 }
 
 func (o *Orchestrator) stopRun(issueID string) {
@@ -2271,6 +2339,34 @@ func (o *Orchestrator) stopRun(issueID string) {
 		o.appendEventLocked("run_stopped", map[string]interface{}{"issue_id": issueID})
 		slog.Info("Agent run stopped", issueLogAttrs(&entry.issue, entry.attempt)...)
 	}
+}
+
+func (o *Orchestrator) markAppServerRetired(issueID string) {
+	if strings.TrimSpace(issueID) == "" {
+		return
+	}
+	o.retiredAppServerMu.Lock()
+	o.retiredAppServerIssues[issueID] = struct{}{}
+	o.retiredAppServerMu.Unlock()
+}
+
+func (o *Orchestrator) unmarkAppServerRetired(issueID string) {
+	if strings.TrimSpace(issueID) == "" {
+		return
+	}
+	o.retiredAppServerMu.Lock()
+	delete(o.retiredAppServerIssues, issueID)
+	o.retiredAppServerMu.Unlock()
+}
+
+func (o *Orchestrator) appServerRetired(issueID string) bool {
+	if strings.TrimSpace(issueID) == "" {
+		return false
+	}
+	o.retiredAppServerMu.RLock()
+	_, ok := o.retiredAppServerIssues[issueID]
+	o.retiredAppServerMu.RUnlock()
+	return ok
 }
 
 func (o *Orchestrator) stopAllRunsGracefully() {
@@ -2956,26 +3052,41 @@ func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *appserver
 	if session == nil || session.TotalTokens <= 0 {
 		return
 	}
-	runKey := strings.TrimSpace(session.ThreadID)
-	if runKey == "" {
-		runKey = strings.TrimSpace(session.SessionID)
-	}
+	runKey := issueTokenSpendRunKey(session)
 
 	o.tokenSpendMu.Lock()
 	defer o.tokenSpendMu.Unlock()
 
 	state := o.tokenSpends[issueID]
-	if state.SessionID != "" && runKey != "" && state.SessionID != runKey {
-		state = issueTokenSpendState{}
+	if runKey == "" {
+		if session.TotalTokens > state.LastUnnamedTotal {
+			state.PendingDelta += session.TotalTokens - state.LastUnnamedTotal
+			state.LastUnnamedTotal = session.TotalTokens
+		}
+		o.tokenSpends[issueID] = state
+		return
 	}
-	if runKey != "" {
-		state.SessionID = runKey
+	if state.LastSeenTotals == nil {
+		state.LastSeenTotals = make(map[string]int)
 	}
-	if session.TotalTokens > state.LastSeenTotal {
-		state.PendingDelta += session.TotalTokens - state.LastSeenTotal
-		state.LastSeenTotal = session.TotalTokens
+	if session.TotalTokens > state.LastSeenTotals[runKey] {
+		state.PendingDelta += session.TotalTokens - state.LastSeenTotals[runKey]
+		state.LastSeenTotals[runKey] = session.TotalTokens
 	}
 	o.tokenSpends[issueID] = state
+}
+
+func issueTokenSpendRunKey(session *appserver.Session) string {
+	if session == nil {
+		return ""
+	}
+	if threadID := strings.TrimSpace(session.ThreadID); threadID != "" {
+		return "thread:" + threadID
+	}
+	if sessionID := strings.TrimSpace(session.SessionID); sessionID != "" {
+		return "session:" + sessionID
+	}
+	return ""
 }
 
 func (o *Orchestrator) persistFinalIssueTokenSpend(issueID string, session *appserver.Session) {
@@ -3342,6 +3453,10 @@ func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban
 		}
 		snapshot.AppSession.IssueID = issue.ID
 		snapshot.AppSession.IssueIdentifier = issue.Identifier
+	}
+	if o.appServerRetired(issue.ID) {
+		snapshot.AppSession.AppServerPID = 0
+		snapshot.ResumeEligible = false
 	}
 	if err := o.store.UpsertIssueExecutionSession(snapshot); err != nil {
 		slog.Warn("Failed to persist issue execution session", "issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
