@@ -1049,9 +1049,12 @@ func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 	}
 }
 
-func TestDispatchBlocksIssueWithMissingBlockerIdentifier(t *testing.T) {
+func TestDispatchAllowsIssueAfterBlockerDeletion(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
-	runner := newRetryTestRunner()
+	runner := &countingPhaseRunner{
+		store:    store,
+		runCalls: make(chan string, 4),
+	}
 	orch.runner = runner
 
 	blocker, err := store.CreateIssue("", "", "Deleted blocker", "", 0, nil)
@@ -1076,10 +1079,8 @@ func TestDispatchBlocksIssueWithMissingBlockerIdentifier(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 
-	select {
-	case identifier := <-runner.runCalls:
-		t.Fatalf("expected blocked issue not to dispatch, got run for %s", identifier)
-	case <-time.After(100 * time.Millisecond):
+	if got := waitForRunCall(t, runner.runCalls, time.Second); got != issue.Identifier {
+		t.Fatalf("expected deleted blocker to unblock issue %s, got run for %s", issue.Identifier, got)
 	}
 }
 
