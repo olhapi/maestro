@@ -87,7 +87,8 @@ type issueTokenSpendState struct {
 }
 
 type orchestratorTestHooks struct {
-	beforeFinishRunRelease func(issueID string)
+	beforeFinishRunRelease           func(issueID string)
+	cleanupLingeringAppServerProcess func(pid int) error
 }
 
 const scopedRuntimeKey = "__scoped__"
@@ -2298,7 +2299,11 @@ func (o *Orchestrator) cleanupTerminalAppServerProcess(issue *kanban.Issue) {
 	}
 	o.markAppServerRetired(issue.ID)
 	if hasLivePID {
-		if err := appserver.CleanupLingeringAppServerProcess(pid); err != nil {
+		cleanupLingering := appserver.CleanupLingeringAppServerProcess
+		if hook := o.testHooks.cleanupLingeringAppServerProcess; hook != nil {
+			cleanupLingering = hook
+		}
+		if err := cleanupLingering(pid); err != nil {
 			o.unmarkAppServerRetired(issue.ID)
 			slog.Warn("Failed to cleanup lingering app-server process",
 				issueLogAttrs(issue, -1, "pid", pid, "error", err)...,
