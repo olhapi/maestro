@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
+import { MarkdownText } from '@/components/ui/markdown'
 import type { ActivityGroup, ActivityEntry } from '@/lib/types'
 import { toTitleCase } from '@/lib/utils'
 
@@ -27,10 +28,10 @@ function entryHeadingClass(entry: ActivityEntry) {
 
 function entrySummaryClass(entry: ActivityEntry) {
   if (entry.kind === 'status') {
-    return 'mt-1 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-sm leading-6 text-white/82'
+    return 'mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-white/82'
   }
 
-  return 'mt-1.5 whitespace-pre-wrap break-all [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92'
+  return 'mt-1.5 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92'
 }
 
 function groupLabel(group: ActivityGroup) {
@@ -124,7 +125,7 @@ export function SessionActivityTranscript({
                           </div>
 
                           <div className="pl-4">
-                            <p className={entrySummaryClass(entry)}>{entry.summary}</p>
+                            <MarkdownText className={entrySummaryClass(entry)} content={entry.summary} />
 
                             {entry.detail && expanded ? (
                               <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88">

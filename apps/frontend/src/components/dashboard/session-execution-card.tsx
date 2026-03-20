@@ -1,5 +1,6 @@
 import { AlertTriangle, ChevronDown } from 'lucide-react'
 
+import { MarkdownText } from '@/components/ui/markdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -118,9 +119,9 @@ export function SessionExecutionCard({
                 <p className="mt-2 text-sky-50/90">
                   Maestro paused execution after the planning turn. Approve the plan to switch this issue into normal execution with full access.
                 </p>
-                <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-sky-200/15 bg-black/25 p-3 text-xs leading-5 text-sky-50/92">
-                  {pendingPlanApproval.markdown}
-                </pre>
+                <div className="mt-3 rounded-md border border-sky-200/15 bg-black/25 p-3 text-sm leading-6 text-sky-50/92">
+                  <MarkdownText content={pendingPlanApproval.markdown} />
+                </div>
                 {onApprovePlan ? (
                   <Button
                     className="mt-3"

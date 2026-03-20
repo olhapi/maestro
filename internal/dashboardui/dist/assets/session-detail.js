@@ -1,0 +1,1 @@
+import{E as e,t}from"./routes.js";import{d as n,l as r}from"./index.js";var i=e();function a(){let{identifier:e}=n({from:`/sessions/$identifier`});return(0,i.jsx)(r,{to:t.issueDetail,params:{identifier:e},replace:!0})}export{a as SessionDetailPage};

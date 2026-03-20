@@ -1,20 +1,21 @@
-import { useState } from "react";
+import { type ComponentType, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, RotateCcw, Send, Trash2 } from "lucide-react";
+import { Paperclip, Pencil, Reply, RotateCcw, Send, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { SessionExecutionCard } from "@/components/dashboard/session-execution-card";
 import { IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FilePicker } from "@/components/ui/file-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { extractClipboardFiles } from "@/lib/clipboard-files";
 import { appRoutes } from "@/lib/routes";
@@ -27,7 +28,7 @@ import {
 } from "@/lib/issue-assets";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
 import type { AgentCommand, IssueAsset, IssueComment, IssueCommentAttachment, IssueState, PermissionProfile } from "@/lib/types";
-import { formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
+import { cn, formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 
 const permissionProfileLabels: Record<PermissionProfile, string> = {
   default: "Default permissions",
@@ -94,6 +95,35 @@ function issueCommentAttachmentContentURL(identifier: string, commentID: string,
   return `/api/v1/app/issues/${encodeURIComponent(identifier)}/comments/${encodeURIComponent(commentID)}/attachments/${encodeURIComponent(attachmentID)}/content`;
 }
 
+function attachmentChipClassName(variant: "default" | "destructive" = "default") {
+  return cn(
+    "inline-flex max-w-full items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+    variant === "destructive"
+      ? "border-red-500/30 bg-red-500/15 text-red-100 hover:bg-red-500/20"
+      : "border-white/10 bg-white/5 text-white hover:bg-white/10",
+  );
+}
+
+function compactAttachmentMedia({
+  contentType,
+  label,
+  src,
+}: {
+  contentType?: string;
+  label: string;
+  src?: string | null;
+}) {
+  if (!contentType || !isIssueAssetImage(contentType) || !src) {
+    return <Paperclip className="size-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />;
+  }
+
+  return (
+    <span className="flex size-6 shrink-0 overflow-hidden rounded-md border border-white/10 bg-black/20">
+      <img alt={label} className="size-full object-cover" loading="lazy" src={src} />
+    </span>
+  );
+}
+
 function IssueCommentAttachmentLink({
   identifier,
   commentID,
@@ -103,15 +133,145 @@ function IssueCommentAttachmentLink({
   commentID: string;
   attachment: IssueCommentAttachment;
 }) {
+  const src = issueCommentAttachmentContentURL(identifier, commentID, attachment.id);
   return (
     <a
-      className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white transition hover:border-white/20 hover:bg-white/10"
-      href={issueCommentAttachmentContentURL(identifier, commentID, attachment.id)}
+      aria-label={`Open ${attachment.filename}`}
+      className={attachmentChipClassName()}
+      href={src}
       rel="noreferrer"
       target="_blank"
+      title={`${attachment.filename} (${formatIssueAssetSize(attachment.byte_size)})`}
     >
-      {attachment.filename} ({formatIssueAssetSize(attachment.byte_size)})
+      {compactAttachmentMedia({
+        contentType: attachment.content_type,
+        label: attachment.filename,
+        src: isIssueAssetImage(attachment.content_type) ? src : null,
+      })}
+      <span className="min-w-0 truncate">{attachment.filename}</span>
     </a>
+  );
+}
+
+function QueuedCommentAttachmentPreview({
+  file,
+  previewURL,
+  onRemove,
+}: {
+  file: File;
+  previewURL: string | null;
+  onRemove: () => void;
+}) {
+  return (
+    <button
+      aria-label={`Remove ${file.name}`}
+      className={attachmentChipClassName()}
+      title={file.name}
+      type="button"
+      onClick={onRemove}
+    >
+      {compactAttachmentMedia({
+        contentType: file.type,
+        label: file.name,
+        src: previewURL,
+      })}
+      <span className="min-w-0 truncate">{file.name}</span>
+      <X className="size-3 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
+    </button>
+  );
+}
+
+function EditableCommentAttachmentChip({
+  attachment,
+  removed,
+  onToggle,
+  identifier,
+  commentID,
+}: {
+  attachment: IssueCommentAttachment;
+  removed: boolean;
+  onToggle: () => void;
+  identifier: string;
+  commentID: string;
+}) {
+  const src = issueCommentAttachmentContentURL(identifier, commentID, attachment.id);
+
+  return (
+    <button
+      aria-label={`${removed ? "Restore" : "Remove"} ${attachment.filename}`}
+      className={attachmentChipClassName(removed ? "destructive" : "default")}
+      title={`${attachment.filename} (${formatIssueAssetSize(attachment.byte_size)})`}
+      type="button"
+      onClick={onToggle}
+    >
+      {compactAttachmentMedia({
+        contentType: attachment.content_type,
+        label: attachment.filename,
+        src: isIssueAssetImage(attachment.content_type) ? src : null,
+      })}
+      <span className="min-w-0 truncate">{attachment.filename}</span>
+      {removed ? (
+        <RotateCcw className="size-3 shrink-0" aria-hidden="true" />
+      ) : (
+        <X className="size-3 shrink-0" aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
+function isCommentAttachmentImage(file: File) {
+  return isIssueAssetImage(file.type) || /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)$/i.test(file.name);
+}
+
+type QueuedCommentAttachment = {
+  file: File;
+  previewURL: string | null;
+  isImage: boolean;
+};
+
+function createQueuedCommentAttachment(file: File): QueuedCommentAttachment {
+  const isImage = isCommentAttachmentImage(file);
+
+  return {
+    file,
+    isImage,
+    previewURL: isImage && typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : null,
+  };
+}
+
+function revokeQueuedCommentAttachment(attachment: QueuedCommentAttachment | undefined) {
+  if (attachment?.previewURL && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(attachment.previewURL);
+  }
+}
+
+function CommentActionButton({
+  icon: Icon,
+  label,
+  onClick,
+  variant,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  variant: ButtonProps["variant"];
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={label}
+          className={cn("shrink-0 p-0")}
+          onClick={onClick}
+          size="icon"
+          type="button"
+          variant={variant}
+        >
+          <Icon className="size-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -158,61 +318,127 @@ function CommentComposer({
   onSubmit: (body: string, files: File[]) => Promise<void>;
 }) {
   const [body, setBody] = useState(initialBody);
-  const [files, setFiles] = useState<File[]>([]);
+  const [queuedAttachments, setQueuedAttachments] = useState<QueuedCommentAttachment[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const queuedAttachmentsRef = useRef<QueuedCommentAttachment[]>([]);
+
+  useEffect(() => {
+    return () => {
+      for (const attachment of queuedAttachmentsRef.current) {
+        revokeQueuedCommentAttachment(attachment);
+      }
+    };
+  }, []);
+
+  const updateQueuedAttachments = (nextAttachments: QueuedCommentAttachment[]) => {
+    queuedAttachmentsRef.current = nextAttachments;
+    setQueuedAttachments(nextAttachments);
+  };
+
+  const addFiles = (nextFiles: File[]) => {
+    if (nextFiles.length === 0) {
+      return;
+    }
+
+    updateQueuedAttachments([...queuedAttachmentsRef.current, ...nextFiles.map(createQueuedCommentAttachment)]);
+  };
+
+  const removeQueuedAttachment = (index: number) => {
+    const currentAttachments = queuedAttachmentsRef.current;
+    const removedAttachment = currentAttachments[index];
+    if (!removedAttachment) {
+      return;
+    }
+
+    revokeQueuedCommentAttachment(removedAttachment);
+    updateQueuedAttachments(currentAttachments.filter((_, currentIndex) => currentIndex !== index));
+  };
+
+  const clearQueuedAttachments = () => {
+    for (const attachment of queuedAttachmentsRef.current) {
+      revokeQueuedCommentAttachment(attachment);
+    }
+    updateQueuedAttachments([]);
+  };
 
   return (
-    <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 p-3">
-      <Textarea
-        value={body}
-        className="min-h-[110px] resize-y"
-        placeholder={placeholder}
-        onChange={(event) => setBody(event.target.value)}
-        onPaste={(event) => {
-          const pastedFiles = extractClipboardFiles(event.clipboardData);
-          if (pastedFiles.length === 0) {
-            return;
-          }
-          event.preventDefault();
-          setFiles((current) => [...current, ...pastedFiles]);
-        }}
-      />
-      <FilePicker
-        compact
-        ariaLabel={`${submitLabel} attachments`}
-        buttonLabel="Attach files"
-        summary={
-          files.length === 0
-            ? "Attach files or paste with Cmd/Ctrl+V while this composer is focused."
-            : files.length === 1
-              ? files[0].name
-              : `${files.length} files queued`
-        }
-        multiple
-        onFilesSelected={(nextFiles) => setFiles((current) => [...current, ...nextFiles])}
-      />
-      {files.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {files.map((file, index) => (
-            <Button
-              key={`${file.name}-${file.size}-${index}`}
-              size="sm"
-              type="button"
-              variant="secondary"
-              onClick={() => setFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))}
-            >
-              Remove {file.name}
-            </Button>
+    <div
+      className={cn(
+        "grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 p-3 transition",
+        dragActive && "border-[var(--accent)] bg-[rgba(196,255,87,0.08)]",
+      )}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragActive(true);
+      }}
+      onDragLeave={(event) => {
+        event.preventDefault();
+        setDragActive(false);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragActive(false);
+        addFiles(Array.from(event.dataTransfer.files ?? []));
+      }}
+    >
+      <div className="relative">
+        <Textarea
+          value={body}
+          className="min-h-[110px] resize-y pb-20 pr-24"
+          placeholder={placeholder}
+          onChange={(event) => setBody(event.target.value)}
+          onPaste={(event) => {
+            const pastedFiles = extractClipboardFiles(event.clipboardData);
+            if (pastedFiles.length === 0) {
+              return;
+            }
+            event.preventDefault();
+            addFiles(pastedFiles);
+          }}
+        />
+        <div className="absolute inset-x-3 bottom-3 flex flex-wrap items-end justify-end gap-2">
+          {queuedAttachments.map((preview, index) => (
+            <QueuedCommentAttachmentPreview
+              key={`${preview.file.name}-${preview.file.size}-${preview.file.lastModified}-${index}`}
+              file={preview.file}
+              previewURL={preview.previewURL}
+              onRemove={() => removeQueuedAttachment(index)}
+            />
           ))}
+          <input
+            ref={inputRef}
+            aria-label={`${submitLabel} attachments`}
+            className="sr-only"
+            multiple
+            type="file"
+            onChange={(event) => {
+              addFiles(Array.from(event.currentTarget.files ?? []));
+              event.currentTarget.value = "";
+            }}
+          />
+          <Button
+            aria-label="Attach files"
+            className="size-8 rounded-full p-0"
+            onClick={() => inputRef.current?.click()}
+            type="button"
+            variant="secondary"
+          >
+            <Upload className="size-4" aria-hidden="true" />
+          </Button>
         </div>
-      ) : null}
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <Button
           className="ml-auto"
-          disabled={isPending || (!body.trim() && files.length === 0)}
+          disabled={isPending || (!body.trim() && queuedAttachments.length === 0)}
           onClick={async () => {
-            await onSubmit(body, files);
+            await onSubmit(body, queuedAttachments.map(({ file }) => file));
             setBody("");
-            setFiles([]);
+            clearQueuedAttachments();
           }}
           type="button"
         >
@@ -287,18 +513,25 @@ function IssueCommentEntry({
           {!normalizedComment.deleted_at ? (
             <div className="flex flex-wrap gap-2">
               {level === 0 ? (
-                <Button size="sm" type="button" variant="secondary" onClick={() => onStartReply(normalizedComment.id)}>
-                  Reply
-                </Button>
+                <CommentActionButton
+                  icon={Reply}
+                  label="Reply"
+                  onClick={() => onStartReply(normalizedComment.id)}
+                  variant="secondary"
+                />
               ) : null}
-              <Button size="sm" type="button" variant="secondary" onClick={() => onStartEdit(normalizedComment)}>
-                <Pencil className="size-4" />
-                Edit
-              </Button>
-              <Button size="sm" type="button" variant="destructive" onClick={() => void onDelete(normalizedComment.id)}>
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+              <CommentActionButton
+                icon={Pencil}
+                label="Edit"
+                onClick={() => onStartEdit(normalizedComment)}
+                variant="secondary"
+              />
+              <CommentActionButton
+                icon={Trash2}
+                label="Delete"
+                onClick={() => void onDelete(normalizedComment.id)}
+                variant="destructive"
+              />
             </div>
           ) : null}
         </>
@@ -320,21 +553,20 @@ function IssueCommentEntry({
               {normalizedComment.attachments.map((attachment) => {
                 const removed = removeAttachmentIDs.includes(attachment.id);
                 return (
-                  <Button
+                  <EditableCommentAttachmentChip
                     key={attachment.id}
-                    size="sm"
-                    type="button"
-                    variant={removed ? "destructive" : "secondary"}
-                    onClick={() =>
+                    attachment={attachment}
+                    commentID={normalizedComment.id}
+                    identifier={identifier}
+                    onToggle={() =>
                       setRemoveAttachmentIDs((current) =>
                         current.includes(attachment.id)
                           ? current.filter((id) => id !== attachment.id)
                           : [...current, attachment.id],
                       )
                     }
-                  >
-                    {removed ? "Restore" : "Remove"} {attachment.filename}
-                  </Button>
+                    removed={removed}
+                  />
                 );
               })}
             </div>
