@@ -282,8 +282,9 @@ write_run_list_json() {
   local run_id="$2"
   local conclusion="$3"
   local head_branch="${4:-ignored}"
+  local head_sha="${5:-ignored}"
   cat >"$file" <<EOF
-[{"conclusion":"$conclusion","databaseId":$run_id,"headBranch":"$head_branch","status":"completed","url":"https://example.com/$run_id"}]
+[{"conclusion":"$conclusion","databaseId":$run_id,"headBranch":"$head_branch","headSha":"$head_sha","status":"completed","url":"https://example.com/$run_id"}]
 EOF
 }
 
@@ -327,7 +328,7 @@ run_success_path_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 101 success "v1.2.3-rc.1"
+  write_run_list_json "$tmp_dir/run-list.json" 101 success "v1.2.3-rc.1" "abc123"
   write_success_run_json "$tmp_dir/run-view.json"
   write_published_state \
     "$tmp_dir/published.json" \
@@ -366,7 +367,7 @@ run_double_dash_passthrough_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 111 success "v1.2.3-rc.2"
+  write_run_list_json "$tmp_dir/run-list.json" 111 success "v1.2.3-rc.2" "double111"
   write_success_run_json "$tmp_dir/run-view.json"
   write_published_state \
     "$tmp_dir/published.json" \
@@ -402,7 +403,7 @@ run_tag_specific_run_selection_test() {
 
   write_mock_commands "$tmp_dir/bin"
   cat >"$tmp_dir/run-list.json" <<'EOF'
-[{"conclusion":"success","databaseId":999,"headBranch":"v1.2.2","status":"completed","url":"https://example.com/999"},{"conclusion":"success","databaseId":444,"headBranch":"v1.2.3-rc.3","status":"completed","url":"https://example.com/444"}]
+[{"conclusion":"success","databaseId":999,"headBranch":"v1.2.3-rc.3","headSha":"stale999","status":"completed","url":"https://example.com/999"},{"conclusion":"success","databaseId":444,"headBranch":"v1.2.3-rc.3","headSha":"tag444","status":"completed","url":"https://example.com/444"}]
 EOF
   write_success_run_json "$tmp_dir/run-view.json"
   write_published_state \
@@ -427,7 +428,7 @@ EOF
   RELEASE_REGISTRY_TIMEOUT_SEC=1 \
   "$SCRIPT_UNDER_TEST" "1.2.3-rc.3"
 
-  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.3 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch"
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.3 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch,headSha"
   assert_contains "$tmp_dir/log.txt" "gh run view 444 --repo olhapi/maestro --json databaseId,status,conclusion,url,jobs"
 }
 
@@ -437,7 +438,7 @@ run_manual_fallback_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 202 failure "v1.2.3"
+  write_run_list_json "$tmp_dir/run-list.json" 202 failure "v1.2.3" "def456"
   write_manual_fallback_run_json "$tmp_dir/run-view.json"
   create_artifacts "$tmp_dir/artifacts" "1.2.3"
   write_published_state \
@@ -459,7 +460,7 @@ run_manual_fallback_test() {
   RELEASE_REGISTRY_TIMEOUT_SEC=1 \
   "$SCRIPT_UNDER_TEST" "1.2.3"
 
-  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch"
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch,headSha"
   assert_contains "$tmp_dir/log.txt" "gh run download 202 --repo olhapi/maestro --dir"
   assert_publish_sequence \
     "$tmp_dir/log.txt" \
@@ -481,7 +482,7 @@ run_manual_fallback_requires_npm_auth_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 707 failure "v1.2.4-rc.1"
+  write_run_list_json "$tmp_dir/run-list.json" 707 failure "v1.2.4-rc.1" "guard707"
   write_manual_fallback_run_json "$tmp_dir/run-view.json"
 
   if PATH="$tmp_dir/bin:$PATH" \
@@ -512,7 +513,7 @@ run_existing_remote_tag_resume_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 404 failure "v1.2.3-rc.4"
+  write_run_list_json "$tmp_dir/run-list.json" 404 failure "v1.2.3-rc.4" "tag404"
   write_manual_fallback_run_json "$tmp_dir/run-view.json"
   create_artifacts "$tmp_dir/artifacts" "1.2.3-rc.4"
   write_published_state \
@@ -540,7 +541,7 @@ run_existing_remote_tag_resume_test() {
   assert_not_contains "$tmp_dir/log.txt" "pnpm verify:pre-push"
   assert_not_contains "$tmp_dir/log.txt" "git tag -a v1.2.3-rc.4 -m Release v1.2.3-rc.4"
   assert_not_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.4"
-  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.4 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch"
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.4 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch,headSha"
   assert_contains "$tmp_dir/log.txt" "gh run download 404 --repo olhapi/maestro --dir"
 }
 
@@ -550,7 +551,7 @@ run_existing_local_tag_push_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 505 success "v1.2.3-rc.5"
+  write_run_list_json "$tmp_dir/run-list.json" 505 success "v1.2.3-rc.5" "head505"
   write_success_run_json "$tmp_dir/run-view.json"
   write_published_state \
     "$tmp_dir/published.json" \
@@ -586,7 +587,7 @@ run_stale_local_tag_guard_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 606 success "v1.2.3-rc.6"
+  write_run_list_json "$tmp_dir/run-list.json" 606 success "v1.2.3-rc.6" "head606"
   write_success_run_json "$tmp_dir/run-view.json"
 
   if PATH="$tmp_dir/bin:$PATH" \
@@ -614,7 +615,7 @@ run_dirty_worktree_guard_test() {
   trap 'rm -rf "$tmp_dir"' RETURN
 
   write_mock_commands "$tmp_dir/bin"
-  write_run_list_json "$tmp_dir/run-list.json" 303 success "v9.9.9-rc.1"
+  write_run_list_json "$tmp_dir/run-list.json" 303 success "v9.9.9-rc.1" "ghi789"
   write_success_run_json "$tmp_dir/run-view.json"
 
   if PATH="$tmp_dir/bin:$PATH" \
