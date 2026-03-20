@@ -2606,6 +2606,103 @@ func TestDeleteIssueReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteIssueRemovesIncomingBlockersAndReactivatesCommands(t *testing.T) {
+	store := setupTestStore(t)
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	blocked, err := store.CreateIssue("", "", "Blocked", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if err := store.UpdateIssueState(blocked.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocked: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	unresolved, err := store.UnresolvedBlockersForIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("UnresolvedBlockersForIssue before delete: %v", err)
+	}
+	if len(unresolved) != 1 || unresolved[0] != blocker.Identifier {
+		t.Fatalf("expected unresolved blocker %q before delete, got %#v", blocker.Identifier, unresolved)
+	}
+
+	firstCommand, err := store.CreateIssueAgentCommandWithRuntimeEvent(
+		blocked.ID,
+		"Resume implementation after unblock.",
+		IssueAgentCommandPending,
+		"manual_command_submitted",
+		map[string]interface{}{
+			"issue_id":   blocked.ID,
+			"identifier": blocked.Identifier,
+			"phase":      string(blocked.WorkflowPhase),
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommandWithRuntimeEvent: %v", err)
+	}
+	if err := store.UpdateIssueAgentCommandStatus(firstCommand.ID, IssueAgentCommandWaitingForUnblock); err != nil {
+		t.Fatalf("UpdateIssueAgentCommandStatus first command: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	secondCommand, err := store.CreateIssueAgentCommand(blocked.ID, "Run the final check.", IssueAgentCommandWaitingForUnblock)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand second command: %v", err)
+	}
+
+	pending, err := store.ListPendingIssueAgentCommands(blocked.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands before delete: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending commands while blocked, got %#v", pending)
+	}
+
+	if err := store.DeleteIssue(blocker.ID); err != nil {
+		t.Fatalf("DeleteIssue blocker: %v", err)
+	}
+
+	updated, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked after delete: %v", err)
+	}
+	if len(updated.BlockedBy) != 0 {
+		t.Fatalf("expected blocked issue to have no blockers after delete, got %#v", updated.BlockedBy)
+	}
+
+	detail, err := store.GetIssueDetailByIdentifier(blocked.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier blocked after delete: %v", err)
+	}
+	if detail.IsBlocked {
+		t.Fatalf("expected issue detail to report unblocked after delete, got %#v", detail)
+	}
+
+	unresolved, err = store.UnresolvedBlockersForIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("UnresolvedBlockersForIssue after delete: %v", err)
+	}
+	if len(unresolved) != 0 {
+		t.Fatalf("expected no unresolved blockers after delete, got %#v", unresolved)
+	}
+
+	pending, err = store.ListPendingIssueAgentCommands(blocked.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands after delete: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected two pending commands after delete, got %#v", pending)
+	}
+	if pending[0].ID != firstCommand.ID || pending[1].ID != secondCommand.ID {
+		t.Fatalf("expected pending commands in creation order, got %#v", pending)
+	}
+}
+
 func TestIssueBlockers(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -3960,6 +4057,122 @@ func TestProviderIssueLookupHelpers(t *testing.T) {
 	}
 	if len(emptyByID) != 0 || len(emptyByIdentifier) != 0 {
 		t.Fatalf("expected empty lookup result for empty inputs, got ids=%#v identifiers=%#v", emptyByID, emptyByIdentifier)
+	}
+}
+
+func TestReconcileProviderIssuesRemovesDeletedBlockersAndReactivatesCommands(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProjectWithProvider(
+		"Provider Project",
+		"",
+		"",
+		"",
+		ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	if err := store.UpdateProjectState(project.ID, ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState: %v", err)
+	}
+
+	if err := store.ReconcileProviderIssues(project.ID, ProviderKindLinear, []Issue{
+		{
+			Identifier:       "LIN-1",
+			ProviderKind:     ProviderKindLinear,
+			ProviderIssueRef: "linear-1",
+			Title:            "Blocker",
+			State:            StateReady,
+		},
+		{
+			Identifier:       "LIN-2",
+			ProviderKind:     ProviderKindLinear,
+			ProviderIssueRef: "linear-2",
+			Title:            "Blocked",
+			BlockedBy:        []string{"LIN-1"},
+			State:            StateReady,
+		},
+	}); err != nil {
+		t.Fatalf("ReconcileProviderIssues initial sync: %v", err)
+	}
+
+	blocker, err := store.GetIssueByIdentifier("LIN-1")
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier blocker: %v", err)
+	}
+	blocked, err := store.GetIssueByIdentifier("LIN-2")
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier blocked: %v", err)
+	}
+
+	firstCommand, err := store.CreateIssueAgentCommandWithRuntimeEvent(
+		blocked.ID,
+		"Resume implementation after unblock.",
+		IssueAgentCommandPending,
+		"manual_command_submitted",
+		map[string]interface{}{
+			"issue_id":   blocked.ID,
+			"identifier": blocked.Identifier,
+			"phase":      string(blocked.WorkflowPhase),
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommandWithRuntimeEvent: %v", err)
+	}
+	if err := store.UpdateIssueAgentCommandStatus(firstCommand.ID, IssueAgentCommandWaitingForUnblock); err != nil {
+		t.Fatalf("UpdateIssueAgentCommandStatus first command: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	secondCommand, err := store.CreateIssueAgentCommand(blocked.ID, "Run the final check.", IssueAgentCommandWaitingForUnblock)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand second command: %v", err)
+	}
+
+	if err := store.ReconcileProviderIssues(project.ID, ProviderKindLinear, []Issue{
+		{
+			Identifier:       "LIN-2",
+			ProviderKind:     ProviderKindLinear,
+			ProviderIssueRef: "linear-2",
+			Title:            "Blocked",
+			BlockedBy:        []string{blocker.Identifier},
+			State:            StateReady,
+		},
+	}); err != nil {
+		t.Fatalf("ReconcileProviderIssues second sync: %v", err)
+	}
+
+	if _, err := store.GetIssueByIdentifier("LIN-1"); !IsNotFound(err) {
+		t.Fatalf("expected blocker issue to be deleted, got %v", err)
+	}
+
+	updated, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked after reconcile delete: %v", err)
+	}
+	if len(updated.BlockedBy) != 0 {
+		t.Fatalf("expected blocked issue to have no blockers after reconcile delete, got %#v", updated.BlockedBy)
+	}
+
+	detail, err := store.GetIssueDetailByIdentifier(blocked.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueDetailByIdentifier blocked after reconcile delete: %v", err)
+	}
+	if detail.IsBlocked {
+		t.Fatalf("expected issue detail to report unblocked after reconcile delete, got %#v", detail)
+	}
+
+	pending, err := store.ListPendingIssueAgentCommands(blocked.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands after reconcile delete: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected two pending commands after reconcile delete, got %#v", pending)
+	}
+	if pending[0].ID != firstCommand.ID || pending[1].ID != secondCommand.ID {
+		t.Fatalf("expected pending commands in creation order, got %#v", pending)
 	}
 }
 
