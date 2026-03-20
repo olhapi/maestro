@@ -3,8 +3,10 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, vi } from "vitest";
 
 import { ProjectsPage } from "@/routes/projects";
+import { projectPermissionProfileButtonCopy } from "@/lib/project-permission-profiles";
 import { makeBootstrapResponse } from "@/test/fixtures";
 import { renderWithQueryClient } from "@/test/test-utils";
+import type { PermissionProfile } from "@/lib/types";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
@@ -23,6 +25,7 @@ vi.mock("@/lib/api", () => ({
     listProjects: vi.fn(),
     listEpics: vi.fn(),
     deleteProject: vi.fn(),
+    setProjectPermissionProfile: vi.fn(),
     deleteEpic: vi.fn(),
     createProject: vi.fn(),
     updateProject: vi.fn(),
@@ -75,6 +78,11 @@ describe("ProjectsPage", () => {
     expect(screen.queryByText(/^(run|stop)$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^edit$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^delete$/i)).not.toBeInTheDocument();
+
+    expect(screen.getByText("Platform work")).toHaveClass("line-clamp-2");
+    expect(screen.queryByText("/repo")).not.toBeInTheDocument();
+    expect(screen.queryByText("kanban")).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /provider kanban/i })).toBeInTheDocument();
 
     expect(screen.getByText("Tokens")).toBeInTheDocument();
   });
@@ -173,6 +181,77 @@ describe("ProjectsPage", () => {
     await waitFor(() => {
       expect(api.stopProject).toHaveBeenCalledWith(runningBootstrap.projects[0].id);
     });
+  });
+
+  it("renders the project permissions icon button on each card and updates the profile", async () => {
+    const bootstrap = makeBootstrapResponse();
+    let permissionProfile: PermissionProfile = "default";
+    const projectID = bootstrap.projects[0].id;
+    const projectSummary = () => ({
+      ...bootstrap.projects[0],
+      permission_profile: permissionProfile,
+    });
+
+    vi.mocked(api.bootstrap).mockImplementation(async () => ({
+      ...bootstrap,
+      projects: [projectSummary()],
+    }));
+    vi.mocked(api.listProjects).mockImplementation(async () => ({
+      items: [projectSummary()],
+    }));
+    vi.mocked(api.listEpics).mockResolvedValue({ items: bootstrap.epics });
+    vi.mocked(api.setProjectPermissionProfile).mockImplementation(
+      async (_id, nextProfile) => {
+        permissionProfile = nextProfile as PermissionProfile;
+        return projectSummary();
+      },
+    );
+
+    renderWithQueryClient(<ProjectsPage />);
+
+    const permissionButton = () =>
+      screen.getByRole("button", {
+        name: projectPermissionProfileButtonCopy(
+          "Project access",
+          permissionProfile,
+        ).ariaLabel,
+      });
+
+    await waitFor(() => {
+      expect(permissionButton()).toBeInTheDocument();
+    });
+
+    expect(permissionButton()).toHaveTextContent("Default access");
+    expect(permissionButton()).not.toHaveTextContent("?");
+    expect(permissionButton().querySelector("svg")).not.toBeNull();
+
+    fireEvent.focus(permissionButton());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Uses the workspace baseline agent settings until a more specific access mode is chosen.",
+    );
+
+    fireEvent.click(permissionButton());
+    await waitFor(() => {
+      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith(
+        projectID,
+        "full-access",
+      );
+    });
+    await waitFor(() => {
+      expect(permissionButton()).toHaveAccessibleName(
+        projectPermissionProfileButtonCopy(
+          "Project access",
+          "full-access",
+        ).ariaLabel,
+      );
+    });
+    expect(permissionButton()).toHaveTextContent("Full access");
+
+    expect(
+      screen.getByRole("button", { name: /^(run|stop)$/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^edit$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^delete$/i })).toBeInTheDocument();
   });
 
   it("shows a delete error when project removal fails", async () => {

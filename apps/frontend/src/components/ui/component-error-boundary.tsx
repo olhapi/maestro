@@ -55,7 +55,7 @@ function ErrorFallback({
   return (
     <Card
       className={cn(
-        'overflow-hidden bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))]',
+        'grid justify-items-stretch items-center overflow-hidden bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))]',
         isPage ? 'min-h-[420px]' : 'min-h-[240px]',
         className,
       )}
@@ -63,7 +63,7 @@ function ErrorFallback({
     >
       <Empty
         className={cn(
-          'min-h-full border-none bg-transparent',
+          'border-none bg-transparent',
           isPage ? 'p-[var(--panel-padding)]' : 'min-h-[240px] p-6',
         )}
       >
