@@ -29,8 +29,8 @@ export function PageHeader({
   statsClassName,
 }: {
   eyebrow?: string;
-  title: string;
-  description?: string;
+  title: ReactNode;
+  description?: ReactNode;
   descriptionClassName?: string;
   crumbs?: Crumb[];
   actions?: ReactNode;
@@ -74,14 +74,14 @@ export function PageHeader({
             {title}
           </h1>
           {description ? (
-            <p
+            <div
               className={cn(
                 "mt-2.5 max-w-2xl text-sm leading-6 text-[var(--muted-foreground)]",
                 descriptionClassName,
               )}
             >
               {description}
-            </p>
+            </div>
           ) : null}
         </div>
         {actions ? (

@@ -3,8 +3,10 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
+import { projectPermissionProfileButtonCopy } from "@/lib/project-permission-profiles";
 import { makeBootstrapResponse } from "@/test/fixtures";
 import { renderWithQueryClient } from "@/test/test-utils";
+import type { PermissionProfile } from "@/lib/types";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
@@ -61,14 +63,44 @@ describe("ProjectDetailPage", () => {
       ).toBeInTheDocument();
     });
 
+    const heading = screen.getByRole("heading", { name: /platform/i });
+    const providerChip = within(heading).getByRole("img", {
+      name: /provider kanban/i,
+    });
+    const repoBinding = within(heading).getByLabelText(/repo path: \/repo/i);
+    expect(providerChip.nextElementSibling).toBe(repoBinding);
+    expect(repoBinding).toHaveTextContent("repo");
+    fireEvent.focus(providerChip);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Provider Kanban");
+    expect(screen.queryByText("Repo binding")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /uses the workspace baseline agent settings until a more specific access mode is chosen/i,
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Project setup")).not.toBeInTheDocument();
+    expect(screen.queryByText("Workflow path")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Workflow defaults to <repo>/WORKFLOW.md."),
+    ).not.toBeInTheDocument();
+
     expect(screen.getByText("Tokens")).toBeInTheDocument();
     expect(
       screen.getByText("Lifetime tokens spent across all project issues."),
     ).toBeInTheDocument();
-    expect(screen.getByText("Repo binding")).toBeInTheDocument();
     expect(screen.getByText("Epics driving this project")).toBeInTheDocument();
     expect(screen.getByText("What changed most recently")).toBeInTheDocument();
     expect(screen.queryByText(/^\d+\s+active$/i)).not.toBeInTheDocument();
+
+    const accessButton = screen.getByRole("button", {
+      name: projectPermissionProfileButtonCopy(
+        "Project access",
+        "default",
+      ).ariaLabel,
+    });
+    expect(
+      screen.getByRole("button", { name: /run project/i }).nextElementSibling,
+    ).toBe(accessButton);
 
     fireEvent.click(screen.getByRole("button", { name: /run project/i }));
     await waitFor(() => {
@@ -99,46 +131,76 @@ describe("ProjectDetailPage", () => {
     });
   });
 
-  it("shows repo setup guidance when dispatch is not ready", async () => {
-    const bootstrap = makeBootstrapResponse({
-      projects: [
-        {
-          ...makeBootstrapResponse().projects[0],
-          repo_path: "",
-          workflow_path: "",
-          orchestration_ready: false,
-          dispatch_ready: false,
-        },
-      ],
+  it("shows dispatch guidance when dispatch is not ready", async () => {
+    const initialInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 390,
     });
-
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
-    vi.mocked(api.getProject).mockResolvedValue({
-      project: bootstrap.projects[0],
-      epics: bootstrap.epics,
-      issues: bootstrap.issues,
-    });
-
-    renderWithQueryClient(<ProjectDetailPage />);
-
-    await waitFor(() => {
-      expect(screen.getByText("Needs repo setup")).toBeInTheDocument();
-    });
-
-    const badge = screen.getByText("Needs repo setup");
     await act(async () => {
-      fireEvent.pointerEnter(badge, { pointerType: "mouse" });
-      fireEvent.mouseEnter(badge);
+      window.dispatchEvent(new Event("resize"));
     });
 
-    await waitFor(() => {
-      expect(screen.getByText("Attach this project to a local repository")).toBeInTheDocument();
-    });
-    expect(screen.getByText("Open the project settings and set Repo path to the local checkout for this project.")).toBeInTheDocument();
-    expect(screen.getByText("Leave Workflow path empty to use WORKFLOW.md at the repo root, or set an explicit workflow file.")).toBeInTheDocument();
+    try {
+      const bootstrap = makeBootstrapResponse({
+        projects: [
+          {
+            ...makeBootstrapResponse().projects[0],
+            repo_path: "/repo/other",
+            workflow_path: "/repo/other/WORKFLOW.md",
+            orchestration_ready: false,
+            dispatch_ready: false,
+            dispatch_error:
+              "Project repo is outside the current server scope (/repo/current)",
+          },
+        ],
+      });
+
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+      vi.mocked(api.getProject).mockResolvedValue({
+        project: bootstrap.projects[0],
+        epics: bootstrap.epics,
+        issues: bootstrap.issues,
+      });
+
+      renderWithQueryClient(<ProjectDetailPage />);
+
+      const heading = await screen.findByRole("heading", { name: /platform/i });
+      expect(within(heading).getByLabelText(/repo path: \/repo\/other/i)).toBeInTheDocument();
+
+      expect(screen.getByText("Out of scope")).toBeInTheDocument();
+      expect(screen.getByText("Bring the repo into this server scope")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "The current Maestro server can only dispatch work inside the repo scope it was started with.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Tip: move the repo under the current server scope or restart Maestro for that repo.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Move the project's repo path under /repo/current, or restart Maestro scoped to /repo/other.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Project repo: /repo/other")).toBeInTheDocument();
+      expect(screen.getByText("Server scope: /repo/current")).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: initialInnerWidth,
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"));
+      });
+    }
   });
 
-  it("renders epic progress using terminal work counts", async () => {
+  it("renders epic state distribution using colored segments", async () => {
     const bootstrap = makeBootstrapResponse({
       epics: [
         {
@@ -151,6 +213,14 @@ describe("ProjectDetailPage", () => {
             done: 2,
             cancelled: 1,
           },
+          state_buckets: [
+            { state: "done", count: 2, is_terminal: true },
+            { state: "backlog", count: 1 },
+            { state: "cancelled", count: 1, is_terminal: true },
+            { state: "in_progress", count: 1, is_active: true },
+            { state: "ready", count: 0, is_active: true },
+            { state: "in_review", count: 0, is_active: true },
+          ],
         },
       ],
     });
@@ -164,67 +234,134 @@ describe("ProjectDetailPage", () => {
 
     renderWithQueryClient(<ProjectDetailPage />);
 
-    const progress = await screen.findByRole("progressbar", {
-      name: /observability completion/i,
+    const distribution = await screen.findByRole("list", {
+      name: /observability state distribution/i,
     });
 
-    expect(progress).toHaveAttribute("aria-valuetext", "3 of 5 issues closed");
-    expect(progress).toHaveAttribute("aria-valuenow", "3");
-    expect(progress).toHaveAttribute("aria-valuemax", "5");
+    const segments = within(distribution).getAllByRole("listitem");
+    expect(segments).toHaveLength(4);
+    expect(
+      segments.map((segment) => segment.getAttribute("data-state")),
+    ).toEqual(["backlog", "in_progress", "done", "cancelled"]);
 
-    const epicCard = progress.parentElement as HTMLElement;
-    expect(within(epicCard).getByText("Backlog 1")).toBeInTheDocument();
-    expect(within(epicCard).getByText("Ready 0")).toBeInTheDocument();
-    expect(within(epicCard).getByText("In progress 1")).toBeInTheDocument();
-    expect(within(epicCard).getByText("Review 0")).toBeInTheDocument();
+    const [backlogSegment, inProgressSegment, doneSegment, cancelledSegment] =
+      segments;
+    expect(backlogSegment).toHaveClass("bg-slate-400/90");
+    expect(backlogSegment).toHaveStyle({ width: "20%" });
+    expect(inProgressSegment).toHaveClass("bg-lime-400/90");
+    expect(inProgressSegment).toHaveStyle({ width: "20%" });
+    expect(doneSegment).toHaveClass("bg-emerald-400/90");
+    expect(doneSegment).toHaveStyle({ width: "40%" });
+    expect(cancelledSegment).toHaveClass("bg-rose-400/90");
+    expect(cancelledSegment).toHaveStyle({ width: "20%" });
+
+    expect(screen.queryByText("Backlog 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Ready 0")).not.toBeInTheDocument();
+    expect(screen.queryByText("In progress 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Review 0")).not.toBeInTheDocument();
   });
 
-  it("updates the project permission profile from the inline selector", async () => {
+  it("cycles the default permissions button through all three profiles", async () => {
     const bootstrap = makeBootstrapResponse();
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
-    vi.mocked(api.getProject).mockResolvedValue({
-      project: bootstrap.projects[0],
+    let permissionProfile: PermissionProfile = "default";
+
+    vi.mocked(api.bootstrap).mockImplementation(async () => ({
+      ...bootstrap,
+      projects: [
+        {
+          ...bootstrap.projects[0],
+          permission_profile: permissionProfile,
+        },
+      ],
+    }));
+    vi.mocked(api.getProject).mockImplementation(async () => ({
+      project: {
+        ...bootstrap.projects[0],
+        permission_profile: permissionProfile,
+      },
       epics: bootstrap.epics,
       issues: bootstrap.issues,
-    });
-    vi.mocked(api.setProjectPermissionProfile).mockResolvedValue({
-      ...bootstrap.projects[0],
-      permission_profile: "full-access",
-    });
+    }));
+    vi.mocked(api.setProjectPermissionProfile).mockImplementation(
+      async (_projectId, nextProfile) => {
+        permissionProfile = nextProfile as PermissionProfile;
+        return {
+          ...bootstrap.projects[0],
+          permission_profile: permissionProfile,
+        };
+      },
+    );
 
     renderWithQueryClient(<ProjectDetailPage />);
 
-    const select = await screen.findByLabelText(/project agent permissions/i);
-    expect(screen.getByText(/issues on the default profile inherit this setting/i)).toBeInTheDocument();
-    fireEvent.change(select, { target: { value: "full-access" } });
+    const button = () =>
+      screen.getByRole("button", {
+        name: projectPermissionProfileButtonCopy(
+          "Project access",
+          permissionProfile,
+        ).ariaLabel,
+      });
 
     await waitFor(() => {
-      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith("project-1", "full-access");
+      expect(button()).toBeInTheDocument();
     });
-  });
+    expect(
+      screen.queryByText(
+        /uses the workspace baseline agent settings until a more specific access mode is chosen/i,
+      ),
+    ).not.toBeInTheDocument();
+    expect(button()).toHaveTextContent("Default access");
+    expect(button()).toHaveClass("w-fit");
 
-  it("offers the plan-first project permission option", async () => {
-    const bootstrap = makeBootstrapResponse();
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
-    vi.mocked(api.getProject).mockResolvedValue({
-      project: bootstrap.projects[0],
-      epics: bootstrap.epics,
-      issues: bootstrap.issues,
-    });
-    vi.mocked(api.setProjectPermissionProfile).mockResolvedValue({
-      ...bootstrap.projects[0],
-      permission_profile: "plan-then-full-access",
-    });
-
-    renderWithQueryClient(<ProjectDetailPage />);
-
-    const select = await screen.findByLabelText(/project agent permissions/i);
-    expect(screen.getByRole("option", { name: /plan, then full access/i })).toBeInTheDocument();
-
-    fireEvent.change(select, { target: { value: "plan-then-full-access" } });
-
+    fireEvent.click(button());
     await waitFor(() => {
-      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith("project-1", "plan-then-full-access");
+      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith(
+        "project-1",
+        "full-access",
+      );
     });
+    await waitFor(() => {
+      expect(button()).toHaveAccessibleName(
+        projectPermissionProfileButtonCopy(
+          "Project access",
+          "full-access",
+        ).ariaLabel,
+      );
+    });
+    expect(button()).toHaveTextContent("Full access");
+
+    fireEvent.click(button());
+    await waitFor(() => {
+      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith(
+        "project-1",
+        "plan-then-full-access",
+      );
+    });
+    await waitFor(() => {
+      expect(button()).toHaveAccessibleName(
+        projectPermissionProfileButtonCopy(
+          "Project access",
+          "plan-then-full-access",
+        ).ariaLabel,
+      );
+    });
+    expect(button()).toHaveTextContent("Plan, then full access");
+
+    fireEvent.click(button());
+    await waitFor(() => {
+      expect(api.setProjectPermissionProfile).toHaveBeenCalledWith(
+        "project-1",
+        "default",
+      );
+    });
+    await waitFor(() => {
+      expect(button()).toHaveAccessibleName(
+        projectPermissionProfileButtonCopy(
+          "Project access",
+          "default",
+        ).ariaLabel,
+      );
+    });
+    expect(button()).toHaveTextContent("Default access");
   });
 });

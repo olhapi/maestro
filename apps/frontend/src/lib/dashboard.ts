@@ -2,13 +2,13 @@ import type { DashboardRuntimeSource, IssueState, IssueSummary, PausedEntry, Ret
 
 export const issueStates: IssueState[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled']
 
-export const stateMeta: Record<string, { label: string; accent: string; boardTint: string }> = {
-  backlog: { label: 'Backlog', accent: 'text-slate-200', boardTint: 'from-slate-500/20 to-slate-900/20' },
-  ready: { label: 'Ready', accent: 'text-cyan-200', boardTint: 'from-cyan-500/20 to-slate-900/20' },
-  in_progress: { label: 'In Progress', accent: 'text-lime-200', boardTint: 'from-lime-500/20 to-slate-900/20' },
-  in_review: { label: 'In Review', accent: 'text-amber-200', boardTint: 'from-amber-500/20 to-slate-900/20' },
-  done: { label: 'Done', accent: 'text-emerald-200', boardTint: 'from-emerald-500/20 to-slate-900/20' },
-  cancelled: { label: 'Cancelled', accent: 'text-rose-200', boardTint: 'from-rose-500/20 to-slate-900/20' },
+export const stateMeta: Record<string, { label: string; accent: string; boardTint: string; progressFill: string }> = {
+  backlog: { label: 'Backlog', accent: 'text-slate-200', boardTint: 'from-slate-500/20 to-slate-900/20', progressFill: 'bg-slate-400/90' },
+  ready: { label: 'Ready', accent: 'text-cyan-200', boardTint: 'from-cyan-500/20 to-slate-900/20', progressFill: 'bg-cyan-400/90' },
+  in_progress: { label: 'In Progress', accent: 'text-lime-200', boardTint: 'from-lime-500/20 to-slate-900/20', progressFill: 'bg-lime-400/90' },
+  in_review: { label: 'In Review', accent: 'text-amber-200', boardTint: 'from-amber-500/20 to-slate-900/20', progressFill: 'bg-amber-400/90' },
+  done: { label: 'Done', accent: 'text-emerald-200', boardTint: 'from-emerald-500/20 to-slate-900/20', progressFill: 'bg-emerald-400/90' },
+  cancelled: { label: 'Cancelled', accent: 'text-rose-200', boardTint: 'from-rose-500/20 to-slate-900/20', progressFill: 'bg-rose-400/90' },
 }
 
 export function getStateMeta(state: string) {
@@ -25,6 +25,7 @@ export function getStateMeta(state: string) {
     label: label || 'Unknown',
     accent: 'text-sky-200',
     boardTint: 'from-sky-500/20 to-slate-900/20',
+    progressFill: 'bg-sky-400/90',
   }
 }
 

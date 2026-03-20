@@ -4,6 +4,7 @@ import type {
   ProjectSummary,
   StateBucket,
 } from "@/lib/types";
+import { getStateMeta } from "@/lib/dashboard";
 
 type DispatchProject = Pick<
   Project,
@@ -23,6 +24,14 @@ export interface ProjectDispatchGuidance {
   mobileTip: string;
   steps: string[];
   context: string[];
+}
+
+export interface SummaryStateSegment {
+  state: string;
+  label: string;
+  count: number;
+  percent: number;
+  fillClass: string;
 }
 
 export interface SummaryProgress {
@@ -190,6 +199,17 @@ function countBuckets(buckets?: StateBucket[]) {
   );
 }
 
+const summaryStateOrder = [
+  "backlog",
+  "ready",
+  "in_progress",
+  "in_review",
+  "done",
+  "cancelled",
+] as const;
+
+const summaryStateOrderSet = new Set<string>(summaryStateOrder);
+
 function fallbackCounts(summary: Pick<ProjectSummary | EpicSummary, "counts">) {
   return {
     total:
@@ -206,6 +226,30 @@ function fallbackCounts(summary: Pick<ProjectSummary | EpicSummary, "counts">) {
     terminal: summary.counts.done + summary.counts.cancelled,
     done: summary.counts.done,
   };
+}
+
+function summaryStateCounts(summary: Pick<ProjectSummary | EpicSummary, "counts" | "state_buckets">) {
+  const counts = new Map<string, number>();
+
+  if (summary.state_buckets?.length) {
+    for (const bucket of summary.state_buckets) {
+      counts.set(bucket.state, (counts.get(bucket.state) ?? 0) + bucket.count);
+    }
+    return counts;
+  }
+
+  counts.set("backlog", summary.counts.backlog);
+  counts.set("ready", summary.counts.ready);
+  counts.set("in_progress", summary.counts.in_progress);
+  counts.set("in_review", summary.counts.in_review);
+  counts.set("done", summary.counts.done);
+  counts.set("cancelled", summary.counts.cancelled);
+
+  return counts;
+}
+
+function roundPercent(value: number) {
+  return Number(value.toFixed(2));
 }
 
 export function summaryActiveCount(summary: ProjectSummary | EpicSummary) {
@@ -247,6 +291,35 @@ export function summaryProgress(summary: ProjectSummary | EpicSummary): SummaryP
     total,
     percent: total === 0 ? 0 : Math.min(100, Math.max(0, (closed / total) * 100)),
   };
+}
+
+export function summaryStateSegments(summary: ProjectSummary | EpicSummary): SummaryStateSegment[] {
+  const counts = summaryStateCounts(summary);
+  const total = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
+
+  if (total <= 0) {
+    return [];
+  }
+
+  const orderedStates = [
+    ...summaryStateOrder.filter((state) => (counts.get(state) ?? 0) > 0),
+    ...Array.from(counts.keys())
+      .filter((state) => !summaryStateOrderSet.has(state) && (counts.get(state) ?? 0) > 0)
+      .sort(),
+  ];
+
+  return orderedStates.map((state) => {
+    const count = counts.get(state) ?? 0;
+    const meta = getStateMeta(state);
+
+    return {
+      state,
+      label: meta.label,
+      count,
+      percent: roundPercent((count / total) * 100),
+      fillClass: meta.progressFill,
+    };
+  });
 }
 
 export function summaryTokenSpend(summary: ProjectSummary) {

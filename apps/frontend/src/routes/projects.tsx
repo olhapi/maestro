@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Play, Plus, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { ProjectProviderChip } from "@/components/dashboard/project-provider-chip";
+import { ProjectPermissionProfileButton } from "@/components/dashboard/project-permission-profile-button";
 import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { EpicDialog, IssueDialog, ProjectDialog } from "@/components/forms";
@@ -150,22 +152,18 @@ export function ProjectsPage() {
             <Card key={project.id} className="overflow-hidden">
               <CardHeader className="flex-col gap-3 lg:flex-row lg:items-start">
                 <div className="space-y-3">
-                  <Badge>{summaryActiveCount(project)} active</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge>{summaryActiveCount(project)} active</Badge>
+                    <ProjectProviderChip providerKind={project.provider_kind} />
+                  </div>
                   <div>
                     <CardTitle className="text-2xl">
                       <Link params={{ projectId: project.id }} to={appRoutes.projectDetail}>
                         {project.name}
                       </Link>
                     </CardTitle>
-                    <p className="mt-2.5 max-w-xl text-sm leading-6 text-[var(--muted-foreground)]">
+                    <p className="mt-2.5 max-w-xl line-clamp-2 text-sm leading-6 text-[var(--muted-foreground)]">
                       {project.description || "No description yet."}
-                    </p>
-                    <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                      {project.repo_path || "No repo path configured yet."}
-                    </p>
-                    <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      {project.provider_kind || "kanban"}
-                      {project.provider_project_ref ? ` · ${project.provider_project_ref}` : ""}
                     </p>
                     {project.dispatch_error ? (
                       <p className="mt-2 text-xs text-rose-200">{project.dispatch_error}</p>
@@ -174,7 +172,13 @@ export function ProjectsPage() {
                 </div>
                 <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
                   {!dispatchReady ? <ProjectDispatchBadge project={project} /> : null}
-                  <div className="flex flex-nowrap items-center gap-1.5 self-start lg:self-end">
+                  <div className="flex flex-wrap items-center gap-1.5 self-start lg:self-end">
+                    <ProjectPermissionProfileButton
+                      projectId={project.id}
+                      permissionProfile={project.permission_profile}
+                      scopeLabel="Project access"
+                      onSuccess={invalidate}
+                    />
                     <Button
                       aria-label={isRunning ? "Stop" : "Run"}
                       size="icon"

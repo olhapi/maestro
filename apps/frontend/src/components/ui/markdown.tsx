@@ -2,6 +2,7 @@ import { type ComponentPropsWithoutRef } from 'react'
 import { type Components } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
+import remarkGfm from 'remark-gfm'
 
 import { cn } from '@/lib/utils'
 
@@ -75,8 +76,29 @@ const markdownComponents: Components = {
   hr() {
     return <hr className="border-current/15" />
   },
-  li({ children }) {
-    return <li className="leading-6">{children}</li>
+  input({ className, ...props }) {
+    const { node, checked, type, ...inputProps } = props as ComponentPropsWithoutRef<'input'> & { node?: unknown }
+    void node
+
+    if (type !== 'checkbox') {
+      return null
+    }
+
+    return (
+      <input
+        checked={Boolean(checked)}
+        className={cn('pointer-events-none mt-0.5 size-4 shrink-0 accent-[var(--accent)]', className)}
+        disabled
+        readOnly
+        type="checkbox"
+        {...inputProps}
+      />
+    )
+  },
+  li({ className, children }) {
+    const taskListItem = typeof className === 'string' && className.includes('task-list-item')
+
+    return <li className={cn(taskListItem ? 'flex items-start gap-2 leading-6' : 'leading-6', className)}>{children}</li>
   },
   ol({ children }) {
     return <ol className="m-0 list-decimal space-y-1 pl-5">{children}</ol>
@@ -109,8 +131,10 @@ const markdownComponents: Components = {
   tr({ children }) {
     return <tr>{children}</tr>
   },
-  ul({ children }) {
-    return <ul className="m-0 list-disc space-y-1 pl-5">{children}</ul>
+  ul({ className, children }) {
+    const taskList = typeof className === 'string' && className.includes('contains-task-list')
+
+    return <ul className={cn('m-0 space-y-1', taskList ? 'list-none pl-0' : 'list-disc pl-5', className)}>{children}</ul>
   },
   strong({ children }) {
     return <strong className="font-semibold text-inherit">{children}</strong>
@@ -139,15 +163,22 @@ export function MarkdownText({ content, className }: { content: string; classNam
           'h5',
           'h6',
           'hr',
+          'input',
           'li',
           'ol',
           'p',
           'pre',
           'strong',
+          'table',
+          'tbody',
+          'td',
+          'th',
+          'thead',
+          'tr',
           'ul',
         ]}
         components={markdownComponents}
-        remarkPlugins={[remarkBreaks]}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
         unwrapDisallowed
       >
         {content}

@@ -43,6 +43,16 @@ export default defineConfig([
 ])
 ```
 
+## Leak Hunt
+
+Use the leak scanner to catch long-lived listeners, timers, subscriptions, and other retained resources before they turn into dashboard growth regressions:
+
+```bash
+pnpm leak:hunt
+```
+
+The scanner walks `src/`, skips tests and generated output, and reports potential cleanup gaps with file and line references.
+
 You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
 
 ```js
