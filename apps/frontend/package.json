@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "leak:hunt": "node ./scripts/leak-hunt.mjs",
     "preview": "vite preview",
     "test": "vitest",
     "test:ci": "vitest run"

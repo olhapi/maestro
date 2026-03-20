@@ -25,6 +25,7 @@
     "frontend:dev": "pnpm --filter @maestro/frontend dev",
     "frontend:build": "turbo build --filter=@maestro/frontend",
     "frontend:lint": "turbo lint --filter=@maestro/frontend",
+    "frontend:leak-hunt": "pnpm --filter @maestro/frontend leak:hunt",
     "frontend:test": "turbo test:ci --filter=@maestro/frontend",
     "website:dev": "pnpm --filter @maestro/website dev",
     "website:build": "turbo build --filter=@maestro/website",

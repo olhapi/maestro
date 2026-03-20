@@ -133,6 +133,11 @@ assert_phase_log() {
   assert_file_content "$path" "$expected"
 }
 
+start_project() {
+  local project_id="$1"
+  sqlite3 "$DB_PATH" "UPDATE projects SET state = 'running', updated_at = datetime('now') WHERE id = '$project_id';"
+}
+
 stop_orchestrator() {
   if [[ -n "$ORCH_PID" ]] && kill -0 "$ORCH_PID" >/dev/null 2>&1; then
     kill "$ORCH_PID" >/dev/null 2>&1 || true
@@ -162,6 +167,7 @@ update_issue_description() {
 require_cmd go
 require_cmd codex
 require_cmd git
+require_cmd sqlite3
 
 mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$DB_PATH")"
 
@@ -258,9 +264,12 @@ Requirements:
 4. Stop immediately after the requested state transition succeeds.
 EOF
 
+PROJECT_ID="$("$MAESTRO_BIN" project create "Real Codex E2E Phase Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
+start_project "$PROJECT_ID"
+
 echo "Creating phase e2e issues in $DB_PATH"
-ISSUE_REVIEW="$("$MAESTRO_BIN" issue create "Phase flow through review" --desc "placeholder" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
-ISSUE_SKIP="$("$MAESTRO_BIN" issue create "Phase flow skipping review" --desc "placeholder" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_REVIEW="$("$MAESTRO_BIN" issue create "Phase flow through review" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_SKIP="$("$MAESTRO_BIN" issue create "Phase flow skipping review" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
 
 update_issue_description "$ISSUE_REVIEW" "$(cat <<EOF
 Implementation-phase requirements for $ISSUE_REVIEW:
