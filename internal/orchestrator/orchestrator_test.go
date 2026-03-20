@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -522,22 +521,6 @@ func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for condition")
-}
-
-func testProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
-}
-
-func testProcessGroupAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(-pid, 0)
-	return err == nil || err == syscall.EPERM
 }
 
 func startLingeringProcessGroup(t *testing.T, childPIDPath string) (*exec.Cmd, int) {
