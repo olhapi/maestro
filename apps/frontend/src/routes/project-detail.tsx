@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { KanbanBoard } from "@/components/dashboard/kanban-board";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
 import { ProjectProviderChip } from "@/components/dashboard/project-provider-chip";
 import {
   ProjectPermissionProfileButton,
@@ -213,6 +214,9 @@ export function ProjectDetailPage() {
         ]}
         actions={
           <>
+            {!dispatchReady ? (
+              <ProjectDispatchBadge project={project.data.project} />
+            ) : null}
             <Button
               variant="secondary"
               disabled={!dispatchReady || togglePending}

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
@@ -131,46 +131,69 @@ describe("ProjectDetailPage", () => {
     });
   });
 
-  it("hides the old project setup card when dispatch is not ready", async () => {
-    const bootstrap = makeBootstrapResponse({
-      projects: [
-        {
-          ...makeBootstrapResponse().projects[0],
-          repo_path: "",
-          workflow_path: "",
-          orchestration_ready: false,
-          dispatch_ready: false,
-        },
-      ],
+  it("shows dispatch guidance when dispatch is not ready", async () => {
+    const initialInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 1280,
     });
+    window.dispatchEvent(new Event("resize"));
 
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
-    vi.mocked(api.getProject).mockResolvedValue({
-      project: bootstrap.projects[0],
-      epics: bootstrap.epics,
-      issues: bootstrap.issues,
-    });
+    try {
+      const bootstrap = makeBootstrapResponse({
+        projects: [
+          {
+            ...makeBootstrapResponse().projects[0],
+            repo_path: "",
+            workflow_path: "",
+            orchestration_ready: false,
+            dispatch_ready: false,
+          },
+        ],
+      });
 
-    renderWithQueryClient(<ProjectDetailPage />);
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+      vi.mocked(api.getProject).mockResolvedValue({
+        project: bootstrap.projects[0],
+        epics: bootstrap.epics,
+        issues: bootstrap.issues,
+      });
 
-    const heading = await screen.findByRole("heading", { name: /platform/i });
-    expect(within(heading).queryByLabelText(/repo path:/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("Needs repo setup")).not.toBeInTheDocument();
-    expect(screen.queryByText("Project setup")).not.toBeInTheDocument();
-    expect(screen.queryByText("Workflow path")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Attach this project to a local repository"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "Open the project settings and set Repo path to the local checkout for this project.",
-      ),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "Leave Workflow path empty to use WORKFLOW.md at the repo root, or set an explicit workflow file.",
-      ),
-    ).not.toBeInTheDocument();
+      renderWithQueryClient(<ProjectDetailPage />);
+
+      const heading = await screen.findByRole("heading", { name: /platform/i });
+      expect(within(heading).queryByLabelText(/repo path:/i)).not.toBeInTheDocument();
+
+      const dispatchBadge = screen.getByText("Needs repo setup");
+      expect(dispatchBadge).toBeInTheDocument();
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          fireEvent.pointerEnter(dispatchBadge, { pointerType: "mouse" });
+          fireEvent.mouseEnter(dispatchBadge);
+          await vi.advanceTimersByTimeAsync(150);
+        });
+
+        expect(
+          screen.getByText("Attach this project to a local repository"),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByText(
+            "Maestro needs a checked-out repo before it can create workspaces, branches, or run the workflow.",
+          ),
+        ).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: initialInnerWidth,
+      });
+      window.dispatchEvent(new Event("resize"));
+    }
   });
 
   it("renders epic state distribution using colored segments", async () => {
