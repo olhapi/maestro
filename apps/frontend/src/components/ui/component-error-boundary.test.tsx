@@ -74,7 +74,11 @@ describe('ComponentErrorBoundary', () => {
     )
 
     expect(await screen.findByText(/reload this page section/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /reload route page/i }).closest('[data-scope="page"]')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /reload route page/i }).closest('[data-scope="page"]')).toHaveClass(
+      'grid',
+      'items-center',
+      'justify-items-stretch',
+    )
 
     rerender(
       <ComponentErrorBoundary label="chart widget" scope="widget">
@@ -83,6 +87,10 @@ describe('ComponentErrorBoundary', () => {
     )
 
     expect(await screen.findByText(/reload this component/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /reload chart widget/i }).closest('[data-scope="widget"]')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /reload chart widget/i }).closest('[data-scope="widget"]')).toHaveClass(
+      'grid',
+      'items-center',
+      'justify-items-stretch',
+    )
   })
 })

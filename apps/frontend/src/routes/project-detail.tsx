@@ -6,11 +6,15 @@ import { toast } from "sonner";
 
 import { KanbanBoard } from "@/components/dashboard/kanban-board";
 import { PageHeader } from "@/components/dashboard/page-header";
-import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
+import { ProjectProviderChip } from "@/components/dashboard/project-provider-chip";
+import {
+  ProjectPermissionProfileButton,
+} from "@/components/dashboard/project-permission-profile-button";
 import { IssuePreviewBoundary } from "@/components/dashboard/issue-preview-boundary";
 import { EpicDialog, IssueDialog } from "@/components/forms";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
@@ -23,23 +27,12 @@ import {
   isProjectRunning,
   summaryActiveCount,
   summaryDoneCount,
-  summaryProgress,
+  summaryStateSegments,
   summaryTokenSpend,
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
-import type {
-  IssueDetail,
-  IssueState,
-  IssueSummary,
-  PermissionProfile,
-} from "@/lib/types";
+import type { EpicSummary, IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 import { formatCompactNumber, formatRelativeTime } from "@/lib/utils";
-
-const permissionProfileLabels: Record<PermissionProfile, string> = {
-  default: "Default permissions",
-  "full-access": "Full access",
-  "plan-then-full-access": "Plan, then full access",
-};
 
 function ProjectStat({
   label,
@@ -60,6 +53,60 @@ function ProjectStat({
         {detail}
       </p>
     </div>
+  );
+}
+
+function EpicStateDistributionBar({ epic }: { epic: EpicSummary }) {
+  const segments = summaryStateSegments(epic);
+
+  return (
+    <div className="mt-3">
+      <ul
+        aria-label={`${epic.name} state distribution`}
+        className="m-0 flex h-1.5 list-none overflow-hidden rounded-full bg-white/10 p-0"
+      >
+        {segments.length > 0 ? (
+          segments.map((segment) => (
+            <li
+              key={segment.state}
+              aria-label={`${segment.label}: ${segment.count} issue${segment.count === 1 ? "" : "s"}`}
+              className={`h-full shrink-0 ${segment.fillClass}`}
+              data-count={segment.count}
+              data-percent={segment.percent}
+              data-state={segment.state}
+              style={{ width: `${segment.percent}%` }}
+              title={`${segment.label}: ${segment.count} issue${segment.count === 1 ? "" : "s"}`}
+            />
+          ))
+        ) : (
+          <li aria-label="No work in this epic" className="h-full w-full" />
+        )}
+      </ul>
+    </div>
+  );
+}
+
+function ProjectRepoBinding({ repoPath }: { repoPath?: string }) {
+  if (!repoPath) {
+    return null;
+  }
+
+  const repoSegments = repoPath.split(/[\\/]/).filter(Boolean);
+  const shortRepoBinding = repoSegments[repoSegments.length - 1] || repoPath;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          aria-label={`Repo path: ${repoPath}`}
+          className="inline-flex w-fit items-center rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs font-mono font-medium tracking-tight text-white"
+          tabIndex={0}
+        >
+          {shortRepoBinding}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="break-all">{repoPath}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -135,17 +182,6 @@ export function ProjectDetailPage() {
       await invalidate();
     },
   });
-  const permissionMutation = useMutation({
-    mutationFn: (permissionProfile: PermissionProfile) =>
-      api.setProjectPermissionProfile(projectId, permissionProfile),
-    onSuccess: async () => {
-      toast.success("Project permissions updated");
-      await invalidate();
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? `Unable to update project permissions: ${error.message}` : "Unable to update project permissions");
-    },
-  });
   if (!bootstrap.data || !project.data) {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
@@ -157,9 +193,19 @@ export function ProjectDetailPage() {
   return (
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
-        title={project.data.project.name}
+        title={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            <span>{project.data.project.name}</span>
+            <ProjectProviderChip
+              providerKind={project.data.project.provider_kind}
+            />
+            <ProjectRepoBinding repoPath={project.data.project.repo_path} />
+          </span>
+        }
         description={
-          project.data.project.description || "No project description yet."
+          <p>
+            {project.data.project.description || "No project description yet."}
+          </p>
         }
         crumbs={[
           { label: "Projects", to: appRoutes.projects },
@@ -170,11 +216,19 @@ export function ProjectDetailPage() {
             <Button
               variant="secondary"
               disabled={!dispatchReady || togglePending}
-              onClick={() => (isRunning ? stopProject.mutate() : runProject.mutate())}
+              onClick={() =>
+                isRunning ? stopProject.mutate() : runProject.mutate()
+              }
             >
               {isRunning ? <Square className="size-4" /> : <Play className="size-4" />}
               {isRunning ? "Stop project" : "Run project"}
             </Button>
+            <ProjectPermissionProfileButton
+              projectId={project.data.project.id}
+              permissionProfile={project.data.project.permission_profile}
+              scopeLabel="Project access"
+              onSuccess={invalidate}
+            />
             <Button
               variant="secondary"
               onClick={() => {
@@ -225,64 +279,6 @@ export function ProjectDetailPage() {
         statsClassName="overflow-hidden rounded-[var(--panel-radius)] border border-white/10 bg-white/[0.04] sm:grid-cols-2 lg:grid-cols-5 lg:gap-0"
       />
 
-      <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-[var(--panel-padding)]">
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-              Repo binding
-            </p>
-            <p className="mt-2 truncate text-sm text-white">
-              {project.data.project.repo_path || "No repo path configured yet."}
-            </p>
-            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-              {project.data.project.workflow_path ||
-                "Workflow defaults to <repo>/WORKFLOW.md."}
-            </p>
-            <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-              Provider {project.data.project.provider_kind || "kanban"}
-              {project.data.project.provider_project_ref
-                ? ` · ${project.data.project.provider_project_ref}`
-                : ""}
-            </p>
-            {project.data.project.dispatch_error ? (
-              <p className="mt-2 text-xs text-rose-200">
-                {project.data.project.dispatch_error}
-              </p>
-            ) : null}
-          </div>
-          <div className="grid min-w-[240px] gap-2">
-            <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-              Default agent permissions
-            </p>
-            <select
-              aria-label="Project agent permissions"
-              className="h-10 rounded-md border border-white/10 bg-white/5 px-3 text-sm text-white outline-none transition focus:border-[var(--accent)]"
-              disabled={permissionMutation.isPending}
-              value={project.data.project.permission_profile ?? "default"}
-              onChange={(event) => {
-                permissionMutation.mutate(event.target.value as PermissionProfile);
-              }}
-            >
-              <option value="default" className="bg-slate-950 text-white">
-                {permissionProfileLabels.default}
-              </option>
-              <option value="full-access" className="bg-slate-950 text-white">
-                {permissionProfileLabels["full-access"]}
-              </option>
-              <option value="plan-then-full-access" className="bg-slate-950 text-white">
-                {permissionProfileLabels["plan-then-full-access"]}
-              </option>
-            </select>
-            <p className="text-xs text-[var(--muted-foreground)]">
-              Issues on the default profile inherit this setting. Plan-first issues can inspect the repo and research during planning, but only gain full access after you approve the final plan. Switching an issue to full access pins it there even if the project default changes later.
-            </p>
-          </div>
-          {!dispatchReady ? (
-            <ProjectDispatchBadge project={project.data.project} />
-          ) : null}
-        </CardContent>
-      </Card>
-
       <div className="grid gap-[var(--section-gap)] lg:grid-cols-[1.1fr_.9fr]">
         <Card>
           <CardContent className="pt-[var(--panel-padding)]">
@@ -305,60 +301,29 @@ export function ProjectDetailPage() {
               </Button>
             </div>
             <div className="mt-4 grid gap-2.5">
-              {project.data.epics.map((epic) => {
-                const progress = summaryProgress(epic);
-
-                return (
-                  <div
-                    key={epic.id}
-                    className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-lg font-semibold text-white">
-                          <Link
-                            params={{ epicId: epic.id }}
-                            to={appRoutes.epicDetail}
-                          >
-                            {epic.name}
-                          </Link>
-                        </p>
-                        <p className="mt-2 text-sm leading-5 text-[var(--muted-foreground)]">
-                          {epic.description || "No epic description yet."}
-                        </p>
-                      </div>
-                    </div>
-                    <div
-                      aria-label={`${epic.name} completion`}
-                      aria-valuemax={progress.total || 1}
-                      aria-valuemin={0}
-                      aria-valuenow={progress.closed}
-                      aria-valuetext={`${progress.closed} of ${progress.total} issues closed`}
-                      className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10"
-                      role="progressbar"
-                    >
-                      <div
-                        className="h-full rounded-full bg-[var(--accent)]"
-                        style={{ width: `${progress.percent}%` }}
-                      />
-                    </div>
-                    <div className="mt-3.5 grid gap-2 text-xs text-[var(--muted-foreground)] sm:grid-cols-2 xl:grid-cols-4">
-                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                        Backlog {epic.counts.backlog}
-                      </div>
-                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                        Ready {epic.counts.ready}
-                      </div>
-                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                        In progress {epic.counts.in_progress}
-                      </div>
-                      <div className="rounded-xl border border-white/8 bg-black/20 p-3">
-                        Review {epic.counts.in_review}
-                      </div>
+              {project.data.epics.map((epic) => (
+                <div
+                  key={epic.id}
+                  className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-semibold text-white">
+                        <Link
+                          params={{ epicId: epic.id }}
+                          to={appRoutes.epicDetail}
+                        >
+                          {epic.name}
+                        </Link>
+                      </p>
+                      <p className="mt-2 text-sm leading-5 text-[var(--muted-foreground)]">
+                        {epic.description || "No epic description yet."}
+                      </p>
                     </div>
                   </div>
-                );
-              })}
+                  <EpicStateDistributionBar epic={epic} />
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
