@@ -84,9 +84,15 @@ assert_file_content() {
   fi
 }
 
+start_project() {
+  local project_id="$1"
+  sqlite3 "$DB_PATH" "UPDATE projects SET state = 'running', updated_at = datetime('now') WHERE id = '$project_id';"
+}
+
 require_cmd go
 require_cmd codex
 require_cmd git
+require_cmd sqlite3
 
 mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$DB_PATH")"
 
@@ -157,9 +163,12 @@ Requirements:
 7. Stop after the issue is marked done.
 EOF
 
+PROJECT_ID="$("$MAESTRO_BIN" project create "Real Codex E2E Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
+start_project "$PROJECT_ID"
+
 echo "Creating e2e issues in $DB_PATH"
-ISSUE_ONE="$("$MAESTRO_BIN" issue create "Create first e2e artifact" --desc "Create file artifact-one.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 1" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
-ISSUE_TWO="$("$MAESTRO_BIN" issue create "Create second e2e artifact" --desc "Create file artifact-two.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 2" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_ONE="$("$MAESTRO_BIN" issue create "Create first e2e artifact" --project "$PROJECT_ID" --desc "Create file artifact-one.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 1" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_TWO="$("$MAESTRO_BIN" issue create "Create second e2e artifact" --project "$PROJECT_ID" --desc "Create file artifact-two.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 2" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
 
 "$MAESTRO_BIN" issue move "$ISSUE_ONE" ready --db "$DB_PATH" >/dev/null
 "$MAESTRO_BIN" issue move "$ISSUE_TWO" ready --db "$DB_PATH" >/dev/null

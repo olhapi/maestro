@@ -146,6 +146,7 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	if !strings.Contains(stdout, "Created issue ") {
 		t.Fatalf("unexpected issue create output %q", stdout)
 	}
+
 	issues, err := store.ListIssues(nil)
 	if err != nil {
 		t.Fatalf("ListIssues failed: %v", err)
@@ -154,6 +155,26 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 		t.Fatalf("expected 1 issue, got %d", len(issues))
 	}
 	issue := issues[0]
+
+	assetPath := filepath.Join(t.TempDir(), "issue-image.png")
+	if err := os.WriteFile(assetPath, sampleMainPNGBytes(), 0o644); err != nil {
+		t.Fatalf("write issue image fixture: %v", err)
+	}
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "add", issue.Identifier, assetPath, "--quiet")
+	if code != 0 {
+		t.Fatalf("issue images add failed: %d stderr=%s", code, stderr)
+	}
+	assetID := strings.TrimSpace(stdout)
+	if assetID == "" {
+		t.Fatal("expected quiet issue images add output")
+	}
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "images", "list", issue.Identifier, "--quiet")
+	if code != 0 {
+		t.Fatalf("issue images list failed: %d stderr=%s", code, stderr)
+	}
+	if got := strings.TrimSpace(stdout); got != assetID {
+		t.Fatalf("unexpected issue images list output %q, want %q", got, assetID)
+	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "list")
 	if code != 0 {

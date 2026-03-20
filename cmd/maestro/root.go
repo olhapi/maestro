@@ -939,8 +939,9 @@ func (a *cliApp) newIssueBlockersCmd() *cobra.Command {
 
 func (a *cliApp) newIssueAssetsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "assets",
-		Short: "Manage issue assets",
+		Use:     "assets",
+		Aliases: []string{"images"},
+		Short:   "Manage issue assets",
 	}
 	cmd.AddCommand(
 		&cobra.Command{
