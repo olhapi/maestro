@@ -48,9 +48,14 @@ describe('leak-hunt scanner', () => {
     expect(findings).toEqual([])
   })
 
-  it('flags leaked object URLs when revokeObjectURL is missing from the file', () => {
+  it('flags leaked object URLs even when another function revokes its own URL', () => {
     const findings = scanSourceText(
       `
+      function makeSafePreview(file: File) {
+        const url = URL.createObjectURL(file)
+        URL.revokeObjectURL(url)
+      }
+
       function makePreview(file: File) {
         return URL.createObjectURL(file)
       }
@@ -60,6 +65,7 @@ describe('leak-hunt scanner', () => {
 
     expect(findings).toHaveLength(1)
     expect(findings[0]?.kind).toBe('object-url')
+    expect(findings[0]?.functionName).toBe('makePreview')
   })
 
   it('keeps the current frontend source tree clean', async () => {

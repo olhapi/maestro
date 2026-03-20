@@ -64,12 +64,12 @@ export function scanSourceText(sourceText, filePath = '<unknown>') {
   const scriptKind = getScriptKind(filePath)
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, scriptKind)
   const findings = []
+  const topLevelFunctions = collectTopLevelFunctions(sourceFile)
+  const topLevelFunctionsByName = new Map(topLevelFunctions.map((topLevelFunction) => [topLevelFunction.name, topLevelFunction.node]))
 
-  for (const topLevelFunction of collectTopLevelFunctions(sourceFile)) {
-    findings.push(...scanFunctionNode(topLevelFunction.node, sourceFile, topLevelFunction.name))
+  for (const topLevelFunction of topLevelFunctions) {
+    findings.push(...scanFunctionNode(topLevelFunction.node, sourceFile, topLevelFunction.name, topLevelFunctionsByName))
   }
-
-  findings.push(...scanObjectUrlUsage(sourceFile))
 
   return findings
 }
@@ -95,7 +95,7 @@ export function formatReport(report) {
   return [summary, ...details].join('\n')
 }
 
-function scanFunctionNode(functionNode, sourceFile, functionName) {
+function scanFunctionNode(functionNode, sourceFile, functionName, topLevelFunctionsByName) {
   const findings = []
   const functionCallNames = collectCallAndConstructionNames(functionNode)
 
@@ -119,6 +119,8 @@ function scanFunctionNode(functionNode, sourceFile, functionName) {
       severity: hit.severity,
     })
   }
+
+  findings.push(...scanObjectUrlUsage(functionNode, sourceFile, functionName, topLevelFunctionsByName))
 
   return findings
 }
@@ -266,12 +268,12 @@ function collectResourceHits(rootNode) {
   return hits
 }
 
-function scanObjectUrlUsage(sourceFile) {
+function scanObjectUrlUsage(rootNode, sourceFile, functionName, topLevelFunctionsByName) {
   const findings = []
   const calls = []
-  const callNames = collectCallAndConstructionNames(sourceFile)
+  const callNames = collectCallAndConstructionNames(rootNode)
 
-  visit(sourceFile, (current) => {
+  visit(rootNode, (current) => {
     if (ts.isCallExpression(current)) {
       const callName = getExpressionName(current.expression)
       if (callName === 'createObjectURL') {
@@ -284,12 +286,20 @@ function scanObjectUrlUsage(sourceFile) {
     return findings
   }
 
+  if (functionName.startsWith('create')) {
+    const matchingRevokeName = `revoke${functionName.slice('create'.length)}`
+    const matchingRevokeFunction = topLevelFunctionsByName.get(matchingRevokeName)
+    if (matchingRevokeFunction && collectCallAndConstructionNames(matchingRevokeFunction).has('revokeObjectURL')) {
+      return findings
+    }
+  }
+
   for (const call of calls) {
     const { line, character } = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile))
     findings.push({
       column: character + 1,
       filePath: sourceFile.fileName,
-      functionName: path.basename(sourceFile.fileName),
+      functionName,
       kind: 'object-url',
       line: line + 1,
       message: 'creates an object URL without a matching revokeObjectURL cleanup',
