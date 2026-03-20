@@ -136,19 +136,23 @@ describe("ProjectDetailPage", () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
-      value: 1280,
+      value: 390,
     });
-    window.dispatchEvent(new Event("resize"));
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+    });
 
     try {
       const bootstrap = makeBootstrapResponse({
         projects: [
           {
             ...makeBootstrapResponse().projects[0],
-            repo_path: "",
-            workflow_path: "",
+            repo_path: "/repo/other",
+            workflow_path: "/repo/other/WORKFLOW.md",
             orchestration_ready: false,
             dispatch_ready: false,
+            dispatch_error:
+              "Project repo is outside the current server scope (/repo/current)",
           },
         ],
       });
@@ -163,36 +167,36 @@ describe("ProjectDetailPage", () => {
       renderWithQueryClient(<ProjectDetailPage />);
 
       const heading = await screen.findByRole("heading", { name: /platform/i });
-      expect(within(heading).queryByLabelText(/repo path:/i)).not.toBeInTheDocument();
+      expect(within(heading).getByLabelText(/repo path: \/repo\/other/i)).toBeInTheDocument();
 
-      const dispatchBadge = screen.getByText("Needs repo setup");
-      expect(dispatchBadge).toBeInTheDocument();
-      vi.useFakeTimers();
-      try {
-        await act(async () => {
-          fireEvent.pointerEnter(dispatchBadge, { pointerType: "mouse" });
-          fireEvent.mouseEnter(dispatchBadge);
-          await vi.advanceTimersByTimeAsync(150);
-        });
-
-        expect(
-          screen.getByText("Attach this project to a local repository"),
-        ).toBeInTheDocument();
-        expect(
-          screen.getByText(
-            "Maestro needs a checked-out repo before it can create workspaces, branches, or run the workflow.",
-          ),
-        ).toBeInTheDocument();
-      } finally {
-        vi.useRealTimers();
-      }
+      expect(screen.getByText("Out of scope")).toBeInTheDocument();
+      expect(screen.getByText("Bring the repo into this server scope")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "The current Maestro server can only dispatch work inside the repo scope it was started with.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Tip: move the repo under the current server scope or restart Maestro for that repo.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Move the project's repo path under /repo/current, or restart Maestro scoped to /repo/other.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Project repo: /repo/other")).toBeInTheDocument();
+      expect(screen.getByText("Server scope: /repo/current")).toBeInTheDocument();
     } finally {
       Object.defineProperty(window, "innerWidth", {
         configurable: true,
         writable: true,
         value: initialInnerWidth,
       });
-      window.dispatchEvent(new Event("resize"));
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"));
+      });
     }
   });
 

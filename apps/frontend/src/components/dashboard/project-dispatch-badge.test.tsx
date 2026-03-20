@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 
 import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
 import { renderWithQueryClient } from "@/test/test-utils";
@@ -12,16 +12,20 @@ describe("ProjectDispatchBadge", () => {
       writable: true,
       value: initialInnerWidth,
     });
-    window.dispatchEvent(new Event("resize"));
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
   });
 
-  it("shows a repo setup tip below the badge on mobile", () => {
+  it("shows the full repo setup guidance on mobile", () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
       value: 390,
     });
-    window.dispatchEvent(new Event("resize"));
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
 
     renderWithQueryClient(
       <ProjectDispatchBadge
@@ -37,17 +41,36 @@ describe("ProjectDispatchBadge", () => {
 
     expect(screen.getByText("Needs repo setup")).toBeInTheDocument();
     expect(
-      screen.getByText("Tip: open project settings and set Repo path to the local checkout."),
+      screen.getByText(
+        "Attach this project to a local repository",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Maestro needs a checked-out repo before it can create workspaces, branches, or run the workflow.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Tip: open project settings and set Repo path to the local checkout.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Open the project settings and set Repo path to the local checkout for this project.",
+      ),
     ).toBeInTheDocument();
   });
 
-  it("shows a scope recovery tip below the badge on mobile", () => {
+  it("shows the scope recovery details on mobile", () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
       value: 390,
     });
-    window.dispatchEvent(new Event("resize"));
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
 
     renderWithQueryClient(
       <ProjectDispatchBadge
@@ -63,7 +86,26 @@ describe("ProjectDispatchBadge", () => {
 
     expect(screen.getByText("Out of scope")).toBeInTheDocument();
     expect(
-      screen.getByText("Tip: move the repo under the current server scope or restart Maestro for that repo."),
+      screen.getByText("Bring the repo into this server scope"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The current Maestro server can only dispatch work inside the repo scope it was started with.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Tip: move the repo under the current server scope or restart Maestro for that repo.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Move the project's repo path under /repo/current, or restart Maestro scoped to /repo/other."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Project repo: /repo/other"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Server scope: /repo/current"),
     ).toBeInTheDocument();
   });
 });
