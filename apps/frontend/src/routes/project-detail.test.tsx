@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
@@ -131,46 +131,73 @@ describe("ProjectDetailPage", () => {
     });
   });
 
-  it("hides the old project setup card when dispatch is not ready", async () => {
-    const bootstrap = makeBootstrapResponse({
-      projects: [
-        {
-          ...makeBootstrapResponse().projects[0],
-          repo_path: "",
-          workflow_path: "",
-          orchestration_ready: false,
-          dispatch_ready: false,
-        },
-      ],
+  it("shows dispatch guidance when dispatch is not ready", async () => {
+    const initialInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 390,
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
     });
 
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
-    vi.mocked(api.getProject).mockResolvedValue({
-      project: bootstrap.projects[0],
-      epics: bootstrap.epics,
-      issues: bootstrap.issues,
-    });
+    try {
+      const bootstrap = makeBootstrapResponse({
+        projects: [
+          {
+            ...makeBootstrapResponse().projects[0],
+            repo_path: "/repo/other",
+            workflow_path: "/repo/other/WORKFLOW.md",
+            orchestration_ready: false,
+            dispatch_ready: false,
+            dispatch_error:
+              "Project repo is outside the current server scope (/repo/current)",
+          },
+        ],
+      });
 
-    renderWithQueryClient(<ProjectDetailPage />);
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+      vi.mocked(api.getProject).mockResolvedValue({
+        project: bootstrap.projects[0],
+        epics: bootstrap.epics,
+        issues: bootstrap.issues,
+      });
 
-    const heading = await screen.findByRole("heading", { name: /platform/i });
-    expect(within(heading).queryByLabelText(/repo path:/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("Needs repo setup")).not.toBeInTheDocument();
-    expect(screen.queryByText("Project setup")).not.toBeInTheDocument();
-    expect(screen.queryByText("Workflow path")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Attach this project to a local repository"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "Open the project settings and set Repo path to the local checkout for this project.",
-      ),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "Leave Workflow path empty to use WORKFLOW.md at the repo root, or set an explicit workflow file.",
-      ),
-    ).not.toBeInTheDocument();
+      renderWithQueryClient(<ProjectDetailPage />);
+
+      const heading = await screen.findByRole("heading", { name: /platform/i });
+      expect(within(heading).getByLabelText(/repo path: \/repo\/other/i)).toBeInTheDocument();
+
+      expect(screen.getByText("Out of scope")).toBeInTheDocument();
+      expect(screen.getByText("Bring the repo into this server scope")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "The current Maestro server can only dispatch work inside the repo scope it was started with.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Tip: move the repo under the current server scope or restart Maestro for that repo.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Move the project's repo path under /repo/current, or restart Maestro scoped to /repo/other.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Project repo: /repo/other")).toBeInTheDocument();
+      expect(screen.getByText("Server scope: /repo/current")).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: initialInnerWidth,
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"));
+      });
+    }
   });
 
   it("renders epic state distribution using colored segments", async () => {
