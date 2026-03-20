@@ -244,22 +244,25 @@ find_release_run() {
         --branch "$TAG" \
         --event push \
         --limit 5 \
-        --json databaseId,status,conclusion,url,headBranch
+        --json databaseId,status,conclusion,url,headBranch,headSha
     )"
     local run_json
     if run_json="$(
       node_query '
         const runs = JSON.parse(process.argv[1]);
         const tag = process.argv[2];
+        const targetSha = process.argv[3];
         if (!Array.isArray(runs) || runs.length === 0) {
           process.exit(1);
         }
-        const match = runs.find((run) => run.headBranch === tag);
-        if (!match) {
+        const matches = runs
+          .filter((run) => run.headBranch === tag && run.headSha === targetSha)
+          .sort((left, right) => Number(right.databaseId) - Number(left.databaseId));
+        if (matches.length === 0) {
           process.exit(1);
         }
-        process.stdout.write(JSON.stringify(match));
-      ' "$run_list_json" "$TAG" 2>/dev/null
+        process.stdout.write(JSON.stringify(matches[0]));
+      ' "$run_list_json" "$TAG" "$TAG_TARGET_SHA" 2>/dev/null
     )"; then
       RELEASE_RUN_ID="$(version_from_json "$run_json" "databaseId")"
       RELEASE_RUN_URL="$(version_from_json "$run_json" "url")"
