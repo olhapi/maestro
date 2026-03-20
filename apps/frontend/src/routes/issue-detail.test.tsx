@@ -50,9 +50,36 @@ vi.mock("@/lib/api", () => ({
 
 const { api } = await import("@/lib/api");
 
+function ensureObjectURLMocks() {
+  if (!vi.isMockFunction(URL.createObjectURL)) {
+    const createObjectURL = vi.fn(() => "blob:queued-image");
+    try {
+      vi.spyOn(URL, "createObjectURL").mockImplementation(createObjectURL);
+    } catch {
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: createObjectURL,
+      });
+    }
+  }
+
+  if (!vi.isMockFunction(URL.revokeObjectURL)) {
+    const revokeObjectURL = vi.fn();
+    try {
+      vi.spyOn(URL, "revokeObjectURL").mockImplementation(revokeObjectURL);
+    } catch {
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        value: revokeObjectURL,
+      });
+    }
+  }
+}
+
 describe("IssueDetailPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    ensureObjectURLMocks();
     vi.mocked(api.listIssueComments).mockResolvedValue({ items: [] });
   });
 
@@ -593,6 +620,9 @@ describe("IssueDetailPage", () => {
     renderWithQueryClient(<IssueDetailPage />);
 
     const composer = await screen.findByPlaceholderText(/add context, ask for a change/i);
+    expect(
+      within(screen.getByTestId("issue-comments-card")).getByRole("button", { name: /attach files/i }),
+    ).toBeInTheDocument();
     const pastedFile = new File(["hello"], "paste.txt", { type: "text/plain" });
     fireEvent.paste(composer, {
       clipboardData: {
@@ -607,6 +637,56 @@ describe("IssueDetailPage", () => {
       clipboardData: { items: [], files: [] },
     });
     expect(screen.queryByRole("button", { name: /remove undefined/i })).not.toBeInTheDocument();
+  });
+
+  it("shows queued image previews in the comment composer and cleans up blob URLs", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.createIssueComment).mockResolvedValue(makeIssueComment());
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    const composer = await screen.findByPlaceholderText(/add context, ask for a change/i);
+    const queuedImage = new File(["image-bytes"], "queued.png", { type: "image/png" });
+    fireEvent.paste(composer, {
+      clipboardData: {
+        items: [{ kind: "file", getAsFile: () => queuedImage }],
+        files: [queuedImage],
+      },
+    });
+
+    const removeButton = await screen.findByRole("button", { name: /remove queued\.png/i });
+    expect(within(removeButton).getByRole("img", { name: /queued\.png/i })).toBeInTheDocument();
+    expect(URL.createObjectURL).toHaveBeenCalledWith(queuedImage);
+
+    fireEvent.change(composer, { target: { value: "Queued image comment" } });
+    fireEvent.click(screen.getByRole("button", { name: /post comment/i }));
+
+    await waitFor(() => {
+      expect(api.createIssueComment).toHaveBeenCalledWith(issue.identifier, {
+        body: "Queued image comment",
+        parent_comment_id: undefined,
+        files: [queuedImage],
+      });
+    });
+    await waitFor(() => {
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:queued-image");
+    });
   });
 
   it("renders comments and supports create, reply, update, and delete flows", async () => {
@@ -694,6 +774,51 @@ describe("IssueDetailPage", () => {
     });
   });
 
+  it("renders comment actions as icon buttons with tooltips", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.listIssueComments).mockResolvedValue({
+      items: [makeIssueComment()],
+    });
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("issue-comments-card")).toBeInTheDocument();
+    });
+
+    const commentsCard = screen.getByTestId("issue-comments-card");
+    const replyButton = within(commentsCard).getByRole("button", { name: /^reply$/i });
+    const editButton = within(commentsCard).getByRole("button", { name: /^edit$/i });
+    const deleteButton = within(commentsCard).getByRole("button", { name: /^delete$/i });
+
+    expect(replyButton).toHaveTextContent("");
+    expect(editButton).toHaveTextContent("");
+    expect(deleteButton).toHaveTextContent("");
+    expect(replyButton.querySelector("svg")).not.toBeNull();
+    expect(editButton.querySelector("svg")).not.toBeNull();
+    expect(deleteButton.querySelector("svg")).not.toBeNull();
+
+    fireEvent.focus(editButton);
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Edit");
+  });
+
   it("disables the reply composer while a reply is being created", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail();
@@ -753,8 +878,8 @@ describe("IssueDetailPage", () => {
     const attachment = {
       id: "att-1",
       comment_id: "cmt-1",
-      filename: "note.txt",
-      content_type: "text/plain",
+      filename: "note.png",
+      content_type: "image/png",
       byte_size: 12,
       created_at: "2026-03-09T11:40:00Z",
       updated_at: "2026-03-09T11:40:00Z",
@@ -787,9 +912,11 @@ describe("IssueDetailPage", () => {
     });
 
     const commentsCard = screen.getByTestId("issue-comments-card");
+    expect(within(commentsCard).getByRole("link", { name: /open note\.png/i })).toBeInTheDocument();
+    expect(within(commentsCard).getByRole("img", { name: /note\.png/i })).toBeInTheDocument();
 
     fireEvent.click(within(commentsCard).getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(within(commentsCard).getByRole("button", { name: /remove note.txt/i }));
+    fireEvent.click(within(commentsCard).getByRole("button", { name: /remove note\.png/i }));
     fireEvent.click(within(commentsCard).getByRole("button", { name: /^cancel$/i }));
 
     fireEvent.click(within(commentsCard).getByRole("button", { name: /^edit$/i }));

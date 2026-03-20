@@ -60,6 +60,28 @@ describe('SessionActivityTranscript', () => {
     expect(toggle).toHaveTextContent('Collapse')
   })
 
+  it('renders markdown-formatted activity summaries', () => {
+    render(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          {
+            id: 'attempt-1-agent-1',
+            kind: 'agent',
+            title: 'Agent update',
+            summary: 'Review the **plan** in [docs](https://example.com)\n\n- First item\n- Second item',
+            expandable: false,
+            phase: 'commentary',
+            tone: 'default',
+          },
+        ])}
+      />,
+    )
+
+    expect(screen.getByText('plan', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('href', 'https://example.com')
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+  })
+
   it('renders the status marker inline and centered with the entry title row', () => {
     render(<SessionActivityTranscript groups={makeGroups([makeCommandEntry()])} />)
 

@@ -90,7 +90,7 @@ describe('SessionExecutionCard', () => {
       <SessionExecutionCard
         execution={makeExecutionDetail({
           plan_approval: {
-            markdown: 'Review the plan before execution.',
+            markdown: 'Review the **plan** before execution.\n\nSee [details](https://example.com).',
             requested_at: '2026-03-18T12:00:00Z',
             attempt: 2,
           },
@@ -101,7 +101,8 @@ describe('SessionExecutionCard', () => {
     )
 
     expect(screen.getByText('Plan ready for approval')).toBeInTheDocument()
-    expect(screen.getByText('Review the plan before execution.')).toBeInTheDocument()
+    expect(screen.getByText('plan', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'details' })).toHaveAttribute('href', 'https://example.com')
 
     fireEvent.click(screen.getByRole('button', { name: /approve plan and continue/i }))
 
