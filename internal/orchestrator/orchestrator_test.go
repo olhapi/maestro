@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -527,14 +528,16 @@ func testProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	return exec.Command("/bin/sh", "-lc", fmt.Sprintf("kill -0 %d", pid)).Run() == nil
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 func testProcessGroupAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	return exec.Command("/bin/sh", "-lc", fmt.Sprintf("kill -0 -- -%d", pid)).Run() == nil
+	err := syscall.Kill(-pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 func startLingeringProcessGroup(t *testing.T, childPIDPath string) (*exec.Cmd, int) {
@@ -565,10 +568,6 @@ while True:
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start lingering process group: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = appserver.CleanupLingeringAppServerProcess(cmd.Process.Pid)
-		_ = cmd.Wait()
-	})
 
 	waitForCondition(t, time.Second, func() bool {
 		data, err := os.ReadFile(childPIDPath)
@@ -2600,7 +2599,7 @@ func TestCleanupTerminalAppServerProcessKillsLiveSessionProcessGroup(t *testing.
 	}
 
 	childPIDPath := filepath.Join(workspaceRoot, issue.Identifier+"-live-child.pid")
-	cmd, childPID := startLingeringProcessGroup(t, childPIDPath)
+	cmd, _ := startLingeringProcessGroup(t, childPIDPath)
 
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
 		IssueID:    issue.ID,
@@ -2623,11 +2622,22 @@ func TestCleanupTerminalAppServerProcessKillsLiveSessionProcessGroup(t *testing.
 		AppServerPID:    cmd.Process.Pid,
 	}
 
+	cleanupCalled := 0
+	orch.testHooks.cleanupLingeringAppServerProcess = func(pid int) error {
+		cleanupCalled = pid
+		return nil
+	}
+
+	t.Cleanup(func() {
+		_ = appserver.CleanupLingeringAppServerProcess(cmd.Process.Pid)
+		_ = cmd.Wait()
+	})
+
 	orch.cleanupTerminalAppServerProcess(issue)
 
-	waitForCondition(t, 2*time.Second, func() bool {
-		return !testProcessGroupAlive(cmd.Process.Pid) && !testProcessAlive(childPID)
-	})
+	if cleanupCalled != cmd.Process.Pid {
+		t.Fatalf("expected terminal cleanup to call lingering process cleanup for pid %d, got %d", cmd.Process.Pid, cleanupCalled)
+	}
 	snapshot, err := store.GetIssueExecutionSession(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
@@ -2677,6 +2687,11 @@ func TestCleanupTerminalWorkspacesRetiresPersistedPIDWithoutKillingUnknownProces
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
+
+	t.Cleanup(func() {
+		_ = appserver.CleanupLingeringAppServerProcess(cmd.Process.Pid)
+		_ = cmd.Wait()
+	})
 
 	orch.cleanupTerminalWorkspaces(context.Background())
 
