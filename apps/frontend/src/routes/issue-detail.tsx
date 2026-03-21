@@ -298,7 +298,9 @@ function normalizeIssueComment(comment: IssueComment): IssueComment {
   return {
     ...comment,
     attachments: Array.isArray(comment.attachments) ? comment.attachments : [],
-    replies: Array.isArray(comment.replies) ? comment.replies.map(normalizeIssueComment) : [],
+    replies: Array.isArray(comment.replies)
+      ? comment.replies.map((reply) => normalizeIssueComment(reply))
+      : [],
   };
 }
 
@@ -482,6 +484,8 @@ function IssueCommentEntry({
   onSaveReply: (parentCommentID: string, body: string, files: File[]) => Promise<void>;
 }) {
   const normalizedComment = normalizeIssueComment(comment);
+  const attachments = Array.isArray(normalizedComment.attachments) ? normalizedComment.attachments : [];
+  const replies = Array.isArray(normalizedComment.replies) ? normalizedComment.replies : [];
   const isEditing = editingCommentID === comment.id;
   const isReplying = replyParentID === comment.id;
   const [removeAttachmentIDs, setRemoveAttachmentIDs] = useState<string[]>([]);
@@ -498,9 +502,9 @@ function IssueCommentEntry({
           <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
             {normalizedComment.deleted_at ? "[deleted]" : normalizedComment.body || "No text"}
           </p>
-          {normalizedComment.attachments.length > 0 ? (
+          {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {normalizedComment.attachments.map((attachment) => (
+              {attachments.map((attachment) => (
                 <IssueCommentAttachmentLink
                   key={attachment.id}
                   identifier={identifier}
@@ -548,9 +552,9 @@ function IssueCommentEntry({
               setRemoveAttachmentIDs([]);
             }}
           />
-          {normalizedComment.attachments.length > 0 ? (
+          {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {normalizedComment.attachments.map((attachment) => {
+              {attachments.map((attachment) => {
                 const removed = removeAttachmentIDs.includes(attachment.id);
                 return (
                   <EditableCommentAttachmentChip
@@ -604,9 +608,9 @@ function IssueCommentEntry({
           </Button>
         </div>
       ) : null}
-      {normalizedComment.replies.length > 0 ? (
+      {replies.length > 0 ? (
         <div className="grid gap-3 border-l border-white/10 pl-4">
-          {normalizedComment.replies.map((reply) => (
+          {replies.map((reply) => (
             <IssueCommentEntry
               key={reply.id}
               identifier={identifier}
@@ -847,12 +851,16 @@ export function IssueDetailPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
-  const commentItems = (comments.data?.items ?? []).map(normalizeIssueComment);
+  const commentItems = Array.isArray(comments.data?.items)
+    ? comments.data.items.map(normalizeIssueComment)
+    : [];
+  const issueAssets = Array.isArray(issue.data.assets) ? issue.data.assets : [];
+  const agentCommands = Array.isArray(execution.data.agent_commands) ? execution.data.agent_commands : [];
   const availableStates = issueStatesFor(bootstrap.data.issues.items, [issue.data.state]);
-  const selectedAsset = issue.data.assets.find((asset) => asset.id === selectedAssetID) ?? null;
+  const selectedAsset = issueAssets.find((asset) => asset.id === selectedAssetID) ?? null;
   const previewAsset = selectedAsset && isIssueAssetImage(selectedAsset.content_type) ? selectedAsset : null;
-  const imageAssets = issue.data.assets.filter((asset) => isIssueAssetImage(asset.content_type));
-  const fileAssets = issue.data.assets.filter((asset) => !isIssueAssetImage(asset.content_type));
+  const imageAssets = issueAssets.filter((asset) => isIssueAssetImage(asset.content_type));
+  const fileAssets = issueAssets.filter((asset) => !isIssueAssetImage(asset.content_type));
   const crumbs: Array<{
     label: string;
     to?: string;
@@ -879,7 +887,7 @@ export function IssueDetailPage() {
   ];
 
   return (
-    <div className="grid gap-[var(--section-gap)]">
+    <div className="mx-auto grid w-full max-w-[1600px] gap-[var(--section-gap)]">
       <PageHeader
         title={issue.data.title}
         crumbs={crumbs}
@@ -985,7 +993,7 @@ export function IssueDetailPage() {
                   }
                 }}
               />
-              {issue.data.assets.length === 0 ? (
+              {issueAssets.length === 0 ? (
                 <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 px-4 py-4">
                   <p className="text-sm font-medium text-white">No assets attached yet</p>
                   <p className="mt-1 text-sm text-[var(--muted-foreground)]">
@@ -1230,7 +1238,7 @@ export function IssueDetailPage() {
               <div className="flex items-center justify-between gap-3">
                 <CardTitle>Agent commands</CardTitle>
                 <span className="text-xs text-[var(--muted-foreground)]">
-                  {execution.data.agent_commands.length} total
+                  {agentCommands.length} total
                 </span>
               </div>
             </CardHeader>
@@ -1255,10 +1263,10 @@ export function IssueDetailPage() {
                 </Button>
               </div>
               <div className="space-y-2.5 border-t border-white/8 pt-4">
-                {execution.data.agent_commands.length === 0 ? (
+                {agentCommands.length === 0 ? (
                   <p className="text-sm text-[var(--muted-foreground)]">No follow-up commands sent yet.</p>
                 ) : (
-                  execution.data.agent_commands.map((command) => (
+                  agentCommands.map((command) => (
                     <AgentCommandEntry key={command.id} command={command} />
                   ))
                 )}
@@ -1291,7 +1299,7 @@ export function IssueDetailPage() {
         open={deleteConfirmOpen}
         onOpenChange={setDeleteConfirmOpen}
         title={`Delete ${issue.data.identifier}?`}
-        description="This removes the issue from Maestro, including its local workspace, activity history, and attached assets. Linked provider items may also be removed."
+        description="This removes the issue from Maestro, including its local workspace, activity history, and attached assets. Linked issues may also be removed."
         confirmLabel="Delete issue"
         pendingLabel="Deleting issue..."
         isPending={deleteMutation.isPending}

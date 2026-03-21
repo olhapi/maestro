@@ -43,7 +43,6 @@ func NewService(store *kanban.Store) *Service {
 		store: store,
 		providers: map[string]Provider{
 			kanban.ProviderKindKanban: NewKanbanProvider(store),
-			kanban.ProviderKindLinear: NewLinearProvider(),
 		},
 		lastSync: make(map[string]time.Time),
 	}
@@ -662,7 +661,7 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 		}
 		updates["issue_type"] = targetIssueType
 	}
-	if issue.ProviderKind != kanban.ProviderKindKanban {
+	if normalizeKind(issue.ProviderKind) != kanban.ProviderKindKanban {
 		if _, ok := updates["cron"]; ok {
 			return nil, fmt.Errorf("%w: recurring schedule updates are not supported for provider-backed issues", ErrUnsupportedCapability)
 		}

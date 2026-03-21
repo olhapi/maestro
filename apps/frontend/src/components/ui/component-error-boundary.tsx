@@ -56,7 +56,7 @@ function ErrorFallback({
     <Card
       className={cn(
         'grid justify-items-stretch items-center overflow-hidden bg-[linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03))]',
-        isPage ? 'min-h-[420px]' : 'min-h-[240px]',
+        isPage ? 'mx-auto w-full max-w-[1600px] min-h-[420px]' : 'min-h-[240px]',
         className,
       )}
       data-scope={scope}

@@ -27,6 +27,7 @@ const (
 	continuationRetryDelay       = time.Second
 	interruptedRunPauseThreshold = 3
 	liveSessionPersistInterval   = 2 * time.Second
+	liveTokenSpendFlushInterval  = 5 * time.Second
 	automaticRetryHistoryLimit   = 200
 	runtimeMaintenanceInterval   = 15 * time.Minute
 	providerSyncMinInterval      = time.Second
@@ -83,6 +84,7 @@ type issueTokenSpendState struct {
 	LastSeenTotals   map[string]int
 	LastUnnamedTotal int
 	PendingDelta     int
+	PendingSince     time.Time
 	LastFlushedAt    time.Time
 }
 
@@ -1435,7 +1437,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		)
 	}
 	o.processPendingRecurringRerunIgnoringRunning(current, issue.ID)
-	o.flushIssueTokenSpend(issue.ID)
+	o.flushIssueTokenSpend(issue.ID, true)
 }
 
 func (o *Orchestrator) publishIssuePreviewAsync(issue *kanban.Issue, phase kanban.WorkflowPhase, result *agent.RunResult) {
@@ -3001,6 +3003,9 @@ func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Sess
 		o.persistExecutionSession(&issue, entry.phase, entry.attempt, "run_started", "", false, "", &cp)
 	}
 	o.observeIssueTokenSpend(issueID, &cp)
+	if o.flushIssueTokenSpend(issueID, false) {
+		observability.BroadcastUpdate()
+	}
 }
 
 func (o *Orchestrator) updateIssueActivity(issueID string, event appserver.ActivityEvent) {
@@ -3058,6 +3063,7 @@ func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *appserver
 		return
 	}
 	runKey := issueTokenSpendRunKey(session)
+	now := time.Now().UTC()
 
 	o.tokenSpendMu.Lock()
 	defer o.tokenSpendMu.Unlock()
@@ -3065,6 +3071,9 @@ func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *appserver
 	state := o.tokenSpends[issueID]
 	if runKey == "" {
 		if session.TotalTokens > state.LastUnnamedTotal {
+			if state.PendingDelta == 0 {
+				state.PendingSince = now
+			}
 			state.PendingDelta += session.TotalTokens - state.LastUnnamedTotal
 			state.LastUnnamedTotal = session.TotalTokens
 		}
@@ -3075,6 +3084,9 @@ func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *appserver
 		state.LastSeenTotals = make(map[string]int)
 	}
 	if session.TotalTokens > state.LastSeenTotals[runKey] {
+		if state.PendingDelta == 0 {
+			state.PendingSince = now
+		}
 		state.PendingDelta += session.TotalTokens - state.LastSeenTotals[runKey]
 		state.LastSeenTotals[runKey] = session.TotalTokens
 	}
@@ -3099,7 +3111,7 @@ func (o *Orchestrator) persistFinalIssueTokenSpend(issueID string, session *apps
 		return
 	}
 	o.observeIssueTokenSpend(issueID, session)
-	o.flushIssueTokenSpend(issueID)
+	o.flushIssueTokenSpend(issueID, true)
 }
 
 func (o *Orchestrator) restoreIssueTokenSpend(issueID string, delta int) {
@@ -3110,19 +3122,25 @@ func (o *Orchestrator) restoreIssueTokenSpend(issueID string, delta int) {
 	defer o.tokenSpendMu.Unlock()
 	state := o.tokenSpends[issueID]
 	state.PendingDelta += delta
+	state.PendingSince = time.Now().UTC()
 	state.LastFlushedAt = time.Time{}
 	o.tokenSpends[issueID] = state
 }
 
-func (o *Orchestrator) flushIssueTokenSpend(issueID string) {
+func (o *Orchestrator) flushIssueTokenSpend(issueID string, force bool) bool {
 	o.tokenSpendMu.Lock()
 	state, ok := o.tokenSpends[issueID]
 	if !ok || state.PendingDelta <= 0 {
 		o.tokenSpendMu.Unlock()
-		return
+		return false
+	}
+	if !force && !state.PendingSince.IsZero() && time.Since(state.PendingSince) < liveTokenSpendFlushInterval {
+		o.tokenSpendMu.Unlock()
+		return false
 	}
 	pending := state.PendingDelta
 	state.PendingDelta = 0
+	state.PendingSince = time.Time{}
 	state.LastFlushedAt = time.Now().UTC()
 	o.tokenSpends[issueID] = state
 	o.tokenSpendMu.Unlock()
@@ -3130,7 +3148,9 @@ func (o *Orchestrator) flushIssueTokenSpend(issueID string) {
 	if err := o.store.AddIssueTokenSpend(issueID, pending); err != nil && err != sql.ErrNoRows {
 		slog.Warn("Failed to flush issue token spend", "issue_id", issueID, "delta", pending, "error", err)
 		o.restoreIssueTokenSpend(issueID, pending)
+		return false
 	}
+	return true
 }
 
 func (o *Orchestrator) clearIssueTokenSpendState(issueID string) {

@@ -105,7 +105,7 @@ Commands that talk to a running daemon over HTTP require `--api-url`, including 
 
 ## Local issue images
 
-Issue attachments are local-first storage, not provider attachments. Maestro stores them under an asset root derived from the active database directory:
+Issue attachments are local-first storage, not remote-tracker attachments. Maestro stores them under an asset root derived from the active database directory:
 
 - default DB path `~/.maestro/maestro.db` stores images in `~/.maestro/assets/images`
 - custom DB path `/path/to/maestro.db` stores images in `/path/to/assets/images`
@@ -113,7 +113,7 @@ Issue attachments are local-first storage, not provider attachments. Maestro sto
 
 Operational limits:
 
-- local-only for both kanban and Linear-backed issues
+- local-only for every issue
 - supported types: PNG, JPEG, WEBP, GIF
 - maximum size: 10 MiB per image
 
@@ -156,7 +156,7 @@ Behavior guarantees:
 `maestro run` and `maestro run [repo_path]` are different modes.
 
 - `maestro run` is unscoped. It runs against the current database, does not infer a repo from the shell working directory, and dispatches work using each project's stored `repo_path` and `workflow_path`.
-- `maestro run /absolute/path/to/repo` scopes the daemon to one repo. Provider sync filters to that repo, MCP and dashboard project mutations must use that same repo path, and project-less issues resolve against that scoped `WORKFLOW.md`.
+- `maestro run /absolute/path/to/repo` scopes the daemon to one repo. MCP and dashboard project mutations must use that same repo path, and project-less issues resolve against that scoped `WORKFLOW.md`.
 
 Use the unscoped form when one daemon should supervise multiple registered projects in the same database. Use the scoped form when you want one daemon to stay pinned to a single repo.
 
@@ -236,7 +236,7 @@ If `maestro mcp` runs in a different environment from `maestro run`, both proces
 
 Current scope boundaries:
 
-- Maestro stays local-first even when a project syncs issues from Linear
-- issue images stay local and are never pushed back to Linear or another upstream tracker
+- Maestro stays local-first even when work is imported from an upstream tracker
+- issue images stay local and are never pushed back to an upstream tracker
 - no Phoenix-style live observability layer
 - no separate plugin runtime for extensions

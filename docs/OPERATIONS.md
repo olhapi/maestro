@@ -7,12 +7,12 @@ This document collects the durable operational details for Maestro: runtime surf
 `maestro run` is the long-lived process for a given database. In code, it owns five connected layers:
 
 - the SQLite-backed local store and runtime persistence
-- the provider service that reads local `kanban` projects and syncs limited `linear` projects into the local store
+- the local project and issue service that keeps Maestro data in the SQLite store
 - the orchestrator and agent runner that turn queued issues into per-issue workspaces and Codex runs
 - a private loopback-only MCP daemon used by `maestro mcp`
 - an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
 
-`WORKFLOW.md` still governs orchestration behavior. Its `tracker.kind` remains `kanban`, even when a project itself is configured to sync issues from a provider such as Linear.
+`WORKFLOW.md` still governs orchestration behavior. Its `tracker.kind` remains `kanban`, which is the local tracker used for every project.
 
 ## HTTP surfaces
 
@@ -128,20 +128,13 @@ Operationally:
 
 ## Provider model
 
-Projects can use one of two provider kinds:
+Projects use the local tracker only:
 
-- `kanban`: fully local project and issue lifecycle backed by the SQLite store
-- `linear`: limited project-backed issue sync and issue mutation through Linear's GraphQL API
+- project records live in the SQLite store
+- issues, epics, blockers, comments, and attachments are managed locally
+- MCP prompts, CLI commands, or dashboard actions can translate external work into local Maestro records before execution
 
-Current Linear support is intentionally limited:
-
-- project provider support is available
-- issue sync and issue state updates are supported
-- assignee filtering is supported through project provider config
-- epics are not supported
-- some create and update flows reject labels, blockers, or project reassignment
-
-Regardless of provider, Maestro supervises work through the same local store, orchestration loop, runtime events, and dashboard surfaces.
+If you are importing another tracker, create local Maestro projects and issues first, then let the orchestrator supervise those local records.
 
 ## Workflow bootstrap and checks
 
@@ -216,7 +209,7 @@ Behavior:
 
 Current scope boundaries and differences from the original Maestro project:
 
-- Maestro stays local-first even when a project syncs issues from Linear
+- Maestro stays local-first and does not sync a remote provider into the live store
 - the public observability surface is HTTP plus an embedded dashboard, not Phoenix-style pubsub
 - `status --dashboard` is a live CLI formatter, not a second control plane
 - extension tools remain local shell commands, not a separate plugin runtime

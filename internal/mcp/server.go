@@ -86,23 +86,17 @@ func (s *Server) registerTools() {
 	s.tools = []mcpapi.Tool{
 		objectTool("server_info", "Get Maestro MCP server identity and store metadata", nil),
 		objectTool("create_project", "Create a new project", map[string]interface{}{
-			"name":                 stringProperty("Project name"),
-			"description":          stringProperty("Project description"),
-			"repo_path":            stringProperty("Absolute path to the repo this project orchestrates"),
-			"workflow_path":        stringProperty("Optional workflow path override"),
-			"provider_kind":        stringProperty("Provider kind: kanban or linear"),
-			"provider_project_ref": stringProperty("Provider project reference (for linear: project slug)"),
-			"provider_config":      objectProperty("Non-secret provider configuration"),
+			"name":          stringProperty("Project name"),
+			"description":   stringProperty("Project description"),
+			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
+			"workflow_path": stringProperty("Optional workflow path override"),
 		}),
 		objectTool("update_project", "Update an existing project", map[string]interface{}{
-			"id":                   stringProperty("Project ID"),
-			"name":                 stringProperty("Project name"),
-			"description":          stringProperty("Project description"),
-			"repo_path":            stringProperty("Absolute path to the repo this project orchestrates"),
-			"workflow_path":        stringProperty("Optional workflow path override"),
-			"provider_kind":        stringProperty("Provider kind: kanban or linear"),
-			"provider_project_ref": stringProperty("Provider project reference"),
-			"provider_config":      objectProperty("Non-secret provider configuration"),
+			"id":            stringProperty("Project ID"),
+			"name":          stringProperty("Project name"),
+			"description":   stringProperty("Project description"),
+			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
+			"workflow_path": stringProperty("Optional workflow path override"),
 		}),
 		objectTool("list_projects", "List all projects", nil),
 		objectTool("delete_project", "Delete a project", map[string]interface{}{
@@ -399,9 +393,9 @@ func (s *Server) handleCreateProject(ctx context.Context, args map[string]interf
 		asString(args["description"]),
 		repoPath,
 		asString(args["workflow_path"]),
-		asString(args["provider_kind"]),
-		asString(args["provider_project_ref"]),
-		objectArg(args, "provider_config"),
+		kanban.ProviderKindKanban,
+		"",
+		nil,
 	)
 	if err != nil {
 		return s.toolError("create_project", fmt.Sprintf("Failed to create project: %v", err)), nil
@@ -419,7 +413,7 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("update_project", err.Error()), nil
 	}
-	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), asString(args["provider_kind"]), asString(args["provider_project_ref"]), objectArg(args, "provider_config")); err != nil {
+	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), kanban.ProviderKindKanban, "", nil); err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
 	}
 	project, err := s.store.GetProject(id)

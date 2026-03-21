@@ -11,22 +11,22 @@ import DocsCommandField from "./_components/DocsCommandField.astro";
 ## Projects
 
 <DocsCommandField
-  command={`maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
+  command={`maestro project create <name> --repo <repo_path> [--desc <description>] [--workflow <workflow_path>]
 maestro project list
 maestro project show <id>
 maestro project start <id> --api-url <url>
 maestro project stop <id> --api-url <url>
-maestro project update <id> [--name <name>] [--desc <description>] [--repo <repo_path>] [--workflow <workflow_path>] [--provider <kanban|linear>] [--provider-project-ref <ref>] [--provider-endpoint <url>] [--provider-assignee <value>]
+maestro project update <id> [--name <name>] [--desc <description>] [--repo <repo_path>] [--workflow <workflow_path>]
 maestro project delete <id>`}
 />
 
-Use project commands to register a repo, inspect the local tracker, configure project-level providers, and remove stale projects from the store.
+Use project commands to register a repo, inspect the local tracker, and remove stale projects from the store.
 
 Use `--desc` for durable Codex guidance, not just a label. Maestro includes `project.description` in the default implementation, review, and done prompts for every issue in that project.
 
 `start` and `stop` are live control commands. They require `--api-url` because they talk to a running Maestro daemon over HTTP.
 
-`kanban` is the default provider. `linear` support exists, but it is intentionally limited and does not support epics.
+Project creation and updates are local-only. If you need to bring in work from Jira or another tracker, translate it into local Maestro projects and issues through MCP or scripts.
 
 ## Epics
 

@@ -483,6 +483,8 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	if !strings.Contains(serverInfo.Description, "Maestro") || strings.Contains(strings.ToLower(serverInfo.Description), "symphony") {
 		t.Fatalf("unexpected server_info description: %q", serverInfo.Description)
 	}
+	assertToolProperties(t, findTool(t, tools.Tools, "create_project"), "description", "name", "repo_path", "workflow_path")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_project"), "description", "id", "name", "repo_path", "workflow_path")
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")

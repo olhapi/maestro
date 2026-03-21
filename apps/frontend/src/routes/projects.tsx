@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Play, Plus, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { ProjectProviderChip } from "@/components/dashboard/project-provider-chip";
 import { ProjectPermissionProfileButton } from "@/components/dashboard/project-permission-profile-button";
 import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -154,7 +153,6 @@ export function ProjectsPage() {
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <Badge>{summaryActiveCount(project)} active</Badge>
-                    <ProjectProviderChip providerKind={project.provider_kind} />
                   </div>
                   <div>
                     <CardTitle className="text-2xl">

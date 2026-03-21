@@ -637,34 +637,20 @@ func TestIssueRepairTokensDeduplicatesCumulativeTotalsPerThread(t *testing.T) {
 	}
 }
 
-func TestIssueCommentAddRejectsEmptyInputForLinearIssues(t *testing.T) {
+func TestIssueCommentAddRejectsEmptyInputForLocalIssues(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	store, err := kanban.NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
-		"",
-		"",
-		"",
-		kanban.ProviderKindLinear,
-		"proj-slug",
-		map[string]interface{}{"project_slug": "proj-slug"},
-	)
+	project, err := store.CreateProject("Local Project", "", "", "")
 	if err != nil {
-		t.Fatalf("CreateProjectWithProvider: %v", err)
+		t.Fatalf("CreateProject: %v", err)
 	}
-	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-issue-1",
-		Identifier:       "LIN-1",
-		Title:            "Provider issue",
-		State:            kanban.StateBacklog,
-	})
+	issue, err := store.CreateIssue(project.ID, "", "Local issue", "", 0, nil)
 	if err != nil {
-		t.Fatalf("UpsertProviderIssue: %v", err)
+		t.Fatalf("CreateIssue: %v", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close store: %v", err)

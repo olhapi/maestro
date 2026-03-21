@@ -64,14 +64,9 @@ describe("ProjectDetailPage", () => {
     });
 
     const heading = screen.getByRole("heading", { name: /platform/i });
-    const providerChip = within(heading).getByRole("img", {
-      name: /provider kanban/i,
-    });
     const repoBinding = within(heading).getByLabelText(/repo path: \/repo/i);
-    expect(providerChip.nextElementSibling).toBe(repoBinding);
     expect(repoBinding).toHaveTextContent("repo");
-    fireEvent.focus(providerChip);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Provider Kanban");
+    expect(within(heading).queryByRole("img", { name: /provider/i })).not.toBeInTheDocument();
     expect(screen.queryByText("Repo binding")).not.toBeInTheDocument();
     expect(
       screen.queryByText(

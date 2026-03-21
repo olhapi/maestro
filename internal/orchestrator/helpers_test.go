@@ -10,6 +10,7 @@ import (
 	"github.com/olhapi/maestro/internal/agent"
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -781,7 +782,7 @@ func TestRuntimeResolutionAndUtilityHelpers(t *testing.T) {
 	}
 }
 
-func TestUpdateLiveSessionDoesNotPersistTokenSpendFromSnapshots(t *testing.T) {
+func TestUpdateLiveSessionFlushesTokenSpendAfterDebounceAndBroadcasts(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)
 	runner := newRetryTestRunner()
@@ -799,6 +800,9 @@ func TestUpdateLiveSessionDoesNotPersistTokenSpendFromSnapshots(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 	waitForRunCall(t, runner.runCalls, time.Second)
+
+	updates, unsubscribe := observability.Subscribe()
+	defer unsubscribe()
 
 	now := time.Now().UTC().Truncate(time.Second)
 	orch.updateLiveSession(issue.ID, &appserver.Session{
@@ -833,6 +837,12 @@ func TestUpdateLiveSessionDoesNotPersistTokenSpendFromSnapshots(t *testing.T) {
 		t.Fatalf("TotalTokensSpent after repeated update = %d, want 0", current.TotalTokensSpent)
 	}
 
+	orch.tokenSpendMu.Lock()
+	state := orch.tokenSpends[issue.ID]
+	state.PendingSince = time.Now().Add(-(liveTokenSpendFlushInterval + time.Second))
+	orch.tokenSpends[issue.ID] = state
+	orch.tokenSpendMu.Unlock()
+
 	orch.updateLiveSession(issue.ID, &appserver.Session{
 		ThreadID:      "thread-token",
 		SessionID:     "thread-token-turn-2",
@@ -841,12 +851,52 @@ func TestUpdateLiveSessionDoesNotPersistTokenSpendFromSnapshots(t *testing.T) {
 		LastTimestamp: now.Add(2 * time.Second),
 		TotalTokens:   18,
 	})
+
+	select {
+	case <-updates:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for dashboard broadcast after live token spend flush")
+	}
+
 	current, err = store.GetIssue(issue.ID)
 	if err != nil {
-		t.Fatalf("GetIssue after later token update: %v", err)
+		t.Fatalf("GetIssue after flushed token update: %v", err)
 	}
-	if current.TotalTokensSpent != 0 {
-		t.Fatalf("TotalTokensSpent after later token update = %d, want 0", current.TotalTokensSpent)
+	if current.TotalTokensSpent != 18 {
+		t.Fatalf("TotalTokensSpent after flushed token update = %d, want 18", current.TotalTokensSpent)
+	}
+
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-token",
+		SessionID:     "thread-token-turn-3",
+		TurnID:        "turn-3",
+		LastEvent:     "thread.tokenUsage.updated",
+		LastTimestamp: now.Add(3 * time.Second),
+		TotalTokens:   25,
+	})
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after pending token update: %v", err)
+	}
+	if current.TotalTokensSpent != 18 {
+		t.Fatalf("TotalTokensSpent after pending token update = %d, want 18", current.TotalTokensSpent)
+	}
+
+	orch.persistFinalIssueTokenSpend(issue.ID, &appserver.Session{
+		ThreadID:      "thread-token",
+		SessionID:     "thread-token-turn-3",
+		TurnID:        "turn-3",
+		LastEvent:     "thread.tokenUsage.updated",
+		LastTimestamp: now.Add(3 * time.Second),
+		TotalTokens:   25,
+	})
+
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after final token flush: %v", err)
+	}
+	if current.TotalTokensSpent != 25 {
+		t.Fatalf("TotalTokensSpent after final token flush = %d, want 25", current.TotalTokensSpent)
 	}
 
 	close(runner.release)
@@ -969,6 +1019,9 @@ func TestIssueTokenSpendHelpersTrackRunKeysAndResetState(t *testing.T) {
 	}
 	if state.LastUnnamedTotal != 7 {
 		t.Fatalf("LastUnnamedTotal = %d, want 7", state.LastUnnamedTotal)
+	}
+	if state.PendingSince.IsZero() {
+		t.Fatal("expected restoreIssueTokenSpend to restart the pending window")
 	}
 	if !state.LastFlushedAt.IsZero() {
 		t.Fatalf("LastFlushedAt = %v, want zero", state.LastFlushedAt)

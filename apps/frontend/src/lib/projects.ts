@@ -175,7 +175,7 @@ export function projectDispatchGuidance(project: DispatchProject): ProjectDispat
     summary: "A project configuration issue is blocking dispatch.",
     mobileTip: "Tip: review the dispatch error and fix the project settings before running again.",
     steps: [
-      "Fix the repo binding or provider settings reported by the project error.",
+      "Fix the repo binding or dispatch settings reported by the project error.",
       `Confirm the workflow instructions are readable at ${workflowPath}.`,
       "Run the project again after the configuration error is resolved.",
     ],

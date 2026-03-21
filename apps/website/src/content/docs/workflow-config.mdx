@@ -22,7 +22,7 @@ When the default handoff is close but not quite right, `WORKFLOW.md` is where yo
 - Codex command and collaboration settings
 - the prompt template rendered for each issue
 
-Project-level provider selection is separate from this file. `WORKFLOW.md` still controls orchestration for every project, while `tracker.kind` remains `kanban` even if a project is configured to sync issues from Linear.
+Project-level source selection is no longer part of this file. `WORKFLOW.md` still controls orchestration for every project, while `tracker.kind` remains `kanban`, the local tracker.
 
 ## Typical Codex-backed section
 
@@ -46,7 +46,7 @@ codex:
 
 ## Main knobs
 
-- `tracker.kind`: orchestration tracker kind. This remains `kanban`.
+- `tracker.kind`: orchestration tracker kind. This remains `kanban`, the local tracker.
 - `agent.mode`: use `app_server` for the Codex app-server protocol or `stdio` for `codex exec` style runners.
 - `agent.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
 - `agent.max_turns`: limit how many turns Maestro gives the agent before ending an attempt.

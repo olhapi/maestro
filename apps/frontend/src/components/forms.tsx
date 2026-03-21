@@ -92,19 +92,12 @@ export function ProjectDialog({
     description?: string;
     repo_path: string;
     workflow_path?: string;
-    provider_kind?: string;
-    provider_project_ref?: string;
-    provider_config?: Record<string, unknown>;
   }) => Promise<void>;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [repoPath, setRepoPath] = useState(initial?.repo_path ?? "");
   const [workflowPath, setWorkflowPath] = useState(initial?.workflow_path ?? "");
-  const [providerKind, setProviderKind] = useState(initial?.provider_kind ?? "kanban");
-  const [providerProjectRef, setProviderProjectRef] = useState(initial?.provider_project_ref ?? "");
-  const [providerEndpoint, setProviderEndpoint] = useState(String(initial?.provider_config?.endpoint ?? ""));
-  const [providerAssignee, setProviderAssignee] = useState(String(initial?.provider_config?.assignee ?? ""));
   const [pending, setPending] = useState(false);
 
   useDialogReset(open, initial?.id ?? initial?.name ?? "__new__", () => {
@@ -112,10 +105,6 @@ export function ProjectDialog({
     setDescription(initial?.description ?? "");
     setRepoPath(initial?.repo_path ?? "");
     setWorkflowPath(initial?.workflow_path ?? "");
-    setProviderKind(initial?.provider_kind ?? "kanban");
-    setProviderProjectRef(initial?.provider_project_ref ?? "");
-    setProviderEndpoint(String(initial?.provider_config?.endpoint ?? ""));
-    setProviderAssignee(String(initial?.provider_config?.assignee ?? ""));
   });
 
   return (
@@ -165,51 +154,6 @@ export function ProjectDialog({
                 />
               )}
             </Field>
-            <Field label="Provider">
-              {({ labelId }) => (
-                <Select value={providerKind} onValueChange={setProviderKind}>
-                  <SelectTrigger aria-labelledby={labelId}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="kanban">kanban</SelectItem>
-                    <SelectItem value="linear">linear</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            </Field>
-            <Field label="Provider project ref">
-              {({ labelId }) => (
-                <Input
-                  aria-labelledby={labelId}
-                  value={providerProjectRef}
-                  onChange={(event) => setProviderProjectRef(event.target.value)}
-                  placeholder={providerKind === "linear" ? "Linear project slug" : "Optional provider project ref"}
-                />
-              )}
-            </Field>
-            <Field label="Provider endpoint">
-              {({ labelId }) => (
-                <Input
-                  aria-labelledby={labelId}
-                  value={providerEndpoint}
-                  onChange={(event) => setProviderEndpoint(event.target.value)}
-                  placeholder="Optional API endpoint override"
-                />
-              )}
-            </Field>
-            <Field label="Provider assignee">
-              {({ labelId }) => (
-                <Input
-                  aria-labelledby={labelId}
-                  value={providerAssignee}
-                  onChange={(event) => setProviderAssignee(event.target.value)}
-                  placeholder={
-                    providerKind === "linear" ? "Optional assignee ID or 'me'" : "Optional provider assignee filter"
-                  }
-                />
-              )}
-            </Field>
           </div>
           <div className="flex justify-end gap-3">
             <Button variant="secondary" onClick={() => onOpenChange(false)}>
@@ -220,25 +164,11 @@ export function ProjectDialog({
               onClick={async () => {
                 setPending(true);
                 try {
-                  const providerConfig: Record<string, unknown> = { ...(initial?.provider_config ?? {}) };
-                  if (providerEndpoint) {
-                    providerConfig.endpoint = providerEndpoint;
-                  } else {
-                    delete providerConfig.endpoint;
-                  }
-                  if (providerAssignee) {
-                    providerConfig.assignee = providerAssignee;
-                  } else {
-                    delete providerConfig.assignee;
-                  }
                   await onSubmit({
                     name,
                     description,
                     repo_path: repoPath,
                     workflow_path: workflowPath || undefined,
-                    provider_kind: providerKind,
-                    provider_project_ref: providerProjectRef || undefined,
-                    provider_config: Object.keys(providerConfig).length > 0 ? providerConfig : undefined,
                   });
                   onOpenChange(false);
                 } finally {
@@ -397,7 +327,7 @@ export function IssueDialog({
   const [pending, setPending] = useState(false);
   const selectedProject = projects.find((project) => project.id === projectID);
   const supportsEpics = selectedProject?.capabilities?.epics ?? true;
-  const canChangeIssueType = !isEditing || initial?.provider_kind === "kanban";
+  const canChangeIssueType = true;
 
   useDialogReset(open, initial?.identifier ?? "__new__", () => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? "");

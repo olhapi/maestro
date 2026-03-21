@@ -303,13 +303,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"items": projects})
 	case http.MethodPost:
 		var body struct {
-			Name               string                 `json:"name"`
-			Description        string                 `json:"description"`
-			RepoPath           string                 `json:"repo_path"`
-			WorkflowPath       string                 `json:"workflow_path"`
-			ProviderKind       string                 `json:"provider_kind"`
-			ProviderProjectRef string                 `json:"provider_project_ref"`
-			ProviderConfig     map[string]interface{} `json:"provider_config"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			RepoPath     string `json:"repo_path"`
+			WorkflowPath string `json:"workflow_path"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -328,9 +325,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(body.Description),
 			strings.TrimSpace(body.RepoPath),
 			strings.TrimSpace(body.WorkflowPath),
-			strings.TrimSpace(body.ProviderKind),
-			strings.TrimSpace(body.ProviderProjectRef),
-			body.ProviderConfig,
+			kanban.ProviderKindKanban,
+			"",
+			nil,
 		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -453,13 +450,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPatch:
 		var body struct {
-			Name               string                 `json:"name"`
-			Description        string                 `json:"description"`
-			RepoPath           string                 `json:"repo_path"`
-			WorkflowPath       string                 `json:"workflow_path"`
-			ProviderKind       string                 `json:"provider_kind"`
-			ProviderProjectRef string                 `json:"provider_project_ref"`
-			ProviderConfig     map[string]interface{} `json:"provider_config"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			RepoPath     string `json:"repo_path"`
+			WorkflowPath string `json:"workflow_path"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -479,9 +473,9 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(body.Description),
 			strings.TrimSpace(body.RepoPath),
 			strings.TrimSpace(body.WorkflowPath),
-			strings.TrimSpace(body.ProviderKind),
-			strings.TrimSpace(body.ProviderProjectRef),
-			body.ProviderConfig,
+			kanban.ProviderKindKanban,
+			"",
+			nil,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

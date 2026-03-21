@@ -8,7 +8,7 @@ Docs: [maestro.olhapi.com/docs](https://maestro.olhapi.com/docs)
 
 It combines a SQLite-backed tracker, an orchestrator that reads `WORKFLOW.md`, a private MCP daemon bridged by `maestro mcp`, and an HTTP server that serves the embedded dashboard plus JSON/WebSocket APIs.
 
-Maestro stays local-first even when a project syncs issues from Linear. Provider-backed issues are synchronized into the local store, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces as local kanban issues.
+Maestro stays local-first. External work is translated into Maestro projects and issues through the CLI, the embedded dashboard, or MCP prompts, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces.
 
 ## Docs Website
 
@@ -106,7 +106,14 @@ maestro issue create "Fix auth bug" --project <project_id> --priority 1 --labels
 maestro issue move ISS-1 ready
 ```
 
-Projects default to the local `kanban` provider. You can also register a project with limited Linear-backed sync by passing `--provider linear --provider-project-ref <slug>` and, if needed, `--provider-endpoint` or `--provider-assignee`.
+Projects use the local tracker only.
+
+If you need to import work from another system, ask your MCP-capable agent to translate it into Maestro records. For example:
+
+```text
+Take my Jira issues from the "make a react todo app" epic and create the corresponding Maestro project, epics, and issues.
+Use the current repo as the project repo path, keep the issues local, and mark the imported work ready.
+```
 
 Project descriptions are not just dashboard notes. Maestro passes `project.description` into every implementation, review, and done prompt by default, so use it for standing requirements, conventions, and validation expectations Codex should keep in mind for every issue.
 
@@ -184,7 +191,7 @@ maestro project stop <project_id> --api-url http://127.0.0.1:8787
 
 `maestro run` is the long-lived process for a given database. It starts:
 
-- the provider service and local SQLite-backed store
+- the local issue service and SQLite-backed store
 - the orchestrator and agent runner
 - a private MCP daemon used by `maestro mcp`
 - the public HTTP server when `--port` is set or left at its default
@@ -224,7 +231,7 @@ maestro issue images list ISS-1
 maestro issue images remove ISS-1 <image_id>
 ```
 
-Image attachments are local-only, including for Linear-backed issues. Maestro accepts PNG, JPEG, WEBP, and GIF files up to 10 MiB each and serves them back through the local HTTP API and dashboard.
+Image attachments are local-only for every issue. Maestro accepts PNG, JPEG, WEBP, and GIF files up to 10 MiB each and serves them back through the local HTTP API and dashboard.
 
 Recurring automation:
 
@@ -292,7 +299,7 @@ Supported prompt-template variables are:
 - `{{ attempt }}`
 
 When a project has a description, Maestro's default implementation, review, and done prompts include it automatically under a `Project context:` section. Custom workflows can place `{{ project.description }}` wherever they want.
-The default done prompt also tells the agent to create a short local preview video when the change can be demonstrated and attach it to an issue comment when the available tracker or provider tooling supports that flow.
+The default done prompt also tells the agent to create a short local preview video when the change can be demonstrated and attach it to an issue comment when the available local issue tooling supports that flow.
 
 The checked-in [`WORKFLOW.md`](WORKFLOW.md) is this repository's own workflow example. It is not guaranteed to match fresh `workflow init` defaults exactly.
 
