@@ -2124,16 +2124,18 @@ func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues [
 	var assetPaths []string
 	var commentAttachments []IssueCommentAttachment
 	issueAssetDirs := make(map[string]struct{})
+	reactivateIssueIDs := make([]string, 0)
 	for providerIssueRef, issueID := range currentProjectShadowByRef {
 		if _, ok := seenRefs[providerIssueRef]; ok {
 			continue
 		}
-		removedPaths, removedCommentAttachments, issueAssetDir, err := s.deleteIssueTx(tx, issueID)
+		removedPaths, removedCommentAttachments, issueAssetDir, unblockedIssueIDs, err := s.deleteIssueTx(tx, issueID)
 		if err != nil {
 			return err
 		}
 		assetPaths = append(assetPaths, removedPaths...)
 		commentAttachments = append(commentAttachments, removedCommentAttachments...)
+		reactivateIssueIDs = append(reactivateIssueIDs, unblockedIssueIDs...)
 		if issueAssetDir != "" {
 			issueAssetDirs[issueAssetDir] = struct{}{}
 		}
@@ -2149,7 +2151,7 @@ func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues [
 	for issueAssetDir := range issueAssetDirs {
 		_ = os.Remove(issueAssetDir)
 	}
-	return nil
+	return s.reactivateIssueAgentCommandsForIssues(reactivateIssueIDs)
 }
 
 func (s *Store) ListDispatchIssues(states []string) ([]DispatchIssue, error) {
@@ -2952,7 +2954,7 @@ func (s *Store) SetIssueBlockers(issueID string, blockers []string) ([]string, e
 	return persisted, nil
 }
 
-func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAttachment, string, error) {
+func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAttachment, string, []string, error) {
 	var workspacePath string
 	err := tx.QueryRow(`SELECT path FROM workspaces WHERE issue_id = ?`, id).Scan(&workspacePath)
 	switch {
@@ -2960,57 +2962,91 @@ func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAt
 	case err == sql.ErrNoRows:
 		workspacePath = ""
 	default:
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
+	}
+
+	var blockerIdentifier string
+	err = tx.QueryRow(`SELECT identifier FROM issues WHERE id = ?`, id).Scan(&blockerIdentifier)
+	switch {
+	case err == nil:
+	case err == sql.ErrNoRows:
+		blockerIdentifier = ""
+	default:
+		return nil, nil, "", nil, err
+	}
+
+	blockedIssueIDs := []string{}
+	if blockerIdentifier != "" {
+		rows, err := tx.Query(`SELECT DISTINCT issue_id FROM issue_blockers WHERE blocked_by = ? ORDER BY issue_id`, blockerIdentifier)
+		if err != nil {
+			return nil, nil, "", nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var issueID string
+			if err := rows.Scan(&issueID); err != nil {
+				return nil, nil, "", nil, err
+			}
+			blockedIssueIDs = append(blockedIssueIDs, issueID)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, nil, "", nil, err
+		}
 	}
 
 	if _, err := tx.Exec(`DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
+	}
+	if blockerIdentifier != "" {
+		if _, err := tx.Exec(`DELETE FROM issue_blockers WHERE blocked_by = ?`, blockerIdentifier); err != nil {
+			return nil, nil, "", nil, err
+		}
 	}
 	assetPaths, err := s.deleteIssueAssetsTx(tx, id)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	commentAttachments, err := s.deleteIssueCommentsTx(tx, id)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_recurrences WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_execution_sessions WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_activity_updates WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_activity_entries WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM issue_agent_commands WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM workspaces WHERE issue_id = ?`, id); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	res, err := tx.Exec(`DELETE FROM issues WHERE id = ?`, id)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
-		return nil, nil, "", notFoundError("issue", id)
+		return nil, nil, "", nil, notFoundError("issue", id)
 	}
 	if workspacePath != "" {
 		if err := s.appendChangeTx(tx, "workspace", id, "deleted", map[string]interface{}{"path": workspacePath}); err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", nil, err
 		}
 	}
 	if err := s.appendChangeTx(tx, "issue", id, "deleted", nil); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
-	return assetPaths, commentAttachments, filepath.Join(s.IssueAssetRoot(), id), nil
+	return assetPaths, commentAttachments, filepath.Join(s.IssueAssetRoot(), id), blockedIssueIDs, nil
 }
 
 func (s *Store) DeleteIssue(id string) error {
@@ -3034,7 +3070,7 @@ func (s *Store) DeleteIssue(id string) error {
 			_ = tx.Rollback()
 		}
 	}()
-	assetPaths, commentAttachments, _, err := s.deleteIssueTx(tx, id)
+	assetPaths, commentAttachments, issueAssetDir, unblockedIssueIDs, err := s.deleteIssueTx(tx, id)
 	if err != nil {
 		return err
 	}
@@ -3045,7 +3081,40 @@ func (s *Store) DeleteIssue(id string) error {
 	s.cleanupIssueAssetPaths(assetPaths)
 	s.cleanupIssueCommentAttachmentPaths(commentAttachments)
 	_ = os.Remove(issueAssetDir)
-	return nil
+	return s.reactivateIssueAgentCommandsForIssues(unblockedIssueIDs)
+}
+
+func (s *Store) reactivateIssueAgentCommandsForIssues(issueIDs []string) error {
+	if len(issueIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(issueIDs))
+	clean := make([]string, 0, len(issueIDs))
+	for _, issueID := range issueIDs {
+		issueID = strings.TrimSpace(issueID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		seen[issueID] = struct{}{}
+		clean = append(clean, issueID)
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	sort.Strings(clean)
+	errs := make([]error, 0, len(clean))
+	for _, issueID := range clean {
+		if err := s.ActivateIssueAgentCommandsIfDispatchable(issueID); err != nil {
+			if IsNotFound(err) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("issue %s: %w", issueID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Workspace operations

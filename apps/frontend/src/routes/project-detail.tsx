@@ -7,7 +7,6 @@ import { toast } from "sonner";
 import { KanbanBoard } from "@/components/dashboard/kanban-board";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
-import { ProjectProviderChip } from "@/components/dashboard/project-provider-chip";
 import {
   ProjectPermissionProfileButton,
 } from "@/components/dashboard/project-permission-profile-button";
@@ -197,9 +196,6 @@ export function ProjectDetailPage() {
         title={
           <span className="inline-flex flex-wrap items-center gap-2">
             <span>{project.data.project.name}</span>
-            <ProjectProviderChip
-              providerKind={project.data.project.provider_kind}
-            />
             <ProjectRepoBinding repoPath={project.data.project.repo_path} />
           </span>
         }

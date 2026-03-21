@@ -1233,10 +1233,6 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 	var description string
 	var repoPath string
 	var workflowPath string
-	var providerKind string
-	var providerProjectRef string
-	var providerEndpoint string
-	var providerAssignee string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a project",
@@ -1250,14 +1246,7 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			providerConfig := map[string]interface{}{}
-			if strings.TrimSpace(providerEndpoint) != "" {
-				providerConfig["endpoint"] = strings.TrimSpace(providerEndpoint)
-			}
-			if strings.TrimSpace(providerAssignee) != "" {
-				providerConfig["assignee"] = strings.TrimSpace(providerAssignee)
-			}
-			project, err := svc.CreateProject(context.Background(), args[0], description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
+			project, err := svc.CreateProject(context.Background(), args[0], description, repoPath, workflowPath, kanban.ProviderKindKanban, "", nil)
 			if err != nil {
 				return err
 			}
@@ -1275,10 +1264,6 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "Project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute path to the repo")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Optional workflow path override")
-	cmd.Flags().StringVar(&providerKind, "provider", kanban.ProviderKindKanban, "Provider kind: kanban or linear")
-	cmd.Flags().StringVar(&providerProjectRef, "provider-project-ref", "", "Provider project reference (for linear: project slug)")
-	cmd.Flags().StringVar(&providerEndpoint, "provider-endpoint", "", "Optional provider endpoint override")
-	cmd.Flags().StringVar(&providerAssignee, "provider-assignee", "", "Optional provider assignee filter (Linear supports assignee IDs and 'me')")
 	return cmd
 }
 
@@ -1327,10 +1312,6 @@ func (a *cliApp) newProjectShowCmd() *cobra.Command {
 			}
 			_, _ = fmt.Fprintf(a.stdout, "Project:\t%s (%s)\n", project.Name, project.ID)
 			_, _ = fmt.Fprintf(a.stdout, "State:\t%s\n", project.State)
-			_, _ = fmt.Fprintf(a.stdout, "Provider:\t%s\n", project.ProviderKind)
-			if project.ProviderProjectRef != "" {
-				_, _ = fmt.Fprintf(a.stdout, "Provider Ref:\t%s\n", project.ProviderProjectRef)
-			}
 			_, _ = fmt.Fprintf(a.stdout, "Repo:\t%s\n", project.RepoPath)
 			_, _ = fmt.Fprintf(a.stdout, "Workflow:\t%s\n", project.WorkflowPath)
 			_, _ = fmt.Fprintf(a.stdout, "Ready:\t%t\n", project.OrchestrationReady)
@@ -1414,10 +1395,6 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 	var description string
 	var repoPath string
 	var workflowPath string
-	var providerKind string
-	var providerProjectRef string
-	var providerEndpoint string
-	var providerAssignee string
 	cmd := &cobra.Command{
 		Use:   "update <id>",
 		Short: "Update a project",
@@ -1444,33 +1421,7 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("workflow") {
 				project.WorkflowPath = workflowPath
 			}
-			if cmd.Flags().Changed("provider") {
-				project.ProviderKind = providerKind
-			}
-			if cmd.Flags().Changed("provider-project-ref") {
-				project.ProviderProjectRef = providerProjectRef
-			}
-			if cmd.Flags().Changed("provider-endpoint") {
-				if project.ProviderConfig == nil {
-					project.ProviderConfig = map[string]interface{}{}
-				}
-				if strings.TrimSpace(providerEndpoint) == "" {
-					delete(project.ProviderConfig, "endpoint")
-				} else {
-					project.ProviderConfig["endpoint"] = strings.TrimSpace(providerEndpoint)
-				}
-			}
-			if cmd.Flags().Changed("provider-assignee") {
-				if project.ProviderConfig == nil {
-					project.ProviderConfig = map[string]interface{}{}
-				}
-				if strings.TrimSpace(providerAssignee) == "" {
-					delete(project.ProviderConfig, "assignee")
-				} else {
-					project.ProviderConfig["assignee"] = strings.TrimSpace(providerAssignee)
-				}
-			}
-			if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, project.ProviderKind, project.ProviderProjectRef, project.ProviderConfig); err != nil {
+			if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, kanban.ProviderKindKanban, "", nil); err != nil {
 				return err
 			}
 			updated, err := store.GetProject(project.ID)
@@ -1492,10 +1443,6 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "New project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute repo path")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Workflow path override")
-	cmd.Flags().StringVar(&providerKind, "provider", "", "Provider kind: kanban or linear")
-	cmd.Flags().StringVar(&providerProjectRef, "provider-project-ref", "", "Provider project reference")
-	cmd.Flags().StringVar(&providerEndpoint, "provider-endpoint", "", "Optional provider endpoint override")
-	cmd.Flags().StringVar(&providerAssignee, "provider-assignee", "", "Optional provider assignee filter")
 	return cmd
 }
 

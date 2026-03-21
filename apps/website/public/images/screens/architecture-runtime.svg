@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 780" role="img" aria-labelledby="title desc">
   <title id="title">Maestro runtime architecture</title>
-  <desc id="desc">A static diagram showing MCP and HTTP entry points flowing into the Maestro daemon, which coordinates providers, orchestration, storage, and the agent runner.</desc>
+  <desc id="desc">A static diagram showing MCP and HTTP entry points flowing into the Maestro daemon, which coordinates local issue management, orchestration, storage, and the agent runner.</desc>
   <defs>
     <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
       <stop offset="0%" stop-color="#0f1317" />
@@ -60,7 +60,7 @@
   <text class="small" x="1013" y="184" text-anchor="middle">shared runtime for the active database</text>
 
   <rect class="box muted" x="806" y="290" width="180" height="84" />
-  <text class="label" x="896" y="325" text-anchor="middle">provider</text>
+  <text class="label" x="896" y="325" text-anchor="middle">local issue</text>
   <text class="small" x="896" y="351" text-anchor="middle">service</text>
 
   <rect class="box muted" x="1040" y="290" width="180" height="84" />
@@ -72,8 +72,8 @@
   <text class="small" x="896" y="495" text-anchor="middle">store</text>
 
   <rect class="box muted" x="806" y="562" width="180" height="84" />
-  <text class="label" x="896" y="597" text-anchor="middle">Linear API</text>
-  <text class="small" x="896" y="623" text-anchor="middle">(optional)</text>
+  <text class="label" x="896" y="597" text-anchor="middle">MCP import</text>
+  <text class="small" x="896" y="623" text-anchor="middle">(prompt-driven)</text>
 
   <rect class="box muted" x="1040" y="434" width="180" height="84" />
   <text class="label" x="1130" y="469" text-anchor="middle">workspace</text>

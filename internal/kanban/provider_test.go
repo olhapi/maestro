@@ -28,8 +28,8 @@ func TestProviderProjectHelpersAndCounts(t *testing.T) {
 		t.Fatalf("expected active 3, got %d", counts.Active())
 	}
 
-	if got := DefaultCapabilities(ProviderKindLinear); got.Epics {
-		t.Fatalf("expected linear provider epics=false, got %#v", got)
+	if got := DefaultCapabilities(ProviderKindLinear); !got.Epics || !got.IssueDelete {
+		t.Fatalf("expected default capabilities for linear to match local, got %#v", got)
 	}
 	if got := DefaultCapabilities(" custom "); !got.Epics || !got.IssueDelete {
 		t.Fatalf("expected default capabilities for custom provider, got %#v", got)

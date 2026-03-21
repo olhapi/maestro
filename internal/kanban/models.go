@@ -353,22 +353,11 @@ type ProviderCapabilities struct {
 }
 
 func DefaultCapabilities(kind string) ProviderCapabilities {
-	switch strings.TrimSpace(kind) {
-	case ProviderKindLinear:
-		return ProviderCapabilities{
-			Projects:         true,
-			Epics:            false,
-			Issues:           true,
-			IssueStateUpdate: true,
-			IssueDelete:      true,
-		}
-	default:
-		return ProviderCapabilities{
-			Projects:         true,
-			Epics:            true,
-			Issues:           true,
-			IssueStateUpdate: true,
-			IssueDelete:      true,
-		}
+	return ProviderCapabilities{
+		Projects:         true,
+		Epics:            true,
+		Issues:           true,
+		IssueStateUpdate: true,
+		IssueDelete:      true,
 	}
 }

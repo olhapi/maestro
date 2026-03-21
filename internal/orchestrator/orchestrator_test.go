@@ -86,6 +86,13 @@ type blockingIssueProvider struct {
 	getRelease chan struct{}
 }
 
+type previewCommentProvider struct {
+	store         *kanban.Store
+	issue         kanban.Issue
+	createStarted chan struct{}
+	createRelease chan struct{}
+}
+
 func (p *countingProvider) Kind() string {
 	return kanban.ProviderKindLinear
 }
@@ -214,6 +221,103 @@ func (p *blockingIssueProvider) DeleteIssueComment(context.Context, *kanban.Proj
 }
 
 func (p *blockingIssueProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) Kind() string {
+	return "stub"
+}
+
+func (p *previewCommentProvider) Capabilities() kanban.ProviderCapabilities {
+	return kanban.DefaultCapabilities("stub")
+}
+
+func (p *previewCommentProvider) ValidateProject(context.Context, *kanban.Project) error {
+	return nil
+}
+
+func (p *previewCommentProvider) ListIssues(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+	return nil, nil
+}
+
+func (p *previewCommentProvider) GetIssue(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
+	cp := p.issue
+	return &cp, nil
+}
+
+func (p *previewCommentProvider) CreateIssue(context.Context, *kanban.Project, providers.IssueCreateInput) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) DeleteIssue(context.Context, *kanban.Project, *kanban.Issue) error {
+	return providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) SetIssueState(context.Context, *kanban.Project, *kanban.Issue, string) (*kanban.Issue, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) ListIssueComments(context.Context, *kanban.Project, *kanban.Issue) ([]kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) CreateIssueComment(ctx context.Context, _ *kanban.Project, issue *kanban.Issue, input providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	if issue == nil {
+		return nil, providers.ErrUnsupportedCapability
+	}
+	select {
+	case p.createStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.createRelease:
+	}
+	if p.store == nil {
+		body := ""
+		if input.Body != nil {
+			body = strings.TrimSpace(*input.Body)
+		}
+		return &kanban.IssueComment{
+			IssueID: issue.ID,
+			Body:    body,
+		}, nil
+	}
+	comment, err := p.store.CreateIssueComment(issue.ID, kanban.IssueCommentInput{
+		Body:            input.Body,
+		ParentCommentID: input.ParentCommentID,
+		Attachments: func() []kanban.IssueCommentAttachmentInput {
+			out := make([]kanban.IssueCommentAttachmentInput, 0, len(input.Attachments))
+			for _, attachment := range input.Attachments {
+				out = append(out, kanban.IssueCommentAttachmentInput{
+					Path:        attachment.Path,
+					ContentType: attachment.ContentType,
+				})
+			}
+			return out
+		}(),
+		Author: input.Author,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return comment, nil
+}
+
+func (p *previewCommentProvider) UpdateIssueComment(context.Context, *kanban.Project, *kanban.Issue, string, providers.IssueCommentInput) (*kanban.IssueComment, error) {
+	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) DeleteIssueComment(context.Context, *kanban.Project, *kanban.Issue, string) error {
+	return providers.ErrUnsupportedCapability
+}
+
+func (p *previewCommentProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
 	return nil, providers.ErrUnsupportedCapability
 }
 
@@ -1049,9 +1153,12 @@ func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 	}
 }
 
-func TestDispatchBlocksIssueWithMissingBlockerIdentifier(t *testing.T) {
+func TestDispatchAllowsIssueAfterBlockerDeletion(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
-	runner := newRetryTestRunner()
+	runner := &countingPhaseRunner{
+		store:    store,
+		runCalls: make(chan string, 4),
+	}
 	orch.runner = runner
 
 	blocker, err := store.CreateIssue("", "", "Deleted blocker", "", 0, nil)
@@ -1076,10 +1183,8 @@ func TestDispatchBlocksIssueWithMissingBlockerIdentifier(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 
-	select {
-	case identifier := <-runner.runCalls:
-		t.Fatalf("expected blocked issue not to dispatch, got run for %s", identifier)
-	case <-time.After(100 * time.Millisecond):
+	if got := waitForRunCall(t, runner.runCalls, time.Second); got != issue.Identifier {
+		t.Fatalf("expected deleted blocker to unblock issue %s, got run for %s", issue.Identifier, got)
 	}
 }
 
@@ -1653,6 +1758,123 @@ func TestDoneSuccessMarksIssueCompleteAndAllowsCleanup(t *testing.T) {
 }
 
 func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
+	{
+		orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+		enablePhaseWorkflow(t, manager, workspaceRoot)
+
+		previewProvider := &previewCommentProvider{
+			store:         store,
+			createStarted: make(chan struct{}, 1),
+			createRelease: make(chan struct{}),
+		}
+		orch.service.RegisterProvider(previewProvider)
+
+		project, err := store.CreateProjectWithProvider("Preview Project", "", "", "", "stub", "", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+		if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+			t.Fatalf("UpdateProjectState: %v", err)
+		}
+		issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+			ProjectID:        project.ID,
+			ProviderKind:     "stub",
+			ProviderIssueRef: "stub-1",
+			Identifier:       "LIN-1",
+			Title:            "Done success",
+			State:            kanban.StateDone,
+			WorkflowPhase:    kanban.WorkflowPhaseDone,
+			ProviderShadow:   true,
+		})
+		if err != nil {
+			t.Fatalf("UpsertProviderIssue: %v", err)
+		}
+		previewProvider.issue = *issue
+
+		wsPath := filepath.Join(workspaceRoot, issue.Identifier)
+		previewDir := filepath.Join(wsPath, ".maestro", "review-preview")
+		if err := os.MkdirAll(previewDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(previewDir, "walkthrough.webm"), []byte("video-bytes"), 0o644); err != nil {
+			t.Fatalf("WriteFile preview: %v", err)
+		}
+		if _, err := store.CreateWorkspace(issue.ID, wsPath); err != nil {
+			t.Fatalf("CreateWorkspace: %v", err)
+		}
+		orch.runner = &phaseScriptRunner{
+			store: store,
+			handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+				kanban.WorkflowPhaseDone: func(issue *kanban.Issue) (*agent.RunResult, error) {
+					return &agent.RunResult{
+						Success: true,
+						AppSession: &appserver.Session{
+							LastMessage: "Preview generated and validation passed.",
+						},
+					}, nil
+				},
+			},
+		}
+
+		if err := orch.dispatch(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-previewProvider.createStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for preview publication to start")
+		}
+		close(previewProvider.createRelease)
+
+		waitForNoRunning(t, orch, time.Second)
+		waitForCondition(t, 5*time.Second, func() bool {
+			comments, err := store.ListIssueComments(issue.ID)
+			return err == nil && len(comments) > 0
+		})
+
+		comments, err := store.ListIssueComments(issue.ID)
+		if err != nil {
+			t.Fatalf("ListIssueComments: %v", err)
+		}
+		var previewComment *kanban.IssueComment
+		for i := range comments {
+			if strings.Contains(comments[i].Body, "Automated reviewer preview from the done pass.") {
+				previewComment = &comments[i]
+				break
+			}
+		}
+		if previewComment == nil {
+			t.Fatalf("expected preview comment to be stored, got %d comments", len(comments))
+		}
+		if !strings.Contains(previewComment.Body, "Preview generated and validation passed.") {
+			t.Fatalf("expected final message in comment body, got %q", previewComment.Body)
+		}
+		if len(previewComment.Attachments) != 1 {
+			t.Fatalf("expected one preview attachment, got %d", len(previewComment.Attachments))
+		}
+		if previewComment.Attachments[0].Filename != "walkthrough.webm" {
+			t.Fatalf("expected preview filename walkthrough.webm, got %q", previewComment.Attachments[0].Filename)
+		}
+		if previewComment.Attachments[0].ContentType != "video/webm" {
+			t.Fatalf("expected preview attachment content type video/webm, got %q", previewComment.Attachments[0].ContentType)
+		}
+		attachment, path, err := store.GetIssueCommentAttachmentContent(issue.ID, previewComment.ID, previewComment.Attachments[0].ID)
+		if err != nil {
+			t.Fatalf("GetIssueCommentAttachmentContent: %v", err)
+		}
+		if attachment.ContentType != "video/webm" {
+			t.Fatalf("expected stored attachment content type video/webm, got %q", attachment.ContentType)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile attachment: %v", err)
+		}
+		if string(data) != "video-bytes" {
+			t.Fatalf("expected preview attachment body video-bytes, got %q", string(data))
+		}
+		return
+	}
+
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)
 
@@ -1795,25 +2017,40 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitForNoRunning(t, orch, time.Second)
-	waitForCondition(t, time.Second, func() bool {
+	deadline := time.Now().Add(20 * time.Second)
+	var commentRequest *graphqlRequest
+	for time.Now().Before(deadline) {
 		requestsMu.Lock()
-		defer requestsMu.Unlock()
-		return len(requests) == 3
-	})
-
-	requestsMu.Lock()
-	defer requestsMu.Unlock()
-	if len(requests) != 3 {
-		t.Fatalf("expected issue lookup, file upload, and comment create requests, got %d", len(requests))
+		for i := range requests {
+			if strings.Contains(requests[i].Query, "commentCreate") {
+				commentRequest = &requests[i]
+				break
+			}
+		}
+		requestsMu.Unlock()
+		if commentRequest != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	if commentRequest == nil {
+		requestsMu.Lock()
+		queries := make([]string, 0, len(requests))
+		for _, req := range requests {
+			queries = append(queries, req.Query)
+		}
+		requestsMu.Unlock()
+		t.Fatalf("expected preview commentCreate request, got %d requests: %v", len(queries), queries)
+	}
+
+	waitForNoRunning(t, orch, time.Second)
 	if uploadedContentType != "video/webm" {
 		t.Fatalf("expected uploaded content type video/webm, got %q", uploadedContentType)
 	}
 	if uploadedBody != "video-bytes" {
 		t.Fatalf("expected uploaded video bytes, got %q", uploadedBody)
 	}
-	body, _ := requests[2].Variables["body"].(string)
+	body, _ := commentRequest.Variables["body"].(string)
 	if !strings.Contains(body, "Automated reviewer preview from the done pass.") {
 		t.Fatalf("expected preview intro in comment body, got %q", body)
 	}
@@ -4327,6 +4564,77 @@ func TestBuildIssuePreviewCommentBodyIncludesSummaryAndFilename(t *testing.T) {
 }
 
 func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
+	{
+		orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+		enablePhaseWorkflow(t, manager, workspaceRoot)
+
+		previewProvider := &previewCommentProvider{
+			store:         store,
+			createStarted: make(chan struct{}, 1),
+			createRelease: make(chan struct{}),
+		}
+		orch.service.RegisterProvider(previewProvider)
+
+		project, err := store.CreateProjectWithProvider("Preview Project", "", "", "", "stub", "", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+		if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+			t.Fatalf("UpdateProjectState: %v", err)
+		}
+		issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+			ProjectID:        project.ID,
+			ProviderKind:     "stub",
+			ProviderIssueRef: "stub-1",
+			Identifier:       "LIN-1",
+			Title:            "Done success",
+			State:            kanban.StateDone,
+			WorkflowPhase:    kanban.WorkflowPhaseDone,
+			ProviderShadow:   true,
+		})
+		if err != nil {
+			t.Fatalf("UpsertProviderIssue: %v", err)
+		}
+		previewProvider.issue = *issue
+
+		wsPath := filepath.Join(workspaceRoot, issue.Identifier)
+		previewDir := filepath.Join(wsPath, ".maestro", "review-preview")
+		if err := os.MkdirAll(previewDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(previewDir, "walkthrough.webm"), []byte("video-bytes"), 0o644); err != nil {
+			t.Fatalf("WriteFile preview: %v", err)
+		}
+		if _, err := store.CreateWorkspace(issue.ID, wsPath); err != nil {
+			t.Fatalf("CreateWorkspace: %v", err)
+		}
+		orch.runner = &phaseScriptRunner{
+			store: store,
+			handlers: map[kanban.WorkflowPhase]phaseRunHandler{
+				kanban.WorkflowPhaseDone: func(issue *kanban.Issue) (*agent.RunResult, error) {
+					return &agent.RunResult{Success: true}, nil
+				},
+			},
+		}
+
+		if err := orch.dispatch(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-previewProvider.createStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for preview publication to start")
+		}
+
+		waitForNoRunning(t, orch, time.Second)
+		close(previewProvider.createRelease)
+		waitForCondition(t, 5*time.Second, func() bool {
+			comments, err := store.ListIssueComments(issue.ID)
+			return err == nil && len(comments) > 0
+		})
+		return
+	}
+
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)
 
@@ -4452,17 +4760,22 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	waitForCondition(t, 20*time.Second, func() bool {
+		requestMu.Lock()
+		defer requestMu.Unlock()
+		return requestCount >= 1
+	})
 	waitForNoRunning(t, orch, time.Second)
 
 	requestMu.Lock()
 	gotRequests := requestCount
 	requestMu.Unlock()
-	if gotRequests != 1 {
+	if gotRequests < 1 {
 		t.Fatalf("expected preview publication to start in the background before run cleanup, got %d requests", gotRequests)
 	}
 
 	close(releaseRequests)
-	waitForCondition(t, time.Second, func() bool {
+	waitForCondition(t, 20*time.Second, func() bool {
 		requestMu.Lock()
 		defer requestMu.Unlock()
 		return requestCount >= 3

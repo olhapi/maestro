@@ -47,17 +47,17 @@ This is the handoff point. Once the daemon is running, Maestro keeps doing the r
 
 When you want to check progress, use the control center or the live CLI helpers instead of reconstructing state from scratch.
 
-## 4. Create a first queue from your coding agent
+## 4. Import work through MCP
 
 This seeds the same queue you will supervise from the dashboard once real work is in flight.
 
-With the daemon running, ask your coding agent to seed the tracker through the saved `maestro` MCP server. For example:
+With the daemon running, ask your coding agent to translate source work into local Maestro records through the saved `maestro` MCP server. For example:
 
 <DocsCommandField
-  command={`Use the maestro MCP server to create a project, epics, and issues for a new react todo app. Set the project repo path to the current working directory. Plan the features first, split them into epics, add a priority value and blockers for each issue, set their state to ready.`}
+  command={`Take my Jira issues from the "make a react todo app" epic and create the corresponding Maestro project, epics, and issues.
+Use the current repo as the project repo path, keep the imported work local, and mark the new issues ready for execution.`}
 />
 
-This example assumes the default local `kanban` provider, which supports epics, issue priorities, and blockers.
 The same prompt works in any connected coding agent once the `maestro` MCP server is saved there.
 
 Project descriptions are the right place for repo-wide instructions such as required test commands, package-manager expectations, or rules about keeping public APIs stable. That text becomes `{{ project.description }}` in the workflow template and is included in Maestro's default prompts automatically.

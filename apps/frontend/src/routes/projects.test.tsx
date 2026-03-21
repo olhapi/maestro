@@ -82,7 +82,7 @@ describe("ProjectsPage", () => {
     expect(screen.getByText("Platform work")).toHaveClass("line-clamp-2");
     expect(screen.queryByText("/repo")).not.toBeInTheDocument();
     expect(screen.queryByText("kanban")).not.toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /provider kanban/i })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /provider/i })).not.toBeInTheDocument();
 
     expect(screen.getByText("Tokens")).toBeInTheDocument();
   });

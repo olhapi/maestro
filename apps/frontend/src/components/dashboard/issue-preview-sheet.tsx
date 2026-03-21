@@ -589,7 +589,7 @@ export function IssuePreviewSheet({
           open={deleteDialogOpen}
           onOpenChange={setDeleteDialogOpen}
           title={`Delete ${activeIssue.identifier}?`}
-          description="This removes the issue from Maestro, including its local workspace, activity history, and attached assets. Linked provider items may also be removed."
+          description="This removes the issue from Maestro, including its local workspace, activity history, and attached assets. Linked issues may also be removed."
           confirmLabel="Delete issue"
           pendingLabel="Deleting issue..."
           onConfirm={async () => {

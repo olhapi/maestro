@@ -13,14 +13,14 @@ import ArchitectureDiagrams from "../../components/docs/ArchitectureDiagrams.ast
 The current codebase is organized around five connected runtime layers:
 
 - a SQLite-backed local store that persists projects, issues, workspaces, sessions, commands, and runtime events
-- a provider service that reads local `kanban` projects and syncs limited `linear` projects into that local store
+- a local project service that keeps every project and issue in the SQLite store
 - an orchestrator plus agent runner that turn queued issues into workspaces and Codex sessions
 - a private MCP daemon that `maestro mcp` bridges over stdio
 - a public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs on the default port unless you override `--port`
 
 ## How work moves through the live loop
 
-The shortest operational view of the system: attach path, optional HTTP surface, local store, provider sync, and agent execution.
+The shortest operational view of the system: attach path, optional HTTP surface, local store, local project management, and agent execution.
 
 This diagram is derived from the current runtime shape in `cmd/maestro` and the internal runtime packages, then captured as a static asset for the docs site.
 
@@ -28,16 +28,16 @@ This diagram is derived from the current runtime shape in `cmd/maestro` and the 
 
 ## Local store first
 
-Even when a project uses a provider such as Linear, Maestro still supervises work through the same local store. Provider-backed issues are synchronized into the SQLite database, then flow through the same queue state, runtime events, sessions, dashboard views, and MCP tools as local kanban issues.
+Maestro keeps all work local. Projects, epics, issues, comments, and attachments live in the SQLite database, then flow through the same queue state, runtime events, sessions, dashboard views, and MCP tools.
 
-`WORKFLOW.md` still controls orchestration behavior, and its `tracker.kind` remains `kanban`. Project-level provider selection is a separate concern from workflow orchestration config.
+`WORKFLOW.md` still controls orchestration behavior, and its `tracker.kind` remains `kanban`. That is the local tracker used for every project.
 
 ## MCP attach model
 
 `maestro run` is the long-lived daemon for a given database. It owns:
 
 - the SQLite store and runtime persistence
-- the provider service and orchestrator runtime
+- the local issue service and orchestrator runtime
 - the private loopback-only MCP transport endpoint
 - the public HTTP server and embedded dashboard, which default to port `8787` unless you override `--port`
 
@@ -63,22 +63,7 @@ Operationally, that means:
 
 The orchestrator does not guess its way around missing repo context. It reads the workflow file, then turns local queue state into per-issue workspaces and agent runs.
 
-When a project is provider-backed, the provider layer refreshes those issues into the local store first, and the orchestrator still runs against the synchronized local view.
-
-## Provider support
-
-Projects can currently use:
-
-- `kanban` for fully local tracking
-- `linear` for limited project-backed issue sync and mutation
-
-Linear support is intentionally limited:
-
-- provider-backed projects are supported
-- issue sync and issue state updates are supported
-- assignee filtering is supported through project provider config
-- epics are not supported
-- some create and update flows reject labels, blockers, or project reassignment
+If you need to import work from another system, use MCP prompts or scripts to create matching local Maestro projects and issues first. The runtime itself does not sync a remote system into the store.
 
 ## Why the architecture stays local-first
 

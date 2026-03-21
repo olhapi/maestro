@@ -78,6 +78,9 @@ describe('ComponentErrorBoundary', () => {
       'grid',
       'items-center',
       'justify-items-stretch',
+      'mx-auto',
+      'w-full',
+      'max-w-[1600px]',
     )
 
     rerender(
