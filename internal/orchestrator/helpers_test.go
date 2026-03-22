@@ -769,6 +769,21 @@ func TestRuntimeResolutionAndUtilityHelpers(t *testing.T) {
 	}); got != 0 {
 		t.Fatalf("expected paused lifecycle to reset retry count, got %d", got)
 	}
+	if got := interruptedFailureStreak([]kanban.RuntimeEvent{
+		{Kind: "workspace_bootstrap_created"},
+		{Kind: "run_started"},
+		{Kind: "run_unsuccessful", Error: "stall_timeout"},
+		{Kind: "retry_scheduled", DelayType: "failure"},
+		{Kind: "workspace_bootstrap_reused"},
+		{Kind: "run_started"},
+		{Kind: "run_unsuccessful", Error: "stall_timeout"},
+		{Kind: "retry_scheduled", DelayType: "failure"},
+		{Kind: "workspace_bootstrap_recovery"},
+		{Kind: "run_started"},
+		{Kind: "run_unsuccessful", Error: "stall_timeout"},
+	}); got != 3 {
+		t.Fatalf("expected interrupted failure streak to ignore workspace bootstrap events, got %d", got)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close store: %v", err)
 	}
