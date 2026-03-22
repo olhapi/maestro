@@ -86,6 +86,9 @@ describe("ProjectDetailPage", () => {
     expect(screen.getByText("Epics driving this project")).toBeInTheDocument();
     expect(screen.getByText("What changed most recently")).toBeInTheDocument();
     expect(screen.queryByText(/^\d+\s+active$/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /collapse backlog status row/i }),
+    ).not.toBeInTheDocument();
 
     const accessButton = screen.getByRole("button", {
       name: projectPermissionProfileButtonCopy(
@@ -124,6 +127,52 @@ describe("ProjectDetailPage", () => {
     await waitFor(() => {
       expect(api.stopProject).toHaveBeenCalledWith("project-1");
     });
+  });
+
+  it("renders grouped status row collapse controls on mobile layouts", async () => {
+    const initialInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 390,
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    try {
+      const bootstrap = makeBootstrapResponse();
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+      vi.mocked(api.getProject).mockResolvedValue({
+        project: bootstrap.projects[0],
+        epics: bootstrap.epics,
+        issues: bootstrap.issues,
+      });
+
+      renderWithQueryClient(<ProjectDetailPage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /collapse backlog status row/i }),
+        ).toBeInTheDocument();
+      });
+
+      expect(
+        screen.getByRole("button", { name: /collapse backlog status row/i }),
+      ).toHaveAttribute("aria-expanded", "true");
+      expect(
+        screen.getByRole("button", { name: /collapse ready status row/i }),
+      ).toHaveAttribute("aria-expanded", "true");
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: initialInnerWidth,
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"));
+      });
+    }
   });
 
   it("shows dispatch guidance when dispatch is not ready", async () => {

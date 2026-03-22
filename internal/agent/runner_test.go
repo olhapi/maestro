@@ -113,6 +113,15 @@ Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt 
 	return runner, store, manager, workspaceRoot, tmpDir
 }
 
+func workspaceGitDirForTest(t *testing.T, workspacePath string) string {
+	t.Helper()
+	gitDir := runGitForTest(t, workspacePath, "rev-parse", "--git-dir")
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(workspacePath, gitDir)
+	}
+	return filepath.Clean(gitDir)
+}
+
 func sampleRunnerPNGBytes() []byte {
 	return []byte{
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -1277,6 +1286,132 @@ func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(preserved[0], "legacy.txt")); err != nil || string(data) != "stale" {
 		t.Fatalf("expected preserved legacy content, got data=%q err=%v", string(data), err)
+	}
+}
+
+func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, err := store.CreateIssue("", "", "Rebase recovery", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	runGitForTest(t, repoPath, "branch", "feature/rebase-target")
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"branch_name": "feature/rebase-target"}); err != nil {
+		t.Fatalf("UpdateIssue branch_name: %v", err)
+	}
+
+	gitDir := workspaceGitDirForTest(t, workspace.Path)
+	if err := os.MkdirAll(filepath.Join(gitDir, "rebase-merge"), 0o755); err != nil {
+		t.Fatalf("MkdirAll rebase state: %v", err)
+	}
+
+	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
+	workflowContent, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("ReadFile workflow: %v", err)
+	}
+	updated := strings.Replace(string(workflowContent), "hooks:\n  timeout_ms: 1000", "hooks:\n  before_run: exit 1\n  timeout_ms: 1000", 1)
+	if err := os.WriteFile(workflowPath, []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	updatedIssue, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	result, err := runner.RunAttempt(context.Background(), updatedIssue, 0)
+	if err != nil {
+		t.Fatalf("RunAttempt: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful recovery run, got %+v", result)
+	}
+	if !strings.Contains(result.Output, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note in prompt output, got %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "Finish or quit the rebase") {
+		t.Fatalf("expected rebase guidance in prompt output, got %q", result.Output)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 20)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "workspace_bootstrap_recovery" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected workspace_bootstrap_recovery event, got %+v", events)
+	}
+}
+
+func TestPrepareTurnPromptWithWorkspaceAddsRecoveryNoteOnlyWhileRebaseActive(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, err := store.CreateIssue("", "", "Prompt recovery", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	gitDir := workspaceGitDirForTest(t, workspace.Path)
+	if err := os.MkdirAll(filepath.Join(gitDir, "rebase-merge"), 0o755); err != nil {
+		t.Fatalf("MkdirAll rebase state: %v", err)
+	}
+
+	firstPrompt, err := runner.prepareTurnPromptWithWorkspace(workflow, issue, 0, 1, workspace.Path)
+	if err != nil {
+		t.Fatalf("prepareTurnPromptWithWorkspace first turn: %v", err)
+	}
+	if !strings.Contains(firstPrompt.Prompt, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note in first prompt, got %q", firstPrompt.Prompt)
+	}
+
+	continuationPrompt, err := runner.prepareTurnPromptWithWorkspace(workflow, issue, 0, 2, workspace.Path)
+	if err != nil {
+		t.Fatalf("prepareTurnPromptWithWorkspace continuation: %v", err)
+	}
+	if !strings.Contains(continuationPrompt.Prompt, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note in continuation prompt, got %q", continuationPrompt.Prompt)
+	}
+	if !strings.Contains(continuationPrompt.Prompt, "Continuation guidance") {
+		t.Fatalf("expected continuation guidance, got %q", continuationPrompt.Prompt)
+	}
+
+	if err := os.RemoveAll(filepath.Join(gitDir, "rebase-merge")); err != nil {
+		t.Fatalf("RemoveAll rebase state: %v", err)
+	}
+
+	clearedPrompt, err := runner.prepareTurnPromptWithWorkspace(workflow, issue, 0, 1, workspace.Path)
+	if err != nil {
+		t.Fatalf("prepareTurnPromptWithWorkspace cleared prompt: %v", err)
+	}
+	if strings.Contains(clearedPrompt.Prompt, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note to disappear after clearing rebase state, got %q", clearedPrompt.Prompt)
 	}
 }
 

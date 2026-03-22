@@ -46,6 +46,11 @@ type Server struct {
 	instanceID string
 }
 
+const (
+	mcpPaginationDefaultLimit = 200
+	mcpPaginationMaxLimit     = 500
+)
+
 // NewServer creates a new MCP server.
 func NewServer(store *kanban.Store) *Server {
 	return NewServerWithProvider(store, nil)
@@ -98,7 +103,10 @@ func (s *Server) registerTools() {
 			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
 			"workflow_path": stringProperty("Optional workflow path override"),
 		}),
-		objectTool("list_projects", "List all projects", nil),
+		objectTool("list_projects", "List projects with pagination; use pagination.next_request to continue", map[string]interface{}{
+			"limit":  numberProperty("Maximum projects to return"),
+			"offset": numberProperty("Number of projects to skip"),
+		}),
 		objectTool("delete_project", "Delete a project", map[string]interface{}{
 			"id": stringProperty("Project ID"),
 		}),
@@ -113,8 +121,10 @@ func (s *Server) registerTools() {
 			"name":        stringProperty("Epic name"),
 			"description": stringProperty("Epic description"),
 		}),
-		objectTool("list_epics", "List epics, optionally filtered by project", map[string]interface{}{
+		objectTool("list_epics", "List epics, optionally filtered by project, with pagination; use pagination.next_request to continue", map[string]interface{}{
 			"project_id": stringProperty("Filter by project ID"),
+			"limit":      numberProperty("Maximum epics to return"),
+			"offset":     numberProperty("Number of epics to skip"),
 		}),
 		objectTool("delete_epic", "Delete an epic", map[string]interface{}{
 			"id": stringProperty("Epic ID"),
@@ -137,10 +147,12 @@ func (s *Server) registerTools() {
 		objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 		}),
-		objectTool("list_issue_comments", "List comments for an issue", map[string]interface{}{
+		objectTool("list_issue_comments", "List comments for an issue with pagination over root threads; use pagination.next_request to continue", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
+			"limit":      numberProperty("Maximum top-level comment threads to return"),
+			"offset":     numberProperty("Number of top-level comment threads to skip"),
 		}),
-		objectTool("list_issues", "List issues with filters, search, sort, and pagination", map[string]interface{}{
+		objectTool("list_issues", "List issues with filters, search, sort, and pagination; use pagination.next_request to continue", map[string]interface{}{
 			"project_id": stringProperty("Filter by project ID"),
 			"epic_id":    stringProperty("Filter by epic ID"),
 			"state":      stringProperty("Filter by state: backlog, ready, in_progress, in_review, done, cancelled"),
@@ -429,8 +441,16 @@ func (s *Server) handleListProjects(ctx context.Context, args map[string]interfa
 	if err != nil {
 		return s.toolError("list_projects", fmt.Sprintf("Failed to list projects: %v", err)), nil
 	}
-	s.decorateProjectSummaries(projects)
-	return s.toolResult("list_projects", map[string]interface{}{"items": projects}), nil
+	limit, offset := normalizePaginationArgs(args)
+	page, total, _ := paginateItems(projects, limit, offset)
+	s.decorateProjectSummaries(page)
+	return s.toolResult("list_projects", map[string]interface{}{
+		"items":      page,
+		"total":      total,
+		"limit":      limit,
+		"offset":     offset,
+		"pagination": s.paginationPayload("list_projects", nil, total, limit, offset, len(page)),
+	}), nil
 }
 
 func (s *Server) handleDeleteProject(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -462,11 +482,24 @@ func (s *Server) handleUpdateEpic(ctx context.Context, args map[string]interface
 }
 
 func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	epics, err := s.service.ListEpicSummaries(asString(args["project_id"]))
+	projectID := asString(args["project_id"])
+	epics, err := s.service.ListEpicSummaries(projectID)
 	if err != nil {
 		return s.toolError("list_epics", fmt.Sprintf("Failed to list epics: %v", err)), nil
 	}
-	return s.toolResult("list_epics", map[string]interface{}{"items": epics}), nil
+	limit, offset := normalizePaginationArgs(args)
+	page, total, _ := paginateItems(epics, limit, offset)
+	baseArgs := map[string]interface{}{}
+	if strings.TrimSpace(projectID) != "" {
+		baseArgs["project_id"] = projectID
+	}
+	return s.toolResult("list_epics", map[string]interface{}{
+		"items":      page,
+		"total":      total,
+		"limit":      limit,
+		"offset":     offset,
+		"pagination": s.paginationPayload("list_epics", baseArgs, total, limit, offset, len(page)),
+	}), nil
 }
 
 func (s *Server) handleDeleteEpic(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -521,13 +554,20 @@ func (s *Server) handleListIssueComments(ctx context.Context, args map[string]in
 	if err != nil {
 		return s.toolError("list_issue_comments", fmt.Sprintf("Failed to list issue comments: %v", err)), nil
 	}
+	limit, offset := normalizePaginationArgs(args)
+	page, total, _ := paginateItems(comments, limit, offset)
 	return s.toolResult("list_issue_comments", map[string]interface{}{
 		"identifier": issue.Identifier,
-		"items":      comments,
+		"items":      page,
+		"total":      total,
+		"limit":      limit,
+		"offset":     offset,
+		"pagination": s.paginationPayload("list_issue_comments", map[string]interface{}{"identifier": issue.Identifier}, total, limit, offset, len(page)),
 	}), nil
 }
 
 func (s *Server) handleListIssues(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+	limit, offset := normalizePaginationArgs(args)
 	query := kanban.IssueQuery{
 		ProjectID: asString(args["project_id"]),
 		EpicID:    asString(args["epic_id"]),
@@ -535,8 +575,8 @@ func (s *Server) handleListIssues(ctx context.Context, args map[string]interface
 		IssueType: asString(args["issue_type"]),
 		Search:    asString(args["search"]),
 		Sort:      asString(args["sort"]),
-		Limit:     intArg(args, "limit", 200),
-		Offset:    intArg(args, "offset", 0),
+		Limit:     limit,
+		Offset:    offset,
 	}
 	if query.Sort == "" {
 		query.Sort = "updated_desc"
@@ -546,17 +586,31 @@ func (s *Server) handleListIssues(ctx context.Context, args map[string]interface
 	if err != nil {
 		return s.toolError("list_issues", fmt.Sprintf("Failed to list issues: %v", err)), nil
 	}
-	if query.Limit <= 0 || query.Limit > 500 {
-		query.Limit = 200
+	baseArgs := map[string]interface{}{}
+	if projectID := strings.TrimSpace(query.ProjectID); projectID != "" {
+		baseArgs["project_id"] = projectID
 	}
-	if query.Offset < 0 {
-		query.Offset = 0
+	if epicID := strings.TrimSpace(query.EpicID); epicID != "" {
+		baseArgs["epic_id"] = epicID
+	}
+	if state := strings.TrimSpace(query.State); state != "" {
+		baseArgs["state"] = state
+	}
+	if issueType := strings.TrimSpace(query.IssueType); issueType != "" {
+		baseArgs["issue_type"] = issueType
+	}
+	if search := strings.TrimSpace(query.Search); search != "" {
+		baseArgs["search"] = search
+	}
+	if sort := strings.TrimSpace(query.Sort); sort != "" {
+		baseArgs["sort"] = sort
 	}
 	return s.toolResult("list_issues", map[string]interface{}{
-		"items":  items,
-		"total":  total,
-		"limit":  query.Limit,
-		"offset": query.Offset,
+		"items":      items,
+		"total":      total,
+		"limit":      query.Limit,
+		"offset":     query.Offset,
+		"pagination": s.paginationPayload("list_issues", baseArgs, total, query.Limit, query.Offset, len(items)),
 	}), nil
 }
 
@@ -882,6 +936,61 @@ func (s *Server) toolResult(name string, data interface{}) *mcpapi.CallToolResul
 
 func (s *Server) toolError(name, message string) *mcpapi.CallToolResult {
 	return s.envelopeResult(name, nil, message, true)
+}
+
+func normalizePaginationArgs(args map[string]interface{}) (int, int) {
+	limit := intArg(args, "limit", mcpPaginationDefaultLimit)
+	if limit <= 0 || limit > mcpPaginationMaxLimit {
+		limit = mcpPaginationDefaultLimit
+	}
+	offset := intArg(args, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+func paginateItems[T any](items []T, limit, offset int) ([]T, int, int) {
+	total := len(items)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	page := make([]T, end-start)
+	copy(page, items[start:end])
+	return page, total, end
+}
+
+func (s *Server) paginationPayload(tool string, baseArgs map[string]interface{}, total, limit, offset, returned int) map[string]interface{} {
+	nextOffset := offset + returned
+	if nextOffset > total {
+		nextOffset = total
+	}
+	pagination := map[string]interface{}{
+		"has_more":    nextOffset < total,
+		"next_offset": nextOffset,
+		"next_hint":   "No additional results remain.",
+	}
+	if nextOffset < total {
+		nextArgs := map[string]interface{}{}
+		for key, value := range baseArgs {
+			if value != nil {
+				nextArgs[key] = value
+			}
+		}
+		nextArgs["limit"] = limit
+		nextArgs["offset"] = nextOffset
+		pagination["next_request"] = map[string]interface{}{
+			"tool":      tool,
+			"arguments": nextArgs,
+		}
+		pagination["next_hint"] = "Use pagination.next_request to fetch the next batch."
+	}
+	return pagination
 }
 
 func (s *Server) scopedRepoPath() string {

@@ -1,7 +1,8 @@
+import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Activity, FolderKanban, RotateCcw, Rocket, TimerReset } from 'lucide-react'
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Activity, FolderKanban, RotateCcw, Rocket } from 'lucide-react'
+import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
 import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,6 +11,23 @@ import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
 import type { BootstrapResponse } from '@/lib/types'
 import { formatCompactNumber, formatNumber, formatRelativeTime } from '@/lib/utils'
+
+type SeriesPoint = BootstrapResponse['overview']['series'][number]
+
+type ChartSeries = {
+  key: keyof SeriesPoint
+  label: string
+  color: string
+}
+
+const executionHealthSeries: ChartSeries[] = [
+  { key: 'runs_started', label: 'Runs started', color: '#53d9ff' },
+  { key: 'runs_completed', label: 'Runs completed', color: '#c4ff57' },
+  { key: 'runs_failed', label: 'Runs failed', color: '#ff6d8f' },
+  { key: 'retries', label: 'Retries', color: '#f3b84c' },
+]
+
+const tokenBurnSeries: ChartSeries[] = [{ key: 'tokens', label: 'Token burn', color: '#53d9ff' }]
 
 function Metric({
   label,
@@ -40,28 +58,183 @@ function Metric({
   )
 }
 
-function ThroughputChart({ series }: { series: BootstrapResponse['overview']['series'] }) {
+function SeriesLegend({ series }: { series: readonly ChartSeries[] }) {
+  return (
+    <div className="flex flex-wrap gap-2.5">
+      {series.map((entry) => (
+        <div
+          key={entry.key}
+          className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-1 text-xs text-[var(--muted-foreground)]"
+        >
+          <span className="size-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+          <span>{entry.label}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ChartTooltip({
+  active,
+  label,
+  payload,
+  series,
+  valueFormatter,
+}: {
+  active?: boolean
+  label?: string | number
+  payload?: Array<{ name?: string; value?: unknown; color?: string; dataKey?: string }>
+  series: readonly ChartSeries[]
+  valueFormatter: (value: number) => string
+}) {
+  if (!active || !payload?.length) {
+    return null
+  }
+
+  const payloadByName = new Map(
+    payload.map((entry) => [String(entry.name ?? entry.dataKey ?? ''), entry] as const),
+  )
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#101114] px-3 py-2.5 shadow-2xl shadow-black/50">
+      <p className="text-[0.68rem] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
+      <div className="mt-2 space-y-1.5">
+        {series.map((entry) => {
+          const payloadEntry = payloadByName.get(entry.label) ?? payloadByName.get(String(entry.key))
+          if (!payloadEntry) {
+            return null
+          }
+
+          return (
+            <div key={entry.key} className="flex items-center justify-between gap-4 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="size-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+                <span className="text-white/90">{entry.label}</span>
+              </div>
+              <span className="font-medium text-white">
+                {valueFormatter(Number(payloadEntry.value ?? 0))}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function ExecutionHealthChart({ series }: { series: SeriesPoint[] }) {
   return (
     <ResponsiveContainer width="100%" height={320}>
-      <AreaChart data={series}>
+      <LineChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
+        <CartesianGrid stroke="rgba(255,255,255,.08)" vertical={false} />
+        <XAxis dataKey="bucket" stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} minTickGap={20} />
+        <YAxis
+          allowDecimals={false}
+          stroke="rgba(255,255,255,.45)"
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(value) => formatNumber(Number(value))}
+        />
+        <Tooltip
+          content={<ChartTooltip series={executionHealthSeries} valueFormatter={(value) => formatNumber(value)} />}
+          cursor={{ stroke: 'rgba(255,255,255,.12)' }}
+        />
+        {executionHealthSeries.map((entry) => (
+          <Line
+            key={entry.key}
+            dataKey={entry.key}
+            name={entry.label}
+            dot={false}
+            activeDot={{ r: 4 }}
+            stroke={entry.color}
+            strokeLinecap="round"
+            strokeWidth={2.5}
+            type="monotone"
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  )
+}
+
+function TokenBurnChart({ series }: { series: SeriesPoint[] }) {
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <AreaChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
         <defs>
-          <linearGradient id="runsCompleted" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="5%" stopColor="#c4ff57" stopOpacity={0.7} />
-            <stop offset="95%" stopColor="#c4ff57" stopOpacity={0} />
-          </linearGradient>
-          <linearGradient id="retries" x1="0" x2="0" y1="0" y2="1">
+          <linearGradient id="tokenBurn" x1="0" x2="0" y1="0" y2="1">
             <stop offset="5%" stopColor="#53d9ff" stopOpacity={0.6} />
             <stop offset="95%" stopColor="#53d9ff" stopOpacity={0} />
           </linearGradient>
         </defs>
         <CartesianGrid stroke="rgba(255,255,255,.08)" vertical={false} />
-        <XAxis dataKey="bucket" stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} />
-        <YAxis stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} />
-        <Tooltip contentStyle={{ background: '#101114', border: '1px solid rgba(255,255,255,.08)', borderRadius: 16 }} />
-        <Area type="monotone" dataKey="runs_completed" stroke="#c4ff57" fill="url(#runsCompleted)" strokeWidth={2} />
-        <Area type="monotone" dataKey="retries" stroke="#53d9ff" fill="url(#retries)" strokeWidth={2} />
+        <XAxis dataKey="bucket" stroke="rgba(255,255,255,.45)" tickLine={false} axisLine={false} minTickGap={20} />
+        <YAxis
+          allowDecimals={false}
+          stroke="rgba(255,255,255,.45)"
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(value) => formatCompactNumber(Number(value))}
+        />
+        <Tooltip
+          content={<ChartTooltip series={tokenBurnSeries} valueFormatter={(value) => formatCompactNumber(value)} />}
+          cursor={{ stroke: 'rgba(255,255,255,.12)' }}
+        />
+        <Area
+          dataKey="tokens"
+          name="Token burn"
+          stroke="#53d9ff"
+          strokeWidth={2.5}
+          fill="url(#tokenBurn)"
+          fillOpacity={1}
+          type="monotone"
+          dot={false}
+        />
       </AreaChart>
     </ResponsiveContainer>
+  )
+}
+
+function totalTokenBurn(series: SeriesPoint[]) {
+  return series.reduce((total, point) => total + (point.tokens ?? 0), 0)
+}
+
+function OverviewTrendCard({
+  badge,
+  title,
+  description,
+  legend,
+  action,
+  boundaryLabel,
+  minHeight,
+  resetKey,
+  children,
+}: {
+  badge: string
+  title: string
+  description: string
+  legend?: readonly ChartSeries[]
+  action?: ReactNode
+  boundaryLabel: string
+  minHeight: string
+  resetKey: string
+  children: ReactNode
+}) {
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="flex-col items-start gap-4 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <Badge>{badge}</Badge>
+          <CardTitle className="mt-4">{title}</CardTitle>
+          <CardDescription className="mt-2">{description}</CardDescription>
+          {legend ? <div className="mt-4"><SeriesLegend series={legend} /></div> : null}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </CardHeader>
+      <ComponentErrorBoundary className={minHeight} label={boundaryLabel} resetKeys={[resetKey]} scope="widget">
+        <CardContent className="min-w-0 pt-0">{children}</CardContent>
+      </ComponentErrorBoundary>
+    </Card>
   )
 }
 
@@ -76,6 +249,7 @@ export function OverviewPage() {
   const status = data.overview.status
   const activeRuns = Number(status.active_runs ?? snapshot.running.length)
   const retryQueue = Number(status.retry_queue_count ?? snapshot.retrying.length)
+  const burnTotal = totalTokenBurn(data.overview.series)
 
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -84,28 +258,37 @@ export function OverviewPage() {
         <Metric label="Retry pressure" value={formatNumber(retryQueue)} detail="Queued retries waiting to re-enter execution." icon={RotateCcw} />
         <Metric label="Total issues" value={formatNumber(data.overview.issue_count)} detail="Current tracked work across the portfolio." icon={FolderKanban} />
         <Metric
-          label="Token burn"
+          label="Live token load"
           value={formatCompactNumber(snapshot.codex_totals.total_tokens)}
-          detail={`Last snapshot refreshed ${formatRelativeTime(data.generated_at)}.`}
+          detail={`Current running sessions only. Snapshot refreshed ${formatRelativeTime(data.generated_at)}.`}
           icon={Activity}
         />
       </section>
 
-      <section>
-        <Card>
-          <CardHeader>
-            <div>
-              <Badge>24h throughput</Badge>
-              <CardTitle className="mt-4">Execution tempo</CardTitle>
-              <CardDescription>Run starts, completions, failures, retries, and token burn across the last 24 hours.</CardDescription>
-            </div>
-          </CardHeader>
-          <ComponentErrorBoundary className="min-h-[320px]" label="overview throughput chart" resetKeys={[data.generated_at]} scope="widget">
-            <CardContent className="min-w-0">
-              <ThroughputChart series={data.overview.series} />
-            </CardContent>
-          </ComponentErrorBoundary>
-        </Card>
+      <section className="grid gap-[var(--section-gap)] lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
+        <OverviewTrendCard
+          badge="24h execution"
+          title="Execution health"
+          description="Runs started, completions, failures, and retries across the last 24 hours."
+          legend={executionHealthSeries}
+          boundaryLabel="overview execution health chart"
+          minHeight="min-h-[340px]"
+          resetKey={data.generated_at}
+        >
+          <ExecutionHealthChart series={data.overview.series} />
+        </OverviewTrendCard>
+
+        <OverviewTrendCard
+          badge="24h burn"
+          title="Token burn"
+          description="Hourly burn from final run totals, not live snapshot totals."
+          action={<Badge className="border-white/10 bg-white/5 text-white/90">{formatCompactNumber(burnTotal)} total</Badge>}
+          boundaryLabel="overview token burn chart"
+          minHeight="min-h-[260px]"
+          resetKey={data.generated_at}
+        >
+          <TokenBurnChart series={data.overview.series} />
+        </OverviewTrendCard>
       </section>
 
       <section className="grid gap-[var(--section-gap)] lg:grid-cols-2">
@@ -176,10 +359,6 @@ export function OverviewPage() {
             <CardContent className="px-[var(--panel-padding-tight)] pb-[var(--panel-padding-tight)] pt-[var(--panel-padding-tight)]">
               <p className="text-[0.68rem] uppercase tracking-[0.14em] text-[var(--muted-foreground)]">{key.replaceAll('_', ' ')}</p>
               <p className="mt-2 font-display text-[calc(var(--metric-value-size)-0.5rem)] font-semibold leading-none">{value}</p>
-              <div className="mt-3 flex items-center gap-1.5 text-[0.7rem] text-[var(--muted-foreground)]">
-                <TimerReset className="size-3.5" />
-                state load
-              </div>
             </CardContent>
           </Card>
         ))}

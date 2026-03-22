@@ -485,12 +485,14 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	}
 	assertToolProperties(t, findTool(t, tools.Tools, "create_project"), "description", "name", "repo_path", "workflow_path")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_project"), "description", "id", "name", "repo_path", "workflow_path")
+	assertToolProperties(t, findTool(t, tools.Tools, "list_projects"), "limit", "offset")
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "list_epics"), "limit", "offset", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_asset"), "identifier", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue_comment"), "attachment_paths", "body", "identifier", "parent_comment_id")
-	assertToolProperties(t, findTool(t, tools.Tools, "list_issue_comments"), "identifier")
+	assertToolProperties(t, findTool(t, tools.Tools, "list_issue_comments"), "identifier", "limit", "offset")
 	assertToolProperties(t, findTool(t, tools.Tools, "update_issue_comment"), "attachment_paths", "body", "comment_id", "identifier", "remove_attachment_ids")
 	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_comment"), "comment_id", "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "delete_issue_asset"), "asset_id", "identifier")
@@ -919,6 +921,394 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	}
 	if got := decodeEnvelope(t, deleteProjectRes)["data"].(map[string]interface{})["id"]; got != tempProjectID {
 		t.Fatalf("unexpected delete_project payload: %#v", got)
+	}
+}
+
+func TestStdioListProjectsPagination(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	client := newTestMCPClient(t, dbPath, testClientOptions{})
+	defer client.Close()
+
+	for _, name := range []string{"Project A", "Project B", "Project C"} {
+		res, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+			"name":      name,
+			"repo_path": t.TempDir(),
+		})
+		if err != nil {
+			t.Fatalf("create_project %s failed: %v", name, err)
+		}
+		if data := decodeEnvelope(t, res)["data"].(map[string]interface{}); asString(data["name"]) != name {
+			t.Fatalf("unexpected project payload: %#v", data)
+		}
+	}
+
+	firstRes, err := client.CallTool(context.Background(), "list_projects", map[string]interface{}{
+		"limit":  2,
+		"offset": 0,
+	})
+	if err != nil {
+		t.Fatalf("list_projects page 1 failed: %v", err)
+	}
+	first := responseData(t, firstRes)
+	if got := len(first["items"].([]interface{})); got != 2 {
+		t.Fatalf("expected 2 project items on first page, got %d", got)
+	}
+	if got := mustInt(t, first["total"]); got != 3 {
+		t.Fatalf("expected total 3 projects, got %d", got)
+	}
+	if got := mustInt(t, first["limit"]); got != 2 {
+		t.Fatalf("expected limit 2, got %d", got)
+	}
+	if got := mustInt(t, first["offset"]); got != 0 {
+		t.Fatalf("expected offset 0, got %d", got)
+	}
+	firstPagination := paginationData(t, first)
+	assertPagination(t, firstPagination, true, 2, "Use pagination.next_request to fetch the next batch.")
+	firstNextArgs := nextRequestArgs(t, firstPagination, "list_projects")
+	if got := mustInt(t, firstNextArgs["limit"]); got != 2 {
+		t.Fatalf("expected next_request limit 2, got %d", got)
+	}
+	if got := mustInt(t, firstNextArgs["offset"]); got != 2 {
+		t.Fatalf("expected next_request offset 2, got %d", got)
+	}
+
+	lastRes, err := client.CallTool(context.Background(), "list_projects", map[string]interface{}{
+		"limit":  2,
+		"offset": 2,
+	})
+	if err != nil {
+		t.Fatalf("list_projects page 2 failed: %v", err)
+	}
+	last := responseData(t, lastRes)
+	if got := len(last["items"].([]interface{})); got != 1 {
+		t.Fatalf("expected 1 project item on last page, got %d", got)
+	}
+	lastPagination := paginationData(t, last)
+	assertPagination(t, lastPagination, false, 3, "No additional results remain.")
+	if _, ok := lastPagination["next_request"]; ok {
+		t.Fatalf("expected no next_request on final projects page, got %#v", lastPagination["next_request"])
+	}
+}
+
+func TestStdioListEpicsPagination(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	client := newTestMCPClient(t, dbPath, testClientOptions{})
+	defer client.Close()
+
+	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Epic Pagination Project",
+		"repo_path": t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("create_project failed: %v", err)
+	}
+	projectID := asString(decodeEnvelope(t, projectRes)["data"].(map[string]interface{})["id"])
+
+	for _, name := range []string{"Epic A", "Epic B", "Epic C"} {
+		res, err := client.CallTool(context.Background(), "create_epic", map[string]interface{}{
+			"project_id": projectID,
+			"name":       name,
+		})
+		if err != nil {
+			t.Fatalf("create_epic %s failed: %v", name, err)
+		}
+		if data := decodeEnvelope(t, res)["data"].(map[string]interface{}); asString(data["name"]) != name {
+			t.Fatalf("unexpected epic payload: %#v", data)
+		}
+	}
+
+	firstRes, err := client.CallTool(context.Background(), "list_epics", map[string]interface{}{
+		"project_id": projectID,
+		"limit":      2,
+		"offset":     0,
+	})
+	if err != nil {
+		t.Fatalf("list_epics page 1 failed: %v", err)
+	}
+	first := responseData(t, firstRes)
+	if got := len(first["items"].([]interface{})); got != 2 {
+		t.Fatalf("expected 2 epic items on first page, got %d", got)
+	}
+	if got := mustInt(t, first["total"]); got != 3 {
+		t.Fatalf("expected total 3 epics, got %d", got)
+	}
+	if got := mustInt(t, first["limit"]); got != 2 {
+		t.Fatalf("expected limit 2, got %d", got)
+	}
+	if got := mustInt(t, first["offset"]); got != 0 {
+		t.Fatalf("expected offset 0, got %d", got)
+	}
+	firstPagination := paginationData(t, first)
+	assertPagination(t, firstPagination, true, 2, "Use pagination.next_request to fetch the next batch.")
+	firstNextArgs := nextRequestArgs(t, firstPagination, "list_epics")
+	if got := asString(firstNextArgs["project_id"]); got != projectID {
+		t.Fatalf("expected next_request project_id %s, got %s", projectID, got)
+	}
+	if got := mustInt(t, firstNextArgs["limit"]); got != 2 {
+		t.Fatalf("expected next_request limit 2, got %d", got)
+	}
+	if got := mustInt(t, firstNextArgs["offset"]); got != 2 {
+		t.Fatalf("expected next_request offset 2, got %d", got)
+	}
+
+	lastRes, err := client.CallTool(context.Background(), "list_epics", map[string]interface{}{
+		"project_id": projectID,
+		"limit":      2,
+		"offset":     2,
+	})
+	if err != nil {
+		t.Fatalf("list_epics page 2 failed: %v", err)
+	}
+	last := responseData(t, lastRes)
+	if got := len(last["items"].([]interface{})); got != 1 {
+		t.Fatalf("expected 1 epic item on last page, got %d", got)
+	}
+	lastPagination := paginationData(t, last)
+	assertPagination(t, lastPagination, false, 3, "No additional results remain.")
+	if _, ok := lastPagination["next_request"]; ok {
+		t.Fatalf("expected no next_request on final epics page, got %#v", lastPagination["next_request"])
+	}
+}
+
+func TestStdioListIssueCommentsPaginationKeepsReplies(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	client := newTestMCPClient(t, dbPath, testClientOptions{})
+	defer client.Close()
+
+	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Comment Pagination Project",
+		"repo_path": t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("create_project failed: %v", err)
+	}
+	projectID := asString(decodeEnvelope(t, projectRes)["data"].(map[string]interface{})["id"])
+
+	issueRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
+		"project_id": projectID,
+		"title":      "Comment Pagination Issue",
+	})
+	if err != nil {
+		t.Fatalf("create_issue failed: %v", err)
+	}
+	issueID := asString(decodeEnvelope(t, issueRes)["data"].(map[string]interface{})["identifier"])
+
+	root1Res, err := client.CallTool(context.Background(), "create_issue_comment", map[string]interface{}{
+		"identifier": issueID,
+		"body":       "Root 1",
+	})
+	if err != nil {
+		t.Fatalf("create_issue_comment root 1 failed: %v", err)
+	}
+	root1ID := asString(decodeEnvelope(t, root1Res)["data"].(map[string]interface{})["id"])
+
+	replyRes, err := client.CallTool(context.Background(), "create_issue_comment", map[string]interface{}{
+		"identifier":        issueID,
+		"body":              "Reply 1",
+		"parent_comment_id": root1ID,
+	})
+	if err != nil {
+		t.Fatalf("create_issue_comment reply failed: %v", err)
+	}
+	if got := asString(decodeEnvelope(t, replyRes)["data"].(map[string]interface{})["body"]); got != "Reply 1" {
+		t.Fatalf("unexpected reply payload body: %s", got)
+	}
+
+	for _, body := range []string{"Root 2", "Root 3"} {
+		res, err := client.CallTool(context.Background(), "create_issue_comment", map[string]interface{}{
+			"identifier": issueID,
+			"body":       body,
+		})
+		if err != nil {
+			t.Fatalf("create_issue_comment %s failed: %v", body, err)
+		}
+		if got := asString(decodeEnvelope(t, res)["data"].(map[string]interface{})["body"]); got != body {
+			t.Fatalf("unexpected comment payload body: %s", got)
+		}
+	}
+
+	firstRes, err := client.CallTool(context.Background(), "list_issue_comments", map[string]interface{}{
+		"identifier": issueID,
+		"limit":      1,
+		"offset":     0,
+	})
+	if err != nil {
+		t.Fatalf("list_issue_comments page 1 failed: %v", err)
+	}
+	first := responseData(t, firstRes)
+	if got := asString(first["identifier"]); got != issueID {
+		t.Fatalf("expected identifier %s, got %s", issueID, got)
+	}
+	if got := len(first["items"].([]interface{})); got != 1 {
+		t.Fatalf("expected 1 comment thread on first page, got %d", got)
+	}
+	if got := mustInt(t, first["total"]); got != 3 {
+		t.Fatalf("expected total 3 root threads, got %d", got)
+	}
+	if got := mustInt(t, first["limit"]); got != 1 {
+		t.Fatalf("expected limit 1, got %d", got)
+	}
+	if got := mustInt(t, first["offset"]); got != 0 {
+		t.Fatalf("expected offset 0, got %d", got)
+	}
+	firstThread := first["items"].([]interface{})[0].(map[string]interface{})
+	if got := asString(firstThread["body"]); got != "Root 1" {
+		t.Fatalf("expected root thread Root 1, got %s", got)
+	}
+	if replies := firstThread["replies"].([]interface{}); len(replies) != 1 || asString(replies[0].(map[string]interface{})["body"]) != "Reply 1" {
+		t.Fatalf("expected Root 1 replies to stay attached, got %#v", replies)
+	}
+	firstPagination := paginationData(t, first)
+	assertPagination(t, firstPagination, true, 1, "Use pagination.next_request to fetch the next batch.")
+	firstNextArgs := nextRequestArgs(t, firstPagination, "list_issue_comments")
+	if got := asString(firstNextArgs["identifier"]); got != issueID {
+		t.Fatalf("expected next_request identifier %s, got %s", issueID, got)
+	}
+	if got := mustInt(t, firstNextArgs["limit"]); got != 1 {
+		t.Fatalf("expected next_request limit 1, got %d", got)
+	}
+	if got := mustInt(t, firstNextArgs["offset"]); got != 1 {
+		t.Fatalf("expected next_request offset 1, got %d", got)
+	}
+
+	secondRes, err := client.CallTool(context.Background(), "list_issue_comments", map[string]interface{}{
+		"identifier": issueID,
+		"limit":      1,
+		"offset":     1,
+	})
+	if err != nil {
+		t.Fatalf("list_issue_comments page 2 failed: %v", err)
+	}
+	second := responseData(t, secondRes)
+	if got := len(second["items"].([]interface{})); got != 1 {
+		t.Fatalf("expected 1 comment thread on second page, got %d", got)
+	}
+	if got := asString(second["items"].([]interface{})[0].(map[string]interface{})["body"]); got != "Root 2" {
+		t.Fatalf("expected second page to advance to Root 2, got %s", got)
+	}
+	secondPagination := paginationData(t, second)
+	assertPagination(t, secondPagination, true, 2, "Use pagination.next_request to fetch the next batch.")
+	secondNextArgs := nextRequestArgs(t, secondPagination, "list_issue_comments")
+	if got := mustInt(t, secondNextArgs["offset"]); got != 2 {
+		t.Fatalf("expected next_request offset 2, got %d", got)
+	}
+
+	lastRes, err := client.CallTool(context.Background(), "list_issue_comments", map[string]interface{}{
+		"identifier": issueID,
+		"limit":      1,
+		"offset":     2,
+	})
+	if err != nil {
+		t.Fatalf("list_issue_comments page 3 failed: %v", err)
+	}
+	last := responseData(t, lastRes)
+	if got := len(last["items"].([]interface{})); got != 1 {
+		t.Fatalf("expected 1 comment thread on last page, got %d", got)
+	}
+	if got := asString(last["items"].([]interface{})[0].(map[string]interface{})["body"]); got != "Root 3" {
+		t.Fatalf("expected last page to advance to Root 3, got %s", got)
+	}
+	lastPagination := paginationData(t, last)
+	assertPagination(t, lastPagination, false, 3, "No additional results remain.")
+	if _, ok := lastPagination["next_request"]; ok {
+		t.Fatalf("expected no next_request on final issue comments page, got %#v", lastPagination["next_request"])
+	}
+}
+
+func TestStdioListIssuesPaginationPreservesFilters(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	client := newTestMCPClient(t, dbPath, testClientOptions{})
+	defer client.Close()
+
+	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
+		"name":      "Issue Pagination Project",
+		"repo_path": t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("create_project failed: %v", err)
+	}
+	projectID := asString(decodeEnvelope(t, projectRes)["data"].(map[string]interface{})["id"])
+
+	for i, title := range []string{"Paged Issue 1", "Paged Issue 2", "Paged Issue 3"} {
+		res, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
+			"project_id": projectID,
+			"title":      title,
+			"state":      "ready",
+			"priority":   i + 1,
+		})
+		if err != nil {
+			t.Fatalf("create_issue %s failed: %v", title, err)
+		}
+		if got := asString(decodeEnvelope(t, res)["data"].(map[string]interface{})["title"]); got != title {
+			t.Fatalf("unexpected issue payload title: %s", got)
+		}
+	}
+
+	firstRes, err := client.CallTool(context.Background(), "list_issues", map[string]interface{}{
+		"project_id": projectID,
+		"search":     "Paged",
+		"state":      "ready",
+		"sort":       "priority_asc",
+		"limit":      2,
+		"offset":     0,
+	})
+	if err != nil {
+		t.Fatalf("list_issues page 1 failed: %v", err)
+	}
+	first := responseData(t, firstRes)
+	if got := len(first["items"].([]interface{})); got != 2 {
+		t.Fatalf("expected 2 issue items on first page, got %d", got)
+	}
+	if got := mustInt(t, first["total"]); got != 3 {
+		t.Fatalf("expected total 3 filtered issues, got %d", got)
+	}
+	if got := mustInt(t, first["limit"]); got != 2 {
+		t.Fatalf("expected limit 2, got %d", got)
+	}
+	if got := mustInt(t, first["offset"]); got != 0 {
+		t.Fatalf("expected offset 0, got %d", got)
+	}
+	firstPagination := paginationData(t, first)
+	assertPagination(t, firstPagination, true, 2, "Use pagination.next_request to fetch the next batch.")
+	firstNextArgs := nextRequestArgs(t, firstPagination, "list_issues")
+	if got := asString(firstNextArgs["project_id"]); got != projectID {
+		t.Fatalf("expected preserved project_id %s, got %s", projectID, got)
+	}
+	if got := asString(firstNextArgs["search"]); got != "Paged" {
+		t.Fatalf("expected preserved search filter, got %q", got)
+	}
+	if got := asString(firstNextArgs["state"]); got != "ready" {
+		t.Fatalf("expected preserved state filter, got %q", got)
+	}
+	if got := asString(firstNextArgs["sort"]); got != "priority_asc" {
+		t.Fatalf("expected preserved sort filter, got %q", got)
+	}
+	if got := mustInt(t, firstNextArgs["limit"]); got != 2 {
+		t.Fatalf("expected next_request limit 2, got %d", got)
+	}
+	if got := mustInt(t, firstNextArgs["offset"]); got != 2 {
+		t.Fatalf("expected next_request offset 2, got %d", got)
+	}
+
+	lastRes, err := client.CallTool(context.Background(), "list_issues", map[string]interface{}{
+		"project_id": projectID,
+		"search":     "Paged",
+		"state":      "ready",
+		"sort":       "priority_asc",
+		"limit":      2,
+		"offset":     2,
+	})
+	if err != nil {
+		t.Fatalf("list_issues page 2 failed: %v", err)
+	}
+	last := responseData(t, lastRes)
+	if got := len(last["items"].([]interface{})); got != 1 {
+		t.Fatalf("expected 1 issue item on last page, got %d", got)
+	}
+	lastPagination := paginationData(t, last)
+	assertPagination(t, lastPagination, false, 3, "No additional results remain.")
+	if _, ok := lastPagination["next_request"]; ok {
+		t.Fatalf("expected no next_request on final issues page, got %#v", lastPagination["next_request"])
 	}
 }
 
@@ -1535,4 +1925,71 @@ func assertToolProperties(t *testing.T, tool mcpapi.Tool, want ...string) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s properties mismatch:\n got %v\nwant %v", tool.Name, got, want)
 	}
+}
+
+func responseData(t *testing.T, result *mcpapi.CallToolResult) map[string]interface{} {
+	t.Helper()
+	return decodeEnvelope(t, result)["data"].(map[string]interface{})
+}
+
+func paginationData(t *testing.T, data map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	pagination, ok := data["pagination"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected pagination payload, got %#v", data["pagination"])
+	}
+	return pagination
+}
+
+func nextRequestArgs(t *testing.T, pagination map[string]interface{}, tool string) map[string]interface{} {
+	t.Helper()
+	nextRequest, ok := pagination["next_request"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected next_request payload, got %#v", pagination["next_request"])
+	}
+	if got := asString(nextRequest["tool"]); got != tool {
+		t.Fatalf("expected next_request tool %s, got %s", tool, got)
+	}
+	args, ok := nextRequest["arguments"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected next_request arguments, got %#v", nextRequest["arguments"])
+	}
+	return args
+}
+
+func assertPagination(t *testing.T, pagination map[string]interface{}, wantHasMore bool, wantNextOffset int, wantHint string) {
+	t.Helper()
+	if got := mustBool(t, pagination["has_more"]); got != wantHasMore {
+		t.Fatalf("expected has_more=%v, got %v", wantHasMore, got)
+	}
+	if got := mustInt(t, pagination["next_offset"]); got != wantNextOffset {
+		t.Fatalf("expected next_offset=%d, got %d", wantNextOffset, got)
+	}
+	if got := asString(pagination["next_hint"]); got != wantHint {
+		t.Fatalf("expected next_hint %q, got %q", wantHint, got)
+	}
+}
+
+func mustInt(t *testing.T, value interface{}) int {
+	t.Helper()
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		t.Fatalf("expected numeric value, got %T", value)
+		return 0
+	}
+}
+
+func mustBool(t *testing.T, value interface{}) bool {
+	t.Helper()
+	typed, ok := value.(bool)
+	if !ok {
+		t.Fatalf("expected boolean value, got %T", value)
+	}
+	return typed
 }

@@ -709,6 +709,10 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		s.handleIssueComments(w, r, identifier, parts[2:])
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "commands" {
+		s.handleIssueCommands(w, r, identifier, parts[2:])
+		return
+	}
 
 	if len(parts) == 1 {
 		switch r.Method {
@@ -909,7 +913,14 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.provider.RetryIssueNow(r.Context(), identifier))
 	case "run-now":
 		writeJSON(w, s.provider.RunRecurringIssueNow(r.Context(), identifier))
-	case "commands":
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleIssueCommands(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
+	switch {
+	case len(rest) == 0 && r.Method == http.MethodPost:
 		var body struct {
 			Command string `json:"command"`
 		}
@@ -956,8 +967,51 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			"issue":   identifier,
 			"command": command,
 		})
+	case len(rest) == 1:
+		commandID := strings.TrimSpace(rest[0])
+		if commandID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		issue, err := s.service.GetIssueByIdentifier(r.Context(), identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		switch r.Method {
+		case http.MethodPatch:
+			var body struct {
+				Command string `json:"command"`
+			}
+			if !decodeJSON(w, r, &body) {
+				return
+			}
+			command, err := s.store.UpdateIssueAgentCommand(issue.ID, commandID, body.Command)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			writeJSON(w, map[string]interface{}{
+				"ok":      true,
+				"issue":   identifier,
+				"command": command,
+			})
+		case http.MethodDelete:
+			if err := s.store.DeleteIssueAgentCommand(issue.ID, commandID); err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			writeJSON(w, map[string]interface{}{
+				"ok":         true,
+				"deleted":    true,
+				"issue":      identifier,
+				"command_id": commandID,
+			})
+		default:
+			methodNotAllowed(w)
+		}
 	default:
-		http.NotFound(w, r)
+		methodNotAllowed(w)
 	}
 }
 

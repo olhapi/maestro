@@ -40,6 +40,8 @@ vi.mock("@/lib/api", () => ({
     approveIssuePlan: vi.fn(),
     setIssueBlockers: vi.fn(),
     sendIssueCommand: vi.fn(),
+    updateIssueCommand: vi.fn(),
+    deleteIssueCommand: vi.fn(),
     uploadIssueAsset: vi.fn(),
     deleteIssueAsset: vi.fn(),
     createIssueComment: vi.fn(),
@@ -1040,6 +1042,17 @@ describe("IssueDetailPage", () => {
             status: "waiting_for_unblock",
             created_at: "2026-03-09T12:10:00Z",
           },
+          {
+            id: "cmd-2",
+            issue_id: issue.id,
+            command: "Already delivered.",
+            status: "delivered",
+            created_at: "2026-03-09T11:45:00Z",
+            delivered_at: "2026-03-09T11:50:00Z",
+            delivery_mode: "same_thread",
+            delivery_thread_id: "thread-live",
+            delivery_attempt: 1,
+          },
         ],
       });
 
@@ -1082,6 +1095,238 @@ describe("IssueDetailPage", () => {
     expect(
       within(controlRail).getByText("Merge the branch to master."),
     ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agent-command-cmd-1")).getByRole("button", { name: /edit command/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agent-command-cmd-1")).getByRole("button", { name: /delete command/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agent-command-cmd-2")).queryByRole("button", { name: /edit command/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agent-command-cmd-2")).queryByRole("button", { name: /delete command/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("submits agent commands on Enter", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "done" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.sendIssueCommand).mockResolvedValue({ ok: true });
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 1,
+      retry_state: "none",
+      session_source: "persisted",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/tell the agent/i)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/tell the agent/i), {
+      target: { value: "Merge the branch to master." },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText(/tell the agent/i), {
+      code: "Enter",
+      key: "Enter",
+    });
+
+    await waitFor(() => {
+      expect(api.sendIssueCommand).toHaveBeenCalledWith(
+        issue.identifier,
+        "Merge the branch to master.",
+      );
+    });
+  });
+
+  it("does not submit agent commands on Shift+Enter", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "done" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.sendIssueCommand).mockResolvedValue({ ok: true });
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 1,
+      retry_state: "none",
+      session_source: "persisted",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/tell the agent/i)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/tell the agent/i), {
+      target: { value: "Add a line break" },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText(/tell the agent/i), {
+      code: "Enter",
+      key: "Enter",
+      shiftKey: true,
+    });
+
+    expect(api.sendIssueCommand).not.toHaveBeenCalled();
+  });
+
+  it("allows editing and deleting queued agent commands inline", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "done" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.sendIssueCommand).mockResolvedValue({ ok: true });
+    vi.mocked(api.updateIssueCommand).mockResolvedValue({
+      ok: true,
+      command: {
+        id: "cmd-1",
+        issue_id: issue.id,
+        command: "Merge the branch after fixing the tests.",
+        status: "waiting_for_unblock",
+        created_at: "2026-03-09T12:10:00Z",
+      },
+    });
+    vi.mocked(api.deleteIssueCommand).mockResolvedValue({
+      ok: true,
+      deleted: true,
+      command_id: "cmd-1",
+    });
+    vi.mocked(api.getIssueExecution)
+      .mockResolvedValueOnce({
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        active: false,
+        phase: "implementation",
+        attempt_number: 1,
+        retry_state: "none",
+        session_source: "persisted",
+        activity_groups: [],
+        debug_activity_groups: [],
+        runtime_events: [],
+        agent_commands: [
+          {
+            id: "cmd-1",
+            issue_id: issue.id,
+            command: "Merge the branch to master.",
+            status: "waiting_for_unblock",
+            created_at: "2026-03-09T12:10:00Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        active: false,
+        phase: "implementation",
+        attempt_number: 1,
+        retry_state: "none",
+        session_source: "persisted",
+        activity_groups: [],
+        debug_activity_groups: [],
+        runtime_events: [],
+        agent_commands: [
+          {
+            id: "cmd-1",
+            issue_id: issue.id,
+            command: "Merge the branch after fixing the tests.",
+            status: "waiting_for_unblock",
+            created_at: "2026-03-09T12:10:00Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        active: false,
+        phase: "implementation",
+        attempt_number: 1,
+        retry_state: "none",
+        session_source: "persisted",
+        activity_groups: [],
+        debug_activity_groups: [],
+        runtime_events: [],
+        agent_commands: [],
+      });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-command-cmd-1")).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      within(screen.getByTestId("agent-command-cmd-1")).getByRole("button", {
+        name: /edit command/i,
+      }),
+    );
+
+    const editor = within(screen.getByTestId("agent-command-cmd-1")).getByPlaceholderText(
+      /update the command/i,
+    );
+    fireEvent.change(editor, {
+      target: { value: "Merge the branch after fixing the tests." },
+    });
+    fireEvent.click(
+      within(screen.getByTestId("agent-command-cmd-1")).getByRole("button", {
+        name: /^save$/i,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(api.updateIssueCommand).toHaveBeenCalledWith(
+        issue.identifier,
+        "cmd-1",
+        "Merge the branch after fixing the tests.",
+      );
+    });
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId("agent-command-cmd-1")).getByText(
+          "Merge the branch after fixing the tests.",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      within(screen.getByTestId("agent-command-cmd-1")).getByRole("button", {
+        name: /delete command/i,
+      }),
+    );
+
+    const deleteDialog = await screen.findByRole("dialog", {
+      name: /delete command\?/i,
+    });
+    fireEvent.click(
+      within(deleteDialog).getByRole("button", {
+        name: /delete command/i,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(api.deleteIssueCommand).toHaveBeenCalledWith(issue.identifier, "cmd-1");
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("agent-command-cmd-1")).not.toBeInTheDocument();
+    });
   });
 
   it("keeps the state selector under issue actions and removes the extra control cards", async () => {

@@ -4065,7 +4065,7 @@ func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEven
 		SELECT seq, kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json
 		FROM runtime_events
 		WHERE issue_id = ?
-			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed')
+			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed', 'workspace_bootstrap_recovery')
 		ORDER BY seq DESC`
 	var (
 		rows *sql.Rows
@@ -4386,6 +4386,117 @@ func (s *Store) MarkIssueAgentCommandsDelivered(issueID string, ids []string, mo
 	})
 }
 
+func (s *Store) UpdateIssueAgentCommand(issueID, commandID, command string) (*IssueAgentCommand, error) {
+	if strings.TrimSpace(issueID) == "" {
+		return nil, validationErrorf("issue id is required")
+	}
+	if strings.TrimSpace(commandID) == "" {
+		return nil, validationErrorf("command id is required")
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil, validationErrorf("command is required")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.Exec(`
+		UPDATE issue_agent_commands
+		SET command = ?
+		WHERE id = ? AND issue_id = ? AND status IN (?, ?)`,
+		command,
+		commandID,
+		issueID,
+		IssueAgentCommandPending,
+		IssueAgentCommandWaitingForUnblock,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return nil, notFoundError("issue_agent_command", commandID)
+	}
+
+	record, err := scanIssueAgentCommandRow(tx.QueryRow(`
+		SELECT id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt
+		FROM issue_agent_commands
+		WHERE id = ? AND issue_id = ?`,
+		commandID,
+		issueID,
+	))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.appendChangeTx(tx, "issue_agent_command", issueID, "updated", map[string]interface{}{
+		"id":       record.ID,
+		"issue_id": issueID,
+		"command":  record.Command,
+		"status":   record.Status,
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return record, nil
+}
+
+func (s *Store) DeleteIssueAgentCommand(issueID, commandID string) error {
+	if strings.TrimSpace(issueID) == "" {
+		return validationErrorf("issue id is required")
+	}
+	if strings.TrimSpace(commandID) == "" {
+		return validationErrorf("command id is required")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.Exec(`
+		DELETE FROM issue_agent_commands
+		WHERE id = ? AND issue_id = ? AND status IN (?, ?)`,
+		commandID,
+		issueID,
+		IssueAgentCommandPending,
+		IssueAgentCommandWaitingForUnblock,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue_agent_command", commandID)
+	}
+
+	if err := s.appendChangeTx(tx, "issue_agent_command", issueID, "deleted", map[string]interface{}{
+		"id":       commandID,
+		"issue_id": issueID,
+	}); err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
+}
+
 func (s *Store) ListRecentExecutionSessions(since time.Time, limit int) ([]ExecutionSessionSnapshot, error) {
 	if limit <= 0 {
 		limit = 12
@@ -4438,37 +4549,95 @@ func (s *Store) ListRecentExecutionSessions(since time.Time, limit int) ([]Execu
 func scanIssueAgentCommands(rows *sql.Rows) ([]IssueAgentCommand, error) {
 	out := []IssueAgentCommand{}
 	for rows.Next() {
-		var record IssueAgentCommand
-		var deliveredAt sql.NullTime
-		if err := rows.Scan(
-			&record.ID,
-			&record.IssueID,
-			&record.Command,
-			&record.Status,
-			&record.CreatedAt,
-			&deliveredAt,
-			&record.DeliveryMode,
-			&record.DeliveryThreadID,
-			&record.DeliveryAttempt,
-		); err != nil {
+		record, err := scanIssueAgentCommandRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		if deliveredAt.Valid {
-			ts := deliveredAt.Time
-			record.DeliveredAt = &ts
-		}
-		out = append(out, record)
+		out = append(out, *record)
 	}
 	return out, rows.Err()
 }
+
+type issueAgentCommandRowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanIssueAgentCommandRow(scanner issueAgentCommandRowScanner) (*IssueAgentCommand, error) {
+	var record IssueAgentCommand
+	var deliveredAt sql.NullTime
+	if err := scanner.Scan(
+		&record.ID,
+		&record.IssueID,
+		&record.Command,
+		&record.Status,
+		&record.CreatedAt,
+		&deliveredAt,
+		&record.DeliveryMode,
+		&record.DeliveryThreadID,
+		&record.DeliveryAttempt,
+	); err != nil {
+		return nil, err
+	}
+	if deliveredAt.Valid {
+		ts := deliveredAt.Time
+		record.DeliveredAt = &ts
+	}
+	return &record, nil
+}
+
+const runtimeSeriesTokenEventKinds = `kind IN ('run_completed', 'run_failed', 'run_unsuccessful', 'run_interrupted') OR (kind = 'retry_paused' AND error = 'plan_approval_pending')`
 
 func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 	if hours <= 0 {
 		hours = 24
 	}
 	start := time.Now().UTC().Add(-time.Duration(hours-1) * time.Hour).Truncate(time.Hour)
+
+	points := make([]RuntimeSeriesPoint, 0, hours)
+	indexByBucket := make(map[string]int, hours)
+	for i := 0; i < hours; i++ {
+		bucketTime := start.Add(time.Duration(i) * time.Hour)
+		bucket := bucketTime.Format("15:04")
+		indexByBucket[bucket] = len(points)
+		points = append(points, RuntimeSeriesPoint{Bucket: bucket})
+	}
+
+	tokenTotalsByThread := map[string]int{}
+	seedRows, err := s.db.Query(`
+		SELECT kind, issue_id, identifier, attempt, total_tokens, error, event_ts, payload_json
+		FROM runtime_events
+		WHERE event_ts < ?
+		  AND (`+runtimeSeriesTokenEventKinds+`)
+		ORDER BY event_ts ASC`, start)
+	if err != nil {
+		return nil, err
+	}
+	defer seedRows.Close()
+	for seedRows.Next() {
+		var (
+			kind        string
+			issueID     string
+			identifier  string
+			attempt     int
+			totalTokens int
+			errText     string
+			ts          time.Time
+			payload     string
+		)
+		if err := seedRows.Scan(&kind, &issueID, &identifier, &attempt, &totalTokens, &errText, &ts, &payload); err != nil {
+			return nil, err
+		}
+		key := runtimeSeriesEventKey(issueID, identifier, attempt, payload, kind, ts)
+		if current, ok := tokenTotalsByThread[key]; !ok || totalTokens > current {
+			tokenTotalsByThread[key] = totalTokens
+		}
+	}
+	if err := seedRows.Err(); err != nil {
+		return nil, err
+	}
+
 	rows, err := s.db.Query(`
-		SELECT kind, total_tokens, event_ts
+		SELECT kind, issue_id, identifier, attempt, total_tokens, error, event_ts, payload_json
 		FROM runtime_events
 		WHERE event_ts >= ?
 		ORDER BY event_ts ASC`, start)
@@ -4477,22 +4646,21 @@ func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 	}
 	defer rows.Close()
 
-	points := make([]RuntimeSeriesPoint, 0, hours)
-	indexByBucket := map[string]int{}
-	for i := 0; i < hours; i++ {
-		bucketTime := start.Add(time.Duration(i) * time.Hour)
-		bucket := bucketTime.Format("15:04")
-		indexByBucket[bucket] = len(points)
-		points = append(points, RuntimeSeriesPoint{Bucket: bucket})
-	}
-
 	for rows.Next() {
-		var kind string
-		var totalTokens int
-		var ts time.Time
-		if err := rows.Scan(&kind, &totalTokens, &ts); err != nil {
+		var (
+			kind        string
+			issueID     string
+			identifier  string
+			attempt     int
+			totalTokens int
+			errText     string
+			ts          time.Time
+			payload     string
+		)
+		if err := rows.Scan(&kind, &issueID, &identifier, &attempt, &totalTokens, &errText, &ts, &payload); err != nil {
 			return nil, err
 		}
+
 		bucket := ts.UTC().Truncate(time.Hour).Format("15:04")
 		index, ok := indexByBucket[bucket]
 		if !ok {
@@ -4503,14 +4671,50 @@ func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 			points[index].RunsStarted++
 		case "run_completed":
 			points[index].RunsCompleted++
-		case "run_failed", "run_unsuccessful":
+		case "run_failed", "run_unsuccessful", "run_interrupted":
 			points[index].RunsFailed++
 		case "retry_scheduled":
 			points[index].Retries++
 		}
-		points[index].Tokens += totalTokens
+
+		if !runtimeSeriesTokenEvent(kind, errText) {
+			continue
+		}
+		key := runtimeSeriesEventKey(issueID, identifier, attempt, payload, kind, ts)
+		prev := tokenTotalsByThread[key]
+		if totalTokens > prev {
+			points[index].Tokens += totalTokens - prev
+			tokenTotalsByThread[key] = totalTokens
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return points, nil
+}
+
+func runtimeSeriesTokenEvent(kind, errText string) bool {
+	switch kind {
+	case "run_completed", "run_failed", "run_unsuccessful", "run_interrupted":
+		return true
+	case "retry_paused":
+		return strings.TrimSpace(errText) == "plan_approval_pending"
+	default:
+		return false
+	}
+}
+
+func runtimeSeriesEventKey(issueID, identifier string, attempt int, payloadJSON, kind string, ts time.Time) string {
+	if threadID := runtimeEventThreadID(payloadJSON); threadID != "" {
+		return "thread:" + threadID
+	}
+	if trimmedIssueID := strings.TrimSpace(issueID); trimmedIssueID != "" {
+		return fmt.Sprintf("issue:%s#attempt:%d", trimmedIssueID, attempt)
+	}
+	if trimmedIdentifier := strings.TrimSpace(identifier); trimmedIdentifier != "" {
+		return fmt.Sprintf("identifier:%s#attempt:%d", trimmedIdentifier, attempt)
+	}
+	return fmt.Sprintf("event:%s#attempt:%d#ts:%s", strings.TrimSpace(kind), attempt, ts.UTC().Format(time.RFC3339Nano))
 }
 
 func asString(v interface{}) string {

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
@@ -81,12 +81,15 @@ describe('WorkPage', () => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
+    expect(screen.getByRole('heading', { name: 'Coordinate work on one board' })).toHaveClass('w-full')
+    expect(screen.getByText('This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed.')).toHaveClass('max-w-none')
     expect(screen.getByText('Investigate retries')).toBeInTheDocument()
     expect(screen.getByText('Active work')).toBeInTheDocument()
     expect(screen.getByText('1 live')).toBeInTheDocument()
     expect(screen.queryByText('Create issue')).not.toBeInTheDocument()
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Board view' })).toHaveAttribute('data-state', 'on')
+    expect(screen.queryByRole('button', { name: /collapse backlog status row/i })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
     await waitFor(() => {
@@ -271,33 +274,52 @@ describe('WorkPage', () => {
   })
 
   it('uses the grouped mobile board without exposing the desktop view toggle', async () => {
-    Object.defineProperty(window, 'innerWidth', {
-      configurable: true,
-      writable: true,
-      value: 390,
-    })
-    window.dispatchEvent(new Event('resize'))
+    try {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        writable: true,
+        value: 390,
+      })
+      await act(async () => {
+        window.dispatchEvent(new Event('resize'))
+      })
 
-    const bootstrap = makeBootstrapResponse()
-    mockWorkBootstrap(bootstrap)
-    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
-    vi.mocked(api.listIssues).mockResolvedValue({
-      items: bootstrap.issues.items,
-      total: bootstrap.issues.total,
-      limit: 200,
-      offset: 0,
-    })
+      const bootstrap = makeBootstrapResponse()
+      mockWorkBootstrap(bootstrap)
+      vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+      vi.mocked(api.listIssues).mockResolvedValue({
+        items: bootstrap.issues.items,
+        total: bootstrap.issues.total,
+        limit: 200,
+        offset: 0,
+      })
 
-    renderWithQueryClient(<WorkPage />)
+      renderWithQueryClient(<WorkPage />)
 
-    await waitFor(() => {
-      expect(screen.getByText('Review work state by state')).toBeInTheDocument()
-    })
+      await waitFor(() => {
+        expect(screen.getByText('Review work state by state')).toBeInTheDocument()
+      })
 
-    expect(screen.queryByRole('radio', { name: 'Board view' })).not.toBeInTheDocument()
-    expect(screen.getAllByText('Backlog').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Ready').length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: 'New' }).length).toBeGreaterThan(0)
+      expect(screen.queryByRole('radio', { name: 'Board view' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /collapse backlog status row/i })).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      )
+      expect(screen.getByRole('button', { name: /collapse ready status row/i })).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      )
+      expect(screen.getAllByRole('button', { name: 'New' }).length).toBeGreaterThan(0)
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        writable: true,
+        value: initialInnerWidth,
+      })
+      await act(async () => {
+        window.dispatchEvent(new Event('resize'))
+      })
+    }
   })
 
   it('confirms issue deletion from the list view before calling the API', async () => {

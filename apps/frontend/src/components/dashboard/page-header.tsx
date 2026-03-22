@@ -21,6 +21,7 @@ interface Crumb {
 export function PageHeader({
   eyebrow,
   title,
+  titleClassName,
   description,
   descriptionClassName,
   crumbs = [],
@@ -30,6 +31,7 @@ export function PageHeader({
 }: {
   eyebrow?: string;
   title: ReactNode;
+  titleClassName?: string;
   description?: ReactNode;
   descriptionClassName?: string;
   crumbs?: Crumb[];
@@ -69,6 +71,7 @@ export function PageHeader({
             className={cn(
               "font-display text-[length:var(--page-title-size)] font-semibold leading-[var(--page-title-line-height)] tracking-tight text-white",
               eyebrow ? "mt-3" : "mt-0",
+              titleClassName,
             )}
           >
             {title}
