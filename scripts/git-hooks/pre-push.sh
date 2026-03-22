@@ -15,10 +15,10 @@ run_step pnpm verify:pre-push
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)
-    if command -v arch >/dev/null 2>&1 && arch -x86_64 sh -c 'node -v >/dev/null 2>&1 && npm -v >/dev/null 2>&1 && pnpm --version >/dev/null 2>&1 && go version >/dev/null 2>&1'; then
+    if command -v arch >/dev/null 2>&1 && [ "$(arch -x86_64 sh -c 'node -p "process.arch"' 2>/dev/null || true)" = "x64" ]; then
       run_step arch -x86_64 ./scripts/git-hooks/host-package-smoke.sh
     else
-      log_step "skipping extra macOS x64 smoke; Rosetta/x86_64 toolchain unavailable"
+      log_step "skipping extra macOS x64 smoke; x86_64 Node toolchain unavailable"
     fi
     ;;
 esac
