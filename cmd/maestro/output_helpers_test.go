@@ -298,6 +298,25 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 		if text := series.String(); !strings.Contains(text, "BUCKET") || !strings.Contains(text, "12:00") {
 			t.Fatalf("unexpected runtime series output %q", text)
 		}
+
+		executionText := formatIssueExecution(map[string]interface{}{
+			"identifier":     "ISS-1",
+			"active":         false,
+			"phase":          "implementation",
+			"attempt_number": 4,
+			"retry_state":    "scheduled",
+			"failure_class":  "workspace_bootstrap",
+			"current_error":  "workspace recovery required: Git blocked the branch switch while rebasing",
+			"workspace_recovery": map[string]interface{}{
+				"status":  "recovering",
+				"message": "Workspace recovery note:\n\n- Maestro found an active Git rebase in this workspace.",
+			},
+		})
+		for _, want := range []string{"Workspace Recovery:\tRecovering", "Recovery Message:\tWorkspace recovery note:", "Current Error:\tworkspace recovery required"} {
+			if !strings.Contains(executionText, want) {
+				t.Fatalf("expected %q in execution output %q", want, executionText)
+			}
+		}
 	})
 }
 

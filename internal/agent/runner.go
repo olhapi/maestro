@@ -94,6 +94,26 @@ Workspace recovery note:
 `)
 }
 
+func isWorkspaceBootstrapRebaseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "cannot switch branch while rebasing") ||
+		(strings.Contains(message, "while rebasing") && strings.Contains(message, "switch branch"))
+}
+
+func workspaceBootstrapRecoveryError(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "active_rebase":
+		return "workspace recovery required: active Git rebase detected"
+	case "branch_switch_blocked":
+		return "workspace recovery required: Git blocked the branch switch while rebasing"
+	default:
+		return "workspace recovery required"
+	}
+}
+
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
 	return NewRunnerWithExtensions(provider, store, nil)
 }
@@ -494,16 +514,25 @@ func workspaceHasActiveRebase(workspacePath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, name := range []string{"rebase-merge", "rebase-apply"} {
-		info, statErr := os.Stat(filepath.Join(gitDir, name))
-		if statErr == nil {
-			if info.IsDir() {
-				return true, nil
-			}
-			continue
+	gitDirs := []string{gitDir}
+	if filepath.Base(filepath.Dir(gitDir)) == "worktrees" {
+		commonDir := filepath.Clean(filepath.Dir(filepath.Dir(gitDir)))
+		if commonDir != gitDir {
+			gitDirs = append(gitDirs, commonDir)
 		}
-		if !errors.Is(statErr, os.ErrNotExist) {
-			return false, statErr
+	}
+	for _, dir := range gitDirs {
+		for _, name := range []string{"rebase-merge", "rebase-apply"} {
+			info, statErr := os.Stat(filepath.Join(dir, name))
+			if statErr == nil {
+				if info.IsDir() {
+					return true, nil
+				}
+				continue
+			}
+			if !errors.Is(statErr, os.ErrNotExist) {
+				return false, statErr
+			}
 		}
 	}
 	return false, nil
@@ -588,6 +617,23 @@ func (r *Runner) recordWorkspaceRuntimeEvent(issue *kanban.Issue, kind string, f
 	_ = r.store.AppendRuntimeEvent(kind, event)
 }
 
+func (r *Runner) recordWorkspaceBootstrapRecovery(issue *kanban.Issue, preparedPath, branchName, currentBranch, reason string, gitErr error) {
+	message := workspaceRecoveryNoteText()
+	fields := map[string]interface{}{
+		"path":            preparedPath,
+		"branch":          branchName,
+		"current_branch":  currentBranch,
+		"status":          "recovering",
+		"message":         message,
+		"recovery_reason": strings.TrimSpace(reason),
+		"error":           workspaceBootstrapRecoveryError(reason),
+	}
+	if gitErr != nil {
+		fields["git_error"] = gitErr.Error()
+	}
+	r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_recovery", fields)
+}
+
 func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, workspacePath, rootAbs string) (bool, string, error) {
 	repoPath, err := r.resolveRepoPathForIssue(workflow, issue)
 	if err != nil {
@@ -620,27 +666,34 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 		}
 		currentBranch = strings.TrimSpace(currentBranch)
 		if recoveryActive {
-			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_recovery", map[string]interface{}{
-				"path":            preparedPath,
-				"branch":          branchName,
-				"current_branch":  currentBranch,
-				"recovery_reason": "active_rebase",
-			})
+			r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "active_rebase", nil)
 			return false, preparedPath, nil
 		}
 		if currentBranch != branchName {
 			if !branchExists(ctx, repoPath, branchName) {
 				if currentBranch != "" {
 					if _, err := runGitCommand(ctx, preparedPath, "branch", "-m", branchName); err != nil {
+						if isWorkspaceBootstrapRebaseError(err) {
+							r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "branch_switch_blocked", err)
+							return false, preparedPath, nil
+						}
 						return false, "", fmt.Errorf("rename workspace branch %s to %s: %w", currentBranch, branchName, err)
 					}
 				} else {
 					if _, err := runGitCommand(ctx, preparedPath, "switch", "-c", branchName); err != nil {
+						if isWorkspaceBootstrapRebaseError(err) {
+							r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "branch_switch_blocked", err)
+							return false, preparedPath, nil
+						}
 						return false, "", fmt.Errorf("switch workspace branch %s: %w", branchName, err)
 					}
 				}
 			} else {
 				if _, err := runGitCommand(ctx, preparedPath, "switch", branchName); err != nil {
+					if isWorkspaceBootstrapRebaseError(err) {
+						r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "branch_switch_blocked", err)
+						return false, preparedPath, nil
+					}
 					return false, "", fmt.Errorf("switch workspace branch %s: %w", branchName, err)
 				}
 			}
@@ -705,8 +758,10 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 		createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, existing.Path, rootAbs)
 		if err != nil {
 			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
-				"path":  existing.Path,
-				"error": err.Error(),
+				"path":    existing.Path,
+				"error":   err.Error(),
+				"status":  "required",
+				"message": "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
 			})
 			return nil, fmt.Errorf("workspace_bootstrap: %w", err)
 		}
@@ -727,8 +782,10 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 	createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, workspacePath, rootAbs)
 	if err != nil {
 		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
-			"path":  workspacePath,
-			"error": err.Error(),
+			"path":    workspacePath,
+			"error":   err.Error(),
+			"status":  "required",
+			"message": "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
 		})
 		return nil, fmt.Errorf("workspace_bootstrap: %w", err)
 	}
@@ -1219,6 +1276,10 @@ func (r *Runner) prepareTurnPrompt(workflow *config.Workflow, issue *kanban.Issu
 }
 
 func (r *Runner) prepareTurnPromptWithWorkspace(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int, workspacePath string) (preparedTurnPrompt, error) {
+	recoveryNote, err := r.workspaceRecoveryNoteForPrompt(issue, workspacePath, turn)
+	if err != nil {
+		return preparedTurnPrompt{}, err
+	}
 	if turn > 1 {
 		prompt := fmt.Sprintf(strings.TrimSpace(`
 Continuation guidance:
@@ -1229,10 +1290,6 @@ Continuation guidance:
 - The original task instructions are already present in the thread history; do not restate them before acting.
 - If a verification approach was blocked by local tooling or browser issues, switch to another deterministic local check instead of retrying the same path.
 `), turn, workflow.Config.Agent.MaxTurns)
-		recoveryNote, err := workspaceRecoveryNoteForPath(workspacePath)
-		if err != nil {
-			return preparedTurnPrompt{}, err
-		}
 		return preparedTurnPrompt{Prompt: appendWorkspaceRecoveryNote(prompt, recoveryNote)}, nil
 	}
 	phase := issue.WorkflowPhase
@@ -1278,11 +1335,7 @@ Continuation guidance:
 		return preparedTurnPrompt{}, err
 	}
 	rendered = appendOperatorCommands(rendered, commands)
-	recoveryNote, err := workspaceRecoveryNoteForPath(workspacePath)
-	if err != nil {
-		return preparedTurnPrompt{}, err
-	}
-	rendered = appendWorkspaceRecoveryNote(rendered, recoveryNote)
+	rendered = prependWorkspaceRecoveryNote(rendered, recoveryNote)
 	if rendered == "" {
 		return preparedTurnPrompt{
 			Prompt:   strings.TrimSpace(firstTurnExecutionGuidance),
@@ -1309,6 +1362,26 @@ func workspaceRecoveryNoteForPath(workspacePath string) (string, error) {
 	return workspaceRecoveryNoteText(), nil
 }
 
+func (r *Runner) workspaceRecoveryNoteForPrompt(issue *kanban.Issue, workspacePath string, turn int) (string, error) {
+	note, err := workspaceRecoveryNoteForPath(workspacePath)
+	if err != nil || note != "" || turn != 1 || r.store == nil || issue == nil {
+		return note, err
+	}
+	events, err := r.store.ListIssueRuntimeEvents(issue.ID, 50)
+	if err != nil {
+		return "", err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Kind {
+		case "workspace_bootstrap_recovery":
+			return workspaceRecoveryNoteText(), nil
+		case "workspace_bootstrap_created", "workspace_bootstrap_reused", "workspace_bootstrap_preserved", "workspace_bootstrap_failed":
+			return "", nil
+		}
+	}
+	return "", nil
+}
+
 func appendWorkspaceRecoveryNote(prompt, recoveryNote string) string {
 	prompt = strings.TrimSpace(prompt)
 	recoveryNote = strings.TrimSpace(recoveryNote)
@@ -1319,6 +1392,18 @@ func appendWorkspaceRecoveryNote(prompt, recoveryNote string) string {
 		return recoveryNote
 	}
 	return prompt + "\n\n" + recoveryNote
+}
+
+func prependWorkspaceRecoveryNote(prompt, recoveryNote string) string {
+	prompt = strings.TrimSpace(prompt)
+	recoveryNote = strings.TrimSpace(recoveryNote)
+	if recoveryNote == "" {
+		return prompt
+	}
+	if prompt == "" {
+		return recoveryNote
+	}
+	return recoveryNote + "\n\n" + prompt
 }
 
 func (r *Runner) projectPromptContext(projectID string) (map[string]interface{}, error) {

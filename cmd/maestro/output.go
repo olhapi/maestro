@@ -23,6 +23,58 @@ func writeJSON(out io.Writer, value interface{}) error {
 	return enc.Encode(value)
 }
 
+func formatIssueExecution(payload map[string]interface{}) string {
+	var out strings.Builder
+	writeLine := func(label string, value interface{}) {
+		fmt.Fprintf(&out, "%s:\t%v\n", label, value)
+	}
+
+	writeLine("Identifier", payload["identifier"])
+	writeLine("Active", payload["active"])
+	writeLine("Phase", payload["phase"])
+	writeLine("Attempt", payload["attempt_number"])
+	writeLine("Retry State", payload["retry_state"])
+	writeLine("Failure Class", payload["failure_class"])
+	writeLine("Current Error", payload["current_error"])
+
+	if recovery, ok := payload["workspace_recovery"].(map[string]interface{}); ok && len(recovery) > 0 {
+		if status := workspaceRecoveryStatusLabel(issueExecutionString(recovery["status"])); status != "" {
+			writeLine("Workspace Recovery", status)
+		}
+		if message := issueExecutionString(recovery["message"]); message != "" {
+			writeLine("Recovery Message", message)
+		}
+	}
+
+	return out.String()
+}
+
+func issueExecutionString(value interface{}) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func workspaceRecoveryStatusLabel(value string) string {
+	clean := strings.TrimSpace(value)
+	switch strings.ToLower(clean) {
+	case "":
+		return ""
+	case "recovering":
+		return "Recovering"
+	case "required":
+		return "Required"
+	default:
+		return strings.ToUpper(clean[:1]) + clean[1:]
+	}
+}
+
 func printIssueTable(out io.Writer, issues []kanban.IssueSummary, mode outputMode) {
 	if mode.quiet {
 		for _, issue := range issues {

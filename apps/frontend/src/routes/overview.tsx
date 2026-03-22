@@ -221,7 +221,7 @@ function OverviewTrendCard({
   children: ReactNode
 }) {
   return (
-    <Card className="overflow-hidden">
+    <Card className="h-full overflow-hidden">
       <CardHeader className="flex-col items-start gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <Badge>{badge}</Badge>
@@ -265,7 +265,7 @@ export function OverviewPage() {
         />
       </section>
 
-      <section className="grid gap-[var(--section-gap)] lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
+      <section className="grid gap-[var(--section-gap)] lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-stretch">
         <OverviewTrendCard
           badge="24h execution"
           title="Execution health"

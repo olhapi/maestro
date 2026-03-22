@@ -108,4 +108,25 @@ describe('SessionExecutionCard', () => {
 
     expect(onApprovePlan).toHaveBeenCalledTimes(1)
   })
+
+  it('renders a workspace recovery banner for bootstrap blockers', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          failure_class: 'workspace_bootstrap',
+          current_error: 'workspace recovery required: Git blocked the branch switch while rebasing',
+          workspace_recovery: {
+            status: 'recovering',
+            message: 'Workspace recovery note:\n\n- Maestro found an active Git rebase in this workspace.',
+          },
+        })}
+        issueTotalTokens={120}
+      />,
+    )
+
+    expect(screen.getByText('Bootstrap blocked')).toBeInTheDocument()
+    expect(screen.getByText('Workspace recovery in progress')).toBeInTheDocument()
+    expect(screen.getByText(/Workspace recovery note:/)).toBeInTheDocument()
+    expect(screen.getByText(/Retry once the workspace is clean/i)).toBeInTheDocument()
+  })
 })

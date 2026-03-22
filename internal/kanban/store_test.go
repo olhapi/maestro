@@ -3454,7 +3454,7 @@ func TestListIssueRuntimeEventsFiltersAndOrdersExecutionEvents(t *testing.T) {
 		t.Fatalf("CreateIssue failed: %v", err)
 	}
 
-	for _, kind := range []string{"run_started", "tick", "run_failed", "retry_scheduled", "manual_retry_requested"} {
+	for _, kind := range []string{"run_started", "tick", "workspace_bootstrap_created", "workspace_bootstrap_recovery", "workspace_bootstrap_failed", "run_failed", "retry_scheduled", "manual_retry_requested"} {
 		if err := store.AppendRuntimeEvent(kind, map[string]interface{}{
 			"issue_id":   issue.ID,
 			"identifier": issue.Identifier,
@@ -3468,11 +3468,23 @@ func TestListIssueRuntimeEventsFiltersAndOrdersExecutionEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIssueRuntimeEvents failed: %v", err)
 	}
-	if len(events) != 4 {
-		t.Fatalf("expected 4 execution events, got %d", len(events))
+	if len(events) != 7 {
+		t.Fatalf("expected 7 execution events, got %d", len(events))
 	}
 	if events[0].Kind != "run_started" || events[len(events)-1].Kind != "manual_retry_requested" {
 		t.Fatalf("expected oldest-to-newest execution events, got %#v", events)
+	}
+	for _, kind := range []string{"workspace_bootstrap_created", "workspace_bootstrap_recovery", "workspace_bootstrap_failed"} {
+		found := false
+		for _, event := range events {
+			if event.Kind == kind {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %s event in filtered runtime events, got %#v", kind, events)
+		}
 	}
 	for _, event := range events {
 		if event.Kind == "tick" {

@@ -4065,7 +4065,7 @@ func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEven
 		SELECT seq, kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json
 		FROM runtime_events
 		WHERE issue_id = ?
-			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed', 'workspace_bootstrap_recovery')
+			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed', 'workspace_bootstrap_created', 'workspace_bootstrap_reused', 'workspace_bootstrap_preserved', 'workspace_bootstrap_recovery', 'workspace_bootstrap_failed')
 		ORDER BY seq DESC`
 	var (
 		rows *sql.Rows

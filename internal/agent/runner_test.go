@@ -1406,12 +1406,88 @@ func TestPrepareTurnPromptWithWorkspaceAddsRecoveryNoteOnlyWhileRebaseActive(t *
 		t.Fatalf("RemoveAll rebase state: %v", err)
 	}
 
-	clearedPrompt, err := runner.prepareTurnPromptWithWorkspace(workflow, issue, 0, 1, workspace.Path)
-	if err != nil {
-		t.Fatalf("prepareTurnPromptWithWorkspace cleared prompt: %v", err)
+	if err := store.AppendRuntimeEvent("workspace_bootstrap_recovery", map[string]interface{}{
+		"issue_id":        issue.ID,
+		"identifier":      issue.Identifier,
+		"phase":           string(issue.WorkflowPhase),
+		"attempt":         0,
+		"status":          "recovering",
+		"message":         workspaceRecoveryNoteText(),
+		"recovery_reason": "active_rebase",
+		"error":           "workspace recovery required: active Git rebase detected",
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent recovery: %v", err)
 	}
-	if strings.Contains(clearedPrompt.Prompt, "Workspace recovery note:") {
-		t.Fatalf("expected recovery note to disappear after clearing rebase state, got %q", clearedPrompt.Prompt)
+
+	firstPromptAfterEvent, err := runner.prepareTurnPromptWithWorkspace(workflow, issue, 0, 1, workspace.Path)
+	if err != nil {
+		t.Fatalf("prepareTurnPromptWithWorkspace recovered first prompt: %v", err)
+	}
+	if !strings.Contains(firstPromptAfterEvent.Prompt, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note fallback in first prompt, got %q", firstPromptAfterEvent.Prompt)
+	}
+
+	continuationAfterEvent, err := runner.prepareTurnPromptWithWorkspace(workflow, issue, 0, 2, workspace.Path)
+	if err != nil {
+		t.Fatalf("prepareTurnPromptWithWorkspace recovered continuation: %v", err)
+	}
+	if strings.Contains(continuationAfterEvent.Prompt, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note to stay off continuation prompt after recovery event, got %q", continuationAfterEvent.Prompt)
+	}
+	if !strings.Contains(continuationAfterEvent.Prompt, "Continuation guidance") {
+		t.Fatalf("expected continuation guidance, got %q", continuationAfterEvent.Prompt)
+	}
+}
+
+func TestGetOrCreateWorkspaceTreatsRepoLevelRebaseAsRecoverable(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, err := store.CreateIssue("", "", "Repo rebase recovery", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace initial: %v", err)
+	}
+	runGitForTest(t, workspace.Path, "switch", "-c", "feature/recovery-detour")
+
+	repoGitDir := runGitForTest(t, repoPath, "rev-parse", "--git-dir")
+	if !filepath.IsAbs(repoGitDir) {
+		repoGitDir = filepath.Join(repoPath, repoGitDir)
+	}
+	if err := os.MkdirAll(filepath.Join(repoGitDir, "rebase-merge"), 0o755); err != nil {
+		t.Fatalf("MkdirAll repo rebase state: %v", err)
+	}
+
+	recoveredWorkspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace recovery: %v", err)
+	}
+	if recoveredWorkspace.Path != workspace.Path {
+		t.Fatalf("expected recovered workspace path %s, got %s", workspace.Path, recoveredWorkspace.Path)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "workspace_bootstrap_recovery" {
+			found = true
+			if event.Payload["status"] != "recovering" {
+				t.Fatalf("expected recovering payload, got %#v", event.Payload)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected workspace_bootstrap_recovery event, got %+v", events)
 	}
 }
 

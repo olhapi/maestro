@@ -398,6 +398,50 @@ func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *te
 	}
 }
 
+func TestIssueExecutionPayloadReturnsWorkspaceRecoveryMetadata(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Recovery issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("workspace_bootstrap_recovery", map[string]interface{}{
+		"issue_id":        issue.ID,
+		"identifier":      issue.Identifier,
+		"phase":           "implementation",
+		"attempt":         1,
+		"status":          "recovering",
+		"message":         "Workspace recovery note:\n\n- Maestro found an active Git rebase in this workspace.",
+		"recovery_reason": "branch_switch_blocked",
+		"error":           "workspace recovery required: Git blocked the branch switch while rebasing",
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	recovery, ok := payload["workspace_recovery"].(*kanban.WorkspaceRecovery)
+	if !ok {
+		t.Fatalf("expected workspace_recovery payload, got %#v", payload["workspace_recovery"])
+	}
+	if recovery.Status != "recovering" {
+		t.Fatalf("unexpected workspace recovery status: %+v", recovery)
+	}
+	if !strings.Contains(recovery.Message, "Workspace recovery note:") {
+		t.Fatalf("unexpected workspace recovery message: %+v", recovery)
+	}
+	if payload["failure_class"] != "workspace_bootstrap" {
+		t.Fatalf("expected workspace bootstrap failure class, got %#v", payload["failure_class"])
+	}
+}
+
 func TestIssueExecutionPayloadIncludesAgentCommands(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

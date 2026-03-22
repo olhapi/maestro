@@ -30,6 +30,7 @@ export function SessionExecutionCard({
   const debugEntries = debugActivityGroups.flatMap((group) => group.entries)
   const runtimeEvents = execution.runtime_events
   const failureLabel = failureStatusLabel(execution.failure_class)
+  const workspaceRecovery = execution.workspace_recovery
   const failureSummaryReason =
     execution.pause_reason || execution.failure_class || execution.current_error
   const pendingInterrupt = execution.pending_interrupt
@@ -42,12 +43,25 @@ export function SessionExecutionCard({
     ? 'Waiting for input'
     : execution.retry_state === 'paused'
       ? 'Paused'
-      : failureLabel
+    : failureLabel
         ? failureLabel
         : execution.active
           ? 'Active session'
           : 'Idle'
   const debugSignalCount = debugEntries.length + execution.runtime_events.length
+  const workspaceRecoveryTitle = workspaceRecovery
+    ? workspaceRecovery.status === 'required'
+      ? 'Workspace recovery required'
+      : 'Workspace recovery in progress'
+    : null
+  const workspaceRecoveryTone =
+    workspaceRecovery?.status === 'required'
+      ? 'border-amber-400/25 bg-amber-400/10 text-amber-50'
+      : 'border-sky-400/25 bg-sky-400/10 text-sky-50'
+  const workspaceRecoveryAccent =
+    workspaceRecovery?.status === 'required' ? 'text-amber-100' : 'text-sky-100'
+  const workspaceRecoveryBody =
+    workspaceRecovery?.status === 'required' ? 'text-amber-50/90' : 'text-sky-50/90'
 
   return (
     <Card>
@@ -133,6 +147,21 @@ export function SessionExecutionCard({
                     Approve plan and continue
                   </Button>
                 ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {workspaceRecovery ? (
+          <div className={`rounded-[calc(var(--panel-radius)-0.125rem)] border p-3.5 text-sm ${workspaceRecoveryTone}`}>
+            <div className="flex items-start gap-3">
+              <AlertTriangle className={`mt-0.5 size-4 ${workspaceRecoveryAccent}`} />
+              <div className="min-w-0 flex-1">
+                <p className={`font-medium ${workspaceRecoveryAccent}`}>{workspaceRecoveryTitle}</p>
+                <p className={`mt-2 ${workspaceRecoveryBody}`}>{workspaceRecovery.message}</p>
+                <p className={`mt-2 ${workspaceRecovery.status === 'required' ? 'text-amber-100/80' : 'text-sky-100/80'}`}>
+                  Retry once the workspace is clean. Maestro will continue through the recovery flow automatically.
+                </p>
               </div>
             </div>
           </div>
