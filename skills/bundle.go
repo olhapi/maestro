@@ -86,13 +86,16 @@ func copyFS(dst string, source fs.FS) error {
 		}
 
 		mode := os.FileMode(0o644)
-		if info, err := d.Info(); err == nil {
-			mode = info.Mode().Perm()
+		if info, err := d.Info(); err == nil && info.Mode()&0o111 != 0 {
+			mode = 0o755
 		}
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 			return err
 		}
 		if err := os.WriteFile(dstPath, data, mode); err != nil {
+			return err
+		}
+		if err := os.Chmod(dstPath, mode); err != nil {
 			return err
 		}
 		return nil

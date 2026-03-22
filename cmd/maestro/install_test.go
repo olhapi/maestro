@@ -46,12 +46,20 @@ func TestInstallSkillsWritesAndReplacesBundle(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read bundled file %q: %v", rel, err)
 			}
-			got, err := os.ReadFile(filepath.Join(target, filepath.FromSlash(rel)))
+			installedPath := filepath.Join(target, filepath.FromSlash(rel))
+			got, err := os.ReadFile(installedPath)
 			if err != nil {
 				t.Fatalf("read installed file %q: %v", rel, err)
 			}
 			if string(got) != string(want) {
 				t.Fatalf("installed file %q mismatch for %s", rel, target)
+			}
+			info, err := os.Stat(installedPath)
+			if err != nil {
+				t.Fatalf("stat installed file %q: %v", rel, err)
+			}
+			if info.Mode().Perm()&0o200 == 0 {
+				t.Fatalf("expected installed file %q to be user-writable, mode=%v", rel, info.Mode().Perm())
 			}
 		}
 	}
