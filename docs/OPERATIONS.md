@@ -148,6 +148,8 @@ If you are importing another tracker, create local Maestro projects and issues f
 
 `verify` and `doctor` are readiness checks. `spec-check` is the lightweight conformance check.
 
+When Maestro creates a brand-new issue workspace, it refreshes the repository's `origin` refs first if that remote exists, then bases the new worktree on the refreshed remote-tracking default branch when it can and falls back to the resolved local branch when it cannot. Local-only repos keep the local-ref fallback, and existing active workspaces are reused without refreshing or recreating them.
+
 ## Extensions file
 
 Only `maestro run` loads extension tools via `--extensions`.

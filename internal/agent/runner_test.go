@@ -57,6 +57,56 @@ func initGitRepoForTest(t *testing.T, repoPath string) {
 	runGitForTest(t, repoPath, "branch", "-M", "main")
 }
 
+func initBareGitRepoForTest(t *testing.T, repoPath string) {
+	t.Helper()
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll bare repo: %v", err)
+	}
+	runGitForTest(t, repoPath, "init", "--bare")
+}
+
+func cloneGitRepoForTest(t *testing.T, source, target string) {
+	t.Helper()
+	cmd := exec.Command("git", "clone", "--branch", "main", "--single-branch", source, target)
+	cmd.Env = gitTestEnv()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git clone %s %s failed: %v\n%s", source, target, err, strings.TrimSpace(string(output)))
+	}
+}
+
+func advanceRemoteMainForTest(t *testing.T, remotePath string) string {
+	t.Helper()
+	advancePath := filepath.Join(t.TempDir(), "advance")
+	cloneGitRepoForTest(t, remotePath, advancePath)
+	runGitForTest(t, advancePath, "config", "user.email", "maestro-tests@example.com")
+	runGitForTest(t, advancePath, "config", "user.name", "Maestro Tests")
+	if err := os.WriteFile(filepath.Join(advancePath, "README.md"), []byte("repo\nremote\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile remote README: %v", err)
+	}
+	runGitForTest(t, advancePath, "add", "README.md")
+	runGitForTest(t, advancePath, "commit", "-m", "advance remote main")
+	runGitForTest(t, advancePath, "push", "origin", "main")
+	return runGitForTest(t, advancePath, "rev-parse", "HEAD")
+}
+
+func advanceRemoteDevelopForTest(t *testing.T, remotePath string) string {
+	t.Helper()
+	advancePath := filepath.Join(t.TempDir(), "advance")
+	cloneGitRepoForTest(t, remotePath, advancePath)
+	runGitForTest(t, advancePath, "config", "user.email", "maestro-tests@example.com")
+	runGitForTest(t, advancePath, "config", "user.name", "Maestro Tests")
+	runGitForTest(t, advancePath, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(advancePath, "README.md"), []byte("repo\nremote\ndevelop\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile remote README: %v", err)
+	}
+	runGitForTest(t, advancePath, "add", "README.md")
+	runGitForTest(t, advancePath, "commit", "-m", "switch remote default")
+	runGitForTest(t, advancePath, "push", "origin", "develop")
+	runGitForTest(t, remotePath, "symbolic-ref", "HEAD", "refs/heads/develop")
+	return runGitForTest(t, advancePath, "rev-parse", "HEAD")
+}
+
 func setupTestRunner(t *testing.T, command string, mode string) (*Runner, *kanban.Store, *config.Manager, string, string) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -1137,6 +1187,184 @@ func TestWorkspaceDeterministic(t *testing.T) {
 	expected := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
 	if ws1.Path != expected {
 		t.Errorf("Expected path %s, got %s", expected, ws1.Path)
+	}
+}
+
+func TestWorkspaceBootstrapUsesFreshRemoteDefaultBranch(t *testing.T) {
+	runner, store, _, workspaceRoot, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	remotePath := filepath.Join(t.TempDir(), "origin.git")
+	initBareGitRepoForTest(t, remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "-u", "origin", "main")
+
+	localMainHead := runGitForTest(t, repoPath, "rev-parse", "main")
+	remoteHead := advanceRemoteDevelopForTest(t, remotePath)
+
+	issue, err := store.CreateIssue("", "", "Fresh remote workspace", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace root: %v", err)
+	}
+
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	if got := runGitForTest(t, repoPath, "rev-parse", "main"); got != localMainHead {
+		t.Fatalf("expected local main to remain at %s, got %s", localMainHead, got)
+	}
+	if got := runGitForTest(t, repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); got != "origin/develop" {
+		t.Fatalf("expected origin/HEAD to refresh to origin/develop, got %q", got)
+	}
+	if got := runGitForTest(t, repoPath, "rev-parse", "refs/remotes/origin/develop"); got != remoteHead {
+		t.Fatalf("expected origin/develop to refresh to %s, got %s", remoteHead, got)
+	}
+	if got := runGitForTest(t, workspace.Path, "rev-parse", "HEAD"); got != remoteHead {
+		t.Fatalf("expected workspace HEAD to start from %s, got %s", remoteHead, got)
+	}
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
+		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	}
+}
+
+func TestWorkspaceBootstrapFallsBackWhenRemoteTrackingBranchIsUnavailable(t *testing.T) {
+	runner, store, _, workspaceRoot, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	remotePath := filepath.Join(t.TempDir(), "origin.git")
+	initBareGitRepoForTest(t, remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "-u", "origin", "main")
+	runGitForTest(t, repoPath, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+
+	localMainHead := runGitForTest(t, repoPath, "rev-parse", "main")
+	advanceRemoteDevelopForTest(t, remotePath)
+
+	issue, err := store.CreateIssue("", "", "Fallback remote workspace", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace root: %v", err)
+	}
+
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	if got := runGitForTest(t, workspace.Path, "rev-parse", "HEAD"); got != localMainHead {
+		t.Fatalf("expected workspace HEAD to fall back to %s, got %s", localMainHead, got)
+	}
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
+		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	}
+}
+
+func TestWorkspaceRecreatesMissingStoredDirectoryFromLocalBranchWithoutRemoteRefresh(t *testing.T) {
+	runner, store, _, workspaceRoot, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	remotePath := filepath.Join(t.TempDir(), "origin.git")
+	initBareGitRepoForTest(t, remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "-u", "origin", "main")
+
+	issue, err := store.CreateIssue("", "", "Missing local branch", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	branchName := deterministicIssueBranch(issue)
+	runGitForTest(t, repoPath, "branch", branchName, "main")
+
+	path := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace path: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, path); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("RemoveAll workspace path: %v", err)
+	}
+
+	badRemotePath := filepath.Join(t.TempDir(), "missing.git")
+	runGitForTest(t, repoPath, "remote", "set-url", "origin", badRemotePath)
+
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+	if workspace.Path != path {
+		t.Fatalf("expected recreated workspace path %s, got %s", path, workspace.Path)
+	}
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != branchName {
+		t.Fatalf("expected workspace branch %s, got %q", branchName, got)
+	}
+}
+
+func TestWorkspaceBootstrapLeavesStalePathUntouchedWhenRefreshFails(t *testing.T) {
+	runner, store, _, workspaceRoot, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	remotePath := filepath.Join(t.TempDir(), "origin.git")
+	initBareGitRepoForTest(t, remotePath)
+	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
+	runGitForTest(t, repoPath, "push", "-u", "origin", "main")
+
+	issue, err := store.CreateIssue("", "", "Refresh failure", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	stalePath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace root: %v", err)
+	}
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("WriteFile stale workspace: %v", err)
+	}
+
+	badRemotePath := filepath.Join(t.TempDir(), "missing.git")
+	runGitForTest(t, repoPath, "remote", "set-url", "origin", badRemotePath)
+
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	_, err = runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err == nil {
+		t.Fatal("expected workspace bootstrap to fail")
+	}
+	if !strings.Contains(err.Error(), "workspace_bootstrap") {
+		t.Fatalf("expected workspace bootstrap error, got %v", err)
+	}
+
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatalf("ReadFile stale workspace: %v", err)
+	}
+	if string(data) != "stale" {
+		t.Fatalf("expected stale workspace content to remain, got %q", string(data))
+	}
+	if info, err := os.Lstat(stalePath); err != nil {
+		t.Fatalf("Lstat stale workspace: %v", err)
+	} else if info.IsDir() {
+		t.Fatal("expected stale workspace to remain as the original file")
+	}
+	if _, err := store.GetWorkspace(issue.ID); err == nil {
+		t.Fatal("expected no workspace record to be created on refresh failure")
 	}
 }
 
