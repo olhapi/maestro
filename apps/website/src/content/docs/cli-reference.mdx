@@ -87,6 +87,17 @@ maestro --log-level <debug|info|warn|error> workflow init [repo_path]`}
 
 Live runtime helpers require `--api-url` because they talk to a running daemon over HTTP.
 
+## Skills
+
+<DocsCommandField
+  command={`maestro install --skills`}
+/>
+
+Use this command to install the bundled Maestro skill into the current user's personal Codex and Claude Code skill directories:
+
+- `~/.agents/skills/maestro`
+- `~/.claude/skills/maestro`
+
 ## Issue states
 
 | State | Meaning |

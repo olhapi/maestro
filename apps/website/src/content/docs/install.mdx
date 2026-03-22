@@ -19,6 +19,14 @@ If you are on a supported platform, the published npm package is the fastest pat
 
 The installed command name is still `maestro`.
 
+## Install the Maestro skill bundle
+
+If you want Codex and Claude Code to pick up Maestro-specific guidance automatically, install the bundled skill once:
+
+<DocsCommandField command={`maestro install --skills`} />
+
+That copies the skill into `~/.agents/skills/maestro` for Codex and `~/.claude/skills/maestro` for Claude Code.
+
 ## Add the MCP server to your coding agent
 
 Once `maestro` is on your `PATH`, pick the setup path that matches your coding agent. Codex and Claude Code have direct `mcp add` commands, and the fallback section covers agents that want a manual MCP server entry.

@@ -197,6 +197,7 @@ func TestScopedHelpCommands(t *testing.T) {
 		{args: []string{"issue", "--help"}, want: "Manage issues"},
 		{args: []string{"project", "--help"}, want: "Manage projects"},
 		{args: []string{"workflow", "--help"}, want: "Manage WORKFLOW.md files"},
+		{args: []string{"install", "--help"}, want: "Install the bundled Maestro skill"},
 	}
 	for _, tc := range tests {
 		code, stdout, stderr := runCLI(t, tc.args...)
