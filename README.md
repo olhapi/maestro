@@ -6,6 +6,8 @@ Website: [maestro.olhapi.com](https://maestro.olhapi.com/)
 Repository: [github.com/olhapi/maestro](https://github.com/olhapi/maestro)
 Docs: [maestro.olhapi.com/docs](https://maestro.olhapi.com/docs)
 
+This project is inspired by [openai/symphony](https://github.com/openai/symphony).
+
 It combines a SQLite-backed tracker, an orchestrator that reads `WORKFLOW.md`, a private MCP daemon bridged by `maestro mcp`, and an HTTP server that serves the embedded dashboard plus JSON/WebSocket APIs.
 
 Maestro stays local-first. External work is translated into Maestro projects and issues through the CLI, the embedded dashboard, or MCP prompts, then supervised through the same local queue, runtime state, MCP tools, and dashboard surfaces.
