@@ -101,6 +101,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 
 	currentError := deriveCurrentError(running != nil, retry, paused, persistedSession, events)
 	failureClass := deriveFailureClass(running != nil, retry, paused, persistedSession, events)
+	workspaceRecovery := deriveWorkspaceRecovery(events)
 	retryState := "none"
 	if running != nil {
 		retryState = "active"
@@ -127,6 +128,9 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		"debug_activity_groups": debugActivityGroups,
 		"runtime_available":     runtimeAvailable,
 		"agent_commands":        commands,
+	}
+	if workspaceRecovery != nil {
+		payload["workspace_recovery"] = workspaceRecovery
 	}
 	if retry != nil {
 		payload["next_retry_at"] = retry.DueAt.UTC().Format(time.RFC3339)
@@ -248,6 +252,9 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *ob
 		}
 	}
 	for i := len(events) - 1; i >= 0; i-- {
+		if class := normalizeFailureClass(events[i].Kind); class == "workspace_bootstrap" {
+			return class
+		}
 		if class := normalizeFailureClass(events[i].Error); class != "" {
 			return class
 		}
@@ -277,6 +284,58 @@ func deriveCurrentError(active bool, retry *observability.RetryEntry, paused *ob
 		}
 	}
 	return ""
+}
+
+func deriveWorkspaceRecovery(events []kanban.RuntimeEvent) *kanban.WorkspaceRecovery {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Kind {
+		case "workspace_bootstrap_recovery":
+			return workspaceRecoveryFromEvent(events[i], "recovering")
+		case "workspace_bootstrap_failed":
+			return workspaceRecoveryFromEvent(events[i], "required")
+		case "workspace_bootstrap_created", "workspace_bootstrap_reused", "workspace_bootstrap_preserved":
+			return nil
+		}
+	}
+	return nil
+}
+
+func workspaceRecoveryFromEvent(event kanban.RuntimeEvent, defaultStatus string) *kanban.WorkspaceRecovery {
+	status := strings.TrimSpace(eventPayloadString(event.Payload, "status"))
+	if status == "" {
+		status = defaultStatus
+	}
+	message := strings.TrimSpace(eventPayloadString(event.Payload, "message"))
+	if message == "" {
+		message = strings.TrimSpace(event.Error)
+	}
+	if message == "" {
+		if status == "recovering" {
+			message = "Workspace recovery is in progress."
+		} else {
+			message = "Workspace bootstrap failed. Review the blocker and retry once it is resolved."
+		}
+	}
+	return &kanban.WorkspaceRecovery{
+		Status:  status,
+		Message: message,
+	}
+}
+
+func eventPayloadString(payload map[string]interface{}, key string) string {
+	if payload == nil {
+		return ""
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return ""
+	}
 }
 
 func asPayloadInt(value interface{}) int {

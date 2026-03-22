@@ -2092,6 +2092,8 @@ func interruptedFailureStreak(events []kanban.RuntimeEvent) int {
 		switch event.Kind {
 		case "retry_scheduled", "run_started", "claim_released":
 			continue
+		case "workspace_bootstrap_created", "workspace_bootstrap_reused", "workspace_bootstrap_preserved", "workspace_bootstrap_recovery", "workspace_bootstrap_failed":
+			continue
 		case "retry_paused":
 			if streak == 0 {
 				if recovered := payloadInt(event.Payload, "consecutive_failures"); recovered > 0 {

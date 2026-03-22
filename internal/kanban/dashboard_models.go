@@ -183,6 +183,11 @@ type IssuePlanApproval struct {
 	Attempt     int       `json:"attempt"`
 }
 
+type WorkspaceRecovery struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 type ExecutionSessionSnapshot struct {
 	IssueID        string            `json:"issue_id"`
 	Identifier     string            `json:"identifier"`

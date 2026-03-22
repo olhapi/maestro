@@ -10,6 +10,8 @@ function failureRunAdjective(value?: string | null): string {
       return "timed out"
     case "read_timeout":
       return "read-timed-out"
+    case "workspace_bootstrap":
+      return "bootstrap-blocked"
     default:
       return "interrupted"
   }
@@ -28,6 +30,8 @@ export function failureStatusLabel(value?: string | null): string | null {
       return "Timed out"
     case "read_timeout":
       return "Read timed out"
+    case "workspace_bootstrap":
+      return "Bootstrap blocked"
     case "run_interrupted":
       return "Interrupted"
     default:
@@ -43,6 +47,8 @@ export function failureHeadline(value?: string | null): string | null {
       return "Last run timed out"
     case "read_timeout":
       return "Last run hit a read timeout"
+    case "workspace_bootstrap":
+      return "Workspace bootstrap blocked"
     case "run_interrupted":
       return "Last run interrupted"
     default:
@@ -58,6 +64,8 @@ export function failureMessage(value?: string | null): string | null {
       return "The last known execution exceeded the turn time budget before completion."
     case "read_timeout":
       return "The last known execution stopped returning readable output before completion."
+    case "workspace_bootstrap":
+      return "Maestro could not prepare a clean workspace before the last run. Check the workspace recovery banner for the next step."
     case "run_interrupted":
       return "The last known execution ended without a live completion signal."
     default:

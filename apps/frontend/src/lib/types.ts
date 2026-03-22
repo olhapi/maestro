@@ -366,6 +366,11 @@ export interface PlanApproval {
   attempt: number;
 }
 
+export interface WorkspaceRecovery {
+  status: "recovering" | "required" | string;
+  message: string;
+}
+
 export interface SessionFeedEntry {
   issue_id: string;
   issue_identifier: string;
@@ -475,6 +480,7 @@ export interface IssueExecutionDetail {
   agent_commands: AgentCommand[];
   pending_interrupt?: PendingInterrupt;
   plan_approval?: PlanApproval;
+  workspace_recovery?: WorkspaceRecovery;
 }
 
 export interface BootstrapResponse {

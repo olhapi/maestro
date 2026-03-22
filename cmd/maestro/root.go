@@ -786,13 +786,7 @@ func (a *cliApp) newIssueExecutionCmd() *cobra.Command {
 			if a.opts.mode.json {
 				return writeJSON(a.stdout, payload)
 			}
-			_, _ = fmt.Fprintf(a.stdout, "Identifier:\t%v\n", payload["identifier"])
-			_, _ = fmt.Fprintf(a.stdout, "Active:\t%v\n", payload["active"])
-			_, _ = fmt.Fprintf(a.stdout, "Phase:\t%v\n", payload["phase"])
-			_, _ = fmt.Fprintf(a.stdout, "Attempt:\t%v\n", payload["attempt_number"])
-			_, _ = fmt.Fprintf(a.stdout, "Retry State:\t%v\n", payload["retry_state"])
-			_, _ = fmt.Fprintf(a.stdout, "Failure Class:\t%v\n", payload["failure_class"])
-			_, _ = fmt.Fprintf(a.stdout, "Current Error:\t%v\n", payload["current_error"])
+			_, _ = fmt.Fprint(a.stdout, formatIssueExecution(payload))
 			return nil
 		},
 	}

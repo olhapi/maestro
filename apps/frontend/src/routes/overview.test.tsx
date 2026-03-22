@@ -61,6 +61,7 @@ describe('OverviewPage', () => {
     expect(screen.getByText('Runs completed')).toBeInTheDocument()
     expect(screen.getByText('Runs failed')).toBeInTheDocument()
     expect(screen.getByText('Retries')).toBeInTheDocument()
+    expect(screen.getByText('Execution health').closest('section') as HTMLElement).toHaveClass('lg:items-stretch')
     expect(screen.getAllByRole('link', { name: /ISS-1/i })).toHaveLength(2)
     expect(screen.getAllByTestId('overview-chart')).toHaveLength(2)
   })
