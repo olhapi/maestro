@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronUp, Copy } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { MarkdownText } from '@/components/ui/markdown'
-import type { ActivityGroup, ActivityEntry } from '@/lib/types'
+import type { ActivityEntry, ActivityGroup } from '@/lib/types'
 import { toTitleCase } from '@/lib/utils'
 
 function rowMarkerClass(entry: ActivityEntry) {
@@ -46,6 +46,46 @@ function groupLabel(group: ActivityGroup) {
   return labels.join(' · ')
 }
 
+async function copyText(value: string) {
+  if (typeof navigator !== 'undefined' && typeof navigator.clipboard?.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {
+      // Fall through to the legacy copy path below.
+    }
+  }
+
+  if (typeof document === 'undefined' || !document.body || typeof document.execCommand !== 'function') {
+    return false
+  }
+
+  const textarea = document.createElement('textarea')
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+  textarea.value = value
+  textarea.readOnly = true
+  textarea.setAttribute('aria-hidden', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  textarea.setSelectionRange(0, textarea.value.length)
+
+  try {
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    textarea.remove()
+    activeElement?.focus()
+  }
+}
+
 export function SessionActivityTranscript({
   groups,
   emptyMessage = 'No visible activity captured for this issue yet.',
@@ -57,8 +97,6 @@ export function SessionActivityTranscript({
   const [copied, setCopied] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const totalEntries = groups.reduce((sum, group) => sum + group.entries.length, 0)
-  const canCopy =
-    typeof navigator !== 'undefined' && typeof navigator.clipboard?.writeText === 'function'
   // Track transcript growth without copying the full command output into a dependency key.
   const scrollVersion = groups
     .map((group) =>
@@ -89,15 +127,9 @@ export function SessionActivityTranscript({
   }
 
   const copyAll = async () => {
-    if (!canCopy) {
-      return
-    }
-
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(groups, null, 2))
+    const copiedText = await copyText(JSON.stringify(groups, null, 2))
+    if (copiedText) {
       setCopied(true)
-    } catch {
-      // Clipboard access is best-effort; leave the button ready to try again.
     }
   }
 
@@ -122,7 +154,6 @@ export function SessionActivityTranscript({
           </span>
           <Button
             className="h-8 rounded-full px-3 text-xs"
-            disabled={!canCopy}
             onClick={() => {
               void copyAll()
             }}
