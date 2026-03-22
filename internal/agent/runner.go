@@ -71,6 +71,40 @@ const workspaceBootstrapRefreshRetryDelay = 100 * time.Millisecond
 var proposedPlanBlockPattern = regexp.MustCompile(`(?s)<proposed_plan>\s*(.*?)\s*</proposed_plan>`)
 var repoBootstrapLocks sync.Map
 
+type repoBootstrapLockState struct {
+	token chan struct{}
+}
+
+func newRepoBootstrapLockState() *repoBootstrapLockState {
+	lock := &repoBootstrapLockState{token: make(chan struct{}, 1)}
+	lock.token <- struct{}{}
+	return lock
+}
+
+func (l *repoBootstrapLockState) acquire(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.token:
+	}
+	if err := ctx.Err(); err != nil {
+		l.release()
+		return nil, err
+	}
+	return l.release, nil
+}
+
+func (l *repoBootstrapLockState) release() {
+	select {
+	case l.token <- struct{}{}:
+	default:
+		panic("repo bootstrap lock released without acquisition")
+	}
+}
+
 func gitCommandEnv() []string {
 	env := os.Environ()
 	filtered := env[:0]
@@ -349,10 +383,8 @@ func repoBootstrapLock(ctx context.Context, repoPath string) (func(), error) {
 		return nil, err
 	}
 	key := canonicalPath(commonDir)
-	lock, _ := repoBootstrapLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := lock.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock, nil
+	lock, _ := repoBootstrapLocks.LoadOrStore(key, newRepoBootstrapLockState())
+	return lock.(*repoBootstrapLockState).acquire(ctx)
 }
 
 func refreshRepoForWorkspaceBootstrap(ctx context.Context, repoPath string) (bool, error) {

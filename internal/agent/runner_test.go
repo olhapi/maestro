@@ -1368,6 +1368,38 @@ func TestWorkspaceBootstrapLeavesStalePathUntouchedWhenRefreshFails(t *testing.T
 	}
 }
 
+func TestRepoBootstrapLockRespectsContextTimeout(t *testing.T) {
+	_, _, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+
+	unlock, err := repoBootstrapLock(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("repoBootstrapLock: %v", err)
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	result := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := repoBootstrapLock(ctx, repoPath)
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		if err != context.DeadlineExceeded {
+			t.Fatalf("expected deadline exceeded, got %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+			t.Fatalf("expected lock acquisition to stop promptly, took %s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected repo bootstrap lock acquisition to respect context timeout")
+	}
+}
+
 func TestSanitizeWorkspaceKey(t *testing.T) {
 	if got := sanitizeWorkspaceKey("MT/Det"); got != "MT_Det" {
 		t.Fatalf("expected MT_Det, got %s", got)
