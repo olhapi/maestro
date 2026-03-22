@@ -5,22 +5,22 @@ import (
 	"testing"
 )
 
-func TestPurpleSessionSourceUnmarshalJSON(t *testing.T) {
+func TestTentacledSessionSourceUnmarshalJSON(t *testing.T) {
 	t.Run("string enum", func(t *testing.T) {
-		var got PurpleSessionSource
+		var got TentacledSessionSource
 		if err := json.Unmarshal([]byte(`"appServer"`), &got); err != nil {
 			t.Fatalf("unmarshal string session source: %v", err)
 		}
 		if got.Enum == nil || *got.Enum != AppServer {
 			t.Fatalf("unexpected enum value: %+v", got.Enum)
 		}
-		if got.PurpleSubAgentSessionSource != nil {
-			t.Fatalf("expected object branch to be nil, got %+v", got.PurpleSubAgentSessionSource)
+		if got.PurpleSessionSource != nil {
+			t.Fatalf("expected object branch to be nil, got %+v", got.PurpleSessionSource)
 		}
 	})
 
 	t.Run("object sub-agent thread spawn", func(t *testing.T) {
-		var got PurpleSessionSource
+		var got TentacledSessionSource
 		payload := []byte(`{"subAgent":{"thread_spawn":{"depth":2,"parent_thread_id":"thread-parent","agent_nickname":"helper","agent_role":"reviewer"}}}`)
 		if err := json.Unmarshal(payload, &got); err != nil {
 			t.Fatalf("unmarshal object session source: %v", err)
@@ -28,17 +28,17 @@ func TestPurpleSessionSourceUnmarshalJSON(t *testing.T) {
 		if got.Enum != nil {
 			t.Fatalf("expected enum branch to be nil, got %+v", got.Enum)
 		}
-		if got.PurpleSubAgentSessionSource == nil || got.PurpleSubAgentSessionSource.SubAgent == nil || got.PurpleSubAgentSessionSource.SubAgent.PurpleSubAgentSource == nil || got.PurpleSubAgentSessionSource.SubAgent.PurpleSubAgentSource.ThreadSpawn == nil {
-			t.Fatalf("expected thread_spawn branch, got %+v", got.PurpleSubAgentSessionSource)
+		if got.PurpleSessionSource == nil || got.PurpleSessionSource.SubAgent == nil || got.PurpleSessionSource.SubAgent.PurpleSubAgentSource == nil || got.PurpleSessionSource.SubAgent.PurpleSubAgentSource.ThreadSpawn == nil {
+			t.Fatalf("expected thread_spawn branch, got %+v", got.PurpleSessionSource)
 		}
-		spawn := got.PurpleSubAgentSessionSource.SubAgent.PurpleSubAgentSource.ThreadSpawn
+		spawn := got.PurpleSessionSource.SubAgent.PurpleSubAgentSource.ThreadSpawn
 		if spawn.Depth != 2 || spawn.ParentThreadID != "thread-parent" {
 			t.Fatalf("unexpected thread spawn payload: %+v", spawn)
 		}
 	})
 
 	t.Run("invalid", func(t *testing.T) {
-		var got PurpleSessionSource
+		var got TentacledSessionSource
 		if err := json.Unmarshal([]byte(`123`), &got); err == nil {
 			t.Fatal("expected invalid payload to fail")
 		}
@@ -54,8 +54,8 @@ func TestApprovalPolicyUnmarshalJSON(t *testing.T) {
 		if got.Enum == nil || *got.Enum != Never {
 			t.Fatalf("unexpected enum value: %+v", got.Enum)
 		}
-		if got.PurpleRejectAskForApproval != nil {
-			t.Fatalf("expected reject branch to be nil, got %+v", got.PurpleRejectAskForApproval)
+		if got.PurpleGranularAskForApproval != nil {
+			t.Fatalf("expected reject branch to be nil, got %+v", got.PurpleGranularAskForApproval)
 		}
 	})
 
@@ -67,23 +67,23 @@ func TestApprovalPolicyUnmarshalJSON(t *testing.T) {
 		if got.Enum == nil || *got.Enum != OnRequest {
 			t.Fatalf("unexpected enum value: %+v", got.Enum)
 		}
-		if got.AskForApprovalRejectAskForApproval != nil {
-			t.Fatalf("expected reject branch to be nil, got %+v", got.AskForApprovalRejectAskForApproval)
+		if got.AskForApprovalGranularAskForApproval != nil {
+			t.Fatalf("expected reject branch to be nil, got %+v", got.AskForApprovalGranularAskForApproval)
 		}
 	})
 
-	t.Run("turn start params reject object", func(t *testing.T) {
+	t.Run("turn start params granular object", func(t *testing.T) {
 		var got TurnStartParamsApprovalPolicy
-		if err := json.Unmarshal([]byte(`{"reject":{"mcp_elicitations":true,"request_permissions":false,"rules":false,"sandbox_approval":true}}`), &got); err != nil {
-			t.Fatalf("unmarshal reject approval policy: %v", err)
+		if err := json.Unmarshal([]byte(`{"granular":{"mcp_elicitations":true,"request_permissions":false,"rules":false,"sandbox_approval":true}}`), &got); err != nil {
+			t.Fatalf("unmarshal granular approval policy: %v", err)
 		}
 		if got.Enum != nil {
 			t.Fatalf("expected enum branch to be nil, got %+v", got.Enum)
 		}
-		if got.FluffyRejectAskForApproval == nil {
-			t.Fatalf("expected reject branch, got %+v", got.FluffyRejectAskForApproval)
+		if got.FluffyGranularAskForApproval == nil {
+			t.Fatalf("expected reject branch, got %+v", got.FluffyGranularAskForApproval)
 		}
-		reject := got.FluffyRejectAskForApproval.Reject
+		reject := got.FluffyGranularAskForApproval.Granular
 		if !reject.MCPElicitations || reject.Rules || !reject.SandboxApproval {
 			t.Fatalf("unexpected reject payload: %+v", reject)
 		}
@@ -135,33 +135,33 @@ func TestNetworkAccessUnionUnmarshalJSON(t *testing.T) {
 	})
 }
 
-func TestFluffySessionSourceUnmarshalJSON(t *testing.T) {
+func TestStickySessionSourceUnmarshalJSON(t *testing.T) {
 	t.Run("string enum", func(t *testing.T) {
-		var got FluffySessionSource
+		var got StickySessionSource
 		if err := json.Unmarshal([]byte(`"cli"`), &got); err != nil {
 			t.Fatalf("unmarshal string session source: %v", err)
 		}
 		if got.Enum == nil || *got.Enum != CLI {
 			t.Fatalf("unexpected enum value: %+v", got.Enum)
 		}
-		if got.FluffySubAgentSessionSource != nil {
-			t.Fatalf("expected object branch to be nil, got %+v", got.FluffySubAgentSessionSource)
+		if got.FluffySessionSource != nil {
+			t.Fatalf("expected object branch to be nil, got %+v", got.FluffySessionSource)
 		}
 	})
 
 	t.Run("object sub-agent other", func(t *testing.T) {
-		var got FluffySessionSource
+		var got StickySessionSource
 		if err := json.Unmarshal([]byte(`{"subAgent":{"other":"custom"}}`), &got); err != nil {
 			t.Fatalf("unmarshal object session source: %v", err)
 		}
 		if got.Enum != nil {
 			t.Fatalf("expected enum branch to be nil, got %+v", got.Enum)
 		}
-		if got.FluffySubAgentSessionSource == nil || got.FluffySubAgentSessionSource.SubAgent == nil || got.FluffySubAgentSessionSource.SubAgent.FluffySubAgentSource == nil || got.FluffySubAgentSessionSource.SubAgent.FluffySubAgentSource.Other == nil {
-			t.Fatalf("expected other sub-agent branch, got %+v", got.FluffySubAgentSessionSource)
+		if got.FluffySessionSource == nil || got.FluffySessionSource.SubAgent == nil || got.FluffySessionSource.SubAgent.FluffySubAgentSource == nil || got.FluffySessionSource.SubAgent.FluffySubAgentSource.Other == nil {
+			t.Fatalf("expected other sub-agent branch, got %+v", got.FluffySessionSource)
 		}
-		if *got.FluffySubAgentSessionSource.SubAgent.FluffySubAgentSource.Other != "custom" {
-			t.Fatalf("unexpected other sub-agent value: %+v", got.FluffySubAgentSessionSource.SubAgent.FluffySubAgentSource.Other)
+		if *got.FluffySessionSource.SubAgent.FluffySubAgentSource.Other != "custom" {
+			t.Fatalf("unexpected other sub-agent value: %+v", got.FluffySessionSource.SubAgent.FluffySubAgentSource.Other)
 		}
 	})
 }

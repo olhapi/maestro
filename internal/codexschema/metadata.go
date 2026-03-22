@@ -3,7 +3,7 @@ package codexschema
 import "path/filepath"
 
 const (
-	SupportedVersion = "0.114.0"
+	SupportedVersion = "0.116.0"
 	QuicktypeVersion = "23.2.6"
 )
 

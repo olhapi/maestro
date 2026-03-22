@@ -159,7 +159,7 @@ func TestRejectApprovalPolicyPreservesRequestPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread approval policy: %v", err)
 	}
-	if threadApproval == nil || threadApproval.PurpleRejectAskForApproval == nil || threadApproval.PurpleRejectAskForApproval.Reject.RequestPermissions == nil || *threadApproval.PurpleRejectAskForApproval.Reject.RequestPermissions {
+	if threadApproval == nil || threadApproval.PurpleGranularAskForApproval == nil || threadApproval.PurpleGranularAskForApproval.Granular.RequestPermissions == nil || *threadApproval.PurpleGranularAskForApproval.Granular.RequestPermissions {
 		t.Fatalf("expected thread reject request_permissions=false, got %+v", threadApproval)
 	}
 
@@ -174,7 +174,7 @@ func TestRejectApprovalPolicyPreservesRequestPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("turn approval policy: %v", err)
 	}
-	if turnApproval == nil || turnApproval.FluffyRejectAskForApproval == nil || turnApproval.FluffyRejectAskForApproval.Reject.RequestPermissions == nil || !*turnApproval.FluffyRejectAskForApproval.Reject.RequestPermissions {
+	if turnApproval == nil || turnApproval.FluffyGranularAskForApproval == nil || turnApproval.FluffyGranularAskForApproval.Granular.RequestPermissions == nil || !*turnApproval.FluffyGranularAskForApproval.Granular.RequestPermissions {
 		t.Fatalf("expected turn reject request_permissions=true, got %+v", turnApproval)
 	}
 }
@@ -272,10 +272,10 @@ func TestThreadStartedNotificationDecodesNestedSubAgentSource(t *testing.T) {
 	if err := msg.UnmarshalParams(&params); err != nil {
 		t.Fatalf("unmarshal thread/started params: %v", err)
 	}
-	if params.Thread.Source == nil || params.Thread.Source.FluffySubAgentSessionSource == nil || params.Thread.Source.FluffySubAgentSessionSource.SubAgent == nil || params.Thread.Source.FluffySubAgentSessionSource.SubAgent.Enum == nil {
+	if params.Thread.Source == nil || params.Thread.Source.FluffySessionSource == nil || params.Thread.Source.FluffySessionSource.SubAgent == nil || params.Thread.Source.FluffySessionSource.SubAgent.Enum == nil {
 		t.Fatalf("expected nested sub-agent session source, got %+v", params.Thread.Source)
 	}
-	if *params.Thread.Source.FluffySubAgentSessionSource.SubAgent.Enum != gen.Review {
-		t.Fatalf("unexpected sub-agent source: %+v", *params.Thread.Source.FluffySubAgentSessionSource.SubAgent.Enum)
+	if *params.Thread.Source.FluffySessionSource.SubAgent.Enum != gen.Review {
+		t.Fatalf("unexpected sub-agent source: %+v", *params.Thread.Source.FluffySessionSource.SubAgent.Enum)
 	}
 }
