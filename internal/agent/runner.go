@@ -84,6 +84,16 @@ func gitCommandEnv() []string {
 	return filtered
 }
 
+func workspaceRecoveryNoteText() string {
+	return strings.TrimSpace(`
+Workspace recovery note:
+
+- Maestro found an active Git rebase in this workspace.
+- Finish or quit the rebase in place before making new changes.
+- Do not recreate or discard the workspace unless recovery fails.
+`)
+}
+
 func NewRunner(provider WorkflowProvider, store *kanban.Store) *Runner {
 	return NewRunnerWithExtensions(provider, store, nil)
 }
@@ -126,8 +136,14 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
-	if err := r.runHook(ctx, workspace.Path, workflow.Config.Hooks.BeforeRun, "before_run"); err != nil {
-		return nil, err
+	recoveryActive, err := workspaceHasActiveRebase(workspace.Path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect workspace recovery state: %w", err)
+	}
+	if !recoveryActive {
+		if err := r.runHook(ctx, workspace.Path, workflow.Config.Hooks.BeforeRun, "before_run"); err != nil {
+			return nil, err
+		}
 	}
 
 	if issue.State == kanban.StateReady {
@@ -432,6 +448,67 @@ func workspaceBootstrapBaseRef(ctx context.Context, workspacePath, repoPath stri
 	return resolveRepoDefaultBranch(ctx, repoPath)
 }
 
+func workspaceGitDir(workspacePath string) (string, error) {
+	absPath, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace path: %w", err)
+	}
+	gitPath := filepath.Join(absPath, ".git")
+	fi, err := os.Lstat(gitPath)
+	if err != nil {
+		return "", fmt.Errorf("read workspace git metadata: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(gitPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve workspace git metadata symlink: %w", err)
+		}
+		return canonicalPath(resolved), nil
+	}
+	if fi.IsDir() {
+		return canonicalPath(gitPath), nil
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", fmt.Errorf("read workspace git metadata: %w", err)
+	}
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir:") {
+		return "", fmt.Errorf("invalid workspace git metadata: %s", gitPath)
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(content, "gitdir:"))
+	if gitDir == "" {
+		return "", fmt.Errorf("invalid workspace git metadata: %s", gitPath)
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(absPath, gitDir)
+	}
+	return canonicalPath(gitDir), nil
+}
+
+func workspaceHasActiveRebase(workspacePath string) (bool, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return false, nil
+	}
+	gitDir, err := workspaceGitDir(workspacePath)
+	if err != nil {
+		return false, err
+	}
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		info, statErr := os.Stat(filepath.Join(gitDir, name))
+		if statErr == nil {
+			if info.IsDir() {
+				return true, nil
+			}
+			continue
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return false, statErr
+		}
+	}
+	return false, nil
+}
+
 func isLinkedWorktree(ctx context.Context, workspacePath string) (bool, error) {
 	gitDir, err := runGitCommand(ctx, workspacePath, "rev-parse", "--git-dir")
 	if err != nil {
@@ -533,11 +610,24 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 	if matched, err := workspaceMatchesRepo(ctx, preparedPath, repoPath); err != nil {
 		return false, "", err
 	} else if matched {
+		recoveryActive, recoveryErr := workspaceHasActiveRebase(preparedPath)
+		if recoveryErr != nil {
+			return false, "", recoveryErr
+		}
 		currentBranch, branchErr := runGitCommand(ctx, preparedPath, "branch", "--show-current")
-		if branchErr != nil {
+		if branchErr != nil && !recoveryActive {
 			return false, "", branchErr
 		}
 		currentBranch = strings.TrimSpace(currentBranch)
+		if recoveryActive {
+			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_recovery", map[string]interface{}{
+				"path":            preparedPath,
+				"branch":          branchName,
+				"current_branch":  currentBranch,
+				"recovery_reason": "active_rebase",
+			})
+			return false, preparedPath, nil
+		}
 		if currentBranch != branchName {
 			if !branchExists(ctx, repoPath, branchName) {
 				if currentBranch != "" {
@@ -731,7 +821,7 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 			return nil, err
 		}
 		issue = refreshedIssue
-		prepared, err := r.prepareTurnPrompt(activeWorkflow, issue, attempt, turn)
+		prepared, err := r.prepareTurnPromptWithWorkspace(activeWorkflow, issue, attempt, turn, workspacePath)
 		if err != nil {
 			return nil, err
 		}
@@ -830,7 +920,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		issue = refreshedIssue
 		permissions = r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
 		client.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
-		prepared, err := r.prepareTurnPrompt(activeWorkflow, issue, attempt, turn)
+		prepared, err := r.prepareTurnPromptWithWorkspace(activeWorkflow, issue, attempt, turn, workspacePath)
 		if err != nil {
 			return nil, err
 		}
@@ -1125,8 +1215,12 @@ func (r *Runner) buildTurnPrompt(workflow *config.Workflow, issue *kanban.Issue,
 }
 
 func (r *Runner) prepareTurnPrompt(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int) (preparedTurnPrompt, error) {
+	return r.prepareTurnPromptWithWorkspace(workflow, issue, attempt, turn, "")
+}
+
+func (r *Runner) prepareTurnPromptWithWorkspace(workflow *config.Workflow, issue *kanban.Issue, attempt int, turn int, workspacePath string) (preparedTurnPrompt, error) {
 	if turn > 1 {
-		return preparedTurnPrompt{Prompt: fmt.Sprintf(strings.TrimSpace(`
+		prompt := fmt.Sprintf(strings.TrimSpace(`
 Continuation guidance:
 
 - The previous turn completed normally, but the issue is still in an active state.
@@ -1134,7 +1228,12 @@ Continuation guidance:
 - Resume from the current workspace state instead of restarting from scratch.
 - The original task instructions are already present in the thread history; do not restate them before acting.
 - If a verification approach was blocked by local tooling or browser issues, switch to another deterministic local check instead of retrying the same path.
-`), turn, workflow.Config.Agent.MaxTurns)}, nil
+`), turn, workflow.Config.Agent.MaxTurns)
+		recoveryNote, err := workspaceRecoveryNoteForPath(workspacePath)
+		if err != nil {
+			return preparedTurnPrompt{}, err
+		}
+		return preparedTurnPrompt{Prompt: appendWorkspaceRecoveryNote(prompt, recoveryNote)}, nil
 	}
 	phase := issue.WorkflowPhase
 	if !phase.IsValid() {
@@ -1179,6 +1278,11 @@ Continuation guidance:
 		return preparedTurnPrompt{}, err
 	}
 	rendered = appendOperatorCommands(rendered, commands)
+	recoveryNote, err := workspaceRecoveryNoteForPath(workspacePath)
+	if err != nil {
+		return preparedTurnPrompt{}, err
+	}
+	rendered = appendWorkspaceRecoveryNote(rendered, recoveryNote)
 	if rendered == "" {
 		return preparedTurnPrompt{
 			Prompt:   strings.TrimSpace(firstTurnExecutionGuidance),
@@ -1189,6 +1293,32 @@ Continuation guidance:
 		Prompt:   rendered + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance),
 		Commands: commands,
 	}, nil
+}
+
+func workspaceRecoveryNoteForPath(workspacePath string) (string, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return "", nil
+	}
+	active, err := workspaceHasActiveRebase(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	if !active {
+		return "", nil
+	}
+	return workspaceRecoveryNoteText(), nil
+}
+
+func appendWorkspaceRecoveryNote(prompt, recoveryNote string) string {
+	prompt = strings.TrimSpace(prompt)
+	recoveryNote = strings.TrimSpace(recoveryNote)
+	if recoveryNote == "" {
+		return prompt
+	}
+	if prompt == "" {
+		return recoveryNote
+	}
+	return prompt + "\n\n" + recoveryNote
 }
 
 func (r *Runner) projectPromptContext(projectID string) (map[string]interface{}, error) {

@@ -127,3 +127,95 @@ func TestIssueCommandsEndpointStoresWaitingForUnblockWhenIssueIsAlreadyBlockedIn
 		t.Fatalf("expected waiting_for_unblock command, got %#v", command)
 	}
 }
+
+func TestIssueCommandsEndpointUpdatesAndDeletesQueuedCommands(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	issue, err := store.CreateIssue("", "", "Queued follow-up", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	createResp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/commands", map[string]interface{}{
+		"command": "Merge the branch to master.",
+	})
+	if createResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected create 200, got %d", createResp.StatusCode)
+	}
+	created := decodeResponse(t, createResp)
+	command := created["command"].(map[string]interface{})
+	commandID := command["id"].(string)
+
+	updateResp := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/issues/"+issue.Identifier+"/commands/"+commandID, map[string]interface{}{
+		"command": "Merge the branch with the latest tests.",
+	})
+	if updateResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected update 200, got %d", updateResp.StatusCode)
+	}
+	updated := decodeResponse(t, updateResp)
+	updatedCommand := updated["command"].(map[string]interface{})
+	if updatedCommand["command"].(string) != "Merge the branch with the latest tests." {
+		t.Fatalf("unexpected updated command payload: %#v", updatedCommand)
+	}
+
+	execution := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/execution", nil)
+	if execution.StatusCode != http.StatusOK {
+		t.Fatalf("expected execution 200 after update, got %d", execution.StatusCode)
+	}
+	executionBody := decodeResponse(t, execution)
+	commands := executionBody["agent_commands"].([]interface{})
+	if len(commands) != 1 {
+		t.Fatalf("expected one command after update, got %#v", executionBody["agent_commands"])
+	}
+	if commands[0].(map[string]interface{})["command"].(string) != "Merge the branch with the latest tests." {
+		t.Fatalf("unexpected execution payload after update: %#v", commands[0])
+	}
+
+	deleteResp := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+issue.Identifier+"/commands/"+commandID, nil)
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d", deleteResp.StatusCode)
+	}
+	_ = decodeResponse(t, deleteResp)
+
+	executionAfterDelete := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+issue.Identifier+"/execution", nil)
+	if executionAfterDelete.StatusCode != http.StatusOK {
+		t.Fatalf("expected execution 200 after delete, got %d", executionAfterDelete.StatusCode)
+	}
+	executionAfterDeleteBody := decodeResponse(t, executionAfterDelete)
+	if commands := executionAfterDeleteBody["agent_commands"].([]interface{}); len(commands) != 0 {
+		t.Fatalf("expected no commands after delete, got %#v", executionAfterDeleteBody["agent_commands"])
+	}
+}
+
+func TestIssueCommandsEndpointRejectsDeliveredCommands(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	issue, err := store.CreateIssue("", "", "Delivered follow-up", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	createResp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/commands", map[string]interface{}{
+		"command": "Ship the branch.",
+	})
+	if createResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected create 200, got %d", createResp.StatusCode)
+	}
+	commandID := decodeResponse(t, createResp)["command"].(map[string]interface{})["id"].(string)
+
+	if err := store.MarkIssueAgentCommandsDelivered(issue.ID, []string{commandID}, "same_thread", "thread-live", 1); err != nil {
+		t.Fatalf("MarkIssueAgentCommandsDelivered: %v", err)
+	}
+
+	updateResp := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/issues/"+issue.Identifier+"/commands/"+commandID, map[string]interface{}{
+		"command": "Ship the branch, then verify the release notes.",
+	})
+	if updateResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected update 404 for delivered command, got %d", updateResp.StatusCode)
+	}
+
+	deleteResp := requestJSON(t, srv, http.MethodDelete, "/api/v1/app/issues/"+issue.Identifier+"/commands/"+commandID, nil)
+	if deleteResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected delete 404 for delivered command, got %d", deleteResp.StatusCode)
+	}
+}

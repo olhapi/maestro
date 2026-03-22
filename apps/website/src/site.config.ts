@@ -69,10 +69,11 @@ export const tourChapters = [
     id: "overview",
     title: "See whether the loop is healthy before you interrupt it",
     description:
-      "Overview keeps running agents, retries, throughput, and board pressure visible so you can decide whether to step in or let the queue keep moving.",
+      "Overview keeps running agents, retries, live token load, execution health, and token burn visible so you can decide whether to step in or let the queue keep moving.",
     bullets: [
       "Retry trends tell you whether the loop is drifting.",
       "State totals make backlog pressure obvious.",
+      "Execution health and token burn are split into separate 24h views.",
       "Live runs and pending retries are one click away.",
     ],
     image: "/images/screens/overview.svg",

@@ -1,5 +1,5 @@
 ---
-# Tracker provider configuration. Supported tracker kind today: kanban.
+# Tracker configuration. Supported tracker kind today: kanban.
 tracker:
   # Tracker backend to read and write issues from.
   kind: kanban

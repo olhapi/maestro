@@ -29,9 +29,9 @@ import { formatCompactNumber } from "@/lib/utils";
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5">
-      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{label}</p>
-      <p className="mt-2.5 font-display text-[calc(var(--metric-value-size)-0.25rem)] leading-none text-white">
+    <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3">
+      <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">{label}</p>
+      <p className="mt-1.5 font-display text-[calc(var(--metric-value-size)-0.375rem)] leading-none text-white">
         {value}
       </p>
     </div>
@@ -149,28 +149,14 @@ export function ProjectsPage() {
           const togglePending = runProject.isPending || stopProject.isPending;
           return (
             <Card key={project.id} className="overflow-hidden">
-              <CardHeader className="flex-col gap-3 lg:flex-row lg:items-start">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Badge>{summaryActiveCount(project)} active</Badge>
-                  </div>
-                  <div>
-                    <CardTitle className="text-2xl">
-                      <Link params={{ projectId: project.id }} to={appRoutes.projectDetail}>
-                        {project.name}
-                      </Link>
-                    </CardTitle>
-                    <p className="mt-2.5 max-w-xl line-clamp-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {project.description || "No description yet."}
-                    </p>
-                    {project.dispatch_error ? (
-                      <p className="mt-2 text-xs text-rose-200">{project.dispatch_error}</p>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
-                  {!dispatchReady ? <ProjectDispatchBadge project={project} /> : null}
-                  <div className="flex flex-wrap items-center gap-1.5 self-start lg:self-end">
+              <CardHeader className="flex-col gap-4 justify-start">
+                <div
+                  data-testid="project-card-utility-row"
+                  className="flex w-full flex-wrap items-center gap-3 lg:flex-nowrap"
+                >
+                  <Badge className="shrink-0">{summaryActiveCount(project)} active</Badge>
+                  <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5 lg:flex-nowrap">
+                    {!dispatchReady ? <ProjectDispatchBadge className="shrink-0" project={project} /> : null}
                     <ProjectPermissionProfileButton
                       projectId={project.id}
                       permissionProfile={project.permission_profile}
@@ -211,10 +197,26 @@ export function ProjectsPage() {
                     </Button>
                   </div>
                 </div>
+                <div className="grid w-full gap-2">
+                  <CardTitle className="w-full text-2xl">
+                    <Link params={{ projectId: project.id }} to={appRoutes.projectDetail}>
+                      {project.name}
+                    </Link>
+                  </CardTitle>
+                  <p className="w-full line-clamp-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                    {project.description || "No description yet."}
+                  </p>
+                  {project.dispatch_error ? (
+                    <p className="w-full text-xs text-rose-200">{project.dispatch_error}</p>
+                  ) : null}
+                </div>
               </CardHeader>
 
               <CardContent className="grid gap-3">
-                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2.5">
+                <div
+                  data-testid="project-card-stats"
+                  className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4"
+                >
                   <StatCard label="Total" value={String(summaryTotalCount(project))} />
                   <StatCard label="Done" value={String(summaryDoneCount(project))} />
                   <StatCard label="Blocked/active" value={String(summaryActiveCount(project))} />

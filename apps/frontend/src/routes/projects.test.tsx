@@ -69,22 +69,38 @@ describe("ProjectsPage", () => {
     expect(screen.queryByRole("button", { name: /new epic/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new issue/i })).not.toBeInTheDocument();
 
-    const runButton = screen.getByRole("button", { name: /^(run|stop)$/i });
-    const editButton = screen.getByRole("button", { name: /^edit$/i });
-    const deleteButton = screen.getByRole("button", { name: /^delete$/i });
+    const utilityRow = screen.getByTestId("project-card-utility-row");
+    expect(utilityRow).toHaveClass("flex", "w-full", "flex-wrap", "items-center", "gap-3");
+    expect(utilityRow).toHaveClass("lg:flex-nowrap");
+    expect(within(utilityRow).getByText(/\d+\s+active/i)).toBeInTheDocument();
 
-    expect(runButton.parentElement).toContainElement(editButton);
-    expect(runButton.parentElement).toContainElement(deleteButton);
+    const runButton = within(utilityRow).getByRole("button", { name: /^(run|stop)$/i });
+    const editButton = within(utilityRow).getByRole("button", { name: /^edit$/i });
+    const deleteButton = within(utilityRow).getByRole("button", { name: /^delete$/i });
+
+    expect(utilityRow).toContainElement(runButton);
+    expect(utilityRow).toContainElement(editButton);
+    expect(utilityRow).toContainElement(deleteButton);
     expect(screen.queryByText(/^(run|stop)$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^edit$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^delete$/i)).not.toBeInTheDocument();
 
-    expect(screen.getByText("Platform work")).toHaveClass("line-clamp-2");
+    expect(screen.getByRole("heading", { name: "Platform" })).toHaveClass("w-full", "text-2xl");
+    const description = screen.getByText("Platform work");
+    expect(description).toHaveClass("w-full", "line-clamp-2");
+    expect(description).not.toHaveClass("max-w-xl");
+
+    const statsGrid = screen.getByTestId("project-card-stats");
+    expect(statsGrid).toHaveClass("grid", "grid-cols-1", "gap-2.5");
+    expect(statsGrid).toHaveClass("sm:grid-cols-2");
+    expect(statsGrid).toHaveClass("lg:grid-cols-4");
+    expect(within(statsGrid).getByText("Total")).toBeInTheDocument();
+    expect(within(statsGrid).getByText("Done")).toBeInTheDocument();
+    expect(within(statsGrid).getByText("Blocked/active")).toBeInTheDocument();
+    expect(within(statsGrid).getByText("Tokens")).toBeInTheDocument();
     expect(screen.queryByText("/repo")).not.toBeInTheDocument();
     expect(screen.queryByText("kanban")).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /provider/i })).not.toBeInTheDocument();
-
-    expect(screen.getByText("Tokens")).toBeInTheDocument();
   });
 
   it("marks out-of-scope projects as not runnable", async () => {
@@ -118,6 +134,10 @@ describe("ProjectsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Out of scope")).toBeInTheDocument();
     });
+
+    const utilityRow = screen.getByTestId("project-card-utility-row");
+    expect(utilityRow).toHaveClass("lg:flex-nowrap");
+    expect(within(utilityRow).getByText("Out of scope")).toBeInTheDocument();
 
     const badge = screen.getByText("Out of scope");
     await act(async () => {

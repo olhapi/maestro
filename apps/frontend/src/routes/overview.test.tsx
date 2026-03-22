@@ -1,12 +1,10 @@
 import type { ReactNode } from 'react'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { OverviewPage } from '@/routes/overview'
 import { makeBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
-
-let shouldThrowChart = false
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -20,17 +18,15 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('recharts', () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => {
-    if (shouldThrowChart) {
-      throw new Error('chart crashed')
-    }
-
     return (
-      <svg data-testid="overview-chart" role="img" aria-label="Overview throughput chart">
+      <svg data-testid="overview-chart" role="img" aria-label="Overview chart">
         {children}
       </svg>
     )
   },
+  LineChart: ({ children }: { children: ReactNode }) => <>{children}</>,
   AreaChart: ({ children }: { children: ReactNode }) => <>{children}</>,
+  Line: () => <path />,
   Area: () => <path />,
   CartesianGrid: () => <g />,
   Tooltip: () => null,
@@ -47,10 +43,6 @@ vi.mock('@/lib/api', () => ({
 const { api } = await import('@/lib/api')
 
 describe('OverviewPage', () => {
-  afterEach(() => {
-    shouldThrowChart = false
-  })
-
   it('renders overview metrics from bootstrap data', async () => {
     vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
 
@@ -60,30 +52,16 @@ describe('OverviewPage', () => {
       expect(screen.getByText('Running agents')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('Execution tempo')).toBeInTheDocument()
-    expect(screen.queryByText('Recent signals')).not.toBeInTheDocument()
+    expect(screen.getByText('Execution health')).toBeInTheDocument()
     expect(screen.getByText('Retry pressure')).toBeInTheDocument()
+    expect(screen.getByText('Live token load')).toBeInTheDocument()
+    expect(screen.getByText(/runs started, completions, failures, and retries across the last 24 hours/i)).toBeInTheDocument()
+    expect(screen.getByText(/hourly burn from final run totals, not live snapshot totals/i)).toBeInTheDocument()
+    expect(screen.getByText('Runs started')).toBeInTheDocument()
+    expect(screen.getByText('Runs completed')).toBeInTheDocument()
+    expect(screen.getByText('Runs failed')).toBeInTheDocument()
+    expect(screen.getByText('Retries')).toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: /ISS-1/i })).toHaveLength(2)
-  })
-
-  it('contains throughput chart crashes and recovers the chart widget', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    shouldThrowChart = true
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
-
-    renderWithQueryClient(<OverviewPage />)
-
-    const reloadButton = await screen.findByRole('button', { name: /reload overview throughput chart/i })
-    expect(screen.getByText('Running agents')).toBeInTheDocument()
-
-    shouldThrowChart = false
-    fireEvent.click(reloadButton)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('overview-chart')).toBeInTheDocument()
-    })
-    expect(screen.getByText('Running agents')).toBeInTheDocument()
-
-    consoleErrorSpy.mockRestore()
+    expect(screen.getAllByTestId('overview-chart')).toHaveLength(2)
   })
 })

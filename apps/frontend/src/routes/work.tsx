@@ -129,11 +129,13 @@ export function WorkPage() {
     <div className="grid gap-[var(--section-gap)]">
       <PageHeader
         title="Coordinate work on one board"
+        titleClassName="w-full"
         description={
           isMobileLayout
             ? "Review work by state, inspect execution context in-place, and open full issue pages only when you need more detail."
             : "This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed."
         }
+        descriptionClassName="max-w-none"
         stats={
           <>
             <StatCard

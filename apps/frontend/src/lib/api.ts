@@ -4,6 +4,7 @@ import type {
   EpicDetailResponse,
   EpicSummary,
   IssueAsset,
+  AgentCommand,
   IssueComment,
   IssueDetail,
   IssueExecutionDetail,
@@ -242,6 +243,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ command }),
     }),
+  updateIssueCommand: (identifier: string, commandID: string, command: string) =>
+    request<{ ok: boolean; command: AgentCommand }>(`/api/v1/app/issues/${identifier}/commands/${commandID}`, {
+      method: "PATCH",
+      body: JSON.stringify({ command }),
+    }),
+  deleteIssueCommand: (identifier: string, commandID: string) =>
+    request<{ ok: boolean; deleted: boolean; command_id: string }>(
+      `/api/v1/app/issues/${identifier}/commands/${commandID}`,
+      {
+        method: "DELETE",
+      },
+    ),
   retryIssue: (identifier: string) =>
     request<Record<string, unknown>>(`/api/v1/app/issues/${identifier}/retry`, {
       method: "POST",

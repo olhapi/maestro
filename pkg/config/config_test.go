@@ -24,10 +24,6 @@ func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
 		"The done phase owns merge-back and finalization for this issue from the current workspace.",
-		"Create a short video preview or walkthrough of the finished result whenever the change can be demonstrated locally.",
-		"Save the preview under .maestro/review-preview/ in the current workspace as a single .mp4, .webm, .mov, or .m4v file so Maestro can publish it automatically.",
-		"Use the available browser automation or local tooling to capture the preview, then attach it to an issue comment for reviewers when the tracker/provider tooling supports comments and attachments.",
-		"If a video preview is not possible because the result is not demoable locally or the required tooling is unavailable, report that blocker clearly and fall back to the strongest deterministic validation you can run.",
 		"Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.",
 		"Consider the work complete once the change is merged.",
 		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
@@ -40,12 +36,10 @@ func assertInitDonePromptSemantics(t *testing.T, prompt string) {
 	assertContainsAll(t, prompt,
 		"Finalize issue {{ issue.identifier }} from the current workspace.",
 		"The done phase owns merge-back and finalization.",
-		"Create a short video preview or walkthrough of the finished result whenever it can be demonstrated locally, save it under .maestro/review-preview/ in the current workspace as a single .mp4, .webm, .mov, or .m4v file, then attach it to an issue comment for reviewers when the available tracker/provider tooling supports comments and attachments.",
-		"If that preview is blocked by missing tooling or a non-demoable change, report the blocker clearly and fall back to deterministic validation.",
 		"Merge the issue branch back when possible, resolving merge conflicts when you can do so safely.",
 		"Consider the work complete once the change is merged.",
 		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
-		"Report any other blocker clearly while keeping the issue in done unless it truly needs to be reopened.",
+		"If any other blocker prevents completion, report it clearly and keep the issue in done unless it truly needs to be reopened.",
 	)
 }
 
@@ -543,7 +537,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		"# Tracker provider configuration. Supported tracker kind today: kanban.",
+		"# Tracker configuration. Supported tracker kind today: kanban.",
 		"tracker:",
 		"kind: kanban",
 		"active_states:",
@@ -574,6 +568,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"read_timeout_ms: 10000",
 		"stall_timeout_ms: 300000",
 		"{{ issue.identifier }}",
+		"Merge the issue branch back when possible, resolving merge conflicts when you can do so safely.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)

@@ -1,4 +1,4 @@
-import { type ComponentType, useEffect, useRef, useState } from "react";
+import { type ComponentType, type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Paperclip, Pencil, Reply, RotateCcw, Send, Trash2, Upload, X } from "lucide-react";
@@ -69,24 +69,123 @@ function commandStatusMeta(status: AgentCommand["status"]) {
   }
 }
 
-function AgentCommandEntry({ command }: { command: AgentCommand }) {
-  const status = commandStatusMeta(command.status);
+function AgentCommandEditForm({
+  initialBody,
+  isPending,
+  onCancel,
+  onSubmit,
+}: {
+  initialBody: string;
+  isPending: boolean;
+  onCancel: () => void;
+  onSubmit: (body: string) => Promise<void>;
+}) {
+  const [body, setBody] = useState(initialBody);
+  const trimmedBody = body.trim();
+  const canSubmit = trimmedBody.length > 0 && trimmedBody !== initialBody && !isPending;
 
   return (
-    <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3">
+    <div className="grid gap-3">
+      <Textarea
+        autoFocus
+        value={body}
+        className="min-h-[120px] resize-y"
+        placeholder="Update the command"
+        onChange={(event) => setBody(event.target.value)}
+        onKeyDown={(event) => {
+          handleAgentCommandTextAreaKeyDown(event, canSubmit, () => {
+            void onSubmit(trimmedBody).catch(() => {});
+          });
+        }}
+      />
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          disabled={!canSubmit}
+          onClick={() => {
+            void onSubmit(trimmedBody).catch(() => {});
+          }}
+        >
+          {isPending ? "Saving..." : "Save"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AgentCommandEntry({
+  command,
+  editingCommandID,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onStartDelete,
+  updatePending,
+}: {
+  command: AgentCommand;
+  editingCommandID: string | null;
+  onStartEdit: (command: AgentCommand) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (commandID: string, body: string) => Promise<void>;
+  onStartDelete: (command: AgentCommand) => void;
+  updatePending: boolean;
+}) {
+  const status = commandStatusMeta(command.status);
+  const isMutable = isMutableAgentCommandStatus(command.status);
+  const isEditing = editingCommandID === command.id && isMutable;
+
+  return (
+    <div
+      className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/8 bg-black/20 p-3"
+      data-testid={`agent-command-${command.id}`}
+    >
       <div className="flex items-start justify-between gap-3">
         <Badge className={status.className}>{status.label}</Badge>
         <span className="text-xs text-[var(--muted-foreground)]">{formatRelativeTime(command.created_at)}</span>
       </div>
-      <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">{command.command}</p>
-      <p className="mt-3 text-xs text-[var(--muted-foreground)]">Sent {formatDateTime(command.created_at)}</p>
-      {command.delivered_at ? (
-        <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-          Delivered {formatDateTime(command.delivered_at)}
-          {command.delivery_mode ? ` via ${command.delivery_mode}` : ""}
-          {command.delivery_thread_id ? ` on ${command.delivery_thread_id}` : ""}
-        </p>
-      ) : null}
+      {isEditing ? (
+        <div className="mt-3">
+          <AgentCommandEditForm
+            initialBody={command.command}
+            isPending={updatePending}
+            onCancel={onCancelEdit}
+            onSubmit={async (body) => {
+              await onSaveEdit(command.id, body);
+            }}
+          />
+        </div>
+      ) : (
+        <>
+          <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">{command.command}</p>
+          <p className="mt-3 text-xs text-[var(--muted-foreground)]">Sent {formatDateTime(command.created_at)}</p>
+          {command.delivered_at ? (
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+              Delivered {formatDateTime(command.delivered_at)}
+              {command.delivery_mode ? ` via ${command.delivery_mode}` : ""}
+              {command.delivery_thread_id ? ` on ${command.delivery_thread_id}` : ""}
+            </p>
+          ) : null}
+          {isMutable ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <CommentActionButton
+                icon={Pencil}
+                label="Edit command"
+                onClick={() => onStartEdit(command)}
+                variant="secondary"
+              />
+              <CommentActionButton
+                icon={Trash2}
+                label="Delete command"
+                onClick={() => onStartDelete(command)}
+                variant="destructive"
+              />
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -273,6 +372,31 @@ function CommentActionButton({
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+function isMutableAgentCommandStatus(status: AgentCommand["status"]) {
+  return status === "pending" || status === "waiting_for_unblock";
+}
+
+function handleAgentCommandTextAreaKeyDown(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  canSubmit: boolean,
+  onSubmit: () => void,
+) {
+  if (
+    event.key !== "Enter" ||
+    event.shiftKey ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.repeat ||
+    event.nativeEvent.isComposing ||
+    !canSubmit
+  ) {
+    return;
+  }
+  event.preventDefault();
+  onSubmit();
 }
 
 function IssueAssetLink({
@@ -645,6 +769,8 @@ export function IssueDetailPage() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteAssetConfirmOpen, setDeleteAssetConfirmOpen] = useState(false);
   const [editingCommentID, setEditingCommentID] = useState<string | null>(null);
+  const [editingCommandID, setEditingCommandID] = useState<string | null>(null);
+  const [deleteCommandTarget, setDeleteCommandTarget] = useState<AgentCommand | null>(null);
   const [replyParentID, setReplyParentID] = useState<string | null>(null);
 
   const bootstrap = useQuery({
@@ -708,11 +834,34 @@ export function IssueDetailPage() {
   });
 
   const commandMutation = useMutation({
-    mutationFn: () => api.sendIssueCommand(identifier, commandDraft.trim()),
+    mutationFn: (command: string) => api.sendIssueCommand(identifier, command),
     onSuccess: async () => {
       toast.success("Command queued for agent");
       setCommandDraft("");
       await invalidate();
+    },
+  });
+  const updateCommandMutation = useMutation({
+    mutationFn: ({ commandID, command }: { commandID: string; command: string }) =>
+      api.updateIssueCommand(identifier, commandID, command),
+    onSuccess: async () => {
+      toast.success("Command updated");
+      setEditingCommandID(null);
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to update command: ${error.message}` : "Unable to update command");
+    },
+  });
+  const deleteCommandMutation = useMutation({
+    mutationFn: (commandID: string) => api.deleteIssueCommand(identifier, commandID),
+    onSuccess: async () => {
+      toast.success("Command deleted");
+      setDeleteCommandTarget(null);
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to delete command: ${error.message}` : "Unable to delete command");
     },
   });
   const permissionMutation = useMutation({
@@ -1249,12 +1398,17 @@ export function IssueDetailPage() {
                   onChange={(event) => setCommandDraft(event.target.value)}
                   className="min-h-[140px] resize-none pb-16 pr-16"
                   placeholder="Tell the agent what it missed or what it should do next."
+                  onKeyDown={(event) => {
+                    handleAgentCommandTextAreaKeyDown(event, commandDraft.trim().length > 0 && !commandMutation.isPending, () => {
+                      commandMutation.mutate(commandDraft.trim());
+                    });
+                  }}
                 />
                 <Button
                   type="button"
                   size="icon"
                   className="absolute bottom-4 right-3"
-                  onClick={() => commandMutation.mutate()}
+                  onClick={() => commandMutation.mutate(commandDraft.trim())}
                   disabled={!commandDraft.trim() || commandMutation.isPending}
                   aria-label="Send to agent"
                   title="Send to agent"
@@ -1267,7 +1421,24 @@ export function IssueDetailPage() {
                   <p className="text-sm text-[var(--muted-foreground)]">No follow-up commands sent yet.</p>
                 ) : (
                   agentCommands.map((command) => (
-                    <AgentCommandEntry key={command.id} command={command} />
+                    <AgentCommandEntry
+                      key={command.id}
+                      command={command}
+                      editingCommandID={editingCommandID}
+                      onCancelEdit={() => setEditingCommandID(null)}
+                      onSaveEdit={async (commandID, body) => {
+                        await updateCommandMutation.mutateAsync({ commandID, command: body });
+                      }}
+                      onStartDelete={(targetCommand) => {
+                        setEditingCommandID(null);
+                        setDeleteCommandTarget(targetCommand);
+                      }}
+                      onStartEdit={(targetCommand) => {
+                        setDeleteCommandTarget(null);
+                        setEditingCommandID(targetCommand.id);
+                      }}
+                      updatePending={updateCommandMutation.isPending}
+                    />
                   ))
                 )}
               </div>
@@ -1305,6 +1476,30 @@ export function IssueDetailPage() {
         isPending={deleteMutation.isPending}
         onConfirm={async () => {
           await deleteMutation.mutateAsync();
+        }}
+      />
+
+      <ConfirmationDialog
+        open={deleteCommandTarget !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setDeleteCommandTarget(null);
+          }
+        }}
+        title="Delete command?"
+        description={
+          deleteCommandTarget
+            ? `This removes the queued command from Maestro before it reaches the agent. Command: ${deleteCommandTarget.command}`
+            : "This removes the queued command from Maestro before it reaches the agent."
+        }
+        confirmLabel="Delete command"
+        pendingLabel="Deleting command..."
+        isPending={deleteCommandMutation.isPending}
+        onConfirm={async () => {
+          if (!deleteCommandTarget) {
+            return;
+          }
+          await deleteCommandMutation.mutateAsync(deleteCommandTarget.id);
         }}
       />
 

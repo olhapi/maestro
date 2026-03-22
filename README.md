@@ -165,6 +165,8 @@ If you built Maestro from source and did not add it to your `PATH`, replace `mae
 
 `maestro mcp` is a stdio bridge into the live `maestro run` daemon for the same database. Start `maestro run` first, then let your coding agent invoke `maestro mcp`.
 
+Paginated MCP list tools return a `pagination` object when more results remain. When `pagination.has_more` is true, call the exact `pagination.next_request` payload to fetch the next batch instead of guessing the next offset by hand.
+
 ### 5. Open the dashboard or use live CLI helpers
 
 By default, `maestro run` serves:
@@ -299,7 +301,7 @@ Supported prompt-template variables are:
 - `{{ attempt }}`
 
 When a project has a description, Maestro's default implementation, review, and done prompts include it automatically under a `Project context:` section. Custom workflows can place `{{ project.description }}` wherever they want.
-The default done prompt also tells the agent to create a short local preview video when the change can be demonstrated and attach it to an issue comment when the available local issue tooling supports that flow.
+The default done prompt now focuses on merge-back, PR readiness, and blocker reporting instead of asking for a preview artifact.
 
 The checked-in [`WORKFLOW.md`](WORKFLOW.md) is this repository's own workflow example. It is not guaranteed to match fresh `workflow init` defaults exactly.
 

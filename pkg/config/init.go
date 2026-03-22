@@ -251,7 +251,7 @@ func buildWorkflowFile(opts InitOptions) string {
 	donePrompt := indentBlock(DefaultInitDonePromptTemplate(), "      ")
 	return strings.TrimSpace(fmt.Sprintf(`
 ---
-# Tracker provider configuration. Supported tracker kind today: %s.
+# Tracker configuration. Supported tracker kind today: %s.
 tracker:
   # Tracker backend to read and write issues from.
   kind: %s

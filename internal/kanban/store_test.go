@@ -750,6 +750,96 @@ func TestIssueAgentCommandLifecycle(t *testing.T) {
 	}
 }
 
+func TestIssueAgentCommandUpdateAndDelete(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Mutable command issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	command, err := store.CreateIssueAgentCommand(issue.ID, "Merge the branch to master.", IssueAgentCommandPending)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand: %v", err)
+	}
+
+	beforeUpdateChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq before update: %v", err)
+	}
+	updated, err := store.UpdateIssueAgentCommand(issue.ID, command.ID, "Merge the branch after fixing the tests.")
+	if err != nil {
+		t.Fatalf("UpdateIssueAgentCommand: %v", err)
+	}
+	if updated.ID != command.ID || updated.Command != "Merge the branch after fixing the tests." {
+		t.Fatalf("unexpected updated command: %+v", updated)
+	}
+	if updated.Status != IssueAgentCommandPending {
+		t.Fatalf("expected pending status to remain unchanged, got %+v", updated)
+	}
+
+	afterUpdateChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq after update: %v", err)
+	}
+	if afterUpdateChange <= beforeUpdateChange {
+		t.Fatalf("expected update change event to advance seq: before=%d after=%d", beforeUpdateChange, afterUpdateChange)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands after update: %v", err)
+	}
+	if len(commands) != 1 || commands[0].Command != "Merge the branch after fixing the tests." {
+		t.Fatalf("unexpected command list after update: %#v", commands)
+	}
+
+	beforeDeleteChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq before delete: %v", err)
+	}
+	if err := store.DeleteIssueAgentCommand(issue.ID, command.ID); err != nil {
+		t.Fatalf("DeleteIssueAgentCommand: %v", err)
+	}
+	afterDeleteChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq after delete: %v", err)
+	}
+	if afterDeleteChange <= beforeDeleteChange {
+		t.Fatalf("expected delete change event to advance seq: before=%d after=%d", beforeDeleteChange, afterDeleteChange)
+	}
+
+	commands, err = store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands after delete: %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected command to be deleted, got %#v", commands)
+	}
+}
+
+func TestIssueAgentCommandMutationsRejectDeliveredCommands(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Delivered command issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	command, err := store.CreateIssueAgentCommand(issue.ID, "Ship the branch.", IssueAgentCommandPending)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand: %v", err)
+	}
+	if err := store.MarkIssueAgentCommandsDelivered(issue.ID, []string{command.ID}, "same_thread", "thread-live", 1); err != nil {
+		t.Fatalf("MarkIssueAgentCommandsDelivered: %v", err)
+	}
+
+	if _, err := store.UpdateIssueAgentCommand(issue.ID, command.ID, "Ship the branch and verify release notes."); !IsNotFound(err) {
+		t.Fatalf("expected delivered command update to be not found, got %v", err)
+	}
+	if err := store.DeleteIssueAgentCommand(issue.ID, command.ID); !IsNotFound(err) {
+		t.Fatalf("expected delivered command delete to be not found, got %v", err)
+	}
+}
+
 func TestStateValidation(t *testing.T) {
 	tests := []struct {
 		state    State
@@ -3391,6 +3481,76 @@ func TestListIssueRuntimeEventsFiltersAndOrdersExecutionEvents(t *testing.T) {
 		if event.IssueID != issue.ID {
 			t.Fatalf("unexpected issue id: %#v", event)
 		}
+	}
+}
+
+func TestRuntimeSeriesCountsFailuresAndUsesPerThreadTokenDeltas(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Runtime series issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Hour)
+	bucket0 := now.Add(-2 * time.Hour)
+	threadID := "thread-runtime-series"
+	appendEvent := func(ts time.Time, kind string, fields map[string]interface{}) {
+		t.Helper()
+		payload := map[string]interface{}{
+			"issue_id":     issue.ID,
+			"identifier":   issue.Identifier,
+			"attempt":      1,
+			"thread_id":    threadID,
+			"total_tokens": 0,
+			"ts":           ts.UTC().Format(time.RFC3339),
+		}
+		for key, value := range fields {
+			payload[key] = value
+		}
+		if err := store.AppendRuntimeEvent(kind, payload); err != nil {
+			t.Fatalf("AppendRuntimeEvent(%s) failed: %v", kind, err)
+		}
+	}
+
+	appendEvent(bucket0.Add(-10*time.Minute), "run_completed", map[string]interface{}{
+		"total_tokens": 8,
+	})
+	appendEvent(bucket0.Add(5*time.Minute), "run_started", nil)
+	appendEvent(bucket0.Add(10*time.Minute), "run_interrupted", map[string]interface{}{
+		"error":        "run_interrupted",
+		"total_tokens": 8,
+	})
+	appendEvent(bucket0.Add(20*time.Minute), "retry_scheduled", nil)
+	appendEvent(bucket0.Add(30*time.Minute), "run_failed", map[string]interface{}{
+		"error":        "stall_timeout",
+		"total_tokens": 8,
+	})
+	appendEvent(bucket0.Add(75*time.Minute), "run_completed", map[string]interface{}{
+		"total_tokens": 14,
+	})
+
+	series, err := store.RuntimeSeries(3)
+	if err != nil {
+		t.Fatalf("RuntimeSeries failed: %v", err)
+	}
+	if len(series) != 3 {
+		t.Fatalf("expected 3 series buckets, got %d", len(series))
+	}
+
+	if series[0].Bucket != bucket0.Format("15:04") {
+		t.Fatalf("expected first bucket %s, got %s", bucket0.Format("15:04"), series[0].Bucket)
+	}
+	if series[0].RunsStarted != 1 || series[0].RunsCompleted != 0 || series[0].RunsFailed != 2 || series[0].Retries != 1 || series[0].Tokens != 0 {
+		t.Fatalf("unexpected first bucket aggregation: %#v", series[0])
+	}
+	if series[1].Bucket != bucket0.Add(time.Hour).Format("15:04") {
+		t.Fatalf("expected second bucket %s, got %s", bucket0.Add(time.Hour).Format("15:04"), series[1].Bucket)
+	}
+	if series[1].RunsStarted != 0 || series[1].RunsCompleted != 1 || series[1].RunsFailed != 0 || series[1].Retries != 0 || series[1].Tokens != 6 {
+		t.Fatalf("unexpected second bucket aggregation: %#v", series[1])
+	}
+	if series[2].Tokens != 0 || series[2].RunsStarted != 0 || series[2].RunsCompleted != 0 || series[2].RunsFailed != 0 || series[2].Retries != 0 {
+		t.Fatalf("expected empty trailing bucket, got %#v", series[2])
 	}
 }
 

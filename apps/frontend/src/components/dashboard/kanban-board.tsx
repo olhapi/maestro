@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Plus } from 'lucide-react'
+import { useId, useState } from 'react'
+import { ChevronDown, ChevronUp, Plus } from 'lucide-react'
 
 import { IssueCard } from '@/components/dashboard/issue-card'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,116 @@ import { getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboar
 import { cn } from '@/lib/utils'
 
 type KanbanBoardMode = 'board' | 'grouped'
+
+type KanbanLane = {
+  blocked: number
+  items: IssueSummary[]
+  live: number
+  state: IssueState
+}
+
+function stateRowBodyId(boardId: string, state: string) {
+  return `${boardId}-${state.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+}
+
+function GroupedKanbanBoard({
+  lanes,
+  bootstrap,
+  onOpenIssue,
+  onMoveIssue,
+  onCreateIssue,
+}: {
+  lanes: KanbanLane[]
+  bootstrap?: DashboardWorkSource
+  onOpenIssue: (issue: IssueSummary) => void
+  onMoveIssue: (issue: IssueSummary, nextState: IssueState) => void
+  onCreateIssue?: (state?: IssueState) => void
+}) {
+  const [collapsedRows, setCollapsedRows] = useState<Record<string, boolean>>({})
+  const groupedBoardId = useId()
+
+  return (
+    <div className="grid gap-[var(--section-gap)]">
+      {lanes.map((lane) => {
+        const meta = getStateMeta(lane.state)
+        const collapsed = collapsedRows[lane.state] ?? false
+        const bodyId = stateRowBodyId(groupedBoardId, lane.state)
+
+        return (
+          <div
+            key={lane.state}
+            className="overflow-hidden rounded-[var(--panel-radius)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02))]"
+          >
+            <div className={cn('border-b border-white/8 bg-gradient-to-br p-[var(--panel-padding)]', meta.boardTint)}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className={cn('text-xs uppercase tracking-[0.22em]', meta.accent)}>{meta.label}</p>
+                  <div className="mt-2 flex flex-wrap items-end gap-3">
+                    <p className="text-2xl font-semibold leading-none text-white">{lane.items.length}</p>
+                    <div className="flex flex-wrap gap-2 text-xs text-[var(--muted-foreground)]">
+                      <span>{lane.blocked} blocked</span>
+                      <span>{lane.live} live</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    aria-controls={bodyId}
+                    aria-expanded={!collapsed}
+                    aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${meta.label} status row`}
+                    className="rounded-full border-white/12 bg-white/6 text-white hover:bg-white/10"
+                    onClick={() => {
+                      setCollapsedRows((current) => ({
+                        ...current,
+                        [lane.state]: !current[lane.state],
+                      }))
+                    }}
+                    size="sm"
+                    variant="secondary"
+                  >
+                    {collapsed ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
+                    <span>{collapsed ? 'Expand' : 'Collapse'}</span>
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-full border-white/12 bg-white/6 text-white hover:bg-white/10"
+                    onClick={() => onCreateIssue?.(lane.state)}
+                  >
+                    <Plus className="size-4" />
+                    New
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div hidden={collapsed} id={bodyId} className="grid gap-2.5 p-[var(--panel-padding)]">
+              {!collapsed && (lane.items.length > 0 ? (
+                lane.items.map((issue) => (
+                  <IssueCard
+                    key={issue.id}
+                    issue={issue}
+                    bootstrap={bootstrap}
+                    compact
+                    onOpen={onOpenIssue}
+                    onStateChange={onMoveIssue}
+                  />
+                ))
+              ) : (
+                <button
+                  className="flex min-h-28 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
+                  onClick={() => onCreateIssue?.(lane.state)}
+                >
+                  Add the next issue
+                </button>
+              ))}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 export function KanbanBoard({
   items,
@@ -40,64 +150,13 @@ export function KanbanBoard({
 
   if (mode === 'grouped') {
     return (
-      <div className="grid gap-[var(--section-gap)]">
-        {lanes.map((lane) => {
-          const meta = getStateMeta(lane.state)
-
-          return (
-            <div
-              key={lane.state}
-              className="overflow-hidden rounded-[var(--panel-radius)] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02))]"
-            >
-              <div className={cn('border-b border-white/8 bg-gradient-to-br p-[var(--panel-padding)]', meta.boardTint)}>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className={cn('text-xs uppercase tracking-[0.22em]', meta.accent)}>{meta.label}</p>
-                    <div className="mt-2 flex flex-wrap items-end gap-3">
-                      <p className="text-2xl font-semibold leading-none text-white">{lane.items.length}</p>
-                      <div className="flex flex-wrap gap-2 text-xs text-[var(--muted-foreground)]">
-                        <span>{lane.blocked} blocked</span>
-                        <span>{lane.live} live</span>
-                      </div>
-                    </div>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="rounded-full border-white/12 bg-white/6 text-white hover:bg-white/10"
-                    onClick={() => onCreateIssue?.(lane.state)}
-                  >
-                    <Plus className="size-4" />
-                    New
-                  </Button>
-                </div>
-              </div>
-
-              <div className="grid gap-2.5 p-[var(--panel-padding)]">
-                {lane.items.length > 0 ? (
-                  lane.items.map((issue) => (
-                    <IssueCard
-                      key={issue.id}
-                      issue={issue}
-                      bootstrap={bootstrap}
-                      compact
-                      onOpen={onOpenIssue}
-                      onStateChange={onMoveIssue}
-                    />
-                  ))
-                ) : (
-                  <button
-                    className="flex min-h-28 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
-                    onClick={() => onCreateIssue?.(lane.state)}
-                  >
-                    Add the next issue
-                  </button>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+      <GroupedKanbanBoard
+        bootstrap={bootstrap}
+        lanes={lanes}
+        onCreateIssue={onCreateIssue}
+        onMoveIssue={onMoveIssue}
+        onOpenIssue={onOpenIssue}
+      />
     )
   }
 
