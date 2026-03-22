@@ -1,6 +1,7 @@
-import { useLayoutEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronUp, Copy } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
 import { MarkdownText } from '@/components/ui/markdown'
 import type { ActivityGroup, ActivityEntry } from '@/lib/types'
 import { toTitleCase } from '@/lib/utils'
@@ -53,8 +54,11 @@ export function SessionActivityTranscript({
   emptyMessage?: string
 }) {
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
+  const [copied, setCopied] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const totalEntries = groups.reduce((sum, group) => sum + group.entries.length, 0)
+  const canCopy =
+    typeof navigator !== 'undefined' && typeof navigator.clipboard?.writeText === 'function'
   // Track transcript growth without copying the full command output into a dependency key.
   const scrollVersion = groups
     .map((group) =>
@@ -68,8 +72,33 @@ export function SessionActivityTranscript({
     )
     .join('||')
 
+  useEffect(() => {
+    if (!copied) {
+      return undefined
+    }
+
+    const handle = window.setTimeout(() => {
+      setCopied(false)
+    }, 1400)
+
+    return () => window.clearTimeout(handle)
+  }, [copied])
+
   const toggleHistoryRow = (rowKey: string) => {
     setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }))
+  }
+
+  const copyAll = async () => {
+    if (!canCopy) {
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(groups, null, 2))
+      setCopied(true)
+    } catch {
+      // Clipboard access is best-effort; leave the button ready to try again.
+    }
   }
 
   useLayoutEffect(() => {
@@ -87,9 +116,24 @@ export function SessionActivityTranscript({
     >
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium text-white">Activity log</p>
-        <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-          {totalEntries} updates
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+            {totalEntries} updates
+          </span>
+          <Button
+            className="h-8 rounded-full px-3 text-xs"
+            disabled={!canCopy}
+            onClick={() => {
+              void copyAll()
+            }}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
+            <span>{copied ? 'Copied' : 'Copy all'}</span>
+          </Button>
+        </div>
       </div>
 
       {totalEntries === 0 ? (

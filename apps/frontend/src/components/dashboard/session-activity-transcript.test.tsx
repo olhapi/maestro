@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
 import type { ActivityEntry, ActivityGroup } from '@/lib/types'
@@ -29,7 +30,34 @@ function makeGroups(entries: ActivityEntry[]): ActivityGroup[] {
   ]
 }
 
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+
+function mockClipboard(writeText = vi.fn().mockResolvedValue(undefined)) {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText,
+    },
+  })
+
+  return writeText
+}
+
+function restoreClipboard() {
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, 'clipboard', originalClipboardDescriptor)
+    return
+  }
+
+  delete (navigator as typeof navigator & { clipboard?: unknown }).clipboard
+}
+
 describe('SessionActivityTranscript', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    restoreClipboard()
+  })
+
   it('renders the transcript inside a scroll container with a fixed-width toggle', () => {
     render(
       <SessionActivityTranscript
@@ -58,6 +86,41 @@ describe('SessionActivityTranscript', () => {
 
     expect(toggle).toHaveClass('w-20')
     expect(toggle).toHaveTextContent('Collapse')
+  })
+
+  it('copies the loaded transcript groups as pretty-printed JSON', async () => {
+    vi.useFakeTimers()
+    const writeText = mockClipboard()
+    const groups = makeGroups([
+      {
+        id: 'attempt-1-agent-1',
+        kind: 'agent',
+        title: 'Agent update',
+        summary: 'Planning the fix',
+        expandable: false,
+        phase: 'commentary',
+        tone: 'default',
+      },
+      makeCommandEntry(),
+    ])
+
+    render(<SessionActivityTranscript groups={groups} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /copy all/i }))
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(groups, null, 2))
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.getByRole('button', { name: /copied/i })).toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1400)
+    })
+
+    expect(screen.getByRole('button', { name: /copy all/i })).toBeInTheDocument()
   })
 
   it('renders markdown-formatted activity summaries', () => {
@@ -89,6 +152,17 @@ describe('SessionActivityTranscript', () => {
     expect(titleRow).toHaveClass('flex')
     expect(titleRow).toHaveClass('items-center')
     expect(titleRow?.querySelector('span')).toHaveClass('size-1.5')
+  })
+
+  it('disables copy all when clipboard access is unavailable', () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    })
+
+    render(<SessionActivityTranscript groups={makeGroups([makeCommandEntry()])} />)
+
+    expect(screen.getByRole('button', { name: /copy all/i })).toBeDisabled()
   })
 
   it('keeps an expanded command row open when the same row updates in place', () => {
