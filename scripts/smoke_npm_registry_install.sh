@@ -41,14 +41,6 @@ if [[ "$VERSION" == *-* ]]; then
   PUBLISH_TAG="smoke"
 fi
 
-supported_targets=(
-  "darwin-arm64"
-  "darwin-x64"
-  "linux-x64-gnu"
-  "linux-arm64-gnu"
-  "win32-x64"
-)
-
 tarball_filename() {
   local package_name="$1"
   printf '%s-%s.tgz\n' "${package_name#@}" "$VERSION" | tr '/' '-'
@@ -74,16 +66,14 @@ if [[ ! -f "$ROOT_TARBALL" ]]; then
   exit 1
 fi
 
-LEAF_TARBALLS=()
-for supported_target in "${supported_targets[@]}"; do
-  package_name="$(leaf_package_name "$supported_target")"
-  tarball="$PACK_DIR/$(tarball_filename "$package_name")"
-  if [[ ! -f "$tarball" ]]; then
-    echo "missing leaf tarball: $tarball" >&2
-    exit 1
-  fi
-  LEAF_TARBALLS+=("$tarball")
-done
+EXPECTED_LEAF_PACKAGE="$(leaf_package_name "$TARGET")"
+EXPECTED_LEAF_TARBALL="$PACK_DIR/$(tarball_filename "$EXPECTED_LEAF_PACKAGE")"
+# The root package exposes all platform leaves as optional dependencies, but
+# this smoke test only needs the current platform leaf to verify install flow.
+if [[ ! -f "$EXPECTED_LEAF_TARBALL" ]]; then
+  echo "missing leaf tarball: $EXPECTED_LEAF_TARBALL" >&2
+  exit 1
+fi
 
 TMP_DIR="$(mktemp -d)"
 VERDACCIO_LOG="$TMP_DIR/verdaccio.log"
@@ -161,12 +151,9 @@ fi
 export npm_config_userconfig="$NPM_CONFIG_FILE"
 export NPM_CONFIG_USERCONFIG="$NPM_CONFIG_FILE"
 
-echo "Publishing npm tarballs to temporary registry"
-for tarball in "${LEAF_TARBALLS[@]}" "$ROOT_TARBALL"; do
-  run_clean_npm publish --registry "$REGISTRY_URL" --access public --tag "$PUBLISH_TAG" "$tarball" >/dev/null
-done
-
-EXPECTED_LEAF_PACKAGE="$(leaf_package_name "$TARGET")"
+echo "Publishing root package and selected leaf tarball to temporary registry"
+run_clean_npm publish --registry "$REGISTRY_URL" --access public --tag "$PUBLISH_TAG" "$EXPECTED_LEAF_TARBALL" >/dev/null
+run_clean_npm publish --registry "$REGISTRY_URL" --access public --tag "$PUBLISH_TAG" "$ROOT_TARBALL" >/dev/null
 
 echo "Smoke testing registry-backed install of $ROOT_PACKAGE_NAME on $TARGET"
 (

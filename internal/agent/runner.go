@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/olhapi/maestro/internal/appserver"
@@ -64,8 +65,45 @@ Execution guidance:
 const activeThreadCommandPollWindow = 250 * time.Millisecond
 const appServerIssueAssetStageDir = ".maestro/issue-assets"
 const planApprovalStopReason = "plan_approval_pending"
+const workspaceBootstrapRefreshAttempts = 3
+const workspaceBootstrapRefreshRetryDelay = 100 * time.Millisecond
 
 var proposedPlanBlockPattern = regexp.MustCompile(`(?s)<proposed_plan>\s*(.*?)\s*</proposed_plan>`)
+var repoBootstrapLocks sync.Map
+
+type repoBootstrapLockState struct {
+	token chan struct{}
+}
+
+func newRepoBootstrapLockState() *repoBootstrapLockState {
+	lock := &repoBootstrapLockState{token: make(chan struct{}, 1)}
+	lock.token <- struct{}{}
+	return lock
+}
+
+func (l *repoBootstrapLockState) acquire(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.token:
+	}
+	if err := ctx.Err(); err != nil {
+		l.release()
+		return nil, err
+	}
+	return l.release, nil
+}
+
+func (l *repoBootstrapLockState) release() {
+	select {
+	case l.token <- struct{}{}:
+	default:
+		panic("repo bootstrap lock released without acquisition")
+	}
+}
 
 func gitCommandEnv() []string {
 	env := os.Environ()
@@ -323,6 +361,88 @@ func runGitCommand(ctx context.Context, dir string, args ...string) (string, err
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+func repoHasRemote(ctx context.Context, repoPath, remoteName string) (bool, error) {
+	if strings.TrimSpace(remoteName) == "" {
+		return false, nil
+	}
+	output, err := runGitCommand(ctx, repoPath, "remote")
+	if err != nil {
+		return false, err
+	}
+	for _, remote := range strings.Split(strings.TrimSpace(output), "\n") {
+		if strings.TrimSpace(remote) == remoteName {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func repoBootstrapLock(ctx context.Context, repoPath string) (func(), error) {
+	commonDir, err := gitCommonDir(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	key := canonicalPath(commonDir)
+	lock, _ := repoBootstrapLocks.LoadOrStore(key, newRepoBootstrapLockState())
+	return lock.(*repoBootstrapLockState).acquire(ctx)
+}
+
+func refreshRepoForWorkspaceBootstrap(ctx context.Context, repoPath string) (bool, error) {
+	hasOrigin, err := repoHasRemote(ctx, repoPath, "origin")
+	if err != nil {
+		return false, err
+	}
+	if !hasOrigin {
+		return false, nil
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= workspaceBootstrapRefreshAttempts; attempt++ {
+		if _, err := runGitCommand(ctx, repoPath, "fetch", "--prune", "origin"); err == nil {
+			if _, err := runGitCommand(ctx, repoPath, "remote", "set-head", "origin", "-a"); err != nil {
+				return true, nil
+			}
+			return true, nil
+		} else {
+			lastErr = err
+		}
+		if ctx.Err() != nil {
+			return true, ctx.Err()
+		}
+		if attempt < workspaceBootstrapRefreshAttempts {
+			timer := time.NewTimer(workspaceBootstrapRefreshRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return true, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return true, fmt.Errorf("refresh repository refs: %w", lastErr)
+}
+
+func workspaceBootstrapFreshBaseRef(ctx context.Context, repoPath string, hasOrigin bool) (string, error) {
+	baseRef, err := resolveRepoDefaultBranch(ctx, repoPath)
+	if err != nil {
+		return "", err
+	}
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef == "" {
+		return "", fmt.Errorf("unable to resolve repository default branch")
+	}
+	if !hasOrigin {
+		return baseRef, nil
+	}
+	if strings.HasPrefix(baseRef, "origin/") {
+		return baseRef, nil
+	}
+	if gitRefExists(ctx, repoPath, "refs/remotes/origin/"+baseRef) {
+		return "origin/" + baseRef, nil
+	}
+	return baseRef, nil
+}
+
 func branchExists(ctx context.Context, repoPath, branch string) bool {
 	if strings.TrimSpace(branch) == "" {
 		return false
@@ -443,6 +563,34 @@ func workspaceMatchesRepo(ctx context.Context, workspacePath, repoPath string) (
 	return filepath.Clean(workspaceCommonDir) == filepath.Clean(repoCommonDir), nil
 }
 
+func validateWorkspacePath(path, rootAbs string) (string, error) {
+	workspacePath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace path: %w", err)
+	}
+	if !pathWithinRoot(workspacePath, rootAbs) {
+		return "", fmt.Errorf("workspace path escape: %s outside %s", workspacePath, rootAbs)
+	}
+	if fi, err := os.Lstat(workspacePath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(workspacePath)
+			if err != nil {
+				return "", fmt.Errorf("workspace symlink check failed: %w", err)
+			}
+			resolvedAbs, err := filepath.Abs(resolved)
+			if err != nil {
+				return "", fmt.Errorf("resolve workspace symlink: %w", err)
+			}
+			if !pathWithinRoot(resolvedAbs, rootAbs) {
+				return "", fmt.Errorf("workspace symlink escape: %s outside %s", resolvedAbs, rootAbs)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return workspacePath, nil
+}
+
 func removeManagedWorkspace(ctx context.Context, workspacePath string) error {
 	commonDir, err := gitCommonDir(ctx, workspacePath)
 	if err == nil && filepath.Base(commonDir) == ".git" {
@@ -455,17 +603,6 @@ func removeManagedWorkspace(ctx context.Context, workspacePath string) error {
 		return nil
 	}
 	return err
-}
-
-func workspaceBootstrapBaseRef(ctx context.Context, workspacePath, repoPath string) (string, error) {
-	workspaceCommonDir, workspaceErr := gitCommonDir(ctx, workspacePath)
-	repoCommonDir, repoErr := gitCommonDir(ctx, repoPath)
-	if workspaceErr == nil && repoErr == nil && filepath.Clean(workspaceCommonDir) == filepath.Clean(repoCommonDir) {
-		if head, err := runGitCommand(ctx, workspacePath, "rev-parse", "HEAD"); err == nil && strings.TrimSpace(head) != "" {
-			return strings.TrimSpace(head), nil
-		}
-	}
-	return resolveRepoDefaultBranch(ctx, repoPath)
 }
 
 func workspaceGitDir(workspacePath string) (string, error) {
@@ -649,60 +786,84 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 		}
 	}
 
-	preparedPath, _, err := prepareWorkspaceDir(workspacePath, rootAbs)
+	unlock, err := repoBootstrapLock(ctx, repoPath)
+	if err != nil {
+		return false, "", fmt.Errorf("lock workspace bootstrap: %w", err)
+	}
+	defer unlock()
+
+	normalizedPath, err := validateWorkspacePath(workspacePath, rootAbs)
 	if err != nil {
 		return false, "", err
 	}
-	if matched, err := workspaceMatchesRepo(ctx, preparedPath, repoPath); err != nil {
+	if matched, err := workspaceMatchesRepo(ctx, normalizedPath, repoPath); err != nil {
 		return false, "", err
 	} else if matched {
-		recoveryActive, recoveryErr := workspaceHasActiveRebase(preparedPath)
+		recoveryActive, recoveryErr := workspaceHasActiveRebase(normalizedPath)
 		if recoveryErr != nil {
 			return false, "", recoveryErr
 		}
-		currentBranch, branchErr := runGitCommand(ctx, preparedPath, "branch", "--show-current")
+		currentBranch, branchErr := runGitCommand(ctx, normalizedPath, "branch", "--show-current")
 		if branchErr != nil && !recoveryActive {
 			return false, "", branchErr
 		}
 		currentBranch = strings.TrimSpace(currentBranch)
 		if recoveryActive {
-			r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "active_rebase", nil)
-			return false, preparedPath, nil
+			r.recordWorkspaceBootstrapRecovery(issue, normalizedPath, branchName, currentBranch, "active_rebase", nil)
+			return false, normalizedPath, nil
 		}
 		if currentBranch != branchName {
 			if !branchExists(ctx, repoPath, branchName) {
 				if currentBranch != "" {
-					if _, err := runGitCommand(ctx, preparedPath, "branch", "-m", branchName); err != nil {
+					if _, err := runGitCommand(ctx, normalizedPath, "branch", "-m", branchName); err != nil {
 						if isWorkspaceBootstrapRebaseError(err) {
-							r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "branch_switch_blocked", err)
-							return false, preparedPath, nil
+							r.recordWorkspaceBootstrapRecovery(issue, normalizedPath, branchName, currentBranch, "branch_switch_blocked", err)
+							return false, normalizedPath, nil
 						}
 						return false, "", fmt.Errorf("rename workspace branch %s to %s: %w", currentBranch, branchName, err)
 					}
 				} else {
-					if _, err := runGitCommand(ctx, preparedPath, "switch", "-c", branchName); err != nil {
+					if _, err := runGitCommand(ctx, normalizedPath, "switch", "-c", branchName); err != nil {
 						if isWorkspaceBootstrapRebaseError(err) {
-							r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "branch_switch_blocked", err)
-							return false, preparedPath, nil
+							r.recordWorkspaceBootstrapRecovery(issue, normalizedPath, branchName, currentBranch, "branch_switch_blocked", err)
+							return false, normalizedPath, nil
 						}
 						return false, "", fmt.Errorf("switch workspace branch %s: %w", branchName, err)
 					}
 				}
 			} else {
-				if _, err := runGitCommand(ctx, preparedPath, "switch", branchName); err != nil {
+				if _, err := runGitCommand(ctx, normalizedPath, "switch", branchName); err != nil {
 					if isWorkspaceBootstrapRebaseError(err) {
-						r.recordWorkspaceBootstrapRecovery(issue, preparedPath, branchName, currentBranch, "branch_switch_blocked", err)
-						return false, preparedPath, nil
+						r.recordWorkspaceBootstrapRecovery(issue, normalizedPath, branchName, currentBranch, "branch_switch_blocked", err)
+						return false, normalizedPath, nil
 					}
 					return false, "", fmt.Errorf("switch workspace branch %s: %w", branchName, err)
 				}
 			}
 		}
 		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_reused", map[string]interface{}{
-			"path":   preparedPath,
+			"path":   normalizedPath,
 			"branch": branchName,
 		})
-		return false, preparedPath, nil
+		return false, normalizedPath, nil
+	}
+
+	branchAlreadyExists := branchExists(ctx, repoPath, branchName)
+	baseRef := ""
+	if !branchAlreadyExists {
+		hasOrigin, err := refreshRepoForWorkspaceBootstrap(ctx, repoPath)
+		if err != nil {
+			return false, "", fmt.Errorf("refresh workspace repo: %w", err)
+		}
+		baseRef, err = workspaceBootstrapFreshBaseRef(ctx, repoPath, hasOrigin)
+		if err != nil {
+			return false, "", err
+		}
+	}
+
+	preparedPath, _, err := prepareWorkspaceDir(normalizedPath, rootAbs)
+	if err != nil {
+		return false, "", err
 	}
 
 	preservedPath, preserved, err := preserveWorkspaceContents(ctx, preparedPath)
@@ -719,27 +880,23 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 		return false, "", fmt.Errorf("remove stale workspace %s: %w", preparedPath, err)
 	}
 	args := []string{"worktree", "add"}
-	if branchExists(ctx, repoPath, branchName) {
+	if branchAlreadyExists {
 		args = append(args, preparedPath, branchName)
 	} else {
-		baseRef, err := workspaceBootstrapBaseRef(ctx, preparedPath, repoPath)
-		if err != nil {
-			return false, "", err
-		}
 		args = append(args, "-b", branchName, preparedPath, baseRef)
 	}
 	if _, err := runGitCommand(ctx, repoPath, args...); err != nil {
 		return false, "", fmt.Errorf("create git worktree %s on %s: %w", preparedPath, branchName, err)
 	}
-	baseRef := branchName
+	recordedBaseRef := branchName
 	if len(args) > 4 {
-		baseRef = args[len(args)-1]
+		recordedBaseRef = args[len(args)-1]
 	}
 	r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_created", map[string]interface{}{
 		"path":      preparedPath,
 		"branch":    branchName,
 		"repo_path": repoPath,
-		"base_ref":  baseRef,
+		"base_ref":  recordedBaseRef,
 	})
 	return true, preparedPath, nil
 }
@@ -807,27 +964,11 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 }
 
 func prepareWorkspaceDir(path, rootAbs string) (string, bool, error) {
-	workspacePath, err := filepath.Abs(path)
+	workspacePath, err := validateWorkspacePath(path, rootAbs)
 	if err != nil {
-		return "", false, fmt.Errorf("resolve workspace path: %w", err)
-	}
-	if !pathWithinRoot(workspacePath, rootAbs) {
-		return "", false, fmt.Errorf("workspace path escape: %s outside %s", workspacePath, rootAbs)
+		return "", false, err
 	}
 	if fi, err := os.Lstat(workspacePath); err == nil {
-		if fi.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(workspacePath)
-			if err != nil {
-				return "", false, fmt.Errorf("workspace symlink check failed: %w", err)
-			}
-			resolvedAbs, err := filepath.Abs(resolved)
-			if err != nil {
-				return "", false, fmt.Errorf("resolve workspace symlink: %w", err)
-			}
-			if !pathWithinRoot(resolvedAbs, rootAbs) {
-				return "", false, fmt.Errorf("workspace symlink escape: %s outside %s", resolvedAbs, rootAbs)
-			}
-		}
 		if !fi.IsDir() {
 			if err := os.Remove(workspacePath); err != nil {
 				return "", false, fmt.Errorf("remove stale workspace path: %w", err)
