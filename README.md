@@ -131,9 +131,17 @@ Issue images are stored next to the active database under `assets/images`. With 
 
 The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
 
-### 4. Add the Maestro MCP server to your coding agent
+### 4. Install the Maestro skill bundle and add the MCP server to your coding agent
 
-Use the setup path that matches your coding agent:
+Install the bundled Maestro skill first so Codex and Claude Code can load the repo-specific guidance automatically:
+
+```bash
+maestro install --skills
+```
+
+That writes the skill to `~/.agents/skills/maestro` for Codex and `~/.claude/skills/maestro` for Claude Code.
+
+Then use the setup path that matches your coding agent:
 
 Codex:
 

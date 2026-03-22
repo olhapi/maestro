@@ -89,6 +89,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	rootCmd.AddCommand(
 		app.newRunCmd(),
 		app.newMCPCmd(),
+		app.newInstallCmd(),
 		app.newBoardCmd(),
 		app.newIssueCmd(),
 		app.newProjectCmd(),
