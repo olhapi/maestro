@@ -447,6 +447,7 @@ describe("IssueDetailPage", () => {
       within(transcript).getByText("Command completed"),
     ).toBeInTheDocument();
     expect(within(transcript).getByText("npm test")).toBeInTheDocument();
+    expect(within(transcript).getByRole("button", { name: /copy all/i })).toBeInTheDocument();
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
   });
 
