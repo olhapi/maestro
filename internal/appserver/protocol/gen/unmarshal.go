@@ -63,24 +63,24 @@ func unmarshalBoolOrString[E ~string](data []byte, boolTarget **bool, enumTarget
 	return fmt.Errorf("decode union bool/string: %w", errors.Join(boolErr, enumErr))
 }
 
-func (s *PurpleSessionSource) UnmarshalJSON(data []byte) error {
-	return unmarshalStringOrObject[SessionSource, PurpleSubAgentSessionSource](data, &s.Enum, &s.PurpleSubAgentSessionSource)
+func (s *TentacledSessionSource) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[SessionSource, PurpleSessionSource](data, &s.Enum, &s.PurpleSessionSource)
 }
 
-func (s *FluffySessionSource) UnmarshalJSON(data []byte) error {
-	return unmarshalStringOrObject[SessionSource, FluffySubAgentSessionSource](data, &s.Enum, &s.FluffySubAgentSessionSource)
+func (s *StickySessionSource) UnmarshalJSON(data []byte) error {
+	return unmarshalStringOrObject[SessionSource, FluffySessionSource](data, &s.Enum, &s.FluffySessionSource)
 }
 
 func (p *ThreadStartParamsApprovalPolicy) UnmarshalJSON(data []byte) error {
-	return unmarshalStringOrObject[ApprovalPolicyEnum, PurpleRejectAskForApproval](data, &p.Enum, &p.PurpleRejectAskForApproval)
+	return unmarshalStringOrObject[ApprovalPolicyEnum, PurpleGranularAskForApproval](data, &p.Enum, &p.PurpleGranularAskForApproval)
 }
 
 func (p *AskForApproval) UnmarshalJSON(data []byte) error {
-	return unmarshalStringOrObject[ApprovalPolicyEnum, AskForApprovalRejectAskForApproval](data, &p.Enum, &p.AskForApprovalRejectAskForApproval)
+	return unmarshalStringOrObject[ApprovalPolicyEnum, AskForApprovalGranularAskForApproval](data, &p.Enum, &p.AskForApprovalGranularAskForApproval)
 }
 
 func (p *TurnStartParamsApprovalPolicy) UnmarshalJSON(data []byte) error {
-	return unmarshalStringOrObject[ApprovalPolicyEnum, FluffyRejectAskForApproval](data, &p.Enum, &p.FluffyRejectAskForApproval)
+	return unmarshalStringOrObject[ApprovalPolicyEnum, FluffyGranularAskForApproval](data, &p.Enum, &p.FluffyGranularAskForApproval)
 }
 
 func (n *NetworkAccessUnion) UnmarshalJSON(data []byte) error {

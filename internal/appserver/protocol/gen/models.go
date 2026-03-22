@@ -10,7 +10,7 @@ type InitializeCapabilities struct {
 	// Opt into receiving experimental API methods and fields.
 	ExperimentalAPI *bool `json:"experimentalApi,omitempty"`
 	// Exact notification method names that should be suppressed for this connection (for
-	// example `codex/event/session_configured`).
+	// example `thread/started`).
 	OptOutNotificationMethods []string `json:"optOutNotificationMethods"`
 }
 
@@ -21,55 +21,67 @@ type ClientInfo struct {
 }
 
 type InitializeResponse struct {
-	UserAgent string `json:"userAgent"`
+	// Platform family for the running app-server target, for example `"unix"` or `"windows"`.
+	PlatformFamily string `json:"platformFamily"`
+	// Operating system for the running app-server target, for example `"macos"`, `"linux"`, or
+	// `"windows"`.
+	PlatformOS string `json:"platformOs"`
+	UserAgent  string `json:"userAgent"`
 }
 
 type ThreadStartParams struct {
-	ApprovalPolicy        *ThreadStartParamsApprovalPolicy `json:"approvalPolicy"`
-	BaseInstructions      *string                          `json:"baseInstructions"`
-	Config                map[string]interface{}           `json:"config"`
-	Cwd                   *string                          `json:"cwd"`
-	DeveloperInstructions *string                          `json:"developerInstructions"`
-	Ephemeral             *bool                            `json:"ephemeral"`
-	Model                 *string                          `json:"model"`
-	ModelProvider         *string                          `json:"modelProvider"`
-	Personality           *Personality                     `json:"personality"`
-	Sandbox               *SandboxMode                     `json:"sandbox"`
-	ServiceName           *string                          `json:"serviceName"`
-	ServiceTier           *ServiceTier                     `json:"serviceTier"`
+	ApprovalPolicy *ThreadStartParamsApprovalPolicy `json:"approvalPolicy"`
+	// Override where approval requests are routed for review on this thread and subsequent
+	// turns.
+	ApprovalsReviewer     *ApprovalsReviewer     `json:"approvalsReviewer"`
+	BaseInstructions      *string                `json:"baseInstructions"`
+	Config                map[string]interface{} `json:"config"`
+	Cwd                   *string                `json:"cwd"`
+	DeveloperInstructions *string                `json:"developerInstructions"`
+	Ephemeral             *bool                  `json:"ephemeral"`
+	Model                 *string                `json:"model"`
+	ModelProvider         *string                `json:"modelProvider"`
+	Personality           *Personality           `json:"personality"`
+	Sandbox               *SandboxMode           `json:"sandbox"`
+	ServiceName           *string                `json:"serviceName"`
+	ServiceTier           *ServiceTier           `json:"serviceTier"`
 }
 
-type PurpleRejectAskForApproval struct {
-	Reject PurpleReject `json:"reject"`
+type PurpleGranularAskForApproval struct {
+	Granular PurpleGranular `json:"granular"`
 }
 
-type PurpleReject struct {
+type PurpleGranular struct {
 	MCPElicitations    bool  `json:"mcp_elicitations"`
 	RequestPermissions *bool `json:"request_permissions,omitempty"`
 	Rules              bool  `json:"rules"`
 	SandboxApproval    bool  `json:"sandbox_approval"`
+	SkillApproval      *bool `json:"skill_approval,omitempty"`
 }
 
 type ThreadStartResponse struct {
-	ApprovalPolicy  *AskForApproval           `json:"approvalPolicy"`
-	Cwd             string                    `json:"cwd"`
-	Model           string                    `json:"model"`
-	ModelProvider   string                    `json:"modelProvider"`
-	ReasoningEffort *ReasoningEffort          `json:"reasoningEffort"`
-	Sandbox         SandboxPolicy             `json:"sandbox"`
-	ServiceTier     *ServiceTier              `json:"serviceTier"`
-	Thread          ThreadStartResponseThread `json:"thread"`
+	ApprovalPolicy *AskForApproval `json:"approvalPolicy"`
+	// Reviewer currently used for approval requests on this thread.
+	ApprovalsReviewer ApprovalsReviewer         `json:"approvalsReviewer"`
+	Cwd               string                    `json:"cwd"`
+	Model             string                    `json:"model"`
+	ModelProvider     string                    `json:"modelProvider"`
+	ReasoningEffort   *ReasoningEffort          `json:"reasoningEffort"`
+	Sandbox           SandboxPolicy             `json:"sandbox"`
+	ServiceTier       *ServiceTier              `json:"serviceTier"`
+	Thread            ThreadStartResponseThread `json:"thread"`
 }
 
-type AskForApprovalRejectAskForApproval struct {
-	Reject FluffyReject `json:"reject"`
+type AskForApprovalGranularAskForApproval struct {
+	Granular FluffyGranular `json:"granular"`
 }
 
-type FluffyReject struct {
+type FluffyGranular struct {
 	MCPElicitations    bool  `json:"mcp_elicitations"`
 	RequestPermissions *bool `json:"request_permissions,omitempty"`
 	Rules              bool  `json:"rules"`
 	SandboxApproval    bool  `json:"sandbox_approval"`
+	SkillApproval      *bool `json:"skill_approval,omitempty"`
 }
 
 type SandboxPolicy struct {
@@ -113,7 +125,7 @@ type ThreadStartResponseThread struct {
 	// Usually the first user message in the thread, if available.
 	Preview string `json:"preview"`
 	// Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
-	Source *PurpleSessionSource `json:"source"`
+	Source *TentacledSessionSource `json:"source"`
 	// Current runtime status for the thread.
 	Status PurpleThreadStatus `json:"status"`
 	// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
@@ -130,7 +142,8 @@ type PurpleGitInfo struct {
 	SHA       *string `json:"sha"`
 }
 
-type PurpleSubAgentSessionSource struct {
+type PurpleSessionSource struct {
+	Custom   *string                  `json:"custom,omitempty"`
 	SubAgent *TentacledSubAgentSource `json:"subAgent"`
 }
 
@@ -201,11 +214,12 @@ type PurpleResponseTooManyFailedAttempts struct {
 type PurpleThreadItem struct {
 	Content []PurpleContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID      string         `json:"id"`
-	Type    ThreadItemType `json:"type"`
-	Phase   *MessagePhase  `json:"phase"`
-	Text    *string        `json:"text,omitempty"`
-	Summary []string       `json:"summary,omitempty"`
+	ID             string                `json:"id"`
+	Type           ThreadItemType        `json:"type"`
+	MemoryCitation *PurpleMemoryCitation `json:"memoryCitation"`
+	Phase          *MessagePhase         `json:"phase"`
+	Text           *string               `json:"text,omitempty"`
+	Summary        []string              `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -239,8 +253,12 @@ type PurpleThreadItem struct {
 	Success      *bool                                    `json:"success"`
 	// Last known status of the target agents, when available.
 	AgentsStates map[string]PurpleCollabAgentState `json:"agentsStates,omitempty"`
+	// Model requested for the spawned agent, when applicable.
+	Model *string `json:"model"`
 	// Prompt text sent as part of the collab tool call, when available.
 	Prompt *string `json:"prompt"`
+	// Reasoning effort requested for the spawned agent, when applicable.
+	ReasoningEffort *ReasoningEffort `json:"reasoningEffort"`
 	// Thread ID of the receiving agent, when applicable. In case of spawn operation, this
 	// corresponds to the newly spawned agent.
 	ReceiverThreadIDS []string `json:"receiverThreadIds,omitempty"`
@@ -318,6 +336,18 @@ type PurpleMCPToolCallError struct {
 	Message string `json:"message"`
 }
 
+type PurpleMemoryCitation struct {
+	Entries   []PurpleMemoryCitationEntry `json:"entries"`
+	ThreadIDS []string                    `json:"threadIds"`
+}
+
+type PurpleMemoryCitationEntry struct {
+	LineEnd   int64  `json:"lineEnd"`
+	LineStart int64  `json:"lineStart"`
+	Note      string `json:"note"`
+	Path      string `json:"path"`
+}
+
 type PurpleMCPToolCallResult struct {
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
@@ -326,6 +356,8 @@ type PurpleMCPToolCallResult struct {
 type TurnStartParams struct {
 	// Override the approval policy for this turn and subsequent turns.
 	ApprovalPolicy *TurnStartParamsApprovalPolicy `json:"approvalPolicy"`
+	// Override where approval requests are routed for review on this turn and subsequent turns.
+	ApprovalsReviewer *ApprovalsReviewer `json:"approvalsReviewer"`
 	// Override the working directory for this turn and subsequent turns.
 	Cwd *string `json:"cwd"`
 	// Override the reasoning effort for this turn and subsequent turns.
@@ -346,15 +378,16 @@ type TurnStartParams struct {
 	ThreadID string            `json:"threadId"`
 }
 
-type FluffyRejectAskForApproval struct {
-	Reject TentacledReject `json:"reject"`
+type FluffyGranularAskForApproval struct {
+	Granular TentacledGranular `json:"granular"`
 }
 
-type TentacledReject struct {
+type TentacledGranular struct {
 	MCPElicitations    bool  `json:"mcp_elicitations"`
 	RequestPermissions *bool `json:"request_permissions,omitempty"`
 	Rules              bool  `json:"rules"`
 	SandboxApproval    bool  `json:"sandbox_approval"`
+	SkillApproval      *bool `json:"skill_approval,omitempty"`
 }
 
 type UserInputElement struct {
@@ -449,11 +482,12 @@ type FluffyResponseTooManyFailedAttempts struct {
 type FluffyThreadItem struct {
 	Content []FluffyContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID      string         `json:"id"`
-	Type    ThreadItemType `json:"type"`
-	Phase   *MessagePhase  `json:"phase"`
-	Text    *string        `json:"text,omitempty"`
-	Summary []string       `json:"summary,omitempty"`
+	ID             string                `json:"id"`
+	Type           ThreadItemType        `json:"type"`
+	MemoryCitation *FluffyMemoryCitation `json:"memoryCitation"`
+	Phase          *MessagePhase         `json:"phase"`
+	Text           *string               `json:"text,omitempty"`
+	Summary        []string              `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -487,8 +521,12 @@ type FluffyThreadItem struct {
 	Success      *bool                                    `json:"success"`
 	// Last known status of the target agents, when available.
 	AgentsStates map[string]FluffyCollabAgentState `json:"agentsStates,omitempty"`
+	// Model requested for the spawned agent, when applicable.
+	Model *string `json:"model"`
 	// Prompt text sent as part of the collab tool call, when available.
 	Prompt *string `json:"prompt"`
+	// Reasoning effort requested for the spawned agent, when applicable.
+	ReasoningEffort *ReasoningEffort `json:"reasoningEffort"`
 	// Thread ID of the receiving agent, when applicable. In case of spawn operation, this
 	// corresponds to the newly spawned agent.
 	ReceiverThreadIDS []string `json:"receiverThreadIds,omitempty"`
@@ -566,6 +604,18 @@ type FluffyMCPToolCallError struct {
 	Message string `json:"message"`
 }
 
+type FluffyMemoryCitation struct {
+	Entries   []FluffyMemoryCitationEntry `json:"entries"`
+	ThreadIDS []string                    `json:"threadIds"`
+}
+
+type FluffyMemoryCitationEntry struct {
+	LineEnd   int64  `json:"lineEnd"`
+	LineStart int64  `json:"lineStart"`
+	Note      string `json:"note"`
+	Path      string `json:"path"`
+}
+
 type FluffyMCPToolCallResult struct {
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
@@ -600,7 +650,7 @@ type ThreadStartedNotificationThread struct {
 	// Usually the first user message in the thread, if available.
 	Preview string `json:"preview"`
 	// Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
-	Source *FluffySessionSource `json:"source"`
+	Source *StickySessionSource `json:"source"`
 	// Current runtime status for the thread.
 	Status FluffyThreadStatus `json:"status"`
 	// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
@@ -617,7 +667,8 @@ type FluffyGitInfo struct {
 	SHA       *string `json:"sha"`
 }
 
-type FluffySubAgentSessionSource struct {
+type FluffySessionSource struct {
+	Custom   *string               `json:"custom,omitempty"`
 	SubAgent *StickySubAgentSource `json:"subAgent"`
 }
 
@@ -688,11 +739,12 @@ type TentacledResponseTooManyFailedAttempts struct {
 type TentacledThreadItem struct {
 	Content []TentacledContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID      string         `json:"id"`
-	Type    ThreadItemType `json:"type"`
-	Phase   *MessagePhase  `json:"phase"`
-	Text    *string        `json:"text,omitempty"`
-	Summary []string       `json:"summary,omitempty"`
+	ID             string                   `json:"id"`
+	Type           ThreadItemType           `json:"type"`
+	MemoryCitation *TentacledMemoryCitation `json:"memoryCitation"`
+	Phase          *MessagePhase            `json:"phase"`
+	Text           *string                  `json:"text,omitempty"`
+	Summary        []string                 `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -726,8 +778,12 @@ type TentacledThreadItem struct {
 	Success      *bool                                       `json:"success"`
 	// Last known status of the target agents, when available.
 	AgentsStates map[string]TentacledCollabAgentState `json:"agentsStates,omitempty"`
+	// Model requested for the spawned agent, when applicable.
+	Model *string `json:"model"`
 	// Prompt text sent as part of the collab tool call, when available.
 	Prompt *string `json:"prompt"`
+	// Reasoning effort requested for the spawned agent, when applicable.
+	ReasoningEffort *ReasoningEffort `json:"reasoningEffort"`
 	// Thread ID of the receiving agent, when applicable. In case of spawn operation, this
 	// corresponds to the newly spawned agent.
 	ReceiverThreadIDS []string `json:"receiverThreadIds,omitempty"`
@@ -805,6 +861,18 @@ type TentacledMCPToolCallError struct {
 	Message string `json:"message"`
 }
 
+type TentacledMemoryCitation struct {
+	Entries   []TentacledMemoryCitationEntry `json:"entries"`
+	ThreadIDS []string                       `json:"threadIds"`
+}
+
+type TentacledMemoryCitationEntry struct {
+	LineEnd   int64  `json:"lineEnd"`
+	LineStart int64  `json:"lineStart"`
+	Note      string `json:"note"`
+	Path      string `json:"path"`
+}
+
 type TentacledMCPToolCallResult struct {
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
@@ -864,11 +932,12 @@ type StickyResponseTooManyFailedAttempts struct {
 type StickyThreadItem struct {
 	Content []StickyContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID      string         `json:"id"`
-	Type    ThreadItemType `json:"type"`
-	Phase   *MessagePhase  `json:"phase"`
-	Text    *string        `json:"text,omitempty"`
-	Summary []string       `json:"summary,omitempty"`
+	ID             string                `json:"id"`
+	Type           ThreadItemType        `json:"type"`
+	MemoryCitation *StickyMemoryCitation `json:"memoryCitation"`
+	Phase          *MessagePhase         `json:"phase"`
+	Text           *string               `json:"text,omitempty"`
+	Summary        []string              `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -902,8 +971,12 @@ type StickyThreadItem struct {
 	Success      *bool                                    `json:"success"`
 	// Last known status of the target agents, when available.
 	AgentsStates map[string]StickyCollabAgentState `json:"agentsStates,omitempty"`
+	// Model requested for the spawned agent, when applicable.
+	Model *string `json:"model"`
 	// Prompt text sent as part of the collab tool call, when available.
 	Prompt *string `json:"prompt"`
+	// Reasoning effort requested for the spawned agent, when applicable.
+	ReasoningEffort *ReasoningEffort `json:"reasoningEffort"`
 	// Thread ID of the receiving agent, when applicable. In case of spawn operation, this
 	// corresponds to the newly spawned agent.
 	ReceiverThreadIDS []string `json:"receiverThreadIds,omitempty"`
@@ -981,6 +1054,18 @@ type StickyMCPToolCallError struct {
 	Message string `json:"message"`
 }
 
+type StickyMemoryCitation struct {
+	Entries   []StickyMemoryCitationEntry `json:"entries"`
+	ThreadIDS []string                    `json:"threadIds"`
+}
+
+type StickyMemoryCitationEntry struct {
+	LineEnd   int64  `json:"lineEnd"`
+	LineStart int64  `json:"lineStart"`
+	Note      string `json:"note"`
+	Path      string `json:"path"`
+}
+
 type StickyMCPToolCallResult struct {
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
@@ -1040,11 +1125,12 @@ type IndigoResponseTooManyFailedAttempts struct {
 type IndigoThreadItem struct {
 	Content []IndigoContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID      string         `json:"id"`
-	Type    ThreadItemType `json:"type"`
-	Phase   *MessagePhase  `json:"phase"`
-	Text    *string        `json:"text,omitempty"`
-	Summary []string       `json:"summary,omitempty"`
+	ID             string                `json:"id"`
+	Type           ThreadItemType        `json:"type"`
+	MemoryCitation *IndigoMemoryCitation `json:"memoryCitation"`
+	Phase          *MessagePhase         `json:"phase"`
+	Text           *string               `json:"text,omitempty"`
+	Summary        []string              `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -1078,8 +1164,12 @@ type IndigoThreadItem struct {
 	Success      *bool                                    `json:"success"`
 	// Last known status of the target agents, when available.
 	AgentsStates map[string]IndigoCollabAgentState `json:"agentsStates,omitempty"`
+	// Model requested for the spawned agent, when applicable.
+	Model *string `json:"model"`
 	// Prompt text sent as part of the collab tool call, when available.
 	Prompt *string `json:"prompt"`
+	// Reasoning effort requested for the spawned agent, when applicable.
+	ReasoningEffort *ReasoningEffort `json:"reasoningEffort"`
 	// Thread ID of the receiving agent, when applicable. In case of spawn operation, this
 	// corresponds to the newly spawned agent.
 	ReceiverThreadIDS []string `json:"receiverThreadIds,omitempty"`
@@ -1155,6 +1245,18 @@ type IndigoDynamicToolCallOutputContentItem struct {
 
 type IndigoMCPToolCallError struct {
 	Message string `json:"message"`
+}
+
+type IndigoMemoryCitation struct {
+	Entries   []IndigoMemoryCitationEntry `json:"entries"`
+	ThreadIDS []string                    `json:"threadIds"`
+}
+
+type IndigoMemoryCitationEntry struct {
+	LineEnd   int64  `json:"lineEnd"`
+	LineStart int64  `json:"lineStart"`
+	Note      string `json:"note"`
+	Path      string `json:"path"`
 }
 
 type IndigoMCPToolCallResult struct {
@@ -1409,6 +1511,19 @@ const (
 	Untrusted ApprovalPolicyEnum = "untrusted"
 )
 
+// Configures who approval requests are routed to for review. Examples include sandbox
+// escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to
+// `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context
+// and apply a risk-based decision framework before approving or denying the request.
+//
+// Reviewer currently used for approval requests on this thread.
+type ApprovalsReviewer string
+
+const (
+	GuardianSubagent ApprovalsReviewer = "guardian_subagent"
+	User             ApprovalsReviewer = "user"
+)
+
 type Personality string
 
 const (
@@ -1528,12 +1643,13 @@ const (
 type CollabAgentStatus string
 
 const (
-	CollabAgentStatusCompleted CollabAgentStatus = "completed"
-	Errored                    CollabAgentStatus = "errored"
-	NotFound                   CollabAgentStatus = "notFound"
-	PendingInit                CollabAgentStatus = "pendingInit"
-	Running                    CollabAgentStatus = "running"
-	Shutdown                   CollabAgentStatus = "shutdown"
+	CollabAgentStatusCompleted   CollabAgentStatus = "completed"
+	CollabAgentStatusInterrupted CollabAgentStatus = "interrupted"
+	Errored                      CollabAgentStatus = "errored"
+	NotFound                     CollabAgentStatus = "notFound"
+	PendingInit                  CollabAgentStatus = "pendingInit"
+	Running                      CollabAgentStatus = "running"
+	Shutdown                     CollabAgentStatus = "shutdown"
 )
 
 type Type string
@@ -1605,10 +1721,10 @@ const (
 type TurnStatus string
 
 const (
-	Failed              TurnStatus = "failed"
-	InProgress          TurnStatus = "inProgress"
-	Interrupted         TurnStatus = "interrupted"
-	TurnStatusCompleted TurnStatus = "completed"
+	Failed                TurnStatus = "failed"
+	InProgress            TurnStatus = "inProgress"
+	TurnStatusCompleted   TurnStatus = "completed"
+	TurnStatusInterrupted TurnStatus = "interrupted"
 )
 
 // Option to disable reasoning summaries.
@@ -1692,13 +1808,13 @@ const (
 )
 
 type ThreadStartParamsApprovalPolicy struct {
-	Enum                       *ApprovalPolicyEnum
-	PurpleRejectAskForApproval *PurpleRejectAskForApproval
+	Enum                         *ApprovalPolicyEnum
+	PurpleGranularAskForApproval *PurpleGranularAskForApproval
 }
 
 type AskForApproval struct {
-	AskForApprovalRejectAskForApproval *AskForApprovalRejectAskForApproval
-	Enum                               *ApprovalPolicyEnum
+	AskForApprovalGranularAskForApproval *AskForApprovalGranularAskForApproval
+	Enum                                 *ApprovalPolicyEnum
 }
 
 type NetworkAccessUnion struct {
@@ -1707,9 +1823,9 @@ type NetworkAccessUnion struct {
 }
 
 // Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
-type PurpleSessionSource struct {
-	Enum                        *SessionSource
-	PurpleSubAgentSessionSource *PurpleSubAgentSessionSource
+type TentacledSessionSource struct {
+	Enum                *SessionSource
+	PurpleSessionSource *PurpleSessionSource
 }
 
 type TentacledSubAgentSource struct {
@@ -1734,8 +1850,8 @@ type PurpleResult struct {
 
 // Override the approval policy for this turn and subsequent turns.
 type TurnStartParamsApprovalPolicy struct {
-	Enum                       *ApprovalPolicyEnum
-	FluffyRejectAskForApproval *FluffyRejectAskForApproval
+	Enum                         *ApprovalPolicyEnum
+	FluffyGranularAskForApproval *FluffyGranularAskForApproval
 }
 
 type HilariousCodexErrorInfo struct {
@@ -1754,9 +1870,9 @@ type FluffyResult struct {
 }
 
 // Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
-type FluffySessionSource struct {
-	Enum                        *SessionSource
-	FluffySubAgentSessionSource *FluffySubAgentSessionSource
+type StickySessionSource struct {
+	Enum                *SessionSource
+	FluffySessionSource *FluffySessionSource
 }
 
 type StickySubAgentSource struct {

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
@@ -31,6 +31,7 @@ function makeGroups(entries: ActivityEntry[]): ActivityGroup[] {
 }
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+const originalExecCommandDescriptor = Object.getOwnPropertyDescriptor(document, 'execCommand')
 
 function mockClipboard(writeText = vi.fn().mockResolvedValue(undefined)) {
   Object.defineProperty(navigator, 'clipboard', {
@@ -52,10 +53,31 @@ function restoreClipboard() {
   delete (navigator as typeof navigator & { clipboard?: unknown }).clipboard
 }
 
+function mockExecCommand(result = true) {
+  const execCommand = vi.fn(() => result)
+
+  Object.defineProperty(document, 'execCommand', {
+    configurable: true,
+    value: execCommand,
+  })
+
+  return execCommand
+}
+
+function restoreExecCommand() {
+  if (originalExecCommandDescriptor) {
+    Object.defineProperty(document, 'execCommand', originalExecCommandDescriptor)
+    return
+  }
+
+  delete (document as typeof document & { execCommand?: unknown }).execCommand
+}
+
 describe('SessionActivityTranscript', () => {
   afterEach(() => {
     vi.useRealTimers()
     restoreClipboard()
+    restoreExecCommand()
   })
 
   it('renders the transcript inside a scroll container with a fixed-width toggle', () => {
@@ -88,7 +110,7 @@ describe('SessionActivityTranscript', () => {
     expect(toggle).toHaveTextContent('Collapse')
   })
 
-  it('copies the loaded transcript groups as pretty-printed JSON', async () => {
+  it('copies the loaded transcript groups with the native clipboard API', async () => {
     vi.useFakeTimers()
     const writeText = mockClipboard()
     const groups = makeGroups([
@@ -106,7 +128,10 @@ describe('SessionActivityTranscript', () => {
 
     render(<SessionActivityTranscript groups={groups} />)
 
-    fireEvent.click(screen.getByRole('button', { name: /copy all/i }))
+    const button = screen.getByRole('button', { name: /copy all/i })
+    expect(button).toBeEnabled()
+
+    fireEvent.click(button)
 
     expect(writeText).toHaveBeenCalledWith(JSON.stringify(groups, null, 2))
 
@@ -121,6 +146,47 @@ describe('SessionActivityTranscript', () => {
     })
 
     expect(screen.getByRole('button', { name: /copy all/i })).toBeInTheDocument()
+  })
+
+  it('falls back to execCommand when the clipboard API is unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    })
+    const execCommand = mockExecCommand(true)
+
+    render(<SessionActivityTranscript groups={makeGroups([makeCommandEntry()])} />)
+
+    const button = screen.getByRole('button', { name: /copy all/i })
+    expect(button).toBeEnabled()
+
+    fireEvent.click(button)
+
+    expect(execCommand).toHaveBeenCalledWith('copy')
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /copied/i })).toBeInTheDocument()
+    })
+  })
+
+  it('falls back to execCommand when the clipboard API rejects', async () => {
+    const writeText = mockClipboard(vi.fn().mockRejectedValue(new Error('permission denied')))
+    const execCommand = mockExecCommand(true)
+    const groups = makeGroups([makeCommandEntry()])
+
+    render(<SessionActivityTranscript groups={groups} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /copy all/i }))
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(groups, null, 2))
+
+    await waitFor(() => {
+      expect(execCommand).toHaveBeenCalledWith('copy')
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /copied/i })).toBeInTheDocument()
+    })
   })
 
   it('renders markdown-formatted activity summaries', () => {
@@ -152,17 +218,6 @@ describe('SessionActivityTranscript', () => {
     expect(titleRow).toHaveClass('flex')
     expect(titleRow).toHaveClass('items-center')
     expect(titleRow?.querySelector('span')).toHaveClass('size-1.5')
-  })
-
-  it('disables copy all when clipboard access is unavailable', () => {
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: undefined,
-    })
-
-    render(<SessionActivityTranscript groups={makeGroups([makeCommandEntry()])} />)
-
-    expect(screen.getByRole('button', { name: /copy all/i })).toBeDisabled()
   })
 
   it('keeps an expanded command row open when the same row updates in place', () => {

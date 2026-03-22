@@ -211,7 +211,7 @@ func toThreadApprovalPolicy(raw interface{}) (*gen.ThreadStartParamsApprovalPoli
 		if err != nil {
 			return nil, err
 		}
-		return &gen.ThreadStartParamsApprovalPolicy{PurpleRejectAskForApproval: reject}, nil
+		return &gen.ThreadStartParamsApprovalPolicy{PurpleGranularAskForApproval: reject}, nil
 	default:
 		return nil, fmt.Errorf("unsupported thread approval policy type %T", raw)
 	}
@@ -233,7 +233,7 @@ func toTurnApprovalPolicy(raw interface{}) (*gen.TurnStartParamsApprovalPolicy, 
 		if err != nil {
 			return nil, err
 		}
-		return &gen.TurnStartParamsApprovalPolicy{FluffyRejectAskForApproval: reject}, nil
+		return &gen.TurnStartParamsApprovalPolicy{FluffyGranularAskForApproval: reject}, nil
 	default:
 		return nil, fmt.Errorf("unsupported turn approval policy type %T", raw)
 	}
@@ -297,13 +297,13 @@ func toApprovalPolicyEnum(raw string) (gen.ApprovalPolicyEnum, error) {
 	return out, nil
 }
 
-func toThreadRejectApproval(raw map[string]interface{}) (*gen.PurpleRejectAskForApproval, error) {
+func toThreadRejectApproval(raw map[string]interface{}) (*gen.PurpleGranularAskForApproval, error) {
 	rejectMap, ok := raw["reject"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("decode thread approval policy: missing reject policy")
 	}
-	return &gen.PurpleRejectAskForApproval{
-		Reject: gen.PurpleReject{
+	return &gen.PurpleGranularAskForApproval{
+		Granular: gen.PurpleGranular{
 			MCPElicitations: boolValueOrFalse(rejectMap["mcp_elicitations"]),
 			Rules:           boolValueOrFalse(rejectMap["rules"]),
 			SandboxApproval: boolValueOrFalse(rejectMap["sandbox_approval"]),
@@ -317,13 +317,13 @@ func toThreadRejectApproval(raw map[string]interface{}) (*gen.PurpleRejectAskFor
 	}, nil
 }
 
-func toTurnRejectApproval(raw map[string]interface{}) (*gen.FluffyRejectAskForApproval, error) {
+func toTurnRejectApproval(raw map[string]interface{}) (*gen.FluffyGranularAskForApproval, error) {
 	rejectMap, ok := raw["reject"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("decode turn approval policy: missing reject policy")
 	}
-	return &gen.FluffyRejectAskForApproval{
-		Reject: gen.TentacledReject{
+	return &gen.FluffyGranularAskForApproval{
+		Granular: gen.TentacledGranular{
 			MCPElicitations: boolValueOrFalse(rejectMap["mcp_elicitations"]),
 			Rules:           boolValueOrFalse(rejectMap["rules"]),
 			SandboxApproval: boolValueOrFalse(rejectMap["sandbox_approval"]),
