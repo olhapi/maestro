@@ -291,7 +291,7 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 - `agent.mode: app_server`
 - `agent.dispatch_mode: parallel`
 - `codex.command: codex app-server`
-- `codex.expected_version: 0.114.0`
+- `codex.expected_version: 0.116.0`
 - `codex.approval_policy: never`
 - `codex.initial_collaboration_mode: default` for fresh `app_server` threads
 - runtime permission profiles now live in the DB per project/issue instead of `WORKFLOW.md`
