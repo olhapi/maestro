@@ -325,7 +325,7 @@ codex:
   # Expected codex --version. Mismatches warn but do not hard-fail.
   expected_version: %s
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
-  # A structured reject object is also supported for per-category rejection policies.
+  # A structured granular object is also supported for per-category approval policies.
   approval_policy: %v
   # Initial collaboration mode for fresh app_server threads. Other option: plan.
   # Ignored for stdio runs and resumed threads.

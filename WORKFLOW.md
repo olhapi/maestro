@@ -120,41 +120,35 @@ No description provided.
 
 ## Default posture
 
-- Start by determining the ticket's current status, then follow the matching flow for that status.
-- Start every task by opening the tracking workpad comment and bringing it up to date before doing new implementation work.
-- Spend extra effort up front on planning and verification design before implementation.
-- Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
-- Keep ticket metadata current (state, checklist, acceptance criteria, links).
-- Treat a single persistent issue comment as the source of truth for progress.
-- When meaningful out-of-scope improvements are discovered during execution,
-  file a separate issue using maestro CLI instead of expanding scope. The follow-up issue
-  must include a clear title, description, and acceptance criteria, be placed in
-  `Backlog`, be assigned to the same project as the current issue, link the
-  current issue in description, and set blocker when the follow-up depends on
-  the current issue.
-- Move status only when the matching quality bar is met.
-- Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+- Determine the issue status first, then follow the matching flow.
+- Open the Maestro Workpad comment immediately and update it before new implementation work.
+- Plan before coding. Design verification before changing code.
+- Reproduce or inspect current behavior first so the target is explicit.
+- Keep metadata current: state, checklist, acceptance criteria, and links.
+- Treat the persistent workpad comment as the source of truth.
+- If you find meaningful out-of-scope work, file a separate maestro CLI issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
+- Move status only when the quality bar for that status is met.
+- Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
 
 ## Instructions
-1. Work only inside the provided workspace for this issue.
-2. Keep the change focused on the issue and preserve the existing project conventions.
-3. Reproduce or inspect the current behavior before making code changes when possible.
-4. Run the relevant validation for the scope you changed.
-5. Create and work from a dedicated issue branch before making changes. Use a deterministic branch name such as `maestro/{{ issue.identifier }}`.
-6. A task is not complete just because the workspace branch is green. Before considering the task complete, the change must be merged into the repository's `main` branch.
-7. Before marking the issue done, sync with the latest `origin/main`, merge the issue branch into local `main`, rerun the relevant validation on `main`, and push `main` to origin.
-8. If you create a branch, commit, PR, or merge commit, add issue comment with the result when applicable.
-9. If blocked by missing credentials, permissions, merge conflicts, or required services, stop and report the blocker clearly in the final message and add comment with the same message.
-10. Final message should contain only completed work, validation run, merge status, and blockers.
+1. Stay inside the provided workspace.
+2. Keep the change focused and preserve project conventions.
+3. Reproduce or inspect current behavior before editing when possible.
+4. Run validation that covers the changed scope.
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+6. Do not consider the task complete until the change is merged into local main.
+7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
+8. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
+9. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
+10. Final message must contain only completed work, validation run, merge status, and blockers.
 
 
 ## Guardrails
 
-- If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `Backlog`, do not modify it; wait for human to move to `Ready`.
-- Do not edit the issue body/description for planning or progress tracking.
-- Use exactly one persistent workpad comment (`## Maestro Workpad`) per issue.
+- If the branch PR is already closed or merged, do not reuse it. Create a new branch from origin/main and restart from reproduction and planning.
+- If the issue state is Backlog, do not modify it; wait for a human to move it to Ready.
+- Do not edit the issue body for planning or progress updates.
+- Use exactly one persistent workpad comment (## Maestro Workpad) per issue.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - Keep issue text concise, specific, and reviewer-oriented.
-- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
+- If blocked and no workpad exists yet, add one blocker comment with the blocker, impact, and next unblock action.

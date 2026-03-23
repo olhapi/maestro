@@ -128,7 +128,7 @@ func DefaultConfig() Config {
 			Command:         "codex app-server",
 			ExpectedVersion: codexschema.SupportedVersion,
 			ApprovalPolicy: map[string]interface{}{
-				"reject": map[string]interface{}{
+				"granular": map[string]interface{}{
 					"sandbox_approval":    true,
 					"rules":               true,
 					"mcp_elicitations":    true,
@@ -181,6 +181,41 @@ Description:
 {% else %}
 No description provided.
 {% endif %}
+
+## Default posture
+
+- Determine the issue status first, then follow the matching flow.
+- Open the Maestro Workpad comment immediately and update it before new implementation work.
+- Plan before coding. Design verification before changing code.
+- Reproduce or inspect current behavior first so the target is explicit.
+- Keep metadata current: state, checklist, acceptance criteria, and links.
+- Treat the persistent workpad comment as the source of truth.
+- If you find meaningful out-of-scope work, file a separate maestro CLI issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
+- Move status only when the quality bar for that status is met.
+- Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
+
+## Instructions
+
+1. Stay inside the provided workspace.
+2. Keep the change focused and preserve project conventions.
+3. Reproduce or inspect current behavior before editing when possible.
+4. Run validation that covers the changed scope.
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+6. Do not consider the task complete until the change is merged into local main.
+7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
+8. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
+9. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
+10. Final message must contain only completed work, validation run, merge status, and blockers.
+
+## Guardrails
+
+- If the branch PR is already closed or merged, do not reuse it. Create a new branch from origin/main and restart from reproduction and planning.
+- If the issue state is Backlog, do not modify it; wait for a human to move it to Ready.
+- Do not edit the issue body for planning or progress updates.
+- Use exactly one persistent workpad comment (## Maestro Workpad) per issue.
+- Temporary proof edits are allowed only for local verification and must be reverted before commit.
+- Keep issue text concise, specific, and reviewer-oriented.
+- If blocked and no workpad exists yet, add one blocker comment with the blocker, impact, and next unblock action.
 `)
 }
 
@@ -239,12 +274,13 @@ Description:
 No description provided.
 {% endif %}
 
-The implementation is already complete. The done phase owns merge-back and finalization for this issue from the current workspace.
+The done phase owns merge-back and finalization for this issue from the current workspace. The work is complete only after it is merged into local main and pushed to origin.
 
-- Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.
-- Consider the work complete once the change is merged.
-- If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.
-- If any other blocker prevents completion, report it clearly and keep the issue in done unless the work truly needs to be reopened.
+- Sync origin/main first.
+- Merge the issue branch into local main.
+- Rerun the relevant validation on main.
+- Push main to origin.
+- If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.
 `)
 }
 
@@ -256,7 +292,13 @@ Project context:
 {{ project.description }}
 
 {% endif %}
-The done phase owns merge-back and finalization. Merge the issue branch back when possible, resolving merge conflicts when you can do so safely. Consider the work complete once the change is merged. If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete. If any other blocker prevents completion, report it clearly and keep the issue in done unless it truly needs to be reopened.
+The done phase owns merge-back and finalization. The work is complete only after it is merged into local main and pushed to origin.
+
+- Sync origin/main first.
+- Merge the issue branch into local main.
+- Rerun the relevant validation on main.
+- Push main to origin.
+- If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.
 `)
 }
 

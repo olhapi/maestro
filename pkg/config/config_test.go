@@ -20,14 +20,42 @@ func assertContainsAll(t *testing.T, text string, wants ...string) {
 	}
 }
 
+func assertGranularApprovalPolicy(t *testing.T, policy interface{}) {
+	t.Helper()
+	root, ok := policy.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map approval policy, got %#v", policy)
+	}
+	granular, ok := root["granular"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected granular approval policy, got %#v", policy)
+	}
+	if granular["mcp_elicitations"] != true || granular["rules"] != true || granular["sandbox_approval"] != true || granular["request_permissions"] != false {
+		t.Fatalf("unexpected granular approval policy: %#v", policy)
+	}
+}
+
+func assertDefaultPromptSemantics(t *testing.T, prompt string) {
+	t.Helper()
+	assertContainsAll(t, prompt,
+		"Determine the issue status first, then follow the matching flow.",
+		"Open the Maestro Workpad comment immediately and update it before new implementation work.",
+		"Plan before coding. Design verification before changing code.",
+		"Reproduce or inspect current behavior first so the target is explicit.",
+		"Treat the persistent workpad comment as the source of truth.",
+		"Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.",
+	)
+}
+
 func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
-		"The done phase owns merge-back and finalization for this issue from the current workspace.",
-		"Merge the issue branch back when possible and resolve merge conflicts when you can do so safely.",
-		"Consider the work complete once the change is merged.",
-		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
-		"If any other blocker prevents completion, report it clearly and keep the issue in done unless the work truly needs to be reopened.",
+		"The done phase owns merge-back and finalization for this issue from the current workspace. The work is complete only after it is merged into local main and pushed to origin.",
+		"Sync origin/main first.",
+		"Merge the issue branch into local main.",
+		"Rerun the relevant validation on main.",
+		"Push main to origin.",
+		"If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.",
 	)
 }
 
@@ -35,11 +63,12 @@ func assertInitDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
 		"Finalize issue {{ issue.identifier }} from the current workspace.",
-		"The done phase owns merge-back and finalization.",
-		"Merge the issue branch back when possible, resolving merge conflicts when you can do so safely.",
-		"Consider the work complete once the change is merged.",
-		"If repository protections or merge policies prevent a direct merge, open or update the PR so it is ready to merge and treat that as complete.",
-		"If any other blocker prevents completion, report it clearly and keep the issue in done unless it truly needs to be reopened.",
+		"The done phase owns merge-back and finalization. The work is complete only after it is merged into local main and pushed to origin.",
+		"Sync origin/main first.",
+		"Merge the issue branch into local main.",
+		"Rerun the relevant validation on main.",
+		"Push main to origin.",
+		"If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.",
 	)
 }
 
@@ -73,10 +102,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
 		t.Fatalf("expected initial collaboration mode %q, got %q", InitialCollaborationModeDefault, cfg.Codex.InitialCollaborationMode)
 	}
-	reject, ok := cfg.Codex.ApprovalPolicy.(map[string]interface{})["reject"].(map[string]interface{})
-	if !ok || reject["request_permissions"] != false {
-		t.Fatalf("expected default approval policy to reject permission requests, got %+v", cfg.Codex.ApprovalPolicy)
-	}
+	assertGranularApprovalPolicy(t, cfg.Codex.ApprovalPolicy)
+	assertDefaultPromptSemantics(t, DefaultPromptTemplate())
 	if !cfg.Phases.Review.Enabled || !strings.Contains(cfg.Phases.Review.Prompt, "review pass") {
 		t.Fatalf("expected review phase defaults, got %+v", cfg.Phases.Review)
 	}
@@ -164,6 +191,30 @@ Issue {{ issue.identifier }}
 	if workflow.Config.Workspace.Root != expectedRoot {
 		t.Fatalf("expected resolved workspace root %s, got %s", expectedRoot, workflow.Config.Workspace.Root)
 	}
+}
+
+func TestLoadWorkflowDefaultsGranularApprovalPolicy(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  command: codex app-server
+  expected_version: ` + codexschema.SupportedVersion + `
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+
+	assertGranularApprovalPolicy(t, workflow.Config.Codex.ApprovalPolicy)
 }
 
 func TestLoadWorkflowAcceptsCustomPhasePrompts(t *testing.T) {
@@ -568,12 +619,14 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"read_timeout_ms: 10000",
 		"stall_timeout_ms: 300000",
 		"{{ issue.identifier }}",
-		"Merge the issue branch back when possible, resolving merge conflicts when you can do so safely.",
+		"The work is complete only after it is merged into local main and pushed to origin.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
+	assertDefaultPromptSemantics(t, text)
+	assertInitDonePromptSemantics(t, text)
 }
 
 func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
@@ -677,6 +730,7 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 		CodexCommand:  "codex app-server --model test",
 		AgentMode:     AgentModeStdio,
 	})
+	assertDefaultPromptSemantics(t, content)
 	assertInitDonePromptSemantics(t, content)
 	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
