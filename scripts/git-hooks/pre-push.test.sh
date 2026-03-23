@@ -70,7 +70,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'arch %s\n' "$*" >>"$LOG_FILE"
-if [[ "$1" == "-x86_64" && "${2:-}" == "sh" && "${3:-}" == "-c" ]]; then
+if [[ "$1" == "-x86_64" && "${2:-}" == "bash" && "${3:-}" == "-c" ]]; then
   if [[ "${MOCK_X64_READY:-0}" == "1" ]]; then
     exit 0
   fi
