@@ -4604,7 +4604,7 @@ func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 
 	tokenTotalsByThread := map[string]int{}
 	seedRows, err := s.db.Query(`
-		SELECT kind, issue_id, identifier, attempt, total_tokens, error, event_ts, payload_json
+		SELECT kind, issue_id, identifier, attempt, total_tokens, COALESCE(error, ''), event_ts, payload_json
 		FROM runtime_events
 		WHERE event_ts < ?
 		  AND (`+runtimeSeriesTokenEventKinds+`)
@@ -4637,7 +4637,7 @@ func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT kind, issue_id, identifier, attempt, total_tokens, error, event_ts, payload_json
+		SELECT kind, issue_id, identifier, attempt, total_tokens, COALESCE(error, ''), event_ts, payload_json
 		FROM runtime_events
 		WHERE event_ts >= ?
 		ORDER BY event_ts ASC`, start)
