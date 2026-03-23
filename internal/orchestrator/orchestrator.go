@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -575,14 +576,7 @@ func (o *Orchestrator) reconcileWithProviderSync(ctx context.Context, syncProvid
 				issueLogAttrs(issue, -1, "reason", "terminal_state")...,
 			)
 			o.stopRun(issueID)
-			o.cleanupTerminalAppServerProcess(issue)
-			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
-				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
-			} else {
-				slog.Info("Cleaned up terminal workspace",
-					issueLogAttrs(issue, -1)...,
-				)
-			}
+			o.cleanupTerminalIssueWorkspace(ctx, runtime.runner, issue, -1, "terminal_state")
 			o.releaseClaim(issueID)
 			continue
 		}
@@ -744,10 +738,7 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context, syncProvider b
 			continue
 		}
 		if o.shouldCleanupTerminalIssue(workflow, issue) {
-			o.cleanupTerminalAppServerProcess(issue)
-			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
-				slog.Warn("Failed to cleanup terminal workspace after orphaned run recovery", "issue", issue.Identifier, "error", err)
-			}
+			o.cleanupTerminalIssueWorkspace(ctx, runtime.runner, issue, attempt, "orphaned_run_recovery")
 		}
 		slog.Warn("Recovered orphaned run without retry",
 			issueLogAttrs(issue, attempt, "phase", phase, "reason", reason)...,
@@ -1070,14 +1061,7 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			slog.Info("Dropping retry because issue reached terminal state",
 				issueLogAttrs(issue, entry.Attempt)...,
 			)
-			o.cleanupTerminalAppServerProcess(issue)
-			if err := runtime.runner.CleanupWorkspace(ctx, issue); err != nil {
-				slog.Warn("Failed to cleanup terminal workspace", "issue", issue.Identifier, "error", err)
-			} else {
-				slog.Info("Cleaned up terminal workspace",
-					issueLogAttrs(issue, entry.Attempt)...,
-				)
-			}
+			o.cleanupTerminalIssueWorkspace(ctx, runtime.runner, issue, entry.Attempt, "terminal_retry_cleanup")
 			o.releaseClaim(issueID)
 			o.mu.Lock()
 			delete(o.retries, issueID)
@@ -1338,11 +1322,11 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 		defer o.runWG.Done()
 		defer close(done)
 		result, err := runner.RunAttempt(runCtx, &runIssue, attempt)
-		o.finishRun(workflow, &runIssue, phase, attempt, result, err)
+		o.finishRun(workflow, runner, &runIssue, phase, attempt, result, err)
 	}()
 }
 
-func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, result *agent.RunResult, err error) {
+func (o *Orchestrator) finishRun(workflow *config.Workflow, runner runnerExecutor, issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, result *agent.RunResult, err error) {
 	defer func() {
 		if hook := o.testHooks.beforeFinishRunRelease; hook != nil {
 			hook(issue.ID)
@@ -1435,9 +1419,28 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, issue *kanban.Issue,
 		slog.Info("Agent run completed",
 			issueLogAttrs(current, attempt, extra...)...,
 		)
+		if !scheduled && o.shouldCleanupTerminalIssue(workflow, current) {
+			o.cleanupTerminalIssueWorkspace(context.Background(), runner, current, attempt, "run_completed")
+		}
 	}
 	o.processPendingRecurringRerunIgnoringRunning(current, issue.ID)
 	o.flushIssueTokenSpend(issue.ID, true)
+}
+
+func (o *Orchestrator) cleanupTerminalIssueWorkspace(ctx context.Context, runner runnerExecutor, issue *kanban.Issue, attempt int, reason string) {
+	if issue == nil || runner == nil {
+		return
+	}
+	o.cleanupTerminalAppServerProcess(issue)
+	if err := runner.CleanupWorkspace(ctx, issue); err != nil {
+		slog.Warn("Failed to cleanup terminal workspace",
+			issueLogAttrs(issue, attempt, "reason", reason, "error", err)...,
+		)
+		return
+	}
+	slog.Info("Cleaned up terminal workspace",
+		issueLogAttrs(issue, attempt, "reason", reason)...,
+	)
 }
 
 func (o *Orchestrator) publishIssuePreviewAsync(issue *kanban.Issue, phase kanban.WorkflowPhase, result *agent.RunResult) {
@@ -1452,15 +1455,23 @@ func (o *Orchestrator) publishIssuePreviewAsync(issue *kanban.Issue, phase kanba
 	if err != nil || previewPath == "" {
 		return
 	}
+	stagedPreviewPath, cleanupStagedPreview, err := stageReviewPreviewAttachment(previewPath)
+	if err != nil {
+		slog.Warn("Failed to stage issue preview",
+			issueLogAttrs(issue, -1, "phase", phase, "preview_path", previewPath, "error", err)...,
+		)
+		return
+	}
 	commentBody := buildIssuePreviewCommentBody(issue, result, previewPath)
 	issueCopy := *issue
-	go func(issue kanban.Issue, previewPath string, commentBody string) {
+	go func(issue kanban.Issue, previewPath, stagedPreviewPath string, commentBody string, cleanup func()) {
+		defer cleanup()
 		ctx, cancel := context.WithTimeout(context.Background(), reviewPreviewPublishTimeout)
 		defer cancel()
 		if err := o.service.CreateIssueComment(ctx, issue.Identifier, providers.IssueCommentInput{
 			Body: &commentBody,
 			Attachments: []providers.IssueCommentAttachment{{
-				Path: previewPath,
+				Path: stagedPreviewPath,
 			}},
 		}); err != nil {
 			if providers.IsUnsupported(err) {
@@ -1474,7 +1485,48 @@ func (o *Orchestrator) publishIssuePreviewAsync(issue *kanban.Issue, phase kanba
 		slog.Info("Published issue preview",
 			issueLogAttrs(&issue, -1, "phase", phase, "preview_path", previewPath)...,
 		)
-	}(issueCopy, previewPath, commentBody)
+	}(issueCopy, previewPath, stagedPreviewPath, commentBody, cleanupStagedPreview)
+}
+
+func stageReviewPreviewAttachment(previewPath string) (string, func(), error) {
+	path := strings.TrimSpace(previewPath)
+	if path == "" {
+		return "", nil, fmt.Errorf("preview path is required")
+	}
+	source, err := os.Open(path)
+	if err != nil {
+		return "", nil, err
+	}
+	defer source.Close()
+
+	stageDir, err := os.MkdirTemp("", "maestro-review-preview-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(stageDir)
+	}
+
+	filename := filepath.Base(path)
+	if filename == "" || filename == "." {
+		filename = "preview"
+	}
+	stagedPath := filepath.Join(stageDir, filename)
+	staged, err := os.Create(stagedPath)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if _, err := io.Copy(staged, source); err != nil {
+		_ = staged.Close()
+		cleanup()
+		return "", nil, err
+	}
+	if err := staged.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return stagedPath, cleanup, nil
 }
 
 func findReviewPreviewVideo(workspacePath string) (string, error) {
@@ -2269,14 +2321,7 @@ func (o *Orchestrator) cleanupTerminalWorkspaces(ctx context.Context) {
 		if !o.shouldCleanupTerminalIssue(workflow, &issues[i]) {
 			continue
 		}
-		o.cleanupTerminalAppServerProcess(&issues[i])
-		if err := runtime.runner.CleanupWorkspace(ctx, &issues[i]); err != nil {
-			slog.Warn("Failed to cleanup terminal workspace", "issue", issues[i].Identifier, "error", err)
-		} else {
-			slog.Info("Cleaned up terminal workspace",
-				issueLogAttrs(&issues[i], -1)...,
-			)
-		}
+		o.cleanupTerminalIssueWorkspace(ctx, runtime.runner, &issues[i], -1, "startup_cleanup")
 	}
 }
 

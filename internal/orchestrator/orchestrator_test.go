@@ -1751,10 +1751,7 @@ func TestDoneSuccessMarksIssueCompleteAndAllowsCleanup(t *testing.T) {
 	if updated.WorkflowPhase != kanban.WorkflowPhaseComplete {
 		t.Fatalf("expected complete phase, got %s", updated.WorkflowPhase)
 	}
-	orch.cleanupTerminalWorkspaces(context.Background())
-	if _, err := store.GetWorkspace(issue.ID); err == nil {
-		t.Fatal("expected workspace cleanup after done phase completion")
-	}
+	waitForWorkspaceRemoval(t, store, issue.ID, time.Second)
 }
 
 func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
@@ -1824,9 +1821,10 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for preview publication to start")
 		}
-		close(previewProvider.createRelease)
 
 		waitForNoRunning(t, orch, time.Second)
+		waitForWorkspaceRemoval(t, store, issue.ID, time.Second)
+		close(previewProvider.createRelease)
 		waitForCondition(t, 5*time.Second, func() bool {
 			comments, err := store.ListIssueComments(issue.ID)
 			return err == nil && len(comments) > 0
@@ -4627,6 +4625,7 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 		}
 
 		waitForNoRunning(t, orch, time.Second)
+		waitForWorkspaceRemoval(t, store, issue.ID, time.Second)
 		close(previewProvider.createRelease)
 		waitForCondition(t, 5*time.Second, func() bool {
 			comments, err := store.ListIssueComments(issue.ID)
@@ -4766,12 +4765,13 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 		return requestCount >= 1
 	})
 	waitForNoRunning(t, orch, time.Second)
+	waitForWorkspaceRemoval(t, store, issue.ID, time.Second)
 
 	requestMu.Lock()
 	gotRequests := requestCount
 	requestMu.Unlock()
 	if gotRequests < 1 {
-		t.Fatalf("expected preview publication to start in the background before run cleanup, got %d requests", gotRequests)
+		t.Fatalf("expected preview publication to start in the background before workspace cleanup completed, got %d requests", gotRequests)
 	}
 
 	close(releaseRequests)
