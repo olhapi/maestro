@@ -2022,8 +2022,8 @@ func TestHelperDefaultsAndWorkspaceValidation(t *testing.T) {
 	}
 
 	policy := defaultApprovalPolicy()
-	reject, ok := policy["reject"].(map[string]interface{})
-	if !ok || reject["sandbox_approval"] != true || reject["rules"] != true || reject["request_permissions"] != false {
+	granular, ok := policy["granular"].(map[string]interface{})
+	if !ok || granular["sandbox_approval"] != true || granular["rules"] != true || granular["mcp_elicitations"] != true || granular["request_permissions"] != false {
 		t.Fatalf("unexpected default approval policy: %#v", policy)
 	}
 
