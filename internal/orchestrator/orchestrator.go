@@ -1909,10 +1909,11 @@ func (o *Orchestrator) scheduleRetryLocked(issue *kanban.Issue, attempt int, pha
 
 func (o *Orchestrator) scheduleRetryLockedAt(issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, delayType, errText string, dueAt time.Time, resumeThreadID string) {
 	now := time.Now().UTC()
-	if dueAt.Before(now) {
-		dueAt = now
-	}
 	delayMs := dueAt.Sub(now).Milliseconds()
+	if delayMs <= 0 {
+		delayMs = 1
+		dueAt = now.Add(time.Millisecond)
+	}
 	o.retries[issue.ID] = retryEntry{
 		Attempt:        attempt,
 		Phase:          string(phase),
