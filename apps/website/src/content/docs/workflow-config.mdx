@@ -111,7 +111,7 @@ That scaffold currently includes:
 - the local `kanban` tracker with `ready`, `in_progress`, and `in_review` as active states
 - `workspace.root: ./workspaces`
 - hook stubs with a `timeout_ms` budget
-- disabled `review` and `done` phases with starter prompt text already filled in, including done-phase guidance focused on merge-back, PR readiness, and blocker reporting
+- enabled `review` and `done` phases with starter prompt text already filled in, including done-phase guidance focused on merge-back, worktree cleanup, PR readiness, and blocker reporting
 - `agent.max_concurrent_agents: 3`, `max_turns: 4`, `max_automatic_retries: 8`, and `dispatch_mode: parallel`
 - `codex.command: codex app-server`, `agent.mode: app_server`, `approval_policy: never`, and `initial_collaboration_mode: default`
 - the default issue prompt template appended after the YAML front matter
@@ -119,8 +119,16 @@ That scaffold currently includes:
 When `--defaults` is not set and both stdin and stdout are TTYs, `workflow init` becomes interactive. The current implementation prompts in this order:
 
 1. `Workspace root`
-2. Runtime selection: recommended Codex setup or `Custom / advanced`
-3. If you choose custom runtime, `Codex command` and `Agent mode (app_server|stdio)`
+2. `Codex command`
+3. `Agent mode (app_server|stdio)`
+4. `Dispatch mode (parallel|per_project_serial)`
+5. `Max concurrent agents`
+6. `Max turns`
+7. `Max automatic retries`
+8. If `agent.mode` is `app_server`, `Approval policy (never|on-request|on-failure|untrusted)`
+9. If `agent.mode` is `app_server`, `Initial collaboration mode (default|plan)`
+
+The additional dispatch, retry, approval, and collaboration choices are interactive-only. `--defaults` remains the stable non-interactive scaffold, and the existing flags still override only `workspace.root`, `codex.command`, and `agent.mode`.
 
 Use flags when you want to skip prompts but still override part of the scaffold:
 

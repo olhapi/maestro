@@ -51,7 +51,7 @@ The phase harness verifies additional deterministic paths:
 - one issue must go `implementation -> review -> done -> complete`
 - one issue must go `implementation -> done -> complete` without review
 - each phase writes a dedicated artifact and appends to a phase log in the expected order
-- restarting `maestro run` cleans up completed workspaces on startup
+- completed workspaces are cleaned up immediately, and restarting `maestro run` also removes any leftovers on startup
 
 ## Why it uses `codex exec`
 

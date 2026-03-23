@@ -7,25 +7,33 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-
-	"github.com/olhapi/maestro/internal/appserver"
 )
 
 var (
-	ErrWorkflowExists        = errors.New("workflow file already exists")
-	ErrWorkflowInitCancelled = errors.New("workflow initialization cancelled")
-	ErrInvalidInitAgentMode  = errors.New("invalid workflow init agent mode")
+	ErrWorkflowExists               = errors.New("workflow file already exists")
+	ErrWorkflowInitCancelled        = errors.New("workflow initialization cancelled")
+	ErrInvalidInitAgentMode         = errors.New("invalid workflow init agent mode")
+	ErrInvalidInitDispatchMode      = errors.New("invalid workflow init dispatch mode")
+	ErrInvalidInitApprovalPolicy    = errors.New("invalid workflow init approval policy")
+	ErrInvalidInitCollaborationMode = errors.New("invalid workflow init collaboration mode")
 )
 
 type InitOptions struct {
-	WorkspaceRoot string
-	CodexCommand  string
-	AgentMode     string
-	Interactive   bool
-	Force         bool
-	Stdin         io.Reader
-	Stdout        io.Writer
+	WorkspaceRoot            string
+	CodexCommand             string
+	AgentMode                string
+	DispatchMode             string
+	MaxConcurrentAgents      int
+	MaxTurns                 int
+	MaxAutomaticRetries      int
+	ApprovalPolicy           string
+	InitialCollaborationMode string
+	Interactive              bool
+	Force                    bool
+	Stdin                    io.Reader
+	Stdout                   io.Writer
 }
 
 func EnsureWorkflow(repoPath string, opts InitOptions) (string, bool, error) {
@@ -89,17 +97,20 @@ func InitWorkflowAtPath(path string, opts InitOptions) error {
 func defaultInitOptions() InitOptions {
 	cfg := DefaultInitConfig()
 	return InitOptions{
-		WorkspaceRoot: cfg.Workspace.Root,
-		CodexCommand:  cfg.Codex.Command,
-		AgentMode:     cfg.Agent.Mode,
+		WorkspaceRoot:            cfg.Workspace.Root,
+		CodexCommand:             cfg.Codex.Command,
+		AgentMode:                cfg.Agent.Mode,
+		DispatchMode:             cfg.Agent.DispatchMode,
+		MaxConcurrentAgents:      cfg.Agent.MaxConcurrentAgents,
+		MaxTurns:                 cfg.Agent.MaxTurns,
+		MaxAutomaticRetries:      cfg.Agent.MaxAutomaticRetries,
+		ApprovalPolicy:           strings.TrimSpace(fmt.Sprintf("%v", cfg.Codex.ApprovalPolicy)),
+		InitialCollaborationMode: cfg.Codex.InitialCollaborationMode,
 	}
 }
 
 func resolveInitOptions(path string, opts InitOptions) (InitOptions, error) {
 	answers := defaultInitOptions()
-	if opts.Interactive {
-		answers = promptInitOptions(path, opts, answers)
-	}
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
 		answers.WorkspaceRoot = strings.TrimSpace(opts.WorkspaceRoot)
 	}
@@ -112,6 +123,39 @@ func resolveInitOptions(path string, opts InitOptions) (InitOptions, error) {
 			return InitOptions{}, err
 		}
 		answers.AgentMode = mode
+	}
+	if strings.TrimSpace(opts.DispatchMode) != "" {
+		dispatchMode, err := validateInitDispatchMode(opts.DispatchMode)
+		if err != nil {
+			return InitOptions{}, err
+		}
+		answers.DispatchMode = dispatchMode
+	}
+	if opts.MaxConcurrentAgents > 0 {
+		answers.MaxConcurrentAgents = opts.MaxConcurrentAgents
+	}
+	if opts.MaxTurns > 0 {
+		answers.MaxTurns = opts.MaxTurns
+	}
+	if opts.MaxAutomaticRetries > 0 {
+		answers.MaxAutomaticRetries = opts.MaxAutomaticRetries
+	}
+	if strings.TrimSpace(opts.ApprovalPolicy) != "" {
+		approvalPolicy, err := validateInitApprovalPolicy(opts.ApprovalPolicy)
+		if err != nil {
+			return InitOptions{}, err
+		}
+		answers.ApprovalPolicy = approvalPolicy
+	}
+	if strings.TrimSpace(opts.InitialCollaborationMode) != "" {
+		collaborationMode, err := validateInitCollaborationMode(opts.InitialCollaborationMode)
+		if err != nil {
+			return InitOptions{}, err
+		}
+		answers.InitialCollaborationMode = collaborationMode
+	}
+	if opts.Interactive {
+		answers = promptInitOptions(path, opts, answers)
 	}
 	return answers, nil
 }
@@ -127,17 +171,30 @@ func promptInitOptions(path string, opts InitOptions, defaults InitOptions) Init
 	if strings.TrimSpace(opts.WorkspaceRoot) == "" {
 		defaults.WorkspaceRoot = promptLine(reader, writer, "Workspace root", defaults.WorkspaceRoot)
 	}
-
-	customRuntime := strings.TrimSpace(opts.CodexCommand) != "" || strings.TrimSpace(opts.AgentMode) != ""
-	if !customRuntime {
-		customRuntime = promptRuntimeChoice(reader, writer, defaults.CodexCommand)
+	if strings.TrimSpace(opts.CodexCommand) == "" {
+		defaults.CodexCommand = promptLine(reader, writer, "Codex command", defaults.CodexCommand)
 	}
-	if customRuntime {
-		if strings.TrimSpace(opts.CodexCommand) == "" {
-			defaults.CodexCommand = promptLine(reader, writer, "Codex command", defaults.CodexCommand)
+	if strings.TrimSpace(opts.AgentMode) == "" {
+		defaults.AgentMode = promptAgentMode(reader, writer, defaults.AgentMode)
+	}
+	if strings.TrimSpace(opts.DispatchMode) == "" {
+		defaults.DispatchMode = promptDispatchMode(reader, writer, defaults.DispatchMode)
+	}
+	if opts.MaxConcurrentAgents <= 0 {
+		defaults.MaxConcurrentAgents = promptPositiveInt(reader, writer, "Max concurrent agents", defaults.MaxConcurrentAgents)
+	}
+	if opts.MaxTurns <= 0 {
+		defaults.MaxTurns = promptPositiveInt(reader, writer, "Max turns", defaults.MaxTurns)
+	}
+	if opts.MaxAutomaticRetries <= 0 {
+		defaults.MaxAutomaticRetries = promptPositiveInt(reader, writer, "Max automatic retries", defaults.MaxAutomaticRetries)
+	}
+	if defaults.AgentMode == AgentModeAppServer {
+		if strings.TrimSpace(opts.ApprovalPolicy) == "" {
+			defaults.ApprovalPolicy = promptApprovalPolicy(reader, writer, defaults.ApprovalPolicy)
 		}
-		if strings.TrimSpace(opts.AgentMode) == "" {
-			defaults.AgentMode = promptAgentMode(reader, writer, defaults.AgentMode)
+		if strings.TrimSpace(opts.InitialCollaborationMode) == "" {
+			defaults.InitialCollaborationMode = promptInitialCollaborationMode(reader, writer, defaults.InitialCollaborationMode)
 		}
 	}
 	return defaults
@@ -160,26 +217,42 @@ func newInitReader(r io.Reader) *bufio.Reader {
 	return bufio.NewReader(r)
 }
 
-func promptRuntimeChoice(reader *bufio.Reader, writer io.Writer, recommendedCommand string) bool {
-	status, err := appserver.DetectCodexVersion(recommendedCommand)
-	recommendedLabel := recommendedCommand + " (recommended)"
-	switch {
-	case err == nil && status.Actual != "":
-		recommendedLabel = fmt.Sprintf("%s (recommended, detected Codex %s)", recommendedCommand, status.Actual)
-	case err != nil:
-		recommendedLabel = fmt.Sprintf("%s (recommended, verify will check installation)", recommendedCommand)
-	}
-	fmt.Fprintln(writer, "Runtime setup:")
-	fmt.Fprintf(writer, "  1) %s\n", recommendedLabel)
-	fmt.Fprintln(writer, "  2) Custom / advanced")
-	choice := promptLine(reader, writer, "Runtime selection", "1")
-	choice = strings.TrimSpace(strings.ToLower(choice))
-	return choice == "2" || choice == "custom" || choice == "advanced"
+func promptAgentMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
+	return promptValidatedString(reader, writer, "Agent mode (app_server|stdio)", fallback, validateInitAgentMode)
 }
 
-func promptAgentMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
-	mode := promptLine(reader, writer, "Agent mode (app_server|stdio)", fallback)
-	return normalizePromptAgentMode(mode, fallback)
+func promptDispatchMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
+	return promptValidatedString(reader, writer, "Dispatch mode (parallel|per_project_serial)", fallback, validateInitDispatchMode)
+}
+
+func promptApprovalPolicy(reader *bufio.Reader, writer io.Writer, fallback string) string {
+	return promptValidatedString(reader, writer, "Approval policy (never|on-request|on-failure|untrusted)", fallback, validateInitApprovalPolicy)
+}
+
+func promptInitialCollaborationMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
+	return promptValidatedString(reader, writer, "Initial collaboration mode (default|plan)", fallback, validateInitCollaborationMode)
+}
+
+func promptValidatedString(reader *bufio.Reader, writer io.Writer, label, fallback string, validate func(string) (string, error)) string {
+	for {
+		value := promptLine(reader, writer, label, fallback)
+		validated, err := validate(value)
+		if err == nil {
+			return validated
+		}
+		fmt.Fprintf(writer, "Invalid value: %v\n", err)
+	}
+}
+
+func promptPositiveInt(reader *bufio.Reader, writer io.Writer, label string, fallback int) int {
+	for {
+		value := promptLine(reader, writer, label, strconv.Itoa(fallback))
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err == nil && parsed > 0 {
+			return parsed
+		}
+		fmt.Fprintf(writer, "Invalid value: expected a positive integer for %s\n", label)
+	}
 }
 
 func promptConfirm(reader *bufio.Reader, writer io.Writer, label string, defaultYes bool) bool {
@@ -224,16 +297,40 @@ func validateInitAgentMode(raw string) (string, error) {
 	}
 }
 
-func normalizePromptAgentMode(raw, fallback string) string {
-	mode := strings.TrimSpace(raw)
-	if mode == "" {
-		return fallback
+func validateInitDispatchMode(raw string) (string, error) {
+	mode := strings.TrimSpace(strings.ToLower(raw))
+	switch mode {
+	case DispatchModeParallel, DispatchModePerProjectSerial:
+		return mode, nil
+	case "":
+		return "", fmt.Errorf("%w: expected %s or %s", ErrInvalidInitDispatchMode, DispatchModeParallel, DispatchModePerProjectSerial)
+	default:
+		return "", fmt.Errorf("%w: %q (expected %s or %s)", ErrInvalidInitDispatchMode, raw, DispatchModeParallel, DispatchModePerProjectSerial)
 	}
-	validated, err := validateInitAgentMode(mode)
-	if err != nil {
-		return fallback
+}
+
+func validateInitApprovalPolicy(raw string) (string, error) {
+	policy := strings.TrimSpace(strings.ToLower(raw))
+	switch policy {
+	case "never", "on-request", "on-failure", "untrusted":
+		return policy, nil
+	case "":
+		return "", fmt.Errorf("%w: expected never, on-request, on-failure, or untrusted", ErrInvalidInitApprovalPolicy)
+	default:
+		return "", fmt.Errorf("%w: %q (expected never, on-request, on-failure, or untrusted)", ErrInvalidInitApprovalPolicy, raw)
 	}
-	return validated
+}
+
+func validateInitCollaborationMode(raw string) (string, error) {
+	mode := normalizeInitialCollaborationMode(raw)
+	switch mode {
+	case InitialCollaborationModeDefault, InitialCollaborationModePlan:
+		return mode, nil
+	case "":
+		return "", fmt.Errorf("%w: expected %s or %s", ErrInvalidInitCollaborationMode, InitialCollaborationModeDefault, InitialCollaborationModePlan)
+	default:
+		return "", fmt.Errorf("%w: %q (expected %s or %s)", ErrInvalidInitCollaborationMode, raw, InitialCollaborationModeDefault, InitialCollaborationModePlan)
+	}
 }
 
 func buildWorkflowFile(opts InitOptions) string {
@@ -245,7 +342,25 @@ func buildWorkflowFile(opts InitOptions) string {
 		cfg.Codex.Command = strings.TrimSpace(opts.CodexCommand)
 	}
 	if strings.TrimSpace(opts.AgentMode) != "" {
-		cfg.Agent.Mode = normalizePromptAgentMode(opts.AgentMode, cfg.Agent.Mode)
+		cfg.Agent.Mode = strings.TrimSpace(opts.AgentMode)
+	}
+	if strings.TrimSpace(opts.DispatchMode) != "" {
+		cfg.Agent.DispatchMode = strings.TrimSpace(opts.DispatchMode)
+	}
+	if opts.MaxConcurrentAgents > 0 {
+		cfg.Agent.MaxConcurrentAgents = opts.MaxConcurrentAgents
+	}
+	if opts.MaxTurns > 0 {
+		cfg.Agent.MaxTurns = opts.MaxTurns
+	}
+	if opts.MaxAutomaticRetries > 0 {
+		cfg.Agent.MaxAutomaticRetries = opts.MaxAutomaticRetries
+	}
+	if strings.TrimSpace(opts.ApprovalPolicy) != "" {
+		cfg.Codex.ApprovalPolicy = strings.TrimSpace(opts.ApprovalPolicy)
+	}
+	if strings.TrimSpace(opts.InitialCollaborationMode) != "" {
+		cfg.Codex.InitialCollaborationMode = strings.TrimSpace(opts.InitialCollaborationMode)
 	}
 	reviewPrompt := indentBlock(DefaultInitReviewPromptTemplate(), "      ")
 	donePrompt := indentBlock(DefaultInitDonePromptTemplate(), "      ")
