@@ -350,6 +350,9 @@ func (c *Client) RunTurnWithInputsAndStartCallback(ctx context.Context, input []
 		if err := c.ensureThreadForTurn(ctx); err != nil {
 			return err
 		}
+		if c.session != nil && c.session.Terminal {
+			c.session.ResetTurnState()
+		}
 		requestID := c.nextRequestID()
 		approvalPolicy, _, turnSandboxPolicy := c.permissionConfig()
 		req, err := protocol.TurnStartRequest(requestID, c.session.ThreadID, input, filepath.Clean(c.cfg.Workspace), approvalPolicy, turnSandboxPolicy)
