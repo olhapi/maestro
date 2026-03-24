@@ -694,13 +694,21 @@ func waitForPendingInterruptCount(t *testing.T, orch *Orchestrator, expected int
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		snapshot := orch.PendingInterrupts()
-		if snapshot.Count == expected {
+		if len(snapshot.Items) == expected {
 			return snapshot
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for pending interrupt count %d", expected)
 	return appserver.PendingInteractionSnapshot{}
+}
+
+func firstPendingInterrupt(snapshot appserver.PendingInteractionSnapshot) *appserver.PendingInteraction {
+	if len(snapshot.Items) == 0 {
+		return nil
+	}
+	interaction := snapshot.Items[0].Clone()
+	return &interaction
 }
 
 func forceRetryDue(t *testing.T, orch *Orchestrator, issueID string) {
@@ -2133,7 +2141,8 @@ func TestPendingInterruptRunPersistsLatestExecutionSessionSnapshot(t *testing.T)
 		t.Fatal(err)
 	}
 	pending := waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
-	if pending.Current == nil || pending.Current.IssueID != issue.ID {
+	current := firstPendingInterrupt(pending)
+	if current == nil || current.IssueID != issue.ID {
 		t.Fatalf("expected current pending interrupt for %s, got %+v", issue.ID, pending)
 	}
 	snapshot := waitForRunStartedExecutionSnapshot(t, store, issue.ID, 3*time.Second)
@@ -2152,7 +2161,7 @@ func TestPendingInterruptRunPersistsLatestExecutionSessionSnapshot(t *testing.T)
 		t.Fatalf("expected live session while interrupt is pending, got %#v", sessions)
 	}
 
-	if err := orch.RespondToInterrupt(context.Background(), pending.Current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
 		Decision: "acceptForSession",
 	}); err != nil {
 		t.Fatalf("respond to pending interrupt: %v", err)
@@ -2657,7 +2666,8 @@ func TestInteractiveAppServerInterruptQueueUsesFIFOAndPromotesNextRequest(t *tes
 		t.Fatal(err)
 	}
 	snapshot := waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
-	if snapshot.Current == nil || snapshot.Current.IssueID != first.ID {
+	current := firstPendingInterrupt(snapshot)
+	if current == nil || current.IssueID != first.ID {
 		t.Fatalf("expected FIFO current interrupt for first issue, got %+v", snapshot)
 	}
 
@@ -2667,21 +2677,23 @@ func TestInteractiveAppServerInterruptQueueUsesFIFOAndPromotesNextRequest(t *tes
 		t.Fatal(err)
 	}
 	snapshot = waitForPendingInterruptCount(t, orch, 2, 3*time.Second)
-	if snapshot.Current == nil || snapshot.Current.IssueID != first.ID {
+	current = firstPendingInterrupt(snapshot)
+	if current == nil || current.IssueID != first.ID {
 		t.Fatalf("expected first issue to stay at the front of the queue, got %+v", snapshot)
 	}
 
-	if err := orch.RespondToInterrupt(context.Background(), snapshot.Current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
 		Decision: "acceptForSession",
 	}); err != nil {
 		t.Fatalf("respond to first interrupt: %v", err)
 	}
 
 	snapshot = waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
-	if snapshot.Current == nil || snapshot.Current.IssueID != second.ID {
+	current = firstPendingInterrupt(snapshot)
+	if current == nil || current.IssueID != second.ID {
 		t.Fatalf("expected second issue to be promoted, got %+v", snapshot)
 	}
-	if err := orch.RespondToInterrupt(context.Background(), snapshot.Current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
 		Decision: "acceptForSession",
 	}); err != nil {
 		t.Fatalf("respond to second interrupt: %v", err)
@@ -2732,11 +2744,12 @@ func TestInteractiveAppServerRedactsSecretUserInputFromPersistedActivity(t *test
 		t.Fatal(err)
 	}
 	snapshot := waitForPendingInterruptCount(t, orch, 1, 3*time.Second)
-	if snapshot.Current == nil {
+	current := firstPendingInterrupt(snapshot)
+	if current == nil {
 		t.Fatal("expected pending interrupt")
 	}
 	secret := "super-secret-token"
-	if err := orch.RespondToInterrupt(context.Background(), snapshot.Current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
 		Answers: map[string][]string{
 			"token": []string{secret},
 		},

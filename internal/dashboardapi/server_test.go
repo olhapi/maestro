@@ -30,6 +30,8 @@ type interruptProvider struct {
 	responseID string
 	response   appserver.PendingInteractionResponse
 	respondErr error
+	ackID      string
+	ackErr     error
 }
 
 func (p testProvider) Status() map[string]interface{} {
@@ -51,7 +53,16 @@ func (p testProvider) LiveSessions() map[string]interface{} {
 }
 
 func (p testProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
-	return appserver.PendingInteractionSnapshot{}
+	items := make([]appserver.PendingInteraction, 0, len(p.pendingInterruptsByIssue))
+	seen := make(map[string]struct{}, len(p.pendingInterruptsByIssue))
+	for _, interaction := range p.pendingInterruptsByIssue {
+		if _, ok := seen[interaction.ID]; ok {
+			continue
+		}
+		seen[interaction.ID] = struct{}{}
+		items = append(items, interaction.Clone())
+	}
+	return appserver.PendingInteractionSnapshot{Items: items}
 }
 
 func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
@@ -68,6 +79,10 @@ func (p testProvider) RespondToInterrupt(ctx context.Context, interactionID stri
 	return nil
 }
 
+func (p testProvider) AcknowledgeInterrupt(ctx context.Context, interactionID string) error {
+	return nil
+}
+
 func (p *interruptProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
 	return p.interrupts
 }
@@ -76,6 +91,11 @@ func (p *interruptProvider) RespondToInterrupt(ctx context.Context, interactionI
 	p.responseID = interactionID
 	p.response = response
 	return p.respondErr
+}
+
+func (p *interruptProvider) AcknowledgeInterrupt(ctx context.Context, interactionID string) error {
+	p.ackID = interactionID
+	return p.ackErr
 }
 
 func (p testProvider) Events(since int64, limit int) map[string]interface{} {
@@ -342,8 +362,7 @@ func TestWorkEndpointReturnsBoundedPayload(t *testing.T) {
 func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
 	provider := &interruptProvider{
 		interrupts: appserver.PendingInteractionSnapshot{
-			Count: 1,
-			Current: &appserver.PendingInteraction{
+			Items: []appserver.PendingInteraction{{
 				ID:              "interrupt-1",
 				Kind:            appserver.PendingInteractionKindApproval,
 				IssueIdentifier: "ISS-1",
@@ -354,7 +373,7 @@ func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
 						{Value: "approved", Label: "Approve once"},
 					},
 				},
-			},
+			}},
 		},
 	}
 	_, srv := setupDashboardServerTest(t, provider)
@@ -364,12 +383,13 @@ func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	payload := decodeResponse(t, resp)
-	if payload["count"].(float64) != 1 {
-		t.Fatalf("unexpected interrupt count: %#v", payload)
+	items := payload["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("unexpected interrupt items: %#v", payload)
 	}
-	current := payload["current"].(map[string]interface{})
+	current := items[0].(map[string]interface{})
 	if current["id"] != "interrupt-1" || current["issue_identifier"] != "ISS-1" {
-		t.Fatalf("unexpected current interrupt payload: %#v", current)
+		t.Fatalf("unexpected interrupt payload: %#v", current)
 	}
 
 	resp = requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-1/respond", map[string]interface{}{
@@ -402,6 +422,82 @@ func TestInterruptEndpointForwardsStructuredDecisionPayloads(t *testing.T) {
 	}
 	if _, ok := provider.response.DecisionPayload["acceptWithExecpolicyAmendment"]; !ok {
 		t.Fatalf("expected structured decision payload, got %+v", provider.response)
+	}
+}
+
+func TestInterruptEndpointExposesProviderSuppliedAlertItems(t *testing.T) {
+	provider := &interruptProvider{
+		interrupts: appserver.PendingInteractionSnapshot{
+			Items: []appserver.PendingInteraction{{
+				ID:              "alert-1",
+				Kind:            appserver.PendingInteractionKindAlert,
+				IssueIdentifier: "ISS-7",
+				IssueTitle:      "Blocked issue",
+				ProjectName:     "Out of scope project",
+				RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
+				Actions: []appserver.PendingInteractionAction{{
+					Kind:  appserver.PendingInteractionActionAcknowledge,
+					Label: "Acknowledge",
+				}},
+				Alert: &appserver.PendingAlert{
+					Code:     "project_dispatch_blocked",
+					Severity: appserver.PendingAlertSeverityError,
+					Title:    "Project dispatch blocked",
+					Message:  "Project repo is outside the current server scope (/repo/current)",
+				},
+			}},
+		},
+	}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/interrupts", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	payload := decodeResponse(t, resp)
+	items := payload["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected one interrupt item, got %#v", payload)
+	}
+	current := items[0].(map[string]interface{})
+	if current["id"] != "alert-1" || current["kind"] != string(appserver.PendingInteractionKindAlert) {
+		t.Fatalf("expected provider alert item, got %#v", current)
+	}
+}
+
+func TestInterruptAcknowledgeEndpointForwardsAcknowledgeRequests(t *testing.T) {
+	provider := &interruptProvider{}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/alert-1/acknowledge", map[string]interface{}{})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.ackID != "alert-1" {
+		t.Fatalf("expected acknowledgement id to be forwarded, got %q", provider.ackID)
+	}
+}
+
+func TestInterruptRespondEndpointRejectsInvalidAlertResponses(t *testing.T) {
+	provider := &interruptProvider{respondErr: appserver.ErrInvalidInteractionResponse}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/alert-1/respond", map[string]interface{}{
+		"decision": "approved",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestInterruptAcknowledgeEndpointRejectsNonAcknowledgeableItems(t *testing.T) {
+	provider := &interruptProvider{ackErr: appserver.ErrInvalidInteractionResponse}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-1/acknowledge", map[string]interface{}{})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }
 

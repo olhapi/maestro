@@ -378,6 +378,10 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_issue_agent_commands_issue_created ON issue_agent_commands(issue_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_issue_agent_commands_issue_status_created ON issue_agent_commands(issue_id, status, created_at ASC)`,
+		`CREATE TABLE IF NOT EXISTS interrupt_acknowledgements (
+			interrupt_id TEXT PRIMARY KEY,
+			acknowledged_at DATETIME NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS change_events (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT,
 			entity_type TEXT NOT NULL,

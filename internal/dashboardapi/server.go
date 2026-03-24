@@ -33,6 +33,7 @@ type Provider interface {
 	PendingInterrupts() appserver.PendingInteractionSnapshot
 	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
 	RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error
+	AcknowledgeInterrupt(ctx context.Context, interactionID string) error
 	RetryIssueNow(ctx context.Context, identifier string) map[string]interface{}
 	RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{}
 	RequestProjectRefresh(projectID string) map[string]interface{}
@@ -1318,12 +1319,33 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	interactionID, action, hasAction := strings.Cut(rest, "/")
-	if interactionID == "" || strings.Contains(interactionID, "/") || !hasAction || action != "respond" {
+	if interactionID == "" || strings.Contains(interactionID, "/") || !hasAction {
 		http.NotFound(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if action == "acknowledge" {
+		err := s.provider.AcknowledgeInterrupt(r.Context(), interactionID)
+		switch {
+		case err == nil:
+			writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
+				"id":     interactionID,
+				"status": "accepted",
+			})
+		case errors.Is(err, appserver.ErrPendingInteractionNotFound):
+			writeErrorStatus(w, http.StatusNotFound, err)
+		case errors.Is(err, appserver.ErrInvalidInteractionResponse):
+			writeErrorStatus(w, http.StatusBadRequest, err)
+		default:
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	if action != "respond" {
+		http.NotFound(w, r)
 		return
 	}
 
