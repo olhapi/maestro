@@ -651,6 +651,11 @@ func (c *Client) awaitResponse(ctx context.Context, requestID int) (protocol.Mes
 }
 
 func (c *Client) awaitTurnCompletion(ctx context.Context) error {
+	// awaitResponse may already have applied the terminal event before this loop starts.
+	if handled, err := c.terminalTurnCompletionResult(); handled {
+		return err
+	}
+
 	var deadline time.Time
 	if c.cfg.TurnTimeout > 0 {
 		deadline = time.Now().Add(c.cfg.TurnTimeout)
@@ -737,6 +742,35 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 		if needsInput(method, payload.Raw) {
 			return &RunError{Kind: "turn_input_required", Payload: payload.Raw}
 		}
+	}
+}
+
+func (c *Client) terminalTurnCompletionResult() (bool, error) {
+	if c.session == nil || !c.session.Terminal {
+		return false, nil
+	}
+
+	logFields := []any{
+		"session_id", c.session.SessionID,
+		"thread_id", c.session.ThreadID,
+		"turn_id", c.session.TurnID,
+	}
+
+	switch c.session.TerminalReason {
+	case "turn.completed", "session.completed", "run.completed":
+		c.logger.Info("Codex turn completed", logFields...)
+		return true, nil
+	case "turn.failed":
+		c.logger.Warn("Codex turn failed", logFields...)
+		return true, &RunError{Kind: "turn_failed"}
+	case "turn.cancelled":
+		c.logger.Warn("Codex turn cancelled", logFields...)
+		return true, &RunError{Kind: "turn_cancelled"}
+	case "run.failed", "error":
+		c.logger.Warn("Codex turn failed", logFields...)
+		return true, &RunError{Kind: strings.ReplaceAll(c.session.TerminalReason, ".", "_")}
+	default:
+		return false, nil
 	}
 }
 
