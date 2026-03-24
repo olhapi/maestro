@@ -49,6 +49,10 @@ func (testProvider) RespondToInterrupt(ctx context.Context, interactionID string
 	return nil
 }
 
+func (testProvider) AcknowledgeInterrupt(ctx context.Context, interactionID string) error {
+	return nil
+}
+
 func (testProvider) Events(since int64, limit int) map[string]interface{} {
 	return map[string]interface{}{"since": since, "last_seq": 0, "events": []interface{}{}}
 }
