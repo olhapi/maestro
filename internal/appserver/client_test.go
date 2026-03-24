@@ -2388,6 +2388,56 @@ func TestUpdatePermissionConfigCanDowngradeSubsequentTurnsToWorkspaceWrite(t *te
 	}
 }
 
+func TestRunClearsTerminalStateBeforeStartingAnotherTurnOnSameThread(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-MULTI-TURN")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	scenario := baseScenario("thread-multi-turn", "turn-1",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-multi-turn", "turnId": "turn-1"},
+			},
+		},
+	)
+	scenario.Steps = append(scenario.Steps, fakeappserver.Step{
+		Match: fakeappserver.Match{Method: "turn/start"},
+		Emit: []fakeappserver.Output{
+			{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-2"}}}},
+			{JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{"threadId": "thread-multi-turn", "turnId": "turn-2"},
+			}},
+		},
+	})
+
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.RunTurn(context.Background(), "first", "First"); err != nil {
+		t.Fatalf("first RunTurn: %v", err)
+	}
+	if err := client.RunTurn(context.Background(), "second", "Second"); err != nil {
+		t.Fatalf("second RunTurn: %v", err)
+	}
+
+	session := client.Session()
+	if session.TurnsStarted != 2 || session.TurnsCompleted != 2 {
+		t.Fatalf("expected two completed turns on the same thread, got %+v", session)
+	}
+	if session.SessionID != "thread-multi-turn-turn-2" || session.TurnID != "turn-2" || !session.Terminal || session.TerminalReason != "turn.completed" {
+		t.Fatalf("unexpected final session after second turn: %+v", session)
+	}
+}
+
 func TestEmitResolvedInteractionActivityPreservesStructuredApprovalStatus(t *testing.T) {
 	var events []ActivityEvent
 	client := &Client{
