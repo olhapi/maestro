@@ -3,7 +3,6 @@ package dashboardapi
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -297,17 +296,6 @@ func TestBootstrapReturnsCompletedLiveSummaryInsteadOfStreamingDelta(t *testing.
 	if entry["last_message"] != "Completed summary" {
 		t.Fatalf("expected bootstrap running summary to keep completed text, got %#v", entry["last_message"])
 	}
-	sessionsPayload, ok := payload["sessions"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected bootstrap sessions payload, got %#v", payload["sessions"])
-	}
-	if _, ok := sessionsPayload["sessions"].(map[string]interface{}); !ok {
-		t.Fatalf("expected bootstrap sessions map, got %#v", sessionsPayload)
-	}
-	entries, ok := sessionsPayload["entries"].([]interface{})
-	if !ok || len(entries) != 1 {
-		t.Fatalf("expected one bootstrap session entry, got %#v", sessionsPayload["entries"])
-	}
 }
 
 func TestWorkEndpointReturnsBoundedPayload(t *testing.T) {
@@ -366,99 +354,8 @@ func TestWorkEndpointReturnsBoundedPayload(t *testing.T) {
 	if _, ok := snapshot["running"]; !ok {
 		t.Fatalf("expected work payload to include running snapshot, got %#v", snapshot)
 	}
-	sessionsPayload, ok := payload["sessions"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected work payload to include sessions, got %#v", payload["sessions"])
-	}
-	entries, ok := sessionsPayload["entries"].([]interface{})
-	if !ok || len(entries) != 1 {
-		t.Fatalf("expected work sessions feed entry, got %#v", sessionsPayload["entries"])
-	}
-}
-
-func TestBootstrapAndWorkUseFullBoardCountsAndSessionsFeed(t *testing.T) {
-	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	const issueCount = 101
-	var liveIssue *kanban.Issue
-	for i := 0; i < issueCount; i++ {
-		issue, err := store.CreateIssue("", "", fmt.Sprintf("Ready issue %03d", i+1), "", 0, nil)
-		if err != nil {
-			t.Fatalf("CreateIssue(%d): %v", i, err)
-		}
-		if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
-			t.Fatalf("UpdateIssueState(%d): %v", i, err)
-		}
-		if i == 0 {
-			liveIssue = issue
-		}
-	}
-
-	now := time.Now().UTC().Truncate(time.Second)
-	provider := testProvider{
-		snapshot: observability.Snapshot{
-			Running: []observability.RunningEntry{{
-				IssueID:     liveIssue.ID,
-				Identifier:  liveIssue.Identifier,
-				State:       "in_progress",
-				SessionID:   "thread-live-turn-live",
-				TurnCount:   1,
-				LastEvent:   "turn.started",
-				LastMessage: "Working",
-				StartedAt:   now.Add(-1 * time.Minute),
-				Tokens:      observability.TokenTotals{TotalTokens: 7},
-			}},
-		},
-		sessions: map[string]interface{}{
-			liveIssue.Identifier: appserver.Session{
-				IssueID:         liveIssue.ID,
-				IssueIdentifier: liveIssue.Identifier,
-				SessionID:       "thread-live-turn-live",
-				ThreadID:        "thread-live",
-				TurnID:          "turn-live",
-				LastEvent:       "turn.started",
-				LastTimestamp:   now,
-				LastMessage:     "Working",
-				TotalTokens:     7,
-				TurnsStarted:    1,
-			},
-		},
-	}
-
-	mux := http.NewServeMux()
-	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	for _, path := range []string{"/api/v1/app/bootstrap", "/api/v1/app/work"} {
-		resp := requestJSON(t, srv, http.MethodGet, path, nil)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("%s: expected 200, got %d", path, resp.StatusCode)
-		}
-
-		payload := decodeResponse(t, resp)
-		overview := payload["overview"].(map[string]interface{})
-		board := overview["board"].(map[string]interface{})
-		if board["ready"].(float64) != issueCount {
-			t.Fatalf("%s: expected full ready count %d, got %#v", path, issueCount, board)
-		}
-
-		issues := payload["issues"].(map[string]interface{})
-		if issues["total"].(float64) != issueCount {
-			t.Fatalf("%s: expected total %d, got %#v", path, issueCount, issues)
-		}
-		if len(issues["items"].([]interface{})) != 100 {
-			t.Fatalf("%s: expected paged issue items, got %#v", path, issues["items"])
-		}
-
-		sessionsPayload := payload["sessions"].(map[string]interface{})
-		if len(sessionsPayload["entries"].([]interface{})) != 1 {
-			t.Fatalf("%s: expected a live session entry, got %#v", path, sessionsPayload["entries"])
-		}
+	if _, ok := payload["sessions"]; !ok {
+		t.Fatalf("expected work payload to include sessions, got %#v", payload)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const testProviderKind = "stub"
+
 func TestProviderProjectHelpersAndCounts(t *testing.T) {
 	repoDir := t.TempDir()
 	workflowPath := filepath.Join(repoDir, "WORKFLOW.md")
@@ -28,8 +30,8 @@ func TestProviderProjectHelpersAndCounts(t *testing.T) {
 		t.Fatalf("expected active 3, got %d", counts.Active())
 	}
 
-	if got := DefaultCapabilities(ProviderKindLinear); !got.Epics || !got.IssueDelete {
-		t.Fatalf("expected default capabilities for linear to match local, got %#v", got)
+	if got := DefaultCapabilities(testProviderKind); !got.Epics || !got.IssueDelete {
+		t.Fatalf("expected default capabilities for stub to match local, got %#v", got)
 	}
 	if got := DefaultCapabilities(" custom "); !got.Epics || !got.IssueDelete {
 		t.Fatalf("expected default capabilities for custom provider, got %#v", got)
@@ -38,8 +40,8 @@ func TestProviderProjectHelpersAndCounts(t *testing.T) {
 	if got := normalizeProviderKind(""); got != ProviderKindKanban {
 		t.Fatalf("expected default provider kind kanban, got %q", got)
 	}
-	if got := normalizeProviderKind(" LINEAR "); got != ProviderKindLinear {
-		t.Fatalf("expected normalized linear kind, got %q", got)
+	if got := normalizeProviderKind(" STUB "); got != testProviderKind {
+		t.Fatalf("expected normalized stub kind, got %q", got)
 	}
 	if got := normalizeProviderKind("Asana"); got != "asana" {
 		t.Fatalf("expected custom provider kind lower-cased, got %q", got)
@@ -83,11 +85,11 @@ func TestProviderProjectHelpersAndCounts(t *testing.T) {
 	}
 
 	store := setupTestStore(t)
-	project, err := store.CreateProjectWithProvider("Linear Project", "desc", repoDir, "", ProviderKindLinear, "LIN-PROJ", originalConfig)
+	project, err := store.CreateProjectWithProvider("Stub Project", "desc", repoDir, "", testProviderKind, "STUB-PROJ", originalConfig)
 	if err != nil {
 		t.Fatalf("CreateProjectWithProvider failed: %v", err)
 	}
-	if project.ProviderKind != ProviderKindLinear || project.ProviderProjectRef != "LIN-PROJ" {
+	if project.ProviderKind != testProviderKind || project.ProviderProjectRef != "STUB-PROJ" {
 		t.Fatalf("unexpected provider project fields: %#v", project)
 	}
 	if project.State != ProjectStateStopped {
@@ -117,7 +119,7 @@ func TestProviderProjectHelpersAndCounts(t *testing.T) {
 		t.Fatalf("unexpected updated terminal states: %#v", projectDefaultTerminalStates(*reloaded))
 	}
 
-	if err := store.UpdateProjectWithProvider("missing", "Missing", "", repoDir, "", ProviderKindLinear, "MISS", nil); err == nil {
+	if err := store.UpdateProjectWithProvider("missing", "Missing", "", repoDir, "", testProviderKind, "MISS", nil); err == nil {
 		t.Fatal("expected missing project update to fail")
 	}
 	if err := invalidPhaseError(WorkflowPhase("bogus")); !IsValidation(err) {
@@ -127,7 +129,7 @@ func TestProviderProjectHelpersAndCounts(t *testing.T) {
 
 func TestProviderIssueLifecycle(t *testing.T) {
 	store := setupTestStore(t)
-	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", ProviderKindLinear, "LIN-PROJ", nil)
+	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", testProviderKind, "STUB-PROJ", nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithProvider failed: %v", err)
 	}
@@ -135,7 +137,7 @@ func TestProviderIssueLifecycle(t *testing.T) {
 	if _, err := store.UpsertProviderIssue("", nil); err == nil {
 		t.Fatal("expected nil provider issue to fail")
 	}
-	if _, err := store.UpsertProviderIssue("", &Issue{ProviderKind: ProviderKindLinear, ProviderIssueRef: "LIN-0"}); err == nil {
+	if _, err := store.UpsertProviderIssue("", &Issue{ProviderKind: testProviderKind, ProviderIssueRef: "STUB-0"}); err == nil {
 		t.Fatal("expected empty projectID to fail")
 	}
 	if _, err := store.UpsertProviderIssue(project.ID, &Issue{ProviderKind: ProviderKindKanban}); err == nil {
@@ -143,28 +145,28 @@ func TestProviderIssueLifecycle(t *testing.T) {
 	}
 
 	incoming := &Issue{
-		Identifier:       "LIN-1",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-1",
+		Identifier:       "EXT-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
 		Title:            "Imported one",
 		Description:      "desc",
 		State:            StateInReview,
 		Priority:         2,
 		Labels:           []string{"sync", "provider"},
-		BlockedBy:        []string{"LIN-2"},
+		BlockedBy:        []string{"EXT-2"},
 	}
 	created, err := store.UpsertProviderIssue(project.ID, incoming)
 	if err != nil {
 		t.Fatalf("UpsertProviderIssue create failed: %v", err)
 	}
-	if !created.ProviderShadow || created.ProviderKind != ProviderKindLinear || created.ProviderIssueRef != "LIN-1" {
+	if !created.ProviderShadow || created.ProviderKind != testProviderKind || created.ProviderIssueRef != "ext-1" {
 		t.Fatalf("unexpected created provider issue: %#v", created)
 	}
 	if created.LastSyncedAt == nil {
 		t.Fatal("expected provider issue last_synced_at to be set")
 	}
 
-	lookedUp, err := store.GetIssueByProviderRef(" linear ", " LIN-1 ")
+	lookedUp, err := store.GetIssueByProviderRef(" stub ", " ext-1 ")
 	if err != nil {
 		t.Fatalf("GetIssueByProviderRef failed: %v", err)
 	}
@@ -188,9 +190,9 @@ func TestProviderIssueLifecycle(t *testing.T) {
 	}
 
 	second := &Issue{
-		Identifier:       "LIN-2",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-2",
+		Identifier:       "EXT-2",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-2",
 		Title:            "Imported two",
 		State:            StateBacklog,
 	}
@@ -200,9 +202,9 @@ func TestProviderIssueLifecycle(t *testing.T) {
 	}
 
 	updateIncoming := &Issue{
-		Identifier:       "LIN-1",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-1",
+		Identifier:       "EXT-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
 		Title:            "Imported one updated",
 		Description:      "updated",
 		State:            StateCancelled,
@@ -226,7 +228,7 @@ func TestProviderIssueLifecycle(t *testing.T) {
 		t.Fatalf("expected blockers to be replaced, got %#v", updated.BlockedBy)
 	}
 
-	filtered, err := store.ListIssues(map[string]interface{}{"provider_kind": ProviderKindLinear})
+	filtered, err := store.ListIssues(map[string]interface{}{"provider_kind": testProviderKind})
 	if err != nil {
 		t.Fatalf("ListIssues provider filter failed: %v", err)
 	}
@@ -234,7 +236,7 @@ func TestProviderIssueLifecycle(t *testing.T) {
 		t.Fatalf("expected 2 provider-filtered issues, got %d", len(filtered))
 	}
 
-	if err := store.DeleteProviderIssuesExcept(project.ID, ProviderKindLinear, []string{"LIN-1", " "}); err != nil {
+	if err := store.DeleteProviderIssuesExcept(project.ID, testProviderKind, []string{"ext-1", " "}); err != nil {
 		t.Fatalf("DeleteProviderIssuesExcept failed: %v", err)
 	}
 	if _, err := store.GetIssue(secondCreated.ID); err == nil {
@@ -242,7 +244,7 @@ func TestProviderIssueLifecycle(t *testing.T) {
 	} else if !IsNotFound(err) {
 		t.Fatalf("expected deleted provider issue to be not found, got %v", err)
 	}
-	if _, err := store.GetIssueByProviderRef(ProviderKindLinear, "LIN-2"); err != sql.ErrNoRows {
+	if _, err := store.GetIssueByProviderRef(testProviderKind, "ext-2"); err != sql.ErrNoRows {
 		t.Fatalf("expected deleted provider ref lookup to return sql.ErrNoRows, got %v", err)
 	}
 
@@ -263,15 +265,15 @@ func TestProviderIssueLifecycle(t *testing.T) {
 
 func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
 	store := setupTestStore(t)
-	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", ProviderKindLinear, "LIN-PROJ", nil)
+	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", testProviderKind, "STUB-PROJ", nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithProvider failed: %v", err)
 	}
 
 	doneIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
-		Identifier:       "LIN-DONE",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-DONE",
+		Identifier:       "EXT-DONE",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-done",
 		Title:            "Imported done",
 		State:            StateDone,
 		WorkflowPhase:    WorkflowPhaseDone,
@@ -284,9 +286,9 @@ func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
 	}
 
 	reviewIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
-		Identifier:       "LIN-REVIEW",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-REVIEW",
+		Identifier:       "EXT-REVIEW",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-review",
 		Title:            "Imported review",
 		State:            StateInReview,
 		WorkflowPhase:    WorkflowPhaseReview,
@@ -299,9 +301,9 @@ func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
 	}
 
 	derivedIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
-		Identifier:       "LIN-DERIVED",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-DERIVED",
+		Identifier:       "EXT-DERIVED",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-derived",
 		Title:            "Imported derived",
 		State:            StateCancelled,
 	})
@@ -313,9 +315,9 @@ func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
 	}
 
 	refreshedReview, err := store.UpsertProviderIssue(project.ID, &Issue{
-		Identifier:       "LIN-REVIEW",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-REVIEW",
+		Identifier:       "EXT-REVIEW",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-review",
 		Title:            "Imported review refreshed",
 		State:            StateInReview,
 		WorkflowPhase:    WorkflowPhaseReview,
@@ -333,15 +335,15 @@ func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
 
 func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStaleData(t *testing.T) {
 	store := setupTestStore(t)
-	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", ProviderKindLinear, "LIN-PROJ", nil)
+	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", testProviderKind, "STUB-PROJ", nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithProvider failed: %v", err)
 	}
 
 	keep, err := store.UpsertProviderIssue(project.ID, &Issue{
-		Identifier:       "LIN-KEEP",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-KEEP",
+		Identifier:       "EXT-KEEP",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-keep",
 		Title:            "Old title",
 		State:            StateBacklog,
 	})
@@ -351,16 +353,16 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	if err := store.UpdateIssue(keep.ID, map[string]interface{}{
 		"agent_name":   "codex",
 		"agent_prompt": "preserve",
-		"branch_name":  "codex/LIN-KEEP",
+		"branch_name":  "codex/EXT-KEEP",
 		"pr_url":       "https://example.com/pr/1",
 	}); err != nil {
 		t.Fatalf("UpdateIssue keep failed: %v", err)
 	}
 
 	stale, err := store.UpsertProviderIssue(project.ID, &Issue{
-		Identifier:       "LIN-STALE",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "LIN-STALE",
+		Identifier:       "EXT-STALE",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-stale",
 		Title:            "Stale issue",
 		State:            StateReady,
 	})
@@ -389,11 +391,11 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	}
 
 	lastSyncedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
-	if err := store.ReconcileProviderIssues(project.ID, ProviderKindLinear, []Issue{
+	if err := store.ReconcileProviderIssues(project.ID, testProviderKind, []Issue{
 		{
-			Identifier:       "LIN-KEEP",
-			ProviderKind:     ProviderKindLinear,
-			ProviderIssueRef: "LIN-KEEP",
+			Identifier:       "EXT-KEEP",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "ext-keep",
 			Title:            "Refreshed title",
 			Description:      "Refreshed description",
 			State:            StateDone,
@@ -403,9 +405,9 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 			LastSyncedAt:     &lastSyncedAt,
 		},
 		{
-			Identifier:       "LIN-NEW",
-			ProviderKind:     ProviderKindLinear,
-			ProviderIssueRef: "LIN-NEW",
+			Identifier:       "EXT-NEW",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "ext-new",
 			Title:            "New issue",
 			State:            StateReady,
 			Labels:           []string{"new"},
@@ -421,7 +423,7 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	if updatedKeep.Title != "Refreshed title" || updatedKeep.Description != "Refreshed description" || updatedKeep.State != StateDone || updatedKeep.Priority != 1 {
 		t.Fatalf("expected provider fields to refresh, got %#v", updatedKeep)
 	}
-	if updatedKeep.AgentName != "codex" || updatedKeep.AgentPrompt != "preserve" || updatedKeep.BranchName != "codex/LIN-KEEP" || updatedKeep.PRURL != "https://example.com/pr/1" {
+	if updatedKeep.AgentName != "codex" || updatedKeep.AgentPrompt != "preserve" || updatedKeep.BranchName != "codex/EXT-KEEP" || updatedKeep.PRURL != "https://example.com/pr/1" {
 		t.Fatalf("expected local fields to be preserved, got %#v", updatedKeep)
 	}
 	if !reflect.DeepEqual(updatedKeep.Labels, []string{"synced"}) {
@@ -437,7 +439,7 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	if _, err := store.GetWorkspace(stale.ID); err == nil {
 		t.Fatal("expected stale workspace to be removed")
 	}
-	if _, err := store.GetIssueByProviderRef(ProviderKindLinear, "LIN-NEW"); err != nil {
+	if _, err := store.GetIssueByProviderRef(testProviderKind, "ext-new"); err != nil {
 		t.Fatalf("expected new provider issue to be inserted, got %v", err)
 	}
 }

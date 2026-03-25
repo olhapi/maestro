@@ -109,13 +109,7 @@ func gitCommandEnv() []string {
 	env := os.Environ()
 	filtered := env[:0]
 	for _, value := range env {
-		switch {
-		case strings.HasPrefix(value, "GIT_DIR="):
-		case strings.HasPrefix(value, "GIT_WORK_TREE="):
-		case strings.HasPrefix(value, "GIT_INDEX_FILE="):
-		case strings.HasPrefix(value, "GIT_COMMON_DIR="):
-		case strings.HasPrefix(value, "GIT_PREFIX="):
-		default:
+		if !strings.HasPrefix(value, "GIT_") {
 			filtered = append(filtered, value)
 		}
 	}

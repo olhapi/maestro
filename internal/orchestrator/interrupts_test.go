@@ -81,34 +81,8 @@ func mkdirAll(path string) error {
 	return os.MkdirAll(path, 0o755)
 }
 
-func registerRunningPendingInteraction(t *testing.T, orch *Orchestrator, issue *kanban.Issue, attempt int, phase kanban.WorkflowPhase, interaction appserver.PendingInteraction, responder appserver.InteractionResponder) {
-	t.Helper()
-
-	runningIssue := *issue
-	runningIssue.State = kanban.StateInProgress
-	runningIssue.WorkflowPhase = phase
-
-	orch.mu.Lock()
-	orch.running[issue.ID] = runningEntry{
-		issue:   runningIssue,
-		attempt: attempt,
-		phase:   phase,
-		cancel:  func() {},
-	}
-	orch.mu.Unlock()
-
-	orch.registerPendingInteraction(issue.ID, &interaction, responder)
-}
-
-func TestSharedPendingInterruptsAppendsQueuedItemsBeforeDerivedAlertsInDispatchOrder(t *testing.T) {
+func TestSharedPendingInterruptsAppendsDerivedAlertsAfterQueuedItemsInDispatchOrder(t *testing.T) {
 	fixture := setupSharedInterruptFixture(t)
-	third, err := fixture.store.CreateIssue(fixture.project.ID, "", "Third blocked issue", "", 3, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue third: %v", err)
-	}
-	if err := fixture.store.UpdateIssueState(third.ID, kanban.StateReady); err != nil {
-		t.Fatalf("UpdateIssueState third: %v", err)
-	}
 
 	queued := appserver.PendingInteraction{
 		ID:              "queued-approval",
@@ -125,7 +99,10 @@ func TestSharedPendingInterruptsAppendsQueuedItemsBeforeDerivedAlertsInDispatchO
 		},
 	}
 
-	registerRunningPendingInteraction(t, fixture.orch, fixture.first, 1, kanban.WorkflowPhaseImplementation, queued, nil)
+	fixture.orch.mu.Lock()
+	fixture.orch.pendingInteractions[queued.ID] = pendingInteractionEntry{interaction: queued}
+	fixture.orch.pendingInteractionOrder = []string{queued.ID}
+	fixture.orch.mu.Unlock()
 
 	snapshot := fixture.orch.PendingInterrupts()
 	if len(snapshot.Items) != 3 {
@@ -134,15 +111,15 @@ func TestSharedPendingInterruptsAppendsQueuedItemsBeforeDerivedAlertsInDispatchO
 	if snapshot.Items[0].ID != queued.ID {
 		t.Fatalf("expected queued interaction first, got %+v", snapshot.Items)
 	}
-	if snapshot.Items[1].Kind != appserver.PendingInteractionKindAlert || snapshot.Items[1].IssueID != fixture.second.ID {
+	if snapshot.Items[1].Kind != appserver.PendingInteractionKindAlert || snapshot.Items[1].IssueID != fixture.first.ID {
 		t.Fatalf("expected first derived alert for highest-priority issue, got %+v", snapshot.Items[1])
 	}
-	if snapshot.Items[2].Kind != appserver.PendingInteractionKindAlert || snapshot.Items[2].IssueID != third.ID {
+	if snapshot.Items[2].Kind != appserver.PendingInteractionKindAlert || snapshot.Items[2].IssueID != fixture.second.ID {
 		t.Fatalf("expected second derived alert for next issue, got %+v", snapshot.Items[2])
 	}
 }
 
-func TestPendingInterruptForIssueReturnsQueuedInteractionForRunningIssue(t *testing.T) {
+func TestPendingInterruptForIssuePrefersQueuedInteractionOverDerivedAlert(t *testing.T) {
 	fixture := setupSharedInterruptFixture(t)
 
 	queued := appserver.PendingInteraction{
@@ -159,7 +136,10 @@ func TestPendingInterruptForIssueReturnsQueuedInteractionForRunningIssue(t *test
 		},
 	}
 
-	registerRunningPendingInteraction(t, fixture.orch, fixture.first, 1, kanban.WorkflowPhaseImplementation, queued, nil)
+	fixture.orch.mu.Lock()
+	fixture.orch.pendingInteractions[queued.ID] = pendingInteractionEntry{interaction: queued}
+	fixture.orch.pendingInteractionOrder = []string{queued.ID}
+	fixture.orch.mu.Unlock()
 
 	interaction, ok := fixture.orch.PendingInterruptForIssue(fixture.first.ID, fixture.first.Identifier)
 	if !ok {
@@ -167,18 +147,6 @@ func TestPendingInterruptForIssueReturnsQueuedInteractionForRunningIssue(t *test
 	}
 	if interaction.ID != queued.ID || interaction.Kind != appserver.PendingInteractionKindUserInput {
 		t.Fatalf("expected queued interaction to win over derived alert, got %+v", interaction)
-	}
-}
-
-func TestPendingInterruptForIssueReturnsDerivedAlertForBlockedIssue(t *testing.T) {
-	fixture := setupSharedInterruptFixture(t)
-
-	interaction, ok := fixture.orch.PendingInterruptForIssue(fixture.first.ID, fixture.first.Identifier)
-	if !ok {
-		t.Fatal("expected pending interrupt for blocked issue")
-	}
-	if interaction.Kind != appserver.PendingInteractionKindAlert || interaction.IssueID != fixture.first.ID {
-		t.Fatalf("expected derived alert for blocked issue, got %+v", interaction)
 	}
 }
 
@@ -200,7 +168,10 @@ func TestPendingInterruptsKeepsQueuedItemsWhenDerivedAlertLookupFails(t *testing
 		},
 	}
 
-	registerRunningPendingInteraction(t, fixture.orch, fixture.first, 1, kanban.WorkflowPhaseImplementation, queued, nil)
+	fixture.orch.mu.Lock()
+	fixture.orch.pendingInteractions[queued.ID] = pendingInteractionEntry{interaction: queued}
+	fixture.orch.pendingInteractionOrder = []string{queued.ID}
+	fixture.orch.mu.Unlock()
 
 	db, err := sql.Open("sqlite3", fixture.dbPath)
 	if err != nil {
@@ -234,7 +205,10 @@ func TestPendingInterruptForIssueKeepsQueuedItemsWhenDerivedAlertLookupFails(t *
 		},
 	}
 
-	registerRunningPendingInteraction(t, fixture.orch, fixture.first, 1, kanban.WorkflowPhaseImplementation, queued, nil)
+	fixture.orch.mu.Lock()
+	fixture.orch.pendingInteractions[queued.ID] = pendingInteractionEntry{interaction: queued}
+	fixture.orch.pendingInteractionOrder = []string{queued.ID}
+	fixture.orch.mu.Unlock()
 
 	db, err := sql.Open("sqlite3", fixture.dbPath)
 	if err != nil {
@@ -296,12 +270,9 @@ func TestAcknowledgeInterruptReappearsWhenDerivedFingerprintChanges(t *testing.T
 		t.Fatalf("AcknowledgeInterrupt: %v", err)
 	}
 
-	differentRepo := filepath.Join(t.TempDir(), "different-project-repo")
-	if err := mkdirAll(differentRepo); err != nil {
-		t.Fatalf("mkdirAll different project repo: %v", err)
-	}
-	if err := fixture.store.UpdateProject(fixture.project.ID, fixture.project.Name, fixture.project.Description, differentRepo, ""); err != nil {
-		t.Fatalf("UpdateProject different repo: %v", err)
+	fixture.orch.scopedRepoPath = filepath.Join(t.TempDir(), "different-scope")
+	if err := mkdirAll(fixture.orch.scopedRepoPath); err != nil {
+		t.Fatalf("mkdirAll new scope repo: %v", err)
 	}
 
 	snapshot = fixture.orch.PendingInterrupts()
@@ -313,36 +284,8 @@ func TestAcknowledgeInterruptReappearsWhenDerivedFingerprintChanges(t *testing.T
 	}
 }
 
-func TestAcknowledgeInterruptStaysHiddenWhenIssueUpdates(t *testing.T) {
-	fixture := setupSharedInterruptFixture(t)
-
-	snapshot := fixture.orch.PendingInterrupts()
-	if len(snapshot.Items) != 2 {
-		t.Fatalf("expected derived alerts, got %+v", snapshot.Items)
-	}
-	acknowledgedID := snapshot.Items[0].ID
-	if err := fixture.orch.AcknowledgeInterrupt(context.Background(), acknowledgedID); err != nil {
-		t.Fatalf("AcknowledgeInterrupt: %v", err)
-	}
-
-	if err := fixture.store.UpdateIssue(fixture.first.ID, map[string]interface{}{
-		"title": "First blocked issue updated",
-	}); err != nil {
-		t.Fatalf("UpdateIssue: %v", err)
-	}
-
-	snapshot = fixture.orch.PendingInterrupts()
-	if len(snapshot.Items) != 1 {
-		t.Fatalf("expected acknowledged alert to stay hidden after issue update, got %+v", snapshot.Items)
-	}
-	if snapshot.Items[0].IssueID != fixture.second.ID {
-		t.Fatalf("expected only the second issue alert to remain visible, got %+v", snapshot.Items[0])
-	}
-}
-
 func TestAcknowledgeInterruptReappearsWhenResolvedBlockerReturns(t *testing.T) {
 	fixture := setupSharedInterruptFixture(t)
-	originalRepoPath := fixture.project.RepoPath
 
 	snapshot := fixture.orch.PendingInterrupts()
 	if len(snapshot.Items) != 2 {
@@ -366,8 +309,12 @@ func TestAcknowledgeInterruptReappearsWhenResolvedBlockerReturns(t *testing.T) {
 		t.Fatalf("expected resolved blocker to prune acknowledgement for %s", acknowledgedID)
 	}
 
-	if err := fixture.store.UpdateProject(fixture.project.ID, fixture.project.Name, fixture.project.Description, originalRepoPath, ""); err != nil {
-		t.Fatalf("UpdateProject restore original repo: %v", err)
+	returnedRepo := filepath.Join(t.TempDir(), "project-repo-returned")
+	if err := mkdirAll(returnedRepo); err != nil {
+		t.Fatalf("mkdirAll returned repo: %v", err)
+	}
+	if err := fixture.store.UpdateProject(fixture.project.ID, fixture.project.Name, fixture.project.Description, returnedRepo, ""); err != nil {
+		t.Fatalf("UpdateProject out of scope again: %v", err)
 	}
 
 	snapshot = fixture.orch.PendingInterrupts()
@@ -386,7 +333,6 @@ func TestDerivedAlertsSkipPausedIssues(t *testing.T) {
 	fixture.orch.paused[fixture.first.ID] = pausedEntry{
 		IssueState: string(fixture.first.State),
 		Attempt:    2,
-		Identifier: fixture.first.Identifier,
 		Phase:      string(kanban.WorkflowPhaseImplementation),
 		PausedAt:   time.Now().UTC(),
 		Error:      "run_paused",
@@ -450,12 +396,21 @@ func TestRespondToInterruptRejectsQueuedItemsBehindQueueHead(t *testing.T) {
 		},
 	}
 
-	registerRunningPendingInteraction(t, fixture.orch, fixture.first, 1, kanban.WorkflowPhaseImplementation, first, func(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
-		return nil
-	})
-	registerRunningPendingInteraction(t, fixture.orch, fixture.second, 1, kanban.WorkflowPhaseImplementation, second, func(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
-		return nil
-	})
+	fixture.orch.mu.Lock()
+	fixture.orch.pendingInteractions[first.ID] = pendingInteractionEntry{
+		interaction: first,
+		respond: func(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+			return nil
+		},
+	}
+	fixture.orch.pendingInteractions[second.ID] = pendingInteractionEntry{
+		interaction: second,
+		respond: func(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+			return nil
+		},
+	}
+	fixture.orch.pendingInteractionOrder = []string{first.ID, second.ID}
+	fixture.orch.mu.Unlock()
 
 	err := fixture.orch.RespondToInterrupt(context.Background(), second.ID, appserver.PendingInteractionResponse{
 		Decision: "approved",
@@ -483,7 +438,10 @@ func TestAcknowledgeInterruptRejectsQueuedApprovals(t *testing.T) {
 		},
 	}
 
-	registerRunningPendingInteraction(t, fixture.orch, fixture.first, 1, kanban.WorkflowPhaseImplementation, queued, nil)
+	fixture.orch.mu.Lock()
+	fixture.orch.pendingInteractions[queued.ID] = pendingInteractionEntry{interaction: queued}
+	fixture.orch.pendingInteractionOrder = []string{queued.ID}
+	fixture.orch.mu.Unlock()
 
 	err := fixture.orch.AcknowledgeInterrupt(context.Background(), queued.ID)
 	if !errors.Is(err, appserver.ErrInvalidInteractionResponse) {

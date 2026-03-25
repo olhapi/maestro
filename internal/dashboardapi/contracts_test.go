@@ -1686,7 +1686,7 @@ func TestDashboardAPIReturnsMethodAndPathErrors(t *testing.T) {
 		{method: http.MethodPost, path: "/api/v1/app/runtime/events", status: http.StatusMethodNotAllowed},
 		{method: http.MethodPost, path: "/api/v1/app/runtime/series", status: http.StatusMethodNotAllowed},
 		{method: http.MethodGet, path: "/api/v1/app/projects/missing/nested", status: http.StatusNotFound},
-		{method: http.MethodGet, path: "/api/v1/app/issues/missing/execution/extra", status: http.StatusNotFound},
+		{method: http.MethodGet, path: "/api/v1/app/issues/missing/execution/extra", status: http.StatusMethodNotAllowed},
 	} {
 		resp := requestJSON(t, srv, tc.method, tc.path, nil)
 		if resp.StatusCode != tc.status {

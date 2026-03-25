@@ -9,7 +9,7 @@ describe("canEditIssueType", () => {
   });
 
   it("blocks editing provider-backed issues", () => {
-    expect(canEditIssueType({ provider_kind: "linear" })).toBe(false);
+    expect(canEditIssueType({ provider_kind: "stub" })).toBe(false);
     expect(canEditIssueType({ provider_kind: "github" })).toBe(false);
   });
 });

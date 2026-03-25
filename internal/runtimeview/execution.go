@@ -16,79 +16,6 @@ type ExecutionProvider interface {
 	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
 }
 
-type issueExecutionPayloadView struct {
-	IssueID              string
-	Identifier           string
-	Active               bool
-	Phase                string
-	Attempt              int
-	FailureClass         string
-	CurrentError         string
-	RetryState           string
-	SessionSource        string
-	RuntimeAvailable     bool
-	RuntimeEvents        []kanban.RuntimeEvent
-	ActivityGroups       []kanban.ActivityGroup
-	DebugActivityGroups  []kanban.ActivityGroup
-	AgentCommands        []kanban.IssueAgentCommand
-	WorkspaceRecovery    *kanban.WorkspaceRecovery
-	HasWorkspaceRecovery bool
-	NextRetryAt          string
-	HasRetry             bool
-	PausedAt             string
-	PauseReason          string
-	ConsecutiveFailures  int
-	PauseThreshold       int
-	HasPaused            bool
-	Session              interface{}
-	HasSession           bool
-	PendingInterrupt     *appserver.PendingInteraction
-	HasPendingInterrupt  bool
-	PlanApproval         kanban.IssuePlanApproval
-	HasPlanApproval      bool
-}
-
-func (p issueExecutionPayloadView) toMap() map[string]interface{} {
-	payload := map[string]interface{}{
-		"issue_id":              p.IssueID,
-		"identifier":            p.Identifier,
-		"active":                p.Active,
-		"phase":                 p.Phase,
-		"attempt_number":        p.Attempt,
-		"failure_class":         p.FailureClass,
-		"current_error":         p.CurrentError,
-		"retry_state":           p.RetryState,
-		"session_source":        p.SessionSource,
-		"runtime_events":        p.RuntimeEvents,
-		"activity_groups":       p.ActivityGroups,
-		"debug_activity_groups": p.DebugActivityGroups,
-		"runtime_available":     p.RuntimeAvailable,
-		"agent_commands":        p.AgentCommands,
-	}
-	if p.HasWorkspaceRecovery && p.WorkspaceRecovery != nil {
-		payload["workspace_recovery"] = p.WorkspaceRecovery
-	}
-	if p.HasRetry {
-		payload["next_retry_at"] = p.NextRetryAt
-	}
-	if p.HasPaused {
-		payload["paused_at"] = p.PausedAt
-		payload["pause_reason"] = p.PauseReason
-		payload["consecutive_failures"] = p.ConsecutiveFailures
-		payload["pause_threshold"] = p.PauseThreshold
-	}
-	if p.HasSession {
-		payload["session"] = p.Session
-	}
-	if p.HasPendingInterrupt && p.PendingInterrupt != nil {
-		payload["pending_interrupt"] = p.PendingInterrupt
-	}
-	if p.HasPlanApproval {
-		payload["plan_approval"] = p.PlanApproval
-	}
-	return payload
-}
-
 func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issue *kanban.Issue) (map[string]interface{}, error) {
 	events, err := store.ListIssueRuntimeEvents(issue.ID, 0)
 	if err != nil {
@@ -150,10 +77,10 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	switch {
 	case running != nil && running.Attempt > 0:
 		attempt = running.Attempt
-	case paused != nil && paused.Attempt > 0:
-		attempt = paused.Attempt
 	case retry != nil && retry.Attempt > 0:
 		attempt = retry.Attempt
+	case paused != nil && paused.Attempt > 0:
+		attempt = paused.Attempt
 	case persistedSession != nil && persistedSession.Attempt > 0:
 		attempt = persistedSession.Attempt
 	case len(events) > 0:
@@ -164,10 +91,10 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	switch {
 	case running != nil && strings.TrimSpace(running.Phase) != "":
 		phase = running.Phase
-	case paused != nil && strings.TrimSpace(paused.Phase) != "":
-		phase = paused.Phase
 	case retry != nil && strings.TrimSpace(retry.Phase) != "":
 		phase = retry.Phase
+	case paused != nil && strings.TrimSpace(paused.Phase) != "":
+		phase = paused.Phase
 	case persistedSession != nil && strings.TrimSpace(persistedSession.Phase) != "":
 		phase = persistedSession.Phase
 	}
@@ -178,62 +105,56 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	retryState := "none"
 	if running != nil {
 		retryState = "active"
-	} else if paused != nil {
-		retryState = "paused"
 	} else if retry != nil {
 		retryState = "scheduled"
+	} else if paused != nil {
+		retryState = "paused"
 	}
 
 	activityGroups, debugActivityGroups := buildActivityGroups(activityEntries, events)
 
-	view := issueExecutionPayloadView{
-		IssueID:             issue.ID,
-		Identifier:          issue.Identifier,
-		Active:              running != nil,
-		Phase:               phase,
-		Attempt:             attempt,
-		FailureClass:        failureClass,
-		CurrentError:        currentError,
-		RetryState:          retryState,
-		SessionSource:       sessionSource,
-		RuntimeAvailable:    runtimeAvailable,
-		RuntimeEvents:       events,
-		ActivityGroups:      activityGroups,
-		DebugActivityGroups: debugActivityGroups,
-		AgentCommands:       commands,
+	payload := map[string]interface{}{
+		"issue_id":              issue.ID,
+		"identifier":            issue.Identifier,
+		"active":                running != nil,
+		"phase":                 phase,
+		"attempt_number":        attempt,
+		"failure_class":         failureClass,
+		"current_error":         currentError,
+		"retry_state":           retryState,
+		"session_source":        sessionSource,
+		"runtime_events":        events,
+		"activity_groups":       activityGroups,
+		"debug_activity_groups": debugActivityGroups,
+		"runtime_available":     runtimeAvailable,
+		"agent_commands":        commands,
 	}
 	if workspaceRecovery != nil {
-		view.WorkspaceRecovery = workspaceRecovery
-		view.HasWorkspaceRecovery = true
+		payload["workspace_recovery"] = workspaceRecovery
 	}
 	if retry != nil {
-		view.NextRetryAt = retry.DueAt.UTC().Format(time.RFC3339)
-		view.HasRetry = true
+		payload["next_retry_at"] = retry.DueAt.UTC().Format(time.RFC3339)
 	}
 	if paused != nil {
-		view.PausedAt = paused.PausedAt.UTC().Format(time.RFC3339)
-		view.PauseReason = paused.Error
-		view.ConsecutiveFailures = paused.ConsecutiveFailures
-		view.PauseThreshold = paused.PauseThreshold
-		view.HasPaused = true
+		payload["paused_at"] = paused.PausedAt.UTC().Format(time.RFC3339)
+		payload["pause_reason"] = paused.Error
+		payload["consecutive_failures"] = paused.ConsecutiveFailures
+		payload["pause_threshold"] = paused.PauseThreshold
 	}
 	if session != nil {
-		view.Session = session
-		view.HasSession = true
+		payload["session"] = session
 	}
 	if pendingInterrupt != nil {
-		view.PendingInterrupt = pendingInterrupt
-		view.HasPendingInterrupt = true
+		payload["pending_interrupt"] = pendingInterrupt
 	}
 	if issue.PlanApprovalPending && strings.TrimSpace(issue.PendingPlanMarkdown) != "" && issue.PendingPlanRequestedAt != nil {
-		view.PlanApproval = kanban.IssuePlanApproval{
+		payload["plan_approval"] = kanban.IssuePlanApproval{
 			Markdown:    issue.PendingPlanMarkdown,
 			RequestedAt: issue.PendingPlanRequestedAt.UTC(),
 			Attempt:     attempt,
 		}
-		view.HasPlanApproval = true
 	}
-	return view.toMap(), nil
+	return payload, nil
 }
 
 func findRunningEntry(entries []observability.RunningEntry, issueID, identifier string) *observability.RunningEntry {
@@ -305,13 +226,21 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *ob
 	if active {
 		return ""
 	}
-	switch {
-	case paused != nil:
-		if class := normalizeFailureErrorClass(paused.Error); class != "" {
-			return class
+	if !active && retry == nil {
+		if persisted != nil && strings.TrimSpace(persisted.RunKind) == "run_started" {
+			return "run_interrupted"
 		}
+		if len(events) > 0 && events[len(events)-1].Kind == "run_started" {
+			return "run_interrupted"
+		}
+	}
+	switch {
 	case retry != nil:
 		if class := normalizeFailureErrorClass(retry.Error); class != "" {
+			return class
+		}
+	case paused != nil:
+		if class := normalizeFailureErrorClass(paused.Error); class != "" {
 			return class
 		}
 	case persisted != nil:
@@ -320,14 +249,6 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *ob
 		}
 		if class := normalizeFailureKind(persisted.RunKind); class != "" {
 			return class
-		}
-	}
-	if retry == nil && paused == nil {
-		if persisted != nil && strings.TrimSpace(persisted.RunKind) == "run_started" {
-			return "run_interrupted"
-		}
-		if len(events) > 0 && events[len(events)-1].Kind == "run_started" {
-			return "run_interrupted"
 		}
 	}
 	for i := len(events) - 1; i >= 0; i-- {
@@ -349,10 +270,10 @@ func deriveCurrentError(active bool, retry *observability.RetryEntry, paused *ob
 		return ""
 	}
 	switch {
-	case paused != nil && strings.TrimSpace(paused.Error) != "":
-		return paused.Error
 	case retry != nil && strings.TrimSpace(retry.Error) != "":
 		return retry.Error
+	case paused != nil && strings.TrimSpace(paused.Error) != "":
+		return paused.Error
 	case persisted != nil && strings.TrimSpace(persisted.Error) != "":
 		return persisted.Error
 	default:

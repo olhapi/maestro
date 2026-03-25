@@ -31,18 +31,7 @@ var derivedAlertCandidateStates = []string{
 func (o *Orchestrator) AcknowledgeInterrupt(ctx context.Context, interactionID string) error {
 	_ = ctx
 
-	if interaction, found := o.queuedPendingInteractionByID(interactionID); found {
-		if !interaction.HasAction(appserver.PendingInteractionActionAcknowledge) {
-			return appserver.ErrInvalidInteractionResponse
-		}
-		if err := o.store.AcknowledgeInterrupt(strings.TrimSpace(interactionID)); err != nil {
-			return err
-		}
-		observability.BroadcastUpdate()
-		return nil
-	}
-
-	interaction, found, err := o.derivedPendingInteractionByID(interactionID)
+	interaction, found, err := o.pendingInteractionByID(interactionID)
 	if err != nil {
 		return err
 	}
@@ -84,58 +73,23 @@ func (o *Orchestrator) sharedPendingInteractionItems() ([]appserver.PendingInter
 	return items, nil
 }
 
-func (o *Orchestrator) queuedPendingInteractionByID(interactionID string) (*appserver.PendingInteraction, bool) {
+func (o *Orchestrator) pendingInteractionByID(interactionID string) (*appserver.PendingInteraction, bool, error) {
 	interactionID = strings.TrimSpace(interactionID)
 	if interactionID == "" {
-		return nil, false
+		return nil, false, nil
 	}
-	o.mu.RLock()
-	entry, ok := o.pendingInteractions[interactionID]
-	o.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	cloned := entry.interaction.Clone()
-	return &cloned, true
-}
-
-func (o *Orchestrator) queuedPendingInteractionForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
-	issueID = strings.TrimSpace(issueID)
-	identifier = strings.TrimSpace(identifier)
-	if issueID == "" && identifier == "" {
-		return nil, false
-	}
-
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	for _, interactionID := range o.pendingInteractionOrder {
-		entry, ok := o.pendingInteractions[interactionID]
-		if !ok {
+	items, err := o.sharedPendingInteractionItems()
+	for i := range items {
+		if items[i].ID != interactionID {
 			continue
 		}
-		if entry.interaction.IssueID != issueID && entry.interaction.IssueIdentifier != identifier {
-			continue
-		}
-		cloned := entry.interaction.Clone()
-		return &cloned, true
+		cloned := items[i].Clone()
+		return &cloned, true, nil
 	}
-	return nil, false
-}
-
-func (o *Orchestrator) derivedPendingInteractionByID(interactionID string) (*appserver.PendingInteraction, bool, error) {
-	items, err := o.derivedAlertItems()
 	if err != nil {
 		return nil, false, err
 	}
-	return pendingInteractionByID(items, interactionID)
-}
-
-func (o *Orchestrator) derivedPendingInteractionForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool, error) {
-	items, err := o.derivedAlertItems()
-	if err != nil {
-		return nil, false, err
-	}
-	return pendingInteractionForIssue(items, issueID, identifier)
+	return nil, false, nil
 }
 
 func (o *Orchestrator) derivedAlertItems() ([]appserver.PendingInteraction, error) {
@@ -204,37 +158,6 @@ func (o *Orchestrator) derivedAlertItems() ([]appserver.PendingInteraction, erro
 	return filtered, nil
 }
 
-func pendingInteractionByID(items []appserver.PendingInteraction, interactionID string) (*appserver.PendingInteraction, bool, error) {
-	interactionID = strings.TrimSpace(interactionID)
-	if interactionID == "" {
-		return nil, false, nil
-	}
-	for i := range items {
-		if items[i].ID != interactionID {
-			continue
-		}
-		cloned := items[i].Clone()
-		return &cloned, true, nil
-	}
-	return nil, false, nil
-}
-
-func pendingInteractionForIssue(items []appserver.PendingInteraction, issueID, identifier string) (*appserver.PendingInteraction, bool, error) {
-	issueID = strings.TrimSpace(issueID)
-	identifier = strings.TrimSpace(identifier)
-	if issueID == "" && identifier == "" {
-		return nil, false, nil
-	}
-	for i := range items {
-		if items[i].IssueID != issueID && items[i].IssueIdentifier != identifier {
-			continue
-		}
-		cloned := items[i].Clone()
-		return &cloned, true, nil
-	}
-	return nil, false, nil
-}
-
 func (o *Orchestrator) issueEligibleForDerivedAlert(issue *kanban.Issue, dispatchState *kanban.IssueDispatchState) bool {
 	if issue == nil || dispatchState == nil {
 		return false
@@ -298,7 +221,7 @@ func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.P
 			projectName = trimmed
 		}
 	}
-	fingerprint := derivedIssueDispatchBlockedFingerprint(issue.ID, projectID, project.RepoPath, scopeError)
+	fingerprint := derivedIssueDispatchBlockedFingerprint(issue.ID, projectID, scopeError)
 	issueLabel := strings.TrimSpace(issue.Identifier)
 	if issueLabel == "" {
 		issueLabel = strings.TrimSpace(issue.Title)
@@ -334,11 +257,10 @@ func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.P
 	}
 }
 
-func derivedIssueDispatchBlockedFingerprint(issueID, projectID, projectRepoPath, scopeError string) string {
+func derivedIssueDispatchBlockedFingerprint(issueID, projectID, scopeError string) string {
 	sum := sha1.Sum([]byte(strings.Join([]string{
 		strings.TrimSpace(issueID),
 		strings.TrimSpace(projectID),
-		strings.TrimSpace(projectRepoPath),
 		strings.TrimSpace(scopeError),
 	}, "|")))
 	return hex.EncodeToString(sum[:])[:12]

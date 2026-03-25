@@ -39,10 +39,9 @@ type testMCPClient struct {
 }
 
 type testLookupProvider struct {
-	kind       string
-	listFunc   func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
-	getFunc    func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
-	updateFunc func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error)
+	kind     string
+	listFunc func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
+	getFunc  func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
 }
 
 func (p *testLookupProvider) Kind() string {
@@ -75,10 +74,7 @@ func (p *testLookupProvider) CreateIssue(context.Context, *kanban.Project, provi
 	return nil, providers.ErrUnsupportedCapability
 }
 
-func (p *testLookupProvider) UpdateIssue(ctx context.Context, project *kanban.Project, issue *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
-	if p.updateFunc != nil {
-		return p.updateFunc(ctx, project, issue, updates)
-	}
+func (p *testLookupProvider) UpdateIssue(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
 	return nil, providers.ErrUnsupportedCapability
 }
 
@@ -416,18 +412,6 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
       "properties":{
         "path":{"type":"string","description":"Absolute path"},
         "mode":{"type":"string","description":"Execution mode","examples":["dry-run"]}
-      },
-      "required":["path"],
-      "additionalProperties":false,
-      "$defs":{
-        "mode_config":{
-          "type":"object",
-          "properties":{
-            "enabled":{"type":"boolean"}
-          },
-          "required":["enabled"],
-          "additionalProperties":false
-        }
       }
     }
   },
@@ -521,7 +505,6 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "run_issue_now"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_schema"), "mode", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_fallback"), "args")
-	assertToolSchemaMetadata(t, findTool(t, tools.Tools, "ext_schema"), []string{"path"}, false, "mode_config")
 }
 
 func TestStdioBuiltInToolCoverage(t *testing.T) {
@@ -886,14 +869,6 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendRuntimeEvent: %v", err)
 	}
-	if err := store.AppendRuntimeEvent("run_completed", map[string]interface{}{
-		"issue_id":   issueBStore.ID,
-		"identifier": issueBIdentifier,
-		"phase":      "review",
-		"attempt":    2,
-	}); err != nil {
-		t.Fatalf("AppendRuntimeEvent completion: %v", err)
-	}
 
 	getExecutionRes, err := client.CallTool(context.Background(), "get_issue_execution", map[string]interface{}{
 		"identifier": issueBIdentifier,
@@ -913,30 +888,9 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list_runtime_events failed: %v", err)
 	}
-	runtimeData := decodeEnvelope(t, listRuntimeEventsRes)["data"].(map[string]interface{})
-	events := runtimeData["events"].([]interface{})
-	if len(events) != 2 {
-		t.Fatalf("expected 2 runtime events, got %#v", events)
-	}
-	latestSeq := mustInt(t, runtimeData["last_seq"])
-	newestEvent := events[len(events)-1].(map[string]interface{})
-	if got := mustInt(t, newestEvent["seq"]); got != latestSeq {
-		t.Fatalf("expected last_seq to match newest seq, got seq=%d last_seq=%d", got, latestSeq)
-	}
-
-	followUpRes, err := client.CallTool(context.Background(), "list_runtime_events", map[string]interface{}{
-		"since": latestSeq,
-		"limit": 10,
-	})
-	if err != nil {
-		t.Fatalf("list_runtime_events follow-up failed: %v", err)
-	}
-	followUp := decodeEnvelope(t, followUpRes)["data"].(map[string]interface{})
-	if got := mustInt(t, followUp["last_seq"]); got != latestSeq {
-		t.Fatalf("expected empty page to preserve cursor, got %d want %d", got, latestSeq)
-	}
-	if got := len(followUp["events"].([]interface{})); got != 0 {
-		t.Fatalf("expected empty follow-up page, got %#v", followUp["events"])
+	events := decodeEnvelope(t, listRuntimeEventsRes)["data"].(map[string]interface{})["events"].([]interface{})
+	if len(events) == 0 {
+		t.Fatal("expected runtime events")
 	}
 
 	deleteIssueRes, err := client.CallTool(context.Background(), "delete_issue", map[string]interface{}{
@@ -1706,72 +1660,6 @@ func TestSetIssueStateRejectsBlockedInProgress(t *testing.T) {
 	}
 }
 
-func TestSetBlockersRoutesThroughProviderMutation(t *testing.T) {
-	store := testStore(t, "")
-	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", "stub", "stub-ref", nil)
-	if err != nil {
-		t.Fatalf("CreateProjectWithProvider: %v", err)
-	}
-	blocker, err := store.CreateIssue("", "", "Local blocker", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue blocker: %v", err)
-	}
-	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		Identifier:       "STUB-1",
-		ProviderKind:     "stub",
-		ProviderIssueRef: "stub-1",
-		Title:            "Provider issue",
-		State:            kanban.StateReady,
-	})
-	if err != nil {
-		t.Fatalf("UpsertProviderIssue: %v", err)
-	}
-
-	server := NewServer(store)
-	var providerCalled bool
-	server.service.RegisterProvider(&testLookupProvider{
-		kind: "stub",
-		getFunc: func(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
-			cp := *issue
-			return &cp, nil
-		},
-		updateFunc: func(_ context.Context, _ *kanban.Project, _ *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
-			providerCalled = true
-			blockedBy, ok := updates["blocked_by"].([]string)
-			if !ok || !reflect.DeepEqual(blockedBy, []string{blocker.Identifier}) {
-				t.Fatalf("unexpected provider blocked_by update: %#v", updates["blocked_by"])
-			}
-			return nil, providers.ErrUnsupportedCapability
-		},
-	})
-
-	res, err := server.handleSetBlockers(context.Background(), map[string]interface{}{
-		"identifier": issue.Identifier,
-		"blocked_by": []interface{}{blocker.Identifier},
-	})
-	if err != nil {
-		t.Fatalf("handleSetBlockers: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected provider rejection to surface as tool error, got %#v", res)
-	}
-	env := decodeEnvelope(t, res)
-	message := asString(env["error"].(map[string]interface{})["message"])
-	if !strings.Contains(message, "unsupported_provider_capability") {
-		t.Fatalf("unexpected blocker rejection message: %q", message)
-	}
-	if !providerCalled {
-		t.Fatal("expected provider mutation path to be called")
-	}
-	persisted, err := store.GetIssue(issue.ID)
-	if err != nil {
-		t.Fatalf("GetIssue: %v", err)
-	}
-	if len(persisted.BlockedBy) != 0 {
-		t.Fatalf("expected provider rejection to leave local blockers untouched, got %#v", persisted.BlockedBy)
-	}
-}
-
 func TestCreateIssueRejectsBlockedInitialInProgress(t *testing.T) {
 	store := testStore(t, "")
 	project, err := store.CreateProject("Project", "", t.TempDir(), "")
@@ -2036,28 +1924,6 @@ func assertToolProperties(t *testing.T, tool mcpapi.Tool, want ...string) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s properties mismatch:\n got %v\nwant %v", tool.Name, got, want)
-	}
-}
-
-func assertToolSchemaMetadata(t *testing.T, tool mcpapi.Tool, wantRequired []string, wantAdditional bool, wantDefs ...string) {
-	t.Helper()
-	if !reflect.DeepEqual(tool.InputSchema.Required, wantRequired) {
-		t.Fatalf("%s required mismatch:\n got %#v\nwant %#v", tool.Name, tool.InputSchema.Required, wantRequired)
-	}
-	additional, ok := tool.InputSchema.AdditionalProperties.(bool)
-	if !ok || additional != wantAdditional {
-		t.Fatalf("%s additionalProperties mismatch: got %#v want %v", tool.Name, tool.InputSchema.AdditionalProperties, wantAdditional)
-	}
-	if len(wantDefs) == 0 {
-		return
-	}
-	if tool.InputSchema.Defs == nil {
-		t.Fatalf("%s defs missing or invalid: %#v", tool.Name, tool.InputSchema.Defs)
-	}
-	for _, defName := range wantDefs {
-		if _, ok := tool.InputSchema.Defs[defName]; !ok {
-			t.Fatalf("%s missing defs entry %q in %#v", tool.Name, defName, tool.InputSchema.Defs)
-		}
 	}
 }
 

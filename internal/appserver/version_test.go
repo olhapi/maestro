@@ -2,7 +2,6 @@ package appserver
 
 import (
 	"bytes"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -23,26 +22,6 @@ func writeFakeCodex(t *testing.T, version string) string {
 	return path
 }
 
-func writeCountingFakeCodex(t *testing.T, version string) (string, string) {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "codex")
-	countFile := filepath.Join(dir, "count")
-	script := fmt.Sprintf(`#!/bin/sh
-count=0
-if [ -f %q ]; then
-  count=$(cat %q)
-fi
-count=$((count + 1))
-printf '%%s\n' "$count" > %q
-printf 'codex-cli %%s\n' %q
-`, countFile, countFile, countFile, version)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write counting fake codex: %v", err)
-	}
-	return path, countFile
-}
-
 func TestDetectCodexVersion(t *testing.T) {
 	path := writeFakeCodex(t, codexschema.SupportedVersion)
 	status, err := DetectCodexVersion(path + " app-server")
@@ -54,31 +33,6 @@ func TestDetectCodexVersion(t *testing.T) {
 	}
 	if status.ExecutablePath == "" {
 		t.Fatalf("expected executable path: %+v", status)
-	}
-}
-
-func TestDetectCodexVersionCachesResolvedExecutables(t *testing.T) {
-	path, countFile := writeCountingFakeCodex(t, codexschema.SupportedVersion)
-
-	first, err := DetectCodexVersion(path + " app-server")
-	if err != nil {
-		t.Fatalf("first DetectCodexVersion: %v", err)
-	}
-	second, err := DetectCodexVersion(path + " app-server")
-	if err != nil {
-		t.Fatalf("second DetectCodexVersion: %v", err)
-	}
-
-	if first.Actual != codexschema.SupportedVersion || second.Actual != codexschema.SupportedVersion {
-		t.Fatalf("unexpected cached version results: first=%+v second=%+v", first, second)
-	}
-
-	data, err := os.ReadFile(countFile)
-	if err != nil {
-		t.Fatalf("read count file: %v", err)
-	}
-	if strings.TrimSpace(string(data)) != "1" {
-		t.Fatalf("expected cached lookup to execute the binary once, got %q", strings.TrimSpace(string(data)))
 	}
 }
 

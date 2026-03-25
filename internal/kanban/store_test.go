@@ -84,13 +84,7 @@ func gitStoreTestEnv() []string {
 	env := os.Environ()
 	filtered := env[:0]
 	for _, value := range env {
-		switch {
-		case strings.HasPrefix(value, "GIT_DIR="):
-		case strings.HasPrefix(value, "GIT_WORK_TREE="):
-		case strings.HasPrefix(value, "GIT_INDEX_FILE="):
-		case strings.HasPrefix(value, "GIT_COMMON_DIR="):
-		case strings.HasPrefix(value, "GIT_PREFIX="):
-		default:
+		if !strings.HasPrefix(value, "GIT_") {
 			filtered = append(filtered, value)
 		}
 	}
@@ -136,6 +130,29 @@ func TestResolveDBPathPreservesExplicitPath(t *testing.T) {
 	want := filepath.Join(t.TempDir(), "custom.db")
 	if got := ResolveDBPath(want); got != want {
 		t.Fatalf("ResolveDBPath(%q) = %q", want, got)
+	}
+}
+
+func TestResolveDBPathExpandsEnvAndHomePaths(t *testing.T) {
+	homeDir := t.TempDir()
+	dbDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("MAESTRO_DB_DIR", dbDir)
+
+	if got := ResolveDBPath("$MAESTRO_DB_DIR/maestro.db"); got != filepath.Join(dbDir, "maestro.db") {
+		t.Fatalf("expected env-expanded db path, got %s", got)
+	}
+	if got := ResolveDBPath("~/maestro.db"); got != filepath.Join(homeDir, "maestro.db") {
+		t.Fatalf("expected home-expanded db path, got %s", got)
+	}
+}
+
+func TestNewStoreRejectsUnresolvedEnvironmentDatabasePaths(t *testing.T) {
+	t.Setenv("MAESTRO_DB_DIR", "")
+
+	_, err := NewStore("$MAESTRO_DB_DIR/maestro.db")
+	if err == nil || !strings.Contains(err.Error(), "unresolved environment variable") {
+		t.Fatalf("expected unresolved environment variable error, got %v", err)
 	}
 }
 
@@ -4135,8 +4152,8 @@ func TestStoreAccessorsAndAdditionalCRUDPaths(t *testing.T) {
 	}
 	providerIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
 		Identifier:       "EXT-1",
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
 		Title:            "Imported issue",
 		State:            StateBacklog,
 	})
@@ -4194,17 +4211,17 @@ func TestProviderIssueLookupHelpers(t *testing.T) {
 		"",
 		"",
 		"",
-		ProviderKindLinear,
-		"proj-slug",
-		map[string]interface{}{"project_slug": "proj-slug"},
+		testProviderKind,
+		"stub-proj",
+		map[string]interface{}{"project_slug": "stub-proj"},
 	)
 	if err != nil {
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	issueA, err := store.UpsertProviderIssue(project.ID, &Issue{
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
+		Identifier:       "EXT-1",
 		Title:            "First provider issue",
 		State:            StateReady,
 	})
@@ -4212,9 +4229,9 @@ func TestProviderIssueLookupHelpers(t *testing.T) {
 		t.Fatalf("UpsertProviderIssue issueA: %v", err)
 	}
 	issueB, err := store.UpsertProviderIssue(project.ID, &Issue{
-		ProviderKind:     ProviderKindLinear,
-		ProviderIssueRef: "linear-2",
-		Identifier:       "LIN-2",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-2",
+		Identifier:       "EXT-2",
 		Title:            "   ",
 		State:            StateDone,
 	})
@@ -4222,14 +4239,14 @@ func TestProviderIssueLookupHelpers(t *testing.T) {
 		t.Fatalf("UpsertProviderIssue issueB: %v", err)
 	}
 
-	hasProviderIssues, err := store.HasProviderIssues(project.ID, " LINEAR ")
+	hasProviderIssues, err := store.HasProviderIssues(project.ID, " stub ")
 	if err != nil {
 		t.Fatalf("HasProviderIssues existing project: %v", err)
 	}
 	if !hasProviderIssues {
 		t.Fatal("expected provider issues to be detected for normalized provider kind")
 	}
-	hasProviderIssues, err = store.HasProviderIssues("missing-project", ProviderKindLinear)
+	hasProviderIssues, err = store.HasProviderIssues("missing-project", testProviderKind)
 	if err != nil {
 		t.Fatalf("HasProviderIssues missing project: %v", err)
 	}
@@ -4239,7 +4256,7 @@ func TestProviderIssueLookupHelpers(t *testing.T) {
 
 	titlesByID, titlesByIdentifier, err := store.LookupIssueTitles(
 		[]string{issueA.ID, issueA.ID, " ", issueB.ID},
-		[]string{"LIN-1", "LIN-1", "", "LIN-2"},
+		[]string{"EXT-1", "EXT-1", "", "EXT-2"},
 	)
 	if err != nil {
 		t.Fatalf("LookupIssueTitles: %v", err)
@@ -4247,7 +4264,7 @@ func TestProviderIssueLookupHelpers(t *testing.T) {
 	if len(titlesByID) != 1 || titlesByID[issueA.ID] != "First provider issue" {
 		t.Fatalf("expected only non-empty titles by id, got %#v", titlesByID)
 	}
-	if len(titlesByIdentifier) != 1 || titlesByIdentifier["LIN-1"] != "First provider issue" {
+	if len(titlesByIdentifier) != 1 || titlesByIdentifier["EXT-1"] != "First provider issue" {
 		t.Fatalf("expected only non-empty titles by identifier, got %#v", titlesByIdentifier)
 	}
 
@@ -4268,9 +4285,9 @@ func TestReconcileProviderIssuesRemovesDeletedBlockersAndReactivatesCommands(t *
 		"",
 		"",
 		"",
-		ProviderKindLinear,
-		"proj-slug",
-		map[string]interface{}{"project_slug": "proj-slug"},
+		testProviderKind,
+		"stub-proj",
+		map[string]interface{}{"project_slug": "stub-proj"},
 	)
 	if err != nil {
 		t.Fatalf("CreateProjectWithProvider: %v", err)
@@ -4279,31 +4296,31 @@ func TestReconcileProviderIssuesRemovesDeletedBlockersAndReactivatesCommands(t *
 		t.Fatalf("UpdateProjectState: %v", err)
 	}
 
-	if err := store.ReconcileProviderIssues(project.ID, ProviderKindLinear, []Issue{
+	if err := store.ReconcileProviderIssues(project.ID, testProviderKind, []Issue{
 		{
-			Identifier:       "LIN-1",
-			ProviderKind:     ProviderKindLinear,
-			ProviderIssueRef: "linear-1",
+			Identifier:       "EXT-1",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "ext-1",
 			Title:            "Blocker",
 			State:            StateReady,
 		},
 		{
-			Identifier:       "LIN-2",
-			ProviderKind:     ProviderKindLinear,
-			ProviderIssueRef: "linear-2",
+			Identifier:       "EXT-2",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "ext-2",
 			Title:            "Blocked",
-			BlockedBy:        []string{"LIN-1"},
+			BlockedBy:        []string{"EXT-1"},
 			State:            StateReady,
 		},
 	}); err != nil {
 		t.Fatalf("ReconcileProviderIssues initial sync: %v", err)
 	}
 
-	blocker, err := store.GetIssueByIdentifier("LIN-1")
+	blocker, err := store.GetIssueByIdentifier("EXT-1")
 	if err != nil {
 		t.Fatalf("GetIssueByIdentifier blocker: %v", err)
 	}
-	blocked, err := store.GetIssueByIdentifier("LIN-2")
+	blocked, err := store.GetIssueByIdentifier("EXT-2")
 	if err != nil {
 		t.Fatalf("GetIssueByIdentifier blocked: %v", err)
 	}
@@ -4331,11 +4348,11 @@ func TestReconcileProviderIssuesRemovesDeletedBlockersAndReactivatesCommands(t *
 		t.Fatalf("CreateIssueAgentCommand second command: %v", err)
 	}
 
-	if err := store.ReconcileProviderIssues(project.ID, ProviderKindLinear, []Issue{
+	if err := store.ReconcileProviderIssues(project.ID, testProviderKind, []Issue{
 		{
-			Identifier:       "LIN-2",
-			ProviderKind:     ProviderKindLinear,
-			ProviderIssueRef: "linear-2",
+			Identifier:       "EXT-2",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "ext-2",
 			Title:            "Blocked",
 			BlockedBy:        []string{blocker.Identifier},
 			State:            StateReady,
@@ -4344,7 +4361,7 @@ func TestReconcileProviderIssuesRemovesDeletedBlockersAndReactivatesCommands(t *
 		t.Fatalf("ReconcileProviderIssues second sync: %v", err)
 	}
 
-	if _, err := store.GetIssueByIdentifier("LIN-1"); !IsNotFound(err) {
+	if _, err := store.GetIssueByIdentifier("EXT-1"); !IsNotFound(err) {
 		t.Fatalf("expected blocker issue to be deleted, got %v", err)
 	}
 

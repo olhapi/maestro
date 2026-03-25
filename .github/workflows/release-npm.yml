@@ -69,7 +69,7 @@ jobs:
       - name: Set up MSYS2
         if: matrix.needs_msys2
         # Pin the v2 release commit, which ships the bundled action entrypoint.
-        uses: msys2/setup-msys2@cafece8e6baf9247cf9b1bf95097b0b983cc558d
+        uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda
         with:
           msystem: UCRT64
           update: true

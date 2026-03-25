@@ -41,13 +41,7 @@ func gitCommandEnv() []string {
 	env := os.Environ()
 	filtered := env[:0]
 	for _, value := range env {
-		switch {
-		case strings.HasPrefix(value, "GIT_DIR="):
-		case strings.HasPrefix(value, "GIT_WORK_TREE="):
-		case strings.HasPrefix(value, "GIT_INDEX_FILE="):
-		case strings.HasPrefix(value, "GIT_COMMON_DIR="):
-		case strings.HasPrefix(value, "GIT_PREFIX="):
-		default:
+		if !strings.HasPrefix(value, "GIT_") {
 			filtered = append(filtered, value)
 		}
 	}
@@ -94,7 +88,75 @@ func ResolveDBPath(dbPath string) string {
 	if strings.TrimSpace(dbPath) == "" {
 		return DefaultDBPath()
 	}
-	return dbPath
+	return expandPathValue(dbPath)
+}
+
+func expandPathValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+
+	if strings.HasPrefix(value, "$") {
+		value = os.Expand(value, func(name string) string {
+			resolved, ok := os.LookupEnv(name)
+			if !ok || strings.TrimSpace(resolved) == "" {
+				return "$" + name
+			}
+			return resolved
+		})
+	}
+
+	if strings.HasPrefix(value, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil && strings.TrimSpace(home) != "" {
+			switch {
+			case value == "~":
+				return home
+			case strings.HasPrefix(value, "~/"):
+				return filepath.Join(home, value[2:])
+			}
+		}
+	}
+
+	return value
+}
+
+func ResolveProjectPaths(repoPath, workflowPath string) (string, string, error) {
+	repoPath = strings.TrimSpace(repoPath)
+	workflowPath = strings.TrimSpace(workflowPath)
+	if repoPath == "" {
+		return "", "", nil
+	}
+
+	absRepoPath, err := resolveConfiguredPath(repoPath)
+	if err != nil {
+		return "", "", err
+	}
+	if workflowPath == "" {
+		return absRepoPath, filepath.Join(absRepoPath, "WORKFLOW.md"), nil
+	}
+
+	absWorkflowPath, err := resolveConfiguredPath(workflowPath)
+	if err != nil {
+		return "", "", err
+	}
+	return absRepoPath, absWorkflowPath, nil
+}
+
+func resolveConfiguredPath(raw string) (string, error) {
+	value := expandPathValue(raw)
+	if strings.HasPrefix(value, "$") {
+		return filepath.Clean(value), nil
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value), nil
+	}
+	baseDir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(baseDir, value)), nil
 }
 
 // NewStore creates a new store with the given database path
@@ -104,6 +166,9 @@ func NewStore(dbPath string) (*Store, error) {
 
 func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, error) {
 	dbPath = ResolveDBPath(dbPath)
+	if strings.HasPrefix(dbPath, "$") {
+		return nil, fmt.Errorf("failed to resolve database path: unresolved environment variable in %q", dbPath)
+	}
 	absDBPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve database path: %w", err)
@@ -860,31 +925,13 @@ func (s *Store) StoreID() string {
 }
 
 func normalizeProjectPaths(repoPath, workflowPath string) (string, string, error) {
-	repoPath = strings.TrimSpace(repoPath)
-	workflowPath = strings.TrimSpace(workflowPath)
-	if repoPath == "" {
-		return "", "", nil
-	}
-	absRepoPath, err := filepath.Abs(repoPath)
-	if err != nil {
-		return "", "", err
-	}
-	if workflowPath == "" {
-		return absRepoPath, filepath.Join(absRepoPath, "WORKFLOW.md"), nil
-	}
-	absWorkflowPath, err := filepath.Abs(workflowPath)
-	if err != nil {
-		return "", "", err
-	}
-	return absRepoPath, absWorkflowPath, nil
+	return ResolveProjectPaths(repoPath, workflowPath)
 }
 
 func normalizeProviderKind(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "", ProviderKindKanban:
 		return ProviderKindKanban
-	case ProviderKindLinear:
-		return ProviderKindLinear
 	default:
 		return strings.ToLower(strings.TrimSpace(kind))
 	}
@@ -2339,9 +2386,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
 		_, err = tx.Exec(`
-				INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, last_synced_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, workflowPhase, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), strings.TrimSpace(incoming.BranchName), strings.TrimSpace(incoming.PRURL), createdAt, updatedAt, lastSyncedAt,
+				INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, workflowPhase, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -2372,9 +2419,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		}
 		res, err := tx.Exec(`
 			UPDATE issues
-			SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, workflow_phase = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, agent_name = COALESCE(NULLIF(?, ''), agent_name), agent_prompt = COALESCE(NULLIF(?, ''), agent_prompt), branch_name = COALESCE(NULLIF(?, ''), branch_name), pr_url = COALESCE(NULLIF(?, ''), pr_url), updated_at = ?, last_synced_at = ?
+			SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, workflow_phase = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
 			WHERE id = ?`,
-			projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, workflowPhase, incoming.Priority, providerKind, providerIssueRef, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), strings.TrimSpace(incoming.BranchName), strings.TrimSpace(incoming.PRURL), updatedAt, lastSyncedAt, currentID,
+			projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, workflowPhase, incoming.Priority, providerKind, providerIssueRef, updatedAt, lastSyncedAt, currentID,
 		)
 		if err != nil {
 			return nil, err
@@ -3348,88 +3395,6 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 	return out, nil
 }
 
-func (s *Store) ListProjectSummariesPage(limit, offset int) ([]ProjectSummary, int, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	var totalProjects int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&totalProjects); err != nil {
-		return nil, 0, err
-	}
-
-	rows, err := s.db.Query(`
-		WITH page_projects AS (
-			SELECT id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at
-			FROM projects
-			ORDER BY name
-			LIMIT ? OFFSET ?
-		)
-		SELECT pp.id, pp.name, pp.description, pp.state, pp.permission_profile, pp.repo_path, pp.workflow_path, pp.provider_kind, pp.provider_project_ref, pp.provider_config_json, pp.created_at, pp.updated_at,
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(COALESCE(i.total_tokens_spent, 0)), 0)
-		FROM page_projects pp
-		LEFT JOIN issues i ON i.project_id = pp.id
-		GROUP BY pp.id
-		ORDER BY pp.name`,
-		limit, offset,
-		StateBacklog, StateReady, StateInProgress, StateInReview, StateDone, StateCancelled,
-	)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	out := []ProjectSummary{}
-	for rows.Next() {
-		var project Project
-		var providerConfigJSON string
-		var counts IssueStateCounts
-		var totalTokens int
-		if err := rows.Scan(
-			&project.ID, &project.Name, &project.Description, &project.State, &project.PermissionProfile,
-			&project.RepoPath, &project.WorkflowPath, &project.ProviderKind, &project.ProviderProjectRef,
-			&providerConfigJSON, &project.CreatedAt, &project.UpdatedAt,
-			&counts.Backlog, &counts.Ready, &counts.InProgress, &counts.InReview, &counts.Done, &counts.Cancelled,
-			&totalTokens,
-		); err != nil {
-			return nil, 0, err
-		}
-		project.PermissionProfile = NormalizePermissionProfile(string(project.PermissionProfile))
-		project.ProviderConfig = decodeProviderConfig(providerConfigJSON)
-		hydrateProject(&project)
-		buckets := BuildStateBuckets(map[string]int{
-			string(StateBacklog):    counts.Backlog,
-			string(StateReady):      counts.Ready,
-			string(StateInProgress): counts.InProgress,
-			string(StateInReview):   counts.InReview,
-			string(StateDone):       counts.Done,
-			string(StateCancelled):  counts.Cancelled,
-		}, projectDefaultActiveStates(project), projectDefaultTerminalStates(project))
-		total, active, terminal := AggregateStateBuckets(buckets)
-		out = append(out, ProjectSummary{
-			Project:          project,
-			TotalTokensSpent: totalTokens,
-			Counts:           counts,
-			StateBuckets:     buckets,
-			TotalCount:       total,
-			ActiveCount:      active,
-			TerminalCount:    terminal,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	return out, totalProjects, nil
-}
-
 func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 	epics, err := s.ListEpics(projectID)
 	if err != nil {
@@ -3486,84 +3451,6 @@ func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 		})
 	}
 	return out, nil
-}
-
-func (s *Store) ListEpicSummariesPage(projectID string, limit, offset int) ([]EpicSummary, int, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	totalQuery := `SELECT COUNT(*) FROM epics WHERE (? = '' OR project_id = ?)`
-	var total int
-	if err := s.db.QueryRow(totalQuery, projectID, projectID).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	rows, err := s.db.Query(`
-		WITH page_epics AS (
-			SELECT id, project_id, name, description, created_at, updated_at
-			FROM epics
-			WHERE (? = '' OR project_id = ?)
-			ORDER BY name
-			LIMIT ? OFFSET ?
-		)
-		SELECT pe.id, pe.project_id, pe.name, pe.description, pe.created_at, pe.updated_at,
-		       COALESCE(p.name, ''),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0)
-		FROM page_epics pe
-		LEFT JOIN projects p ON p.id = pe.project_id
-		LEFT JOIN issues i ON i.epic_id = pe.id
-		GROUP BY pe.id
-		ORDER BY pe.name`,
-		projectID, projectID, limit, offset,
-		StateBacklog, StateReady, StateInProgress, StateInReview, StateDone, StateCancelled,
-	)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	out := []EpicSummary{}
-	for rows.Next() {
-		var epic Epic
-		var projectName string
-		var counts IssueStateCounts
-		if err := rows.Scan(
-			&epic.ID, &epic.ProjectID, &epic.Name, &epic.Description, &epic.CreatedAt, &epic.UpdatedAt,
-			&projectName,
-			&counts.Backlog, &counts.Ready, &counts.InProgress, &counts.InReview, &counts.Done, &counts.Cancelled,
-		); err != nil {
-			return nil, 0, err
-		}
-		buckets := BuildStateBuckets(map[string]int{
-			string(StateBacklog):    counts.Backlog,
-			string(StateReady):      counts.Ready,
-			string(StateInProgress): counts.InProgress,
-			string(StateInReview):   counts.InReview,
-			string(StateDone):       counts.Done,
-			string(StateCancelled):  counts.Cancelled,
-		}, []string{string(StateReady), string(StateInProgress), string(StateInReview)}, []string{string(StateDone), string(StateCancelled)})
-		totalCount, activeCount, terminalCount := AggregateStateBuckets(buckets)
-		out = append(out, EpicSummary{
-			Epic:          epic,
-			ProjectName:    projectName,
-			Counts:         counts,
-			StateBuckets:   buckets,
-			TotalCount:     totalCount,
-			ActiveCount:    activeCount,
-			TerminalCount:  terminalCount,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	return out, total, nil
 }
 
 func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error) {

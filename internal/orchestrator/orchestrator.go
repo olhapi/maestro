@@ -55,7 +55,6 @@ type pendingInteractionEntry struct {
 
 type retryEntry struct {
 	Attempt        int       `json:"attempt"`
-	Identifier     string    `json:"-"`
 	Phase          string    `json:"phase,omitempty"`
 	DueAt          time.Time `json:"due_at"`
 	Error          string    `json:"error,omitempty"`
@@ -66,7 +65,6 @@ type retryEntry struct {
 type pausedEntry struct {
 	IssueState          string    `json:"-"`
 	Attempt             int       `json:"attempt"`
-	Identifier          string    `json:"-"`
 	Phase               string    `json:"phase,omitempty"`
 	PausedAt            time.Time `json:"paused_at"`
 	Error               string    `json:"error,omitempty"`
@@ -1747,7 +1745,6 @@ func (o *Orchestrator) pauseRetryLocked(issue *kanban.Issue, attempt int, phase 
 	entry := pausedEntry{
 		IssueState: string(issue.State),
 		Attempt:    attempt,
-		Identifier: issue.Identifier,
 		Phase:      string(phase),
 		PausedAt:   now,
 		Error:      errText,
@@ -1919,7 +1916,6 @@ func (o *Orchestrator) scheduleRetryLockedAt(issue *kanban.Issue, attempt int, p
 	}
 	o.retries[issue.ID] = retryEntry{
 		Attempt:        attempt,
-		Identifier:     issue.Identifier,
 		Phase:          string(phase),
 		DueAt:          dueAt,
 		Error:          errText,
@@ -2238,7 +2234,6 @@ func pausedEntryFromRuntimeEvent(event kanban.RuntimeEvent) pausedEntry {
 	return pausedEntry{
 		IssueState:          payloadString(event.Payload, "issue_state"),
 		Attempt:             event.Attempt,
-		Identifier:          event.Identifier,
 		Phase:               event.Phase,
 		PausedAt:            pausedAt,
 		Error:               event.Error,
@@ -2792,9 +2787,15 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 	}
 
 	for issueID, entry := range retryEntries {
+		identifier := issueID
+		if running, ok := runningEntries[issueID]; ok {
+			identifier = running.issue.Identifier
+		} else if issue, err := o.store.GetIssue(issueID); err == nil && issue != nil {
+			identifier = issue.Identifier
+		}
 		retry := observability.RetryEntry{
 			IssueID:    issueID,
-			Identifier: entry.Identifier,
+			Identifier: identifier,
 			Phase:      entry.Phase,
 			Attempt:    entry.Attempt,
 			DueAt:      entry.DueAt,
@@ -2806,9 +2807,15 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 	}
 
 	for issueID, entry := range pausedEntries {
+		identifier := issueID
+		if running, ok := runningEntries[issueID]; ok {
+			identifier = running.issue.Identifier
+		} else if issue, err := o.store.GetIssue(issueID); err == nil && issue != nil {
+			identifier = issue.Identifier
+		}
 		snapshot.Paused = append(snapshot.Paused, observability.PausedEntry{
 			IssueID:             issueID,
-			Identifier:          entry.Identifier,
+			Identifier:          identifier,
 			Phase:               entry.Phase,
 			Attempt:             entry.Attempt,
 			PausedAt:            entry.PausedAt,
@@ -2860,41 +2867,41 @@ func (o *Orchestrator) PendingInterrupts() appserver.PendingInteractionSnapshot 
 func (o *Orchestrator) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
 	issueID = strings.TrimSpace(issueID)
 	identifier = strings.TrimSpace(identifier)
-	if interaction, found := o.queuedPendingInteractionForIssue(issueID, identifier); found {
-		return interaction, true
-	}
-	interaction, found, err := o.derivedPendingInteractionForIssue(issueID, identifier)
+	items, err := o.sharedPendingInteractionItems()
 	if err != nil {
 		slog.Warn("Failed to build issue pending interaction", "issue_id", issueID, "identifier", identifier, "error", err)
-		return nil, false
 	}
-	if found {
-		return interaction, true
+	for i := range items {
+		interaction := items[i]
+		if interaction.IssueID == issueID || interaction.IssueIdentifier == identifier {
+			cloned := interaction.Clone()
+			return &cloned, true
+		}
 	}
 	return nil, false
 }
 
 func (o *Orchestrator) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
 	interactionID = strings.TrimSpace(interactionID)
-	if interaction, found := o.queuedPendingInteractionByID(interactionID); found {
-		o.mu.RLock()
-		current := o.currentPendingInteractionLocked()
-		entry, ok := o.pendingInteractions[interactionID]
-		o.mu.RUnlock()
-		if !ok || current == nil || current.ID != interactionID {
-			return appserver.ErrPendingInteractionConflict
+	o.mu.RLock()
+	entry, ok := o.pendingInteractions[interactionID]
+	current := o.currentPendingInteractionLocked()
+	o.mu.RUnlock()
+	if !ok {
+		if _, found, err := o.pendingInteractionByID(interactionID); err != nil {
+			return err
+		} else if found {
+			return appserver.ErrInvalidInteractionResponse
 		}
-		if entry.respond == nil {
-			return appserver.ErrPendingInteractionConflict
-		}
-		return entry.respond(ctx, interaction.ID, response)
+		return appserver.ErrPendingInteractionNotFound
 	}
-	if _, found, err := o.derivedPendingInteractionByID(interactionID); err != nil {
-		return err
-	} else if found {
-		return appserver.ErrInvalidInteractionResponse
+	if current == nil || current.ID != interactionID {
+		return appserver.ErrPendingInteractionConflict
 	}
-	return appserver.ErrPendingInteractionNotFound
+	if entry.respond == nil {
+		return appserver.ErrPendingInteractionConflict
+	}
+	return entry.respond(ctx, interactionID, response)
 }
 
 func (o *Orchestrator) registerPendingInteraction(issueID string, interaction *appserver.PendingInteraction, responder appserver.InteractionResponder) {
@@ -3349,7 +3356,6 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 	if entry, ok := o.retries[issue.ID]; ok {
 		entry.DueAt = time.Now().UTC()
 		entry.ResumeThreadID = ""
-		entry.Identifier = issue.Identifier
 		o.retries[issue.ID] = entry
 		delete(o.paused, issue.ID)
 		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
@@ -3367,12 +3373,11 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 	if entry, ok := o.paused[issue.ID]; ok {
 		dueAt := time.Now().UTC()
 		o.retries[issue.ID] = retryEntry{
-			Attempt:    entry.Attempt,
-			Identifier: issue.Identifier,
-			Phase:      entry.Phase,
-			DueAt:      dueAt,
-			Error:      entry.Error,
-			DelayType:  "manual",
+			Attempt:   entry.Attempt,
+			Phase:     entry.Phase,
+			DueAt:     dueAt,
+			Error:     entry.Error,
+			DelayType: "manual",
 		}
 		o.claimed[issue.ID] = struct{}{}
 		delete(o.paused, issue.ID)
@@ -3390,11 +3395,10 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 
 	if issue.WorkflowPhase == kanban.WorkflowPhaseDone && issue.State == kanban.StateDone {
 		o.retries[issue.ID] = retryEntry{
-			Attempt:    0,
-			Identifier: issue.Identifier,
-			Phase:      string(kanban.WorkflowPhaseDone),
-			DueAt:      time.Now().UTC(),
-			DelayType:  "manual",
+			Attempt:   0,
+			Phase:     string(kanban.WorkflowPhaseDone),
+			DueAt:     time.Now().UTC(),
+			DelayType: "manual",
 		}
 		o.claimed[issue.ID] = struct{}{}
 		o.appendEventLocked("manual_retry_requested", map[string]interface{}{

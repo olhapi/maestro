@@ -314,6 +314,10 @@ func WorkflowPath(repoPath string) string {
 
 func ResolveWorkflowPath(repoPath, overridePath string) string {
 	if strings.TrimSpace(overridePath) != "" {
+		overridePath = expandPathValue(overridePath)
+		if strings.HasPrefix(overridePath, "$") {
+			return filepath.Clean(overridePath)
+		}
 		if filepath.IsAbs(overridePath) {
 			return filepath.Clean(overridePath)
 		}
@@ -741,19 +745,9 @@ func resolvePathValue(baseDir, raw, fallback string) string {
 	if value == "" {
 		value = fallback
 	}
+	value = expandPathValue(value)
 	if strings.HasPrefix(value, "$") {
-		if env := strings.TrimSpace(strings.TrimPrefix(value, "$")); env != "" {
-			resolved := strings.TrimSpace(os.Getenv(env))
-			if resolved != "" {
-				value = resolved
-			}
-		}
-	}
-	if strings.HasPrefix(value, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			value = filepath.Join(home, strings.TrimPrefix(value, "~"))
-		}
+		return filepath.Clean(value)
 	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value)
@@ -762,6 +756,37 @@ func resolvePathValue(baseDir, raw, fallback string) string {
 		baseDir, _ = os.Getwd()
 	}
 	return filepath.Clean(filepath.Join(baseDir, value))
+}
+
+func expandPathValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+
+	if strings.HasPrefix(value, "$") {
+		value = os.Expand(value, func(name string) string {
+			resolved, ok := os.LookupEnv(name)
+			if !ok || strings.TrimSpace(resolved) == "" {
+				return "$" + name
+			}
+			return resolved
+		})
+	}
+
+	if strings.HasPrefix(value, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil && strings.TrimSpace(home) != "" {
+			switch {
+			case value == "~":
+				return home
+			case strings.HasPrefix(value, "~/"):
+				return filepath.Join(home, value[2:])
+			}
+		}
+	}
+
+	return value
 }
 
 func hashContent(data []byte) uint64 {

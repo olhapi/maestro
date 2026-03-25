@@ -113,7 +113,6 @@ func TestDashboardAPIHandlerDecodeAndNotFoundPaths(t *testing.T) {
 		{"missing execution", http.MethodGet, "/api/v1/app/issues/ISS-404/execution", server.handleIssue, http.StatusNotFound, "sql: no rows"},
 		{"missing state issue", http.MethodPost, "/api/v1/app/issues/ISS-404/state", server.handleIssue, http.StatusNotFound, "sql: no rows"},
 		{"missing blockers issue", http.MethodPost, "/api/v1/app/issues/ISS-404/blockers", server.handleIssue, http.StatusNotFound, "sql: no rows"},
-		{"unknown issue action get", http.MethodGet, "/api/v1/app/issues/" + issue.Identifier + "/unknown", server.handleIssue, http.StatusNotFound, "404 page not found"},
 		{"unknown issue action", http.MethodPost, "/api/v1/app/issues/" + issue.Identifier + "/unknown", server.handleIssue, http.StatusNotFound, "404 page not found"},
 		{"project nested path", http.MethodGet, "/api/v1/app/projects/" + project.ID + "/nested", server.handleProject, http.StatusNotFound, "404 page not found"},
 	} {
@@ -335,7 +334,11 @@ func TestDashboardAPIAdditionalSuccessPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	provider := testProvider{}
+	provider := testProvider{
+		sessions: map[string]interface{}{
+			"sessions": map[string]interface{}{},
+		},
+	}
 	server := NewServer(store, provider)
 
 	epicBody := bytes.NewBufferString(`{"project_id":"` + project.ID + `","name":"Epic","description":"desc"}`)
@@ -387,14 +390,6 @@ func TestDashboardAPIAdditionalSuccessPaths(t *testing.T) {
 	server.handleBootstrap(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"project_count":1`) {
 		t.Fatalf("bootstrap failed: %d %q", rec.Code, rec.Body.String())
-	}
-	bootstrapPayload := decodeResponse(t, rec.Result())
-	sessionsPayload, ok := bootstrapPayload["sessions"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected bootstrap sessions payload, got %#v", bootstrapPayload["sessions"])
-	}
-	if _, ok := sessionsPayload["entries"].([]interface{}); !ok {
-		t.Fatalf("expected bootstrap sessions entries, got %#v", sessionsPayload)
 	}
 
 	rec = httptest.NewRecorder()
@@ -469,8 +464,12 @@ func TestDashboardAPIMethodAndValidationBranches(t *testing.T) {
 		rec = httptest.NewRecorder()
 		req = httptest.NewRequest(tc.method, tc.target, nil)
 		tc.call(rec, req)
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("%s: expected %d, got %d body=%q", tc.name, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+		expected := http.StatusMethodNotAllowed
+		if tc.name == "issue execution method" {
+			expected = http.StatusNotFound
+		}
+		if rec.Code != expected {
+			t.Fatalf("%s: expected %d, got %d body=%q", tc.name, expected, rec.Code, rec.Body.String())
 		}
 	}
 }

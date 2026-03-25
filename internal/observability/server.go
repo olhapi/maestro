@@ -29,12 +29,6 @@ type Server struct {
 	http *http.Server
 }
 
-func writeMethodNotAllowed(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusMethodNotAllowed)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "method_not_allowed"})
-}
-
 func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 	if mux == nil {
 		return
@@ -42,19 +36,11 @@ func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 
 	// Start launches an HTTP server exposing runtime status endpoints.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeMethodNotAllowed(w)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "ts": time.Now().UTC().Format(time.RFC3339)})
 	})
 
 	mux.HandleFunc("/api/v1/state", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeMethodNotAllowed(w)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		if sp, ok := provider.(SnapshotProvider); ok {
 			_ = json.NewEncoder(w).Encode(StatePayload(sp))
@@ -64,10 +50,6 @@ func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 	})
 
 	mux.HandleFunc("/api/v1/sessions", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeMethodNotAllowed(w)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		if sp, ok := provider.(SessionProvider); ok {
 			all := sp.LiveSessions()
@@ -90,10 +72,6 @@ func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 	})
 
 	mux.HandleFunc("/api/v1/events", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeMethodNotAllowed(w)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		ep, ok := provider.(EventProvider)
 		if !ok {
@@ -131,10 +109,6 @@ func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 	})
 
 	mux.HandleFunc("/api/v1/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeMethodNotAllowed(w)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		out := map[string]interface{}{
 			"state": provider.Status(),
@@ -150,7 +124,8 @@ func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 
 	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			writeMethodNotAllowed(w)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "method_not_allowed"})
 			return
 		}
 		identifier := strings.TrimPrefix(r.URL.Path, "/api/v1/")

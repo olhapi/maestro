@@ -15,7 +15,6 @@ type ActivityEvent struct {
 	RequestID        string                 `json:"request_id,omitempty"`
 	ThreadID         string                 `json:"thread_id"`
 	TurnID           string                 `json:"turn_id"`
-	CallID           string                 `json:"call_id,omitempty"`
 	ItemID           string                 `json:"item_id,omitempty"`
 	ItemType         string                 `json:"item_type,omitempty"`
 	ItemPhase        string                 `json:"item_phase,omitempty"`
@@ -43,17 +42,21 @@ func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 
 	switch method {
 	case protocol.MethodTurnStarted, protocol.MethodTurnCompleted, protocol.MethodTurnFailed, protocol.MethodTurnCancelled:
-		params, ok := messageParamsMap(msg)
-		if !ok {
+		var payload struct {
+			ThreadID string `json:"threadId"`
+			Turn     struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		if err := msg.UnmarshalParams(&payload); err != nil {
 			return ActivityEvent{}, false
 		}
-		threadID, turnID := threadTurnIDsFromMap(params)
 		return ActivityEvent{
 			Type:     normalizeEventType(method),
-			ThreadID: threadID,
-			TurnID:   turnID,
+			ThreadID: strings.TrimSpace(payload.ThreadID),
+			TurnID:   strings.TrimSpace(payload.Turn.ID),
 			Raw:      cloneRawMap(msg.Raw),
-		}, threadID != "" || turnID != ""
+		}, payload.ThreadID != "" || payload.Turn.ID != ""
 	case protocol.MethodThreadTokenUsageUpdated:
 		var payload struct {
 			ThreadID   string `json:"threadId"`
@@ -146,27 +149,24 @@ func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 		if !ok {
 			return ActivityEvent{}, false
 		}
-		callID := strings.TrimSpace(firstStr(params, "callId", "call_id"))
 		return ActivityEvent{
-				Type:     normalizeEventType(method),
-				ThreadID: strings.TrimSpace(firstStr(params, "threadId", "thread_id")),
-				TurnID:   strings.TrimSpace(firstStr(params, "turnId", "turn_id")),
-				ItemID:   strings.TrimSpace(firstStr(params, "itemId", "item_id", "callId", "call_id")),
-				CallID:   callID,
-				ItemType: "commandExecution",
-				Delta:    firstStr(params, "delta", "chunk"),
-				Command:  strings.TrimSpace(firstStr(params, "command")),
-				CWD:      strings.TrimSpace(firstStr(params, "cwd")),
-				Raw:      cloneRawMap(msg.Raw),
-			}, firstStr(params, "threadId", "thread_id") != "" ||
-				firstStr(params, "turnId", "turn_id") != "" ||
-				firstStr(params, "itemId", "item_id", "callId", "call_id") != ""
+			Type:     normalizeEventType(method),
+			ThreadID: strings.TrimSpace(firstStr(params, "threadId", "thread_id")),
+			TurnID:   strings.TrimSpace(firstStr(params, "turnId", "turn_id")),
+			ItemID:   strings.TrimSpace(firstStr(params, "itemId", "item_id", "callId", "call_id")),
+			ItemType: "commandExecution",
+			Delta:    firstStr(params, "delta", "chunk"),
+			Command:  strings.TrimSpace(firstStr(params, "command")),
+			CWD:      strings.TrimSpace(firstStr(params, "cwd")),
+			Raw:      cloneRawMap(msg.Raw),
+		}, firstStr(params, "threadId", "thread_id") != "" ||
+			firstStr(params, "turnId", "turn_id") != "" ||
+			firstStr(params, "itemId", "item_id", "callId", "call_id") != ""
 	case "item/commandExecution/terminalInteraction":
 		var payload struct {
 			ThreadID  string `json:"threadId"`
 			TurnID    string `json:"turnId"`
 			ItemID    string `json:"itemId"`
-			CallID    string `json:"callId"`
 			ProcessID string `json:"processId"`
 			Stdin     string `json:"stdin"`
 		}
@@ -178,7 +178,6 @@ func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 			ThreadID:  strings.TrimSpace(payload.ThreadID),
 			TurnID:    strings.TrimSpace(payload.TurnID),
 			ItemID:    strings.TrimSpace(payload.ItemID),
-			CallID:    strings.TrimSpace(payload.CallID),
 			ItemType:  "commandExecution",
 			ProcessID: strings.TrimSpace(payload.ProcessID),
 			Stdin:     payload.Stdin,
@@ -197,13 +196,11 @@ func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 }
 
 func activityEventFromParams(eventType, requestID string, params map[string]interface{}, item map[string]interface{}, raw map[string]interface{}) ActivityEvent {
-	threadID, turnID := threadTurnIDsFromMap(params)
 	event := ActivityEvent{
 		Type:      eventType,
 		RequestID: requestID,
-		ThreadID:  threadID,
-		TurnID:    turnID,
-		CallID:    strings.TrimSpace(firstStr(params, "callId", "call_id")),
+		ThreadID:  strings.TrimSpace(firstStr(params, "threadId", "thread_id")),
+		TurnID:    strings.TrimSpace(firstStr(params, "turnId", "turn_id")),
 		ItemID:    strings.TrimSpace(firstStr(params, "itemId", "item_id")),
 		Item:      cloneRawMap(item),
 		Raw:       cloneRawMap(raw),
@@ -211,9 +208,6 @@ func activityEventFromParams(eventType, requestID string, params map[string]inte
 	if item != nil {
 		if event.ItemID == "" {
 			event.ItemID = strings.TrimSpace(firstStr(item, "id"))
-		}
-		if event.CallID == "" {
-			event.CallID = strings.TrimSpace(firstStr(item, "callId", "call_id"))
 		}
 		event.ItemType = strings.TrimSpace(firstStr(item, "type"))
 		event.ItemPhase = strings.TrimSpace(firstStr(item, "phase"))
@@ -229,6 +223,17 @@ func activityEventFromParams(eventType, requestID string, params map[string]inte
 		event.Reason = strings.TrimSpace(firstStr(params, "reason"))
 	}
 	return event
+}
+
+func messageParamsMap(msg protocol.Message) (map[string]interface{}, bool) {
+	if len(msg.Params) == 0 || string(msg.Params) == "null" {
+		return nil, false
+	}
+	var params map[string]interface{}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return nil, false
+	}
+	return params, true
 }
 
 func requestIDString(msg protocol.Message) string {
