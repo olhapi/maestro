@@ -189,6 +189,24 @@ func TestRunRejectsInvalidWorkspace(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected outside workspace rejection")
 	}
+
+	if runtime.GOOS != "windows" {
+		symlinkWorkspace := filepath.Join(workspaceRoot, "ISS-2")
+		if err := os.Symlink(outside, symlinkWorkspace); err != nil {
+			t.Fatalf("create symlink workspace: %v", err)
+		}
+
+		_, err := Run(context.Background(), ClientConfig{
+			Executable:    cfg.Executable,
+			Args:          cfg.Args,
+			Workspace:     symlinkWorkspace,
+			WorkspaceRoot: workspaceRoot,
+		})
+		var runErr *RunError
+		if !errors.As(err, &runErr) || runErr.Kind != "invalid_workspace_cwd" {
+			t.Fatalf("expected symlink escape rejection, got %v", err)
+		}
+	}
 }
 
 func TestClientCloseTerminatesManagedProcessGroup(t *testing.T) {

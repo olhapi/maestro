@@ -491,33 +491,26 @@ func ParseEventLine(line string) (Event, bool) {
 func EventFromMessage(msg protocol.Message) (Event, bool) {
 	switch msg.Method {
 	case protocol.MethodThreadStarted:
-		var payload struct {
-			Thread struct {
-				ID string `json:"id"`
-			} `json:"thread"`
-		}
-		if err := msg.UnmarshalParams(&payload); err != nil {
+		params, ok := messageParamsMap(msg)
+		if !ok {
 			return Event{}, false
 		}
+		threadID, _ := threadTurnIDsFromMap(params)
 		return Event{
 			Type:     normalizeEventType(msg.Method),
-			ThreadID: payload.Thread.ID,
-		}, payload.Thread.ID != ""
+			ThreadID: threadID,
+		}, threadID != ""
 	case protocol.MethodTurnStarted, protocol.MethodTurnCompleted:
-		var payload struct {
-			ThreadID string `json:"threadId"`
-			Turn     struct {
-				ID string `json:"id"`
-			} `json:"turn"`
-		}
-		if err := msg.UnmarshalParams(&payload); err != nil {
+		params, ok := messageParamsMap(msg)
+		if !ok {
 			return Event{}, false
 		}
+		threadID, turnID := threadTurnIDsFromMap(params)
 		return Event{
 			Type:     normalizeEventType(msg.Method),
-			ThreadID: payload.ThreadID,
-			TurnID:   payload.Turn.ID,
-		}, payload.ThreadID != "" || payload.Turn.ID != ""
+			ThreadID: threadID,
+			TurnID:   turnID,
+		}, threadID != "" || turnID != ""
 	case protocol.MethodThreadTokenUsageUpdated:
 		var payload struct {
 			ThreadID   string `json:"threadId"`

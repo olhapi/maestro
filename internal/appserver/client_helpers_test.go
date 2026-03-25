@@ -402,3 +402,53 @@ func TestInputAnswerAndVersionHelpers(t *testing.T) {
 		t.Fatal("expected parseCodexVersion to reject invalid output")
 	}
 }
+
+func TestNormalizePendingInteractionResponsePreservesMultipleUserInputAnswers(t *testing.T) {
+	interaction := PendingInteraction{
+		Kind:   PendingInteractionKindUserInput,
+		Method: protocol.MethodToolRequestUserInput,
+		UserInput: &PendingUserInput{
+			Questions: []PendingUserInputQuestion{
+				{
+					ID: "q1",
+					Options: []PendingUserInputOption{
+						{Label: "Option A"},
+						{Label: "Option B"},
+					},
+				},
+			},
+		},
+	}
+	response := PendingInteractionResponse{
+		Answers: map[string][]string{
+			"q1": []string{"Option A", "Option B"},
+		},
+	}
+
+	normalized, err := normalizePendingInteractionResponse(interaction, response)
+	if err != nil {
+		t.Fatalf("normalizePendingInteractionResponse: %v", err)
+	}
+	if got := normalized.Answers["q1"]; len(got) != 2 || got[0] != "Option A" || got[1] != "Option B" {
+		t.Fatalf("expected multiple answers to survive normalization, got %#v", normalized.Answers)
+	}
+
+	stdin := &bufferWriteCloser{}
+	client := &Client{stdin: stdin}
+	if err := client.sendPendingInteractionResponse(interaction, protocol.RequestID([]byte(`"42"`)), normalized); err != nil {
+		t.Fatalf("sendPendingInteractionResponse: %v", err)
+	}
+
+	msg, ok := protocol.DecodeMessage(strings.TrimSpace(stdin.String()))
+	if !ok {
+		t.Fatalf("expected protocol JSON, got %q", stdin.String())
+	}
+	var result gen.ToolRequestUserInputResponse
+	if err := msg.UnmarshalResult(&result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	got := result.Answers["q1"].Answers
+	if len(got) != 2 || got[0] != "Option A" || got[1] != "Option B" {
+		t.Fatalf("expected full answer slice in emitted protocol JSON, got %#v", got)
+	}
+}

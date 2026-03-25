@@ -597,6 +597,46 @@ func TestEventFromMessageAndMergeEvents(t *testing.T) {
 	}
 }
 
+func TestEventFromMessageSupportsFlatLifecycleIdentifiers(t *testing.T) {
+	tests := []struct {
+		name         string
+		line         string
+		wantType     string
+		wantThreadID string
+		wantTurnID   string
+	}{
+		{
+			name:         "thread started",
+			line:         `{"method":"thread/started","params":{"threadId":"th-flat"}}`,
+			wantType:     "thread.started",
+			wantThreadID: "th-flat",
+		},
+		{
+			name:         "turn completed",
+			line:         `{"method":"turn/completed","params":{"threadId":"th-flat","turnId":"tu-flat"}}`,
+			wantType:     "turn.completed",
+			wantThreadID: "th-flat",
+			wantTurnID:   "tu-flat",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, ok := protocol.DecodeMessage(tc.line)
+			if !ok {
+				t.Fatal("expected message decode")
+			}
+			evt, ok := EventFromMessage(msg)
+			if !ok {
+				t.Fatal("expected event parse")
+			}
+			if evt.Type != tc.wantType || evt.ThreadID != tc.wantThreadID || evt.TurnID != tc.wantTurnID {
+				t.Fatalf("unexpected parsed event: %+v", evt)
+			}
+		})
+	}
+}
+
 func TestMergeEventsIncludesCommandMetadata(t *testing.T) {
 	primary := Event{
 		Type:   "exec_command_output_delta",
