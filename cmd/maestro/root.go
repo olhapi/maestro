@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -1790,6 +1791,9 @@ func buildMaestroCommand(dbPath string, parts ...string) string {
 
 func shellQuoteArg(arg string) string {
 	if arg == "" {
+		if runtime.GOOS == "windows" {
+			return `""`
+		}
 		return "''"
 	}
 	for _, r := range arg {
@@ -1799,6 +1803,9 @@ func shellQuoteArg(arg string) string {
 		case r >= '0' && r <= '9':
 		case strings.ContainsRune("._/:@%+=,-", r):
 		default:
+			if runtime.GOOS == "windows" {
+				return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
+			}
 			return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
 		}
 	}
