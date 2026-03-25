@@ -1770,7 +1770,7 @@ func resolveCLIRepoPath(repoPath string) string {
 
 func workflowInitCommands(repoPath, dbPath string) (string, string, string) {
 	verifyCmd := buildMaestroCommand(dbPath, "verify", "--repo", repoPath)
-	projectCmd := buildMaestroCommand(dbPath, "project", "create", "\"My Project\"", "--repo", repoPath)
+	projectCmd := buildMaestroCommand(dbPath, "project", "create", "My Project", "--repo", repoPath)
 	runCmd := buildMaestroCommand(dbPath, "run", repoPath)
 	return verifyCmd, projectCmd, runCmd
 }
@@ -1781,7 +1781,28 @@ func buildMaestroCommand(dbPath string, parts ...string) string {
 		args = append(args, "--db", dbPath)
 	}
 	args = append(args, parts...)
-	return strings.Join(args, " ")
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuoteArg(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuoteArg(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	for _, r := range arg {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("._/:@%+=,-", r):
+		default:
+			return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+		}
+	}
+	return arg
 }
 
 func hasWorkflowInitAdvisories(res verification.Result) bool {
