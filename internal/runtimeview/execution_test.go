@@ -312,6 +312,73 @@ func TestIssueExecutionPayloadMarksStaleRunStartedSnapshotAsInterrupted(t *testi
 	}
 }
 
+func TestIssueExecutionPayloadPrefersPausedSnapshotOverStaleRunStartedSession(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Paused issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	pausedAt := time.Date(2026, 3, 9, 12, 6, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    3,
+		RunKind:    "run_started",
+		UpdatedAt:  pausedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-stale-turn-stale",
+			LastEvent:       "turn.started",
+			LastTimestamp:   pausedAt,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    3,
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, testProvider{
+		snapshot: observability.Snapshot{
+			Paused: []observability.PausedEntry{{
+				IssueID:             issue.ID,
+				Identifier:          issue.Identifier,
+				Phase:               "implementation",
+				Attempt:             3,
+				PausedAt:            pausedAt,
+				Error:               "stall_timeout",
+				ConsecutiveFailures: 4,
+				PauseThreshold:      3,
+			}},
+		},
+	}, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["active"] != false || payload["retry_state"] != "paused" {
+		t.Fatalf("expected paused payload, got %#v", payload)
+	}
+	if payload["failure_class"] != "stall_timeout" || payload["current_error"] != "stall_timeout" {
+		t.Fatalf("expected paused failure metadata to win, got %#v", payload)
+	}
+	if payload["paused_at"] != pausedAt.Format(time.RFC3339) {
+		t.Fatalf("unexpected paused_at: %#v", payload["paused_at"])
+	}
+}
+
 func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
