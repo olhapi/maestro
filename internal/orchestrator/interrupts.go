@@ -298,7 +298,7 @@ func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.P
 			projectName = trimmed
 		}
 	}
-	fingerprint := derivedIssueDispatchBlockedFingerprint(issue.ID, projectID, project.RepoPath, requestedAt)
+	fingerprint := derivedIssueDispatchBlockedFingerprint(issue.ID, projectID, project.RepoPath, scopeError)
 	issueLabel := strings.TrimSpace(issue.Identifier)
 	if issueLabel == "" {
 		issueLabel = strings.TrimSpace(issue.Title)
@@ -334,12 +334,12 @@ func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.P
 	}
 }
 
-func derivedIssueDispatchBlockedFingerprint(issueID, projectID, projectRepoPath string, requestedAt time.Time) string {
+func derivedIssueDispatchBlockedFingerprint(issueID, projectID, projectRepoPath, scopeError string) string {
 	sum := sha1.Sum([]byte(strings.Join([]string{
 		strings.TrimSpace(issueID),
 		strings.TrimSpace(projectID),
 		strings.TrimSpace(projectRepoPath),
-		requestedAt.UTC().Format(time.RFC3339Nano),
+		strings.TrimSpace(scopeError),
 	}, "|")))
 	return hex.EncodeToString(sum[:])[:12]
 }

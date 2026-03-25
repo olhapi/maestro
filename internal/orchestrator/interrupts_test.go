@@ -313,6 +313,33 @@ func TestAcknowledgeInterruptReappearsWhenDerivedFingerprintChanges(t *testing.T
 	}
 }
 
+func TestAcknowledgeInterruptStaysHiddenWhenIssueUpdates(t *testing.T) {
+	fixture := setupSharedInterruptFixture(t)
+
+	snapshot := fixture.orch.PendingInterrupts()
+	if len(snapshot.Items) != 2 {
+		t.Fatalf("expected derived alerts, got %+v", snapshot.Items)
+	}
+	acknowledgedID := snapshot.Items[0].ID
+	if err := fixture.orch.AcknowledgeInterrupt(context.Background(), acknowledgedID); err != nil {
+		t.Fatalf("AcknowledgeInterrupt: %v", err)
+	}
+
+	if err := fixture.store.UpdateIssue(fixture.first.ID, map[string]interface{}{
+		"title": "First blocked issue updated",
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+
+	snapshot = fixture.orch.PendingInterrupts()
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("expected acknowledged alert to stay hidden after issue update, got %+v", snapshot.Items)
+	}
+	if snapshot.Items[0].IssueID != fixture.second.ID {
+		t.Fatalf("expected only the second issue alert to remain visible, got %+v", snapshot.Items[0])
+	}
+}
+
 func TestAcknowledgeInterruptReappearsWhenResolvedBlockerReturns(t *testing.T) {
 	fixture := setupSharedInterruptFixture(t)
 	originalRepoPath := fixture.project.RepoPath
