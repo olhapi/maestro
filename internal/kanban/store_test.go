@@ -147,6 +147,42 @@ func TestResolveDBPathExpandsEnvAndHomePaths(t *testing.T) {
 	}
 }
 
+func TestHasUnresolvedExpandedEnvPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawPath  string
+		resolved string
+		want     bool
+	}{
+		{
+			name:     "reject unresolved env segment",
+			rawPath:  "$HOME/.maestro/$TEAM/maestro.db",
+			resolved: "/Users/test/.maestro/$TEAM/maestro.db",
+			want:     true,
+		},
+		{
+			name:     "allow literal dollar sign inside filename",
+			rawPath:  "$HOME/.maestro/price$5/maestro.db",
+			resolved: "/Users/test/.maestro/price$5/maestro.db",
+			want:     false,
+		},
+		{
+			name:     "allow expanded env path",
+			rawPath:  "$HOME/.maestro/maestro.db",
+			resolved: "/Users/test/.maestro/maestro.db",
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasUnresolvedExpandedEnvPath(tc.rawPath, tc.resolved); got != tc.want {
+				t.Fatalf("HasUnresolvedExpandedEnvPath(%q, %q) = %v, want %v", tc.rawPath, tc.resolved, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewStoreRejectsUnresolvedEnvironmentDatabasePaths(t *testing.T) {
 	t.Setenv("MAESTRO_DB_DIR", "")
 

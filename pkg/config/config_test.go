@@ -221,6 +221,146 @@ Issue {{ issue.identifier }}
 	assertGranularApprovalPolicy(t, workflow.Config.Codex.ApprovalPolicy)
 }
 
+func TestLoadWorkflowNormalizesMapApprovalPolicy(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  approval_policy:
+    granular:
+      sandbox_approval: true
+      rules: true
+      mcp_elicitations: true
+      request_permissions: false
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+
+	assertGranularApprovalPolicy(t, workflow.Config.Codex.ApprovalPolicy)
+}
+
+func TestLoadWorkflowRejectsBlankApprovalPolicy(t *testing.T) {
+	cases := []struct {
+		name    string
+		enabled string
+	}{
+		{
+			name: "empty_scalar",
+			enabled: `  approval_policy:
+`,
+		},
+		{
+			name: "quoted_blank",
+			enabled: `  approval_policy: ""
+`,
+		},
+		{
+			name: "unknown_scalar",
+			enabled: `  approval_policy: maybe
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+			content := `---
+tracker:
+  kind: kanban
+codex:
+  command: codex app-server
+` + tc.enabled + `---
+Issue {{ issue.identifier }}
+`
+			if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := LoadWorkflow(workflowPath); err == nil || !strings.Contains(err.Error(), "approval_policy") {
+				t.Fatalf("expected invalid approval policy error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadWorkflowRejectsNonMapFrontMatter(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+- kanban
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadWorkflow(workflowPath)
+	if err == nil {
+		t.Fatal("expected non-map front matter to fail")
+	}
+	if !errors.Is(err, ErrWorkflowFrontMatter) {
+		t.Fatalf("expected ErrWorkflowFrontMatter, got %v", err)
+	}
+}
+
+func TestLoadWorkflowAcceptsCommentOnlyFrontMatter(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+# default workflow configuration is inherited
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow == nil || workflow.Config.Codex.Command == "" {
+		t.Fatalf("expected workflow to load with defaults, got %+v", workflow)
+	}
+}
+
+func TestLoadWorkflowDefaultsNegativeStallTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  command: codex app-server
+  stall_timeout_ms: -1
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if workflow.Config.Codex.StallTimeoutMs != 300000 {
+		t.Fatalf("expected stall timeout to default to 300000, got %d", workflow.Config.Codex.StallTimeoutMs)
+	}
+}
+
 func TestLoadWorkflowAcceptsCustomPhasePrompts(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
@@ -656,6 +796,47 @@ tracker:
 	}
 	if manager.LastError() == nil {
 		t.Fatal("expected reload error to be retained")
+	}
+}
+
+func TestManagerRefreshClearsLastErrorAfterRecovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	initial := `---
+tracker:
+  kind: kanban
+---
+Hello {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := os.Chmod(workflowPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = manager.Refresh()
+	if manager.LastError() == nil {
+		t.Fatal("expected refresh failure to be retained")
+	}
+
+	if err := os.Chmod(workflowPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current, err := manager.Refresh()
+	if err != nil {
+		t.Fatalf("Refresh after recovery: %v", err)
+	}
+	if current == nil || !strings.Contains(current.PromptTemplate, "Hello") {
+		t.Fatalf("expected recovered workflow, got %+v", current)
+	}
+	if manager.LastError() != nil {
+		t.Fatalf("expected last error to clear after recovery, got %v", manager.LastError())
 	}
 }
 

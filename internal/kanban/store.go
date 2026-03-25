@@ -92,6 +92,21 @@ func ResolveDBPath(dbPath string) string {
 	return expandPathValue(dbPath)
 }
 
+// HasUnresolvedExpandedEnvPath reports whether expansion left a path segment unresolved.
+func HasUnresolvedExpandedEnvPath(rawPath, resolvedPath string) bool {
+	if !strings.HasPrefix(strings.TrimSpace(rawPath), "$") {
+		return false
+	}
+
+	cleaned := filepath.Clean(strings.TrimSpace(resolvedPath))
+	for _, segment := range strings.Split(cleaned, string(filepath.Separator)) {
+		if strings.HasPrefix(segment, "$") {
+			return true
+		}
+	}
+	return false
+}
+
 func expandPathValue(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -166,8 +181,9 @@ func NewStore(dbPath string) (*Store, error) {
 }
 
 func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, error) {
+	rawPath := dbPath
 	dbPath = ResolveDBPath(dbPath)
-	if strings.HasPrefix(dbPath, "$") {
+	if HasUnresolvedExpandedEnvPath(rawPath, dbPath) {
 		return nil, fmt.Errorf("failed to resolve database path: unresolved environment variable in %q", dbPath)
 	}
 	absDBPath, err := filepath.Abs(dbPath)

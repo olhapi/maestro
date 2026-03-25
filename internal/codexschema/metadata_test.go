@@ -1,6 +1,7 @@
 package codexschema
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,8 +16,13 @@ func TestVendoredSchemasExistForConsumedSubset(t *testing.T) {
 	schemaDir := SchemaDir(repoRoot)
 	for _, rel := range ConsumedSchemaFiles {
 		path := filepath.Join(schemaDir, rel)
-		if _, err := os.Stat(path); err != nil {
+		data, err := os.ReadFile(path)
+		if err != nil {
 			t.Fatalf("expected vendored schema %s: %v", path, err)
+		}
+		var parsed any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("expected vendored schema %s to be valid JSON: %v", path, err)
 		}
 	}
 	models := filepath.Join(repoRoot, "internal", "appserver", "protocol", "gen", "models.go")

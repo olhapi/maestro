@@ -153,6 +153,39 @@ func TestOpenStoreUsesHomeDefaultPath(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsPartiallyUnresolvedEnvPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TEAM", "")
+
+	dbPath := "$HOME/.maestro/$TEAM/maestro.db"
+	_, err := openStore(dbPath)
+	if err == nil || !strings.Contains(err.Error(), "unresolved environment variable") {
+		t.Fatalf("expected unresolved environment variable error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".maestro", "$TEAM")); !os.IsNotExist(err) {
+		t.Fatalf("expected openStore to avoid creating literal env dir, stat err=%v", err)
+	}
+}
+
+func TestOpenStoreAllowsLiteralDollarSignInPathSegment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	store, err := openStore("$HOME/.maestro/price$5/maestro.db")
+	if err != nil {
+		t.Fatalf("openStore failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	dbPath := filepath.Join(home, ".maestro", "price$5", "maestro.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected db at %s: %v", dbPath, err)
+	}
+}
+
 func TestGuardrailsAcknowledgementBannerMentionsFlag(t *testing.T) {
 	banner := guardrailsAcknowledgementBanner()
 	for _, want := range []string{

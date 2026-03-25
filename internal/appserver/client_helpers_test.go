@@ -84,7 +84,7 @@ func TestAwaitResponseBranches(t *testing.T) {
 	})
 }
 
-func TestInitializeUsesGeneratedRequestID(t *testing.T) {
+func TestInitializeUsesGeneratedRequestIDForConfiguredWorkspace(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	workspace := filepath.Join(workspaceRoot, "ISS-1")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
