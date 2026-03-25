@@ -29,6 +29,10 @@ func Handler() http.Handler {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
+		if strings.HasPrefix(cleanPath, "assets/") || path.Ext(cleanPath) != "" {
+			http.NotFound(w, r)
+			return
+		}
 		serveIndex(dist, w, r)
 	})
 }

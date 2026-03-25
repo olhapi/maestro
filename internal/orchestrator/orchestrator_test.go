@@ -46,11 +46,31 @@ func runGitForTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = scrubGitHookEnv(os.Environ())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func scrubGitHookEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "GIT_DIR="):
+			continue
+		case strings.HasPrefix(kv, "GIT_WORK_TREE="):
+			continue
+		case strings.HasPrefix(kv, "GIT_INDEX_FILE="):
+			continue
+		case strings.HasPrefix(kv, "GIT_COMMON_DIR="):
+			continue
+		default:
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func initGitRepoForTest(t *testing.T, repoPath string) {

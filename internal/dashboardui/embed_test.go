@@ -77,3 +77,15 @@ func TestHandlerServesEmbeddedAssetsWithoutSPAFallback(t *testing.T) {
 		t.Fatal("expected at least one embedded asset")
 	}
 }
+
+func TestHandlerReturnsNotFoundForMissingAssets(t *testing.T) {
+	handler := Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/missing.css", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing asset, got %d body=%q", rec.Code, rec.Body.String())
+	}
+}

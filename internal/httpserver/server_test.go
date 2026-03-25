@@ -102,6 +102,16 @@ func TestNewHandlerRedirectsDashboardRoutes(t *testing.T) {
 			t.Fatalf("%s: expected redirect to %q, got %q", path, want, got)
 		}
 	}
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/issues/1?sort=updated_desc", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("query redirect: expected 307, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/issues/1?sort=updated_desc" {
+		t.Fatalf("query redirect: expected redirect to %q, got %q", "/issues/1?sort=updated_desc", got)
+	}
 }
 
 func TestNewHandlerServesAPIAndSPAContent(t *testing.T) {

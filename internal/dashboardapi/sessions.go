@@ -15,7 +15,7 @@ const (
 	recentSessionFeedWindow = 24 * time.Hour
 )
 
-func (s *Server) sessionsPayload() map[string]interface{} {
+func (s *Server) sessionsPayload(snapshot observability.Snapshot) map[string]interface{} {
 	livePayload := s.provider.LiveSessions()
 	sessionsMap := map[string]interface{}{}
 	if raw, ok := livePayload["sessions"].(map[string]interface{}); ok {
@@ -28,16 +28,15 @@ func (s *Server) sessionsPayload() map[string]interface{} {
 		"sessions": sessionsMap,
 		"entries":  []kanban.SessionFeedEntry{},
 	}
-	entries, err := buildSessionFeedEntries(s.store, s.provider, sessionsMap)
+	entries, err := buildSessionFeedEntries(s.store, s.provider, snapshot, sessionsMap)
 	if err == nil {
 		payload["entries"] = entries
 	}
 	return payload
 }
 
-func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSessions map[string]interface{}) ([]kanban.SessionFeedEntry, error) {
+func buildSessionFeedEntries(store *kanban.Store, provider Provider, snapshot observability.Snapshot, liveSessions map[string]interface{}) ([]kanban.SessionFeedEntry, error) {
 	live := decodeLiveSessions(liveSessions)
-	snapshot := provider.Snapshot()
 	pendingByIssueID, pendingByIdentifier := indexPendingInterrupts(provider.PendingInterrupts().Items)
 	runningByIdentifier := make(map[string]observability.RunningEntry, len(snapshot.Running))
 	for _, entry := range snapshot.Running {
