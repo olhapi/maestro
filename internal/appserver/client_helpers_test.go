@@ -128,6 +128,66 @@ func TestAwaitTurnCompletionBranches(t *testing.T) {
 	}
 }
 
+func TestAwaitTurnCompletionReturnsRecordedTerminalOutcome(t *testing.T) {
+	tests := []struct {
+		name     string
+		reason   string
+		wantKind string
+	}{
+		{
+			name:   "completed",
+			reason: "turn.completed",
+		},
+		{
+			name:     "failed",
+			reason:   "turn.failed",
+			wantKind: "turn_failed",
+		},
+		{
+			name:     "cancelled",
+			reason:   "turn.cancelled",
+			wantKind: "turn_cancelled",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &Client{
+				cfg: ClientConfig{
+					ReadTimeout: 50 * time.Millisecond,
+					TurnTimeout: 200 * time.Millisecond,
+				},
+				lines:   make(chan string),
+				lineErr: make(chan error, 1),
+				waitCh:  make(chan error, 1),
+				session: &Session{
+					ThreadID:       "thread-terminal",
+					TurnID:         "turn-terminal",
+					Terminal:       true,
+					TerminalReason: tc.reason,
+					MaxHistory:     4,
+				},
+				logger: discardLogger(),
+			}
+			close(client.lines)
+			client.lineErr <- io.EOF
+
+			err := client.awaitTurnCompletion(context.Background())
+			if tc.wantKind == "" {
+				if err != nil {
+					t.Fatalf("expected nil error for %s, got %v", tc.reason, err)
+				}
+				return
+			}
+
+			var runErr *RunError
+			if !errors.As(err, &runErr) || runErr.Kind != tc.wantKind {
+				t.Fatalf("expected %s, got %v", tc.wantKind, err)
+			}
+		})
+	}
+}
+
 func TestAwaitTurnCompletionTreatsCleanEOFAsCompletion(t *testing.T) {
 	client := &Client{
 		cfg: ClientConfig{

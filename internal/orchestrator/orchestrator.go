@@ -2857,32 +2857,22 @@ func (o *Orchestrator) LiveSessions() map[string]interface{} {
 }
 
 func (o *Orchestrator) PendingInterrupts() appserver.PendingInteractionSnapshot {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	current := o.currentPendingInteractionLocked()
-	snapshot := appserver.PendingInteractionSnapshot{
-		Count: len(o.pendingInteractions),
+	items, err := o.sharedPendingInteractionItems()
+	if err != nil {
+		slog.Warn("Failed to build pending interaction snapshot", "error", err)
 	}
-	if current != nil {
-		cloned := current.Clone()
-		snapshot.Current = &cloned
-	}
-	return snapshot
+	return appserver.PendingInteractionSnapshot{Items: items}
 }
 
 func (o *Orchestrator) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
 	issueID = strings.TrimSpace(issueID)
 	identifier = strings.TrimSpace(identifier)
-
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	for _, interactionID := range o.pendingInteractionOrder {
-		entry, ok := o.pendingInteractions[interactionID]
-		if !ok {
-			continue
-		}
-		interaction := entry.interaction
+	items, err := o.sharedPendingInteractionItems()
+	if err != nil {
+		slog.Warn("Failed to build issue pending interaction", "issue_id", issueID, "identifier", identifier, "error", err)
+	}
+	for i := range items {
+		interaction := items[i]
 		if interaction.IssueID == issueID || interaction.IssueIdentifier == identifier {
 			cloned := interaction.Clone()
 			return &cloned, true
@@ -2892,11 +2882,21 @@ func (o *Orchestrator) PendingInterruptForIssue(issueID, identifier string) (*ap
 }
 
 func (o *Orchestrator) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+	interactionID = strings.TrimSpace(interactionID)
 	o.mu.RLock()
-	entry, ok := o.pendingInteractions[strings.TrimSpace(interactionID)]
+	entry, ok := o.pendingInteractions[interactionID]
+	current := o.currentPendingInteractionLocked()
 	o.mu.RUnlock()
 	if !ok {
+		if _, found, err := o.pendingInteractionByID(interactionID); err != nil {
+			return err
+		} else if found {
+			return appserver.ErrInvalidInteractionResponse
+		}
 		return appserver.ErrPendingInteractionNotFound
+	}
+	if current == nil || current.ID != interactionID {
+		return appserver.ErrPendingInteractionConflict
 	}
 	if entry.respond == nil {
 		return appserver.ErrPendingInteractionConflict

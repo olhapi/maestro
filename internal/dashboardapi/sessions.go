@@ -38,6 +38,7 @@ func (s *Server) sessionsPayload() map[string]interface{} {
 func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSessions map[string]interface{}) ([]kanban.SessionFeedEntry, error) {
 	live := decodeLiveSessions(liveSessions)
 	snapshot := provider.Snapshot()
+	pendingByIssueID, pendingByIdentifier := indexPendingInterrupts(provider.PendingInterrupts().Items)
 	runningByIdentifier := make(map[string]observability.RunningEntry, len(snapshot.Running))
 	for _, entry := range snapshot.Running {
 		if id := strings.TrimSpace(entry.Identifier); id != "" {
@@ -66,7 +67,12 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	out := make([]kanban.SessionFeedEntry, 0, len(live)+recentSessionFeedLimit)
 	seen := make(map[string]struct{}, len(live))
 	for identifier, session := range live {
-		pendingInterrupt, _ := provider.PendingInterruptForIssue(session.IssueID, firstNonEmpty(session.IssueIdentifier, identifier))
+		pendingInterrupt := pendingInterruptForSession(
+			session.IssueID,
+			firstNonEmpty(session.IssueIdentifier, identifier),
+			pendingByIssueID,
+			pendingByIdentifier,
+		)
 		entry := buildLiveSessionFeedEntry(identifier, session, runningByIdentifier[identifier], titleByIdentifier[identifier], pendingInterrupt)
 		out = append(out, entry)
 		if entry.IssueIdentifier != "" {
@@ -101,6 +107,40 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	})
 
 	return out, nil
+}
+
+func indexPendingInterrupts(items []appserver.PendingInteraction) (map[string]appserver.PendingInteraction, map[string]appserver.PendingInteraction) {
+	byIssueID := make(map[string]appserver.PendingInteraction, len(items))
+	byIdentifier := make(map[string]appserver.PendingInteraction, len(items))
+	for i := range items {
+		interaction := items[i].Clone()
+		if issueID := strings.TrimSpace(interaction.IssueID); issueID != "" {
+			if _, ok := byIssueID[issueID]; !ok {
+				byIssueID[issueID] = interaction
+			}
+		}
+		if identifier := strings.TrimSpace(interaction.IssueIdentifier); identifier != "" {
+			if _, ok := byIdentifier[identifier]; !ok {
+				byIdentifier[identifier] = interaction
+			}
+		}
+	}
+	return byIssueID, byIdentifier
+}
+
+func pendingInterruptForSession(
+	issueID, identifier string,
+	byIssueID, byIdentifier map[string]appserver.PendingInteraction,
+) *appserver.PendingInteraction {
+	if interaction, ok := byIssueID[strings.TrimSpace(issueID)]; ok {
+		cloned := interaction.Clone()
+		return &cloned
+	}
+	if interaction, ok := byIdentifier[strings.TrimSpace(identifier)]; ok {
+		cloned := interaction.Clone()
+		return &cloned
+	}
+	return nil
 }
 
 func loadIssueTitlesByIdentifier(store *kanban.Store, live map[string]appserver.Session, recent []kanban.ExecutionSessionSnapshot) map[string]string {
@@ -197,7 +237,11 @@ func buildLiveSessionFeedEntry(identifier string, session appserver.Session, run
 	if pendingInterrupt != nil {
 		cloned := pendingInterrupt.Clone()
 		pending = &cloned
-		status = "waiting"
+		if pending.Kind == appserver.PendingInteractionKindAlert {
+			status = "blocked"
+		} else {
+			status = "waiting"
+		}
 		if pending.LastActivityAt != nil && !pending.LastActivityAt.IsZero() {
 			updatedAt = pending.LastActivityAt.UTC()
 		}
