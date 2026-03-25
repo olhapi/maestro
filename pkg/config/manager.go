@@ -66,6 +66,9 @@ func (m *Manager) Refresh() (*Workflow, error) {
 	current := m.current
 	m.mu.RUnlock()
 	if same {
+		m.mu.Lock()
+		m.lastErr = nil
+		m.mu.Unlock()
 		return current, nil
 	}
 

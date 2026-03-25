@@ -344,7 +344,9 @@ func LoadWorkflow(path string) (*Workflow, error) {
 	}
 
 	cfg := payload.Config
-	applyDefaults(&cfg)
+	if err := applyDefaults(&cfg); err != nil {
+		return nil, err
+	}
 	if err := validateConfig(&cfg); err != nil {
 		return nil, err
 	}
@@ -357,32 +359,9 @@ func LoadWorkflow(path string) (*Workflow, error) {
 }
 
 func parseWorkflowPayload(path, content string) (*workflowPayload, error) {
-	var raw map[string]interface{}
-	promptStart := 0
-
-	if strings.HasPrefix(content, "---\n") {
-		end := strings.Index(content[4:], "\n---\n")
-		if end == -1 {
-			frontMatter := content[4:]
-			if err := yaml.Unmarshal([]byte(frontMatter), &raw); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
-			}
-			if raw == nil {
-				raw = map[string]interface{}{}
-			}
-			promptStart = len(content)
-		} else {
-			frontMatter := content[4 : end+4]
-			if err := yaml.Unmarshal([]byte(frontMatter), &raw); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
-			}
-			if raw == nil {
-				raw = map[string]interface{}{}
-			}
-			promptStart = end + 8
-		}
-	} else {
-		raw = map[string]interface{}{}
+	raw, promptStart, err := parseWorkflowFrontMatter(content)
+	if err != nil {
+		return nil, err
 	}
 
 	normalized, err := normalizeWorkflowKeys(raw)
@@ -412,6 +391,80 @@ func parseWorkflowPayload(path, content string) (*workflowPayload, error) {
 
 	cfg.Workspace.Root = resolvePathValue(filepath.Dir(path), cfg.Workspace.Root, DefaultConfig().Workspace.Root)
 	return &workflowPayload{Config: cfg, Prompt: prompt}, nil
+}
+
+func parseWorkflowFrontMatter(content string) (map[string]interface{}, int, error) {
+	if !strings.HasPrefix(content, "---\n") {
+		return map[string]interface{}{}, 0, nil
+	}
+
+	end := strings.Index(content[4:], "\n---\n")
+	frontMatter := content[4:]
+	promptStart := len(content)
+	if end != -1 {
+		frontMatter = content[4 : end+4]
+		promptStart = end + 8
+	}
+
+	var raw interface{}
+	if err := yaml.Unmarshal([]byte(frontMatter), &raw); err != nil {
+		return nil, 0, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
+	}
+
+	normalized, err := normalizeWorkflowFrontMatter(raw, frontMatter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return normalized, promptStart, nil
+}
+
+func normalizeWorkflowFrontMatter(raw interface{}, frontMatter string) (map[string]interface{}, error) {
+	if raw == nil {
+		return map[string]interface{}{}, nil
+	}
+
+	switch typed := raw.(type) {
+	case map[string]interface{}:
+		return normalizeWorkflowMap(typed), nil
+	case map[interface{}]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			out[fmt.Sprint(key)] = normalizeWorkflowValue(value)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("%w: front matter must be a map, got %T", ErrWorkflowFrontMatter, raw)
+	}
+}
+
+func normalizeWorkflowMap(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for key, value := range in {
+		out[key] = normalizeWorkflowValue(value)
+	}
+	return out
+}
+
+func normalizeWorkflowValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return normalizeWorkflowMap(typed)
+	case map[interface{}]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, child := range typed {
+			out[fmt.Sprint(key)] = normalizeWorkflowValue(child)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for i, child := range typed {
+			out[i] = normalizeWorkflowValue(child)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, error) {
@@ -456,6 +509,13 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveNumeric(out, codex, "codex_turn_timeout_ms", "turn_timeout_ms")
 	moveNumeric(out, codex, "codex_read_timeout_ms", "read_timeout_ms")
 	moveNumeric(out, codex, "codex_stall_timeout_ms", "stall_timeout_ms")
+	if value, ok := codex["approval_policy"]; ok {
+		normalized, err := normalizeApprovalPolicyValue(value, true)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
+		}
+		codex["approval_policy"] = normalized
+	}
 
 	unsupported := []string{"tracker_api_token", "tracker_project_slug", "tracker_assignee"}
 	for _, key := range unsupported {
@@ -573,7 +633,54 @@ func splitCSVValues(value string) []string {
 	return out
 }
 
-func applyDefaults(c *Config) {
+func normalizeApprovalPolicyValue(value interface{}, present bool) (interface{}, error) {
+	if !present {
+		return nil, nil
+	}
+	if value == nil {
+		return nil, fmt.Errorf("approval_policy cannot be blank")
+	}
+
+	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		policy, ok := canonicalApprovalPolicyString(trimmed)
+		if !ok {
+			if trimmed == "" {
+				return nil, fmt.Errorf("approval_policy cannot be blank")
+			}
+			return nil, fmt.Errorf("unsupported approval_policy %q", typed)
+		}
+		return policy, nil
+	case map[string]interface{}:
+		return normalizeWorkflowMap(typed), nil
+	case map[interface{}]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, child := range typed {
+			out[fmt.Sprint(key)] = normalizeWorkflowValue(child)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported approval_policy type %T", value)
+	}
+}
+
+func canonicalApprovalPolicyString(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "never":
+		return "never", true
+	case "on-request", "on_request":
+		return "on-request", true
+	case "on-failure", "on_failure":
+		return "on-failure", true
+	case "untrusted":
+		return "untrusted", true
+	default:
+		return "", false
+	}
+}
+
+func applyDefaults(c *Config) error {
 	defaults := DefaultConfig()
 
 	if strings.TrimSpace(c.Tracker.Kind) == "" {
@@ -618,8 +725,14 @@ func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.Codex.ExpectedVersion) == "" {
 		c.Codex.ExpectedVersion = defaults.Codex.ExpectedVersion
 	}
-	if c.Codex.ApprovalPolicy == nil {
+	normalizedApprovalPolicy, err := normalizeApprovalPolicyValue(c.Codex.ApprovalPolicy, c.Codex.ApprovalPolicy != nil)
+	if err != nil {
+		return err
+	}
+	if normalizedApprovalPolicy == nil {
 		c.Codex.ApprovalPolicy = defaults.Codex.ApprovalPolicy
+	} else {
+		c.Codex.ApprovalPolicy = normalizedApprovalPolicy
 	}
 	c.Codex.InitialCollaborationMode = normalizeInitialCollaborationMode(c.Codex.InitialCollaborationMode)
 	if c.Codex.InitialCollaborationMode == "" {
@@ -631,7 +744,7 @@ func applyDefaults(c *Config) {
 	if c.Codex.ReadTimeoutMs <= 0 {
 		c.Codex.ReadTimeoutMs = defaults.Codex.ReadTimeoutMs
 	}
-	if c.Codex.StallTimeoutMs == 0 {
+	if c.Codex.StallTimeoutMs <= 0 {
 		c.Codex.StallTimeoutMs = defaults.Codex.StallTimeoutMs
 	}
 	if c.Phases.Review.Enabled && strings.TrimSpace(c.Phases.Review.Prompt) == "" {
@@ -640,6 +753,7 @@ func applyDefaults(c *Config) {
 	if c.Phases.Done.Enabled && strings.TrimSpace(c.Phases.Done.Prompt) == "" {
 		c.Phases.Done.Prompt = DefaultDonePromptTemplate()
 	}
+	return nil
 }
 
 func LegacyWorkflowUsesFullAccess(path string) (bool, error) {
@@ -718,6 +832,9 @@ func validateConfig(c *Config) error {
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		return fmt.Errorf("codex.command is required")
 	}
+	if err := validateApprovalPolicyValue(c.Codex.ApprovalPolicy); err != nil {
+		return err
+	}
 	switch c.Codex.InitialCollaborationMode {
 	case InitialCollaborationModePlan, InitialCollaborationModeDefault:
 	case "":
@@ -734,6 +851,28 @@ func validateConfig(c *Config) error {
 		}
 	}
 	return nil
+}
+
+func validateApprovalPolicyValue(value interface{}) error {
+	if value == nil {
+		return fmt.Errorf("codex.approval_policy is required")
+	}
+
+	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return fmt.Errorf("codex.approval_policy is required")
+		}
+		if _, ok := canonicalApprovalPolicyString(trimmed); !ok {
+			return fmt.Errorf("unsupported codex.approval_policy %q", typed)
+		}
+		return nil
+	case map[string]interface{}, map[interface{}]interface{}:
+		return nil
+	default:
+		return fmt.Errorf("unsupported codex.approval_policy type %T", value)
+	}
 }
 
 func normalizeInitialCollaborationMode(raw string) string {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
@@ -24,6 +25,7 @@ func Run(repoPath, dbPath string) Result {
 	if repoPath == "" {
 		repoPath, _ = os.Getwd()
 	}
+	rawDBPath := dbPath
 	dbPath = kanban.ResolveDBPath(dbPath)
 
 	workflowPath := config.WorkflowPath(repoPath)
@@ -70,7 +72,14 @@ func Run(repoPath, dbPath string) Result {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+	if hasUnresolvedExpandedEnvPath(rawDBPath, dbPath) {
+		res.OK = false
+		res.Checks["db_dir"] = "skipped"
+		res.Errors = append(res.Errors, fmt.Sprintf("db_open: unresolved environment variable in %q", dbPath))
+		res.Checks["db_open"] = "fail"
+		res.Remediation["db_open"] = "Provide a fully resolved `--db` path."
+		return res
+	} else if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		res.OK = false
 		res.Errors = append(res.Errors, fmt.Sprintf("db_dir: %v", err))
 		res.Checks["db_dir"] = "fail"
@@ -91,4 +100,8 @@ func Run(repoPath, dbPath string) Result {
 	}
 
 	return res
+}
+
+func hasUnresolvedExpandedEnvPath(rawPath, resolvedPath string) bool {
+	return strings.HasPrefix(strings.TrimSpace(rawPath), "$") && strings.Contains(resolvedPath, "$")
 }

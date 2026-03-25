@@ -153,6 +153,21 @@ func TestOpenStoreUsesHomeDefaultPath(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsPartiallyUnresolvedEnvPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TEAM", "")
+
+	dbPath := "$HOME/.maestro/$TEAM/maestro.db"
+	_, err := openStore(dbPath)
+	if err == nil || !strings.Contains(err.Error(), "unresolved environment variable") {
+		t.Fatalf("expected unresolved environment variable error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".maestro", "$TEAM")); !os.IsNotExist(err) {
+		t.Fatalf("expected openStore to avoid creating literal env dir, stat err=%v", err)
+	}
+}
+
 func TestGuardrailsAcknowledgementBannerMentionsFlag(t *testing.T) {
 	banner := guardrailsAcknowledgementBanner()
 	for _, want := range []string{

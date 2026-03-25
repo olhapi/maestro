@@ -46,6 +46,47 @@ func TestRunVerificationUsesHomeDefaultDBPath(t *testing.T) {
 	}
 }
 
+func TestRunVerificationSkipsLiteralDbDirCreationForUnresolvedEnvPath(t *testing.T) {
+	tmp := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TEAM", "")
+	workflow := `---
+tracker:
+  kind: kanban
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	res := Run(tmp, "$HOME/.maestro/$TEAM/maestro.db")
+	if res.OK {
+		t.Fatalf("expected unresolved db path to fail verification, got %+v", res)
+	}
+	if res.Checks["db_dir"] != "skipped" {
+		t.Fatalf("expected db_dir to be skipped, got %+v", res.Checks)
+	}
+	if res.Checks["db_open"] != "fail" {
+		t.Fatalf("expected db_open to fail, got %+v", res.Checks)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".maestro", "$TEAM")); !os.IsNotExist(err) {
+		t.Fatalf("expected verify to avoid creating literal env dir, stat err=%v", err)
+	}
+}
+
 func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	codexPath := filepath.Join(tmp, "codex")
