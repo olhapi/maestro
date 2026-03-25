@@ -271,6 +271,11 @@ export const api = {
     ),
   listInterrupts: () =>
     request<PendingInterruptsResponse>("/api/v1/app/interrupts"),
+  acknowledgeInterrupt: (id: string) =>
+    request<{ id: string; status: string }>(`/api/v1/app/interrupts/${id}/acknowledge`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   respondToInterrupt: (
     id: string,
     body: {

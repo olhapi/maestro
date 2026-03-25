@@ -1,51 +1,51 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { vi } from 'vitest'
 
 import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
 
-describe('GlobalInterruptPanel', () => {
-  afterEach(() => {
-    vi.useRealTimers()
-  })
+function makeApprovalInterrupt() {
+  return {
+    id: 'interrupt-approval',
+    kind: 'approval' as const,
+    issue_identifier: 'ISS-1',
+    issue_title: 'Review migrations',
+    phase: 'review',
+    attempt: 1,
+    requested_at: '2026-03-16T10:00:00Z',
+    approval: {
+      command: 'ssh-add --apple-use-keychain ~/.ssh/id_rsa ~/.ssh/squirro.key',
+      cwd: '/Users/olhapi-work',
+      reason: 'Add SSH keys to macOS keychain agent',
+      decisions: [
+        {
+          value: 'approved_once',
+          label: 'Approve once',
+          description: 'Run the tool and continue.',
+        },
+        {
+          value: 'approved_for_session',
+          label: 'Approve for session',
+          description: 'Allow similar requests for the rest of the session.',
+        },
+        {
+          value: 'denied',
+          label: 'Deny',
+          description: 'Reject the request and let the agent continue the turn.',
+        },
+      ],
+    },
+  }
+}
 
+describe('GlobalInterruptPanel', () => {
   it('renders the richer approval structure and auto-submits plain approval decisions', () => {
     const onRespond = vi.fn()
 
     render(
       <GlobalInterruptPanel
-        count={1}
-        current={{
-          id: 'interrupt-approval',
-          kind: 'approval',
-          issue_identifier: 'ISS-1',
-          issue_title: 'Review migrations',
-          phase: 'review',
-          attempt: 1,
-          requested_at: '2026-03-16T10:00:00Z',
-          approval: {
-            command: 'ssh-add --apple-use-keychain ~/.ssh/id_rsa ~/.ssh/squirro.key',
-            cwd: '/Users/olhapi-work',
-            reason: 'Add SSH keys to macOS keychain agent',
-            decisions: [
-              {
-                value: 'approved_once',
-                label: 'Approve once',
-                description: 'Run the tool and continue.',
-              },
-              {
-                value: 'approved_for_session',
-                label: 'Approve for session',
-                description: 'Allow similar requests for the rest of the session.',
-              },
-              {
-                value: 'denied',
-                label: 'Deny',
-                description: 'Reject the request and let the agent continue the turn.',
-              },
-            ],
-          },
-        }}
+        items={[makeApprovalInterrupt()]}
         isSubmitting={false}
+        onAcknowledge={() => {}}
         onRespond={onRespond}
       />,
     )
@@ -67,8 +67,7 @@ describe('GlobalInterruptPanel', () => {
 
     render(
       <GlobalInterruptPanel
-        count={1}
-        current={{
+        items={[{
           id: 'interrupt-approval-structured',
           kind: 'approval',
           issue_identifier: 'ISS-4',
@@ -92,8 +91,9 @@ describe('GlobalInterruptPanel', () => {
               },
             ],
           },
-        }}
+        }]}
         isSubmitting={false}
+        onAcknowledge={() => {}}
         onRespond={onRespond}
       />,
     )
@@ -118,8 +118,7 @@ describe('GlobalInterruptPanel', () => {
 
     render(
       <GlobalInterruptPanel
-        count={1}
-        current={{
+        items={[{
           id: 'interrupt-options',
           kind: 'user_input',
           issue_identifier: 'ISS-2',
@@ -134,8 +133,9 @@ describe('GlobalInterruptPanel', () => {
               },
             ],
           },
-        }}
+        }]}
         isSubmitting={false}
+        onAcknowledge={() => {}}
         onRespond={onRespond}
       />,
     )
@@ -157,8 +157,7 @@ describe('GlobalInterruptPanel', () => {
 
     render(
       <GlobalInterruptPanel
-        count={1}
-        current={{
+        items={[{
           id: 'interrupt-other',
           kind: 'user_input',
           issue_identifier: 'ISS-3',
@@ -174,14 +173,14 @@ describe('GlobalInterruptPanel', () => {
               },
             ],
           },
-        }}
+        }]}
         isSubmitting={false}
+        onAcknowledge={() => {}}
         onRespond={onRespond}
       />,
     )
 
     const submitButton = screen.getByRole('button', { name: /submit response/i })
-    expect(submitButton).toBeInTheDocument()
     expect(submitButton).toBeDisabled()
 
     fireEvent.click(screen.getByText('Use default').closest('button')!)
@@ -190,83 +189,112 @@ describe('GlobalInterruptPanel', () => {
     expect(submitButton).toBeEnabled()
   })
 
-  it('disables actions while the panel is exiting so stale approvals cannot be submitted', () => {
-    vi.useFakeTimers()
-    const onRespond = vi.fn()
-
-    const interrupt = {
-      id: 'interrupt-exiting',
-      kind: 'approval' as const,
-      issue_identifier: 'ISS-10',
-      issue_title: 'Approve command',
-      requested_at: '2026-03-16T10:00:00Z',
-      approval: {
-        command: 'gh pr view',
-        decisions: [{ value: 'approved', label: 'Approve once' }],
-      },
-    }
-
-    const { rerender } = render(
-      <GlobalInterruptPanel count={1} current={interrupt} isSubmitting={false} onRespond={onRespond} />,
+  it('defaults the detail pane to the first actionable interrupt when alerts are also queued', () => {
+    render(
+      <GlobalInterruptPanel
+        items={[
+          {
+            id: 'alert-project-dispatch-1',
+            kind: 'alert',
+            issue_identifier: 'ISS-9',
+            issue_title: 'Blocked issue',
+            project_id: 'project-1',
+            project_name: 'Platform',
+            requested_at: '2026-03-16T10:00:00Z',
+            actions: [{ kind: 'acknowledge', label: 'Acknowledge' }],
+            alert: {
+              code: 'project_dispatch_blocked',
+              severity: 'error',
+              title: 'Project dispatch blocked',
+              message: 'Project repo is outside the current server scope (/repo/current)',
+            },
+          },
+          makeApprovalInterrupt(),
+        ]}
+        isSubmitting={false}
+        onAcknowledge={() => {}}
+        onRespond={() => {}}
+      />,
     )
 
-    rerender(
+    expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
+    expect(screen.getByText('2 waiting')).toBeInTheDocument()
+    expect(screen.getAllByText('Project dispatch blocked').length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'Acknowledge' }).length).toBeGreaterThan(0)
+  })
+
+  it('keeps later queued approvals read-only until they reach the front of the queue', () => {
+    const onRespond = vi.fn()
+
+    render(
       <GlobalInterruptPanel
-        count={1}
-        current={interrupt}
-        hiddenCurrentId="interrupt-exiting"
+        items={[
+          makeApprovalInterrupt(),
+          {
+            ...makeApprovalInterrupt(),
+            id: 'interrupt-approval-2',
+            issue_identifier: 'ISS-2',
+            issue_title: 'Approve deployment',
+            approval: {
+              command: 'deploy production',
+              decisions: [{ value: 'approved_once', label: 'Approve once' }],
+            },
+          },
+        ]}
+        respondableInterruptId="interrupt-approval"
         isSubmitting={false}
+        onAcknowledge={() => {}}
         onRespond={onRespond}
       />,
     )
 
-    const staleApprovalButton = screen.getByRole('button', { name: /approve once/i })
-    expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'exiting')
-    expect(staleApprovalButton).toBeDisabled()
+    fireEvent.click(screen.getByText('Approve deployment').closest('button')!)
 
-    fireEvent.click(staleApprovalButton)
+    expect(screen.getByText(/an earlier interrupt is still pending/i)).toBeInTheDocument()
+
+    const approveButton = screen.getByRole('button', { name: /approve once/i })
+    expect(approveButton).toBeDisabled()
+
+    fireEvent.click(approveButton)
 
     expect(onRespond).not.toHaveBeenCalled()
   })
 
-  it('applies the closing state before unmounting when the current interrupt is hidden', () => {
-    vi.useFakeTimers()
-    const onRespond = vi.fn()
+  it('renders alert actions and deep links for issue-level maestro blockers', () => {
+    const onAcknowledge = vi.fn()
 
-    const interrupt = {
-      id: 'interrupt-hiding',
-      kind: 'approval' as const,
-      issue_identifier: 'ISS-9',
-      issue_title: 'Approve command',
-      requested_at: '2026-03-16T10:00:00Z',
-      approval: {
-        command: 'gh pr view',
-        decisions: [{ value: 'approved', label: 'Approve once' }],
-      },
-    }
-
-    const { rerender } = render(
-      <GlobalInterruptPanel count={1} current={interrupt} isSubmitting={false} onRespond={onRespond} />,
-    )
-
-    expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'visible')
-
-    rerender(
+    render(
       <GlobalInterruptPanel
-        count={1}
-        current={interrupt}
-        hiddenCurrentId="interrupt-hiding"
-        isSubmitting
-        onRespond={onRespond}
+        items={[{
+          id: 'alert-project-dispatch-2',
+          kind: 'alert',
+          issue_identifier: 'ISS-7',
+          issue_title: 'Blocked issue',
+          project_id: 'project-1',
+          project_name: 'Platform',
+          requested_at: '2026-03-16T10:00:00Z',
+          actions: [{ kind: 'acknowledge', label: 'Acknowledge' }],
+          alert: {
+            code: 'project_dispatch_blocked',
+            severity: 'error',
+            title: 'Project dispatch blocked',
+            message: 'Project repo is outside the current server scope (/repo/current)',
+            detail: 'Blocked issue is waiting for execution until the project scope mismatch is fixed.',
+          },
+        }]}
+        isSubmitting={false}
+        onAcknowledge={onAcknowledge}
+        onRespond={() => {}}
       />,
     )
 
-    expect(screen.getByTestId('global-interrupt-panel')).toHaveAttribute('data-visibility', 'exiting')
+    expect(screen.getAllByText('Project dispatch blocked').length).toBeGreaterThan(0)
+    expect(screen.getByText('Blocked issue is waiting for execution until the project scope mismatch is fixed.')).toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: 'Open issue' })[0]).toHaveAttribute('href', '/issues/ISS-7')
+    expect(screen.getAllByRole('link', { name: 'Open project' })[0]).toHaveAttribute('href', '/projects/project-1')
 
-    act(() => {
-      vi.advanceTimersByTime(180)
-    })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Acknowledge' })[0]!)
 
-    expect(screen.queryByTestId('global-interrupt-panel')).not.toBeInTheDocument()
+    expect(onAcknowledge).toHaveBeenCalledWith('alert-project-dispatch-2')
   })
 })

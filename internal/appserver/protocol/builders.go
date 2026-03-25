@@ -207,11 +207,11 @@ func toThreadApprovalPolicy(raw interface{}) (*gen.ThreadStartParamsApprovalPoli
 		}
 		return &gen.ThreadStartParamsApprovalPolicy{Enum: &enum}, nil
 	case map[string]interface{}:
-		reject, err := toThreadRejectApproval(typed)
+		approval, err := toThreadStructuredApproval(typed)
 		if err != nil {
 			return nil, err
 		}
-		return &gen.ThreadStartParamsApprovalPolicy{PurpleGranularAskForApproval: reject}, nil
+		return &gen.ThreadStartParamsApprovalPolicy{PurpleGranularAskForApproval: approval}, nil
 	default:
 		return nil, fmt.Errorf("unsupported thread approval policy type %T", raw)
 	}
@@ -229,11 +229,11 @@ func toTurnApprovalPolicy(raw interface{}) (*gen.TurnStartParamsApprovalPolicy, 
 		}
 		return &gen.TurnStartParamsApprovalPolicy{Enum: &enum}, nil
 	case map[string]interface{}:
-		reject, err := toTurnRejectApproval(typed)
+		approval, err := toTurnStructuredApproval(typed)
 		if err != nil {
 			return nil, err
 		}
-		return &gen.TurnStartParamsApprovalPolicy{FluffyGranularAskForApproval: reject}, nil
+		return &gen.TurnStartParamsApprovalPolicy{FluffyGranularAskForApproval: approval}, nil
 	default:
 		return nil, fmt.Errorf("unsupported turn approval policy type %T", raw)
 	}
@@ -297,18 +297,18 @@ func toApprovalPolicyEnum(raw string) (gen.ApprovalPolicyEnum, error) {
 	return out, nil
 }
 
-func toThreadRejectApproval(raw map[string]interface{}) (*gen.PurpleGranularAskForApproval, error) {
-	rejectMap, ok := raw["reject"].(map[string]interface{})
+func toThreadStructuredApproval(raw map[string]interface{}) (*gen.PurpleGranularAskForApproval, error) {
+	approvalMap, ok := structuredApprovalMap(raw)
 	if !ok {
-		return nil, fmt.Errorf("decode thread approval policy: missing reject policy")
+		return nil, fmt.Errorf("decode thread approval policy: missing structured approval policy")
 	}
 	return &gen.PurpleGranularAskForApproval{
 		Granular: gen.PurpleGranular{
-			MCPElicitations: boolValueOrFalse(rejectMap["mcp_elicitations"]),
-			Rules:           boolValueOrFalse(rejectMap["rules"]),
-			SandboxApproval: boolValueOrFalse(rejectMap["sandbox_approval"]),
+			MCPElicitations: boolValueOrFalse(approvalMap["mcp_elicitations"]),
+			Rules:           boolValueOrFalse(approvalMap["rules"]),
+			SandboxApproval: boolValueOrFalse(approvalMap["sandbox_approval"]),
 			RequestPermissions: func() *bool {
-				if v, ok := boolValue(rejectMap["request_permissions"]); ok {
+				if v, ok := boolValue(approvalMap["request_permissions"]); ok {
 					return BoolPtr(v)
 				}
 				return nil
@@ -317,24 +317,34 @@ func toThreadRejectApproval(raw map[string]interface{}) (*gen.PurpleGranularAskF
 	}, nil
 }
 
-func toTurnRejectApproval(raw map[string]interface{}) (*gen.FluffyGranularAskForApproval, error) {
-	rejectMap, ok := raw["reject"].(map[string]interface{})
+func toTurnStructuredApproval(raw map[string]interface{}) (*gen.FluffyGranularAskForApproval, error) {
+	approvalMap, ok := structuredApprovalMap(raw)
 	if !ok {
-		return nil, fmt.Errorf("decode turn approval policy: missing reject policy")
+		return nil, fmt.Errorf("decode turn approval policy: missing structured approval policy")
 	}
 	return &gen.FluffyGranularAskForApproval{
 		Granular: gen.TentacledGranular{
-			MCPElicitations: boolValueOrFalse(rejectMap["mcp_elicitations"]),
-			Rules:           boolValueOrFalse(rejectMap["rules"]),
-			SandboxApproval: boolValueOrFalse(rejectMap["sandbox_approval"]),
+			MCPElicitations: boolValueOrFalse(approvalMap["mcp_elicitations"]),
+			Rules:           boolValueOrFalse(approvalMap["rules"]),
+			SandboxApproval: boolValueOrFalse(approvalMap["sandbox_approval"]),
 			RequestPermissions: func() *bool {
-				if v, ok := boolValue(rejectMap["request_permissions"]); ok {
+				if v, ok := boolValue(approvalMap["request_permissions"]); ok {
 					return BoolPtr(v)
 				}
 				return nil
 			}(),
 		},
 	}, nil
+}
+
+func structuredApprovalMap(raw map[string]interface{}) (map[string]interface{}, bool) {
+	if approvalMap, ok := raw["granular"].(map[string]interface{}); ok {
+		return approvalMap, true
+	}
+	if approvalMap, ok := raw["reject"].(map[string]interface{}); ok {
+		return approvalMap, true
+	}
+	return nil, false
 }
 
 func toSandboxPolicyType(raw interface{}) (gen.SandboxPolicyType, error) {

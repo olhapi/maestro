@@ -34,13 +34,16 @@ export function SessionExecutionCard({
   const failureSummaryReason =
     execution.pause_reason || execution.failure_class || execution.current_error
   const pendingInterrupt = execution.pending_interrupt
+  const pendingAlert = pendingInterrupt?.kind === 'alert' ? pendingInterrupt : null
   const pendingPlanApproval = execution.plan_approval
   const pausedRunSummary = describeFailureRuns(
     execution.consecutive_failures,
     failureSummaryReason,
   )
   const sessionStatusLabel = pendingInterrupt
-    ? 'Waiting for input'
+    ? pendingAlert
+      ? 'Blocked'
+      : 'Waiting for input'
     : execution.retry_state === 'paused'
       ? 'Paused'
     : failureLabel
@@ -76,7 +79,15 @@ export function SessionExecutionCard({
           <Badge className="border-white/10 bg-white/5 text-white">Attempt {execution.attempt_number || 0}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.phase || 'implementation')}</Badge>
           {pendingInterrupt ? (
-            <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">Waiting</Badge>
+            <Badge
+              className={
+                pendingAlert
+                  ? 'border-rose-400/20 bg-rose-400/10 text-rose-100'
+                  : 'border-amber-400/20 bg-amber-400/10 text-amber-100'
+              }
+            >
+              {pendingAlert ? 'Blocked' : 'Waiting'}
+            </Badge>
           ) : null}
           {pendingInterrupt?.collaboration_mode === 'plan' ? (
             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
@@ -108,16 +119,31 @@ export function SessionExecutionCard({
         ) : null}
 
         {pendingInterrupt ? (
-          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
+          <div
+            className={
+              pendingAlert
+                ? 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-rose-400/25 bg-rose-400/10 p-3.5 text-sm text-rose-50'
+                : 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50'
+            }
+          >
             <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
+              <AlertTriangle className={pendingAlert ? 'mt-0.5 size-4 text-rose-200' : 'mt-0.5 size-4 text-amber-200'} />
               <div>
-                <p className="font-medium text-amber-100">Waiting for operator input</p>
-                <p className="mt-2 text-amber-50/90">
-                  {pendingInterrupt.last_activity || 'This run is blocked on a response in the global interrupt queue.'}
+                <p className={pendingAlert ? 'font-medium text-rose-100' : 'font-medium text-amber-100'}>
+                  {pendingAlert ? pendingAlert.alert?.title || 'Execution blocked' : 'Waiting for operator input'}
                 </p>
-                <p className="mt-2 text-amber-100/80">
-                  Respond from the global interrupt panel to let this thread continue on the same session.
+                <p className={pendingAlert ? 'mt-2 text-rose-50/90' : 'mt-2 text-amber-50/90'}>
+                  {pendingAlert
+                    ? pendingAlert.alert?.message || pendingInterrupt.last_activity || 'Maestro found a blocker for this issue.'
+                    : pendingInterrupt.last_activity || 'This run is blocked on a response in the global interrupt queue.'}
+                </p>
+                {pendingAlert?.alert?.detail ? (
+                  <p className="mt-2 text-white/70">{pendingAlert.alert.detail}</p>
+                ) : null}
+                <p className={pendingAlert ? 'mt-2 text-rose-100/80' : 'mt-2 text-amber-100/80'}>
+                  {pendingAlert
+                    ? 'Resolve the underlying blocker from the issue or project context, then re-run once the dispatch path is clear.'
+                    : 'Respond from the global interrupt panel to let this thread continue on the same session.'}
                 </p>
               </div>
             </div>

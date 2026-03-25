@@ -13,6 +13,7 @@ import { api } from '@/lib/api'
 import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
 import { dashboardRefreshCoalesceMs, refreshDashboardQueries } from '@/lib/query-refresh'
+import type { PendingInterrupt } from '@/lib/types'
 import { cn, formatRelativeTimeCompact } from '@/lib/utils'
 
 const nav = [
@@ -89,6 +90,14 @@ function getPageTitle(pathname: string) {
   return ''
 }
 
+function pickSpotlightInterrupt(items: PendingInterrupt[]) {
+  return items.find((interrupt) => interrupt.kind !== 'alert') ?? items[0] ?? null
+}
+
+function pickRespondableInterruptId(items: PendingInterrupt[]) {
+  return items.find((interrupt) => interrupt.kind !== 'alert')?.id ?? null
+}
+
 export function AppShell() {
   const { location } = useRouterState()
   const activePath = useMemo(() => location.pathname || appRoutes.overview, [location.pathname])
@@ -96,8 +105,8 @@ export function AppShell() {
   const isMobileLayout = useIsMobileLayout()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
-  const [hiddenInterruptId, setHiddenInterruptId] = useState<string | null>(null)
-  const lastObservedInterruptId = useRef<string | null | undefined>(undefined)
+  const [optimisticHiddenInterruptIds, setOptimisticHiddenInterruptIds] = useState<string[]>([])
+  const previouslyObservedInterruptIds = useRef<Set<string> | null>(null)
   const refreshTimerRef = useRef<number | null>(null)
   const latestPathRef = useRef(activePath)
   const useWorkBootstrap = activePath === appRoutes.work
@@ -106,6 +115,25 @@ export function AppShell() {
     queryFn: useWorkBootstrap ? api.workBootstrap : api.bootstrap,
   })
   const interrupts = useQuery({ queryKey: ['interrupts'], queryFn: api.listInterrupts })
+  const addOptimisticHiddenInterruptId = (interruptId: string) => {
+    startTransition(() => {
+      setOptimisticHiddenInterruptIds((current) => (
+        current.includes(interruptId) ? current : [...current, interruptId]
+      ))
+    })
+  }
+  const removeOptimisticHiddenInterruptId = (interruptId: string) => {
+    startTransition(() => {
+      setOptimisticHiddenInterruptIds((current) => current.filter((candidate) => candidate !== interruptId))
+    })
+  }
+  const invalidateInterruptViews = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['interrupts'], refetchType: 'active' }),
+      queryClient.invalidateQueries({ queryKey: ['sessions'], refetchType: 'active' }),
+      queryClient.invalidateQueries({ queryKey: ['issue-execution'], refetchType: 'active' }),
+    ])
+  }
   const respondToInterrupt = useMutation({
     mutationFn: ({
       id,
@@ -120,19 +148,25 @@ export function AppShell() {
     }) =>
       api.respondToInterrupt(id, body),
     onMutate: ({ id }) => {
-      startTransition(() => {
-        setHiddenInterruptId(id)
-      })
+      addOptimisticHiddenInterruptId(id)
     },
-    onError: () => {
-      setHiddenInterruptId(null)
+    onError: (_, { id }) => {
+      removeOptimisticHiddenInterruptId(id)
     },
     onSettled: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['interrupts'], refetchType: 'active' }),
-        queryClient.invalidateQueries({ queryKey: ['sessions'], refetchType: 'active' }),
-        queryClient.invalidateQueries({ queryKey: ['issue-execution'], refetchType: 'active' }),
-      ])
+      await invalidateInterruptViews()
+    },
+  })
+  const acknowledgeInterrupt = useMutation({
+    mutationFn: (id: string) => api.acknowledgeInterrupt(id),
+    onMutate: (id) => {
+      addOptimisticHiddenInterruptId(id)
+    },
+    onError: (_, id) => {
+      removeOptimisticHiddenInterruptId(id)
+    },
+    onSettled: async () => {
+      await invalidateInterruptViews()
     },
   })
 
@@ -202,8 +236,17 @@ export function AppShell() {
   const pageTitle = getPageTitle(activePath) || SIDEBAR_TITLE
   const runningCount = dashboardQuery.data?.overview.snapshot.running.length ?? 0
   const retryCount = dashboardQuery.data?.overview.snapshot.retrying.length ?? 0
-  const currentInterruptId = interrupts.data?.current?.id ?? null
-  const effectiveHiddenInterruptId = interrupts.data?.current?.id === hiddenInterruptId ? hiddenInterruptId : null
+  const interruptItems = useMemo(() => interrupts.data?.items ?? [], [interrupts.data?.items])
+  const visibleInterrupts = useMemo(
+    () =>
+      interruptItems.filter(
+        (interrupt) => !optimisticHiddenInterruptIds.includes(interrupt.id),
+      ),
+    [interruptItems, optimisticHiddenInterruptIds],
+  )
+  const observedSpotlightInterrupt = useMemo(() => pickSpotlightInterrupt(interruptItems), [interruptItems])
+  const spotlightInterrupt = useMemo(() => pickSpotlightInterrupt(visibleInterrupts), [visibleInterrupts])
+  const respondableInterruptId = useMemo(() => pickRespondableInterruptId(interruptItems), [interruptItems])
 
   useEffect(() => {
     const nextTitle = getPageTitle(activePath)
@@ -214,20 +257,31 @@ export function AppShell() {
     if (!interrupts.isFetched) {
       return
     }
-    if (lastObservedInterruptId.current === undefined) {
-      lastObservedInterruptId.current = currentInterruptId
+    startTransition(() => {
+      setOptimisticHiddenInterruptIds((current) => {
+        const next = current.filter((interruptId) =>
+          interruptItems.some((interrupt) => interrupt.id === interruptId),
+        )
+        return next.length === current.length ? current : next
+      })
+    })
+  }, [interruptItems, interrupts.isFetched])
+
+  useEffect(() => {
+    if (!interrupts.isFetched) {
       return
     }
-    if (!currentInterruptId) {
-      lastObservedInterruptId.current = null
+    const currentIds = new Set(interruptItems.map((interrupt) => interrupt.id))
+    const previousIds = previouslyObservedInterruptIds.current
+    if (previousIds === null) {
+      previouslyObservedInterruptIds.current = currentIds
       return
     }
-    if (lastObservedInterruptId.current === currentInterruptId) {
-      return
+    if (observedSpotlightInterrupt && !previousIds.has(observedSpotlightInterrupt.id)) {
+      playInterruptNotification()
     }
-    lastObservedInterruptId.current = currentInterruptId
-    playInterruptNotification()
-  }, [currentInterruptId, interrupts.isFetched])
+    previouslyObservedInterruptIds.current = currentIds
+  }, [interruptItems, interrupts.isFetched, observedSpotlightInterrupt])
 
   return (
     <div className="min-h-screen overflow-x-clip bg-[var(--page)] text-white">
@@ -361,19 +415,17 @@ export function AppShell() {
           </header>
           <ComponentErrorBoundary
             label="interrupt panel"
-            resetKeys={[interrupts.data?.current?.id ?? '', interrupts.data?.count ?? 0, effectiveHiddenInterruptId ?? '']}
+            resetKeys={[spotlightInterrupt?.id ?? '', visibleInterrupts.length]}
             scope="widget"
           >
             <GlobalInterruptPanel
-              count={interrupts.data?.count ?? 0}
-              current={interrupts.data?.current}
-              hiddenCurrentId={effectiveHiddenInterruptId}
-              isSubmitting={respondToInterrupt.isPending}
+              items={visibleInterrupts}
+              respondableInterruptId={respondableInterruptId}
+              isSubmitting={respondToInterrupt.isPending || acknowledgeInterrupt.isPending}
+              onAcknowledge={(interruptId) => {
+                acknowledgeInterrupt.mutate(interruptId)
+              }}
               onRespond={({ interruptId, ...body }) => {
-                const current = interrupts.data?.current
-                if (!current || current.id !== interruptId) {
-                  return
-                }
                 respondToInterrupt.mutate({ id: interruptId, body })
               }}
             />

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -3506,6 +3507,38 @@ func TestRuntimeSeriesCountsFailuresAndUsesPerThreadTokenDeltas(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Hour)
 	bucket0 := now.Add(-2 * time.Hour)
 	threadID := "thread-runtime-series"
+	insertNullErrorEvent := func(ts time.Time, kind string, totalTokens int) {
+		t.Helper()
+		payload := map[string]interface{}{
+			"issue_id":     issue.ID,
+			"identifier":   issue.Identifier,
+			"attempt":      1,
+			"thread_id":    threadID,
+			"total_tokens": totalTokens,
+			"ts":           ts.UTC().Format(time.RFC3339),
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal runtime payload: %v", err)
+		}
+		if _, err := store.db.Exec(`
+			INSERT INTO runtime_events (kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+			kind,
+			issue.ID,
+			issue.Identifier,
+			issue.Title,
+			1,
+			"",
+			0,
+			0,
+			totalTokens,
+			ts,
+			string(body),
+		); err != nil {
+			t.Fatalf("insert runtime event %s: %v", kind, err)
+		}
+	}
 	appendEvent := func(ts time.Time, kind string, fields map[string]interface{}) {
 		t.Helper()
 		payload := map[string]interface{}{
@@ -3524,19 +3557,14 @@ func TestRuntimeSeriesCountsFailuresAndUsesPerThreadTokenDeltas(t *testing.T) {
 		}
 	}
 
-	appendEvent(bucket0.Add(-10*time.Minute), "run_completed", map[string]interface{}{
-		"total_tokens": 8,
-	})
+	insertNullErrorEvent(bucket0.Add(-10*time.Minute), "run_completed", 8)
 	appendEvent(bucket0.Add(5*time.Minute), "run_started", nil)
 	appendEvent(bucket0.Add(10*time.Minute), "run_interrupted", map[string]interface{}{
 		"error":        "run_interrupted",
 		"total_tokens": 8,
 	})
 	appendEvent(bucket0.Add(20*time.Minute), "retry_scheduled", nil)
-	appendEvent(bucket0.Add(30*time.Minute), "run_failed", map[string]interface{}{
-		"error":        "stall_timeout",
-		"total_tokens": 8,
-	})
+	insertNullErrorEvent(bucket0.Add(30*time.Minute), "run_failed", 8)
 	appendEvent(bucket0.Add(75*time.Minute), "run_completed", map[string]interface{}{
 		"total_tokens": 14,
 	})

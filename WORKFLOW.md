@@ -59,7 +59,7 @@ phases:
       Project context:
       {{ project.description }}
       {% endif %}
-      Commit all changes to the feature branch, then merge it to main. Resolve conflicts if needed, then merge.
+      Commit all changes to the feature branch, merge it to main, rerun validation on main, and push main to origin. Do not remove the issue worktree yourself; Maestro handles post-run cleanup after your run exits. If merge or push is blocked, report the blocker clearly and stop.
 
 # Agent runtime settings.
 agent:
@@ -138,9 +138,10 @@ No description provided.
 5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
 6. Do not consider the task complete until the change is merged into local main.
 7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
-8. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
-9. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
-10. Final message must contain only completed work, validation run, merge status, and blockers.
+8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
+9. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
+10. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
+11. Final message must contain only completed work, validation run, merge status, and blockers.
 
 
 ## Guardrails

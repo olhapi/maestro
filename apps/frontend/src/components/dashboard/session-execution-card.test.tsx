@@ -129,4 +129,35 @@ describe('SessionExecutionCard', () => {
     expect(screen.getByText(/Workspace recovery note:/)).toBeInTheDocument()
     expect(screen.getByText(/Retry once the workspace is clean/i)).toBeInTheDocument()
   })
+
+  it('renders issue-level maestro alerts as execution blockers', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          pending_interrupt: {
+            id: 'alert-1',
+            kind: 'alert',
+            issue_identifier: 'ISS-1',
+            issue_title: 'Blocked issue',
+            project_id: 'project-1',
+            project_name: 'Platform',
+            requested_at: '2026-03-16T12:00:00Z',
+            alert: {
+              code: 'project_dispatch_blocked',
+              severity: 'error',
+              title: 'Project dispatch blocked',
+              message: 'Project repo is outside the current server scope (/repo/current)',
+              detail: 'Blocked issue is waiting for execution until the project scope mismatch is fixed.',
+            },
+          },
+        })}
+        issueTotalTokens={120}
+      />,
+    )
+
+    expect(screen.getAllByText('Blocked').length).toBeGreaterThan(0)
+    expect(screen.getByText('Project dispatch blocked')).toBeInTheDocument()
+    expect(screen.getByText('Project repo is outside the current server scope (/repo/current)')).toBeInTheDocument()
+    expect(screen.getByText('Blocked issue is waiting for execution until the project scope mismatch is fixed.')).toBeInTheDocument()
+  })
 })

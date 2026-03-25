@@ -89,6 +89,17 @@ func (s *Session) ResetThreadState() {
 	}
 }
 
+func (s *Session) ResetTurnState() {
+	if s == nil {
+		return
+	}
+	s.TurnID = ""
+	s.SessionID = ""
+	s.Terminal = false
+	s.TerminalReason = ""
+	s.startedTurnID = ""
+}
+
 func SessionFromAny(value interface{}) (Session, bool) {
 	switch session := value.(type) {
 	case Session:

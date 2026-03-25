@@ -378,6 +378,10 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_issue_agent_commands_issue_created ON issue_agent_commands(issue_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_issue_agent_commands_issue_status_created ON issue_agent_commands(issue_id, status, created_at ASC)`,
+		`CREATE TABLE IF NOT EXISTS interrupt_acknowledgements (
+			interrupt_id TEXT PRIMARY KEY,
+			acknowledged_at DATETIME NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS change_events (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT,
 			entity_type TEXT NOT NULL,
@@ -4604,7 +4608,7 @@ func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 
 	tokenTotalsByThread := map[string]int{}
 	seedRows, err := s.db.Query(`
-		SELECT kind, issue_id, identifier, attempt, total_tokens, error, event_ts, payload_json
+		SELECT kind, issue_id, identifier, attempt, total_tokens, COALESCE(error, ''), event_ts, payload_json
 		FROM runtime_events
 		WHERE event_ts < ?
 		  AND (`+runtimeSeriesTokenEventKinds+`)
@@ -4637,7 +4641,7 @@ func (s *Store) RuntimeSeries(hours int) ([]RuntimeSeriesPoint, error) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT kind, issue_id, identifier, attempt, total_tokens, error, event_ts, payload_json
+		SELECT kind, issue_id, identifier, attempt, total_tokens, COALESCE(error, ''), event_ts, payload_json
 		FROM runtime_events
 		WHERE event_ts >= ?
 		ORDER BY event_ts ASC`, start)

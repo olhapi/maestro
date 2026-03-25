@@ -236,29 +236,29 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *ob
 	}
 	switch {
 	case retry != nil:
-		if class := normalizeFailureClass(retry.Error); class != "" {
+		if class := normalizeFailureErrorClass(retry.Error); class != "" {
 			return class
 		}
 	case paused != nil:
-		if class := normalizeFailureClass(paused.Error); class != "" {
+		if class := normalizeFailureErrorClass(paused.Error); class != "" {
 			return class
 		}
 	case persisted != nil:
-		if class := normalizeFailureClass(persisted.Error); class != "" {
+		if class := normalizeFailureErrorClass(persisted.Error); class != "" {
 			return class
 		}
-		if class := normalizeFailureClass(persisted.RunKind); class != "" {
+		if class := normalizeFailureKind(persisted.RunKind); class != "" {
 			return class
 		}
 	}
 	for i := len(events) - 1; i >= 0; i-- {
-		if class := normalizeFailureClass(events[i].Kind); class == "workspace_bootstrap" {
+		if class := normalizeFailureKind(events[i].Kind); class == "workspace_bootstrap" {
 			return class
 		}
-		if class := normalizeFailureClass(events[i].Error); class != "" {
+		if class := normalizeFailureErrorClass(events[i].Error); class != "" {
 			return class
 		}
-		if class := normalizeFailureClass(events[i].Kind); class != "" {
+		if class := normalizeFailureKind(events[i].Kind); class != "" {
 			return class
 		}
 	}
@@ -351,13 +351,11 @@ func asPayloadInt(value interface{}) int {
 	}
 }
 
-func normalizeFailureClass(value string) string {
+func normalizeFailureErrorClass(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch {
 	case value == "":
 		return ""
-	case strings.Contains(value, "workspace_bootstrap"):
-		return "workspace_bootstrap"
 	case strings.Contains(value, "approval_required"):
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):
@@ -370,5 +368,27 @@ func normalizeFailureClass(value string) string {
 		return "run_failed"
 	default:
 		return value
+	}
+}
+
+func normalizeFailureKind(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case value == "":
+		return ""
+	case value == "workspace_bootstrap", value == "workspace_bootstrap_recovery", value == "workspace_bootstrap_failed":
+		return "workspace_bootstrap"
+	case strings.Contains(value, "approval_required"):
+		return "approval_required"
+	case strings.Contains(value, "turn_input_required"):
+		return "turn_input_required"
+	case strings.Contains(value, "stall_timeout"):
+		return "stall_timeout"
+	case strings.Contains(value, "run_unsuccessful"), strings.Contains(value, "unsuccessful"):
+		return "run_unsuccessful"
+	case strings.Contains(value, "run_failed"):
+		return "run_failed"
+	default:
+		return ""
 	}
 }

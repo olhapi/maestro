@@ -333,14 +333,29 @@ export interface PendingUserInput {
   questions: PendingUserInputQuestion[];
 }
 
+export interface PendingAlert {
+  code: string;
+  severity: "info" | "warning" | "error";
+  title: string;
+  message: string;
+  detail?: string;
+}
+
+export interface PendingInterruptAction {
+  kind: "acknowledge";
+  label?: string;
+}
+
 export interface PendingInterrupt {
   id: string;
   request_id?: string;
-  kind: "approval" | "user_input";
+  kind: "approval" | "user_input" | "alert";
   method?: string;
   issue_id?: string;
   issue_identifier?: string;
   issue_title?: string;
+  project_id?: string;
+  project_name?: string;
   phase?: string;
   attempt?: number;
   session_id?: string;
@@ -351,13 +366,14 @@ export interface PendingInterrupt {
   last_activity_at?: string;
   last_activity?: string;
   collaboration_mode?: "plan" | "default";
+  actions?: PendingInterruptAction[];
   approval?: PendingApproval;
   user_input?: PendingUserInput;
+  alert?: PendingAlert;
 }
 
 export interface PendingInterruptsResponse {
-  count: number;
-  current?: PendingInterrupt;
+  items: PendingInterrupt[];
 }
 
 export interface PlanApproval {
@@ -377,7 +393,7 @@ export interface SessionFeedEntry {
   issue_title?: string;
   source: "live" | "persisted";
   active: boolean;
-  status: "active" | "waiting" | "paused" | "completed" | "failed" | "interrupted";
+  status: "active" | "waiting" | "blocked" | "paused" | "completed" | "failed" | "interrupted";
   pending_interrupt?: PendingInterrupt;
   phase?: string;
   attempt?: number;
