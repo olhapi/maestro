@@ -157,31 +157,31 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	return payload, nil
 }
 
-func findRunningEntry(entries []observability.RunningEntry, issueID, identifier string) *observability.RunningEntry {
+func findEntry[T any](entries []T, match func(*T) bool) *T {
 	for i := range entries {
-		if entries[i].IssueID == issueID || entries[i].Identifier == identifier {
+		if match(&entries[i]) {
 			return &entries[i]
 		}
 	}
 	return nil
+}
+
+func findRunningEntry(entries []observability.RunningEntry, issueID, identifier string) *observability.RunningEntry {
+	return findEntry(entries, func(entry *observability.RunningEntry) bool {
+		return entry.IssueID == issueID || entry.Identifier == identifier
+	})
 }
 
 func findRetryEntry(entries []observability.RetryEntry, issueID, identifier string) *observability.RetryEntry {
-	for i := range entries {
-		if entries[i].IssueID == issueID || entries[i].Identifier == identifier {
-			return &entries[i]
-		}
-	}
-	return nil
+	return findEntry(entries, func(entry *observability.RetryEntry) bool {
+		return entry.IssueID == issueID || entry.Identifier == identifier
+	})
 }
 
 func findPausedEntry(entries []observability.PausedEntry, issueID, identifier string) *observability.PausedEntry {
-	for i := range entries {
-		if entries[i].IssueID == issueID || entries[i].Identifier == identifier {
-			return &entries[i]
-		}
-	}
-	return nil
+	return findEntry(entries, func(entry *observability.PausedEntry) bool {
+		return entry.IssueID == issueID || entry.Identifier == identifier
+	})
 }
 
 func findPersistedPausedEntry(events []kanban.RuntimeEvent) *observability.PausedEntry {
@@ -251,18 +251,15 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *ob
 			return class
 		}
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if class := normalizeFailureKind(events[i].Kind); class == "workspace_bootstrap" {
+	return deriveHistoricalFailure(events, func(event kanban.RuntimeEvent) string {
+		if class := normalizeFailureKind(event.Kind); class == "workspace_bootstrap" {
 			return class
 		}
-		if class := normalizeFailureErrorClass(events[i].Error); class != "" {
+		if class := normalizeFailureErrorClass(event.Error); class != "" {
 			return class
 		}
-		if class := normalizeFailureKind(events[i].Kind); class != "" {
-			return class
-		}
-	}
-	return ""
+		return normalizeFailureKind(event.Kind)
+	})
 }
 
 func deriveCurrentError(active bool, retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
@@ -277,13 +274,32 @@ func deriveCurrentError(active bool, retry *observability.RetryEntry, paused *ob
 	case persisted != nil && strings.TrimSpace(persisted.Error) != "":
 		return persisted.Error
 	default:
-		for i := len(events) - 1; i >= 0; i-- {
-			if strings.TrimSpace(events[i].Error) != "" {
-				return events[i].Error
-			}
+		return deriveHistoricalFailure(events, func(event kanban.RuntimeEvent) string {
+			return strings.TrimSpace(event.Error)
+		})
+	}
+}
+
+func deriveHistoricalFailure(events []kanban.RuntimeEvent, valueFn func(kanban.RuntimeEvent) string) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if isHistoricalFailureResetEvent(event.Kind) {
+			return ""
+		}
+		if value := strings.TrimSpace(valueFn(event)); value != "" {
+			return value
 		}
 	}
 	return ""
+}
+
+func isHistoricalFailureResetEvent(kind string) bool {
+	switch kind {
+	case "run_completed", "workspace_bootstrap_created", "workspace_bootstrap_reused", "workspace_bootstrap_preserved":
+		return true
+	default:
+		return false
+	}
 }
 
 func deriveWorkspaceRecovery(events []kanban.RuntimeEvent) *kanban.WorkspaceRecovery {
