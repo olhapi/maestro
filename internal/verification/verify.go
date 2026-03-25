@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
@@ -72,7 +71,7 @@ func Run(repoPath, dbPath string) Result {
 		}
 	}
 
-	if hasUnresolvedExpandedEnvPath(rawDBPath, dbPath) {
+	if kanban.HasUnresolvedExpandedEnvPath(rawDBPath, dbPath) {
 		res.OK = false
 		res.Checks["db_dir"] = "skipped"
 		res.Errors = append(res.Errors, fmt.Sprintf("db_open: unresolved environment variable in %q", dbPath))
@@ -100,8 +99,4 @@ func Run(repoPath, dbPath string) Result {
 	}
 
 	return res
-}
-
-func hasUnresolvedExpandedEnvPath(rawPath, resolvedPath string) bool {
-	return strings.HasPrefix(strings.TrimSpace(rawPath), "$") && strings.Contains(resolvedPath, "$")
 }

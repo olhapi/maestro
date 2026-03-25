@@ -37,6 +37,13 @@ func TestRunAgainstRepoRoot(t *testing.T) {
 	}
 }
 
+func TestValidateWorkflowPromptRenderAllowsCustomPrompts(t *testing.T) {
+	prompt := "Run the custom workflow without relying on the sample issue fields."
+	if err := validateWorkflowPromptRender(prompt); err != nil {
+		t.Fatalf("validateWorkflowPromptRender: %v", err)
+	}
+}
+
 func TestRunRejectsBadSemanticRepo(t *testing.T) {
 	tmp := t.TempDir()
 	workflow := `---

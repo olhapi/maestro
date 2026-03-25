@@ -76,17 +76,13 @@ func setupLoggerWithWriter(stdout io.Writer, logsRoot string, maxBytes int64, ma
 func openStore(dbPath string) (*kanban.Store, error) {
 	rawPath := dbPath
 	dbPath = kanban.ResolveDBPath(dbPath)
-	if hasUnresolvedExpandedEnvPath(rawPath, dbPath) {
+	if kanban.HasUnresolvedExpandedEnvPath(rawPath, dbPath) {
 		return nil, fmt.Errorf("failed to resolve database path: unresolved environment variable in %q", dbPath)
 	}
 	if err := ensureDir(filepath.Dir(dbPath)); err != nil {
 		return nil, err
 	}
 	return kanban.NewStore(dbPath)
-}
-
-func hasUnresolvedExpandedEnvPath(rawPath, resolvedPath string) bool {
-	return strings.HasPrefix(strings.TrimSpace(rawPath), "$") && strings.Contains(resolvedPath, "$")
 }
 
 func openProviderService(dbPath string) (*kanban.Store, *providers.Service, error) {

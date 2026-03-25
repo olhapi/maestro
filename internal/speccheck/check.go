@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/pkg/config"
@@ -46,25 +45,7 @@ func Run(repoRoot string) Report {
 			checks["workflow_version"] = "fail"
 		}
 
-		rendered, err := config.RenderLiquidTemplate(workflow.PromptTemplate, map[string]interface{}{
-			"issue": map[string]interface{}{
-				"identifier":  "ISS-1",
-				"title":       "Spec check",
-				"description": "Parses correctly",
-				"state":       "ready",
-			},
-			"project": map[string]interface{}{
-				"id":          "PRJ-1",
-				"name":        "Spec check project",
-				"description": "Follow repo-wide guidance",
-			},
-			"phase":   "implementation",
-			"attempt": 1,
-		})
-		if err != nil {
-			ok = false
-			checks["workflow_prompt_render"] = "fail"
-		} else if !strings.Contains(rendered, "ISS-1") || !strings.Contains(rendered, "Spec check") {
+		if err := validateWorkflowPromptRender(workflow.PromptTemplate); err != nil {
 			ok = false
 			checks["workflow_prompt_render"] = "fail"
 		} else {
@@ -94,6 +75,29 @@ func Run(repoRoot string) Report {
 	}
 
 	return Report{OK: ok, Checks: checks}
+}
+
+func validateWorkflowPromptRender(prompt string) error {
+	_, err := config.RenderLiquidTemplate(prompt, sampleWorkflowPromptContext())
+	return err
+}
+
+func sampleWorkflowPromptContext() map[string]interface{} {
+	return map[string]interface{}{
+		"issue": map[string]interface{}{
+			"identifier":  "ISS-1",
+			"title":       "Spec check",
+			"description": "Parses correctly",
+			"state":       "ready",
+		},
+		"project": map[string]interface{}{
+			"id":          "PRJ-1",
+			"name":        "Spec check project",
+			"description": "Follow repo-wide guidance",
+		},
+		"phase":   "implementation",
+		"attempt": 1,
+	}
 }
 
 func validateDefaultConfig() error {
