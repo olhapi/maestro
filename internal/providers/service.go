@@ -312,7 +312,11 @@ func (s *Service) ListEpicSummariesPage(projectID string, limit, offset int) ([]
 		if err != nil {
 			return nil, 0, err
 		}
-		if !s.ProviderForProject(project).Capabilities().Epics {
+		provider, err := s.ProviderForProject(project)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !provider.Capabilities().Epics {
 			return []kanban.EpicSummary{}, 0, nil
 		}
 	}

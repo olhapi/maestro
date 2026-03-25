@@ -1497,6 +1497,37 @@ func TestServiceListIssueSummariesReturnsErrorWhenAnyProjectLacksCache(t *testin
 	}
 }
 
+func TestServiceListEpicSummariesPageReturnsUnsupportedCapabilityWhenProviderMissing(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Linear Project",
+		"",
+		"",
+		"",
+		kanban.ProviderKindLinear,
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+
+	svc := NewService(store)
+
+	_, _, err = svc.ListEpicSummariesPage(project.ID, 10, 0)
+	if err == nil {
+		t.Fatal("expected unsupported capability error")
+	}
+	if !IsUnsupported(err) {
+		t.Fatalf("expected unsupported capability error, got %v", err)
+	}
+}
+
 func TestServiceGetIssueByIdentifierColdMissContinuesAcrossProjects(t *testing.T) {
 	withProviderReadTimeout(t, 20*time.Millisecond)
 
