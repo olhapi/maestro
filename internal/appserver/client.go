@@ -226,11 +226,11 @@ func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
 	}()
 
 	runErr := client.RunTurn(ctx, cfg.Prompt, cfg.Title)
-	closeErr := client.Close()
 	result := &Result{Output: client.Output(), Session: client.Session()}
 	if runErr != nil {
 		return result, runErr
 	}
+	closeErr := client.closeWithGrace(2 * time.Second)
 	if closeErr != nil {
 		return result, closeErr
 	}
@@ -271,6 +271,10 @@ func (c *Client) Wait() error {
 }
 
 func (c *Client) Close() error {
+	return c.closeWithGrace(managedProcessKillWait)
+}
+
+func (c *Client) closeWithGrace(grace time.Duration) error {
 	var closeErr error
 	c.closeOnce.Do(func() {
 		captureWaitErr := func(err error) error {
@@ -298,13 +302,15 @@ func (c *Client) Close() error {
 				return
 			default:
 			}
-			select {
-			case err := <-c.waitCh:
-				if closeErr == nil {
-					closeErr = captureWaitErr(err)
+			if grace > 0 {
+				select {
+				case err := <-c.waitCh:
+					if closeErr == nil {
+						closeErr = captureWaitErr(err)
+					}
+					return
+				case <-time.After(grace):
 				}
-				return
-			case <-time.After(2 * time.Second):
 			}
 			pid := c.cmd.Process.Pid
 			if err := terminateManagedProcessTree(pid, managedProcessTerminateWait, managedProcessKillWait); err != nil && closeErr == nil {
