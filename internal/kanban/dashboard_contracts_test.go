@@ -192,3 +192,156 @@ func TestDashboardScenarioShapesMatchPortfolioContracts(t *testing.T) {
 		t.Fatalf("unexpected execution snapshot payload: %#v", snapshot)
 	}
 }
+
+func TestDashboardPaginationHelpersUsePageQueries(t *testing.T) {
+	store := setupTestStore(t)
+
+	alpha, err := store.CreateProject("Alpha", "", t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("CreateProject alpha: %v", err)
+	}
+	bravo, err := store.CreateProject("Bravo", "", t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("CreateProject bravo: %v", err)
+	}
+	charlie, err := store.CreateProject("Charlie", "", t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("CreateProject charlie: %v", err)
+	}
+
+	alphaIssue, err := store.CreateIssue(alpha.ID, "", "Alpha issue", "", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue alpha: %v", err)
+	}
+	if err := store.UpdateIssueState(alphaIssue.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState alpha: %v", err)
+	}
+	if err := store.AddIssueTokenSpend(alphaIssue.ID, 3); err != nil {
+		t.Fatalf("AddIssueTokenSpend alpha: %v", err)
+	}
+	bravoIssue, err := store.CreateIssue(bravo.ID, "", "Bravo issue", "", 2, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue bravo: %v", err)
+	}
+	if err := store.UpdateIssueState(bravoIssue.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState bravo: %v", err)
+	}
+	if err := store.AddIssueTokenSpend(bravoIssue.ID, 5); err != nil {
+		t.Fatalf("AddIssueTokenSpend bravo: %v", err)
+	}
+	if _, err := store.CreateIssue(charlie.ID, "", "Charlie issue", "", 0, nil); err != nil {
+		t.Fatalf("CreateIssue charlie: %v", err)
+	}
+
+	epic1, err := store.CreateEpic(alpha.ID, "Alpha epic 1", "")
+	if err != nil {
+		t.Fatalf("CreateEpic alpha 1: %v", err)
+	}
+	epic2, err := store.CreateEpic(alpha.ID, "Alpha epic 2", "")
+	if err != nil {
+		t.Fatalf("CreateEpic alpha 2: %v", err)
+	}
+	epic3, err := store.CreateEpic(alpha.ID, "Alpha epic 3", "")
+	if err != nil {
+		t.Fatalf("CreateEpic alpha 3: %v", err)
+	}
+	if issue, err := store.CreateIssue(alpha.ID, epic1.ID, "Epic issue 1", "", 0, nil); err != nil {
+		t.Fatalf("CreateIssue epic 1: %v", err)
+	} else if err := store.UpdateIssueState(issue.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState epic 1: %v", err)
+	}
+	if issue, err := store.CreateIssue(alpha.ID, epic2.ID, "Epic issue 2", "", 0, nil); err != nil {
+		t.Fatalf("CreateIssue epic 2: %v", err)
+	} else if err := store.UpdateIssueState(issue.ID, StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState epic 2: %v", err)
+	}
+	if issue, err := store.CreateIssue(alpha.ID, epic3.ID, "Epic issue 3", "", 0, nil); err != nil {
+		t.Fatalf("CreateIssue epic 3: %v", err)
+	} else if err := store.UpdateIssueState(issue.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState epic 3: %v", err)
+	}
+
+	commentIssue, err := store.CreateIssue(alpha.ID, "", "Comment issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue comment: %v", err)
+	}
+	root1Body := "Root 1"
+	root1, err := store.CreateIssueComment(commentIssue.ID, IssueCommentInput{Body: &root1Body})
+	if err != nil {
+		t.Fatalf("CreateIssueComment root1: %v", err)
+	}
+	replyBody := "Reply 1"
+	if _, err := store.CreateIssueComment(commentIssue.ID, IssueCommentInput{Body: &replyBody, ParentCommentID: root1.ID}); err != nil {
+		t.Fatalf("CreateIssueComment reply: %v", err)
+	}
+	for _, body := range []string{"Root 2", "Root 3"} {
+		body := body
+		if _, err := store.CreateIssueComment(commentIssue.ID, IssueCommentInput{Body: &body}); err != nil {
+			t.Fatalf("CreateIssueComment %s: %v", body, err)
+		}
+	}
+
+	projectsPage1, totalProjects, err := store.ListProjectSummariesPage(2, 0)
+	if err != nil {
+		t.Fatalf("ListProjectSummariesPage 1: %v", err)
+	}
+	if totalProjects != 3 || len(projectsPage1) != 2 {
+		t.Fatalf("unexpected first project page: total=%d items=%#v", totalProjects, projectsPage1)
+	}
+	if projectsPage1[0].Name != "Alpha" || projectsPage1[1].Name != "Bravo" {
+		t.Fatalf("expected name-ordered project page, got %#v", projectsPage1)
+	}
+	if projectsPage1[0].Counts.Backlog != 1 || projectsPage1[0].Counts.Ready != 2 || projectsPage1[0].Counts.InProgress != 1 || projectsPage1[0].Counts.Done != 1 || projectsPage1[0].TotalTokensSpent != 3 {
+		t.Fatalf("expected project aggregates to survive paging, got %#v", projectsPage1[0])
+	}
+	projectsPage2, totalProjects2, err := store.ListProjectSummariesPage(2, 2)
+	if err != nil {
+		t.Fatalf("ListProjectSummariesPage 2: %v", err)
+	}
+	if totalProjects2 != 3 || len(projectsPage2) != 1 || projectsPage2[0].Name != "Charlie" {
+		t.Fatalf("unexpected second project page: total=%d items=%#v", totalProjects2, projectsPage2)
+	}
+
+	epicsPage1, totalEpics, err := store.ListEpicSummariesPage(alpha.ID, 2, 0)
+	if err != nil {
+		t.Fatalf("ListEpicSummariesPage 1: %v", err)
+	}
+	if totalEpics != 3 || len(epicsPage1) != 2 {
+		t.Fatalf("unexpected first epic page: total=%d items=%#v", totalEpics, epicsPage1)
+	}
+	if epicsPage1[0].Name != "Alpha epic 1" || epicsPage1[0].ProjectName != alpha.Name {
+		t.Fatalf("expected epic page to preserve project context, got %#v", epicsPage1[0])
+	}
+	epicsPage2, totalEpics2, err := store.ListEpicSummariesPage(alpha.ID, 2, 2)
+	if err != nil {
+		t.Fatalf("ListEpicSummariesPage 2: %v", err)
+	}
+	if totalEpics2 != 3 || len(epicsPage2) != 1 || epicsPage2[0].Name != "Alpha epic 3" {
+		t.Fatalf("unexpected second epic page: total=%d items=%#v", totalEpics2, epicsPage2)
+	}
+
+	commentsPage1, totalComments, err := store.ListIssueCommentsPage(commentIssue.ID, 1, 0)
+	if err != nil {
+		t.Fatalf("ListIssueCommentsPage 1: %v", err)
+	}
+	if totalComments != 3 || len(commentsPage1) != 1 {
+		t.Fatalf("unexpected first comment page: total=%d items=%#v", totalComments, commentsPage1)
+	}
+	if commentsPage1[0].Body != "Root 1" || len(commentsPage1[0].Replies) != 1 || commentsPage1[0].Replies[0].Body != "Reply 1" {
+		t.Fatalf("expected replies to stay attached, got %#v", commentsPage1[0])
+	}
+	commentsPage2, totalComments2, err := store.ListIssueCommentsPage(commentIssue.ID, 1, 1)
+	if err != nil {
+		t.Fatalf("ListIssueCommentsPage 2: %v", err)
+	}
+	if totalComments2 != 3 || len(commentsPage2) != 1 || commentsPage2[0].Body != "Root 2" {
+		t.Fatalf("unexpected second comment page: total=%d items=%#v", totalComments2, commentsPage2)
+	}
+	commentsPage3, totalComments3, err := store.ListIssueCommentsPage(commentIssue.ID, 1, 2)
+	if err != nil {
+		t.Fatalf("ListIssueCommentsPage 3: %v", err)
+	}
+	if totalComments3 != 3 || len(commentsPage3) != 1 || commentsPage3[0].Body != "Root 3" {
+		t.Fatalf("unexpected third comment page: total=%d items=%#v", totalComments3, commentsPage3)
+	}
+}

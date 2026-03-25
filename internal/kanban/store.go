@@ -3348,6 +3348,88 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 	return out, nil
 }
 
+func (s *Store) ListProjectSummariesPage(limit, offset int) ([]ProjectSummary, int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var totalProjects int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&totalProjects); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := s.db.Query(`
+		WITH page_projects AS (
+			SELECT id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at
+			FROM projects
+			ORDER BY name
+			LIMIT ? OFFSET ?
+		)
+		SELECT pp.id, pp.name, pp.description, pp.state, pp.permission_profile, pp.repo_path, pp.workflow_path, pp.provider_kind, pp.provider_project_ref, pp.provider_config_json, pp.created_at, pp.updated_at,
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(COALESCE(i.total_tokens_spent, 0)), 0)
+		FROM page_projects pp
+		LEFT JOIN issues i ON i.project_id = pp.id
+		GROUP BY pp.id
+		ORDER BY pp.name`,
+		limit, offset,
+		StateBacklog, StateReady, StateInProgress, StateInReview, StateDone, StateCancelled,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []ProjectSummary{}
+	for rows.Next() {
+		var project Project
+		var providerConfigJSON string
+		var counts IssueStateCounts
+		var totalTokens int
+		if err := rows.Scan(
+			&project.ID, &project.Name, &project.Description, &project.State, &project.PermissionProfile,
+			&project.RepoPath, &project.WorkflowPath, &project.ProviderKind, &project.ProviderProjectRef,
+			&providerConfigJSON, &project.CreatedAt, &project.UpdatedAt,
+			&counts.Backlog, &counts.Ready, &counts.InProgress, &counts.InReview, &counts.Done, &counts.Cancelled,
+			&totalTokens,
+		); err != nil {
+			return nil, 0, err
+		}
+		project.PermissionProfile = NormalizePermissionProfile(string(project.PermissionProfile))
+		project.ProviderConfig = decodeProviderConfig(providerConfigJSON)
+		hydrateProject(&project)
+		buckets := BuildStateBuckets(map[string]int{
+			string(StateBacklog):    counts.Backlog,
+			string(StateReady):      counts.Ready,
+			string(StateInProgress): counts.InProgress,
+			string(StateInReview):   counts.InReview,
+			string(StateDone):       counts.Done,
+			string(StateCancelled):  counts.Cancelled,
+		}, projectDefaultActiveStates(project), projectDefaultTerminalStates(project))
+		total, active, terminal := AggregateStateBuckets(buckets)
+		out = append(out, ProjectSummary{
+			Project:          project,
+			TotalTokensSpent: totalTokens,
+			Counts:           counts,
+			StateBuckets:     buckets,
+			TotalCount:       total,
+			ActiveCount:      active,
+			TerminalCount:    terminal,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return out, totalProjects, nil
+}
+
 func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 	epics, err := s.ListEpics(projectID)
 	if err != nil {
@@ -3404,6 +3486,84 @@ func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 		})
 	}
 	return out, nil
+}
+
+func (s *Store) ListEpicSummariesPage(projectID string, limit, offset int) ([]EpicSummary, int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	totalQuery := `SELECT COUNT(*) FROM epics WHERE (? = '' OR project_id = ?)`
+	var total int
+	if err := s.db.QueryRow(totalQuery, projectID, projectID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(`
+		WITH page_epics AS (
+			SELECT id, project_id, name, description, created_at, updated_at
+			FROM epics
+			WHERE (? = '' OR project_id = ?)
+			ORDER BY name
+			LIMIT ? OFFSET ?
+		)
+		SELECT pe.id, pe.project_id, pe.name, pe.description, pe.created_at, pe.updated_at,
+		       COALESCE(p.name, ''),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN i.state = ? THEN 1 ELSE 0 END), 0)
+		FROM page_epics pe
+		LEFT JOIN projects p ON p.id = pe.project_id
+		LEFT JOIN issues i ON i.epic_id = pe.id
+		GROUP BY pe.id
+		ORDER BY pe.name`,
+		projectID, projectID, limit, offset,
+		StateBacklog, StateReady, StateInProgress, StateInReview, StateDone, StateCancelled,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []EpicSummary{}
+	for rows.Next() {
+		var epic Epic
+		var projectName string
+		var counts IssueStateCounts
+		if err := rows.Scan(
+			&epic.ID, &epic.ProjectID, &epic.Name, &epic.Description, &epic.CreatedAt, &epic.UpdatedAt,
+			&projectName,
+			&counts.Backlog, &counts.Ready, &counts.InProgress, &counts.InReview, &counts.Done, &counts.Cancelled,
+		); err != nil {
+			return nil, 0, err
+		}
+		buckets := BuildStateBuckets(map[string]int{
+			string(StateBacklog):    counts.Backlog,
+			string(StateReady):      counts.Ready,
+			string(StateInProgress): counts.InProgress,
+			string(StateInReview):   counts.InReview,
+			string(StateDone):       counts.Done,
+			string(StateCancelled):  counts.Cancelled,
+		}, []string{string(StateReady), string(StateInProgress), string(StateInReview)}, []string{string(StateDone), string(StateCancelled)})
+		totalCount, activeCount, terminalCount := AggregateStateBuckets(buckets)
+		out = append(out, EpicSummary{
+			Epic:          epic,
+			ProjectName:    projectName,
+			Counts:         counts,
+			StateBuckets:   buckets,
+			TotalCount:     totalCount,
+			ActiveCount:    activeCount,
+			TerminalCount:  terminalCount,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
 }
 
 func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error) {
