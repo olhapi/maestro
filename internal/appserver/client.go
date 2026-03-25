@@ -304,7 +304,7 @@ func (c *Client) Close() error {
 					closeErr = captureWaitErr(err)
 				}
 				return
-			case <-time.After(managedProcessTerminateWait):
+			case <-time.After(2 * time.Second):
 			}
 			pid := c.cmd.Process.Pid
 			if err := terminateManagedProcessTree(pid, managedProcessTerminateWait, managedProcessKillWait); err != nil && closeErr == nil {
