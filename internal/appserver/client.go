@@ -449,10 +449,11 @@ func (c *Client) clearActiveThread() {
 }
 
 func (c *Client) initialize(ctx context.Context) error {
-	if err := c.sendMessage(protocol.InitializeRequest(c.nextRequestID(), "Maestro")); err != nil {
+	requestID := c.nextRequestID()
+	if err := c.sendMessage(protocol.InitializeRequest(requestID, "Maestro")); err != nil {
 		return err
 	}
-	if _, err := c.awaitResponse(ctx, 1); err != nil {
+	if _, err := c.awaitResponse(ctx, requestID); err != nil {
 		return err
 	}
 	c.logger.Info("Codex session initialized")

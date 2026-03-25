@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +82,49 @@ func TestAwaitResponseBranches(t *testing.T) {
 			t.Fatalf("expected missing-result response_error, got %v", err)
 		}
 	})
+}
+
+func TestInitializeUsesGeneratedRequestID(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	workspace := filepath.Join(workspaceRoot, "ISS-1")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	stdin := &bufferWriteCloser{}
+	client := &Client{
+		cfg: ClientConfig{
+			ApprovalPolicy:           "never",
+			Workspace:                workspace,
+			WorkspaceRoot:            workspaceRoot,
+			ReadTimeout:              50 * time.Millisecond,
+			TurnTimeout:              200 * time.Millisecond,
+			StallTimeout:             200 * time.Millisecond,
+			ThreadSandbox:            "workspace-write",
+			InitialCollaborationMode: "default",
+		},
+		stdin:               stdin,
+		lines:               make(chan string, 2),
+		lineErr:             make(chan error, 1),
+		session:             &Session{MaxHistory: 4},
+		logger:              discardLogger(),
+		nextID:              7,
+		pendingInteractions: make(map[string]*interactionWaiter),
+	}
+	client.lines <- `{"id":7,"result":{}}`
+	client.lines <- `{"id":8,"result":{"thread":{"id":"thread-1"}}}`
+
+	if err := client.initialize(context.Background()); err != nil {
+		t.Fatalf("initialize failed: %v", err)
+	}
+
+	output := stdin.String()
+	if !strings.Contains(output, `"id":7`) {
+		t.Fatalf("expected initialize request to use generated id 7, got %q", output)
+	}
+	if !strings.Contains(output, `"id":8`) {
+		t.Fatalf("expected thread/start request to advance to id 8, got %q", output)
+	}
 }
 
 func TestAwaitTurnCompletionBranches(t *testing.T) {
