@@ -56,6 +56,39 @@ func TestLinearProviderNormalizeIssueFiltersNonBlockingRelations(t *testing.T) {
 	}
 }
 
+func TestLinearProviderNormalizeIssueMapsWorkflowStateTypes(t *testing.T) {
+	provider := NewLinearProvider()
+
+	cases := []struct {
+		name      string
+		stateType string
+		want      kanban.State
+	}{
+		{name: "backlog", stateType: "backlog", want: kanban.StateBacklog},
+		{name: "unstarted", stateType: "unstarted", want: kanban.StateReady},
+		{name: "started", stateType: "started", want: kanban.StateInProgress},
+		{name: "completed", stateType: "completed", want: kanban.StateDone},
+		{name: "canceled", stateType: "canceled", want: kanban.StateCancelled},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := provider.normalizeIssue(map[string]interface{}{
+				"id":         "linear-1",
+				"identifier": "LIN-1",
+				"title":      "Linear issue",
+				"state": map[string]interface{}{
+					"name": "ignored",
+					"type": tc.stateType,
+				},
+			})
+			if issue.State != tc.want {
+				t.Fatalf("expected %s to normalize to %s, got %s", tc.stateType, tc.want, issue.State)
+			}
+		})
+	}
+}
+
 func TestLinearProviderListIssuesFiltersByAssignee(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +214,19 @@ func TestLinearProviderListIssuesPushesAssigneeAndStateFiltersToGraphQL(t *testi
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": map[string]interface{}{
 				"issues": map[string]interface{}{
-					"nodes": []interface{}{},
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":         "linear-1",
+							"identifier": "LIN-1",
+							"title":      "Assigned to worker",
+							"assignee":   map[string]interface{}{"id": "worker-1"},
+							"state":      map[string]interface{}{"name": "Todo", "type": "unstarted"},
+							"labels":     map[string]interface{}{"nodes": []interface{}{}},
+							"inverseRelations": map[string]interface{}{
+								"nodes": []interface{}{},
+							},
+						},
+					},
 					"pageInfo": map[string]interface{}{
 						"hasNextPage": false,
 						"endCursor":   "",
@@ -203,26 +248,123 @@ func TestLinearProviderListIssuesPushesAssigneeAndStateFiltersToGraphQL(t *testi
 		},
 	}
 
-	if _, err := provider.ListIssues(context.Background(), project, kanban.IssueQuery{
+	issues, err := provider.ListIssues(context.Background(), project, kanban.IssueQuery{
 		Assignee: "worker-1",
-		State:    "ready",
-	}); err != nil {
+		State:    string(kanban.StateReady),
+	})
+	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].State != kanban.StateReady {
+		t.Fatalf("expected ready issue result, got %#v", issues)
 	}
 
 	query, _ := requestBody["query"].(string)
 	if !strings.Contains(query, "assignee: {id: {eq: $assigneeID}}") {
 		t.Fatalf("expected assignee filter in query, got %q", query)
 	}
-	if !strings.Contains(query, "state: {name: {eq: $stateName}}") {
+	if !strings.Contains(query, "state: {type: {eq: $stateType}}") {
 		t.Fatalf("expected state filter in query, got %q", query)
 	}
 	variables := requestBody["variables"].(map[string]interface{})
 	if variables["assigneeID"] != "worker-1" {
 		t.Fatalf("expected assigneeID variable, got %#v", variables)
 	}
-	if variables["stateName"] != "ready" {
-		t.Fatalf("expected stateName variable, got %#v", variables)
+	if variables["stateType"] != "unstarted" {
+		t.Fatalf("expected stateType variable, got %#v", variables)
+	}
+}
+
+func TestLinearProviderSetIssueStateUsesWorkflowStateTypeAndLowestPosition(t *testing.T) {
+	var requests []map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, body)
+		query, _ := body["query"].(string)
+		switch {
+		case strings.Contains(query, "MaestroLinearState"):
+			variables := body["variables"].(map[string]interface{})
+			if variables["stateType"] != "started" {
+				t.Fatalf("expected started workflow type, got %#v", variables)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issue": map[string]interface{}{
+						"team": map[string]interface{}{
+							"states": map[string]interface{}{
+								"nodes": []interface{}{
+									map[string]interface{}{"id": "state-high", "position": 20},
+									map[string]interface{}{"id": "state-low", "position": 10},
+								},
+							},
+						},
+					},
+				},
+			})
+		case strings.Contains(query, "MaestroLinearUpdateIssueState"):
+			variables := body["variables"].(map[string]interface{})
+			if variables["stateId"] != "state-low" {
+				t.Fatalf("expected lowest-position state id, got %#v", variables)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issueUpdate": map[string]interface{}{
+						"success": true,
+					},
+				},
+			})
+		case strings.Contains(query, "MaestroLinearIssue"):
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issues": map[string]interface{}{
+						"nodes": []interface{}{
+							map[string]interface{}{
+								"id":         "linear-1",
+								"identifier": "LIN-1",
+								"title":      "Updated issue",
+								"state":      map[string]interface{}{"name": "In Progress", "type": "started"},
+								"labels":     map[string]interface{}{"nodes": []interface{}{}},
+								"inverseRelations": map[string]interface{}{
+									"nodes": []interface{}{},
+								},
+							},
+						},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected graphql query: %s", query)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{
+		ProviderProjectRef: "proj-slug",
+		ProviderConfig: map[string]interface{}{
+			"endpoint": server.URL,
+		},
+	}
+	issue := &kanban.Issue{
+		ProviderIssueRef: "linear-issue-1",
+		Identifier:       "LIN-1",
+	}
+
+	updated, err := provider.SetIssueState(context.Background(), project, issue, string(kanban.StateInReview))
+	if err != nil {
+		t.Fatalf("SetIssueState: %v", err)
+	}
+	if updated.State != kanban.StateInProgress {
+		t.Fatalf("expected started state to normalize to in_progress, got %s", updated.State)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("expected state lookup, mutation, and refresh requests, got %d", len(requests))
 	}
 }
 
