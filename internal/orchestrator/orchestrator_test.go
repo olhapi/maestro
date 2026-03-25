@@ -46,7 +46,7 @@ func runGitForTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = scrubGitHookEnv(os.Environ())
+	cmd.Env = gitTestEnv(dir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
@@ -54,23 +54,18 @@ func runGitForTest(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func scrubGitHookEnv(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		switch {
-		case strings.HasPrefix(kv, "GIT_DIR="):
-			continue
-		case strings.HasPrefix(kv, "GIT_WORK_TREE="):
-			continue
-		case strings.HasPrefix(kv, "GIT_INDEX_FILE="):
-			continue
-		case strings.HasPrefix(kv, "GIT_COMMON_DIR="):
-			continue
-		default:
-			out = append(out, kv)
+func gitTestEnv(dir string) []string {
+	env := os.Environ()
+	filtered := env[:0]
+	for _, value := range env {
+		if !strings.HasPrefix(value, "GIT_") {
+			filtered = append(filtered, value)
 		}
 	}
-	return out
+	if strings.TrimSpace(dir) != "" {
+		filtered = append(filtered, "PWD="+dir)
+	}
+	return filtered
 }
 
 func initGitRepoForTest(t *testing.T, repoPath string) {
@@ -114,11 +109,11 @@ type previewCommentProvider struct {
 }
 
 func (p *countingProvider) Kind() string {
-	return kanban.ProviderKindLinear
+	return "stub"
 }
 
 func (p *countingProvider) Capabilities() kanban.ProviderCapabilities {
-	return kanban.DefaultCapabilities(kanban.ProviderKindLinear)
+	return kanban.DefaultCapabilities("stub")
 }
 
 func (p *countingProvider) ValidateProject(context.Context, *kanban.Project) error {
@@ -1805,7 +1800,7 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 			ProjectID:        project.ID,
 			ProviderKind:     "stub",
 			ProviderIssueRef: "stub-1",
-			Identifier:       "LIN-1",
+			Identifier:       "STUB-1",
 			Title:            "Done success",
 			State:            kanban.StateDone,
 			WorkflowPhase:    kanban.WorkflowPhaseDone,
@@ -1941,8 +1936,8 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 						"issues": map[string]interface{}{
 							"nodes": []map[string]interface{}{
 								{
-									"id":         "linear-1",
-									"identifier": "LIN-1",
+									"id":         "stub-1",
+									"identifier": "STUB-1",
 									"title":      "Done success",
 									"state":      map[string]interface{}{"name": "done"},
 									"labels":     map[string]interface{}{"nodes": []interface{}{}},
@@ -1961,7 +1956,7 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 							"success": true,
 							"uploadFile": map[string]interface{}{
 								"uploadUrl": server.URL + "/upload",
-								"assetUrl":  "https://linear.example/assets/walkthrough.webm",
+								"assetUrl":  "https://stub.example/assets/walkthrough.webm",
 							},
 						},
 					},
@@ -1980,14 +1975,14 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	t.Setenv("LINEAR_API_KEY", "test-token")
+	t.Setenv("STUB_PROVIDER_API_KEY", "test-token")
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug", "endpoint": server.URL},
 	)
@@ -1999,9 +1994,9 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 	}
 	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
 		ProjectID:        project.ID,
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Done success",
 		State:            kanban.StateDone,
 		WorkflowPhase:    kanban.WorkflowPhaseDone,
@@ -2086,7 +2081,7 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 	if !strings.Contains(body, "walkthrough.webm") {
 		t.Fatalf("expected preview filename in comment body, got %q", body)
 	}
-	if !strings.Contains(body, "https://linear.example/assets/walkthrough.webm") {
+	if !strings.Contains(body, "https://stub.example/assets/walkthrough.webm") {
 		t.Fatalf("expected uploaded asset link in comment body, got %q", body)
 	}
 }
@@ -2487,7 +2482,6 @@ func TestProcessRetriesResumesOrphanedAppServerRunAndFallsBackToFreshStart(t *te
 	orch.claimed[issue.ID] = struct{}{}
 	orch.retries[issue.ID] = retryEntry{
 		Attempt:        2,
-		Identifier:     issue.Identifier,
 		Phase:          string(kanban.WorkflowPhaseImplementation),
 		DueAt:          time.Now().UTC(),
 		DelayType:      "failure",
@@ -2540,7 +2534,6 @@ func TestProcessRetriesFallsBackToFreshStartWhenResumedThreadDisappearsBeforeTur
 	orch.claimed[issue.ID] = struct{}{}
 	orch.retries[issue.ID] = retryEntry{
 		Attempt:        2,
-		Identifier:     issue.Identifier,
 		Phase:          string(kanban.WorkflowPhaseImplementation),
 		DueAt:          time.Now().UTC(),
 		DelayType:      "failure",
@@ -3089,7 +3082,7 @@ func TestDispatchBlockedByInvalidWorkflowReloadKeepsLastGood(t *testing.T) {
 	issue, _ := store.CreateIssue("", "", "Ready", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
-	if err := os.WriteFile(manager.Path(), []byte("---\ntracker:\n  kind: linear\n---\nlegacy"), 0o644); err != nil {
+	if err := os.WriteFile(manager.Path(), []byte("---\ntracker:\n  kind: stub\n---\nlegacy"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Refresh(); err != nil {
@@ -3184,8 +3177,8 @@ func TestMaintenanceProtectedIssueIDsIncludeRetryAndPausedIssues(t *testing.T) {
 
 	orch.mu.Lock()
 	orch.running[runningIssue.ID] = runningEntry{issue: *runningIssue, cancel: func() {}}
-	orch.retries[retryIssue.ID] = retryEntry{Attempt: 2, Identifier: retryIssue.Identifier, Phase: "implementation", DueAt: time.Now().UTC().Add(time.Minute)}
-	orch.paused[pausedIssue.ID] = pausedEntry{Attempt: 3, Identifier: pausedIssue.Identifier, Phase: "review", PausedAt: time.Now().UTC()}
+	orch.retries[retryIssue.ID] = retryEntry{Attempt: 2, Phase: "implementation", DueAt: time.Now().UTC().Add(time.Minute)}
+	orch.paused[pausedIssue.ID] = pausedEntry{Attempt: 3, Phase: "review", PausedAt: time.Now().UTC()}
 	ids := orch.maintenanceProtectedIssueIDsLocked()
 	orch.mu.Unlock()
 
@@ -3242,7 +3235,6 @@ func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
 	}
 	orch.retries[doneIssue.ID] = retryEntry{
 		Attempt:        3,
-		Identifier:     doneIssue.Identifier,
 		Phase:          string(kanban.WorkflowPhaseDone),
 		DueAt:          time.Now().UTC().Add(5 * time.Minute),
 		Error:          "approval_required",
@@ -3367,10 +3359,9 @@ func TestSnapshotDoesNotRefreshProviderIssuesWhileHoldingRuntimeState(t *testing
 
 	orch.mu.Lock()
 	orch.retries[issue.ID] = retryEntry{
-		Attempt:    1,
-		Identifier: issue.Identifier,
-		Phase:      string(kanban.WorkflowPhaseImplementation),
-		DueAt:      time.Now().UTC().Add(time.Minute),
+		Attempt: 1,
+		Phase:   string(kanban.WorkflowPhaseImplementation),
+		DueAt:   time.Now().UTC().Add(time.Minute),
 	}
 	orch.mu.Unlock()
 
@@ -4380,11 +4371,10 @@ func TestPerProjectSerialDispatchPrefersHigherPriorityOverDueRetry(t *testing.T)
 
 	orch.mu.Lock()
 	orch.retries[lowWithRetry.ID] = retryEntry{
-		Attempt:    2,
-		Identifier: lowWithRetry.Identifier,
-		Phase:      string(kanban.WorkflowPhaseImplementation),
-		DueAt:      time.Now().UTC().Add(-time.Second),
-		DelayType:  "manual",
+		Attempt:   2,
+		Phase:     string(kanban.WorkflowPhaseImplementation),
+		DueAt:     time.Now().UTC().Add(-time.Second),
+		DelayType: "manual",
 	}
 	orch.claimed[lowWithRetry.ID] = struct{}{}
 	orch.mu.Unlock()
@@ -4439,11 +4429,11 @@ func TestTickSyncsProviderIssuesOnlyOnce(t *testing.T) {
 	repoPath := filepath.Dir(manager.Path())
 
 	if _, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		repoPath,
 		manager.Path(),
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	); err != nil {
@@ -4622,7 +4612,7 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 			ProjectID:        project.ID,
 			ProviderKind:     "stub",
 			ProviderIssueRef: "stub-1",
-			Identifier:       "LIN-1",
+			Identifier:       "STUB-1",
 			Title:            "Done success",
 			State:            kanban.StateDone,
 			WorkflowPhase:    kanban.WorkflowPhaseDone,
@@ -4705,8 +4695,8 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 						"issues": map[string]interface{}{
 							"nodes": []map[string]interface{}{
 								{
-									"id":               "linear-1",
-									"identifier":       "LIN-1",
+									"id":               "stub-1",
+									"identifier":       "STUB-1",
 									"title":            "Done success",
 									"state":            map[string]interface{}{"name": "done"},
 									"labels":           map[string]interface{}{"nodes": []interface{}{}},
@@ -4723,7 +4713,7 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 							"success": true,
 							"uploadFile": map[string]interface{}{
 								"uploadUrl": server.URL + "/upload",
-								"assetUrl":  "https://linear.example/assets/walkthrough.webm",
+								"assetUrl":  "https://stub.example/assets/walkthrough.webm",
 							},
 						},
 					},
@@ -4740,14 +4730,14 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	t.Setenv("LINEAR_API_KEY", "test-token")
+	t.Setenv("STUB_PROVIDER_API_KEY", "test-token")
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug", "endpoint": server.URL},
 	)
@@ -4759,9 +4749,9 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 	}
 	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
 		ProjectID:        project.ID,
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Done success",
 		State:            kanban.StateDone,
 		WorkflowPhase:    kanban.WorkflowPhaseDone,

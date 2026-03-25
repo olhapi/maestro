@@ -1242,11 +1242,11 @@ func normalizePendingInteractionResponse(interaction PendingInteraction, respons
 			if !ok {
 				return PendingInteractionResponse{}, fmt.Errorf("%w: missing answer for %q", ErrInvalidInteractionResponse, question.ID)
 			}
-			answers, err := normalizePendingUserInputAnswers(question, rawAnswers)
+			answer, err := normalizePendingUserInputAnswer(question, rawAnswers)
 			if err != nil {
 				return PendingInteractionResponse{}, err
 			}
-			normalized[question.ID] = answers
+			normalized[question.ID] = []string{answer}
 		}
 		return PendingInteractionResponse{Answers: normalized}, nil
 	default:
@@ -1254,45 +1254,26 @@ func normalizePendingInteractionResponse(interaction PendingInteraction, respons
 	}
 }
 
-func normalizePendingUserInputAnswers(question PendingUserInputQuestion, answers []string) ([]string, error) {
+func normalizePendingUserInputAnswer(question PendingUserInputQuestion, answers []string) (string, error) {
 	if len(answers) == 0 {
-		return nil, fmt.Errorf("%w: missing answer for %q", ErrInvalidInteractionResponse, question.ID)
+		return "", fmt.Errorf("%w: missing answer for %q", ErrInvalidInteractionResponse, question.ID)
 	}
-	normalized := make([]string, 0, len(answers))
-	allowed := make(map[string]string, len(question.Options))
-	for _, option := range question.Options {
-		label := strings.TrimSpace(option.Label)
-		if label == "" {
-			continue
-		}
-		if _, ok := allowed[label]; !ok {
-			allowed[label] = option.Label
-		}
+	answer := answers[0]
+	if strings.TrimSpace(answer) == "" {
+		return "", fmt.Errorf("%w: blank answer for %q", ErrInvalidInteractionResponse, question.ID)
 	}
 	if len(question.Options) == 0 {
-		for _, answer := range answers {
-			if strings.TrimSpace(answer) == "" {
-				return nil, fmt.Errorf("%w: blank answer for %q", ErrInvalidInteractionResponse, question.ID)
-			}
-		}
-		return append([]string(nil), answers...), nil
+		return answer, nil
 	}
-	for _, answer := range answers {
-		trimmed := strings.TrimSpace(answer)
-		if trimmed == "" {
-			return nil, fmt.Errorf("%w: blank answer for %q", ErrInvalidInteractionResponse, question.ID)
+	for _, option := range question.Options {
+		if strings.TrimSpace(option.Label) == strings.TrimSpace(answer) {
+			return option.Label, nil
 		}
-		if canonical, ok := allowed[trimmed]; ok {
-			normalized = append(normalized, canonical)
-			continue
-		}
-		if question.IsOther {
-			normalized = append(normalized, answer)
-			continue
-		}
-		return nil, fmt.Errorf("%w: unsupported answer for %q", ErrInvalidInteractionResponse, question.ID)
 	}
-	return normalized, nil
+	if question.IsOther {
+		return answer, nil
+	}
+	return "", fmt.Errorf("%w: unsupported answer for %q", ErrInvalidInteractionResponse, question.ID)
 }
 
 func interactionApprovalDecisions(interaction PendingInteraction) []PendingApprovalDecision {
@@ -1747,21 +1728,11 @@ func validateWorkspaceCWD(workspace, workspaceRoot string) error {
 	if err != nil {
 		return err
 	}
-	workspaceResolved, err := filepath.EvalSymlinks(workspaceAbs)
-	if err != nil {
-		return &RunError{Kind: "invalid_workspace_cwd", Err: fmt.Errorf("resolve workspace path: %w", err)}
-	}
-	rootResolved, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return &RunError{Kind: "invalid_workspace_cwd", Err: fmt.Errorf("resolve workspace root: %w", err)}
-	}
-	workspaceResolved = filepath.Clean(workspaceResolved)
-	rootResolved = filepath.Clean(rootResolved)
-	if workspaceResolved == rootResolved {
+	if workspaceAbs == rootAbs {
 		return &RunError{Kind: "invalid_workspace_cwd", Err: fmt.Errorf("workspace root rejected: %s", workspaceAbs)}
 	}
-	if workspaceResolved != rootResolved && !strings.HasPrefix(workspaceResolved, rootResolved+string(os.PathSeparator)) {
-		return &RunError{Kind: "invalid_workspace_cwd", Err: fmt.Errorf("workspace outside root: %s not under %s", workspaceResolved, rootResolved)}
+	if workspaceAbs != rootAbs && !strings.HasPrefix(workspaceAbs, rootAbs+string(os.PathSeparator)) {
+		return &RunError{Kind: "invalid_workspace_cwd", Err: fmt.Errorf("workspace outside root: %s not under %s", workspaceAbs, rootAbs)}
 	}
 	return nil
 }

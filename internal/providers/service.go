@@ -55,28 +55,49 @@ func (s *Service) RegisterProvider(provider Provider) {
 	s.providers[normalizeKind(provider.Kind())] = provider
 }
 
-func (s *Service) ProviderForProject(project *kanban.Project) (Provider, error) {
-	if project == nil || strings.TrimSpace(project.ProviderKind) == "" {
-		return s.providerForKind(kanban.ProviderKindKanban)
+func (s *Service) ProviderForProject(project *kanban.Project) Provider {
+	if project == nil {
+		return s.providers[kanban.ProviderKindKanban]
 	}
-	return s.providerForKind(project.ProviderKind)
+	if provider, ok := s.providers[normalizeKind(project.ProviderKind)]; ok {
+		return provider
+	}
+	return nil
 }
 
-func (s *Service) providerForKind(kind string) (Provider, error) {
-	if s == nil {
-		return nil, fmt.Errorf("%w: service is nil", ErrUnsupportedCapability)
+func (s *Service) providerForKind(kind string) Provider {
+	if provider, ok := s.providers[normalizeKind(kind)]; ok {
+		return provider
 	}
-	normalized := normalizeKind(kind)
-	provider, ok := s.providers[normalized]
-	if !ok || provider == nil {
-		return nil, fmt.Errorf("%w: provider kind %q is not registered", ErrUnsupportedCapability, normalized)
+	return nil
+}
+
+func unsupportedProviderKindError(kind string) error {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = kanban.ProviderKindKanban
+	}
+	return fmt.Errorf("%w: unsupported provider kind %q", kanban.ErrValidation, kind)
+}
+
+func (s *Service) providerForProjectOrError(project *kanban.Project) (Provider, error) {
+	if project == nil {
+		return s.providerForKindOrError(kanban.ProviderKindKanban)
+	}
+	return s.providerForKindOrError(project.ProviderKind)
+}
+
+func (s *Service) providerForKindOrError(kind string) (Provider, error) {
+	provider := s.providerForKind(kind)
+	if provider == nil {
+		return nil, unsupportedProviderKindError(kind)
 	}
 	return provider, nil
 }
 
 func (s *Service) resolveProjectProvider(projectID string) (*kanban.Project, Provider, error) {
 	if strings.TrimSpace(projectID) == "" {
-		provider, err := s.providerForKind(kanban.ProviderKindKanban)
+		provider, err := s.providerForKindOrError(kanban.ProviderKindKanban)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -86,7 +107,7 @@ func (s *Service) resolveProjectProvider(projectID string) (*kanban.Project, Pro
 	if err != nil {
 		return nil, nil, err
 	}
-	provider, err := s.ProviderForProject(project)
+	provider, err := s.providerForProjectOrError(project)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -99,7 +120,7 @@ func (s *Service) resolveIssueProvider(issue *kanban.Issue) (*kanban.Project, Pr
 	}
 	issueProviderKind := normalizeKind(issue.ProviderKind)
 	if strings.TrimSpace(issue.ProjectID) == "" {
-		provider, err := s.providerForKind(issueProviderKind)
+		provider, err := s.providerForKindOrError(issueProviderKind)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -111,13 +132,13 @@ func (s *Service) resolveIssueProvider(issue *kanban.Issue) (*kanban.Project, Pr
 	}
 	projectProviderKind := normalizeKind(project.ProviderKind)
 	if issueProviderKind != "" && issueProviderKind != projectProviderKind {
-		provider, err := s.providerForKind(issueProviderKind)
+		provider, err := s.providerForKindOrError(issueProviderKind)
 		if err != nil {
 			return nil, nil, err
 		}
 		return project, provider, nil
 	}
-	provider, err := s.ProviderForProject(project)
+	provider, err := s.providerForProjectOrError(project)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -125,23 +146,7 @@ func (s *Service) resolveIssueProvider(issue *kanban.Issue) (*kanban.Project, Pr
 }
 
 func normalizeProjectPaths(repoPath, workflowPath string) (string, string, error) {
-	repoPath = strings.TrimSpace(repoPath)
-	workflowPath = strings.TrimSpace(workflowPath)
-	if repoPath == "" {
-		return "", "", nil
-	}
-	absRepoPath, err := filepath.Abs(repoPath)
-	if err != nil {
-		return "", "", err
-	}
-	if workflowPath == "" {
-		return absRepoPath, filepath.Join(absRepoPath, "WORKFLOW.md"), nil
-	}
-	absWorkflowPath, err := filepath.Abs(workflowPath)
-	if err != nil {
-		return "", "", err
-	}
-	return absRepoPath, absWorkflowPath, nil
+	return kanban.ResolveProjectPaths(repoPath, workflowPath)
 }
 
 func cloneProjectProviderConfig(providerConfig map[string]interface{}) map[string]interface{} {
@@ -189,7 +194,7 @@ func (s *Service) CreateProject(ctx context.Context, name, description, repoPath
 	if err != nil {
 		return nil, err
 	}
-	provider, err := s.ProviderForProject(candidate)
+	provider, err := s.providerForProjectOrError(candidate)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +217,7 @@ func (s *Service) UpdateProject(ctx context.Context, id, name, description, repo
 	if err != nil {
 		return err
 	}
-	provider, err := s.ProviderForProject(candidate)
+	provider, err := s.providerForProjectOrError(candidate)
 	if err != nil {
 		return err
 	}
@@ -229,10 +234,6 @@ func (s *Service) ListProjectSummaries() ([]kanban.ProjectSummary, error) {
 	return s.store.ListProjectSummaries()
 }
 
-func (s *Service) ListProjectSummariesPage(limit, offset int) ([]kanban.ProjectSummary, int, error) {
-	return s.store.ListProjectSummariesPage(limit, offset)
-}
-
 func (s *Service) CreateEpic(projectID, name, description string) (*kanban.Epic, error) {
 	if strings.TrimSpace(projectID) == "" {
 		return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
@@ -241,7 +242,7 @@ func (s *Service) CreateEpic(projectID, name, description string) (*kanban.Epic,
 	if err != nil {
 		return nil, err
 	}
-	provider, err := s.ProviderForProject(project)
+	provider, err := s.providerForProjectOrError(project)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +260,7 @@ func (s *Service) UpdateEpic(id, projectID, name, description string) error {
 	if err != nil {
 		return err
 	}
-	provider, err := s.ProviderForProject(project)
+	provider, err := s.providerForProjectOrError(project)
 	if err != nil {
 		return err
 	}
@@ -276,14 +277,15 @@ func (s *Service) DeleteEpic(id string) error {
 	}
 	if epic.ProjectID != "" {
 		project, err := s.store.GetProject(epic.ProjectID)
-		if err == nil {
-			provider, providerErr := s.ProviderForProject(project)
-			if providerErr != nil {
-				return providerErr
-			}
-			if !provider.Capabilities().Epics {
-				return ErrUnsupportedCapability
-			}
+		if err != nil {
+			return err
+		}
+		provider, providerErr := s.providerForProjectOrError(project)
+		if providerErr != nil {
+			return providerErr
+		}
+		if !provider.Capabilities().Epics {
+			return ErrUnsupportedCapability
 		}
 	}
 	return s.store.DeleteEpic(id)
@@ -295,7 +297,7 @@ func (s *Service) ListEpicSummaries(projectID string) ([]kanban.EpicSummary, err
 		if err != nil {
 			return nil, err
 		}
-		provider, err := s.ProviderForProject(project)
+		provider, err := s.providerForProjectOrError(project)
 		if err != nil {
 			return nil, err
 		}
@@ -304,23 +306,6 @@ func (s *Service) ListEpicSummaries(projectID string) ([]kanban.EpicSummary, err
 		}
 	}
 	return s.store.ListEpicSummaries(projectID)
-}
-
-func (s *Service) ListEpicSummariesPage(projectID string, limit, offset int) ([]kanban.EpicSummary, int, error) {
-	if strings.TrimSpace(projectID) != "" {
-		project, err := s.store.GetProject(projectID)
-		if err != nil {
-			return nil, 0, err
-		}
-		provider, err := s.ProviderForProject(project)
-		if err != nil {
-			return nil, 0, err
-		}
-		if !provider.Capabilities().Epics {
-			return []kanban.EpicSummary{}, 0, nil
-		}
-	}
-	return s.store.ListEpicSummariesPage(projectID, limit, offset)
 }
 
 func (s *Service) SyncIssues(ctx context.Context, query kanban.IssueQuery) error {
@@ -348,7 +333,7 @@ func (s *Service) syncIssuesBestEffort(ctx context.Context, query kanban.IssueQu
 		if query.ProjectID != "" && project.ID != query.ProjectID {
 			continue
 		}
-		provider, err := s.ProviderForProject(&project)
+		provider, err := s.providerForProjectOrError(&project)
 		if err != nil {
 			return err
 		}
@@ -398,7 +383,7 @@ func (s *Service) syncIssues(ctx context.Context, query kanban.IssueQuery) error
 		if query.ProjectID != "" && project.ID != query.ProjectID {
 			continue
 		}
-		provider, err := s.ProviderForProject(&project)
+		provider, err := s.providerForProjectOrError(&project)
 		if err != nil {
 			return err
 		}
@@ -498,7 +483,7 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 		if providerErr != nil {
 			return nil, providerErr
 		}
-		if provider.Kind() != kanban.ProviderKindKanban {
+		if provider != nil && provider.Kind() != kanban.ProviderKindKanban {
 			readCtx, cancel, propagateParentContext := s.newReadSyncContext(ctx)
 			defer cancel()
 			refreshed, refreshErr := s.RefreshIssue(readCtx, issue)
@@ -547,7 +532,7 @@ func (s *Service) lookupProviderIssueByIdentifier(ctx context.Context, projects 
 
 	externalProjects := make([]kanban.Project, 0, len(projects))
 	for i := range projects {
-		provider, err := s.ProviderForProject(&projects[i])
+		provider, err := s.providerForProjectOrError(&projects[i])
 		if err != nil {
 			return nil, err
 		}
@@ -567,7 +552,7 @@ func (s *Service) lookupProviderIssueByIdentifier(ctx context.Context, projects 
 	var wg sync.WaitGroup
 	for i := range externalProjects {
 		project := externalProjects[i]
-		provider, err := s.ProviderForProject(&project)
+		provider, err := s.providerForProjectOrError(&project)
 		if err != nil {
 			return nil, err
 		}
@@ -712,23 +697,14 @@ func (s *Service) CreateIssue(ctx context.Context, input IssueCreateInput) (*kan
 		if err != nil {
 			return nil, err
 		}
-		localUpdates := map[string]interface{}{}
-		if value := strings.TrimSpace(input.AgentName); value != "" {
-			localUpdates["agent_name"] = value
+		localUpdates := map[string]interface{}{
+			"agent_name":   input.AgentName,
+			"agent_prompt": input.AgentPrompt,
+			"branch_name":  input.BranchName,
+			"pr_url":       input.PRURL,
 		}
-		if value := strings.TrimSpace(input.AgentPrompt); value != "" {
-			localUpdates["agent_prompt"] = value
-		}
-		if value := strings.TrimSpace(input.BranchName); value != "" {
-			localUpdates["branch_name"] = value
-		}
-		if value := strings.TrimSpace(input.PRURL); value != "" {
-			localUpdates["pr_url"] = value
-		}
-		if len(localUpdates) > 0 {
-			if err := s.store.UpdateIssue(synced.ID, localUpdates); err != nil {
-				return nil, err
-			}
+		if err := s.store.UpdateIssue(synced.ID, localUpdates); err != nil {
+			return nil, err
 		}
 		return s.store.GetIssueDetailByIdentifier(synced.Identifier)
 	}
@@ -871,29 +847,6 @@ func (s *Service) ListIssueComments(ctx context.Context, identifier string) ([]k
 	return comments, nil
 }
 
-func (s *Service) ListIssueCommentsPage(ctx context.Context, identifier string, limit, offset int) ([]kanban.IssueComment, int, error) {
-	issue, err := s.GetIssueByIdentifier(ctx, identifier)
-	if err != nil {
-		return nil, 0, err
-	}
-	project, provider, err := s.resolveIssueProvider(issue)
-	if err != nil {
-		return nil, 0, err
-	}
-	if provider.Kind() == kanban.ProviderKindKanban {
-		return s.store.ListIssueCommentsPage(issue.ID, limit, offset)
-	}
-	comments, err := provider.ListIssueComments(ctx, project, issue)
-	if err != nil {
-		return nil, 0, err
-	}
-	if comments == nil {
-		return []kanban.IssueComment{}, 0, nil
-	}
-	page, total := paginateSlice(comments, limit, offset)
-	return page, total, nil
-}
-
 func (s *Service) CreateIssueCommentWithResult(ctx context.Context, identifier string, input IssueCommentInput) (*kanban.IssueComment, error) {
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
@@ -942,26 +895,6 @@ func (s *Service) GetIssueCommentAttachmentContent(ctx context.Context, identifi
 	return provider.GetIssueCommentAttachmentContent(ctx, project, issue, commentID, attachmentID)
 }
 
-func paginateSlice[T any](items []T, limit, offset int) ([]T, int) {
-	total := len(items)
-	if limit <= 0 || limit > total {
-		limit = total
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	page := make([]T, end-offset)
-	copy(page, items[offset:end])
-	return page, total
-}
-
 func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 	projects, err := s.store.ListProjects()
 	if err != nil {
@@ -973,7 +906,7 @@ func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 		if repoPath != "" && project.RepoPath != repoPath {
 			continue
 		}
-		provider, err := s.ProviderForProject(&project)
+		provider, err := s.providerForProjectOrError(&project)
 		if err != nil {
 			return err
 		}
@@ -1042,6 +975,47 @@ func (s *Service) recordListSync(query kanban.IssueQuery) {
 
 func (s *Service) listSyncKey(query kanban.IssueQuery) string {
 	return strings.TrimSpace(query.ProjectID) + "|" + strings.TrimSpace(query.Assignee)
+}
+
+func buildProjectCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
+	normalizedRepoPath, normalizedWorkflowPath, err := normalizeProjectPathsForValidation(repoPath, workflowPath)
+	if err != nil {
+		return nil, err
+	}
+	project := &kanban.Project{
+		Name:               name,
+		Description:        description,
+		State:              kanban.ProjectStateStopped,
+		PermissionProfile:  kanban.PermissionProfileDefault,
+		RepoPath:           normalizedRepoPath,
+		WorkflowPath:       normalizedWorkflowPath,
+		ProviderKind:       normalizeKind(providerKind),
+		ProviderProjectRef: strings.TrimSpace(providerProjectRef),
+		ProviderConfig:     cloneProviderConfig(providerConfig),
+	}
+	if existing != nil {
+		project.ID = existing.ID
+		project.State = existing.State
+		project.PermissionProfile = existing.PermissionProfile
+		project.CreatedAt = existing.CreatedAt
+		project.UpdatedAt = existing.UpdatedAt
+	}
+	return project, nil
+}
+
+func normalizeProjectPathsForValidation(repoPath, workflowPath string) (string, string, error) {
+	return kanban.ResolveProjectPaths(repoPath, workflowPath)
+}
+
+func cloneProviderConfig(config map[string]interface{}) map[string]interface{} {
+	if len(config) == 0 {
+		return map[string]interface{}{}
+	}
+	out := make(map[string]interface{}, len(config))
+	for key, value := range config {
+		out[key] = value
+	}
+	return out
 }
 
 func providerConfigString(config map[string]interface{}, key string) string {

@@ -254,11 +254,11 @@ func TestServiceSyncIssuesPrunesStaleProviderShadowIssues(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -267,9 +267,9 @@ func TestServiceSyncIssuesPrunesStaleProviderShadowIssues(t *testing.T) {
 	}
 
 	stale, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-stale",
-		Identifier:       "LIN-STALE",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-stale",
+		Identifier:       "STUB-STALE",
 		Title:            "Stale issue",
 		State:            kanban.StateBacklog,
 	})
@@ -281,13 +281,13 @@ func TestServiceSyncIssuesPrunesStaleProviderShadowIssues(t *testing.T) {
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		issues: []kanban.Issue{
 			{
-				ProviderKind:     kanban.ProviderKindLinear,
-				ProviderIssueRef: "linear-keep",
-				Identifier:       "LIN-KEEP",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-keep",
+				Identifier:       "STUB-KEEP",
 				Title:            "Kept issue",
 				State:            kanban.StateReady,
 			},
@@ -298,18 +298,18 @@ func TestServiceSyncIssuesPrunesStaleProviderShadowIssues(t *testing.T) {
 		t.Fatalf("SyncIssues: %v", err)
 	}
 
-	if _, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-stale"); !kanban.IsNotFound(err) {
+	if _, err := store.GetIssueByProviderRef("stub", "stub-stale"); !kanban.IsNotFound(err) {
 		t.Fatalf("expected stale provider issue to be deleted, got %v", err)
 	}
 	if _, err := store.GetWorkspace(stale.ID); err == nil {
 		t.Fatal("expected stale workspace to be removed with the provider issue")
 	}
 
-	kept, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-keep")
+	kept, err := store.GetIssueByProviderRef("stub", "stub-keep")
 	if err != nil {
 		t.Fatalf("GetIssueByProviderRef keep: %v", err)
 	}
-	if kept.Identifier != "LIN-KEEP" {
+	if kept.Identifier != "STUB-KEEP" {
 		t.Fatalf("expected kept issue to be synced, got %q", kept.Identifier)
 	}
 }
@@ -322,11 +322,11 @@ func TestServiceSyncIssuesPreservesLocalFieldsOnProviderShadowUpdates(t *testing
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -335,9 +335,9 @@ func TestServiceSyncIssuesPreservesLocalFieldsOnProviderShadowUpdates(t *testing
 	}
 
 	existing, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-keep",
-		Identifier:       "LIN-KEEP",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-keep",
+		Identifier:       "STUB-KEEP",
 		Title:            "Old title",
 		State:            kanban.StateBacklog,
 	})
@@ -347,19 +347,19 @@ func TestServiceSyncIssuesPreservesLocalFieldsOnProviderShadowUpdates(t *testing
 	if err := store.UpdateIssue(existing.ID, map[string]interface{}{
 		"agent_name":   "codex",
 		"agent_prompt": "preserve me",
-		"branch_name":  "codex/LIN-KEEP",
+		"branch_name":  "codex/STUB-KEEP",
 		"pr_url":       "https://example.com/pr/1",
 	}); err != nil {
 		t.Fatalf("UpdateIssue: %v", err)
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		issues: []kanban.Issue{{
-			ProviderKind:     kanban.ProviderKindLinear,
-			ProviderIssueRef: "linear-keep",
-			Identifier:       "LIN-KEEP",
+			ProviderKind:     "stub",
+			ProviderIssueRef: "stub-keep",
+			Identifier:       "STUB-KEEP",
 			Title:            "New title",
 			Description:      "Provider refreshed description",
 			State:            kanban.StateReady,
@@ -371,14 +371,14 @@ func TestServiceSyncIssuesPreservesLocalFieldsOnProviderShadowUpdates(t *testing
 		t.Fatalf("SyncIssues: %v", err)
 	}
 
-	refreshed, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-keep")
+	refreshed, err := store.GetIssueByProviderRef("stub", "stub-keep")
 	if err != nil {
 		t.Fatalf("GetIssueByProviderRef: %v", err)
 	}
 	if refreshed.Title != "New title" || refreshed.Description != "Provider refreshed description" || refreshed.State != kanban.StateReady {
 		t.Fatalf("expected provider fields to refresh, got %#v", refreshed)
 	}
-	if refreshed.AgentName != "codex" || refreshed.AgentPrompt != "preserve me" || refreshed.BranchName != "codex/LIN-KEEP" || refreshed.PRURL != "https://example.com/pr/1" {
+	if refreshed.AgentName != "codex" || refreshed.AgentPrompt != "preserve me" || refreshed.BranchName != "codex/STUB-KEEP" || refreshed.PRURL != "https://example.com/pr/1" {
 		t.Fatalf("expected local fields to survive provider sync, got %#v", refreshed)
 	}
 }
@@ -395,7 +395,7 @@ func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-source",
 		map[string]interface{}{"project_slug": "proj-source"},
 	)
@@ -407,7 +407,7 @@ func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-target",
 		map[string]interface{}{"project_slug": "proj-target"},
 	)
@@ -416,9 +416,9 @@ func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
 	}
 
 	existing, err := store.UpsertProviderIssue(sourceProject.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-moved",
-		Identifier:       "LIN-MOVED",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-moved",
+		Identifier:       "STUB-MOVED",
 		Title:            "Moved issue",
 		State:            kanban.StateReady,
 	})
@@ -427,16 +427,16 @@ func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		listFunc: func(ctx context.Context, project *kanban.Project, query kanban.IssueQuery) ([]kanban.Issue, error) {
 			if project.ID != targetProject.ID {
 				return []kanban.Issue{}, nil
 			}
 			return []kanban.Issue{{
-				ProviderKind:     kanban.ProviderKindLinear,
-				ProviderIssueRef: "linear-moved",
-				Identifier:       "LIN-MOVED",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-moved",
+				Identifier:       "STUB-MOVED",
 				Title:            "Moved issue",
 				State:            kanban.StateReady,
 			}}, nil
@@ -465,11 +465,11 @@ func TestServiceSyncForRepoPathPassesProviderAssigneeFilter(t *testing.T) {
 
 	repoPath := t.TempDir()
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		repoPath,
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{
 			"project_slug": "proj-slug",
@@ -481,19 +481,19 @@ func TestServiceSyncForRepoPathPassesProviderAssigneeFilter(t *testing.T) {
 	}
 
 	provider := &stubProvider{
-		kind: kanban.ProviderKindLinear,
+		kind: "stub",
 		issues: []kanban.Issue{
 			{
-				ProviderKind:     kanban.ProviderKindLinear,
-				ProviderIssueRef: "linear-keep",
-				Identifier:       "LIN-KEEP",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-keep",
+				Identifier:       "STUB-KEEP",
 				Title:            "Kept issue",
 				State:            kanban.StateReady,
 			},
 		},
 	}
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = provider
+	svc.providers["stub"] = provider
 
 	if err := svc.SyncForRepoPath(context.Background(), repoPath); err != nil {
 		t.Fatalf("SyncForRepoPath: %v", err)
@@ -502,7 +502,7 @@ func TestServiceSyncForRepoPathPassesProviderAssigneeFilter(t *testing.T) {
 	if provider.lastQuery.Assignee != "me" {
 		t.Fatalf("expected assignee filter to be forwarded, got %#v", provider.lastQuery)
 	}
-	if _, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-keep"); err != nil {
+	if _, err := store.GetIssueByProviderRef("stub", "stub-keep"); err != nil {
 		t.Fatalf("expected synced issue for project %s: %v", project.ID, err)
 	}
 }
@@ -521,7 +521,7 @@ func TestServiceSyncForRepoPathAppliesTimeoutPerProject(t *testing.T) {
 		"",
 		t.TempDir(),
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"slow-proj",
 		map[string]interface{}{"project_slug": "slow-proj"},
 	)
@@ -533,7 +533,7 @@ func TestServiceSyncForRepoPathAppliesTimeoutPerProject(t *testing.T) {
 		"",
 		t.TempDir(),
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"fast-proj",
 		map[string]interface{}{"project_slug": "fast-proj"},
 	)
@@ -542,8 +542,8 @@ func TestServiceSyncForRepoPathAppliesTimeoutPerProject(t *testing.T) {
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		listFunc: func(ctx context.Context, project *kanban.Project, _ kanban.IssueQuery) ([]kanban.Issue, error) {
 			switch project.ProviderProjectRef {
 			case slowProject.ProviderProjectRef:
@@ -551,9 +551,9 @@ func TestServiceSyncForRepoPathAppliesTimeoutPerProject(t *testing.T) {
 				return nil, ctx.Err()
 			case fastProject.ProviderProjectRef:
 				return []kanban.Issue{{
-					ProviderKind:     kanban.ProviderKindLinear,
-					ProviderIssueRef: "linear-fast-1",
-					Identifier:       "LIN-FAST-1",
+					ProviderKind:     "stub",
+					ProviderIssueRef: "stub-fast-1",
+					Identifier:       "STUB-FAST-1",
 					Title:            "Fast issue",
 					State:            kanban.StateReady,
 				}}, nil
@@ -572,7 +572,7 @@ func TestServiceSyncForRepoPathAppliesTimeoutPerProject(t *testing.T) {
 		t.Fatalf("expected per-project timeout rather than repo-wide starvation, took %v", elapsed)
 	}
 
-	fastIssue, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-fast-1")
+	fastIssue, err := store.GetIssueByProviderRef("stub", "stub-fast-1")
 	if err != nil {
 		t.Fatalf("expected later project to sync despite earlier timeout: %v", err)
 	}
@@ -589,11 +589,11 @@ func TestServiceCreateIssueCommentDelegatesToProvider(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -601,9 +601,9 @@ func TestServiceCreateIssueCommentDelegatesToProvider(t *testing.T) {
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Provider issue",
 		State:            kanban.StateDone,
 	}); err != nil {
@@ -612,19 +612,19 @@ func TestServiceCreateIssueCommentDelegatesToProvider(t *testing.T) {
 
 	var got IssueCommentInput
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		getIssue: &kanban.Issue{
 			ProjectID:        project.ID,
-			ProviderKind:     kanban.ProviderKindLinear,
-			ProviderIssueRef: "linear-1",
-			Identifier:       "LIN-1",
+			ProviderKind:     "stub",
+			ProviderIssueRef: "stub-1",
+			Identifier:       "STUB-1",
 		},
 		commentFunc: func(_ context.Context, gotProject *kanban.Project, issue *kanban.Issue, input IssueCommentInput) (*kanban.IssueComment, error) {
 			if gotProject == nil || gotProject.ID != project.ID {
 				t.Fatalf("unexpected project context: %#v", gotProject)
 			}
-			if issue.Identifier != "LIN-1" {
+			if issue.Identifier != "STUB-1" {
 				t.Fatalf("unexpected issue %q", issue.Identifier)
 			}
 			got = input
@@ -639,7 +639,7 @@ func TestServiceCreateIssueCommentDelegatesToProvider(t *testing.T) {
 			Path: "/tmp/preview.mp4",
 		}},
 	}
-	if err := svc.CreateIssueComment(context.Background(), "LIN-1", input); err != nil {
+	if err := svc.CreateIssueComment(context.Background(), "STUB-1", input); err != nil {
 		t.Fatalf("CreateIssueComment: %v", err)
 	}
 	if got.Body != input.Body || len(got.Attachments) != 1 || got.Attachments[0].Path != input.Attachments[0].Path {
@@ -657,11 +657,11 @@ func TestServiceListIssueSummariesServesCachedDataWhenReadSyncTimesOut(t *testin
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -669,9 +669,9 @@ func TestServiceListIssueSummariesServesCachedDataWhenReadSyncTimesOut(t *testin
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-keep",
-		Identifier:       "LIN-KEEP",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-keep",
+		Identifier:       "STUB-KEEP",
 		Title:            "Cached issue",
 		State:            kanban.StateReady,
 	}); err != nil {
@@ -680,8 +680,8 @@ func TestServiceListIssueSummariesServesCachedDataWhenReadSyncTimesOut(t *testin
 
 	gate := make(chan struct{})
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:     kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
 		listGate: gate,
 	}
 
@@ -692,7 +692,7 @@ func TestServiceListIssueSummariesServesCachedDataWhenReadSyncTimesOut(t *testin
 	if total != 1 || len(items) != 1 {
 		t.Fatalf("expected cached provider issue after timeout, got total=%d items=%#v", total, items)
 	}
-	if items[0].Identifier != "LIN-KEEP" {
+	if items[0].Identifier != "STUB-KEEP" {
 		t.Fatalf("unexpected cached issue payload: %#v", items[0])
 	}
 }
@@ -705,11 +705,11 @@ func TestServiceListIssueSummariesPropagatesParentDeadlineExceeded(t *testing.T)
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -717,9 +717,9 @@ func TestServiceListIssueSummariesPropagatesParentDeadlineExceeded(t *testing.T)
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-keep",
-		Identifier:       "LIN-KEEP",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-keep",
+		Identifier:       "STUB-KEEP",
 		Title:            "Cached issue",
 		State:            kanban.StateReady,
 	}); err != nil {
@@ -727,8 +727,8 @@ func TestServiceListIssueSummariesPropagatesParentDeadlineExceeded(t *testing.T)
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:     kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
 		listGate: make(chan struct{}),
 	}
 
@@ -750,11 +750,11 @@ func TestServiceListIssueSummariesSkipsRepeatedBestEffortSyncWithinInterval(t *t
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -764,14 +764,14 @@ func TestServiceListIssueSummariesSkipsRepeatedBestEffortSyncWithinInterval(t *t
 
 	var calls atomic.Int32
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		listFunc: func(ctx context.Context, project *kanban.Project, query kanban.IssueQuery) ([]kanban.Issue, error) {
 			calls.Add(1)
 			return []kanban.Issue{{
-				ProviderKind:     kanban.ProviderKindLinear,
-				ProviderIssueRef: "linear-1",
-				Identifier:       "LIN-1",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-1",
+				Identifier:       "STUB-1",
 				Title:            "Synced issue",
 				State:            kanban.StateReady,
 			}}, nil
@@ -783,7 +783,7 @@ func TestServiceListIssueSummariesSkipsRepeatedBestEffortSyncWithinInterval(t *t
 		if err != nil {
 			t.Fatalf("ListIssueSummaries call %d: %v", i, err)
 		}
-		if total != 1 || len(items) != 1 || items[0].Identifier != "LIN-1" {
+		if total != 1 || len(items) != 1 || items[0].Identifier != "STUB-1" {
 			t.Fatalf("unexpected list payload on call %d: total=%d items=%#v", i, total, items)
 		}
 	}
@@ -801,11 +801,11 @@ func TestServiceListIssueSummariesFilteredReadDoesNotPruneNonMatchingProviderIss
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -814,18 +814,18 @@ func TestServiceListIssueSummariesFilteredReadDoesNotPruneNonMatchingProviderIss
 	}
 
 	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-ready",
-		Identifier:       "LIN-READY",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-ready",
+		Identifier:       "STUB-READY",
 		Title:            "Ready issue",
 		State:            kanban.StateReady,
 	}); err != nil {
 		t.Fatalf("UpsertProviderIssue ready: %v", err)
 	}
 	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-done",
-		Identifier:       "LIN-DONE",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-done",
+		Identifier:       "STUB-DONE",
 		Title:            "Done issue",
 		State:            kanban.StateDone,
 	}); err != nil {
@@ -833,26 +833,26 @@ func TestServiceListIssueSummariesFilteredReadDoesNotPruneNonMatchingProviderIss
 	}
 
 	provider := &stubProvider{
-		kind: kanban.ProviderKindLinear,
+		kind: "stub",
 		issues: []kanban.Issue{
 			{
-				ProviderKind:     kanban.ProviderKindLinear,
-				ProviderIssueRef: "linear-ready",
-				Identifier:       "LIN-READY",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-ready",
+				Identifier:       "STUB-READY",
 				Title:            "Ready issue",
 				State:            kanban.StateReady,
 			},
 			{
-				ProviderKind:     kanban.ProviderKindLinear,
-				ProviderIssueRef: "linear-done",
-				Identifier:       "LIN-DONE",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-done",
+				Identifier:       "STUB-DONE",
 				Title:            "Done issue",
 				State:            kanban.StateDone,
 			},
 		},
 	}
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = provider
+	svc.providers["stub"] = provider
 
 	items, total, err := svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{
 		ProjectID: project.ID,
@@ -864,10 +864,10 @@ func TestServiceListIssueSummariesFilteredReadDoesNotPruneNonMatchingProviderIss
 	if provider.lastQuery.State != "" {
 		t.Fatalf("expected provider sync query to omit transient state filters, got %#v", provider.lastQuery)
 	}
-	if total != 1 || len(items) != 1 || items[0].Identifier != "LIN-READY" {
+	if total != 1 || len(items) != 1 || items[0].Identifier != "STUB-READY" {
 		t.Fatalf("expected filtered results from local store, got total=%d items=%#v", total, items)
 	}
-	if _, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-done"); err != nil {
+	if _, err := store.GetIssueByProviderRef("stub", "stub-done"); err != nil {
 		t.Fatalf("expected non-matching provider issue to remain cached: %v", err)
 	}
 }
@@ -880,11 +880,11 @@ func TestServiceGetIssueByIdentifierServesCachedProviderIssueWhenRefreshFails(t 
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -892,9 +892,9 @@ func TestServiceGetIssueByIdentifierServesCachedProviderIssueWhenRefreshFails(t 
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	cached, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Cached issue",
 		State:            kanban.StateReady,
 	})
@@ -903,9 +903,9 @@ func TestServiceGetIssueByIdentifierServesCachedProviderIssueWhenRefreshFails(t 
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:   kanban.ProviderKindLinear,
-		getErr: errors.New("linear unavailable"),
+	svc.providers["stub"] = &stubProvider{
+		kind:   "stub",
+		getErr: errors.New("stub unavailable"),
 	}
 
 	issue, err := svc.GetIssueByIdentifier(context.Background(), cached.Identifier)
@@ -925,11 +925,11 @@ func TestServiceGetIssueByIdentifierPropagatesParentDeadlineExceeded(t *testing.
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -937,9 +937,9 @@ func TestServiceGetIssueByIdentifierPropagatesParentDeadlineExceeded(t *testing.
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	cached, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Cached issue",
 		State:            kanban.StateReady,
 	})
@@ -948,8 +948,8 @@ func TestServiceGetIssueByIdentifierPropagatesParentDeadlineExceeded(t *testing.
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:    kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:    "stub",
 		getGate: make(chan struct{}),
 	}
 
@@ -969,11 +969,11 @@ func TestServiceProviderIssueAssetsStayLocalAcrossRefresh(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -981,9 +981,9 @@ func TestServiceProviderIssueAssetsStayLocalAcrossRefresh(t *testing.T) {
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	if _, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Cached issue",
 		State:            kanban.StateReady,
 	}); err != nil {
@@ -991,22 +991,22 @@ func TestServiceProviderIssueAssetsStayLocalAcrossRefresh(t *testing.T) {
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		getIssue: &kanban.Issue{
-			ProviderKind:     kanban.ProviderKindLinear,
-			ProviderIssueRef: "linear-1",
-			Identifier:       "LIN-1",
+			ProviderKind:     "stub",
+			ProviderIssueRef: "stub-1",
+			Identifier:       "STUB-1",
 			Title:            "Fresh upstream issue",
 			State:            kanban.StateReady,
 		},
 	}
 
-	asset, err := svc.AttachIssueAsset(context.Background(), "LIN-1", "provider.png", bytes.NewReader(sampleProviderPNGBytes()))
+	asset, err := svc.AttachIssueAsset(context.Background(), "STUB-1", "provider.png", bytes.NewReader(sampleProviderPNGBytes()))
 	if err != nil {
 		t.Fatalf("AttachIssueAsset: %v", err)
 	}
-	detail, err := svc.GetIssueDetailByIdentifier(context.Background(), "LIN-1")
+	detail, err := svc.GetIssueDetailByIdentifier(context.Background(), "STUB-1")
 	if err != nil {
 		t.Fatalf("GetIssueDetailByIdentifier: %v", err)
 	}
@@ -1054,244 +1054,6 @@ func TestServiceCreateIssueRequiresProject(t *testing.T) {
 	}
 }
 
-func TestServiceCreateIssuePreservesProviderMetadataOnProviderBackedCreate(t *testing.T) {
-	t.Run("blank local metadata preserves provider values", func(t *testing.T) {
-		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("NewStore: %v", err)
-		}
-		t.Cleanup(func() { _ = store.Close() })
-
-		project, err := store.CreateProjectWithProvider(
-			"Linear Project",
-			"",
-			"",
-			"",
-			kanban.ProviderKindLinear,
-			"proj-slug",
-			map[string]interface{}{"project_slug": "proj-slug"},
-		)
-		if err != nil {
-			t.Fatalf("CreateProjectWithProvider: %v", err)
-		}
-
-		svc := NewService(store)
-		svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-			kind: kanban.ProviderKindLinear,
-			createFunc: func(_ context.Context, _ *kanban.Project, _ IssueCreateInput) (*kanban.Issue, error) {
-				return &kanban.Issue{
-					ProviderKind:     kanban.ProviderKindLinear,
-					ProviderIssueRef: "linear-1",
-					Identifier:       "LIN-1",
-					Title:            "Provider-backed issue",
-					State:            kanban.StateReady,
-					AgentName:        "provider-agent",
-					AgentPrompt:      "provider prompt",
-					BranchName:       "feature/provider-1",
-					PRURL:            "https://example.com/pr/provider-1",
-				}, nil
-			},
-		}
-
-		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
-			ProjectID: project.ID,
-			Title:     "Provider-backed issue",
-		})
-		if err != nil {
-			t.Fatalf("CreateIssue: %v", err)
-		}
-		if detail.AgentName != "provider-agent" || detail.AgentPrompt != "provider prompt" || detail.BranchName != "feature/provider-1" || detail.PRURL != "https://example.com/pr/provider-1" {
-			t.Fatalf("expected provider metadata to survive blank local inputs, got %#v", detail)
-		}
-
-		persisted, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-1")
-		if err != nil {
-			t.Fatalf("GetIssueByProviderRef: %v", err)
-		}
-		if persisted.AgentName != "provider-agent" || persisted.AgentPrompt != "provider prompt" || persisted.BranchName != "feature/provider-1" || persisted.PRURL != "https://example.com/pr/provider-1" {
-			t.Fatalf("expected persisted provider metadata to survive, got %#v", persisted)
-		}
-	})
-
-	t.Run("explicit local metadata wins", func(t *testing.T) {
-		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("NewStore: %v", err)
-		}
-		t.Cleanup(func() { _ = store.Close() })
-
-		project, err := store.CreateProjectWithProvider(
-			"Linear Project",
-			"",
-			"",
-			"",
-			kanban.ProviderKindLinear,
-			"proj-slug",
-			map[string]interface{}{"project_slug": "proj-slug"},
-		)
-		if err != nil {
-			t.Fatalf("CreateProjectWithProvider: %v", err)
-		}
-
-		svc := NewService(store)
-		svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-			kind: kanban.ProviderKindLinear,
-			createFunc: func(_ context.Context, _ *kanban.Project, _ IssueCreateInput) (*kanban.Issue, error) {
-				return &kanban.Issue{
-					ProviderKind:     kanban.ProviderKindLinear,
-					ProviderIssueRef: "linear-2",
-					Identifier:       "LIN-2",
-					Title:            "Provider-backed override issue",
-					State:            kanban.StateReady,
-					AgentName:        "provider-agent",
-					AgentPrompt:      "provider prompt",
-					BranchName:       "feature/provider-2",
-					PRURL:            "https://example.com/pr/provider-2",
-				}, nil
-			},
-		}
-
-		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
-			ProjectID:   project.ID,
-			Title:       "Provider-backed override issue",
-			AgentName:   "local-agent",
-			AgentPrompt: "local prompt",
-			BranchName:  "feature/local-2",
-			PRURL:       "https://example.com/pr/local-2",
-		})
-		if err != nil {
-			t.Fatalf("CreateIssue: %v", err)
-		}
-		if detail.AgentName != "local-agent" || detail.AgentPrompt != "local prompt" || detail.BranchName != "feature/local-2" || detail.PRURL != "https://example.com/pr/local-2" {
-			t.Fatalf("expected explicit local metadata to win, got %#v", detail)
-		}
-
-		persisted, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-2")
-		if err != nil {
-			t.Fatalf("GetIssueByProviderRef: %v", err)
-		}
-		if persisted.AgentName != "local-agent" || persisted.AgentPrompt != "local prompt" || persisted.BranchName != "feature/local-2" || persisted.PRURL != "https://example.com/pr/local-2" {
-			t.Fatalf("expected persisted local metadata to win, got %#v", persisted)
-		}
-	})
-}
-
-func TestServiceCreateProjectRejectsUnknownProviderKind(t *testing.T) {
-	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	svc := NewService(store)
-	_, err = svc.CreateProject(context.Background(), "Broken Project", "", "", "", "mystery", "mystery-ref", map[string]interface{}{"project_slug": "mystery"})
-	if !IsUnsupported(err) {
-		t.Fatalf("expected unsupported provider error, got %v", err)
-	}
-
-	projects, err := store.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-	if len(projects) != 0 {
-		t.Fatalf("expected no projects to persist on unsupported provider, got %#v", projects)
-	}
-}
-
-func TestServiceCreateIssueDefaultsBlankProviderKindToKanbanAndRejectsUnknownProviderKinds(t *testing.T) {
-	t.Run("blank provider kind defaults to kanban", func(t *testing.T) {
-		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("NewStore: %v", err)
-		}
-		t.Cleanup(func() { _ = store.Close() })
-
-		project, err := store.CreateProjectWithProvider("Local Project", "", "", "", "", "", nil)
-		if err != nil {
-			t.Fatalf("CreateProjectWithProvider: %v", err)
-		}
-
-		svc := NewService(store)
-		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
-			ProjectID: project.ID,
-			Title:     "Local issue",
-		})
-		if err != nil {
-			t.Fatalf("CreateIssue: %v", err)
-		}
-		if detail.ProviderKind != kanban.ProviderKindKanban {
-			t.Fatalf("expected blank provider kind to resolve to kanban, got %#v", detail.ProviderKind)
-		}
-
-		persisted, err := store.GetIssueByIdentifier(detail.Identifier)
-		if err != nil {
-			t.Fatalf("GetIssueByIdentifier: %v", err)
-		}
-		if persisted.ProviderKind != kanban.ProviderKindKanban {
-			t.Fatalf("expected persisted issue to remain kanban, got %#v", persisted.ProviderKind)
-		}
-	})
-
-	t.Run("unknown provider kind rejects create issue", func(t *testing.T) {
-		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("NewStore: %v", err)
-		}
-		t.Cleanup(func() { _ = store.Close() })
-
-		project, err := store.CreateProjectWithProvider("Broken Project", "", "", "", "mystery", "mystery-ref", map[string]interface{}{"project_slug": "mystery"})
-		if err != nil {
-			t.Fatalf("CreateProjectWithProvider: %v", err)
-		}
-
-		svc := NewService(store)
-		_, err = svc.CreateIssue(context.Background(), IssueCreateInput{
-			ProjectID: project.ID,
-			Title:     "Broken issue",
-		})
-		if !IsUnsupported(err) {
-			t.Fatalf("expected unsupported provider error, got %v", err)
-		}
-
-		issues, err := store.ListIssues(map[string]interface{}{"project_id": project.ID})
-		if err != nil {
-			t.Fatalf("ListIssues: %v", err)
-		}
-		if len(issues) != 0 {
-			t.Fatalf("expected no issues to persist on unsupported provider, got %#v", issues)
-		}
-	})
-}
-
-func TestServiceGetIssueByIdentifierRejectsUnknownProviderKind(t *testing.T) {
-	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	project, err := store.CreateProjectWithProvider("Broken Project", "", "", "", "mystery", "mystery-ref", map[string]interface{}{"project_slug": "mystery"})
-	if err != nil {
-		t.Fatalf("CreateProjectWithProvider: %v", err)
-	}
-	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     "mystery",
-		ProviderIssueRef: "mystery-1",
-		Identifier:       "MYS-1",
-		Title:            "Mystery issue",
-		State:            kanban.StateReady,
-	})
-	if err != nil {
-		t.Fatalf("UpsertProviderIssue: %v", err)
-	}
-
-	svc := NewService(store)
-	_, err = svc.GetIssueByIdentifier(context.Background(), issue.Identifier)
-	if !IsUnsupported(err) {
-		t.Fatalf("expected unsupported provider error, got %v", err)
-	}
-}
-
 func TestServiceUpdateIssueRequiresProject(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -1322,11 +1084,11 @@ func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *t
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -1334,9 +1096,9 @@ func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *t
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Provider issue",
 		State:            kanban.StateBacklog,
 	})
@@ -1346,8 +1108,8 @@ func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *t
 
 	var updateCalled bool
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:     kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
 		getIssue: issue,
 		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
 			updateCalled = true
@@ -1378,11 +1140,11 @@ func TestServiceUpdateIssueStoresLocalAgentMetadataForProviderBackedIssue(t *tes
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -1390,9 +1152,9 @@ func TestServiceUpdateIssueStoresLocalAgentMetadataForProviderBackedIssue(t *tes
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     kanban.ProviderKindLinear,
-		ProviderIssueRef: "linear-1",
-		Identifier:       "LIN-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
 		Title:            "Provider issue",
 		State:            kanban.StateBacklog,
 	})
@@ -1401,8 +1163,8 @@ func TestServiceUpdateIssueStoresLocalAgentMetadataForProviderBackedIssue(t *tes
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:     kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
 		getIssue: issue,
 		updateFunc: func(_ context.Context, _ *kanban.Project, _ *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
 			if _, ok := updates["agent_name"]; ok {
@@ -1439,7 +1201,7 @@ func TestServiceListIssueSummariesReturnsErrorWhenAnyProjectLacksCache(t *testin
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"slow-proj",
 		map[string]interface{}{"project_slug": "slow-proj"},
 	)
@@ -1451,7 +1213,7 @@ func TestServiceListIssueSummariesReturnsErrorWhenAnyProjectLacksCache(t *testin
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"fast-proj",
 		map[string]interface{}{"project_slug": "fast-proj"},
 	)
@@ -1460,17 +1222,17 @@ func TestServiceListIssueSummariesReturnsErrorWhenAnyProjectLacksCache(t *testin
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		listFunc: func(_ context.Context, project *kanban.Project, _ kanban.IssueQuery) ([]kanban.Issue, error) {
 			switch project.ProviderProjectRef {
 			case slowProject.ProviderProjectRef:
 				return nil, context.DeadlineExceeded
 			case fastProject.ProviderProjectRef:
 				return []kanban.Issue{{
-					ProviderKind:     kanban.ProviderKindLinear,
-					ProviderIssueRef: "linear-fast-1",
-					Identifier:       "LIN-FAST-1",
+					ProviderKind:     "stub",
+					ProviderIssueRef: "stub-fast-1",
+					Identifier:       "STUB-FAST-1",
 					Title:            "Fast issue",
 					State:            kanban.StateReady,
 				}}, nil
@@ -1492,39 +1254,8 @@ func TestServiceListIssueSummariesReturnsErrorWhenAnyProjectLacksCache(t *testin
 	if total != 1 || len(items) != 1 {
 		t.Fatalf("expected the healthy project to still sync before returning the error, got total=%d items=%#v", total, items)
 	}
-	if items[0].Identifier != "LIN-FAST-1" || items[0].ProjectID != fastProject.ID {
+	if items[0].Identifier != "STUB-FAST-1" || items[0].ProjectID != fastProject.ID {
 		t.Fatalf("unexpected synced issue payload: %#v", items[0])
-	}
-}
-
-func TestServiceListEpicSummariesPageReturnsUnsupportedCapabilityWhenProviderMissing(t *testing.T) {
-	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
-		"",
-		"",
-		"",
-		kanban.ProviderKindLinear,
-		"proj-slug",
-		map[string]interface{}{"project_slug": "proj-slug"},
-	)
-	if err != nil {
-		t.Fatalf("CreateProjectWithProvider: %v", err)
-	}
-
-	svc := NewService(store)
-
-	_, _, err = svc.ListEpicSummariesPage(project.ID, 10, 0)
-	if err == nil {
-		t.Fatal("expected unsupported capability error")
-	}
-	if !IsUnsupported(err) {
-		t.Fatalf("expected unsupported capability error, got %v", err)
 	}
 }
 
@@ -1542,7 +1273,7 @@ func TestServiceGetIssueByIdentifierColdMissContinuesAcrossProjects(t *testing.T
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"slow-proj",
 		map[string]interface{}{"project_slug": "slow-proj"},
 	)
@@ -1554,7 +1285,7 @@ func TestServiceGetIssueByIdentifierColdMissContinuesAcrossProjects(t *testing.T
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"fast-proj",
 		map[string]interface{}{"project_slug": "fast-proj"},
 	)
@@ -1563,8 +1294,8 @@ func TestServiceGetIssueByIdentifierColdMissContinuesAcrossProjects(t *testing.T
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		getFunc: func(ctx context.Context, project *kanban.Project, identifier string) (*kanban.Issue, error) {
 			switch project.ProviderProjectRef {
 			case slowProject.ProviderProjectRef:
@@ -1572,8 +1303,8 @@ func TestServiceGetIssueByIdentifierColdMissContinuesAcrossProjects(t *testing.T
 				return nil, ctx.Err()
 			case fastProject.ProviderProjectRef:
 				return &kanban.Issue{
-					ProviderKind:     kanban.ProviderKindLinear,
-					ProviderIssueRef: "linear-fast-1",
+					ProviderKind:     "stub",
+					ProviderIssueRef: "stub-fast-1",
 					Identifier:       identifier,
 					Title:            "Fast issue",
 					State:            kanban.StateReady,
@@ -1584,11 +1315,11 @@ func TestServiceGetIssueByIdentifierColdMissContinuesAcrossProjects(t *testing.T
 		},
 	}
 
-	issue, err := svc.GetIssueByIdentifier(context.Background(), "LIN-FAST-1")
+	issue, err := svc.GetIssueByIdentifier(context.Background(), "STUB-FAST-1")
 	if err != nil {
 		t.Fatalf("GetIssueByIdentifier: %v", err)
 	}
-	if issue.ProjectID != fastProject.ID || issue.Identifier != "LIN-FAST-1" {
+	if issue.ProjectID != fastProject.ID || issue.Identifier != "STUB-FAST-1" {
 		t.Fatalf("expected cold miss lookup to continue to the healthy project, got %#v", issue)
 	}
 }
@@ -1609,7 +1340,7 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 			"",
 			"",
 			"",
-			kanban.ProviderKindLinear,
+			"stub",
 			ref,
 			map[string]interface{}{"project_slug": ref},
 		); err != nil {
@@ -1619,8 +1350,8 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 
 	var started atomic.Int32
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		getFunc: func(ctx context.Context, project *kanban.Project, identifier string) (*kanban.Issue, error) {
 			started.Add(1)
 			for started.Load() < int32(len(projectRefs)) {
@@ -1634,8 +1365,8 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 			time.Sleep(15 * time.Millisecond)
 			if project.ProviderProjectRef == "proj-d" {
 				return &kanban.Issue{
-					ProviderKind:     kanban.ProviderKindLinear,
-					ProviderIssueRef: "linear-fast-1",
+					ProviderKind:     "stub",
+					ProviderIssueRef: "stub-fast-1",
 					Identifier:       identifier,
 					Title:            "Fast issue",
 					State:            kanban.StateReady,
@@ -1646,11 +1377,11 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 	}
 
 	start := time.Now()
-	issue, err := svc.GetIssueByIdentifier(context.Background(), "LIN-FAST-1")
+	issue, err := svc.GetIssueByIdentifier(context.Background(), "STUB-FAST-1")
 	if err != nil {
 		t.Fatalf("GetIssueByIdentifier: %v", err)
 	}
-	if issue.Identifier != "LIN-FAST-1" {
+	if issue.Identifier != "STUB-FAST-1" {
 		t.Fatalf("unexpected issue returned: %#v", issue)
 	}
 	if elapsed := time.Since(start); elapsed >= 40*time.Millisecond {
@@ -1672,7 +1403,7 @@ func TestServiceGetIssueByIdentifierColdMissRejectsAmbiguousProviderMatches(t *t
 			"",
 			"",
 			"",
-			kanban.ProviderKindLinear,
+			"stub",
 			ref,
 			map[string]interface{}{"project_slug": ref},
 		); err != nil {
@@ -1681,8 +1412,8 @@ func TestServiceGetIssueByIdentifierColdMissRejectsAmbiguousProviderMatches(t *t
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		getFunc: func(ctx context.Context, project *kanban.Project, identifier string) (*kanban.Issue, error) {
 			if project.ProviderProjectRef == "proj-b" {
 				select {
@@ -1692,7 +1423,7 @@ func TestServiceGetIssueByIdentifierColdMissRejectsAmbiguousProviderMatches(t *t
 				}
 			}
 			return &kanban.Issue{
-				ProviderKind:     kanban.ProviderKindLinear,
+				ProviderKind:     "stub",
 				ProviderIssueRef: project.ProviderProjectRef + "-1",
 				Identifier:       identifier,
 				Title:            project.ProviderProjectRef,
@@ -1701,11 +1432,11 @@ func TestServiceGetIssueByIdentifierColdMissRejectsAmbiguousProviderMatches(t *t
 		},
 	}
 
-	_, err = svc.GetIssueByIdentifier(context.Background(), "LIN-AMBIG")
+	_, err = svc.GetIssueByIdentifier(context.Background(), "STUB-AMBIG")
 	if !errors.Is(err, ErrAmbiguousProviderIssue) {
 		t.Fatalf("expected ambiguous provider issue error, got %v", err)
 	}
-	if _, err := store.GetIssueByIdentifier("LIN-AMBIG"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetIssueByIdentifier("STUB-AMBIG"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected ambiguous lookup not to persist an issue, got %v", err)
 	}
 }
@@ -1718,25 +1449,25 @@ func TestServiceGetIssueByIdentifierColdMissReturnsProviderErrorWhenAllProjectsF
 	t.Cleanup(func() { _ = store.Close() })
 
 	if _, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	); err != nil {
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 
-	providerErr := errors.New("linear unavailable")
+	providerErr := errors.New("stub unavailable")
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:   kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:   "stub",
 		getErr: providerErr,
 	}
 
-	_, err = svc.GetIssueByIdentifier(context.Background(), "LIN-MISS")
+	_, err = svc.GetIssueByIdentifier(context.Background(), "STUB-MISS")
 	if !errors.Is(err, providerErr) {
 		t.Fatalf("expected provider error on cold miss, got %v", err)
 	}
@@ -1752,11 +1483,11 @@ func TestServiceGetIssueByIdentifierColdMissReturnsBoundedProviderTimeout(t *tes
 	t.Cleanup(func() { _ = store.Close() })
 
 	if _, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	); err != nil {
@@ -1764,13 +1495,13 @@ func TestServiceGetIssueByIdentifierColdMissReturnsBoundedProviderTimeout(t *tes
 	}
 
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:    kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:    "stub",
 		getGate: make(chan struct{}),
 	}
 
 	start := time.Now()
-	_, err = svc.GetIssueByIdentifier(context.Background(), "LIN-MISS")
+	_, err = svc.GetIssueByIdentifier(context.Background(), "STUB-MISS")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected bounded provider timeout to surface, got %v", err)
 	}
@@ -1787,11 +1518,11 @@ func TestServiceListIssueSummariesReturnsProviderErrorWhenNoCachedResults(t *tes
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"proj-slug",
 		map[string]interface{}{"project_slug": "proj-slug"},
 	)
@@ -1799,10 +1530,10 @@ func TestServiceListIssueSummariesReturnsProviderErrorWhenNoCachedResults(t *tes
 		t.Fatalf("CreateProjectWithProvider: %v", err)
 	}
 
-	providerErr := errors.New("linear unavailable")
+	providerErr := errors.New("stub unavailable")
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind:    kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind:    "stub",
 		listErr: providerErr,
 	}
 
@@ -1819,10 +1550,10 @@ func TestServiceCreateProjectValidationFailureDoesNotPersistProject(t *testing.T
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	validationErr := errors.New("missing LINEAR_API_KEY")
+	validationErr := errors.New("missing STUB_PROVIDER_API_KEY")
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		validateFunc: func(_ context.Context, project *kanban.Project) error {
 			if project.ProviderProjectRef != "proj-slug" {
 				t.Fatalf("unexpected project for validation: %#v", project)
@@ -1831,7 +1562,7 @@ func TestServiceCreateProjectValidationFailureDoesNotPersistProject(t *testing.T
 		},
 	}
 
-	_, err = svc.CreateProject(context.Background(), "Linear Project", "", "", "", kanban.ProviderKindLinear, "proj-slug", map[string]interface{}{"project_slug": "proj-slug"})
+	_, err = svc.CreateProject(context.Background(), "Stub Project", "", "", "", "stub", "proj-slug", map[string]interface{}{"project_slug": "proj-slug"})
 	if !errors.Is(err, validationErr) {
 		t.Fatalf("expected validation failure, got %v", err)
 	}
@@ -1853,11 +1584,11 @@ func TestServiceUpdateProjectValidationFailureLeavesStoredProjectUntouched(t *te
 	t.Cleanup(func() { _ = store.Close() })
 
 	project, err := store.CreateProjectWithProvider(
-		"Linear Project",
+		"Stub Project",
 		"",
 		"",
 		"",
-		kanban.ProviderKindLinear,
+		"stub",
 		"good-slug",
 		map[string]interface{}{"project_slug": "good-slug"},
 	)
@@ -1867,8 +1598,8 @@ func TestServiceUpdateProjectValidationFailureLeavesStoredProjectUntouched(t *te
 
 	validationErr := errors.New("invalid provider config")
 	svc := NewService(store)
-	svc.providers[kanban.ProviderKindLinear] = &stubProvider{
-		kind: kanban.ProviderKindLinear,
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
 		validateFunc: func(_ context.Context, candidate *kanban.Project) error {
 			if candidate.ProviderProjectRef == "bad-slug" {
 				return validationErr
@@ -1888,5 +1619,66 @@ func TestServiceUpdateProjectValidationFailureLeavesStoredProjectUntouched(t *te
 	}
 	if stored.ProviderProjectRef != "good-slug" {
 		t.Fatalf("expected original provider config to remain, got %#v", stored)
+	}
+}
+
+func TestServiceProjectPathOverridesExpandEnvAndHomePaths(t *testing.T) {
+	homeDir := t.TempDir()
+	repoBase := t.TempDir()
+	workflowBase := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("MAESTRO_REPO_BASE", repoBase)
+	t.Setenv("MAESTRO_WORKFLOW_BASE", workflowBase)
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	svc := NewService(store)
+	validated := 0
+	wantRepo := filepath.Join(repoBase, "repo")
+	wantWorkflow := filepath.Join(homeDir, "workflow", "WORKFLOW.md")
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
+		validateFunc: func(_ context.Context, candidate *kanban.Project) error {
+			validated++
+			if candidate.RepoPath != wantRepo {
+				t.Fatalf("expected repo path %q, got %q", wantRepo, candidate.RepoPath)
+			}
+			if candidate.WorkflowPath != wantWorkflow {
+				t.Fatalf("expected workflow path %q, got %q", wantWorkflow, candidate.WorkflowPath)
+			}
+			return nil
+		},
+	}
+
+	project, err := svc.CreateProject(context.Background(), "Path Project", "", "$MAESTRO_REPO_BASE/repo", "~/workflow/WORKFLOW.md", "stub", "stub-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if validated != 1 {
+		t.Fatalf("expected one validation during create, got %d", validated)
+	}
+	if project.RepoPath != wantRepo || project.WorkflowPath != wantWorkflow {
+		t.Fatalf("expected create to persist expanded paths, got %#v", project)
+	}
+
+	wantRepo = filepath.Join(homeDir, "updated-repo")
+	wantWorkflow = filepath.Join(workflowBase, "updated", "WORKFLOW.md")
+	if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, "~/updated-repo", "$MAESTRO_WORKFLOW_BASE/updated/WORKFLOW.md", project.ProviderKind, project.ProviderProjectRef, nil); err != nil {
+		t.Fatalf("UpdateProject: %v", err)
+	}
+	if validated != 2 {
+		t.Fatalf("expected two validations after update, got %d", validated)
+	}
+
+	updated, err := store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if updated.RepoPath != wantRepo || updated.WorkflowPath != wantWorkflow {
+		t.Fatalf("expected update to persist expanded paths, got %#v", updated)
 	}
 }

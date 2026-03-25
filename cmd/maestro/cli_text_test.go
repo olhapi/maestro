@@ -31,9 +31,9 @@ func TestShellQuoteArg(t *testing.T) {
 		want string
 	}{
 		{name: "plain", in: "maestro", want: "maestro"},
-		{name: "empty", in: "", want: shellQuoteArg("")},
-		{name: "spaces", in: "My Project", want: shellQuoteArg("My Project")},
-		{name: "apostrophe", in: "repo's path", want: shellQuoteArg("repo's path")},
+		{name: "empty", in: "", want: "''"},
+		{name: "spaces", in: "My Project", want: "'My Project'"},
+		{name: "apostrophe", in: "repo's path", want: "'repo'\"'\"'s path'"},
 	}
 
 	for _, tc := range tests {
@@ -100,13 +100,13 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 			t.Fatalf("expected workflow init output to contain %q, got %q", want, stdout)
 		}
 	}
-	if !strings.Contains(stdout, buildMaestroCommand(dbPath, "project", "create", "My Project", "--repo", initRepo)) {
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' project create 'My Project' --repo '"+initRepo+"'") {
 		t.Fatalf("expected quoted next-step command in output %q", stdout)
 	}
-	if !strings.Contains(stdout, buildMaestroCommand(dbPath, "run", initRepo)) {
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' run '"+initRepo+"'") {
 		t.Fatalf("expected quoted run command in output %q", stdout)
 	}
-	if !strings.Contains(stdout, buildMaestroCommand(dbPath, "verify", "--repo", initRepo)) {
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' verify --repo '"+initRepo+"'") {
 		t.Fatalf("expected quoted verify command in output %q", stdout)
 	}
 

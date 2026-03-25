@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,7 +376,7 @@ Implement {{ issue.identifier }}
 	}
 }
 
-func TestLoadWorkflowRejectsLegacyFlatSchema(t *testing.T) {
+func TestLoadWorkflowAcceptsLegacyFlatSchemaAliases(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
 	content := `---
@@ -400,12 +401,62 @@ Hello {{ issue.identifier }}
 	}
 }
 
+func TestLoadWorkflowResolvesWorkspaceRootPaths(t *testing.T) {
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("WORKSPACE_BASE", workDir)
+
+	cases := []struct {
+		name string
+		root string
+		want string
+	}{
+		{
+			name: "env",
+			root: "$WORKSPACE_BASE/workspaces",
+			want: filepath.Join(workDir, "workspaces"),
+		},
+		{
+			name: "home",
+			root: "~/workspaces",
+			want: filepath.Join(homeDir, "workspaces"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+			content := fmt.Sprintf(`---
+tracker:
+  kind: kanban
+workspace:
+  root: %q
+---
+Issue {{ issue.identifier }}
+`, tc.root)
+			if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			workflow, err := LoadWorkflow(workflowPath)
+			if err != nil {
+				t.Fatalf("LoadWorkflow: %v", err)
+			}
+			if workflow.Config.Workspace.Root != tc.want {
+				t.Fatalf("expected workspace root %q, got %q", tc.want, workflow.Config.Workspace.Root)
+			}
+		})
+	}
+}
+
 func TestLoadWorkflowRejectsUnsupportedTrackerKind(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
 	content := `---
 tracker:
-  kind: linear
+  kind: github
 ---
 Hello {{ issue.identifier }}
 `
@@ -415,6 +466,25 @@ Hello {{ issue.identifier }}
 
 	if _, err := LoadWorkflow(workflowPath); err == nil || !strings.Contains(err.Error(), "unsupported tracker.kind") {
 		t.Fatalf("expected unsupported tracker kind error, got %v", err)
+	}
+}
+
+func TestLoadWorkflowRejectsUnsupportedLegacyTrackerFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+tracker_api_token: secret
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadWorkflow(workflowPath); err == nil || !strings.Contains(err.Error(), "legacy workflow key \"tracker_api_token\" is not supported in kanban mode") {
+		t.Fatalf("expected unsupported legacy workflow key error, got %v", err)
 	}
 }
 
@@ -492,6 +562,20 @@ func TestResolveWorkflowPathUsesOverrideRelativeToRepo(t *testing.T) {
 	}
 }
 
+func TestResolveWorkflowPathResolvesEnvAndHomePaths(t *testing.T) {
+	homeDir := t.TempDir()
+	workflowDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("WORKFLOW_ROOT", workflowDir)
+
+	if got := ResolveWorkflowPath("", "$WORKFLOW_ROOT/WORKFLOW.md"); got != filepath.Join(workflowDir, "WORKFLOW.md") {
+		t.Fatalf("expected env-expanded workflow path, got %s", got)
+	}
+	if got := ResolveWorkflowPath("", "~/WORKFLOW.md"); got != filepath.Join(homeDir, "WORKFLOW.md") {
+		t.Fatalf("expected home-expanded workflow path, got %s", got)
+	}
+}
+
 func TestNewManagerForPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "custom.workflow.md")
@@ -555,7 +639,7 @@ Hello {{ issue.identifier }}
 
 	bad := `---
 tracker:
-  kind: linear
+  kind: github
 ---
 {{ issue.identifier }}
 `

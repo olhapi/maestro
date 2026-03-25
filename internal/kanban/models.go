@@ -36,7 +36,6 @@ type IssueType string
 
 const (
 	ProviderKindKanban = "kanban"
-	ProviderKindLinear = "linear"
 
 	WorkflowPhaseImplementation WorkflowPhase = "implementation"
 	WorkflowPhaseReview         WorkflowPhase = "review"

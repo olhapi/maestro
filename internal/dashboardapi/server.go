@@ -115,18 +115,6 @@ func decorateProjectSummaries(projects []kanban.ProjectSummary, scopedRepoPath s
 	return projects
 }
 
-func (s *Server) issueStateCounts(projectID string) (kanban.IssueStateCounts, error) {
-	countsByState, err := s.store.CountIssuesByState(projectID)
-	if err != nil {
-		return kanban.IssueStateCounts{}, err
-	}
-	counts := kanban.IssueStateCounts{}
-	for state, count := range countsByState {
-		counts.AddCount(state, count)
-	}
-	return counts, nil
-}
-
 func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
 	if strings.TrimSpace(scopedRepoPath) == "" {
 		return nil
@@ -216,12 +204,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := s.provider.Snapshot()
-	board, err := s.issueStateCounts("")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	board := kanban.IssueStateCounts{}
+	for _, issue := range issues {
+		board.Add(issue.State)
 	}
-	sessions := s.sessionsPayload(snapshot)
 
 	writeJSON(w, map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
@@ -243,7 +229,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			"limit":  100,
 			"offset": 0,
 		},
-		"sessions": sessions,
+		"sessions": s.provider.LiveSessions(),
 	})
 }
 
@@ -277,12 +263,10 @@ func (s *Server) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := s.provider.Snapshot()
-	board, err := s.issueStateCounts("")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	board := kanban.IssueStateCounts{}
+	for _, issue := range issues {
+		board.Add(issue.State)
 	}
-	sessions := s.sessionsPayload(snapshot)
 
 	writeJSON(w, map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
@@ -302,7 +286,7 @@ func (s *Server) handleWork(w http.ResponseWriter, r *http.Request) {
 			"limit":  100,
 			"offset": 0,
 		},
-		"sessions": sessions,
+		"sessions": s.provider.LiveSessions(),
 	})
 }
 
@@ -809,15 +793,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(parts) > 2 && parts[1] == "execution" {
-		http.NotFound(w, r)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "execution" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
+	if len(parts) == 2 && r.Method == http.MethodGet && parts[1] == "execution" {
 		issue, err := s.service.GetIssueByIdentifier(r.Context(), identifier)
 		if err != nil {
 			writeErrorStatus(w, appErrorStatus(err), err)
@@ -832,17 +808,13 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(parts) > 2 {
-		http.NotFound(w, r)
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		methodNotAllowed(w)
 		return
 	}
 
 	switch parts[1] {
 	case "permissions":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
 		var body struct {
 			PermissionProfile string `json:"permission_profile"`
 		}
@@ -870,10 +842,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, detail)
 	case "approve-plan":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
 		issue, err := s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
 			writeErrorStatus(w, appErrorStatus(err), err)
@@ -917,10 +885,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			"dispatch": s.provider.RetryIssueNow(r.Context(), identifier),
 		})
 	case "state":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
 		var body struct {
 			State string `json:"state"`
 		}
@@ -934,10 +898,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "state": detail.State})
 	case "blockers":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
 		var body struct {
 			BlockedBy []string `json:"blocked_by"`
 		}
@@ -951,16 +911,8 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]interface{}{"ok": true, "identifier": identifier, "blocked_by": detail.BlockedBy})
 	case "retry":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
 		writeJSON(w, s.provider.RetryIssueNow(r.Context(), identifier))
 	case "run-now":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
 		writeJSON(w, s.provider.RunRecurringIssueNow(r.Context(), identifier))
 	default:
 		http.NotFound(w, r)
@@ -969,11 +921,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIssueCommands(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
 	switch {
-	case len(rest) == 0:
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
+	case len(rest) == 0 && r.Method == http.MethodPost:
 		var body struct {
 			Command string `json:"command"`
 		}
@@ -1064,13 +1012,12 @@ func (s *Server) handleIssueCommands(w http.ResponseWriter, r *http.Request, ide
 			methodNotAllowed(w)
 		}
 	default:
-		http.NotFound(w, r)
+		methodNotAllowed(w)
 	}
 }
 
 func (s *Server) handleIssueAssets(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
-	switch {
-	case len(rest) == 0:
+	if len(rest) == 0 {
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
 			return
@@ -1090,11 +1037,9 @@ func (s *Server) handleIssueAssets(w http.ResponseWriter, r *http.Request, ident
 		}
 		writeJSONStatus(w, http.StatusCreated, asset)
 		return
-	case len(rest) == 2 && rest[1] == "content":
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
+	}
+
+	if len(rest) == 2 && rest[1] == "content" && r.Method == http.MethodGet {
 		asset, path, err := s.service.GetIssueAssetContent(r.Context(), identifier, rest[0])
 		if err != nil {
 			writeError(w, appErrorStatus(err), err)
@@ -1112,20 +1057,18 @@ func (s *Server) handleIssueAssets(w http.ResponseWriter, r *http.Request, ident
 		w.Header().Set("Content-Length", strconv.FormatInt(asset.ByteSize, 10))
 		http.ServeContent(w, r, asset.Filename, asset.UpdatedAt, file)
 		return
-	case len(rest) == 1:
-		if r.Method != http.MethodDelete {
-			methodNotAllowed(w)
-			return
-		}
+	}
+
+	if len(rest) == 1 && r.Method == http.MethodDelete {
 		if err := s.service.DeleteIssueAsset(r.Context(), identifier, rest[0]); err != nil {
 			writeError(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSON(w, map[string]interface{}{"deleted": true, "identifier": identifier, "asset_id": rest[0]})
 		return
-	default:
-		http.NotFound(w, r)
 	}
+
+	methodNotAllowed(w)
 }
 
 func (s *Server) handleIssueComments(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
@@ -1157,11 +1100,7 @@ func (s *Server) handleIssueComments(w http.ResponseWriter, r *http.Request, ide
 		return
 	}
 
-	if len(rest) == 4 && rest[1] == "attachments" && rest[2] != "" && rest[3] == "content" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
+	if len(rest) == 4 && rest[1] == "attachments" && rest[2] != "" && rest[3] == "content" && r.Method == http.MethodGet {
 		content, err := s.service.GetIssueCommentAttachmentContent(r.Context(), identifier, rest[0], rest[2])
 		if err != nil {
 			writeErrorStatus(w, appErrorStatus(err), err)
@@ -1445,7 +1384,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, s.sessionsPayload(s.provider.Snapshot()))
+	writeJSON(w, s.sessionsPayload())
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {

@@ -36,19 +36,12 @@ func newHandler(store *kanban.Store, provider dashboardapi.Provider) http.Handle
 			http.NotFound(w, r)
 			return
 		}
-		target := "/"
-		if rawQuery := strings.TrimSpace(r.URL.RawQuery); rawQuery != "" {
-			target += "?" + rawQuery
-		}
-		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 	})
 	mux.HandleFunc("/dashboard/", func(w http.ResponseWriter, r *http.Request) {
 		target := strings.TrimPrefix(r.URL.Path, "/dashboard")
 		if target == "" {
 			target = "/"
-		}
-		if rawQuery := strings.TrimSpace(r.URL.RawQuery); rawQuery != "" {
-			target += "?" + rawQuery
 		}
 		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 	})
