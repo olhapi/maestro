@@ -69,7 +69,11 @@ func (p *LinearProvider) ListIssues(ctx context.Context, project *kanban.Project
 		filterParts = append(filterParts, `assignee: {id: {eq: $assigneeID}}`)
 		variables["assigneeID"] = assigneeID
 	}
-	if stateName := strings.TrimSpace(query.State); stateName != "" {
+	if stateType, ok := linearStateTypeForState(query.State); ok {
+		varDecls = append(varDecls, "$stateType: String!")
+		filterParts = append(filterParts, `state: {type: {eq: $stateType}}`)
+		variables["stateType"] = stateType
+	} else if stateName := strings.TrimSpace(query.State); stateName != "" {
 		varDecls = append(varDecls, "$stateName: String!")
 		filterParts = append(filterParts, `state: {name: {eq: $stateName}}`)
 		variables["stateName"] = stateName
@@ -87,7 +91,7 @@ query MaestroLinearIssues(%s) {
       createdAt
       updatedAt
       assignee { id }
-      state { name }
+      state { name type }
       labels { nodes { name } }
       inverseRelations(first: 50) {
         nodes {
@@ -117,8 +121,9 @@ query MaestroLinearIssues(%s) {
 			if !matchesAssigneeRaw(node, assigneeMatcher) {
 				continue
 			}
+			rawStateName := asStringNested(node, "state", "name")
 			issue := p.normalizeIssue(node)
-			if !matchesIssueQuery(issue, query) {
+			if !matchesIssueQuery(issue, rawStateName, query) {
 				continue
 			}
 			if project != nil {
@@ -150,7 +155,7 @@ query MaestroLinearIssue($projectSlug: String!, $identifier: String!) {
       createdAt
       updatedAt
       assignee { id }
-      state { name }
+      state { name type }
       labels { nodes { name } }
       inverseRelations(first: 50) {
         nodes {
@@ -203,7 +208,7 @@ mutation MaestroLinearCreateIssue($projectId: String!, $title: String!, $descrip
       createdAt
       updatedAt
       assignee { id }
-      state { name }
+      state { name type }
       labels { nodes { name } }
       inverseRelations(first: 50) { nodes { type issue { identifier } } }
     }
@@ -588,28 +593,41 @@ query MaestroLinearProject($projectSlug: String!) {
 }
 
 func (p *LinearProvider) resolveStateID(ctx context.Context, project *kanban.Project, issueID, stateName string) (string, error) {
+	stateType, ok := linearStateTypeForState(stateName)
+	if !ok {
+		return "", fmt.Errorf("%w: linear state %q is not supported", ErrUnsupportedCapability, strings.TrimSpace(stateName))
+	}
 	const gql = `
-query MaestroLinearState($issueId: String!, $stateName: String!) {
+query MaestroLinearState($issueId: String!, $stateType: String!) {
   issue(id: $issueId) {
     team {
-      states(filter: {name: {eq: $stateName}}, first: 1) {
-        nodes { id }
+      states(filter: {type: {eq: $stateType}}, first: 50) {
+        nodes { id position }
       }
     }
   }
 }`
 	body, err := p.graphql(ctx, project, gql, map[string]interface{}{
 		"issueId":   issueID,
-		"stateName": stateName,
+		"stateType": stateType,
 	})
 	if err != nil {
 		return "", err
 	}
 	nodes, _ := getMapSlice(body, "data", "issue", "team", "states", "nodes")
 	if len(nodes) == 0 {
-		return "", fmt.Errorf("linear state not found: %s", stateName)
+		return "", fmt.Errorf("linear state not found for type %s", stateType)
 	}
-	stateID, _ := nodes[0]["id"].(string)
+	bestIndex := 0
+	bestPosition := asInt(nodes[0]["position"])
+	for i := 1; i < len(nodes); i++ {
+		position := asInt(nodes[i]["position"])
+		if position < bestPosition {
+			bestIndex = i
+			bestPosition = position
+		}
+	}
+	stateID, _ := nodes[bestIndex]["id"].(string)
 	if strings.TrimSpace(stateID) == "" {
 		return "", fmt.Errorf("linear state lookup returned empty id")
 	}
@@ -653,13 +671,22 @@ query MaestroLinearViewer {
 }
 
 func (p *LinearProvider) normalizeIssue(raw map[string]interface{}) kanban.Issue {
+	stateType := asStringNested(raw, "state", "type")
+	stateName := asStringNested(raw, "state", "name")
+	issueState, ok := linearCanonicalState(stateType)
+	if !ok {
+		issueState, ok = linearCanonicalState(stateName)
+	}
+	if !ok {
+		issueState = kanban.StateReady
+	}
 	issue := kanban.Issue{
 		ProviderKind:     kanban.ProviderKindLinear,
 		ProviderIssueRef: asString(raw["id"]),
 		Identifier:       asString(raw["identifier"]),
 		Title:            asString(raw["title"]),
 		Description:      asString(raw["description"]),
-		State:            kanban.State(asStringNested(raw, "state", "name")),
+		State:            issueState,
 		Priority:         asInt(raw["priority"]),
 		BranchName:       asString(raw["branchName"]),
 		ProviderShadow:   true,
@@ -760,9 +787,15 @@ func (p *LinearProvider) graphql(ctx context.Context, project *kanban.Project, q
 	return body, nil
 }
 
-func matchesIssueQuery(issue kanban.Issue, query kanban.IssueQuery) bool {
-	if query.State != "" && !strings.EqualFold(string(issue.State), query.State) {
-		return false
+func matchesIssueQuery(issue kanban.Issue, rawStateName string, query kanban.IssueQuery) bool {
+	if query.State != "" {
+		if expected, ok := linearCanonicalState(query.State); ok {
+			if issue.State != expected {
+				return false
+			}
+		} else if !strings.EqualFold(strings.TrimSpace(rawStateName), strings.TrimSpace(query.State)) {
+			return false
+		}
 	}
 	if query.Search != "" {
 		needle := strings.ToLower(strings.TrimSpace(query.Search))
@@ -779,6 +812,42 @@ func matchesIssueQuery(issue kanban.Issue, query kanban.IssueQuery) bool {
 		}
 	}
 	return true
+}
+
+func linearStateTypeForState(state string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case string(kanban.StateBacklog), "icebox":
+		return "backlog", true
+	case string(kanban.StateReady), "todo", "to do", "unstarted":
+		return "unstarted", true
+	case string(kanban.StateInProgress), "in progress", "doing", "started":
+		return "started", true
+	case string(kanban.StateInReview), "in review":
+		return "started", true
+	case string(kanban.StateDone), "completed", "closed":
+		return "completed", true
+	case string(kanban.StateCancelled), "canceled":
+		return "canceled", true
+	default:
+		return "", false
+	}
+}
+
+func linearCanonicalState(state string) (kanban.State, bool) {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case string(kanban.StateBacklog), "icebox":
+		return kanban.StateBacklog, true
+	case string(kanban.StateReady), "todo", "to do", "unstarted":
+		return kanban.StateReady, true
+	case string(kanban.StateInProgress), "in progress", "doing", "started", string(kanban.StateInReview), "in review":
+		return kanban.StateInProgress, true
+	case string(kanban.StateDone), "completed", "closed":
+		return kanban.StateDone, true
+	case string(kanban.StateCancelled), "canceled":
+		return kanban.StateCancelled, true
+	default:
+		return "", false
+	}
 }
 
 func nullableString(value string) interface{} {

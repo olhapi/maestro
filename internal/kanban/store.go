@@ -2339,9 +2339,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 			lastSyncedAt = incoming.LastSyncedAt.UTC()
 		}
 		_, err = tx.Exec(`
-				INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at, last_synced_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, workflowPhase, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), createdAt, updatedAt, lastSyncedAt,
+				INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, last_synced_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, projectID, nil, incoming.Identifier, IssueTypeStandard, providerKind, providerIssueRef, incoming.Title, incoming.Description, incoming.State, workflowPhase, PermissionProfileDefault, incoming.Priority, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), strings.TrimSpace(incoming.BranchName), strings.TrimSpace(incoming.PRURL), createdAt, updatedAt, lastSyncedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -2372,9 +2372,9 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		}
 		res, err := tx.Exec(`
 			UPDATE issues
-			SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, workflow_phase = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, updated_at = ?, last_synced_at = ?
+			SET project_id = ?, identifier = ?, issue_type = ?, title = ?, description = ?, state = ?, workflow_phase = ?, priority = ?, provider_kind = ?, provider_issue_ref = ?, provider_shadow = 1, agent_name = COALESCE(NULLIF(?, ''), agent_name), agent_prompt = COALESCE(NULLIF(?, ''), agent_prompt), branch_name = COALESCE(NULLIF(?, ''), branch_name), pr_url = COALESCE(NULLIF(?, ''), pr_url), updated_at = ?, last_synced_at = ?
 			WHERE id = ?`,
-			projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, workflowPhase, incoming.Priority, providerKind, providerIssueRef, updatedAt, lastSyncedAt, currentID,
+			projectID, incoming.Identifier, IssueTypeStandard, incoming.Title, incoming.Description, incoming.State, workflowPhase, incoming.Priority, providerKind, providerIssueRef, strings.TrimSpace(incoming.AgentName), strings.TrimSpace(incoming.AgentPrompt), strings.TrimSpace(incoming.BranchName), strings.TrimSpace(incoming.PRURL), updatedAt, lastSyncedAt, currentID,
 		)
 		if err != nil {
 			return nil, err

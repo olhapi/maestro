@@ -1054,6 +1054,244 @@ func TestServiceCreateIssueRequiresProject(t *testing.T) {
 	}
 }
 
+func TestServiceCreateIssuePreservesProviderMetadataOnProviderBackedCreate(t *testing.T) {
+	t.Run("blank local metadata preserves provider values", func(t *testing.T) {
+		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+
+		project, err := store.CreateProjectWithProvider(
+			"Linear Project",
+			"",
+			"",
+			"",
+			kanban.ProviderKindLinear,
+			"proj-slug",
+			map[string]interface{}{"project_slug": "proj-slug"},
+		)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+
+		svc := NewService(store)
+		svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+			kind: kanban.ProviderKindLinear,
+			createFunc: func(_ context.Context, _ *kanban.Project, _ IssueCreateInput) (*kanban.Issue, error) {
+				return &kanban.Issue{
+					ProviderKind:     kanban.ProviderKindLinear,
+					ProviderIssueRef: "linear-1",
+					Identifier:       "LIN-1",
+					Title:            "Provider-backed issue",
+					State:            kanban.StateReady,
+					AgentName:        "provider-agent",
+					AgentPrompt:      "provider prompt",
+					BranchName:       "feature/provider-1",
+					PRURL:            "https://example.com/pr/provider-1",
+				}, nil
+			},
+		}
+
+		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
+			ProjectID: project.ID,
+			Title:     "Provider-backed issue",
+		})
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if detail.AgentName != "provider-agent" || detail.AgentPrompt != "provider prompt" || detail.BranchName != "feature/provider-1" || detail.PRURL != "https://example.com/pr/provider-1" {
+			t.Fatalf("expected provider metadata to survive blank local inputs, got %#v", detail)
+		}
+
+		persisted, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-1")
+		if err != nil {
+			t.Fatalf("GetIssueByProviderRef: %v", err)
+		}
+		if persisted.AgentName != "provider-agent" || persisted.AgentPrompt != "provider prompt" || persisted.BranchName != "feature/provider-1" || persisted.PRURL != "https://example.com/pr/provider-1" {
+			t.Fatalf("expected persisted provider metadata to survive, got %#v", persisted)
+		}
+	})
+
+	t.Run("explicit local metadata wins", func(t *testing.T) {
+		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+
+		project, err := store.CreateProjectWithProvider(
+			"Linear Project",
+			"",
+			"",
+			"",
+			kanban.ProviderKindLinear,
+			"proj-slug",
+			map[string]interface{}{"project_slug": "proj-slug"},
+		)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+
+		svc := NewService(store)
+		svc.providers[kanban.ProviderKindLinear] = &stubProvider{
+			kind: kanban.ProviderKindLinear,
+			createFunc: func(_ context.Context, _ *kanban.Project, _ IssueCreateInput) (*kanban.Issue, error) {
+				return &kanban.Issue{
+					ProviderKind:     kanban.ProviderKindLinear,
+					ProviderIssueRef: "linear-2",
+					Identifier:       "LIN-2",
+					Title:            "Provider-backed override issue",
+					State:            kanban.StateReady,
+					AgentName:        "provider-agent",
+					AgentPrompt:      "provider prompt",
+					BranchName:       "feature/provider-2",
+					PRURL:            "https://example.com/pr/provider-2",
+				}, nil
+			},
+		}
+
+		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
+			ProjectID:   project.ID,
+			Title:       "Provider-backed override issue",
+			AgentName:   "local-agent",
+			AgentPrompt: "local prompt",
+			BranchName:  "feature/local-2",
+			PRURL:       "https://example.com/pr/local-2",
+		})
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if detail.AgentName != "local-agent" || detail.AgentPrompt != "local prompt" || detail.BranchName != "feature/local-2" || detail.PRURL != "https://example.com/pr/local-2" {
+			t.Fatalf("expected explicit local metadata to win, got %#v", detail)
+		}
+
+		persisted, err := store.GetIssueByProviderRef(kanban.ProviderKindLinear, "linear-2")
+		if err != nil {
+			t.Fatalf("GetIssueByProviderRef: %v", err)
+		}
+		if persisted.AgentName != "local-agent" || persisted.AgentPrompt != "local prompt" || persisted.BranchName != "feature/local-2" || persisted.PRURL != "https://example.com/pr/local-2" {
+			t.Fatalf("expected persisted local metadata to win, got %#v", persisted)
+		}
+	})
+}
+
+func TestServiceCreateProjectRejectsUnknownProviderKind(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	svc := NewService(store)
+	_, err = svc.CreateProject(context.Background(), "Broken Project", "", "", "", "mystery", "mystery-ref", map[string]interface{}{"project_slug": "mystery"})
+	if !IsUnsupported(err) {
+		t.Fatalf("expected unsupported provider error, got %v", err)
+	}
+
+	projects, err := store.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("expected no projects to persist on unsupported provider, got %#v", projects)
+	}
+}
+
+func TestServiceCreateIssueDefaultsBlankProviderKindToKanbanAndRejectsUnknownProviderKinds(t *testing.T) {
+	t.Run("blank provider kind defaults to kanban", func(t *testing.T) {
+		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+
+		project, err := store.CreateProjectWithProvider("Local Project", "", "", "", "", "", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+
+		svc := NewService(store)
+		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
+			ProjectID: project.ID,
+			Title:     "Local issue",
+		})
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if detail.ProviderKind != kanban.ProviderKindKanban {
+			t.Fatalf("expected blank provider kind to resolve to kanban, got %#v", detail.ProviderKind)
+		}
+
+		persisted, err := store.GetIssueByIdentifier(detail.Identifier)
+		if err != nil {
+			t.Fatalf("GetIssueByIdentifier: %v", err)
+		}
+		if persisted.ProviderKind != kanban.ProviderKindKanban {
+			t.Fatalf("expected persisted issue to remain kanban, got %#v", persisted.ProviderKind)
+		}
+	})
+
+	t.Run("unknown provider kind rejects create issue", func(t *testing.T) {
+		store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+
+		project, err := store.CreateProjectWithProvider("Broken Project", "", "", "", "mystery", "mystery-ref", map[string]interface{}{"project_slug": "mystery"})
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+
+		svc := NewService(store)
+		_, err = svc.CreateIssue(context.Background(), IssueCreateInput{
+			ProjectID: project.ID,
+			Title:     "Broken issue",
+		})
+		if !IsUnsupported(err) {
+			t.Fatalf("expected unsupported provider error, got %v", err)
+		}
+
+		issues, err := store.ListIssues(map[string]interface{}{"project_id": project.ID})
+		if err != nil {
+			t.Fatalf("ListIssues: %v", err)
+		}
+		if len(issues) != 0 {
+			t.Fatalf("expected no issues to persist on unsupported provider, got %#v", issues)
+		}
+	})
+}
+
+func TestServiceGetIssueByIdentifierRejectsUnknownProviderKind(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider("Broken Project", "", "", "", "mystery", "mystery-ref", map[string]interface{}{"project_slug": "mystery"})
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     "mystery",
+		ProviderIssueRef: "mystery-1",
+		Identifier:       "MYS-1",
+		Title:            "Mystery issue",
+		State:            kanban.StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	svc := NewService(store)
+	_, err = svc.GetIssueByIdentifier(context.Background(), issue.Identifier)
+	if !IsUnsupported(err) {
+		t.Fatalf("expected unsupported provider error, got %v", err)
+	}
+}
+
 func TestServiceUpdateIssueRequiresProject(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
