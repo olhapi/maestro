@@ -15,14 +15,14 @@
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
-    "@astrojs/mdx": "^5.0.1",
-    "@astrojs/react": "^5.0.0",
+    "@astrojs/mdx": "^5.0.2",
+    "@astrojs/react": "^5.0.1",
     "@astrojs/sitemap": "^3.7.1",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/ibm-plex-sans": "^5.2.8",
     "@fontsource/space-grotesk": "^5.2.10",
-    "astro": "^6.0.5",
-    "motion": "^12.37.0",
+    "astro": "^6.0.8",
+    "motion": "^12.38.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
