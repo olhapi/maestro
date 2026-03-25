@@ -3,7 +3,9 @@ package fakeappserver
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -23,12 +26,15 @@ const (
 )
 
 type Scenario struct {
-	Steps []Step `json:"steps"`
+	Steps             []Step `json:"steps"`
+	ExitAfterLastStep bool   `json:"exit_after_last_step,omitempty"`
 }
 
 type Step struct {
 	Match            Match    `json:"match"`
 	Emit             []Output `json:"emit,omitempty"`
+	DelayMS          int      `json:"delay_ms,omitempty"`
+	EmitAfterDelay   []Output `json:"emit_after_delay,omitempty"`
 	WaitForRelease   string   `json:"wait_for_release,omitempty"`
 	EmitAfterRelease []Output `json:"emit_after_release,omitempty"`
 	ExitCode         *int     `json:"exit_code,omitempty"`
@@ -43,6 +49,17 @@ type Output struct {
 	Stream string                 `json:"stream,omitempty"`
 	Text   string                 `json:"text,omitempty"`
 	JSON   map[string]interface{} `json:"json,omitempty"`
+}
+
+type ExitCodeError struct {
+	Code int
+}
+
+func (e *ExitCodeError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("exit code %d", e.Code)
 }
 
 type Config struct {
@@ -128,14 +145,18 @@ func MaybeRun() {
 	if os.Getenv(envHelperMode) != "1" {
 		return
 	}
-	if err := run(); err != nil {
+	if err := runFromEnv(); err != nil {
+		var exitErr *ExitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 	os.Exit(0)
 }
 
-func run() error {
+func runFromEnv() error {
 	path := os.Getenv(envScenarioPath)
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("missing %s", envScenarioPath)
@@ -159,8 +180,21 @@ func run() error {
 		control = json.NewDecoder(conn)
 	}
 
-	tracePath := os.Getenv(envTraceFilePath)
-	scanner := bufio.NewScanner(os.Stdin)
+	return RunScenario(os.Stdin, os.Stdout, os.Stderr, os.Getenv(envTraceFilePath), control, scenario)
+}
+
+func RunScenario(stdin io.Reader, stdout, stderr io.Writer, tracePath string, control *json.Decoder, scenario Scenario) error {
+	if stdin == nil {
+		stdin = strings.NewReader("")
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+
+	scanner := bufio.NewScanner(stdin)
 	const maxLine = 2 * 1024 * 1024
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLine)
 
@@ -181,7 +215,13 @@ func run() error {
 		if !step.Match.matches(payload) {
 			return fmt.Errorf("unexpected payload at step %d: want %+v got %s", stepIndex, step.Match, line)
 		}
-		if err := emitOutputs(step.Emit); err != nil {
+		if err := emitOutputs(step.Emit, stdout, stderr); err != nil {
+			return err
+		}
+		if step.DelayMS > 0 {
+			time.Sleep(time.Duration(step.DelayMS) * time.Millisecond)
+		}
+		if err := emitOutputs(step.EmitAfterDelay, stdout, stderr); err != nil {
 			return err
 		}
 		if step.WaitForRelease != "" {
@@ -192,13 +232,18 @@ func run() error {
 				return err
 			}
 		}
-		if err := emitOutputs(step.EmitAfterRelease); err != nil {
+		if err := emitOutputs(step.EmitAfterRelease, stdout, stderr); err != nil {
 			return err
 		}
 		if step.ExitCode != nil {
-			os.Exit(*step.ExitCode)
+			return &ExitCodeError{Code: *step.ExitCode}
 		}
 		stepIndex++
+		if stepIndex == len(scenario.Steps) {
+			if scenario.ExitAfterLastStep {
+				return nil
+			}
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scan stdin: %w", err)
@@ -236,11 +281,11 @@ func traceLine(path, line string) error {
 	return nil
 }
 
-func emitOutputs(outputs []Output) error {
+func emitOutputs(outputs []Output, stdout, stderr io.Writer) error {
 	for _, output := range outputs {
-		target := os.Stdout
+		target := stdout
 		if strings.EqualFold(output.Stream, "stderr") {
-			target = os.Stderr
+			target = stderr
 		}
 		switch {
 		case output.JSON != nil:

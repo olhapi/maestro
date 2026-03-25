@@ -1,121 +1,116 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
-	"time"
-)
 
-type envelope struct {
-	ID     interface{}            `json:"id,omitempty"`
-	Method string                 `json:"method,omitempty"`
-	Params map[string]interface{} `json:"params,omitempty"`
-	Result map[string]interface{} `json:"result,omitempty"`
-}
+	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
+)
 
 func main() {
 	var scenario string
-	var delayMs int
+	var delayMS int
 	flag.StringVar(&scenario, "scenario", "complete", "Scenario to run: complete, input, or stall")
-	flag.IntVar(&delayMs, "delay-ms", 0, "Optional delay before emitting turn events")
+	flag.IntVar(&delayMS, "delay-ms", 0, "Optional delay before emitting turn events")
 	flag.Parse()
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-
-	threadID := "thread-" + sanitizeScenario(scenario)
-	turnID := "turn-" + sanitizeScenario(scenario)
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.HasPrefix(line, "{") {
-			continue
-		}
-
-		var req envelope
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-
-		switch req.Method {
-		case "initialize":
-			emit(envelope{ID: req.ID, Result: map[string]interface{}{"ok": true}})
-		case "initialized":
-		case "thread/start":
-			emit(envelope{
-				ID: req.ID,
-				Result: map[string]interface{}{
-					"thread": map[string]interface{}{"id": threadID},
-				},
-			})
-		case "turn/start":
-			emit(envelope{
-				ID: req.ID,
-				Result: map[string]interface{}{
-					"turn": map[string]interface{}{"id": turnID},
-				},
-			})
-			if delayMs > 0 {
-				time.Sleep(time.Duration(delayMs) * time.Millisecond)
-			}
-			switch sanitizeScenario(scenario) {
-			case "complete":
-				emit(envelope{
-					Method: "turn/completed",
-					Params: map[string]interface{}{
-						"threadId": threadID,
-						"turn": map[string]interface{}{
-							"id":     turnID,
-							"status": "completed",
-							"items":  []interface{}{},
-						},
-					},
-				})
-				return
-			case "input":
-				emit(envelope{
-					ID:     1000,
-					Method: "item/tool/requestUserInput",
-					Params: map[string]interface{}{
-						"questions": []map[string]interface{}{{
-							"id":       "strategy",
-							"header":   "Strategy",
-							"question": "Which strategy should I use?",
-							"options": []map[string]interface{}{
-								{"label": "Option A", "description": "Use approach A"},
-								{"label": "Option B", "description": "Use approach B"},
-							},
-						}},
-					},
-				})
-				sleepForever()
-			case "stall":
-				sleepForever()
-			default:
-				fmt.Fprintf(os.Stderr, "unknown scenario %q\n", scenario)
-				os.Exit(2)
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
-}
-
-func emit(payload envelope) {
-	body, err := json.Marshal(payload)
+	runScenario, err := scenarioForMode(scenario, delayMS)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	fmt.Println(string(body))
+
+	if err := fakeappserver.RunScenario(os.Stdin, os.Stdout, os.Stderr, os.Getenv("TRACE_FILE"), nil, runScenario); err != nil {
+		var exitErr *fakeappserver.ExitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+}
+
+func scenarioForMode(mode string, delayMS int) (fakeappserver.Scenario, error) {
+	threadID := "thread-" + sanitizeScenario(mode)
+	turnID := "turn-" + sanitizeScenario(mode)
+
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{"ok": true}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id": 2,
+						"result": map[string]interface{}{
+							"thread": map[string]interface{}{"id": threadID},
+						},
+					},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id": 3,
+						"result": map[string]interface{}{
+							"turn": map[string]interface{}{"id": turnID},
+						},
+					},
+				}},
+				DelayMS: delayMS,
+			},
+		},
+	}
+
+	switch sanitizeScenario(mode) {
+	case "complete":
+		scenario.ExitAfterLastStep = true
+		scenario.Steps[3].EmitAfterDelay = []fakeappserver.Output{{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{
+					"threadId": threadID,
+					"turn": map[string]interface{}{
+						"id":     turnID,
+						"status": "completed",
+						"items":  []interface{}{},
+					},
+				},
+			},
+		}}
+	case "input":
+		scenario.Steps[3].EmitAfterDelay = []fakeappserver.Output{{
+			JSON: map[string]interface{}{
+				"id":     1000,
+				"method": "item/tool/requestUserInput",
+				"params": map[string]interface{}{
+					"questions": []map[string]interface{}{{
+						"id":       "strategy",
+						"header":   "Strategy",
+						"question": "Which strategy should I use?",
+						"options": []map[string]interface{}{
+							{"label": "Option A", "description": "Use approach A"},
+							{"label": "Option B", "description": "Use approach B"},
+						},
+					}},
+				},
+			},
+		}}
+	case "stall":
+		// No additional output. The helper keeps reading stdin and stays alive.
+	default:
+		return fakeappserver.Scenario{}, fmt.Errorf("unknown scenario %q", mode)
+	}
+
+	return scenario, nil
 }
 
 func sanitizeScenario(value string) string {
@@ -128,11 +123,5 @@ func sanitizeScenario(value string) string {
 		return "stall"
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
-	}
-}
-
-func sleepForever() {
-	for {
-		time.Sleep(time.Hour)
 	}
 }
