@@ -131,9 +131,9 @@ func TestProcessRetriesAndRunLoopHelpers(t *testing.T) {
 	orch.claimed[terminalIssue.ID] = struct{}{}
 	orch.claimed[blockedIssue.ID] = struct{}{}
 	orch.claimed["missing"] = struct{}{}
-	orch.retries[runIssue.ID] = retryEntry{Attempt: 2, Phase: string(kanban.WorkflowPhaseImplementation), DueAt: now, DelayType: "failure"}
-	orch.retries[terminalIssue.ID] = retryEntry{Attempt: 1, Phase: string(kanban.WorkflowPhaseComplete), DueAt: now, DelayType: "failure"}
-	orch.retries[blockedIssue.ID] = retryEntry{Attempt: 1, Phase: string(kanban.WorkflowPhaseImplementation), DueAt: now, DelayType: "failure"}
+	orch.retries[runIssue.ID] = retryEntry{Attempt: 2, Identifier: runIssue.Identifier, Phase: string(kanban.WorkflowPhaseImplementation), DueAt: now, DelayType: "failure"}
+	orch.retries[terminalIssue.ID] = retryEntry{Attempt: 1, Identifier: terminalIssue.Identifier, Phase: string(kanban.WorkflowPhaseComplete), DueAt: now, DelayType: "failure"}
+	orch.retries[blockedIssue.ID] = retryEntry{Attempt: 1, Identifier: blockedIssue.Identifier, Phase: string(kanban.WorkflowPhaseImplementation), DueAt: now, DelayType: "failure"}
 	orch.retries["missing"] = retryEntry{Attempt: 1, Phase: string(kanban.WorkflowPhaseImplementation), DueAt: now, DelayType: "failure"}
 
 	orch.processRetries(context.Background())
