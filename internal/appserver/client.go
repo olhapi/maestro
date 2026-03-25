@@ -221,15 +221,20 @@ func Run(ctx context.Context, cfg ClientConfig) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer client.Close()
+	defer func() {
+		_ = client.Close()
+	}()
 
-	if err := client.RunTurn(ctx, cfg.Prompt, cfg.Title); err != nil {
-		return &Result{Output: client.Output(), Session: client.Session()}, err
+	runErr := client.RunTurn(ctx, cfg.Prompt, cfg.Title)
+	closeErr := client.Close()
+	result := &Result{Output: client.Output(), Session: client.Session()}
+	if runErr != nil {
+		return result, runErr
 	}
-	if err := client.Wait(); err != nil {
-		return &Result{Output: client.Output(), Session: client.Session()}, err
+	if closeErr != nil {
+		return result, closeErr
 	}
-	return &Result{Output: client.Output(), Session: client.Session()}, nil
+	return result, nil
 }
 
 func (c *Client) Session() *Session {
@@ -268,18 +273,47 @@ func (c *Client) Wait() error {
 func (c *Client) Close() error {
 	var closeErr error
 	c.closeOnce.Do(func() {
+		captureWaitErr := func(err error) error {
+			if err != nil {
+				return err
+			}
+			select {
+			case readErr := <-c.lineErr:
+				if readErr != nil && !isBenignReadCloseError(readErr) {
+					return readErr
+				}
+			default:
+			}
+			return nil
+		}
+
 		if c.stdin != nil {
 			_ = c.stdin.Close()
 		}
 		if c.cmd != nil && c.cmd.Process != nil {
+			// Let the app-server observe stdin EOF and exit cleanly before we escalate.
+			select {
+			case err := <-c.waitCh:
+				closeErr = captureWaitErr(err)
+				return
+			default:
+			}
+			select {
+			case err := <-c.waitCh:
+				if closeErr == nil {
+					closeErr = captureWaitErr(err)
+				}
+				return
+			case <-time.After(managedProcessTerminateWait):
+			}
 			pid := c.cmd.Process.Pid
-			if err := terminateManagedProcessTree(pid, managedProcessTerminateWait, managedProcessKillWait); err != nil {
+			if err := terminateManagedProcessTree(pid, managedProcessTerminateWait, managedProcessKillWait); err != nil && closeErr == nil {
 				closeErr = err
 			}
 			select {
 			case err := <-c.waitCh:
 				if closeErr == nil {
-					closeErr = err
+					closeErr = captureWaitErr(err)
 				}
 			case <-time.After(managedProcessKillWait):
 			}
@@ -449,10 +483,11 @@ func (c *Client) clearActiveThread() {
 }
 
 func (c *Client) initialize(ctx context.Context) error {
-	if err := c.sendMessage(protocol.InitializeRequest(c.nextRequestID(), "Maestro")); err != nil {
+	requestID := c.nextRequestID()
+	if err := c.sendMessage(protocol.InitializeRequest(requestID, "Maestro")); err != nil {
 		return err
 	}
-	if _, err := c.awaitResponse(ctx, 1); err != nil {
+	if _, err := c.awaitResponse(ctx, requestID); err != nil {
 		return err
 	}
 	c.logger.Info("Codex session initialized")
@@ -808,7 +843,7 @@ func (c *Client) turnFinishedByCleanProcessExit(wait time.Duration) bool {
 
 func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (bool, error) {
 	method := payload.Method
-	if method == "" || !payload.HasID() {
+	if !payload.HasID() {
 		return false, nil
 	}
 
@@ -896,7 +931,11 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 		c.emitMessage(eventName, map[string]interface{}{"payload": payload.Raw})
 		return true, nil
 	default:
-		return false, nil
+		return true, &RunError{
+			Kind:    "unsupported_request",
+			Payload: payload.Raw,
+			Err:     fmt.Errorf("unsupported request method %q", strings.TrimSpace(method)),
+		}
 	}
 }
 
@@ -1096,7 +1135,7 @@ func (c *Client) registerPendingInteraction(interaction PendingInteraction, payl
 	waiter := &interactionWaiter{
 		interaction: interaction,
 		payloadID:   payloadID,
-		responseCh:  make(chan PendingInteractionResponse),
+		responseCh:  make(chan PendingInteractionResponse, 1),
 		doneCh:      make(chan struct{}),
 	}
 	c.pendingMu.Lock()
