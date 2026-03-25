@@ -1,4 +1,4 @@
 - never run "--no-verify", if coverage is missing or there are errors then they should be fixed
 - you must use conventional commits style with a monorepo scope for each commit message
-- when asked to commit, you need to create a feature branch, commit all changes, push and create a PR with auto-merge setting
-- do not write simplified test just for making them pass, tests should be written in order to verify the expected logic
+- when asked to commit, you need to create a feature branch, commit all changes, push and create a PR with a detailed task that you were assigned to do and what you did
+- do not write simplified test just for making them pass, tests should be written in order to verify the expected business logic

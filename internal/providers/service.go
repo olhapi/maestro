@@ -697,14 +697,11 @@ func (s *Service) CreateIssue(ctx context.Context, input IssueCreateInput) (*kan
 		if err != nil {
 			return nil, err
 		}
-		localUpdates := map[string]interface{}{
-			"agent_name":   input.AgentName,
-			"agent_prompt": input.AgentPrompt,
-			"branch_name":  input.BranchName,
-			"pr_url":       input.PRURL,
-		}
-		if err := s.store.UpdateIssue(synced.ID, localUpdates); err != nil {
-			return nil, err
+		localUpdates := providerIssueCreateLocalUpdates(issue, input)
+		if len(localUpdates) > 0 {
+			if err := s.store.UpdateIssue(synced.ID, localUpdates); err != nil {
+				return nil, err
+			}
 		}
 		return s.store.GetIssueDetailByIdentifier(synced.Identifier)
 	}
@@ -715,13 +712,6 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 	if err != nil {
 		return nil, err
 	}
-	targetProjectID := strings.TrimSpace(issue.ProjectID)
-	if raw, ok := updates["project_id"]; ok {
-		targetProjectID = strings.TrimSpace(fmt.Sprint(raw))
-	}
-	if targetProjectID == "" {
-		return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
-	}
 	targetIssueType := issue.IssueType
 	if raw, ok := updates["issue_type"]; ok {
 		targetIssueType, err = kanban.ParseIssueType(fmt.Sprint(raw))
@@ -730,7 +720,17 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 		}
 		updates["issue_type"] = targetIssueType
 	}
-	if normalizeKind(issue.ProviderKind) != kanban.ProviderKindKanban {
+	providerBacked := normalizeKind(issue.ProviderKind) != kanban.ProviderKindKanban
+	if providerBacked {
+		projectID := strings.TrimSpace(issue.ProjectID)
+		if projectID == "" {
+			return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
+		}
+		if raw, ok := updates["project_id"]; ok {
+			if requestedProjectID, ok := trimmedStringUpdate(raw); ok && requestedProjectID != projectID {
+				return nil, fmt.Errorf("%w: moving provider-backed issues between projects is not supported", ErrUnsupportedCapability)
+			}
+		}
 		if _, ok := updates["cron"]; ok {
 			return nil, fmt.Errorf("%w: recurring schedule updates are not supported for provider-backed issues", ErrUnsupportedCapability)
 		}
@@ -740,42 +740,53 @@ func (s *Service) UpdateIssue(ctx context.Context, identifier string, updates ma
 		if targetIssueType == kanban.IssueTypeRecurring {
 			return nil, fmt.Errorf("%w: recurring issues must be created as local kanban issues", ErrUnsupportedCapability)
 		}
+		providerUpdates := providerIssueUpdatePayload(updates)
+		localUpdates := providerIssueLocalUpdatePayload(issue, updates)
+		if len(providerUpdates) == 0 {
+			if len(localUpdates) == 0 {
+				return s.store.GetIssueDetailByIdentifier(issue.Identifier)
+			}
+			if err := s.store.UpdateIssue(issue.ID, localUpdates); err != nil {
+				return nil, err
+			}
+			return s.store.GetIssueDetailByIdentifier(issue.Identifier)
+		}
+		project, provider, err := s.resolveIssueProvider(issue)
+		if err != nil {
+			return nil, err
+		}
+		updated, err := provider.UpdateIssue(ctx, project, issue, providerUpdates)
+		if err != nil {
+			return nil, err
+		}
+		if updated, err = s.store.UpsertProviderIssue(project.ID, updated); err != nil {
+			return nil, err
+		}
+		if len(localUpdates) > 0 {
+			if err := s.store.UpdateIssue(updated.ID, localUpdates); err != nil {
+				return nil, err
+			}
+		}
+		return s.store.GetIssueDetailByIdentifier(updated.Identifier)
+	}
+	targetProjectID := strings.TrimSpace(issue.ProjectID)
+	if raw, ok := updates["project_id"]; ok {
+		targetProjectID = strings.TrimSpace(fmt.Sprint(raw))
+	}
+	if targetProjectID == "" {
+		return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
 	}
 	project, provider, err := s.resolveIssueProvider(issue)
 	if err != nil {
 		return nil, err
 	}
-	providerUpdates := updates
-	localOnlyUpdates := map[string]interface{}{}
-	if provider.Kind() != kanban.ProviderKindKanban {
-		providerUpdates = map[string]interface{}{}
-		for key, value := range updates {
-			switch key {
-			case "agent_name", "agent_prompt":
-				localOnlyUpdates[key] = value
-			default:
-				providerUpdates[key] = value
-			}
-		}
-	}
-	updated, err := provider.UpdateIssue(ctx, project, issue, providerUpdates)
+	updated, err := provider.UpdateIssue(ctx, project, issue, updates)
 	if err != nil {
 		return nil, err
 	}
 	if provider.Kind() != kanban.ProviderKindKanban {
 		if updated, err = s.store.UpsertProviderIssue(project.ID, updated); err != nil {
 			return nil, err
-		}
-		localUpdates := localOnlyUpdates
-		for _, key := range []string{"branch_name", "pr_url"} {
-			if value, ok := updates[key]; ok {
-				localUpdates[key] = value
-			}
-		}
-		if len(localUpdates) > 0 {
-			if err := s.store.UpdateIssue(updated.ID, localUpdates); err != nil {
-				return nil, err
-			}
 		}
 		issue = updated
 	}
@@ -1039,4 +1050,95 @@ func (s *Service) RefreshIssueByID(ctx context.Context, issueID string) (*kanban
 
 func IsUnsupported(err error) bool {
 	return errors.Is(err, ErrUnsupportedCapability)
+}
+
+func providerIssueCreateLocalUpdates(providerIssue *kanban.Issue, input IssueCreateInput) map[string]interface{} {
+	updates := make(map[string]interface{})
+	for key, value := range map[string]string{
+		"epic_id":      providerIssue.EpicID,
+		"agent_name":   providerIssue.AgentName,
+		"agent_prompt": providerIssue.AgentPrompt,
+		"branch_name":  providerIssue.BranchName,
+		"pr_url":       providerIssue.PRURL,
+	} {
+		if trimmed, ok := preferredStringValue(inputValueForKey(input, key), value); ok {
+			updates[key] = trimmed
+		}
+	}
+	return updates
+}
+
+func providerIssueUpdatePayload(updates map[string]interface{}) map[string]interface{} {
+	providerUpdates := make(map[string]interface{})
+	for _, key := range []string{"title", "description", "state", "priority", "labels", "blocked_by", "issue_type"} {
+		if value, ok := updates[key]; ok {
+			providerUpdates[key] = value
+		}
+	}
+	return providerUpdates
+}
+
+func providerIssueLocalUpdatePayload(issue *kanban.Issue, updates map[string]interface{}) map[string]interface{} {
+	localUpdates := make(map[string]interface{})
+	addString := func(key, current string) {
+		if raw, ok := updates[key]; ok {
+			if value, ok := stringUpdateValue(raw); ok && value != strings.TrimSpace(current) {
+				localUpdates[key] = value
+			}
+		}
+	}
+	addString("epic_id", issue.EpicID)
+	addString("agent_name", issue.AgentName)
+	addString("agent_prompt", issue.AgentPrompt)
+	addString("branch_name", issue.BranchName)
+	addString("pr_url", issue.PRURL)
+	return localUpdates
+}
+
+func inputValueForKey(input IssueCreateInput, key string) string {
+	switch key {
+	case "epic_id":
+		return input.EpicID
+	case "agent_name":
+		return input.AgentName
+	case "agent_prompt":
+		return input.AgentPrompt
+	case "branch_name":
+		return input.BranchName
+	case "pr_url":
+		return input.PRURL
+	default:
+		return ""
+	}
+}
+
+func preferredStringValue(primary, fallback string) (string, bool) {
+	for _, candidate := range []string{primary, fallback} {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed, true
+		}
+	}
+	return "", false
+}
+
+func stringUpdateValue(raw interface{}) (string, bool) {
+	if raw == nil {
+		return "", false
+	}
+	value := strings.TrimSpace(fmt.Sprint(raw))
+	if value == "<nil>" {
+		return "", false
+	}
+	return value, true
+}
+
+func trimmedStringUpdate(raw interface{}) (string, bool) {
+	if raw == nil {
+		return "", false
+	}
+	value := strings.TrimSpace(fmt.Sprint(raw))
+	if value == "" || value == "<nil>" {
+		return "", false
+	}
+	return value, true
 }

@@ -1053,7 +1053,7 @@ func TestListEpics(t *testing.T) {
 func TestCreateIssue(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, _ := store.CreateProject("MyApp", "", "", "")
+	project, _ := store.CreateProject("A B C", "", "", "")
 	labels := []string{"bug", "urgent"}
 
 	issue, err := store.CreateIssue(project.ID, "", "Fix login bug", "Description here", 1, labels)
@@ -1067,11 +1067,19 @@ func TestCreateIssue(t *testing.T) {
 	if issue.State != StateBacklog {
 		t.Errorf("Expected initial state 'backlog', got %s", issue.State)
 	}
-	if issue.Identifier == "" {
-		t.Error("Expected non-empty identifier")
+	if issue.Identifier != "ABC-1" {
+		t.Fatalf("Expected identifier ABC-1, got %s", issue.Identifier)
 	}
 	if len(issue.Labels) != 2 {
 		t.Errorf("Expected 2 labels, got %d", len(issue.Labels))
+	}
+
+	nextIssue, err := store.CreateIssue(project.ID, "", "Fix auth bug", "Second issue", 1, nil)
+	if err != nil {
+		t.Fatalf("Failed to create second issue: %v", err)
+	}
+	if nextIssue.Identifier != "ABC-2" {
+		t.Fatalf("Expected identifier ABC-2, got %s", nextIssue.Identifier)
 	}
 }
 
@@ -3081,7 +3089,7 @@ func makeReadOnlyWorkspaceTree(t *testing.T, root string) {
 func TestGenerateIdentifierHelper(t *testing.T) {
 	store := setupTestStore(t)
 
-	project, err := store.CreateProject("Tooling", "", "", "")
+	project, err := store.CreateProject("A B C", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateProject failed: %v", err)
 	}
@@ -3094,11 +3102,27 @@ func TestGenerateIdentifierHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateIdentifier second failed: %v", err)
 	}
-	if first == second {
-		t.Fatalf("expected unique identifiers, got %q twice", first)
+	if first != "ABC-1" || second != "ABC-2" {
+		t.Fatalf("expected sequential project prefix identifiers, got %q and %q", first, second)
 	}
-	if !strings.HasPrefix(first, "TOOL-") || !strings.HasPrefix(second, "TOOL-") {
-		t.Fatalf("expected project prefix identifiers, got %q and %q", first, second)
+}
+
+func TestIdentifierPrefixFromProjectName(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "A B C", want: "ABC"},
+		{name: "Go", want: "GO"},
+		{name: "  \t  ", want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := identifierPrefixFromProjectName(tc.name); got != tc.want {
+				t.Fatalf("expected prefix %q, got %q", tc.want, got)
+			}
+		})
 	}
 }
 

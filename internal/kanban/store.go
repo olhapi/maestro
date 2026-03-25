@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -1527,7 +1528,7 @@ func (s *Store) identifierPrefix(projectID string) (string, error) {
 			return "", err
 		}
 		if p != nil {
-			prefix = strings.ToUpper(strings.ReplaceAll(p.Name, " ", ""))[:min(4, len(p.Name))]
+			prefix = identifierPrefixFromProjectName(p.Name)
 		}
 	}
 	if prefix == "" {
@@ -1536,21 +1537,34 @@ func (s *Store) identifierPrefix(projectID string) (string, error) {
 	return prefix, nil
 }
 
-func generateIdentifierTx(tx *sql.Tx, prefix string) (string, error) {
-	var counter int
-	err := tx.QueryRow(`SELECT value FROM counters WHERE name = ?`, prefix).Scan(&counter)
-	if err == sql.ErrNoRows {
-		counter = 0
-		_, err = tx.Exec(`INSERT INTO counters (name, value) VALUES (?, 1)`, prefix)
-	} else if err == nil {
-		_, err = tx.Exec(`UPDATE counters SET value = value + 1 WHERE name = ?`, prefix)
-		counter++
+func identifierPrefixFromProjectName(name string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return unicode.ToUpper(r)
+	}, strings.TrimSpace(name))
+	if cleaned == "" {
+		return ""
 	}
-	if err != nil {
+	runes := []rune(cleaned)
+	if len(runes) > 4 {
+		runes = runes[:4]
+	}
+	return string(runes)
+}
+
+func generateIdentifierTx(tx *sql.Tx, prefix string) (string, error) {
+	if _, err := tx.Exec(`INSERT INTO counters (name, value) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET value = value + 1`, prefix); err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("%s-%d", prefix, counter+1), nil
+	var counter int
+	if err := tx.QueryRow(`SELECT value FROM counters WHERE name = ?`, prefix).Scan(&counter); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s-%d", prefix, counter), nil
 }
 
 func (s *Store) generateIdentifier(projectID string) (string, error) {
