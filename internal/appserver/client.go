@@ -110,11 +110,12 @@ type Client struct {
 }
 
 type interactionWaiter struct {
-	interaction PendingInteraction
-	payloadID   protocol.RequestID
-	responseCh  chan PendingInteractionResponse
-	doneCh      chan struct{}
-	responded   bool
+	interaction     PendingInteraction
+	payloadID       protocol.RequestID
+	responseReadyCh chan struct{}
+	response        PendingInteractionResponse
+	doneCh          chan struct{}
+	responded       bool
 }
 
 func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
@@ -333,6 +334,9 @@ func (c *Client) RespondToInteraction(ctx context.Context, interactionID string,
 	if interactionID == "" {
 		return fmt.Errorf("%w: missing interaction id", ErrInvalidInteractionResponse)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	c.pendingMu.Lock()
 	waiter, ok := c.pendingInteractions[interactionID]
@@ -344,32 +348,23 @@ func (c *Client) RespondToInteraction(ctx context.Context, interactionID string,
 		c.pendingMu.Unlock()
 		return ErrPendingInteractionConflict
 	}
+	select {
+	case <-waiter.doneCh:
+		c.pendingMu.Unlock()
+		return ErrPendingInteractionNotFound
+	default:
+	}
 	normalized, err := normalizePendingInteractionResponse(waiter.interaction, response)
 	if err != nil {
 		c.pendingMu.Unlock()
 		return err
 	}
 	waiter.responded = true
+	waiter.response = normalized
+	close(waiter.responseReadyCh)
 	c.pendingMu.Unlock()
 
-	select {
-	case <-ctx.Done():
-		c.pendingMu.Lock()
-		if current, ok := c.pendingInteractions[interactionID]; ok && current == waiter {
-			current.responded = false
-		}
-		c.pendingMu.Unlock()
-		return ctx.Err()
-	case <-waiter.doneCh:
-		c.pendingMu.Lock()
-		if current, ok := c.pendingInteractions[interactionID]; ok && current == waiter {
-			current.responded = false
-		}
-		c.pendingMu.Unlock()
-		return ErrPendingInteractionNotFound
-	case waiter.responseCh <- normalized:
-		return nil
-	}
+	return nil
 }
 
 func (c *Client) RunTurn(ctx context.Context, prompt, title string) error {
@@ -1139,10 +1134,10 @@ func (c *Client) currentInteractionCollaborationMode() string {
 
 func (c *Client) registerPendingInteraction(interaction PendingInteraction, payloadID protocol.RequestID) *interactionWaiter {
 	waiter := &interactionWaiter{
-		interaction: interaction,
-		payloadID:   payloadID,
-		responseCh:  make(chan PendingInteractionResponse, 1),
-		doneCh:      make(chan struct{}),
+		interaction:     interaction,
+		payloadID:       payloadID,
+		responseReadyCh: make(chan struct{}),
+		doneCh:          make(chan struct{}),
 	}
 	c.pendingMu.Lock()
 	c.pendingInteractions[interaction.ID] = waiter
@@ -1182,7 +1177,12 @@ func (c *Client) awaitPendingInteractionResponse(ctx context.Context, waiter *in
 			return PendingInteractionResponse{}, ctx.Err()
 		}
 		return PendingInteractionResponse{}, &RunError{Kind: "run_interrupted"}
-	case response := <-waiter.responseCh:
+	case <-waiter.doneCh:
+		return PendingInteractionResponse{}, ErrPendingInteractionNotFound
+	case <-waiter.responseReadyCh:
+		c.pendingMu.Lock()
+		response := waiter.response
+		c.pendingMu.Unlock()
 		return response, nil
 	}
 }
