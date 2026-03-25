@@ -2192,8 +2192,8 @@ func TestRespondToInteractionRejectsStoppedWaiter(t *testing.T) {
 				Decisions: reviewApprovalDecisions(),
 			},
 		},
-		responseCh: make(chan PendingInteractionResponse),
-		doneCh:     make(chan struct{}),
+		responseReadyCh: make(chan struct{}),
+		doneCh:          make(chan struct{}),
 	}
 	close(waiter.doneCh)
 
