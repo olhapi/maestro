@@ -23,6 +23,28 @@ func TestRunCommandDefaultsPortTo8787(t *testing.T) {
 		t.Fatalf("run --port default = %q, want %q", got, defaultHTTPPort)
 	}
 }
+
+func TestShellQuoteArg(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain", in: "maestro", want: "maestro"},
+		{name: "empty", in: "", want: "''"},
+		{name: "spaces", in: "My Project", want: "'My Project'"},
+		{name: "apostrophe", in: "repo's path", want: "'repo'\"'\"'s path'"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shellQuoteArg(tc.in); got != tc.want {
+				t.Fatalf("shellQuoteArg(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func writeFakeCodexCLI(t *testing.T, version string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -44,12 +66,12 @@ func repoRootFromCaller(t *testing.T) string {
 }
 
 func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	dbPath := filepath.Join(t.TempDir(), "maestro db", "maestro.db")
 	repoPath := setupRepo(t)
 	opsRepoPath := setupRepo(t)
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
 
-	initRepo := t.TempDir()
+	initRepo := filepath.Join(t.TempDir(), "workflow init repo")
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init failed: %d stderr=%s", code, stderr)
@@ -78,8 +100,14 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 			t.Fatalf("expected workflow init output to contain %q, got %q", want, stdout)
 		}
 	}
-	if !strings.Contains(stdout, "maestro --db "+dbPath+" project create \"My Project\" --repo "+initRepo) {
-		t.Fatalf("unexpected workflow init output %q", stdout)
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' project create 'My Project' --repo '"+initRepo+"'") {
+		t.Fatalf("expected quoted next-step command in output %q", stdout)
+	}
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' run '"+initRepo+"'") {
+		t.Fatalf("expected quoted run command in output %q", stdout)
+	}
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' verify --repo '"+initRepo+"'") {
+		t.Fatalf("expected quoted verify command in output %q", stdout)
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "create", "Platform", "--repo", repoPath)
