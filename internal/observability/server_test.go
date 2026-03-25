@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -166,6 +167,38 @@ func TestServerStartsAndServesState(t *testing.T) {
 	defer resp8.Body.Close()
 	if resp8.StatusCode != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d", resp8.StatusCode)
+	}
+}
+
+func TestRegisterRoutesRejectsNonGetRequests(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, testProvider{})
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/health"},
+		{method: http.MethodPost, path: "/api/v1/state"},
+		{method: http.MethodPost, path: "/api/v1/sessions"},
+		{method: http.MethodPost, path: "/api/v1/events"},
+		{method: http.MethodPost, path: "/api/v1/dashboard"},
+		{method: http.MethodPost, path: "/api/v1/iss-1"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s %s: expected 405, got %d", tc.method, tc.path, rec.Code)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+			t.Fatalf("%s %s: decode response: %v", tc.method, tc.path, err)
+		}
+		if payload["error"] != "method_not_allowed" {
+			t.Fatalf("%s %s: unexpected payload %#v", tc.method, tc.path, payload)
+		}
 	}
 }
 
