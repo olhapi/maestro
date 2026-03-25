@@ -1054,6 +1054,44 @@ func TestServiceCreateIssueRequiresProject(t *testing.T) {
 	}
 }
 
+func newProviderBackedIssueFixture(t *testing.T) (*kanban.Store, *kanban.Project, *kanban.Epic, *kanban.Issue) {
+	t.Helper()
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Stub Project",
+		"",
+		"",
+		"",
+		"stub",
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	epic, err := store.CreateEpic(project.ID, "Epic", "")
+	if err != nil {
+		t.Fatalf("CreateEpic: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-1",
+		Identifier:       "STUB-1",
+		Title:            "Provider issue",
+		State:            kanban.StateBacklog,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+	return store, project, epic, issue
+}
+
 func TestServiceUpdateIssueRequiresProject(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -1074,6 +1112,114 @@ func TestServiceUpdateIssueRequiresProject(t *testing.T) {
 	if !kanban.IsValidation(err) {
 		t.Fatalf("expected validation error, got %v", err)
 	}
+}
+
+func TestServiceCreateIssuePreservesProviderLocalMetadata(t *testing.T) {
+	t.Run("blank input keeps provider metadata", func(t *testing.T) {
+		store, project, epic, _ := newProviderBackedIssueFixture(t)
+
+		svc := NewService(store)
+		svc.providers["stub"] = &stubProvider{
+			kind: "stub",
+			createFunc: func(_ context.Context, projectArg *kanban.Project, input IssueCreateInput) (*kanban.Issue, error) {
+				if projectArg == nil || projectArg.ID != project.ID {
+					t.Fatalf("expected project %s, got %#v", project.ID, projectArg)
+				}
+				if input.EpicID != epic.ID {
+					t.Fatalf("expected epic %s, got %s", epic.ID, input.EpicID)
+				}
+				if input.AgentName != "" || input.AgentPrompt != "" || input.BranchName != "" || input.PRURL != "" {
+					t.Fatalf("expected blank local input metadata, got %#v", input)
+				}
+				return &kanban.Issue{
+					ProviderKind:     "stub",
+					ProviderIssueRef: "stub-create-1",
+					Identifier:       "STUB-CREATE-1",
+					Title:            input.Title,
+					State:            kanban.StateReady,
+					AgentName:        "provider-agent",
+					AgentPrompt:      "provider prompt",
+					BranchName:       "provider/branch",
+					PRURL:            "https://provider.example/pr/1",
+				}, nil
+			},
+		}
+
+		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
+			ProjectID:   project.ID,
+			EpicID:      epic.ID,
+			Title:       "Provider issue",
+			Description: "desc",
+			Priority:    2,
+		})
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if detail.EpicID != epic.ID {
+			t.Fatalf("expected epic %s to persist, got %q", epic.ID, detail.EpicID)
+		}
+		if detail.AgentName != "provider-agent" || detail.AgentPrompt != "provider prompt" {
+			t.Fatalf("expected provider agent metadata to persist, got %#v", detail)
+		}
+		if detail.BranchName != "provider/branch" || detail.PRURL != "https://provider.example/pr/1" {
+			t.Fatalf("expected provider branch/pr metadata to persist, got %#v", detail)
+		}
+	})
+
+	t.Run("explicit input overrides provider metadata", func(t *testing.T) {
+		store, project, epic, _ := newProviderBackedIssueFixture(t)
+
+		svc := NewService(store)
+		svc.providers["stub"] = &stubProvider{
+			kind: "stub",
+			createFunc: func(_ context.Context, projectArg *kanban.Project, input IssueCreateInput) (*kanban.Issue, error) {
+				if projectArg == nil || projectArg.ID != project.ID {
+					t.Fatalf("expected project %s, got %#v", project.ID, projectArg)
+				}
+				if input.EpicID != epic.ID {
+					t.Fatalf("expected epic %s, got %s", epic.ID, input.EpicID)
+				}
+				if input.AgentName != "requested-agent" || input.AgentPrompt != "requested prompt" || input.BranchName != "requested/branch" || input.PRURL != "https://example.com/pr/99" {
+					t.Fatalf("expected explicit local input metadata, got %#v", input)
+				}
+				return &kanban.Issue{
+					ProviderKind:     "stub",
+					ProviderIssueRef: "stub-create-2",
+					Identifier:       "STUB-2",
+					Title:            input.Title,
+					State:            kanban.StateReady,
+					AgentName:        "provider-agent",
+					AgentPrompt:      "provider prompt",
+					BranchName:       "provider/branch",
+					PRURL:            "https://provider.example/pr/1",
+				}, nil
+			},
+		}
+
+		detail, err := svc.CreateIssue(context.Background(), IssueCreateInput{
+			ProjectID:   project.ID,
+			EpicID:      epic.ID,
+			Title:       "Provider issue",
+			Description: "desc",
+			Priority:    2,
+			AgentName:   "requested-agent",
+			AgentPrompt: "requested prompt",
+			BranchName:  "requested/branch",
+			PRURL:       "https://example.com/pr/99",
+		})
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if detail.EpicID != epic.ID {
+			t.Fatalf("expected epic %s to persist, got %q", epic.ID, detail.EpicID)
+		}
+		if detail.AgentName != "requested-agent" || detail.AgentPrompt != "requested prompt" {
+			t.Fatalf("expected explicit agent metadata to persist, got %#v", detail)
+		}
+		if detail.BranchName != "requested/branch" || detail.PRURL != "https://example.com/pr/99" {
+			t.Fatalf("expected explicit branch/pr metadata to persist, got %#v", detail)
+		}
+	})
 }
 
 func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *testing.T) {
@@ -1132,60 +1278,180 @@ func TestServiceUpdateIssueRejectsRecurringConversionForProviderBackedIssue(t *t
 	}
 }
 
-func TestServiceUpdateIssueStoresLocalAgentMetadataForProviderBackedIssue(t *testing.T) {
-	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	project, err := store.CreateProjectWithProvider(
-		"Stub Project",
-		"",
-		"",
-		"",
-		"stub",
-		"proj-slug",
-		map[string]interface{}{"project_slug": "proj-slug"},
-	)
-	if err != nil {
-		t.Fatalf("CreateProjectWithProvider: %v", err)
-	}
-	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
-		ProviderKind:     "stub",
-		ProviderIssueRef: "stub-1",
-		Identifier:       "STUB-1",
-		Title:            "Provider issue",
-		State:            kanban.StateBacklog,
-	})
-	if err != nil {
-		t.Fatalf("UpsertProviderIssue: %v", err)
+func TestServiceUpdateIssueStoresLocalMetadataForProviderBackedIssue(t *testing.T) {
+	store, project, epic, issue := newProviderBackedIssueFixture(t)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"epic_id":      epic.ID,
+		"agent_name":   "codex",
+		"agent_prompt": "preserve me",
+		"branch_name":  "codex/STUB-1",
+		"pr_url":       "https://example.com/pr/1",
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
 	}
 
 	svc := NewService(store)
+	updateCalled := false
 	svc.providers["stub"] = &stubProvider{
 		kind:     "stub",
 		getIssue: issue,
-		updateFunc: func(_ context.Context, _ *kanban.Project, _ *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
+		updateFunc: func(_ context.Context, projectArg *kanban.Project, currentIssue *kanban.Issue, updates map[string]interface{}) (*kanban.Issue, error) {
+			updateCalled = true
+			if projectArg == nil || projectArg.ID != project.ID {
+				t.Fatalf("expected project %s, got %#v", project.ID, projectArg)
+			}
+			if currentIssue == nil || currentIssue.ID != issue.ID {
+				t.Fatalf("expected issue %s, got %#v", issue.ID, currentIssue)
+			}
+			if _, ok := updates["project_id"]; ok {
+				t.Fatalf("expected project_id to be excluded from provider update: %#v", updates)
+			}
+			if _, ok := updates["epic_id"]; ok {
+				t.Fatalf("expected epic_id to be excluded from provider update: %#v", updates)
+			}
 			if _, ok := updates["agent_name"]; ok {
-				t.Fatalf("expected local agent metadata to be excluded from provider update: %#v", updates)
+				t.Fatalf("expected agent_name to be excluded from provider update: %#v", updates)
 			}
 			if _, ok := updates["agent_prompt"]; ok {
-				t.Fatalf("expected local agent metadata to be excluded from provider update: %#v", updates)
+				t.Fatalf("expected agent_prompt to be excluded from provider update: %#v", updates)
 			}
-			return issue, nil
+			if _, ok := updates["branch_name"]; ok {
+				t.Fatalf("expected branch_name to be excluded from provider update: %#v", updates)
+			}
+			if _, ok := updates["pr_url"]; ok {
+				t.Fatalf("expected pr_url to be excluded from provider update: %#v", updates)
+			}
+			if updates["title"] != "Fresh title" {
+				t.Fatalf("expected provider title update, got %#v", updates)
+			}
+			cp := *currentIssue
+			cp.Title = "Fresh title"
+			return &cp, nil
 		},
 	}
 
 	detail, err := svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"project_id":   project.ID,
+		"title":        "Fresh title",
 		"agent_name":   "marketing",
 		"agent_prompt": "Review homepage positioning.",
 	})
 	if err != nil {
 		t.Fatalf("UpdateIssue: %v", err)
 	}
+	if !updateCalled {
+		t.Fatal("expected provider update to be called for provider-owned fields")
+	}
 	if detail.AgentName != "marketing" || detail.AgentPrompt != "Review homepage positioning." {
-		t.Fatalf("expected local agent metadata to persist, got %#v", detail)
+		t.Fatalf("expected updated agent metadata, got %#v", detail)
+	}
+	if detail.EpicID != epic.ID {
+		t.Fatalf("expected epic metadata to persist, got %#v", detail)
+	}
+	if detail.BranchName != "codex/STUB-1" || detail.PRURL != "https://example.com/pr/1" {
+		t.Fatalf("expected branch/pr metadata to persist, got %#v", detail)
+	}
+	if detail.Title != "Fresh title" {
+		t.Fatalf("expected updated title, got %#v", detail)
+	}
+}
+
+func TestServiceUpdateIssueClearsProviderBackedLocalMetadata(t *testing.T) {
+	store, _, epic, issue := newProviderBackedIssueFixture(t)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"epic_id":      epic.ID,
+		"agent_name":   "codex",
+		"agent_prompt": "preserve me",
+		"branch_name":  "codex/STUB-1",
+		"pr_url":       "https://example.com/pr/1",
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
+	}
+
+	updateCalled := false
+	svc := NewService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
+		getIssue: issue,
+		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+			updateCalled = true
+			return nil, nil
+		},
+	}
+
+	detail, err := svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"epic_id":      "",
+		"agent_name":   "",
+		"agent_prompt": "",
+		"branch_name":  "",
+		"pr_url":       "",
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if updateCalled {
+		t.Fatal("expected provider update to be skipped for local-only clears")
+	}
+	if detail.EpicID != "" || detail.AgentName != "" || detail.AgentPrompt != "" || detail.BranchName != "" || detail.PRURL != "" {
+		t.Fatalf("expected local metadata to clear, got %#v", detail)
+	}
+}
+
+func TestServiceUpdateIssueRejectsProviderBackedProjectMoves(t *testing.T) {
+	store, project, epic, issue := newProviderBackedIssueFixture(t)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"epic_id":     epic.ID,
+		"branch_name": "codex/STUB-1",
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
+	}
+	otherProject, err := store.CreateProjectWithProvider(
+		"Other Project",
+		"",
+		"",
+		"",
+		"stub",
+		"other-slug",
+		map[string]interface{}{"project_slug": "other-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider other: %v", err)
+	}
+	if _, err := store.CreateEpic(otherProject.ID, "Other Epic", ""); err != nil {
+		t.Fatalf("CreateEpic other: %v", err)
+	}
+
+	svc := NewService(store)
+	updateCalled := false
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
+		getIssue: issue,
+		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+			updateCalled = true
+			return nil, nil
+		},
+	}
+
+	_, err = svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"project_id": otherProject.ID,
+		"title":      "Moved issue",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported project move error")
+	}
+	if !IsUnsupported(err) {
+		t.Fatalf("expected unsupported capability error, got %v", err)
+	}
+	if updateCalled {
+		t.Fatal("expected provider update to be skipped when project moves are rejected")
+	}
+
+	persisted, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if persisted.ProjectID != project.ID || persisted.EpicID != epic.ID || persisted.BranchName != "codex/STUB-1" {
+		t.Fatalf("expected local state to remain unchanged, got %#v", persisted)
 	}
 }
 
