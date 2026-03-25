@@ -39,12 +39,12 @@ vi.mock('@/components/command-palette', () => ({
 }))
 
 vi.mock('@/components/dashboard/global-interrupt-panel', () => ({
-  GlobalInterruptPanel: ({ count }: { count: number }) => {
-    if (count > 0 && shouldThrowInterruptPanel) {
+  GlobalInterruptPanel: ({ items }: { items: Array<unknown> }) => {
+    if (items.length > 0 && shouldThrowInterruptPanel) {
       throw new Error('interrupt panel crashed')
     }
 
-    return <div data-testid="interrupt-panel">{count > 0 ? 'Interrupt panel ready' : 'No interrupts'}</div>
+    return <div data-testid="interrupt-panel">{items.length > 0 ? 'Interrupt panel ready' : 'No interrupts'}</div>
   },
 }))
 
@@ -60,6 +60,7 @@ vi.mock('@/lib/api', () => ({
     bootstrap: vi.fn(),
     workBootstrap: vi.fn(),
     listInterrupts: vi.fn(),
+    acknowledgeInterrupt: vi.fn(),
     respondToInterrupt: vi.fn(),
   },
 }))
@@ -83,7 +84,7 @@ describe('AppShell error boundaries', () => {
 
   it('contains command palette crashes and reloads the palette subtree', async () => {
     vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse())
-    vi.mocked(api.listInterrupts).mockResolvedValue({ count: 0 })
+    vi.mocked(api.listInterrupts).mockResolvedValue({ items: [] })
     shouldThrowCommandPalette = true
 
     renderWithQueryClient(<AppShell />)
@@ -107,8 +108,7 @@ describe('AppShell error boundaries', () => {
   it('contains interrupt panel crashes and reloads the panel subtree', async () => {
     vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse())
     vi.mocked(api.listInterrupts).mockResolvedValue({
-      count: 1,
-      current: {
+      items: [{
         id: 'interrupt-1',
         kind: 'approval',
         issue_identifier: 'ISS-1',
@@ -117,7 +117,7 @@ describe('AppShell error boundaries', () => {
         approval: {
           decisions: [{ value: 'approved', label: 'Approve once' }],
         },
-      },
+      }],
     })
     shouldThrowInterruptPanel = true
 

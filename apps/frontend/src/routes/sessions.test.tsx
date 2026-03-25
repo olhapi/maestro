@@ -208,6 +208,41 @@ describe('SessionsPage', () => {
     })
   })
 
+  it('renders alert-backed live sessions as blocked', async () => {
+    vi.mocked(api.listSessions).mockResolvedValue({
+      ...makeSessionsResponse(),
+      entries: [
+        {
+          ...makeSessionsResponse().entries[0],
+          status: 'blocked',
+          pending_interrupt: {
+            id: 'alert-1',
+            kind: 'alert',
+            requested_at: '2026-03-10T11:59:30Z',
+            last_activity_at: '2026-03-10T11:59:30Z',
+            last_activity: 'Project repo is outside the current server scope (/repo/current)',
+            alert: {
+              code: 'project_dispatch_blocked',
+              severity: 'error',
+              title: 'Project dispatch blocked',
+              message: 'Project repo is outside the current server scope (/repo/current)',
+            },
+          },
+        },
+      ],
+    })
+    vi.mocked(api.listRuntimeEvents).mockResolvedValue({ events: [] })
+
+    renderWithQueryClient(<SessionsPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Blocked')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('session-summary-RUN-LIVE-A')).toHaveTextContent(
+      'Project repo is outside the current server scope (/repo/current)',
+    )
+  })
+
   it('shows an empty state when there are no live or recent runs', async () => {
     vi.mocked(api.listSessions).mockResolvedValue({ sessions: {}, entries: [] })
     vi.mocked(api.listRuntimeEvents).mockResolvedValue({ events: [] })

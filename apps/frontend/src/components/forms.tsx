@@ -18,6 +18,7 @@ import {
   issueAssetInputAccept,
   type IssueAssetChangeSet,
 } from "@/lib/issue-assets";
+import { canEditIssueType } from "@/lib/issues";
 import type { EpicSummary, IssueDetail, IssueSummary, IssueType, ProjectSummary } from "@/lib/types";
 
 const noEpicValue = "__no-epic__";
@@ -327,7 +328,7 @@ export function IssueDialog({
   const [pending, setPending] = useState(false);
   const selectedProject = projects.find((project) => project.id === projectID);
   const supportsEpics = selectedProject?.capabilities?.epics ?? true;
-  const canChangeIssueType = true;
+  const canChangeIssueType = canEditIssueType(initial);
 
   useDialogReset(open, initial?.identifier ?? "__new__", () => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? "");

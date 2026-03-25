@@ -43,7 +43,7 @@ The phase harness verifies two additional deterministic paths:
 - one issue must go `implementation -> review -> done -> complete`
 - one issue must go `implementation -> done -> complete` without running review
 - each phase writes a dedicated artifact and appends to a phase log in the expected order
-- restarting `maestro run` cleans up completed workspaces on startup
+- completed workspaces are cleaned up immediately, and restarting `maestro run` also removes any leftovers on startup
 
 The image harness verifies the new app-server image path:
 

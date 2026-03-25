@@ -147,35 +147,59 @@ func TestThreadAndTurnStartRequestWireShape(t *testing.T) {
 	}
 }
 
-func TestRejectApprovalPolicyPreservesRequestPermissions(t *testing.T) {
-	threadApproval, err := toThreadApprovalPolicy(map[string]interface{}{
-		"reject": map[string]interface{}{
-			"mcp_elicitations":    true,
-			"request_permissions": false,
-			"rules":               true,
-			"sandbox_approval":    true,
+func TestStructuredApprovalPolicyPreservesRequestPermissions(t *testing.T) {
+	cases := []struct {
+		name              string
+		key               string
+		threadRequestPerm bool
+		turnRequestPerm   bool
+	}{
+		{
+			name:              "granular",
+			key:               "granular",
+			threadRequestPerm: false,
+			turnRequestPerm:   true,
 		},
-	})
-	if err != nil {
-		t.Fatalf("thread approval policy: %v", err)
-	}
-	if threadApproval == nil || threadApproval.PurpleGranularAskForApproval == nil || threadApproval.PurpleGranularAskForApproval.Granular.RequestPermissions == nil || *threadApproval.PurpleGranularAskForApproval.Granular.RequestPermissions {
-		t.Fatalf("expected thread reject request_permissions=false, got %+v", threadApproval)
+		{
+			name:              "legacy reject",
+			key:               "reject",
+			threadRequestPerm: false,
+			turnRequestPerm:   true,
+		},
 	}
 
-	turnApproval, err := toTurnApprovalPolicy(map[string]interface{}{
-		"reject": map[string]interface{}{
-			"mcp_elicitations":    true,
-			"request_permissions": true,
-			"rules":               false,
-			"sandbox_approval":    true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("turn approval policy: %v", err)
-	}
-	if turnApproval == nil || turnApproval.FluffyGranularAskForApproval == nil || turnApproval.FluffyGranularAskForApproval.Granular.RequestPermissions == nil || !*turnApproval.FluffyGranularAskForApproval.Granular.RequestPermissions {
-		t.Fatalf("expected turn reject request_permissions=true, got %+v", turnApproval)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			threadApproval, err := toThreadApprovalPolicy(map[string]interface{}{
+				tc.key: map[string]interface{}{
+					"mcp_elicitations":    true,
+					"request_permissions": tc.threadRequestPerm,
+					"rules":               true,
+					"sandbox_approval":    true,
+				},
+			})
+			if err != nil {
+				t.Fatalf("thread approval policy: %v", err)
+			}
+			if threadApproval == nil || threadApproval.PurpleGranularAskForApproval == nil || threadApproval.PurpleGranularAskForApproval.Granular.RequestPermissions == nil || *threadApproval.PurpleGranularAskForApproval.Granular.RequestPermissions != tc.threadRequestPerm {
+				t.Fatalf("unexpected thread approval policy: %+v", threadApproval)
+			}
+
+			turnApproval, err := toTurnApprovalPolicy(map[string]interface{}{
+				tc.key: map[string]interface{}{
+					"mcp_elicitations":    true,
+					"request_permissions": tc.turnRequestPerm,
+					"rules":               false,
+					"sandbox_approval":    true,
+				},
+			})
+			if err != nil {
+				t.Fatalf("turn approval policy: %v", err)
+			}
+			if turnApproval == nil || turnApproval.FluffyGranularAskForApproval == nil || turnApproval.FluffyGranularAskForApproval.Granular.RequestPermissions == nil || *turnApproval.FluffyGranularAskForApproval.Granular.RequestPermissions != tc.turnRequestPerm {
+				t.Fatalf("unexpected turn approval policy: %+v", turnApproval)
+			}
+		})
 	}
 }
 

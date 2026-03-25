@@ -442,6 +442,47 @@ func TestIssueExecutionPayloadReturnsWorkspaceRecoveryMetadata(t *testing.T) {
 	}
 }
 
+func TestIssueExecutionPayloadIgnoresSuccessfulWorkspaceBootstrapEvents(t *testing.T) {
+	for _, kind := range []string{
+		"workspace_bootstrap_created",
+		"workspace_bootstrap_reused",
+		"workspace_bootstrap_preserved",
+	} {
+		t.Run(kind, func(t *testing.T) {
+			store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			issue, err := store.CreateIssue("", "", "Bootstrap issue", "", 0, nil)
+			if err != nil {
+				t.Fatalf("CreateIssue: %v", err)
+			}
+			if err := store.AppendRuntimeEvent(kind, map[string]interface{}{
+				"issue_id":   issue.ID,
+				"identifier": issue.Identifier,
+				"phase":      "implementation",
+				"attempt":    1,
+			}); err != nil {
+				t.Fatalf("AppendRuntimeEvent: %v", err)
+			}
+
+			payload, err := IssueExecutionPayload(store, nil, issue)
+			if err != nil {
+				t.Fatalf("IssueExecutionPayload: %v", err)
+			}
+
+			if payload["failure_class"] != "" {
+				t.Fatalf("expected successful bootstrap event to remain clear, got %#v", payload["failure_class"])
+			}
+			if payload["workspace_recovery"] != nil {
+				t.Fatalf("expected no workspace recovery metadata, got %#v", payload["workspace_recovery"])
+			}
+		})
+	}
+}
+
 func TestIssueExecutionPayloadIncludesAgentCommands(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

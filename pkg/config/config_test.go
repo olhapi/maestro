@@ -44,17 +44,19 @@ func assertDefaultPromptSemantics(t *testing.T, prompt string) {
 		"Reproduce or inspect current behavior first so the target is explicit.",
 		"Treat the persistent workpad comment as the source of truth.",
 		"Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.",
+		"In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
 	)
 }
 
 func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
-		"The done phase owns merge-back and finalization for this issue from the current workspace. The work is complete only after it is merged into local main and pushed to origin.",
+		"The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
 		"Sync origin/main first.",
 		"Merge the issue branch into local main.",
 		"Rerun the relevant validation on main.",
 		"Push main to origin.",
+		"Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.",
 		"If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.",
 	)
 }
@@ -63,11 +65,12 @@ func assertInitDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
 		"Finalize issue {{ issue.identifier }} from the current workspace.",
-		"The done phase owns merge-back and finalization. The work is complete only after it is merged into local main and pushed to origin.",
+		"The done phase owns merge-back and finalization. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
 		"Sync origin/main first.",
 		"Merge the issue branch into local main.",
 		"Rerun the relevant validation on main.",
 		"Push main to origin.",
+		"Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.",
 		"If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.",
 	)
 }
@@ -619,7 +622,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"read_timeout_ms: 10000",
 		"stall_timeout_ms: 300000",
 		"{{ issue.identifier }}",
-		"The work is complete only after it is merged into local main and pushed to origin.",
+		"Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
@@ -634,7 +637,7 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("\n\n\n"),
+		Stdin:       strings.NewReader(strings.Repeat("\n", 9)),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -649,23 +652,44 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 		"root: ./workspaces",
 		"command: codex app-server",
 		"mode: app_server",
+		"dispatch_mode: parallel",
+		"max_concurrent_agents: 3",
+		"max_turns: 4",
+		"max_automatic_retries: 8",
+		"approval_policy: never",
 		"initial_collaboration_mode: default",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if !strings.Contains(stdout.String(), "Target workflow file:") || !strings.Contains(stdout.String(), "Runtime setup:") {
+	for _, want := range []string{
+		"Target workflow file:",
+		"Workspace root [",
+		"Codex command [",
+		"Agent mode (app_server|stdio) [",
+		"Dispatch mode (parallel|per_project_serial) [",
+		"Max concurrent agents [",
+		"Max turns [",
+		"Max automatic retries [",
+		"Approval policy (never|on-request|on-failure|untrusted) [",
+		"Initial collaboration mode (default|plan) [",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("expected wizard output to contain %q, got %q", want, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "Runtime setup:") {
 		t.Fatalf("expected wizard output, got %q", stdout.String())
 	}
 }
 
-func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
+func TestInitWorkflowInteractiveWizardSupportsCustomStdioTuning(t *testing.T) {
 	tmpDir := t.TempDir()
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("./ws\n2\ncodex exec --model test\nstdio\n"),
+		Stdin:       strings.NewReader("./ws\ncodex exec --model test\nstdio\nper_project_serial\n5\n6\n7\n"),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -680,11 +704,88 @@ func TestInitWorkflowInteractiveWizardSupportsCustomRuntime(t *testing.T) {
 		"root: ./ws",
 		"command: codex exec --model test",
 		"mode: stdio",
+		"dispatch_mode: per_project_serial",
+		"max_concurrent_agents: 5",
+		"max_turns: 6",
+		"max_automatic_retries: 7",
+		"approval_policy: never",
 		"initial_collaboration_mode: default",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
+	}
+	if strings.Contains(stdout.String(), "Approval policy (never|on-request|on-failure|untrusted)") || strings.Contains(stdout.String(), "Initial collaboration mode (default|plan)") {
+		t.Fatalf("expected stdio wizard to skip app_server-only prompts, got %q", stdout.String())
+	}
+}
+
+func TestInitWorkflowInteractiveWizardSupportsAppServerCollaborationTuning(t *testing.T) {
+	tmpDir := t.TempDir()
+	var stdout bytes.Buffer
+	if err := InitWorkflow(tmpDir, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader("./ws\ncodex app-server --model test\napp_server\nparallel\n4\n5\n6\non-request\nplan\n"),
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"root: ./ws",
+		"command: codex app-server --model test",
+		"mode: app_server",
+		"dispatch_mode: parallel",
+		"max_concurrent_agents: 4",
+		"max_turns: 5",
+		"max_automatic_retries: 6",
+		"approval_policy: on-request",
+		"initial_collaboration_mode: plan",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q", want)
+		}
+	}
+	assertContainsAll(t, stdout.String(),
+		"Approval policy (never|on-request|on-failure|untrusted) [",
+		"Initial collaboration mode (default|plan) [",
+	)
+}
+
+func TestInitWorkflowInteractiveWizardRepromptsOnInvalidInput(t *testing.T) {
+	tmpDir := t.TempDir()
+	var stdout bytes.Buffer
+	if err := InitWorkflow(tmpDir, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader("\n\nbad-mode\nstdio\nserial\nper_project_serial\n0\n2\nabc\n5\n-1\n6\n"),
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"mode: stdio",
+		"dispatch_mode: per_project_serial",
+		"max_concurrent_agents: 2",
+		"max_turns: 5",
+		"max_automatic_retries: 6",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q", want)
+		}
+	}
+	if strings.Count(stdout.String(), "Invalid value:") < 4 {
+		t.Fatalf("expected wizard to report invalid input and reprompt, got %q", stdout.String())
 	}
 }
 
@@ -711,24 +812,40 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 		"root: ./flag-ws",
 		"command: codex exec --model custom",
 		"mode: stdio",
+		"dispatch_mode: parallel",
+		"max_concurrent_agents: 3",
+		"max_turns: 4",
+		"max_automatic_retries: 8",
 		"initial_collaboration_mode: default",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if strings.Contains(stdout.String(), "Runtime setup:") || strings.Contains(stdout.String(), "Workspace root [") {
+	if strings.Contains(stdout.String(), "Workspace root [") || strings.Contains(stdout.String(), "Codex command [") || strings.Contains(stdout.String(), "Agent mode (app_server|stdio) [") {
 		t.Fatalf("expected explicit values to skip prompts, got %q", stdout.String())
 	}
+	assertContainsAll(t, stdout.String(),
+		"Dispatch mode (parallel|per_project_serial) [",
+		"Max concurrent agents [",
+		"Max turns [",
+		"Max automatic retries [",
+	)
 }
 
 func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
 	content := buildWorkflowFile(InitOptions{
-		WorkspaceRoot: "./ws",
-		CodexCommand:  "codex app-server --model test",
-		AgentMode:     AgentModeStdio,
+		WorkspaceRoot:            "./ws",
+		CodexCommand:             "codex app-server --model test",
+		AgentMode:                AgentModeAppServer,
+		DispatchMode:             DispatchModePerProjectSerial,
+		MaxConcurrentAgents:      5,
+		MaxTurns:                 6,
+		MaxAutomaticRetries:      7,
+		ApprovalPolicy:           "on-request",
+		InitialCollaborationMode: InitialCollaborationModePlan,
 	})
 	assertDefaultPromptSemantics(t, content)
 	assertInitDonePromptSemantics(t, content)
@@ -746,20 +863,29 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	if workflow.Config.Workspace.Root != filepath.Join(tmpDir, "ws") {
 		t.Fatalf("unexpected workspace root: %s", workflow.Config.Workspace.Root)
 	}
-	if workflow.Config.Agent.Mode != AgentModeStdio {
+	if workflow.Config.Agent.Mode != AgentModeAppServer {
 		t.Fatalf("unexpected agent mode: %q", workflow.Config.Agent.Mode)
 	}
-	if workflow.Config.Agent.DispatchMode != DispatchModeParallel {
+	if workflow.Config.Agent.DispatchMode != DispatchModePerProjectSerial {
 		t.Fatalf("unexpected dispatch mode: %q", workflow.Config.Agent.DispatchMode)
 	}
-	if workflow.Config.Agent.MaxAutomaticRetries != 8 {
+	if workflow.Config.Agent.MaxConcurrentAgents != 5 {
+		t.Fatalf("unexpected max concurrent agents: %d", workflow.Config.Agent.MaxConcurrentAgents)
+	}
+	if workflow.Config.Agent.MaxTurns != 6 {
+		t.Fatalf("unexpected max turns: %d", workflow.Config.Agent.MaxTurns)
+	}
+	if workflow.Config.Agent.MaxAutomaticRetries != 7 {
 		t.Fatalf("unexpected max automatic retries: %d", workflow.Config.Agent.MaxAutomaticRetries)
 	}
 	if workflow.Config.Codex.Command != "codex app-server --model test" {
 		t.Fatalf("unexpected codex command: %q", workflow.Config.Codex.Command)
 	}
-	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
+	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
 		t.Fatalf("unexpected initial collaboration mode: %q", workflow.Config.Codex.InitialCollaborationMode)
+	}
+	if got := strings.TrimSpace(workflow.Config.Codex.ApprovalPolicy.(string)); got != "on-request" {
+		t.Fatalf("unexpected approval policy: %q", got)
 	}
 	if !workflow.Config.Phases.Review.Enabled || !strings.Contains(workflow.Config.Phases.Review.Prompt, "Review the implementation for issue") {
 		t.Fatalf("expected generated workflow review phase to round-trip, got %+v", workflow.Config.Phases.Review)
