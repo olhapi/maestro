@@ -437,7 +437,8 @@ func listDaemonEntries() ([]DaemonEntry, error) {
 		path := filepath.Join(root, dirEntry.Name())
 		entry, err := readDaemonEntryFile(path)
 		if err != nil {
-			return nil, err
+			slog.Warn("Skipping unreadable daemon registry entry", "path", path, "error", err)
+			continue
 		}
 		entries = append(entries, *entry)
 	}

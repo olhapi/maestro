@@ -98,6 +98,37 @@ func TestManagedDaemonReplacesStaleRegistryEntry(t *testing.T) {
 	}
 }
 
+func TestManagedDaemonDiscoverySkipsCorruptRegistryEntries(t *testing.T) {
+	registryRoot := t.TempDir()
+	t.Setenv(daemonRegistryEnv, registryRoot)
+
+	store := testStore(t, filepath.Join(t.TempDir(), "maestro.db"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handle, err := StartManagedDaemon(ctx, store, testRuntimeProvider{store: store}, nil, "fresh")
+	if err != nil {
+		t.Fatalf("StartManagedDaemon failed: %v", err)
+	}
+	defer func() { _ = handle.Close() }()
+
+	corruptPath := filepath.Join(registryRoot, "corrupt.json")
+	if err := os.WriteFile(corruptPath, []byte("{"), 0o600); err != nil {
+		t.Fatalf("write corrupt registry entry: %v", err)
+	}
+
+	entry, err := DiscoverDaemonForStore(context.Background(), store.Identity())
+	if err != nil {
+		t.Fatalf("DiscoverDaemonForStore failed with corrupt registry entry: %v", err)
+	}
+	if entry.StoreID != store.Identity().StoreID {
+		t.Fatalf("unexpected store id: got %q want %q", entry.StoreID, store.Identity().StoreID)
+	}
+	if entry.BaseURL != handle.Entry.BaseURL {
+		t.Fatalf("expected discovery to return live daemon, got %q want %q", entry.BaseURL, handle.Entry.BaseURL)
+	}
+}
+
 func TestManagedDaemonRejectsSecondOwnerForSameStore(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 

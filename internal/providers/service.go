@@ -229,6 +229,10 @@ func (s *Service) ListProjectSummaries() ([]kanban.ProjectSummary, error) {
 	return s.store.ListProjectSummaries()
 }
 
+func (s *Service) ListProjectSummariesPage(limit, offset int) ([]kanban.ProjectSummary, int, error) {
+	return s.store.ListProjectSummariesPage(limit, offset)
+}
+
 func (s *Service) CreateEpic(projectID, name, description string) (*kanban.Epic, error) {
 	if strings.TrimSpace(projectID) == "" {
 		return nil, fmt.Errorf("%w: project_id is required", kanban.ErrValidation)
@@ -300,6 +304,23 @@ func (s *Service) ListEpicSummaries(projectID string) ([]kanban.EpicSummary, err
 		}
 	}
 	return s.store.ListEpicSummaries(projectID)
+}
+
+func (s *Service) ListEpicSummariesPage(projectID string, limit, offset int) ([]kanban.EpicSummary, int, error) {
+	if strings.TrimSpace(projectID) != "" {
+		project, err := s.store.GetProject(projectID)
+		if err != nil {
+			return nil, 0, err
+		}
+		provider, err := s.ProviderForProject(project)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !provider.Capabilities().Epics {
+			return []kanban.EpicSummary{}, 0, nil
+		}
+	}
+	return s.store.ListEpicSummariesPage(projectID, limit, offset)
 }
 
 func (s *Service) SyncIssues(ctx context.Context, query kanban.IssueQuery) error {
@@ -850,6 +871,29 @@ func (s *Service) ListIssueComments(ctx context.Context, identifier string) ([]k
 	return comments, nil
 }
 
+func (s *Service) ListIssueCommentsPage(ctx context.Context, identifier string, limit, offset int) ([]kanban.IssueComment, int, error) {
+	issue, err := s.GetIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, 0, err
+	}
+	project, provider, err := s.resolveIssueProvider(issue)
+	if err != nil {
+		return nil, 0, err
+	}
+	if provider.Kind() == kanban.ProviderKindKanban {
+		return s.store.ListIssueCommentsPage(issue.ID, limit, offset)
+	}
+	comments, err := provider.ListIssueComments(ctx, project, issue)
+	if err != nil {
+		return nil, 0, err
+	}
+	if comments == nil {
+		return []kanban.IssueComment{}, 0, nil
+	}
+	page, total := paginateSlice(comments, limit, offset)
+	return page, total, nil
+}
+
 func (s *Service) CreateIssueCommentWithResult(ctx context.Context, identifier string, input IssueCommentInput) (*kanban.IssueComment, error) {
 	issue, err := s.GetIssueByIdentifier(ctx, identifier)
 	if err != nil {
@@ -896,6 +940,26 @@ func (s *Service) GetIssueCommentAttachmentContent(ctx context.Context, identifi
 		return nil, err
 	}
 	return provider.GetIssueCommentAttachmentContent(ctx, project, issue, commentID, attachmentID)
+}
+
+func paginateSlice[T any](items []T, limit, offset int) ([]T, int) {
+	total := len(items)
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page := make([]T, end-offset)
+	copy(page, items[offset:end])
+	return page, total
 }
 
 func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {

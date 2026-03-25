@@ -34,16 +34,23 @@ type RuntimeProvider interface {
 	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
 }
 
+type toolHandlerFunc func(context.Context, map[string]interface{}) (*mcpapi.CallToolResult, error)
+
+type toolRoute struct {
+	tool    mcpapi.Tool
+	handler toolHandlerFunc
+}
+
 // Server implements the MCP server for the kanban board
 // and optional extension tools.
 type Server struct {
-	store      *kanban.Store
-	service    *providers.Service
-	provider   RuntimeProvider
-	server     *mcpserver.MCPServer
-	tools      []mcpapi.Tool
-	extensions *extensions.Registry
-	instanceID string
+	store        *kanban.Store
+	service      *providers.Service
+	provider     RuntimeProvider
+	server       *mcpserver.MCPServer
+	toolHandlers map[string]toolHandlerFunc
+	extensions   *extensions.Registry
+	instanceID   string
 }
 
 const (
@@ -75,12 +82,13 @@ func NewServerWithRegistry(store *kanban.Store, provider RuntimeProvider, regist
 		registry = extensions.EmptyRegistry()
 	}
 	s := &Server{
-		store:      store,
-		service:    providers.NewService(store),
-		provider:   provider,
-		server:     mcpserver.NewMCPServer("maestro", "1.0.0", mcpserver.WithToolCapabilities(false)),
-		extensions: registry,
-		instanceID: generateServerInstanceID(),
+		store:        store,
+		service:      providers.NewService(store),
+		provider:     provider,
+		server:       mcpserver.NewMCPServer("maestro", "1.0.0", mcpserver.WithToolCapabilities(false)),
+		toolHandlers: map[string]toolHandlerFunc{},
+		extensions:   registry,
+		instanceID:   generateServerInstanceID(),
 	}
 
 	s.registerTools()
@@ -88,48 +96,76 @@ func NewServerWithRegistry(store *kanban.Store, provider RuntimeProvider, regist
 }
 
 func (s *Server) registerTools() {
-	s.tools = []mcpapi.Tool{
-		objectTool("server_info", "Get Maestro MCP server identity and store metadata", nil),
-		objectTool("create_project", "Create a new project", map[string]interface{}{
+	routes := s.builtinToolRoutes()
+	if s.extensions != nil {
+		for _, spec := range s.extensions.Specs() {
+			toolName := asString(spec["name"])
+			if strings.TrimSpace(toolName) == "" {
+				continue
+			}
+			routes = append(routes, toolRoute{
+				tool: mcpapi.Tool{
+					Name:        toolName,
+					Description: asString(spec["description"]),
+					InputSchema: extensionToolInputSchema(spec),
+				},
+				handler: func(name string) toolHandlerFunc {
+					return func(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
+						return s.handleExtensionTool(ctx, name, args)
+					}
+				}(toolName),
+			})
+		}
+	}
+	s.toolHandlers = make(map[string]toolHandlerFunc, len(routes))
+	for _, route := range routes {
+		s.registerToolRoute(route)
+	}
+}
+
+func (s *Server) builtinToolRoutes() []toolRoute {
+	return []toolRoute{
+		{tool: objectTool("server_info", "Get Maestro MCP server identity and store metadata", nil), handler: s.handleServerInfo},
+		{tool: objectTool("create_project", "Create a new project", map[string]interface{}{
 			"name":          stringProperty("Project name"),
 			"description":   stringProperty("Project description"),
 			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
 			"workflow_path": stringProperty("Optional workflow path override"),
-		}),
-		objectTool("update_project", "Update an existing project", map[string]interface{}{
+		}), handler: s.handleCreateProject},
+		{tool: objectTool("update_project", "Update an existing project", map[string]interface{}{
 			"id":            stringProperty("Project ID"),
 			"name":          stringProperty("Project name"),
 			"description":   stringProperty("Project description"),
 			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
 			"workflow_path": stringProperty("Optional workflow path override"),
-		}),
-		objectTool("list_projects", "List projects with pagination; use pagination.next_request to continue", map[string]interface{}{
+		}), handler: s.handleUpdateProject},
+		{tool: objectTool("list_projects", "List projects with pagination; use pagination.next_request to continue", map[string]interface{}{
 			"limit":  numberProperty("Maximum projects to return"),
 			"offset": numberProperty("Number of projects to skip"),
-		}),
-		objectTool("delete_project", "Delete a project", map[string]interface{}{
+		}), handler: s.handleListProjects},
+		{tool: objectTool("delete_project", "Delete a project", map[string]interface{}{
 			"id": stringProperty("Project ID"),
-		}),
-		objectTool("create_epic", "Create a new epic within a project", map[string]interface{}{
+		}), handler: s.handleDeleteProject},
+		{tool: objectTool("create_epic", "Create a new epic within a project", map[string]interface{}{
 			"project_id":  stringProperty("Project ID"),
 			"name":        stringProperty("Epic name"),
 			"description": stringProperty("Epic description"),
-		}),
-		objectTool("update_epic", "Update an existing epic", map[string]interface{}{
+		}), handler: s.handleCreateEpic},
+		{tool: objectTool("update_epic", "Update an existing epic", map[string]interface{}{
 			"id":          stringProperty("Epic ID"),
 			"project_id":  stringProperty("Project ID"),
 			"name":        stringProperty("Epic name"),
 			"description": stringProperty("Epic description"),
-		}),
-		objectTool("list_epics", "List epics, optionally filtered by project, with pagination; use pagination.next_request to continue", map[string]interface{}{
+		}), handler: s.handleUpdateEpic},
+		{tool: objectTool("list_epics", "List epics, optionally filtered by project, with pagination; use pagination.next_request to continue", map[string]interface{}{
 			"project_id": stringProperty("Filter by project ID"),
 			"limit":      numberProperty("Maximum epics to return"),
 			"offset":     numberProperty("Number of epics to skip"),
-		}),
-		objectTool("delete_epic", "Delete an epic", map[string]interface{}{
+		}), handler: s.handleListEpics},
+		{tool: objectTool("delete_epic", "Delete an epic", map[string]interface{}{
 			"id": stringProperty("Epic ID"),
-		}),
-		objectTool("create_issue", "Create a new issue", map[string]interface{}{
+		}), handler: s.handleDeleteEpic},
+		{tool: objectTool("create_issue", "Create a new issue", map[string]interface{}{
 			"title":       stringProperty("Issue title"),
 			"description": stringProperty("Issue description"),
 			"project_id":  stringProperty("Project ID"),
@@ -143,16 +179,16 @@ func (s *Server) registerTools() {
 			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
 			"branch_name": stringProperty("Branch name"),
 			"pr_url":      stringProperty("Pull request URL"),
-		}),
-		objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
+		}), handler: s.handleCreateIssue},
+		{tool: objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
-		}),
-		objectTool("list_issue_comments", "List comments for an issue with pagination over root threads; use pagination.next_request to continue", map[string]interface{}{
+		}), handler: s.handleGetIssue},
+		{tool: objectTool("list_issue_comments", "List comments for an issue with pagination over root threads; use pagination.next_request to continue", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"limit":      numberProperty("Maximum top-level comment threads to return"),
 			"offset":     numberProperty("Number of top-level comment threads to skip"),
-		}),
-		objectTool("list_issues", "List issues with filters, search, sort, and pagination; use pagination.next_request to continue", map[string]interface{}{
+		}), handler: s.handleListIssueComments},
+		{tool: objectTool("list_issues", "List issues with filters, search, sort, and pagination; use pagination.next_request to continue", map[string]interface{}{
 			"project_id": stringProperty("Filter by project ID"),
 			"epic_id":    stringProperty("Filter by epic ID"),
 			"state":      stringProperty("Filter by state: backlog, ready, in_progress, in_review, done, cancelled"),
@@ -161,8 +197,8 @@ func (s *Server) registerTools() {
 			"sort":       stringProperty("Sort order: updated_desc, created_asc, priority_asc, identifier_asc, state_asc"),
 			"limit":      numberProperty("Maximum issues to return"),
 			"offset":     numberProperty("Number of issues to skip"),
-		}),
-		objectTool("update_issue", "Update an issue", map[string]interface{}{
+		}), handler: s.handleListIssues},
+		{tool: objectTool("update_issue", "Update an issue", map[string]interface{}{
 			"identifier":  stringProperty("Issue ID or identifier"),
 			"project_id":  stringProperty("Project ID"),
 			"epic_id":     stringProperty("Epic ID"),
@@ -176,95 +212,95 @@ func (s *Server) registerTools() {
 			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
 			"branch_name": stringProperty("Branch name"),
 			"pr_url":      stringProperty("Pull request URL"),
-		}),
-		objectTool("attach_issue_asset", "Attach a local asset to an issue from a file path", map[string]interface{}{
+		}), handler: s.handleUpdateIssue},
+		{tool: objectTool("attach_issue_asset", "Attach a local asset to an issue from a file path", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"path":       stringProperty("Absolute or relative local file path"),
-		}),
-		objectTool("create_issue_comment", "Create a comment on an issue", map[string]interface{}{
+		}), handler: s.handleAttachIssueAsset},
+		{tool: objectTool("create_issue_comment", "Create a comment on an issue", map[string]interface{}{
 			"identifier":        stringProperty("Issue ID or identifier"),
 			"body":              stringProperty("Comment body"),
 			"parent_comment_id": stringProperty("Parent comment ID"),
 			"attachment_paths":  stringArrayProperty("Attachment file paths"),
-		}),
-		objectTool("update_issue_comment", "Update an existing issue comment", map[string]interface{}{
+		}), handler: s.handleCreateIssueComment},
+		{tool: objectTool("update_issue_comment", "Update an existing issue comment", map[string]interface{}{
 			"identifier":            stringProperty("Issue ID or identifier"),
 			"comment_id":            stringProperty("Comment ID"),
 			"body":                  stringProperty("Updated comment body"),
 			"attachment_paths":      stringArrayProperty("Attachment file paths"),
 			"remove_attachment_ids": stringArrayProperty("Attachment IDs to remove"),
-		}),
-		objectTool("delete_issue_comment", "Delete an issue comment", map[string]interface{}{
+		}), handler: s.handleUpdateIssueComment},
+		{tool: objectTool("delete_issue_comment", "Delete an issue comment", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"comment_id": stringProperty("Comment ID"),
-		}),
-		objectTool("delete_issue_asset", "Delete an attached issue asset", map[string]interface{}{
+		}), handler: s.handleDeleteIssueComment},
+		{tool: objectTool("delete_issue_asset", "Delete an attached issue asset", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"asset_id":   stringProperty("Issue asset ID"),
-		}),
-		objectTool("set_issue_state", "Change an issue state", map[string]interface{}{
+		}), handler: s.handleDeleteIssueAsset},
+		{tool: objectTool("set_issue_state", "Change an issue state", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"state":      stringProperty("New state: backlog, ready, in_progress, in_review, done, cancelled"),
-		}),
-		objectTool("set_issue_workflow_phase", "Change an issue workflow phase", map[string]interface{}{
+		}), handler: s.handleSetIssueState},
+		{tool: objectTool("set_issue_workflow_phase", "Change an issue workflow phase", map[string]interface{}{
 			"identifier":     stringProperty("Issue ID or identifier"),
 			"workflow_phase": stringProperty("New workflow phase: implementation, review, done, complete"),
-		}),
-		objectTool("delete_issue", "Delete an issue", map[string]interface{}{
+		}), handler: s.handleSetIssueWorkflowPhase},
+		{tool: objectTool("delete_issue", "Delete an issue", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
-		}),
-		objectTool("run_project", "Request live orchestration for a project", map[string]interface{}{
+		}), handler: s.handleDeleteIssue},
+		{tool: objectTool("run_project", "Request live orchestration for a project", map[string]interface{}{
 			"id": stringProperty("Project ID"),
-		}),
-		objectTool("stop_project", "Stop live runs for a project", map[string]interface{}{
+		}), handler: s.handleRunProject},
+		{tool: objectTool("stop_project", "Stop live runs for a project", map[string]interface{}{
 			"id": stringProperty("Project ID"),
-		}),
-		objectTool("get_issue_execution", "Get execution details for a single issue", map[string]interface{}{
+		}), handler: s.handleStopProject},
+		{tool: objectTool("get_issue_execution", "Get execution details for a single issue", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
-		}),
-		objectTool("retry_issue", "Request an immediate retry for an issue", map[string]interface{}{
+		}), handler: s.handleGetIssueExecution},
+		{tool: objectTool("retry_issue", "Request an immediate retry for an issue", map[string]interface{}{
 			"identifier": stringProperty("Issue identifier"),
-		}),
-		objectTool("run_issue_now", "Trigger a recurring issue immediately", map[string]interface{}{
+		}), handler: s.handleRetryIssue},
+		{tool: objectTool("run_issue_now", "Trigger a recurring issue immediately", map[string]interface{}{
 			"identifier": stringProperty("Recurring issue identifier"),
-		}),
-		objectTool("board_overview", "Get a kanban board overview showing issue counts by state", map[string]interface{}{
+		}), handler: s.handleRunIssueNow},
+		{tool: objectTool("board_overview", "Get a kanban board overview showing issue counts by state", map[string]interface{}{
 			"project_id": stringProperty("Filter by project ID"),
-		}),
-		objectTool("set_blockers", "Set blockers for an issue", map[string]interface{}{
+		}), handler: s.handleBoardOverview},
+		{tool: objectTool("set_blockers", "Set blockers for an issue", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
 			"blocked_by": stringArrayProperty("List of issue identifiers that block this issue"),
-		}),
-		objectTool("list_runtime_events", "List persisted runtime events", map[string]interface{}{
+		}), handler: s.handleSetBlockers},
+		{tool: objectTool("list_runtime_events", "List persisted runtime events", map[string]interface{}{
 			"since": numberProperty("Only return events with seq greater than this value"),
 			"limit": numberProperty("Maximum events to return"),
-		}),
-		objectTool("get_runtime_snapshot", "Get the live Maestro runtime snapshot", nil),
-		objectTool("list_sessions", "List live Maestro sessions or fetch one issue session", map[string]interface{}{
+		}), handler: s.handleListRuntimeEvents},
+		{tool: objectTool("get_runtime_snapshot", "Get the live Maestro runtime snapshot", nil), handler: s.handleGetRuntimeSnapshot},
+		{tool: objectTool("list_sessions", "List live Maestro sessions or fetch one issue session", map[string]interface{}{
 			"identifier": stringProperty("Issue identifier to fetch a single live session"),
-		}),
+		}), handler: s.handleListSessions},
 	}
+}
 
-	for _, spec := range s.extensions.Specs() {
-		s.tools = append(s.tools, mcpapi.Tool{
-			Name:        asString(spec["name"]),
-			Description: asString(spec["description"]),
-			InputSchema: extensionToolInputSchema(spec),
-		})
+func (s *Server) registerToolRoute(route toolRoute) {
+	name := strings.TrimSpace(route.tool.Name)
+	if name == "" || route.handler == nil {
+		return
 	}
-
-	for _, tool := range s.tools {
-		tool := tool
-		s.server.AddTool(tool, func(ctx context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
-			args := map[string]interface{}{}
-			if request.Params.Arguments != nil {
-				if typed, ok := request.Params.Arguments.(map[string]interface{}); ok {
-					args = typed
-				}
+	if _, exists := s.toolHandlers[name]; exists {
+		return
+	}
+	tool := route.tool
+	s.toolHandlers[name] = route.handler
+	s.server.AddTool(tool, func(ctx context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
+		args := map[string]interface{}{}
+		if request.Params.Arguments != nil {
+			if typed, ok := request.Params.Arguments.(map[string]interface{}); ok {
+				args = typed
 			}
-			return s.handleCallTool(ctx, tool.Name, args)
-		})
-	}
+		}
+		return s.handleCallTool(ctx, tool.Name, args)
+	})
 }
 
 // handleCallTool routes tool calls to appropriate handlers.
@@ -275,80 +311,14 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 			err = nil
 		}
 	}()
-
-	switch name {
-	case "server_info":
-		return s.handleServerInfo(ctx, args)
-	case "create_project":
-		return s.handleCreateProject(ctx, args)
-	case "update_project":
-		return s.handleUpdateProject(ctx, args)
-	case "list_projects":
-		return s.handleListProjects(ctx, args)
-	case "delete_project":
-		return s.handleDeleteProject(ctx, args)
-	case "create_epic":
-		return s.handleCreateEpic(ctx, args)
-	case "update_epic":
-		return s.handleUpdateEpic(ctx, args)
-	case "list_epics":
-		return s.handleListEpics(ctx, args)
-	case "delete_epic":
-		return s.handleDeleteEpic(ctx, args)
-	case "create_issue":
-		return s.handleCreateIssue(ctx, args)
-	case "get_issue":
-		return s.handleGetIssue(ctx, args)
-	case "list_issue_comments":
-		return s.handleListIssueComments(ctx, args)
-	case "list_issues":
-		return s.handleListIssues(ctx, args)
-	case "update_issue":
-		return s.handleUpdateIssue(ctx, args)
-	case "attach_issue_asset":
-		return s.handleAttachIssueAsset(ctx, args)
-	case "create_issue_comment":
-		return s.handleCreateIssueComment(ctx, args)
-	case "update_issue_comment":
-		return s.handleUpdateIssueComment(ctx, args)
-	case "delete_issue_comment":
-		return s.handleDeleteIssueComment(ctx, args)
-	case "delete_issue_asset":
-		return s.handleDeleteIssueAsset(ctx, args)
-	case "set_issue_state":
-		return s.handleSetIssueState(ctx, args)
-	case "set_issue_workflow_phase":
-		return s.handleSetIssueWorkflowPhase(ctx, args)
-	case "delete_issue":
-		return s.handleDeleteIssue(ctx, args)
-	case "run_project":
-		return s.handleRunProject(ctx, args)
-	case "stop_project":
-		return s.handleStopProject(ctx, args)
-	case "get_issue_execution":
-		return s.handleGetIssueExecution(ctx, args)
-	case "retry_issue":
-		return s.handleRetryIssue(ctx, args)
-	case "run_issue_now":
-		return s.handleRunIssueNow(ctx, args)
-	case "board_overview":
-		return s.handleBoardOverview(ctx, args)
-	case "set_blockers":
-		return s.handleSetBlockers(ctx, args)
-	case "list_runtime_events":
-		return s.handleListRuntimeEvents(ctx, args)
-	case "get_runtime_snapshot":
-		return s.handleGetRuntimeSnapshot(ctx, args)
-	case "list_sessions":
-		return s.handleListSessions(ctx, args)
-	default:
-		for _, toolName := range s.extensions.Names() {
-			if toolName == name {
-				return s.handleExtensionTool(ctx, name, args)
-			}
-		}
+	if s == nil || len(s.toolHandlers) == 0 {
 		return s.toolError(name, fmt.Sprintf("unknown tool: %s", name)), nil
 	}
+	handler, ok := s.toolHandlers[strings.TrimSpace(name)]
+	if !ok || handler == nil {
+		return s.toolError(name, fmt.Sprintf("unknown tool: %s", name)), nil
+	}
+	return handler(ctx, args)
 }
 
 func generateServerInstanceID() string {
@@ -437,19 +407,18 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 }
 
 func (s *Server) handleListProjects(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
-	projects, err := s.service.ListProjectSummaries()
+	limit, offset := normalizePaginationArgs(args)
+	projects, total, err := s.service.ListProjectSummariesPage(limit, offset)
 	if err != nil {
 		return s.toolError("list_projects", fmt.Sprintf("Failed to list projects: %v", err)), nil
 	}
-	limit, offset := normalizePaginationArgs(args)
-	page, total, _ := paginateItems(projects, limit, offset)
-	s.decorateProjectSummaries(page)
+	s.decorateProjectSummaries(projects)
 	return s.toolResult("list_projects", map[string]interface{}{
-		"items":      page,
+		"items":      projects,
 		"total":      total,
 		"limit":      limit,
 		"offset":     offset,
-		"pagination": s.paginationPayload("list_projects", nil, total, limit, offset, len(page)),
+		"pagination": s.paginationPayload("list_projects", nil, total, limit, offset, len(projects)),
 	}), nil
 }
 
@@ -483,22 +452,21 @@ func (s *Server) handleUpdateEpic(ctx context.Context, args map[string]interface
 
 func (s *Server) handleListEpics(ctx context.Context, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
 	projectID := asString(args["project_id"])
-	epics, err := s.service.ListEpicSummaries(projectID)
+	limit, offset := normalizePaginationArgs(args)
+	epics, total, err := s.service.ListEpicSummariesPage(projectID, limit, offset)
 	if err != nil {
 		return s.toolError("list_epics", fmt.Sprintf("Failed to list epics: %v", err)), nil
 	}
-	limit, offset := normalizePaginationArgs(args)
-	page, total, _ := paginateItems(epics, limit, offset)
 	baseArgs := map[string]interface{}{}
 	if strings.TrimSpace(projectID) != "" {
 		baseArgs["project_id"] = projectID
 	}
 	return s.toolResult("list_epics", map[string]interface{}{
-		"items":      page,
+		"items":      epics,
 		"total":      total,
 		"limit":      limit,
 		"offset":     offset,
-		"pagination": s.paginationPayload("list_epics", baseArgs, total, limit, offset, len(page)),
+		"pagination": s.paginationPayload("list_epics", baseArgs, total, limit, offset, len(epics)),
 	}), nil
 }
 
@@ -550,19 +518,18 @@ func (s *Server) handleListIssueComments(ctx context.Context, args map[string]in
 	if err != nil {
 		return s.toolError("list_issue_comments", err.Error()), nil
 	}
-	comments, err := s.service.ListIssueComments(ctx, issue.Identifier)
+	limit, offset := normalizePaginationArgs(args)
+	comments, total, err := s.service.ListIssueCommentsPage(ctx, issue.Identifier, limit, offset)
 	if err != nil {
 		return s.toolError("list_issue_comments", fmt.Sprintf("Failed to list issue comments: %v", err)), nil
 	}
-	limit, offset := normalizePaginationArgs(args)
-	page, total, _ := paginateItems(comments, limit, offset)
 	return s.toolResult("list_issue_comments", map[string]interface{}{
 		"identifier": issue.Identifier,
-		"items":      page,
+		"items":      comments,
 		"total":      total,
 		"limit":      limit,
 		"offset":     offset,
-		"pagination": s.paginationPayload("list_issue_comments", map[string]interface{}{"identifier": issue.Identifier}, total, limit, offset, len(page)),
+		"pagination": s.paginationPayload("list_issue_comments", map[string]interface{}{"identifier": issue.Identifier}, total, limit, offset, len(comments)),
 	}), nil
 }
 
@@ -833,17 +800,15 @@ func (s *Server) handleSetBlockers(ctx context.Context, args map[string]interfac
 	if err != nil {
 		return s.toolError("set_blockers", err.Error()), nil
 	}
-	persisted, err := s.store.SetIssueBlockers(issue.ID, stringListArg(args, "blocked_by"))
+	detail, err := s.service.UpdateIssue(ctx, issue.Identifier, map[string]interface{}{
+		"blocked_by": stringListArg(args, "blocked_by"),
+	})
 	if err != nil {
 		return s.toolError("set_blockers", fmt.Sprintf("Failed to set blockers: %v", err)), nil
 	}
-	detail, err := s.store.GetIssueDetailByIdentifier(issue.Identifier)
-	if err != nil {
-		return s.toolError("set_blockers", fmt.Sprintf("Failed to reload issue: %v", err)), nil
-	}
 	return s.toolResult("set_blockers", map[string]interface{}{
 		"identifier": issue.Identifier,
-		"blocked_by": persisted,
+		"blocked_by": detail.BlockedBy,
 		"issue":      detail,
 	}), nil
 }
@@ -855,7 +820,7 @@ func (s *Server) handleListRuntimeEvents(ctx context.Context, args map[string]in
 	if err != nil {
 		return s.toolError("list_runtime_events", fmt.Sprintf("Failed to list runtime events: %v", err)), nil
 	}
-	var lastSeq int64
+	lastSeq := since
 	if len(events) > 0 {
 		lastSeq = events[len(events)-1].Seq
 	}
@@ -1183,10 +1148,20 @@ func extensionToolInputSchema(spec map[string]interface{}) mcpapi.ToolInputSchem
 	if typ == "" {
 		typ = "object"
 	}
-	return mcpapi.ToolInputSchema{
+	schema := mcpapi.ToolInputSchema{
 		Type:       typ,
 		Properties: properties,
 	}
+	if rawDefs, ok := inputSchema["$defs"].(map[string]interface{}); ok {
+		schema.Defs = cloneSchemaMap(rawDefs)
+	}
+	if rawRequired, ok := inputSchema["required"]; ok {
+		schema.Required = stringSliceValueFromSchema(rawRequired)
+	}
+	if rawAdditional, ok := inputSchema["additionalProperties"]; ok {
+		schema.AdditionalProperties = cloneJSONSchemaValue(rawAdditional)
+	}
+	return schema
 }
 
 func objectTool(name, description string, properties map[string]interface{}) mcpapi.Tool {
@@ -1214,6 +1189,67 @@ func objectProperty(description string) map[string]interface{} {
 
 func booleanProperty(description string) map[string]interface{} {
 	return map[string]interface{}{"type": "boolean", "description": description}
+}
+
+func stringSliceValueFromSchema(value interface{}) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if strings.TrimSpace(item) == "" {
+				continue
+			}
+			out = append(out, item)
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok || strings.TrimSpace(text) == "" {
+				continue
+			}
+			out = append(out, text)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func cloneJSONSchemaValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	return cloneJSONValue(value)
+}
+
+func cloneSchemaMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for key, value := range src {
+		dst[key] = cloneJSONValue(value)
+	}
+	return dst
+}
+
+func cloneJSONValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return value
+	}
+	return out
 }
 
 func stringArrayProperty(description string) map[string]interface{} {
