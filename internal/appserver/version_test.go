@@ -22,9 +22,9 @@ func writeFakeCodex(t *testing.T, version string) string {
 	return path
 }
 
-func TestDetectCodexVersion(t *testing.T) {
+func TestDetectCodexVersionDirectBinary(t *testing.T) {
 	path := writeFakeCodex(t, codexschema.SupportedVersion)
-	status, err := DetectCodexVersion(path + " app-server")
+	status, err := DetectCodexVersion(path)
 	if err != nil {
 		t.Fatalf("DetectCodexVersion: %v", err)
 	}
@@ -33,6 +33,16 @@ func TestDetectCodexVersion(t *testing.T) {
 	}
 	if status.ExecutablePath == "" {
 		t.Fatalf("expected executable path: %+v", status)
+	}
+}
+
+func TestDetectCodexVersionSkipsNonCodexCommand(t *testing.T) {
+	status, err := DetectCodexVersion("/bin/sh -lc echo")
+	if err != nil {
+		t.Fatalf("DetectCodexVersion: %v", err)
+	}
+	if status.ExecutablePath != "" || status.Actual != "" {
+		t.Fatalf("expected non-codex command to be ignored, got %+v", status)
 	}
 }
 
