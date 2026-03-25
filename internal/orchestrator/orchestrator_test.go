@@ -4571,7 +4571,7 @@ func TestFindReviewPreviewVideoReturnsNewestArtifact(t *testing.T) {
 }
 
 func TestBuildIssuePreviewCommentBodyIncludesSummaryAndFilename(t *testing.T) {
-	body := buildIssuePreviewCommentBody(&kanban.Issue{Identifier: "MAES-18"}, &agent.RunResult{
+	body := buildIssuePreviewCommentBody(&agent.RunResult{
 		Output: "fallback output",
 		AppSession: &appserver.Session{
 			LastMessage: "Validation passed and the feature is ready.",

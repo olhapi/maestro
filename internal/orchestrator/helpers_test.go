@@ -918,6 +918,67 @@ func TestUpdateLiveSessionFlushesTokenSpendAfterDebounceAndBroadcasts(t *testing
 	waitForNoRunning(t, orch, time.Second)
 }
 
+func TestStopAllRunsFlushesPendingTokenSpendOnCancellation(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	runner := &blockingRunner{
+		started:      make(chan struct{}),
+		ctxCancelled: make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	orch.runner = runner
+
+	issue, err := store.CreateIssue("", "", "Cancel token spend", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for run start")
+	}
+
+	orch.updateLiveSession(issue.ID, &appserver.Session{
+		ThreadID:      "thread-cancel",
+		SessionID:     "thread-cancel-turn-1",
+		TurnID:        "turn-1",
+		LastEvent:     "thread.tokenUsage.updated",
+		LastTimestamp: time.Now().UTC(),
+		TotalTokens:   10,
+	})
+
+	current, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue before cancellation: %v", err)
+	}
+	if current.TotalTokensSpent != 0 {
+		t.Fatalf("TotalTokensSpent before cancellation = %d, want 0", current.TotalTokensSpent)
+	}
+
+	orch.stopAllRuns()
+	select {
+	case <-runner.ctxCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for run cancellation")
+	}
+	close(runner.release)
+	waitForNoRunning(t, orch, time.Second)
+
+	current, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after cancellation: %v", err)
+	}
+	if current.TotalTokensSpent != 10 {
+		t.Fatalf("TotalTokensSpent after cancellation = %d, want 10", current.TotalTokensSpent)
+	}
+}
+
 func TestPersistFinalIssueTokenSpendDeduplicatesAcrossLiveThreadSwitches(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	issue, err := store.CreateIssue("", "", "Token thread switches", "", 0, nil)

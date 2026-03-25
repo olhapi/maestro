@@ -1352,6 +1352,7 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, runner runnerExecuto
 		current = &cloned
 	}
 	current.WorkflowPhase = phase
+	o.finalizeIssueTokenSpend(issue.ID, result)
 	if isCancelledRunCompletion(err, result) {
 		if snapshot, snapshotErr := o.store.GetIssueExecutionSession(issue.ID); snapshotErr == nil && snapshot != nil && snapshot.StopReason == gracefulShutdownStopReason {
 			return
@@ -1360,9 +1361,6 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, runner runnerExecuto
 			issueLogAttrs(current, attempt, "phase", phase)...,
 		)
 		return
-	}
-	if result != nil && result.AppSession != nil {
-		o.persistFinalIssueTokenSpend(issue.ID, result.AppSession)
 	}
 
 	switch {
@@ -1424,7 +1422,6 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, runner runnerExecuto
 		}
 	}
 	o.processPendingRecurringRerunIgnoringRunning(current, issue.ID)
-	o.flushIssueTokenSpend(issue.ID, true)
 }
 
 func (o *Orchestrator) cleanupTerminalIssueWorkspace(ctx context.Context, runner runnerExecutor, issue *kanban.Issue, attempt int, reason string) {
@@ -1462,7 +1459,7 @@ func (o *Orchestrator) publishIssuePreviewAsync(issue *kanban.Issue, phase kanba
 		)
 		return
 	}
-	commentBody := buildIssuePreviewCommentBody(issue, result, previewPath)
+	commentBody := buildIssuePreviewCommentBody(result, previewPath)
 	issueCopy := *issue
 	go func(issue kanban.Issue, previewPath, stagedPreviewPath string, commentBody string, cleanup func()) {
 		defer cleanup()
@@ -1572,7 +1569,7 @@ func findReviewPreviewVideo(workspacePath string) (string, error) {
 	return bestPath, nil
 }
 
-func buildIssuePreviewCommentBody(issue *kanban.Issue, result *agent.RunResult, previewPath string) string {
+func buildIssuePreviewCommentBody(result *agent.RunResult, previewPath string) string {
 	lines := []string{"Automated reviewer preview from the done pass."}
 	finalMessage := strings.TrimSpace(issuePreviewSummary(result))
 	if finalMessage != "" {
@@ -1605,6 +1602,13 @@ func isCancelledRunCompletion(err error, result *agent.RunResult) bool {
 		return false
 	}
 	return errors.Is(result.Error, context.Canceled)
+}
+
+func (o *Orchestrator) finalizeIssueTokenSpend(issueID string, result *agent.RunResult) {
+	if result != nil && result.AppSession != nil {
+		o.persistFinalIssueTokenSpend(issueID, result.AppSession)
+	}
+	o.flushIssueTokenSpend(issueID, true)
 }
 
 func nextAttempt(attempt int) int {

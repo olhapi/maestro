@@ -398,6 +398,106 @@ func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *te
 	}
 }
 
+func TestIssueExecutionPayloadClearsHistoricalFailureAfterRunCompletedSuccess(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Succeeded after failure", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	for _, event := range []struct {
+		kind    string
+		attempt int
+		error   string
+	}{
+		{kind: "run_started", attempt: 1},
+		{kind: "run_failed", attempt: 1, error: "approval_required"},
+		{kind: "retry_scheduled", attempt: 2, error: "approval_required"},
+		{kind: "run_started", attempt: 2},
+		{kind: "run_completed", attempt: 2},
+	} {
+		payload := map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+			"attempt":    event.attempt,
+		}
+		if event.error != "" {
+			payload["error"] = event.error
+		}
+		if err := store.AppendRuntimeEvent(event.kind, payload); err != nil {
+			t.Fatalf("AppendRuntimeEvent(%s): %v", event.kind, err)
+		}
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["failure_class"] != "" {
+		t.Fatalf("expected success boundary to clear failure class, got %#v", payload["failure_class"])
+	}
+	if payload["current_error"] != "" {
+		t.Fatalf("expected success boundary to clear current error, got %#v", payload["current_error"])
+	}
+	if payload["attempt_number"].(int) != 2 {
+		t.Fatalf("expected latest successful attempt number, got %#v", payload["attempt_number"])
+	}
+}
+
+func TestIssueExecutionPayloadClearsHistoricalBootstrapFailureAfterSuccess(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Bootstrap succeeded after failure", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	for _, event := range []struct {
+		kind  string
+		error string
+	}{
+		{kind: "workspace_bootstrap_recovery", error: "workspace recovery required: Git blocked the branch switch while rebasing"},
+		{kind: "workspace_bootstrap_created"},
+	} {
+		payload := map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+			"attempt":    1,
+		}
+		if event.error != "" {
+			payload["error"] = event.error
+		}
+		if err := store.AppendRuntimeEvent(event.kind, payload); err != nil {
+			t.Fatalf("AppendRuntimeEvent(%s): %v", event.kind, err)
+		}
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["failure_class"] != "" {
+		t.Fatalf("expected bootstrap success boundary to clear failure class, got %#v", payload["failure_class"])
+	}
+	if payload["current_error"] != "" {
+		t.Fatalf("expected bootstrap success boundary to clear current error, got %#v", payload["current_error"])
+	}
+	if payload["workspace_recovery"] != nil {
+		t.Fatalf("expected successful bootstrap boundary to clear recovery metadata, got %#v", payload["workspace_recovery"])
+	}
+}
+
 func TestIssueExecutionPayloadReturnsWorkspaceRecoveryMetadata(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
