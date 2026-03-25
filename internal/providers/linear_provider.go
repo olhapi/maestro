@@ -121,8 +121,9 @@ query MaestroLinearIssues(%s) {
 			if !matchesAssigneeRaw(node, assigneeMatcher) {
 				continue
 			}
+			rawStateName := asStringNested(node, "state", "name")
 			issue := p.normalizeIssue(node)
-			if !matchesIssueQuery(issue, query) {
+			if !matchesIssueQuery(issue, rawStateName, query) {
 				continue
 			}
 			if project != nil {
@@ -786,13 +787,13 @@ func (p *LinearProvider) graphql(ctx context.Context, project *kanban.Project, q
 	return body, nil
 }
 
-func matchesIssueQuery(issue kanban.Issue, query kanban.IssueQuery) bool {
+func matchesIssueQuery(issue kanban.Issue, rawStateName string, query kanban.IssueQuery) bool {
 	if query.State != "" {
 		if expected, ok := linearCanonicalState(query.State); ok {
 			if issue.State != expected {
 				return false
 			}
-		} else if !strings.EqualFold(string(issue.State), strings.TrimSpace(query.State)) {
+		} else if !strings.EqualFold(strings.TrimSpace(rawStateName), strings.TrimSpace(query.State)) {
 			return false
 		}
 	}

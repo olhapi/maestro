@@ -275,6 +275,72 @@ func TestLinearProviderListIssuesPushesAssigneeAndStateFiltersToGraphQL(t *testi
 	}
 }
 
+func TestLinearProviderListIssuesPreservesCustomStateNames(t *testing.T) {
+	var requestBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":         "linear-1",
+							"identifier": "LIN-1",
+							"title":      "Custom workflow issue",
+							"state": map[string]interface{}{
+								"name": "QA Ready",
+								"type": "unstarted",
+							},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+							"inverseRelations": map[string]interface{}{
+								"nodes": []interface{}{},
+							},
+						},
+					},
+					"pageInfo": map[string]interface{}{
+						"hasNextPage": false,
+						"endCursor":   "",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("LINEAR_API_KEY", "test-token")
+
+	provider := NewLinearProvider()
+	provider.http = server.Client()
+	project := &kanban.Project{
+		ProviderProjectRef: "proj-slug",
+		ProviderConfig: map[string]interface{}{
+			"endpoint": server.URL,
+		},
+	}
+
+	issues, err := provider.ListIssues(context.Background(), project, kanban.IssueQuery{State: "QA Ready"})
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Identifier != "LIN-1" {
+		t.Fatalf("expected custom state issue to remain visible, got %#v", issues)
+	}
+	if issues[0].State != kanban.StateReady {
+		t.Fatalf("expected custom workflow state to normalize to ready, got %q", issues[0].State)
+	}
+
+	query, _ := requestBody["query"].(string)
+	if !strings.Contains(query, "state: {name: {eq: $stateName}}") {
+		t.Fatalf("expected state-name filter in query, got %q", query)
+	}
+	variables := requestBody["variables"].(map[string]interface{})
+	if variables["stateName"] != "QA Ready" {
+		t.Fatalf("expected custom stateName variable, got %#v", variables)
+	}
+}
+
 func TestLinearProviderSetIssueStateUsesWorkflowStateTypeAndLowestPosition(t *testing.T) {
 	var requests []map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
