@@ -1674,6 +1674,8 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 
 func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, client *appserver.Client, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string) (bool, error) {
 	deadline := time.Now().Add(activeThreadCommandPollWindow)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
 	var commands []kanban.IssueAgentCommand
 	for {
 		var err error
@@ -1687,7 +1689,7 @@ func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, client *a
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		case <-time.After(25 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
 	if len(commands) == 0 {
