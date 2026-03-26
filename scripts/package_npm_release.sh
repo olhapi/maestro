@@ -7,8 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT_DIR/scripts/lib/npm_safe_env.sh"
 ROOT_PACKAGE_TEMPLATE="$ROOT_DIR/packaging/npm/root.package.json.tmpl"
 ROOT_PACKAGE_SOURCE_DIR="$ROOT_DIR/packaging/npm/root"
-FRONTEND_APP_DIR="$ROOT_DIR/apps/frontend"
-FRONTEND_DIST_DIR="$ROOT_DIR/internal/dashboardui/dist"
+ENSURE_DASHBOARD_DIST_BIN="${MAESTRO_ENSURE_DASHBOARD_DIST_BIN:-$ROOT_DIR/scripts/ensure_dashboard_dist.sh}"
 OUT_ROOT="${OUT_ROOT:-$ROOT_DIR/dist}"
 STAGE_DIR="${STAGE_DIR:-$OUT_ROOT/npm-package}"
 PACK_DIR="${PACK_DIR:-$OUT_ROOT/npm}"
@@ -176,52 +175,6 @@ pack_package_dir() {
   node -e 'const data = JSON.parse(process.argv[1]); process.stdout.write(data[0].filename);' "$pack_output"
 }
 
-run_pnpm() {
-  if command -v pnpm >/dev/null 2>&1; then
-    pnpm "$@"
-    return
-  fi
-  if command -v corepack >/dev/null 2>&1; then
-    corepack pnpm "$@"
-    return
-  fi
-
-  echo "missing required command: pnpm (or corepack)" >&2
-  exit 1
-}
-
-ensure_frontend_dependencies() {
-  if [[ -d "$ROOT_DIR/node_modules/.pnpm" && -d "$FRONTEND_APP_DIR/node_modules" ]]; then
-    return
-  fi
-
-  echo "Installing frontend workspace dependencies"
-  (
-    cd "$ROOT_DIR"
-    run_pnpm install --frozen-lockfile
-  )
-}
-
-ensure_dashboard_dist() {
-  if ! command -v node >/dev/null 2>&1; then
-    echo "missing required command: node" >&2
-    exit 1
-  fi
-
-  ensure_frontend_dependencies
-
-  echo "Building embedded dashboard bundle"
-  (
-    cd "$FRONTEND_APP_DIR"
-    run_pnpm build
-  )
-
-  if [[ ! -f "$FRONTEND_DIST_DIR/index.html" || ! -f "$FRONTEND_DIST_DIR/assets/index.js" ]]; then
-    echo "frontend build did not produce expected dashboard assets in $FRONTEND_DIST_DIR" >&2
-    exit 1
-  fi
-}
-
 render_root_package_json() {
   local version="$1"
   sed "s/__VERSION__/$(escape_sed_replacement "$version")/g" "$ROOT_PACKAGE_TEMPLATE"
@@ -321,7 +274,7 @@ pack_leaf_package() {
   rm -rf "$stage_dir"
   mkdir -p "$stage_dir/lib" "$PACK_DIR"
 
-  ensure_dashboard_dist
+  "$ENSURE_DASHBOARD_DIST_BIN"
 
   echo "Building maestro $version for $GOOS/$GOARCH"
   (

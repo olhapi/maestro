@@ -11,7 +11,23 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  go-test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Run Go tests
+        run: make test
+
   go-platform-smoke:
+    needs: go-test
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

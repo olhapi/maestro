@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+"$ROOT_DIR/scripts/ensure_dashboard_dist.sh"
+
 packages=(
   "./cmd/maestro:80"
   "./internal/appserver:80"

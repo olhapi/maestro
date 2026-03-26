@@ -1,4 +1,4 @@
-.PHONY: frontend-build build test test-cover test-race start dev e2e-real-codex e2e-real-codex-phases e2e-real-codex-issue-images e2e-retry-safety
+.PHONY: frontend-build ensure-dashboard-dist build test test-cover test-race start dev e2e-real-codex e2e-real-codex-phases e2e-real-codex-issue-images e2e-retry-safety
 
 GO_TEST_PACKAGES := ./cmd/... ./internal/... ./pkg/...
 START_DB_PATH ?= $(HOME)/.maestro/maestro.db
@@ -9,16 +9,19 @@ MAESTRO_BIN ?= ./maestro
 frontend-build:
 	pnpm run frontend:build
 
-build: frontend-build
+ensure-dashboard-dist:
+	./scripts/ensure_dashboard_dist.sh
+
+build: ensure-dashboard-dist
 	go build -o $(MAESTRO_BIN) ./cmd/maestro
 
-test:
+test: ensure-dashboard-dist
 	go test $(GO_TEST_PACKAGES)
 
-test-cover:
+test-cover: ensure-dashboard-dist
 	./scripts/check_coverage.sh
 
-test-race:
+test-race: ensure-dashboard-dist
 	go test -race $(GO_TEST_PACKAGES)
 
 start: build
