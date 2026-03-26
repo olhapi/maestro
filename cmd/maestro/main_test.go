@@ -243,6 +243,26 @@ func TestScopedHelpCommands(t *testing.T) {
 	}
 }
 
+func TestRootHelpIncludesInitCommand(t *testing.T) {
+	code, stdout, stderr := runCLI(t, "--help")
+	if code != 0 {
+		t.Fatalf("root help failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\n  init") || !strings.Contains(stdout, "Initialize WORKFLOW.md") {
+		t.Fatalf("expected root help to list init command, got %q", stdout)
+	}
+}
+
+func TestWorkflowHelpIncludesInitSubcommand(t *testing.T) {
+	code, stdout, stderr := runCLI(t, "workflow", "--help")
+	if code != 0 {
+		t.Fatalf("workflow help failed: %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "\n  init") || !strings.Contains(stdout, "Initialize WORKFLOW.md") {
+		t.Fatalf("expected workflow help to list init subcommand, got %q", stdout)
+	}
+}
+
 func TestFlagErrorsAndUnknownFlags(t *testing.T) {
 	tests := []struct {
 		args []string
