@@ -47,7 +47,7 @@ func assertDefaultPromptSemantics(t *testing.T, prompt string) {
 		"Use the issue branch already prepared by Maestro in the provided workspace.",
 		"Do not consider the task complete until the change is merged into the repository default branch.",
 		"Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.",
-		"In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.",
 	)
 }
 
@@ -902,7 +902,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"read_timeout_ms: 10000",
 		"stall_timeout_ms: 300000",
 		"{{ issue.identifier }}",
-		"Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"Maestro handles cleanup hooks and worktree removal after your run exits.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)

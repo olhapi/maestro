@@ -343,6 +343,43 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	}
 }
 
+func TestTextModeRootInitAlias(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro db", "maestro.db")
+	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	initRepo := filepath.Join(t.TempDir(), "root init repo")
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
+	if code != 0 {
+		t.Fatalf("root init failed: %d stderr=%s", code, stderr)
+	}
+
+	workflowPath := filepath.Join(initRepo, "WORKFLOW.md")
+	if _, err := os.Stat(workflowPath); err != nil {
+		t.Fatalf("expected workflow file: %v", err)
+	}
+	for _, want := range []string{
+		"Initialized " + workflowPath,
+		"Verification",
+		"codex_version: ok",
+		"Next steps",
+		"Register the repo:",
+		"Start the orchestrator:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected root init output to contain %q, got %q", want, stdout)
+		}
+	}
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' project create 'My Project' --repo '"+initRepo+"'") {
+		t.Fatalf("expected quoted next-step project command in output %q", stdout)
+	}
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' run '"+initRepo+"'") {
+		t.Fatalf("expected quoted next-step run command in output %q", stdout)
+	}
+	if !strings.Contains(stdout, "maestro --db '"+dbPath+"' verify --repo '"+initRepo+"'") {
+		t.Fatalf("expected quoted next-step verify command in output %q", stdout)
+	}
+}
+
 func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
 	code, stdout, stderr := runCLI(t, "workflow", "init", "--help")
 	if code != 0 {
@@ -357,6 +394,24 @@ func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected workflow init help to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestRootInitHelpIncludesSetupFlags(t *testing.T) {
+	code, stdout, stderr := runCLI(t, "init", "--help")
+	if code != 0 {
+		t.Fatalf("root init help failed: %d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{
+		"--workspace-root",
+		"--codex-command",
+		"--agent-mode",
+		"--force",
+		"--defaults",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected root init help to contain %q, got %q", want, stdout)
 		}
 	}
 }

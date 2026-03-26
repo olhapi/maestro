@@ -205,6 +205,7 @@ No description provided.
 - If you find meaningful out-of-scope work, file a separate maestro CLI issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
 - Move status only when the quality bar for that status is met.
 - Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
+- In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
 
 ## Instructions
 

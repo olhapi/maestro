@@ -93,6 +93,7 @@ If a project has a description, Maestro's default implementation, review, and do
 The workflow file is required for orchestration, but different commands treat a missing file differently:
 
 - `maestro workflow init` creates it explicitly
+- `maestro init` is a root-level alias for the same explicit bootstrap
 - `maestro run` bootstraps a missing file automatically
 - `maestro verify` checks readiness and returns remediation guidance
 - `maestro doctor` runs the same readiness checks with a different presentation
@@ -100,7 +101,7 @@ The workflow file is required for orchestration, but different commands treat a 
 
 ## Workflow init guide
 
-`maestro workflow init [repo_path]` writes a fresh `WORKFLOW.md` and then immediately runs the same readiness verification used by `maestro verify`. If `repo_path` is omitted, Maestro resolves it to your current working directory.
+`maestro workflow init [repo_path]` writes a fresh `WORKFLOW.md` and then immediately runs the same readiness verification used by `maestro verify`. `maestro init [repo_path]` is a root-level alias for the same flow. If `repo_path` is omitted, Maestro resolves it to your current working directory.
 
 Start with the non-interactive baseline when you want a predictable scaffold:
 

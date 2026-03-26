@@ -321,7 +321,7 @@ The checked-in [`WORKFLOW.md`](WORKFLOW.md) is this repository's own workflow ex
 
 Missing-file behavior differs by command:
 
-- `maestro workflow init` creates `WORKFLOW.md` explicitly
+- `maestro workflow init` creates `WORKFLOW.md` explicitly; `maestro init` is a root-level alias for the same command
 - `maestro run` bootstraps a missing file automatically
 - `maestro verify` checks readiness and returns remediation guidance
 - `maestro doctor` runs the same readiness checks with different presentation
