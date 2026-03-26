@@ -1094,6 +1094,7 @@ while IFS= read -r line; do
     5)
       printf '%s\n' '{"id":4,"result":{"turn":{"id":"turn-two"}}}'
       printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-live","turnId":"turn-two"}}'
+      sleep 0.03
       exit 0
       ;;
   esac
