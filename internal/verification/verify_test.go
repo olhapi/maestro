@@ -113,3 +113,50 @@ Issue {{ issue.identifier }}
 		t.Fatalf("unexpected warnings: %+v", res.Warnings)
 	}
 }
+
+func TestRunVerificationWarnsOnWorkflowAdvisories(t *testing.T) {
+	tmp := t.TempDir()
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  approval_policy: never
+  thread_sandbox: danger-full-access
+phases:
+  done:
+    prompt: |
+      Sync origin/main first.
+      Merge the issue branch into local main.
+      Push main to origin.
+---
+## Instructions
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if res.Checks["workflow_permissions"] != "warn" {
+		t.Fatalf("expected workflow permissions warning, got %+v", res)
+	}
+	if res.Checks["workflow_approval_policy"] != "warn" {
+		t.Fatalf("expected workflow approval policy warning, got %+v", res)
+	}
+	if res.Checks["workflow_prompt_branching"] != "warn" {
+		t.Fatalf("expected workflow prompt warning, got %+v", res)
+	}
+	joined := strings.Join(res.Warnings, "\n")
+	if !strings.Contains(joined, "workflow_permissions:") || !strings.Contains(joined, "workflow_approval_policy:") || !strings.Contains(joined, "workflow_prompt_branching:") {
+		t.Fatalf("expected advisory warnings, got %+v", res.Warnings)
+	}
+	if !strings.Contains(res.Remediation["workflow_permissions"], "permission profile") {
+		t.Fatalf("expected workflow permissions remediation, got %+v", res.Remediation)
+	}
+	if !strings.Contains(res.Remediation["workflow_approval_policy"], "approval_policy=never") {
+		t.Fatalf("expected workflow approval policy remediation, got %+v", res.Remediation)
+	}
+	if !strings.Contains(res.Remediation["workflow_prompt_branching"], "prepared by Maestro") {
+		t.Fatalf("expected workflow prompt remediation, got %+v", res.Remediation)
+	}
+}

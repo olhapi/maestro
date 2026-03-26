@@ -20,6 +20,9 @@ const (
 	DispatchModePerProjectSerial    = "per_project_serial"
 	InitialCollaborationModePlan    = "plan"
 	InitialCollaborationModeDefault = "default"
+	WorkflowAdvisoryPermissions     = "workflow_permissions"
+	WorkflowAdvisoryApprovalPolicy  = "workflow_approval_policy"
+	WorkflowAdvisoryPromptBranching = "workflow_prompt_branching"
 )
 
 var (
@@ -93,11 +96,19 @@ type Workflow struct {
 	Path           string
 	Config         Config
 	PromptTemplate string
+	Advisories     []WorkflowAdvisory
+}
+
+type WorkflowAdvisory struct {
+	Code        string
+	Message     string
+	Remediation string
 }
 
 type workflowPayload struct {
 	Config Config
 	Prompt string
+	Raw    map[string]interface{}
 }
 
 type fileStamp struct {
@@ -170,6 +181,7 @@ Continuation attempt: {{ attempt }}
 {% endif %}
 
 Title: {{ issue.title }}
+State: {{ issue.state }}
 {% if project.description %}
 Project context:
 {{ project.description }}
@@ -193,6 +205,7 @@ No description provided.
 - If you find meaningful out-of-scope work, file a separate maestro CLI issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
 - Move status only when the quality bar for that status is met.
 - Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
+- In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
 
 ## Instructions
 
@@ -200,17 +213,17 @@ No description provided.
 2. Keep the change focused and preserve project conventions.
 3. Reproduce or inspect current behavior before editing when possible.
 4. Run validation that covers the changed scope.
-5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
-6. Do not consider the task complete until the change is merged into local main.
-7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
-8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
+5. Use the issue branch already prepared by Maestro in the provided workspace. Do not create, rename, or switch issue branches manually unless you are recovering from a broken workspace.
+6. Do not consider the task complete until the change is merged into the repository default branch.
+7. Before marking done, merge the issue branch into the repository default branch, rerun validation on that branch, and push the default branch to origin.
+8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 9. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
 10. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
 11. Final message must contain only completed work, validation run, merge status, and blockers.
 
 ## Guardrails
 
-- If the branch PR is already closed or merged, do not reuse it. Create a new branch from origin/main and restart from reproduction and planning.
+- If the workspace branch is unusable or a prior branch was already merged or closed, do not manually create a replacement branch. Report the condition clearly and stop; Maestro owns workspace and branch bootstrap.
 - If the issue state is Backlog, do not modify it; wait for a human to move it to Ready.
 - Do not edit the issue body for planning or progress updates.
 - Use exactly one persistent workpad comment (## Maestro Workpad) per issue.
@@ -275,12 +288,12 @@ Description:
 No description provided.
 {% endif %}
 
-The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles cleanup hooks and worktree removal after your run exits.
+The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 
-- Sync origin/main first.
-- Merge the issue branch into local main.
-- Rerun the relevant validation on main.
-- Push main to origin.
+- Commit all remaining changes to the prepared issue branch.
+- Merge the issue branch into the repository default branch.
+- Rerun the relevant validation on the default branch.
+- Push the default branch to origin.
 - Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.
 - If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.
 `)
@@ -294,12 +307,12 @@ Project context:
 {{ project.description }}
 
 {% endif %}
-The done phase owns merge-back and finalization. Maestro handles cleanup hooks and worktree removal after your run exits.
+The done phase owns merge-back and finalization. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 
-- Sync origin/main first.
-- Merge the issue branch into local main.
-- Rerun the relevant validation on main.
-- Push main to origin.
+- Commit all remaining changes to the prepared issue branch.
+- Merge the issue branch into the repository default branch.
+- Rerun the relevant validation on the default branch.
+- Push the default branch to origin.
 - Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.
 - If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.
 `)
@@ -355,6 +368,7 @@ func LoadWorkflow(path string) (*Workflow, error) {
 		Path:           path,
 		Config:         cfg,
 		PromptTemplate: payload.Prompt,
+		Advisories:     detectWorkflowAdvisories(cfg, payload.Prompt, payload.Raw),
 	}, nil
 }
 
@@ -390,7 +404,7 @@ func parseWorkflowPayload(path, content string) (*workflowPayload, error) {
 	}
 
 	cfg.Workspace.Root = resolvePathValue(filepath.Dir(path), cfg.Workspace.Root, DefaultConfig().Workspace.Root)
-	return &workflowPayload{Config: cfg, Prompt: prompt}, nil
+	return &workflowPayload{Config: cfg, Prompt: prompt, Raw: normalized}, nil
 }
 
 func parseWorkflowFrontMatter(content string) (map[string]interface{}, int, error) {
@@ -816,6 +830,86 @@ func extractMap(raw interface{}) map[string]interface{} {
 	default:
 		return nil
 	}
+}
+
+func detectWorkflowAdvisories(cfg Config, prompt string, raw map[string]interface{}) []WorkflowAdvisory {
+	advisories := make([]WorkflowAdvisory, 0, 3)
+	hasLegacySandboxKeys := rawWorkflowHasLegacySandboxKeys(raw)
+	if hasLegacySandboxKeys {
+		advisories = append(advisories, WorkflowAdvisory{
+			Code:        WorkflowAdvisoryPermissions,
+			Message:     "Legacy sandbox keys in WORKFLOW.md are ignored. Maestro now resolves execution permissions from the project or issue permission profile in the database.",
+			Remediation: "Remove legacy sandbox settings from WORKFLOW.md and set the project or issue permission profile to the access level the run requires before starting the agent.",
+		})
+	}
+	if hasLegacySandboxKeys && workflowApprovalPolicyBlocksInteractiveRecovery(cfg) {
+		advisories = append(advisories, WorkflowAdvisory{
+			Code:        WorkflowAdvisoryApprovalPolicy,
+			Message:     "This workflow disables interactive approvals with codex.approval_policy=never while also carrying ignored legacy sandbox settings. If the project or issue permission profile does not already grant the access the task needs, the run can dead-end on sandbox or permission blockers.",
+			Remediation: "Either keep approval_policy=never and make sure the project or issue permission profile already grants the required access, or switch to a non-never approval policy if you want the agent to recover through user-approved permission escalations.",
+		})
+	}
+	if cfg.Phases.Done.Enabled && workflowUsesLegacyBranchInstructions(prompt, cfg.Phases.Done.Prompt) {
+		advisories = append(advisories, WorkflowAdvisory{
+			Code:        WorkflowAdvisoryPromptBranching,
+			Message:     "The workflow prompt still tells agents to create or replace issue branches manually or merge through hard-coded mainline branches. Maestro already prepares the issue workspace branch and the repository default branch is not always main.",
+			Remediation: "Update WORKFLOW.md to use the branch already prepared by Maestro and describe finalization in terms of the repository default branch instead of hard-coded branch names.",
+		})
+	}
+	return advisories
+}
+
+func rawWorkflowHasLegacySandboxKeys(raw map[string]interface{}) bool {
+	if raw == nil {
+		return false
+	}
+	codex := extractMap(raw["codex"])
+	if _, ok := codex["thread_sandbox"]; ok {
+		return true
+	}
+	if _, ok := codex["turn_sandbox_policy"]; ok {
+		return true
+	}
+	if _, ok := raw["codex_thread_sandbox"]; ok {
+		return true
+	}
+	if _, ok := raw["codex_turn_sandbox_policy"]; ok {
+		return true
+	}
+	return false
+}
+
+func workflowApprovalPolicyBlocksInteractiveRecovery(cfg Config) bool {
+	if strings.TrimSpace(cfg.Agent.Mode) != AgentModeAppServer {
+		return false
+	}
+	policy, ok := cfg.Codex.ApprovalPolicy.(string)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(policy), "never")
+}
+
+func workflowUsesLegacyBranchInstructions(prompt, donePrompt string) bool {
+	combined := strings.ToLower(strings.TrimSpace(prompt + "\n" + donePrompt))
+	if combined == "" {
+		return false
+	}
+	legacyFragments := []string{
+		"create a dedicated issue branch before editing",
+		"use maestro/{{ issue.identifier }}",
+		"sync origin/main",
+		"merge the issue branch into local main",
+		"rerun the relevant validation on main",
+		"push main to origin",
+		"create a new branch from origin/main",
+	}
+	for _, fragment := range legacyFragments {
+		if strings.Contains(combined, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateConfig(c *Config) error {

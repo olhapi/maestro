@@ -23,6 +23,7 @@ func NewManagerForPath(path string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	logWorkflowAdvisories(path, workflow.Advisories)
 	stamp, err := currentStamp(path)
 	if err != nil {
 		return nil, err
@@ -89,6 +90,7 @@ func (m *Manager) Refresh() (*Workflow, error) {
 	m.current = workflow
 	m.stamp = stamp
 	m.lastErr = nil
+	logWorkflowAdvisories(m.path, workflow.Advisories)
 	return workflow, nil
 }
 
@@ -96,4 +98,10 @@ func (m *Manager) LastError() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.lastErr
+}
+
+func logWorkflowAdvisories(path string, advisories []WorkflowAdvisory) {
+	for _, advisory := range advisories {
+		slog.Warn("Workflow advisory", "path", path, "code", advisory.Code, "message", advisory.Message)
+	}
 }

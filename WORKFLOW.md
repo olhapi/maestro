@@ -47,7 +47,7 @@ phases:
       {% if project.description %}
       Project context:
       {{ project.description }}
-      
+
       {% endif %}
       Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
   done:
@@ -59,14 +59,14 @@ phases:
       {% if project.description %}
       Project context:
       {{ project.description }}
-      
+
       {% endif %}
-      The done phase owns merge-back and finalization. Maestro handles cleanup hooks and worktree removal after your run exits.
-      
-      - Sync origin/agent-runtime-v2 first.
-      - Merge the issue branch into local agent-runtime-v2.
-      - Rerun the relevant validation on agent-runtime-v2.
-      - Push agent-runtime-v2 to origin.
+      The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
+
+      - Commit all remaining changes to the prepared issue branch.
+      - Merge the issue branch into the repository default branch.
+      - Rerun the relevant validation on the default branch.
+      - Push the default branch to origin.
       - Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.
       - If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.
 
@@ -93,7 +93,8 @@ codex:
   expected_version: 0.116.0
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured granular object is also supported for per-category approval policies.
-  approval_policy: never
+  # `on-request` keeps the run interactive so permission recovery can happen through approvals.
+  approval_policy: on-request
   # Initial collaboration mode for fresh app_server threads. Other option: plan.
   # Ignored for stdio runs and resumed threads.
   initial_collaboration_mode: plan
@@ -144,17 +145,17 @@ No description provided.
 2. Keep the change focused and preserve project conventions.
 3. Reproduce or inspect current behavior before editing when possible.
 4. Run validation that covers the changed scope.
-5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
-6. Do not consider the task complete until the change is merged into local main.
-7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
-8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
+5. Use the issue branch already prepared by Maestro in the provided workspace. Do not create, rename, or switch issue branches manually unless you are recovering from a broken workspace.
+6. Do not consider the task complete until the change is merged into the repository default branch.
+7. Before marking done, merge the issue branch into the repository default branch, rerun validation on that branch, and push the default branch to origin.
+8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 9. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
 10. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
 11. Final message must contain only completed work, validation run, merge status, and blockers.
 
 ## Guardrails
 
-- If the branch PR is already closed or merged, do not reuse it. Create a new branch from origin/main and restart from reproduction and planning.
+- If the workspace branch is unusable or a prior branch was already merged or closed, do not manually create a replacement branch. Report the condition clearly and stop; Maestro owns workspace and branch bootstrap.
 - If the issue state is Backlog, do not modify it; wait for a human to move it to Ready.
 - Do not edit the issue body for planning or progress updates.
 - Use exactly one persistent workpad comment (## Maestro Workpad) per issue.

@@ -44,6 +44,8 @@ func assertDefaultPromptSemantics(t *testing.T, prompt string) {
 		"Plan before coding. Design verification before changing code.",
 		"Reproduce or inspect current behavior first so the target is explicit.",
 		"Treat the persistent workpad comment as the source of truth.",
+		"Use the issue branch already prepared by Maestro in the provided workspace.",
+		"Do not consider the task complete until the change is merged into the repository default branch.",
 		"Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.",
 		"In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.",
 	)
@@ -52,11 +54,11 @@ func assertDefaultPromptSemantics(t *testing.T, prompt string) {
 func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
-		"The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles cleanup hooks and worktree removal after your run exits.",
-		"Sync origin/main first.",
-		"Merge the issue branch into local main.",
-		"Rerun the relevant validation on main.",
-		"Push main to origin.",
+		"The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"Commit all remaining changes to the prepared issue branch.",
+		"Merge the issue branch into the repository default branch.",
+		"Rerun the relevant validation on the default branch.",
+		"Push the default branch to origin.",
 		"Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.",
 		"If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.",
 	)
@@ -66,14 +68,24 @@ func assertInitDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
 		"Finalize issue {{ issue.identifier }} from the current workspace.",
-		"The done phase owns merge-back and finalization. Maestro handles cleanup hooks and worktree removal after your run exits.",
-		"Sync origin/main first.",
-		"Merge the issue branch into local main.",
-		"Rerun the relevant validation on main.",
-		"Push main to origin.",
+		"The done phase owns merge-back and finalization. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"Commit all remaining changes to the prepared issue branch.",
+		"Merge the issue branch into the repository default branch.",
+		"Rerun the relevant validation on the default branch.",
+		"Push the default branch to origin.",
 		"Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.",
 		"If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.",
 	)
+}
+
+func assertWorkflowHasAdvisory(t *testing.T, workflow *Workflow, code string) {
+	t.Helper()
+	for _, advisory := range workflow.Advisories {
+		if advisory.Code == code {
+			return
+		}
+	}
+	t.Fatalf("expected advisory %q, got %+v", code, workflow.Advisories)
 }
 
 func TestDefaultConfig(t *testing.T) {
@@ -115,6 +127,9 @@ func TestDefaultConfig(t *testing.T) {
 		t.Fatalf("expected done phase defaults, got %+v", cfg.Phases.Done)
 	}
 	assertDefaultDonePromptSemantics(t, cfg.Phases.Done.Prompt)
+	if advisories := detectWorkflowAdvisories(cfg, DefaultPromptTemplate(), nil); len(advisories) != 0 {
+		t.Fatalf("expected default prompt to avoid advisories, got %+v", advisories)
+	}
 }
 
 func TestLoadWorkflowNestedSchema(t *testing.T) {
@@ -1165,6 +1180,9 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	if strings.Contains(content, "thread_sandbox:") || strings.Contains(content, "turn_sandbox_policy:") {
 		t.Fatalf("expected generated workflow to omit sandbox fields, got %q", content)
 	}
+	if len(workflow.Advisories) != 0 {
+		t.Fatalf("expected generated workflow to avoid advisories, got %+v", workflow.Advisories)
+	}
 }
 
 func TestLegacyWorkflowUsesFullAccess(t *testing.T) {
@@ -1198,6 +1216,98 @@ Issue {{ issue.identifier }}
 	}
 	if workflow.Config.Codex.Command == "" {
 		t.Fatal("expected workflow to remain loadable after ignoring legacy sandbox fields")
+	}
+	assertWorkflowHasAdvisory(t, workflow, WorkflowAdvisoryPermissions)
+}
+
+func TestLoadWorkflowWarnsWhenApprovalPolicyNeverBlocksLegacySandboxRecovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+codex:
+  approval_policy: never
+  thread_sandbox: danger-full-access
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	assertWorkflowHasAdvisory(t, workflow, WorkflowAdvisoryPermissions)
+	assertWorkflowHasAdvisory(t, workflow, WorkflowAdvisoryApprovalPolicy)
+}
+
+func TestLoadWorkflowWarnsOnLegacyBranchInstructions(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+phases:
+  done:
+    prompt: |
+      Sync origin/main first.
+      Merge the issue branch into local main.
+      Push main to origin.
+---
+Title: {{ issue.title }}
+State: {{ issue.state }}
+
+## Instructions
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+6. Do not consider the task complete until the change is merged into local main.
+7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	assertWorkflowHasAdvisory(t, workflow, WorkflowAdvisoryPromptBranching)
+}
+
+func TestLoadWorkflowSkipsDoneBranchAdvisoryWhenDoneDisabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+phases:
+  done:
+    enabled: false
+    prompt: |
+      Sync origin/main first.
+      Merge the issue branch into local main.
+      Push main to origin.
+---
+Title: {{ issue.title }}
+State: {{ issue.state }}
+
+## Instructions
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+6. Do not consider the task complete until the change is merged into local main.
+7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if len(workflow.Advisories) != 0 {
+		t.Fatalf("expected disabled done phase to skip branch advisory, got %+v", workflow.Advisories)
 	}
 }
 
