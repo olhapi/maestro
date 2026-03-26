@@ -3386,6 +3386,71 @@ func TestSnapshotDoesNotRefreshProviderIssuesWhileHoldingRuntimeState(t *testing
 	}
 }
 
+func TestRetryIssueNowPreservesPlanApprovalThreadResumeHint(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Plan approval retry", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, kanban.WorkflowPhaseImplementation); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase: %v", err)
+	}
+	requestedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      planApprovalStopReason,
+		StopReason: planApprovalStopReason,
+		UpdatedAt:  requestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-1",
+			ThreadID:        "thread-plan",
+			TurnID:          "turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.paused[issue.ID] = pausedEntry{
+		Attempt:  2,
+		Phase:    string(kanban.WorkflowPhaseImplementation),
+		PausedAt: requestedAt,
+		Error:    planApprovalStopReason,
+	}
+	orch.mu.Unlock()
+
+	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now retry result, got %#v", result)
+	}
+	if result["resume_thread_id"] != "thread-plan" {
+		t.Fatalf("expected resume_thread_id in retry response, got %#v", result)
+	}
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected retry entry after plan approval retry")
+	}
+	if retry.ResumeThreadID != "thread-plan" {
+		t.Fatalf("expected retry to preserve plan approval thread, got %+v", retry)
+	}
+}
+
 func TestRunRecurringIssueNowQueuesIdleRecurringIssue(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 

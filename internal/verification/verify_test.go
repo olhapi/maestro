@@ -160,3 +160,32 @@ phases:
 		t.Fatalf("expected workflow prompt remediation, got %+v", res.Remediation)
 	}
 }
+
+func TestRunVerificationWarnsWhenPlanModeKeepsApprovalPolicyNever(t *testing.T) {
+	tmp := t.TempDir()
+	workflow := `---
+tracker:
+  kind: kanban
+agent:
+  mode: app_server
+codex:
+  approval_policy: never
+  initial_collaboration_mode: plan
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if res.Checks["workflow_plan_approval_policy"] != "warn" {
+		t.Fatalf("expected plan-mode approval warning, got %+v", res)
+	}
+	if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, "\n"), "workflow_plan_approval_policy:") {
+		t.Fatalf("expected plan-mode warning entry, got %+v", res.Warnings)
+	}
+	if !strings.Contains(res.Remediation["workflow_plan_approval_policy"], "approval_policy=on-request") {
+		t.Fatalf("expected plan-mode remediation, got %+v", res.Remediation)
+	}
+}

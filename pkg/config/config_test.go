@@ -1244,6 +1244,31 @@ Issue {{ issue.identifier }}
 	assertWorkflowHasAdvisory(t, workflow, WorkflowAdvisoryApprovalPolicy)
 }
 
+func TestLoadWorkflowWarnsWhenPlanModeUsesApprovalPolicyNever(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+agent:
+  mode: app_server
+codex:
+  approval_policy: never
+  initial_collaboration_mode: plan
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	assertWorkflowHasAdvisory(t, workflow, WorkflowAdvisoryPlanApprovalPolicy)
+}
+
 func TestLoadWorkflowWarnsOnLegacyBranchInstructions(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")

@@ -13,16 +13,17 @@ import (
 )
 
 const (
-	TrackerKindKanban               = "kanban"
-	AgentModeAppServer              = "app_server"
-	AgentModeStdio                  = "stdio"
-	DispatchModeParallel            = "parallel"
-	DispatchModePerProjectSerial    = "per_project_serial"
-	InitialCollaborationModePlan    = "plan"
-	InitialCollaborationModeDefault = "default"
-	WorkflowAdvisoryPermissions     = "workflow_permissions"
-	WorkflowAdvisoryApprovalPolicy  = "workflow_approval_policy"
-	WorkflowAdvisoryPromptBranching = "workflow_prompt_branching"
+	TrackerKindKanban                  = "kanban"
+	AgentModeAppServer                 = "app_server"
+	AgentModeStdio                     = "stdio"
+	DispatchModeParallel               = "parallel"
+	DispatchModePerProjectSerial       = "per_project_serial"
+	InitialCollaborationModePlan       = "plan"
+	InitialCollaborationModeDefault    = "default"
+	WorkflowAdvisoryPermissions        = "workflow_permissions"
+	WorkflowAdvisoryApprovalPolicy     = "workflow_approval_policy"
+	WorkflowAdvisoryPlanApprovalPolicy = "workflow_plan_approval_policy"
+	WorkflowAdvisoryPromptBranching    = "workflow_prompt_branching"
 )
 
 var (
@@ -199,6 +200,10 @@ No description provided.
 - Determine the issue status first, then follow the matching flow.
 - Open the Maestro Workpad comment immediately and update it before new implementation work.
 - Plan before coding. Design verification before changing code.
+{% if plan_mode %}
+- This is a planning turn. Ask the clarifying questions you need, validate assumptions, and stop with a single <proposed_plan> block once the approach is ready.
+- Do not start implementation until the plan is approved.
+{% endif %}
 - Reproduce or inspect current behavior first so the target is explicit.
 - Keep metadata current: state, checklist, acceptance criteria, and links.
 - Treat the persistent workpad comment as the source of truth.
@@ -833,7 +838,7 @@ func extractMap(raw interface{}) map[string]interface{} {
 }
 
 func detectWorkflowAdvisories(cfg Config, prompt string, raw map[string]interface{}) []WorkflowAdvisory {
-	advisories := make([]WorkflowAdvisory, 0, 3)
+	advisories := make([]WorkflowAdvisory, 0, 4)
 	hasLegacySandboxKeys := rawWorkflowHasLegacySandboxKeys(raw)
 	if hasLegacySandboxKeys {
 		advisories = append(advisories, WorkflowAdvisory{
@@ -847,6 +852,13 @@ func detectWorkflowAdvisories(cfg Config, prompt string, raw map[string]interfac
 			Code:        WorkflowAdvisoryApprovalPolicy,
 			Message:     "This workflow disables interactive approvals with codex.approval_policy=never while also carrying ignored legacy sandbox settings. If the project or issue permission profile does not already grant the access the task needs, the run can dead-end on sandbox or permission blockers.",
 			Remediation: "Either keep approval_policy=never and make sure the project or issue permission profile already grants the required access, or switch to a non-never approval policy if you want the agent to recover through user-approved permission escalations.",
+		})
+	}
+	if workflowPlanModeBlocksInteractiveRecovery(cfg) {
+		advisories = append(advisories, WorkflowAdvisory{
+			Code:        WorkflowAdvisoryPlanApprovalPolicy,
+			Message:     "This workflow starts app_server threads in plan mode but still uses codex.approval_policy=never. Plan turns can pause on <proposed_plan>, but they cannot ask clarifying questions or request approvals interactively until the approval policy allows it.",
+			Remediation: "Use approval_policy=on-request for plan-gated runs, or switch initial_collaboration_mode back to default when you want unattended execution-first runs.",
 		})
 	}
 	if cfg.Phases.Done.Enabled && workflowUsesLegacyBranchInstructions(prompt, cfg.Phases.Done.Prompt) {
@@ -881,6 +893,20 @@ func rawWorkflowHasLegacySandboxKeys(raw map[string]interface{}) bool {
 
 func workflowApprovalPolicyBlocksInteractiveRecovery(cfg Config) bool {
 	if strings.TrimSpace(cfg.Agent.Mode) != AgentModeAppServer {
+		return false
+	}
+	policy, ok := cfg.Codex.ApprovalPolicy.(string)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(policy), "never")
+}
+
+func workflowPlanModeBlocksInteractiveRecovery(cfg Config) bool {
+	if strings.TrimSpace(cfg.Agent.Mode) != AgentModeAppServer {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(cfg.Codex.InitialCollaborationMode), InitialCollaborationModePlan) {
 		return false
 	}
 	policy, ok := cfg.Codex.ApprovalPolicy.(string)

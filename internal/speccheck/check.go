@@ -102,8 +102,9 @@ func sampleWorkflowPromptContext() map[string]interface{} {
 			"name":        "Spec check project",
 			"description": "Follow repo-wide guidance",
 		},
-		"phase":   "implementation",
-		"attempt": 1,
+		"phase":     "implementation",
+		"attempt":   1,
+		"plan_mode": false,
 	}
 }
 

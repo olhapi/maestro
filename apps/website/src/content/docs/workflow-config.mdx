@@ -54,7 +54,7 @@ codex:
 - `codex.command`: exact command Maestro launches.
 - `codex.expected_version`: version Maestro expects from `codex --version`.
 - `codex.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
-- `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. This does not affect `stdio` or resumed threads.
+- `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. Pair `plan` with `approval_policy: on-request` if you want the agent to ask clarifying questions and wait for approval. This does not affect `stdio` or resumed threads.
 - `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
 
 Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves runtime sandbox access from DB-backed permission profiles:
@@ -67,8 +67,8 @@ Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves 
 
 These two settings solve different problems:
 
-- `initial_collaboration_mode: default` starts a fresh unattended `app_server` thread in execution mode. Use `plan` only for explicitly plan-gated runs.
-- The global interrupt queue only appears when a live `app_server` turn actually asks for approval or user input.
+- `initial_collaboration_mode: default` starts a fresh unattended `app_server` thread in execution mode. Use `plan` only for explicitly plan-gated runs, and keep `approval_policy: on-request` if you want the turn to pause for questions or approval.
+- The global interrupt queue only appears when a live `app_server` turn actually asks for approval or user input, which requires an approval policy other than `never`.
 - Resumed threads keep their existing thread state and do not reapply the startup collaboration mode.
 - `stdio` runs stay non-interactive for this feature.
 

@@ -25,13 +25,27 @@ import (
 
 type retryTrackingProvider struct {
 	testProvider
-	retried []string
-	runNow  []string
+	retried         []string
+	runNow          []string
+	resumeThreadIDs []string
+	store           *kanban.Store
 }
 
 func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	p.retried = append(p.retried, identifier)
-	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+	result := map[string]interface{}{"status": "queued_now", "issue": identifier}
+	if p.store != nil {
+		issue, err := p.store.GetIssueByIdentifier(identifier)
+		if err == nil {
+			if snapshot, err := p.store.GetIssueExecutionSession(issue.ID); err == nil && snapshot != nil && strings.TrimSpace(snapshot.StopReason) == "plan_approval_pending" {
+				if threadID := strings.TrimSpace(snapshot.AppSession.ThreadID); threadID != "" {
+					p.resumeThreadIDs = append(p.resumeThreadIDs, threadID)
+					result["resume_thread_id"] = threadID
+				}
+			}
+		}
+	}
+	return result
 }
 
 func (p *retryTrackingProvider) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
@@ -1247,6 +1261,7 @@ func TestRecurringIssueContractsExposeRecurringFieldsAndRunNow(t *testing.T) {
 func TestIssueApprovePlanContractsPromoteAndRedispatch(t *testing.T) {
 	provider := &retryTrackingProvider{}
 	store, srv := setupDashboardServerTest(t, provider)
+	provider.store = store
 
 	project, err := store.CreateProject("Maestro", "", "/repo", "")
 	if err != nil {
@@ -1263,6 +1278,25 @@ func TestIssueApprovePlanContractsPromoteAndRedispatch(t *testing.T) {
 	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
 		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
 	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      "plan_approval_pending",
+		StopReason: "plan_approval_pending",
+		UpdatedAt:  requestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-1",
+			ThreadID:        "thread-plan",
+			TurnID:          "turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
 
 	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/approve-plan", nil)
 	if resp.StatusCode != http.StatusOK {
@@ -1274,6 +1308,16 @@ func TestIssueApprovePlanContractsPromoteAndRedispatch(t *testing.T) {
 	}
 	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
 		t.Fatalf("expected redispatch for %s, got %v", issue.Identifier, provider.retried)
+	}
+	if len(provider.resumeThreadIDs) != 1 || provider.resumeThreadIDs[0] != "thread-plan" {
+		t.Fatalf("expected redispatch to preserve thread resume id, got %v", provider.resumeThreadIDs)
+	}
+	dispatch, ok := payload["dispatch"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected dispatch payload, got %#v", payload["dispatch"])
+	}
+	if dispatch["resume_thread_id"] != "thread-plan" {
+		t.Fatalf("expected dispatch to include resume_thread_id, got %#v", dispatch)
 	}
 
 	updated, err := store.GetIssue(issue.ID)
