@@ -440,6 +440,8 @@ codex:
   # Expected codex --version. Mismatches warn but do not hard-fail.
   expected_version: %s
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
+  # "never" keeps unattended runs non-interactive, so permission recovery must come
+  # from the project or issue permission profile rather than live approval prompts.
   # A structured granular object is also supported for per-category approval policies.
   approval_policy: %v
   # Initial collaboration mode for fresh app_server threads. Other option: plan.

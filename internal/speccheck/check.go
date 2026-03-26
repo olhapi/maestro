@@ -35,6 +35,7 @@ func Run(repoRoot string) Report {
 		checks["workflow_load"] = "fail"
 		checks["workflow_version"] = "skipped"
 		checks["workflow_prompt_render"] = "skipped"
+		checks["workflow_advisories"] = "skipped"
 	} else {
 		checks["workflow_load"] = "ok"
 
@@ -50,6 +51,12 @@ func Run(repoRoot string) Report {
 			checks["workflow_prompt_render"] = "fail"
 		} else {
 			checks["workflow_prompt_render"] = "ok"
+		}
+		if len(workflow.Advisories) > 0 {
+			ok = false
+			checks["workflow_advisories"] = "fail"
+		} else {
+			checks["workflow_advisories"] = "ok"
 		}
 	}
 
