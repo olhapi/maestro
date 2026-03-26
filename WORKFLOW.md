@@ -92,10 +92,10 @@ codex:
   expected_version: 0.117.0
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured reject object is also supported for per-category rejection policies.
-  approval_policy: never
+  approval_policy: on-request
   # Initial collaboration mode for fresh app_server threads. Other option: plan.
   # Ignored for stdio runs and resumed threads.
-  initial_collaboration_mode: default
+  initial_collaboration_mode: plan
   # Maximum total runtime for one turn before Maestro cancels it.
   turn_timeout_ms: 3600000
   # Maximum time to wait for streamed output before considering the stream stalled.
