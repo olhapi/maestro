@@ -57,6 +57,12 @@ EOF
   chmod +x "$bin_dir/node" "$bin_dir/pnpm"
 }
 
+set_timestamp() {
+  local timestamp="$1"
+  shift
+  touch -t "$timestamp" "$@"
+}
+
 test_builds_missing_dist_when_toolchain_is_available() {
   local tmp_dir repo_dir bin_dir log_file
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ensure-dashboard-dist.XXXXXX")"
@@ -80,6 +86,7 @@ test_builds_missing_dist_when_toolchain_is_available() {
 
   [[ -f "$repo_dir/internal/dashboardui/dist/index.html" ]] || fail "expected index.html to be created"
   [[ -f "$repo_dir/internal/dashboardui/dist/assets/index.js" ]] || fail "expected assets/index.js to be created"
+  [[ -f "$repo_dir/internal/dashboardui/dist/.maestro-dist-stamp" ]] || fail "expected freshness stamp to be created"
   assert_contains "$log_file" "pnpm install --frozen-lockfile"
   assert_contains "$log_file" "pnpm build"
   assert_contains "$tmp_dir/stdout.txt" "Installing frontend workspace dependencies"
@@ -92,9 +99,13 @@ test_skips_toolchain_when_dist_already_exists() {
   repo_dir="$tmp_dir/repo"
   log_file="$tmp_dir/log.txt"
 
-  mkdir -p "$repo_dir/internal/dashboardui/dist/assets"
+  mkdir -p "$repo_dir/apps/frontend/src" "$repo_dir/internal/dashboardui/dist/assets"
+  printf 'export {}\n' >"$repo_dir/apps/frontend/src/main.tsx"
   printf '<!doctype html>\n' >"$repo_dir/internal/dashboardui/dist/index.html"
   printf 'console.log("ok")\n' >"$repo_dir/internal/dashboardui/dist/assets/index.js"
+  : >"$repo_dir/internal/dashboardui/dist/.maestro-dist-stamp"
+  set_timestamp 202603260800 "$repo_dir/apps/frontend/src/main.tsx"
+  set_timestamp 202603260900 "$repo_dir/internal/dashboardui/dist/index.html" "$repo_dir/internal/dashboardui/dist/assets/index.js" "$repo_dir/internal/dashboardui/dist/.maestro-dist-stamp"
   : >"$log_file"
 
   LOG_FILE="$log_file" \
@@ -106,6 +117,38 @@ test_skips_toolchain_when_dist_already_exists() {
   [[ ! -s "$tmp_dir/stdout.txt" ]] || fail "expected no output when dist already exists"
   [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected no stderr when dist already exists"
   assert_not_contains "$log_file" "pnpm "
+}
+
+test_rebuilds_stale_dist_when_frontend_sources_are_newer() {
+  local tmp_dir repo_dir bin_dir log_file
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ensure-dashboard-dist-stale.XXXXXX")"
+  repo_dir="$tmp_dir/repo"
+  bin_dir="$tmp_dir/bin"
+  log_file="$tmp_dir/log.txt"
+
+  mkdir -p "$repo_dir/apps/frontend/src" "$repo_dir/internal/dashboardui/dist/assets" "$repo_dir/node_modules/.pnpm" "$repo_dir/apps/frontend/node_modules"
+  printf 'export {}\n' >"$repo_dir/apps/frontend/src/main.tsx"
+  printf '<!doctype html>\n' >"$repo_dir/internal/dashboardui/dist/index.html"
+  printf 'console.log("stale")\n' >"$repo_dir/internal/dashboardui/dist/assets/index.js"
+  : >"$repo_dir/internal/dashboardui/dist/.maestro-dist-stamp"
+  set_timestamp 202603260800 "$repo_dir/internal/dashboardui/dist/index.html" "$repo_dir/internal/dashboardui/dist/assets/index.js" "$repo_dir/internal/dashboardui/dist/.maestro-dist-stamp"
+  set_timestamp 202603260900 "$repo_dir/apps/frontend/src/main.tsx"
+  : >"$log_file"
+  make_mock_toolchain "$bin_dir"
+
+  PATH="$bin_dir:$PATH" \
+  LOG_FILE="$log_file" \
+  MOCK_ROOT_DIR="$repo_dir" \
+  MOCK_FRONTEND_APP_DIR="$repo_dir/apps/frontend" \
+  MOCK_FRONTEND_DIST_DIR="$repo_dir/internal/dashboardui/dist" \
+  MAESTRO_ROOT_DIR="$repo_dir" \
+  MAESTRO_FRONTEND_APP_DIR="$repo_dir/apps/frontend" \
+  MAESTRO_FRONTEND_DIST_DIR="$repo_dir/internal/dashboardui/dist" \
+  bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
+
+  assert_not_contains "$log_file" "pnpm install --frozen-lockfile"
+  assert_contains "$log_file" "pnpm build"
+  assert_contains "$tmp_dir/stdout.txt" "Building embedded dashboard bundle"
 }
 
 test_fails_when_node_is_missing() {
@@ -157,6 +200,7 @@ EOF
 main() {
   test_builds_missing_dist_when_toolchain_is_available
   test_skips_toolchain_when_dist_already_exists
+  test_rebuilds_stale_dist_when_frontend_sources_are_newer
   test_fails_when_node_is_missing
   test_fails_when_package_manager_is_missing
 }
