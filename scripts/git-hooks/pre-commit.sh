@@ -7,6 +7,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 ROOT=$(repo_root)
 cd "$ROOT"
+ENSURE_DASHBOARD_DIST_BIN="${MAESTRO_ENSURE_DASHBOARD_DIST_BIN:-$ROOT/scripts/ensure_dashboard_dist.sh}"
 
 STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
 if [ -z "$STAGED" ]; then
@@ -58,6 +59,10 @@ IFS=$old_ifs
 if [ "$needs_full_verify" -eq 1 ]; then
   run_step pnpm verify
   exit 0
+fi
+
+if [ "$needs_make_test" -eq 1 ] || [ -n "$go_packages" ]; then
+  run_step "$ENSURE_DASHBOARD_DIST_BIN"
 fi
 
 if [ "$needs_make_test" -eq 1 ]; then
