@@ -62,6 +62,26 @@ Execution guidance:
 - If a verification path is blocked by local environment issues such as browser-session conflicts, stop retrying that path and choose another deterministic local check.
 `
 
+const firstTurnPlanningGuidance = `
+Planning guidance:
+
+- Use this turn to clarify requirements, identify missing constraints, and validate assumptions.
+- Ask concise questions when the issue or project context is ambiguous.
+- Keep verification lightweight and deterministic.
+- End the turn with a single <proposed_plan> block when the plan is ready; do not start implementation yet.
+`
+
+const continuationPlanningGuidance = `
+Continuation guidance:
+
+- The previous turn completed normally, but the issue is still in the planning phase.
+- This is continuation turn #%d of %d for the current agent run.
+- Keep refining the plan and ask any remaining blocking questions.
+- Finish with a single <proposed_plan> block when the plan is ready; do not start implementation before approval.
+- Resume from the current workspace state instead of restarting from scratch.
+- The original task instructions are already present in the thread history; do not restate them before acting.
+`
+
 const activeThreadCommandPollWindow = 250 * time.Millisecond
 const appServerIssueAssetStageDir = ".maestro/issue-assets"
 const planApprovalStopReason = "plan_approval_pending"
@@ -262,7 +282,7 @@ func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy in
 		}
 	case kanban.PermissionProfilePlanThenFullAccess:
 		return permissionConfig{
-			ApprovalPolicy:           "never",
+			ApprovalPolicy:           approvalPolicy,
 			ThreadSandbox:            "workspace-write",
 			TurnSandboxPolicy:        nil,
 			InitialCollaborationMode: config.InitialCollaborationModePlan,
@@ -1057,6 +1077,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 	}
 	issue = refreshedIssue
 	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
+	planMode := strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
 	var client *appserver.Client
 	clientConfig := appserver.ClientConfig{
 		Executable:               "sh",
@@ -1154,7 +1175,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 				AppSession: client.Session(),
 			}, nil
 		}
-		requestedPlanApproval, err := r.capturePendingPlanApproval(issue, attempt, client.Session())
+		requestedPlanApproval, err := r.capturePendingPlanApproval(issue, attempt, client.Session(), planMode)
 		if err != nil {
 			return &RunResult{
 				Success:    false,
@@ -1197,8 +1218,8 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 	return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
 }
 
-func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, session *appserver.Session) (bool, error) {
-	if issue == nil || r.effectivePermissionProfile(issue) != kanban.PermissionProfilePlanThenFullAccess {
+func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, session *appserver.Session, planMode bool) (bool, error) {
+	if issue == nil || !planMode {
 		return false, nil
 	}
 	planMarkdown := extractProposedPlanMarkdown(finalAnswerFromSession(session))
@@ -1421,8 +1442,9 @@ func (r *Runner) prepareTurnPromptWithWorkspace(workflow *config.Workflow, issue
 	if err != nil {
 		return preparedTurnPrompt{}, err
 	}
+	planMode := r.planModeForIssue(workflow, issue)
 	if turn > 1 {
-		prompt := fmt.Sprintf(strings.TrimSpace(`
+		continuationGuidance := strings.TrimSpace(`
 Continuation guidance:
 
 - The previous turn completed normally, but the issue is still in an active state.
@@ -1430,7 +1452,11 @@ Continuation guidance:
 - Resume from the current workspace state instead of restarting from scratch.
 - The original task instructions are already present in the thread history; do not restate them before acting.
 - If a verification approach was blocked by local tooling or browser issues, switch to another deterministic local check instead of retrying the same path.
-`), turn, workflow.Config.Agent.MaxTurns)
+`)
+		if planMode {
+			continuationGuidance = strings.TrimSpace(continuationPlanningGuidance)
+		}
+		prompt := fmt.Sprintf(continuationGuidance, turn, workflow.Config.Agent.MaxTurns)
 		return preparedTurnPrompt{Prompt: appendWorkspaceRecoveryNote(prompt, recoveryNote)}, nil
 	}
 	phase := issue.WorkflowPhase
@@ -1458,9 +1484,10 @@ Continuation guidance:
 			"created_at":   issue.CreatedAt.Format(time.RFC3339),
 			"updated_at":   issue.UpdatedAt.Format(time.RFC3339),
 		},
-		"project": projectCtx,
-		"attempt": nil,
-		"phase":   string(phase),
+		"project":   projectCtx,
+		"attempt":   nil,
+		"phase":     string(phase),
+		"plan_mode": planMode,
 	}
 	if attempt > 0 {
 		ctx["attempt"] = attempt
@@ -1477,14 +1504,18 @@ Continuation guidance:
 	}
 	rendered = appendOperatorCommands(rendered, commands)
 	rendered = prependWorkspaceRecoveryNote(rendered, recoveryNote)
+	guidance := firstTurnExecutionGuidance
+	if planMode {
+		guidance = firstTurnPlanningGuidance
+	}
 	if rendered == "" {
 		return preparedTurnPrompt{
-			Prompt:   strings.TrimSpace(firstTurnExecutionGuidance),
+			Prompt:   strings.TrimSpace(guidance),
 			Commands: commands,
 		}, nil
 	}
 	return preparedTurnPrompt{
-		Prompt:   rendered + "\n\n" + strings.TrimSpace(firstTurnExecutionGuidance),
+		Prompt:   rendered + "\n\n" + strings.TrimSpace(guidance),
 		Commands: commands,
 	}, nil
 }
@@ -1578,6 +1609,14 @@ func promptTemplateForPhase(workflow *config.Workflow, phase kanban.WorkflowPhas
 	default:
 		return workflow.PromptTemplate
 	}
+}
+
+func (r *Runner) planModeForIssue(workflow *config.Workflow, issue *kanban.Issue) bool {
+	if workflow == nil {
+		return false
+	}
+	permissions := r.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	return strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
 }
 
 func (r *Runner) pendingCommandsForIssue(issueID string) ([]kanban.IssueAgentCommand, error) {

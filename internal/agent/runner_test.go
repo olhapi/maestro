@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -369,8 +370,8 @@ func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testi
 	}
 
 	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
-	if permissions.ApprovalPolicy != "never" {
-		t.Fatalf("expected approval policy never, got %#v", permissions.ApprovalPolicy)
+	if !reflect.DeepEqual(permissions.ApprovalPolicy, workflow.Config.Codex.ApprovalPolicy) {
+		t.Fatalf("expected inherited approval policy, got %#v", permissions.ApprovalPolicy)
 	}
 	if permissions.ThreadSandbox != "workspace-write" {
 		t.Fatalf("expected workspace-write thread sandbox, got %q", permissions.ThreadSandbox)
@@ -479,7 +480,43 @@ func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
 	}
 }
 
-func TestCapturePendingPlanApprovalPersistsPlanRequest(t *testing.T) {
+func TestBuildTurnPromptUsesPlanningGuidanceWhenPlanModeEnabled(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflow := defaultPromptWorkflowForTest()
+	workflow.Config.Codex.InitialCollaborationMode = config.InitialCollaborationModePlan
+
+	issue, err := store.CreateIssue("", "", "Plan the change", "Need clarification", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	firstPrompt, err := runner.buildTurnPrompt(workflow, issue, 0, 1)
+	if err != nil {
+		t.Fatalf("buildTurnPrompt first turn: %v", err)
+	}
+	if !strings.Contains(firstPrompt, "Planning guidance:") {
+		t.Fatalf("expected planning guidance in first plan-mode prompt, got %q", firstPrompt)
+	}
+	if !strings.Contains(firstPrompt, "<proposed_plan>") {
+		t.Fatalf("expected proposed plan guidance in first plan-mode prompt, got %q", firstPrompt)
+	}
+	if strings.Contains(firstPrompt, "Execution guidance:") {
+		t.Fatalf("did not expect execution guidance in first plan-mode prompt, got %q", firstPrompt)
+	}
+
+	continuationPrompt, err := runner.buildTurnPrompt(workflow, issue, 0, 2)
+	if err != nil {
+		t.Fatalf("buildTurnPrompt continuation: %v", err)
+	}
+	if !strings.Contains(continuationPrompt, "planning phase") {
+		t.Fatalf("expected planning continuation guidance, got %q", continuationPrompt)
+	}
+	if !strings.Contains(continuationPrompt, "<proposed_plan>") {
+		t.Fatalf("expected proposed plan reminder in continuation prompt, got %q", continuationPrompt)
+	}
+}
+
+func TestCapturePendingPlanApprovalPersistsPlanRequestForPlanMode(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	project, err := store.CreateProject("Platform", "", repoPath, "")
 	if err != nil {
@@ -488,9 +525,6 @@ func TestCapturePendingPlanApprovalPersistsPlanRequest(t *testing.T) {
 	issue, err := store.CreateIssue(project.ID, "", "Capture proposed plan", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
-	}
-	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
-		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
 	}
 	issue, err = store.GetIssue(issue.ID)
 	if err != nil {
@@ -506,7 +540,7 @@ func TestCapturePendingPlanApprovalPersistsPlanRequest(t *testing.T) {
 		}},
 	}
 
-	requested, err := runner.capturePendingPlanApproval(issue, 3, session)
+	requested, err := runner.capturePendingPlanApproval(issue, 3, session, true)
 	if err != nil {
 		t.Fatalf("capturePendingPlanApproval: %v", err)
 	}

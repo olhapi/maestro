@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
 import type { ActivityEntry, ActivityGroup } from '@/lib/types'
+import { formatDateTime } from '@/lib/utils'
 
 function makeCommandEntry(overrides: Partial<ActivityEntry> = {}): ActivityEntry {
   return {
@@ -211,13 +212,49 @@ describe('SessionActivityTranscript', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
   })
 
-  it('renders the status marker inline and centered with the entry title row', () => {
-    render(<SessionActivityTranscript groups={makeGroups([makeCommandEntry()])} />)
+  it('renders inline timestamps, clamps verbose summaries, and keeps the layout contained', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T12:00:00Z'))
 
-    const titleRow = screen.getByText('Command output').parentElement
-    expect(titleRow).toHaveClass('flex')
-    expect(titleRow).toHaveClass('items-center')
-    expect(titleRow?.querySelector('span')).toHaveClass('size-1.5')
+    const startedAt = '2026-03-10T11:30:00Z'
+    const completedAt = '2026-03-10T11:58:00Z'
+
+    render(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          makeCommandEntry({
+            started_at: startedAt,
+            completed_at: completedAt,
+            summary:
+              'This is an exceptionally long activity summary that should stay compact inside the transcript so it does not widen the center column or push nearby panels sideways.',
+            detail: '$ npm run dev\nfirst detail chunk',
+          }),
+        ])}
+      />,
+    )
+
+    const activityLog = screen.getByTestId('activity-log')
+    expect(activityLog).toHaveClass('overflow-x-hidden')
+
+    const scrollContainer = screen.getByTestId('activity-log-scroll')
+    expect(scrollContainer).toHaveClass('overflow-x-hidden')
+
+    const title = screen.getByText('Command output')
+    const row = title.closest('article')
+    expect(row).toHaveClass('min-w-0')
+    expect(row).toHaveClass('overflow-x-hidden')
+
+    const titleRow = title.parentElement
+    expect(titleRow).toHaveClass('flex-wrap')
+    expect(titleRow).toHaveClass('min-w-0')
+
+    const timestamp = within(titleRow as HTMLElement).getByText('2m ago')
+    expect(timestamp).toHaveAttribute('dateTime', completedAt)
+    expect(timestamp).toHaveAttribute('title', formatDateTime(completedAt))
+    expect(within(titleRow as HTMLElement).queryByText('30m ago')).not.toBeInTheDocument()
+
+    const summary = screen.getByText(/exceptionally long activity summary/i)
+    expect(summary.closest('div')).toHaveClass('line-clamp-3')
   })
 
   it('keeps an expanded command row open when the same row updates in place', () => {
@@ -251,13 +288,15 @@ describe('SessionActivityTranscript', () => {
     expect(screen.queryByText(/first detail chunk/i)).not.toBeInTheDocument()
   })
 
-  it('scrolls the activity log to the bottom when activity updates arrive', () => {
+  it('scrolls the activity log to the bottom when timestamp-only updates arrive', () => {
     const { rerender } = render(
       <SessionActivityTranscript
         groups={makeGroups([
           makeCommandEntry({
             summary: 'Initial summary',
             detail: '$ npm run dev\nfirst detail chunk',
+            started_at: '2026-03-10T11:30:00Z',
+            completed_at: '2026-03-10T11:58:00Z',
           }),
         ])}
       />,
@@ -278,18 +317,11 @@ describe('SessionActivityTranscript', () => {
       <SessionActivityTranscript
         groups={makeGroups([
           makeCommandEntry({
-            summary: 'Updated summary',
-            detail: '$ npm run dev\nsecond detail chunk',
+            summary: 'Initial summary',
+            detail: '$ npm run dev\nfirst detail chunk',
+            started_at: '2026-03-10T11:30:00Z',
+            completed_at: '2026-03-10T11:59:00Z',
           }),
-          {
-            id: 'attempt-1-agent-2',
-            kind: 'agent',
-            title: 'Agent update',
-            summary: 'Newer message at the bottom',
-            expandable: false,
-            phase: 'commentary',
-            tone: 'default',
-          },
         ])}
       />,
     )

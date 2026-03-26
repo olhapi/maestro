@@ -442,9 +442,13 @@ codex:
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # "never" keeps unattended runs non-interactive, so permission recovery must come
   # from the project or issue permission profile rather than live approval prompts.
+  # Use on-request when initial_collaboration_mode is plan so the agent can ask
+  # questions and recover through approvals before Maestro promotes the run.
   # A structured granular object is also supported for per-category approval policies.
   approval_policy: %v
   # Initial collaboration mode for fresh app_server threads. Other option: plan.
+  # Use plan for a planning pass before implementation. Pair it with on-request
+  # when you want the agent to ask questions and pause for approval.
   # Ignored for stdio runs and resumed threads.
   initial_collaboration_mode: %s
   # Maximum total runtime for one turn before Maestro cancels it.

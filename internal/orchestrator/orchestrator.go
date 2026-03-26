@@ -3359,7 +3359,12 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 
 	if entry, ok := o.retries[issue.ID]; ok {
 		entry.DueAt = time.Now().UTC()
-		entry.ResumeThreadID = ""
+		resumeThreadID := o.planApprovalResumeThreadID(issue.ID)
+		if resumeThreadID == "" {
+			entry.ResumeThreadID = ""
+		} else {
+			entry.ResumeThreadID = resumeThreadID
+		}
 		o.retries[issue.ID] = entry
 		delete(o.paused, issue.ID)
 		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
@@ -3367,21 +3372,27 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 			"identifier": issue.Identifier,
 			"phase":      entry.Phase,
 		})
-		return map[string]interface{}{
+		result := map[string]interface{}{
 			"status":       "queued_now",
 			"issue":        identifier,
 			"retry_due_at": entry.DueAt.Format(time.RFC3339),
 		}
+		if resumeThreadID != "" {
+			result["resume_thread_id"] = resumeThreadID
+		}
+		return result
 	}
 
 	if entry, ok := o.paused[issue.ID]; ok {
 		dueAt := time.Now().UTC()
+		resumeThreadID := o.planApprovalResumeThreadID(issue.ID)
 		o.retries[issue.ID] = retryEntry{
-			Attempt:   entry.Attempt,
-			Phase:     entry.Phase,
-			DueAt:     dueAt,
-			Error:     entry.Error,
-			DelayType: "manual",
+			Attempt:        entry.Attempt,
+			Phase:          entry.Phase,
+			DueAt:          dueAt,
+			Error:          entry.Error,
+			DelayType:      "manual",
+			ResumeThreadID: resumeThreadID,
 		}
 		o.claimed[issue.ID] = struct{}{}
 		delete(o.paused, issue.ID)
@@ -3390,11 +3401,15 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 			"identifier": issue.Identifier,
 			"phase":      entry.Phase,
 		})
-		return map[string]interface{}{
+		result := map[string]interface{}{
 			"status":       "queued_now",
 			"issue":        identifier,
 			"retry_due_at": dueAt.Format(time.RFC3339),
 		}
+		if resumeThreadID != "" {
+			result["resume_thread_id"] = resumeThreadID
+		}
+		return result
 	}
 
 	if issue.WorkflowPhase == kanban.WorkflowPhaseDone && issue.State == kanban.StateDone {
@@ -3426,6 +3441,17 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 		"status": "refresh_requested",
 		"issue":  identifier,
 	}
+}
+
+func (o *Orchestrator) planApprovalResumeThreadID(issueID string) string {
+	snapshot, err := o.store.GetIssueExecutionSession(issueID)
+	if err != nil || snapshot == nil {
+		return ""
+	}
+	if strings.TrimSpace(snapshot.StopReason) != planApprovalStopReason {
+		return ""
+	}
+	return strings.TrimSpace(snapshot.AppSession.ThreadID)
 }
 
 func (o *Orchestrator) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {

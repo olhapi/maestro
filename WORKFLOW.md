@@ -94,8 +94,12 @@ codex:
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured granular object is also supported for per-category approval policies.
   # `on-request` keeps the run interactive so permission recovery can happen through approvals.
+  # Use on-request when initial_collaboration_mode is plan so the agent can ask
+  # questions and pause for approval before Maestro promotes the run to full access.
   approval_policy: on-request
   # Initial collaboration mode for fresh app_server threads. Other option: plan.
+  # Use plan for a planning pass before implementation. Pair it with on-request
+  # when you want the agent to ask questions and pause for approval.
   # Ignored for stdio runs and resumed threads.
   initial_collaboration_mode: plan
   # Maximum total runtime for one turn before Maestro cancels it.
@@ -132,6 +136,10 @@ No description provided.
 - Determine the issue status first, then follow the matching flow.
 - Open the Maestro Workpad comment immediately and update it before new implementation work.
 - Plan before coding. Design verification before changing code.
+{% if plan_mode %}
+- This is a planning turn. Ask the clarifying questions you need, validate assumptions, and stop with a single `<proposed_plan>` block once the approach is ready.
+- Do not start implementation until the plan is approved.
+{% endif %}
 - Reproduce or inspect current behavior first so the target is explicit.
 - Keep metadata current: state, checklist, acceptance criteria, and links.
 - Treat the persistent workpad comment as the source of truth.

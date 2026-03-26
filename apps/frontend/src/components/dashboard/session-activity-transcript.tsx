@@ -4,7 +4,11 @@ import { Check, ChevronDown, ChevronUp, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { MarkdownText } from '@/components/ui/markdown'
 import type { ActivityEntry, ActivityGroup } from '@/lib/types'
-import { toTitleCase } from '@/lib/utils'
+import { formatDateTime, formatRelativeTimeCompact, toTitleCase } from '@/lib/utils'
+
+function entryTimestamp(entry: ActivityEntry) {
+  return entry.completed_at ?? entry.started_at
+}
 
 function rowMarkerClass(entry: ActivityEntry) {
   if (entry.kind === 'agent') {
@@ -24,15 +28,15 @@ function entryHeadingClass(entry: ActivityEntry) {
       ? 'text-emerald-200/85'
       : 'text-[var(--muted-foreground)]'
 
-  return `text-[11px] font-medium uppercase tracking-[0.18em] ${headingTone}`
+  return `min-w-0 break-words [overflow-wrap:anywhere] text-[11px] font-medium uppercase tracking-[0.18em] ${headingTone}`
 }
 
 function entrySummaryClass(entry: ActivityEntry) {
   if (entry.kind === 'status') {
-    return 'mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-white/82'
+    return 'mt-1 min-w-0 line-clamp-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-white/82'
   }
 
-  return 'mt-1.5 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92'
+  return 'mt-1.5 min-w-0 line-clamp-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92'
 }
 
 function groupLabel(group: ActivityGroup) {
@@ -105,7 +109,7 @@ export function SessionActivityTranscript({
         group.phase ?? '',
         group.status ?? '',
         ...group.entries.map((entry) =>
-          `${entry.id}:${entry.status ?? ''}:${entry.summary.length}:${entry.detail?.length ?? 0}`),
+          `${entry.id}:${entry.status ?? ''}:${entry.summary.length}:${entry.detail?.length ?? 0}:${entry.started_at ?? ''}:${entry.completed_at ?? ''}`),
       ].join('|'),
     )
     .join('||')
@@ -143,10 +147,10 @@ export function SessionActivityTranscript({
 
   return (
     <section
-      className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5"
+      className="min-w-0 overflow-x-hidden rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3.5"
       data-testid="activity-log"
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center justify-between gap-3">
         <p className="text-sm font-medium text-white">Activity log</p>
         <div className="flex items-center gap-2">
           <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
@@ -171,7 +175,7 @@ export function SessionActivityTranscript({
         <p className="mt-4 text-sm text-[var(--muted-foreground)]">{emptyMessage}</p>
       ) : (
         <div
-          className="mt-4 max-h-[520px] overflow-y-auto pr-1"
+          className="mt-4 max-h-[520px] overflow-x-hidden overflow-y-auto pr-1"
           data-testid="activity-log-scroll"
           ref={scrollContainerRef}
         >
@@ -190,13 +194,27 @@ export function SessionActivityTranscript({
                 <div className="space-y-4">
                   {group.entries.map((entry) => {
                     const expanded = expandedRows[entry.id] ?? false
+                    const timestamp = entryTimestamp(entry)
 
                     return (
-                      <article key={entry.id} className="flex items-start gap-3">
+                      <article key={entry.id} className="flex min-w-0 items-start gap-3 overflow-x-hidden">
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2.5">
+                          <div className="flex min-w-0 items-start gap-2.5">
                             <span className={`block size-1.5 shrink-0 rounded-full ${rowMarkerClass(entry)}`} />
-                            <p className={entryHeadingClass(entry)}>{entry.title}</p>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                                <p className={entryHeadingClass(entry)}>{entry.title}</p>
+                                {timestamp ? (
+                                  <time
+                                    className="shrink-0 whitespace-nowrap text-[11px] leading-4 text-[var(--muted-foreground)]"
+                                    dateTime={timestamp}
+                                    title={formatDateTime(timestamp)}
+                                  >
+                                    {formatRelativeTimeCompact(timestamp)}
+                                  </time>
+                                ) : null}
+                              </div>
+                            </div>
                           </div>
 
                           <div className="pl-4">
