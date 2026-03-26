@@ -203,7 +203,7 @@ No description provided.
 5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
 6. Do not consider the task complete until the change is merged into local main.
 7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
-8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
+8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
 9. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
 10. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
 11. Final message must contain only completed work, validation run, merge status, and blockers.
@@ -275,7 +275,7 @@ Description:
 No description provided.
 {% endif %}
 
-The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
+The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles cleanup hooks and worktree removal after your run exits.
 
 - Sync origin/main first.
 - Merge the issue branch into local main.
@@ -294,7 +294,7 @@ Project context:
 {{ project.description }}
 
 {% endif %}
-The done phase owns merge-back and finalization. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
+The done phase owns merge-back and finalization. Maestro handles cleanup hooks and worktree removal after your run exits.
 
 - Sync origin/main first.
 - Merge the issue branch into local main.

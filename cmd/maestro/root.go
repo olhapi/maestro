@@ -98,6 +98,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		app.newVerifyCmd("verify"),
 		app.newVerifyCmd("doctor"),
 		app.newSpecCheckCmd(),
+		app.newWorkflowInitCmd(),
 		app.newWorkflowCmd(),
 		app.newSessionsCmd(),
 		app.newEventsCmd(),
@@ -216,12 +217,6 @@ func (a *cliApp) newMCPCmd() *cobra.Command {
 }
 
 func (a *cliApp) newWorkflowCmd() *cobra.Command {
-	var workspaceRoot string
-	var codexCommand string
-	var agentMode string
-	var force bool
-	var defaults bool
-
 	cmd := &cobra.Command{
 		Use:   "workflow",
 		Short: "Manage WORKFLOW.md files",
@@ -230,7 +225,18 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 			return usageErrorf("a workflow subcommand is required")
 		},
 	}
-	initCmd := &cobra.Command{
+	cmd.AddCommand(a.newWorkflowInitCmd())
+	return cmd
+}
+
+func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
+	var workspaceRoot string
+	var codexCommand string
+	var agentMode string
+	var force bool
+	var defaults bool
+
+	cmd := &cobra.Command{
 		Use:   "init [repo_path]",
 		Short: "Initialize WORKFLOW.md",
 		Args:  cobra.MaximumNArgs(1),
@@ -266,12 +272,11 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 			return nil
 		},
 	}
-	initCmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "Workspace root to write into WORKFLOW.md")
-	initCmd.Flags().StringVar(&codexCommand, "codex-command", "", "Codex command to write into WORKFLOW.md")
-	initCmd.Flags().StringVar(&agentMode, "agent-mode", "", "Agent mode to write into WORKFLOW.md (app_server or stdio)")
-	initCmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing WORKFLOW.md")
-	initCmd.Flags().BoolVar(&defaults, "defaults", false, "Use defaults without prompting")
-	cmd.AddCommand(initCmd)
+	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "Workspace root to write into WORKFLOW.md")
+	cmd.Flags().StringVar(&codexCommand, "codex-command", "", "Codex command to write into WORKFLOW.md")
+	cmd.Flags().StringVar(&agentMode, "agent-mode", "", "Agent mode to write into WORKFLOW.md (app_server or stdio)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing WORKFLOW.md")
+	cmd.Flags().BoolVar(&defaults, "defaults", false, "Use defaults without prompting")
 	return cmd
 }
 

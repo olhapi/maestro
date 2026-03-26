@@ -45,14 +45,14 @@ func assertDefaultPromptSemantics(t *testing.T, prompt string) {
 		"Reproduce or inspect current behavior first so the target is explicit.",
 		"Treat the persistent workpad comment as the source of truth.",
 		"Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.",
-		"In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.",
 	)
 }
 
 func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
-		"The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles cleanup hooks and worktree removal after your run exits.",
 		"Sync origin/main first.",
 		"Merge the issue branch into local main.",
 		"Rerun the relevant validation on main.",
@@ -66,7 +66,7 @@ func assertInitDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
 		"Finalize issue {{ issue.identifier }} from the current workspace.",
-		"The done phase owns merge-back and finalization. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"The done phase owns merge-back and finalization. Maestro handles cleanup hooks and worktree removal after your run exits.",
 		"Sync origin/main first.",
 		"Merge the issue branch into local main.",
 		"Rerun the relevant validation on main.",
@@ -887,7 +887,7 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"read_timeout_ms: 10000",
 		"stall_timeout_ms: 300000",
 		"{{ issue.identifier }}",
-		"Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.",
+		"Maestro handles cleanup hooks and worktree removal after your run exits.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
