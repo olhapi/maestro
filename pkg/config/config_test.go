@@ -1276,6 +1276,41 @@ State: {{ issue.state }}
 	assertWorkflowHasAdvisory(t, workflow, WorkflowAdvisoryPromptBranching)
 }
 
+func TestLoadWorkflowSkipsDoneBranchAdvisoryWhenDoneDisabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+phases:
+  done:
+    enabled: false
+    prompt: |
+      Sync origin/main first.
+      Merge the issue branch into local main.
+      Push main to origin.
+---
+Title: {{ issue.title }}
+State: {{ issue.state }}
+
+## Instructions
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+6. Do not consider the task complete until the change is merged into local main.
+7. Before marking done, sync origin/main, merge the issue branch into local main, rerun validation on main, and push main to origin.
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if len(workflow.Advisories) != 0 {
+		t.Fatalf("expected disabled done phase to skip branch advisory, got %+v", workflow.Advisories)
+	}
+}
+
 func TestEnsureWorkflowCreatesMissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	path, created, err := EnsureWorkflow(tmpDir, InitOptions{})

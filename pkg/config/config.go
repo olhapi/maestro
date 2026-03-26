@@ -849,7 +849,7 @@ func detectWorkflowAdvisories(cfg Config, prompt string, raw map[string]interfac
 			Remediation: "Either keep approval_policy=never and make sure the project or issue permission profile already grants the required access, or switch to a non-never approval policy if you want the agent to recover through user-approved permission escalations.",
 		})
 	}
-	if workflowUsesLegacyBranchInstructions(prompt, cfg.Phases.Done.Prompt) {
+	if cfg.Phases.Done.Enabled && workflowUsesLegacyBranchInstructions(prompt, cfg.Phases.Done.Prompt) {
 		advisories = append(advisories, WorkflowAdvisory{
 			Code:        WorkflowAdvisoryPromptBranching,
 			Message:     "The workflow prompt still tells agents to create or replace issue branches manually or merge through hard-coded mainline branches. Maestro already prepares the issue workspace branch and the repository default branch is not always main.",
