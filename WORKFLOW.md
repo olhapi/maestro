@@ -15,7 +15,7 @@ tracker:
 
 # How often Maestro scans the tracker for runnable work.
 polling:
-  interval_ms: 10000
+  interval_ms: 30000
 
 # Where Maestro creates per-issue workspaces. Relative paths resolve from the repo root;
 # absolute paths, $ENV_VAR paths, and ~/ paths are also supported.
@@ -47,7 +47,6 @@ phases:
       {% if project.description %}
       Project context:
       {{ project.description }}
-
       {% endif %}
       Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
   done:
@@ -59,14 +58,14 @@ phases:
       {% if project.description %}
       Project context:
       {{ project.description }}
-
       {% endif %}
       The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 
       - Commit all remaining changes to the prepared issue branch.
-      - Merge the issue branch into the repository default branch.
-      - Rerun the relevant validation on the default branch.
-      - Push the default branch to origin.
+      - Sync origin/agent-runtime-v2.
+      - Merge the issue branch into local agent-runtime-v2.
+      - Rerun the relevant validation on agent-runtime-v2.
+      - Push agent-runtime-v2 to origin.
       - Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.
       - If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.
 
@@ -77,7 +76,7 @@ agent:
   # Maximum turns Maestro gives Codex before ending an attempt.
   max_turns: 50
   # Maximum delay between automatic retries after failed attempts.
-  max_retry_backoff_ms: 60000
+  max_retry_backoff_ms: 300000
   # Maximum automatic retry attempts for the same issue before Maestro stops retrying.
   max_automatic_retries: 8
   # Agent transport. Other options: app_server, stdio.
@@ -92,16 +91,11 @@ codex:
   # Expected codex --version. Mismatches warn but do not hard-fail.
   expected_version: 0.117.0
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
-  # A structured granular object is also supported for per-category approval policies.
-  # `on-request` keeps the run interactive so permission recovery can happen through approvals.
-  # Use on-request when initial_collaboration_mode is plan so the agent can ask
-  # questions and pause for approval before Maestro promotes the run to full access.
-  approval_policy: on-request
+  # A structured reject object is also supported for per-category rejection policies.
+  approval_policy: never
   # Initial collaboration mode for fresh app_server threads. Other option: plan.
-  # Use plan for a planning pass before implementation. Pair it with on-request
-  # when you want the agent to ask questions and pause for approval.
   # Ignored for stdio runs and resumed threads.
-  initial_collaboration_mode: plan
+  initial_collaboration_mode: default
   # Maximum total runtime for one turn before Maestro cancels it.
   turn_timeout_ms: 3600000
   # Maximum time to wait for streamed output before considering the stream stalled.
@@ -119,6 +113,7 @@ Continuation attempt: {{ attempt }}
 {% endif %}
 
 Title: {{ issue.title }}
+State: {{ issue.state }}
 {% if project.description %}
 Project context:
 {{ project.description }}
@@ -148,22 +143,22 @@ No description provided.
 - Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
 
 ## Instructions
-
 1. Stay inside the provided workspace.
 2. Keep the change focused and preserve project conventions.
 3. Reproduce or inspect current behavior before editing when possible.
 4. Run validation that covers the changed scope.
-5. Use the issue branch already prepared by Maestro in the provided workspace. Do not create, rename, or switch issue branches manually unless you are recovering from a broken workspace.
-6. Do not consider the task complete until the change is merged into the repository default branch.
-7. Before marking done, merge the issue branch into the repository default branch, rerun validation on that branch, and push the default branch to origin.
+5. Use the issue branch already prepared by Maestro in the provided workspace. Do not create, rename, or switch issue branches manually unless the workflow explicitly tells you to recover from a broken workspace.
+6. Do not consider the task complete until the change is merged into local agent-runtime-v2.
+7. Before marking done, sync origin/agent-runtime-v2, merge the issue branch into local agent-runtime-v2, rerun validation on agent-runtime-v2, and push agent-runtime-v2 to origin.
 8. In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 9. Add an issue comment when you create a branch, commit, PR, or merge commit, when relevant.
 10. If blocked by credentials, permissions, merge conflicts, or required services, stop, report it clearly in the final message, and add the same blocker comment.
 11. Final message must contain only completed work, validation run, merge status, and blockers.
 
+
 ## Guardrails
 
-- If the workspace branch is unusable or a prior branch was already merged or closed, do not manually create a replacement branch. Report the condition clearly and stop; Maestro owns workspace and branch bootstrap.
+- If the workspace branch is unusable or a prior branch was already merged/closed, do not manually create a new branch. Report the condition clearly and stop; Maestro owns workspace and branch bootstrap.
 - If the issue state is Backlog, do not modify it; wait for a human to move it to Ready.
 - Do not edit the issue body for planning or progress updates.
 - Use exactly one persistent workpad comment (## Maestro Workpad) per issue.
