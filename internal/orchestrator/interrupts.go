@@ -100,6 +100,9 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteractio
 		if strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
 			continue
 		}
+		if strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil {
+			continue
+		}
 		var project *kanban.Project
 		if projectID := strings.TrimSpace(issue.ProjectID); projectID != "" {
 			if cached, ok := projectCache[projectID]; ok {

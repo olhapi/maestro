@@ -1746,19 +1746,24 @@ func (s *Server) requestIssuePlanRevision(ctx context.Context, issue *kanban.Iss
 	if err := s.store.SetIssuePendingPlanRevision(issue.ID, note, requestedAt); err != nil {
 		return nil, err
 	}
-	detail, err := s.service.GetIssueDetailByIdentifier(ctx, issue.Identifier)
-	if err != nil {
-		return nil, err
+	rollbackRevision := func(reason string, cause error) error {
+		if clearErr := s.store.ClearIssuePendingPlanRevision(issue.ID, reason); clearErr != nil {
+			return errors.Join(cause, fmt.Errorf("clear pending plan revision: %w", clearErr))
+		}
+		return cause
 	}
 	dispatch := s.provider.RetryIssueNow(ctx, issue.Identifier)
 	if status, _ := dispatch["status"].(string); status == "error" {
-		return nil, fmt.Errorf("%v", dispatch["error"])
+		return nil, rollbackRevision("dispatch_failed", fmt.Errorf("%v", dispatch["error"]))
 	}
-	return map[string]interface{}{
+	response := map[string]interface{}{
 		"ok":       true,
-		"issue":    detail,
 		"dispatch": dispatch,
-	}, nil
+	}
+	if detail, err := s.service.GetIssueDetailByIdentifier(ctx, issue.Identifier); err == nil {
+		response["issue"] = detail
+	}
+	return response, nil
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

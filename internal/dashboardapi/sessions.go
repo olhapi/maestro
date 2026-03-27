@@ -13,6 +13,7 @@ import (
 const (
 	recentSessionFeedLimit  = 12
 	recentSessionFeedWindow = 24 * time.Hour
+	queuedPlanRevisionText  = "Plan revision queued for the next planning turn."
 )
 
 func (s *Server) sessionsPayload() map[string]interface{} {
@@ -63,17 +64,26 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 		return nil, err
 	}
 	titleByIdentifier := loadIssueTitlesByIdentifier(store, live, recent)
+	issuesByIdentifier := loadIssuesByIdentifier(store, live, recent)
 
 	out := make([]kanban.SessionFeedEntry, 0, len(live)+recentSessionFeedLimit)
 	seen := make(map[string]struct{}, len(live))
 	for identifier, session := range live {
+		issue := issuesByIdentifier[firstNonEmpty(session.IssueIdentifier, identifier)]
 		pendingInterrupt := pendingInterruptForSession(
 			session.IssueID,
 			firstNonEmpty(session.IssueIdentifier, identifier),
 			pendingByIssueID,
 			pendingByIdentifier,
 		)
-		entry := buildLiveSessionFeedEntry(identifier, session, runningByIdentifier[identifier], titleByIdentifier[identifier], pendingInterrupt)
+		entry := buildLiveSessionFeedEntry(
+			identifier,
+			session,
+			runningByIdentifier[identifier],
+			issue,
+			titleByIdentifier[identifier],
+			pendingInterrupt,
+		)
 		out = append(out, entry)
 		if entry.IssueIdentifier != "" {
 			seen[entry.IssueIdentifier] = struct{}{}
@@ -90,7 +100,16 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 		if _, ok := seen[identifier]; ok {
 			continue
 		}
-		out = append(out, buildPersistedSessionFeedEntry(snapshot, retryByIdentifier[identifier], pausedByIdentifier[identifier], titleByIdentifier[identifier]))
+		out = append(
+			out,
+			buildPersistedSessionFeedEntry(
+				snapshot,
+				retryByIdentifier[identifier],
+				pausedByIdentifier[identifier],
+				issuesByIdentifier[identifier],
+				titleByIdentifier[identifier],
+			),
+		)
 		seen[identifier] = struct{}{}
 	}
 
@@ -202,6 +221,32 @@ func loadIssueTitlesByIdentifier(store *kanban.Store, live map[string]appserver.
 	return out
 }
 
+func loadIssuesByIdentifier(store *kanban.Store, live map[string]appserver.Session, recent []kanban.ExecutionSessionSnapshot) map[string]*kanban.Issue {
+	identifiers := make(map[string]struct{}, len(live)+len(recent))
+	for identifier, session := range live {
+		resolvedIdentifier := strings.TrimSpace(firstNonEmpty(session.IssueIdentifier, identifier))
+		if resolvedIdentifier != "" {
+			identifiers[resolvedIdentifier] = struct{}{}
+		}
+	}
+	for _, snapshot := range recent {
+		identifier := strings.TrimSpace(firstNonEmpty(snapshot.Identifier, snapshot.AppSession.IssueIdentifier))
+		if identifier != "" {
+			identifiers[identifier] = struct{}{}
+		}
+	}
+
+	out := make(map[string]*kanban.Issue, len(identifiers))
+	for identifier := range identifiers {
+		issue, err := store.GetIssueByIdentifier(identifier)
+		if err != nil {
+			continue
+		}
+		out[identifier] = issue
+	}
+	return out
+}
+
 func sessionFeedSortKey(title, identifier string) string {
 	key := strings.TrimSpace(title)
 	if key == "" {
@@ -214,7 +259,21 @@ func decodeLiveSessions(raw map[string]interface{}) map[string]appserver.Session
 	return appserver.SessionsFromMap(raw)
 }
 
-func buildLiveSessionFeedEntry(identifier string, session appserver.Session, running observability.RunningEntry, issueTitle string, pendingInterrupt *appserver.PendingInteraction) kanban.SessionFeedEntry {
+func issueHasPendingPlanRevision(issue *kanban.Issue) bool {
+	if issue == nil {
+		return false
+	}
+	return strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil
+}
+
+func buildLiveSessionFeedEntry(
+	identifier string,
+	session appserver.Session,
+	running observability.RunningEntry,
+	issue *kanban.Issue,
+	issueTitle string,
+	pendingInterrupt *appserver.PendingInteraction,
+) kanban.SessionFeedEntry {
 	updatedAt := session.LastTimestamp
 	if updatedAt.IsZero() {
 		if running.LastEventAt != nil && !running.LastEventAt.IsZero() {
@@ -249,6 +308,13 @@ func buildLiveSessionFeedEntry(identifier string, session appserver.Session, run
 			lastMessage = pending.LastActivity
 		}
 	}
+	if issueHasPendingPlanRevision(issue) && (pending == nil || pending.Kind != appserver.PendingInteractionKindAlert) {
+		status = "revision_queued"
+		lastMessage = queuedPlanRevisionText
+		if issue.PendingPlanRevisionRequestedAt != nil && !issue.PendingPlanRevisionRequestedAt.IsZero() {
+			updatedAt = issue.PendingPlanRevisionRequestedAt.UTC()
+		}
+	}
 
 	return kanban.SessionFeedEntry{
 		IssueID:          firstNonEmpty(session.IssueID, running.IssueID),
@@ -273,7 +339,13 @@ func buildLiveSessionFeedEntry(identifier string, session appserver.Session, run
 	}
 }
 
-func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, retry observability.RetryEntry, paused observability.PausedEntry, issueTitle string) kanban.SessionFeedEntry {
+func buildPersistedSessionFeedEntry(
+	snapshot kanban.ExecutionSessionSnapshot,
+	retry observability.RetryEntry,
+	paused observability.PausedEntry,
+	issue *kanban.Issue,
+	issueTitle string,
+) kanban.SessionFeedEntry {
 	session := snapshot.AppSession
 	updatedAt := session.LastTimestamp
 	if updatedAt.IsZero() {
@@ -281,17 +353,20 @@ func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, re
 	}
 	errorText := firstNonEmpty(paused.Error, retry.Error, snapshot.Error)
 	planApprovalWaiting := isPlanApprovalPendingError(errorText) || isPlanApprovalPendingError(snapshot.RunKind) || isPlanApprovalPendingError(snapshot.StopReason)
+	planRevisionQueued := issueHasPendingPlanRevision(issue)
 	failureClass := normalizeFailureClass(errorText)
 	if failureClass == "" {
 		failureClass = normalizeFailureClass(snapshot.RunKind)
 	}
-	if planApprovalWaiting {
+	if planApprovalWaiting || planRevisionQueued {
 		failureClass = ""
 		errorText = ""
 	}
 
 	status := "failed"
 	switch {
+	case planRevisionQueued:
+		status = "revision_queued"
 	case planApprovalWaiting:
 		status = "waiting"
 	case strings.TrimSpace(paused.Identifier) != "" || strings.EqualFold(snapshot.RunKind, "retry_paused"):
@@ -324,6 +399,13 @@ func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, re
 	if attempt == 0 && retry.Attempt > 0 {
 		attempt = retry.Attempt
 	}
+	lastMessage := session.LastMessage
+	if planRevisionQueued {
+		lastMessage = queuedPlanRevisionText
+		if issue != nil && issue.PendingPlanRevisionRequestedAt != nil && !issue.PendingPlanRevisionRequestedAt.IsZero() {
+			updatedAt = issue.PendingPlanRevisionRequestedAt.UTC()
+		}
+	}
 
 	return kanban.SessionFeedEntry{
 		IssueID:         snapshot.IssueID,
@@ -338,7 +420,7 @@ func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, re
 		FailureClass:    failureClass,
 		UpdatedAt:       updatedAt,
 		LastEvent:       session.LastEvent,
-		LastMessage:     session.LastMessage,
+		LastMessage:     lastMessage,
 		TotalTokens:     session.TotalTokens,
 		EventsProcessed: session.EventsProcessed,
 		TurnsStarted:    session.TurnsStarted,

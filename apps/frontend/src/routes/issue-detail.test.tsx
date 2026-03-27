@@ -415,7 +415,7 @@ describe("IssueDetailPage", () => {
       expect(screen.getByText(/project's plan-first profile/i)).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /add note/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add steering note/i }));
     fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: "Prefer a smaller rollout and keep the rollback step explicit." },
     });
@@ -507,7 +507,7 @@ describe("IssueDetailPage", () => {
       expect(screen.getByRole("button", { name: /restart plan thread/i })).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /add note/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add steering note/i }));
     const noteInput = screen.getByPlaceholderText(/explain what should change in the plan/i);
     fireEvent.change(noteInput, { target: { value: "Keep the plan, then approve it." } });
     fireEvent.click(screen.getByRole("button", { name: /approve plan/i }));

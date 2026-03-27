@@ -28,7 +28,7 @@ export function DialogContent({
       >
         {showCloseButton ? (
           <DialogPrimitive.Close className="absolute right-4 top-4 rounded-full p-2 text-[var(--muted-foreground)] hover:bg-white/8 hover:text-white">
-            <X className="size-4" />
+            <X className="size-4 shrink-0" />
           </DialogPrimitive.Close>
         ) : null}
         {children}

@@ -74,6 +74,7 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 		snapshot,
 		observability.RetryEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
 		observability.PausedEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
+		nil,
 		"Plan approval issue",
 	)
 
@@ -88,5 +89,56 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 	}
 	if entry.TotalTokens != 42 || entry.TurnsStarted != 3 || entry.TurnsCompleted != 1 {
 		t.Fatalf("unexpected session counters: %+v", entry)
+	}
+}
+
+func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
+	now := time.Date(2026, 3, 18, 13, 30, 0, 0, time.UTC)
+	revisionRequestedAt := now.Add(2 * time.Minute)
+	snapshot := kanban.ExecutionSessionSnapshot{
+		IssueID:    "issue-1",
+		Identifier: "ISS-1",
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      "plan_approval_pending",
+		StopReason: "plan_approval_pending",
+		UpdatedAt:  now,
+		AppSession: appserver.Session{
+			IssueID:         "issue-1",
+			IssueIdentifier: "ISS-1",
+			LastTimestamp:   now.Add(-30 * time.Second),
+			LastEvent:       "turn.paused",
+			LastMessage:     "Waiting for operator approval",
+			TotalTokens:     42,
+			TurnsStarted:    3,
+			TurnsCompleted:  1,
+		},
+	}
+
+	entry := buildPersistedSessionFeedEntry(
+		snapshot,
+		observability.RetryEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
+		observability.PausedEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
+		&kanban.Issue{
+			ID:                             "issue-1",
+			Identifier:                     "ISS-1",
+			PendingPlanRevisionMarkdown:    "Tighten the rollout and keep the rollback explicit.",
+			PendingPlanRevisionRequestedAt: &revisionRequestedAt,
+		},
+		"Plan approval issue",
+	)
+
+	if entry.Status != "revision_queued" {
+		t.Fatalf("expected revision_queued status, got %+v", entry)
+	}
+	if entry.LastMessage != queuedPlanRevisionText {
+		t.Fatalf("expected queued revision summary, got %+v", entry)
+	}
+	if !entry.UpdatedAt.Equal(revisionRequestedAt) {
+		t.Fatalf("expected queued revision timestamp, got %+v", entry)
+	}
+	if entry.Error != "" || entry.FailureClass != "" {
+		t.Fatalf("expected queued revision to clear waiting errors, got %+v", entry)
 	}
 }

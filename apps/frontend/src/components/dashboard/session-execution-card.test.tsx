@@ -138,7 +138,7 @@ describe('SessionExecutionCard', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
     fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: 'Tighten the rollout steps.' },
     })
@@ -168,7 +168,7 @@ describe('SessionExecutionCard', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
 
     const noteInput = screen.getByPlaceholderText(/explain what should change in the plan/i)
     fireEvent.change(noteInput, {
@@ -179,7 +179,7 @@ describe('SessionExecutionCard', () => {
 
     expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /edit note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /edit steering note/i }))
 
     expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue(
       'Keep the rollout small.',
@@ -224,6 +224,35 @@ describe('SessionExecutionCard', () => {
     expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveFocus()
   })
 
+  it('shows a queued revision state instead of active approval controls when a plan revision is pending', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the **plan** before execution.',
+            requested_at: '2026-03-18T12:00:00Z',
+            attempt: 2,
+          },
+          plan_revision: {
+            markdown: 'Tighten the rollout and keep the rollback explicit.',
+            requested_at: '2026-03-18T12:03:00Z',
+            attempt: 2,
+          },
+        })}
+        issueTotalTokens={120}
+        onApprovePlan={() => {}}
+        onRequestPlanRevision={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('Plan revision queued')).toBeInTheDocument()
+    expect(screen.getByText(/carry it into the next planning turn/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /approve plan/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /request changes/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Waiting$/)).not.toBeInTheDocument()
+    expect(screen.getByText('Revision note queued')).toBeInTheDocument()
+  })
+
   it('clears stale revision notes when a new plan approval arrives', () => {
     const onApprovePlan = vi.fn()
     const { rerender } = render(
@@ -240,7 +269,7 @@ describe('SessionExecutionCard', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
     fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: 'Reduce the rollout size and add a rollback check.' },
     })
@@ -263,7 +292,7 @@ describe('SessionExecutionCard', () => {
     )
 
     expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
     expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue('')
 
     fireEvent.click(screen.getByRole('button', { name: /approve plan/i }))

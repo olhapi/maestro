@@ -250,6 +250,90 @@ func TestSessionsEndpointMarksPendingInterruptsAsWaiting(t *testing.T) {
 	}
 }
 
+func TestSessionsEndpointMarksQueuedPlanRevisionsAsRevisionQueued(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Waiting on revision", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", now.Add(-30*time.Second)); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval failed: %v", err)
+	}
+	revisionRequestedAt := now.Add(-5 * time.Second)
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and keep the rollback explicit.", revisionRequestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision failed: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      "plan_approval_pending",
+		StopReason: "plan_approval_pending",
+		UpdatedAt:  now.Add(-10 * time.Second),
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-waiting-turn-waiting",
+			ThreadID:        "thread-waiting",
+			TurnID:          "turn-waiting",
+			LastEvent:       "turn.paused",
+			LastTimestamp:   now.Add(-20 * time.Second),
+			LastMessage:     "Waiting for operator approval",
+			TotalTokens:     21,
+			TurnsStarted:    3,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession failed: %v", err)
+	}
+
+	provider := testProvider{
+		snapshot: observability.Snapshot{
+			Retrying: []observability.RetryEntry{{
+				IssueID:    issue.ID,
+				Identifier: issue.Identifier,
+				Phase:      "implementation",
+				Attempt:    2,
+				DueAt:      now.Add(1 * time.Minute),
+				Error:      "plan_approval_pending",
+			}},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/app/sessions", nil)
+	NewServer(store, provider).handleSessions(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode sessions payload: %v", err)
+	}
+	entries, ok := payload["entries"].([]interface{})
+	if !ok || len(entries) != 1 {
+		t.Fatalf("expected one session entry, got %#v", payload["entries"])
+	}
+	entry := entries[0].(map[string]interface{})
+	if entry["status"] != "revision_queued" {
+		t.Fatalf("expected revision_queued status, got %#v", entry)
+	}
+	if entry["last_message"] != queuedPlanRevisionText {
+		t.Fatalf("expected queued revision summary, got %#v", entry["last_message"])
+	}
+	if _, ok := entry["pending_interrupt"]; ok {
+		t.Fatalf("expected queued revision to avoid pending interrupt payload, got %#v", entry["pending_interrupt"])
+	}
+}
+
 func TestSessionsEndpointMarksAlertInterruptsAsBlocked(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))

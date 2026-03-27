@@ -116,7 +116,7 @@ function PlanSection({
 }: {
   content: string
   eyebrow: string
-  title: string
+  title?: string
   tone?: 'default' | 'questions' | 'assumptions'
 }) {
   if (!content.trim()) {
@@ -134,7 +134,7 @@ function PlanSection({
     >
       <div className="mb-3 space-y-1.5">
         <p className="text-xs font-medium uppercase tracking-[0.12em] text-white/55">{eyebrow}</p>
-        <h3 className="text-lg font-semibold leading-7 text-white">{title}</h3>
+        {title ? <h3 className="text-lg font-semibold leading-7 text-white">{title}</h3> : null}
       </div>
       <MarkdownText className="space-y-3 text-[15px] leading-7 text-inherit" content={content} />
     </section>
@@ -157,12 +157,7 @@ export function PlanApprovalDocument({
   if (!parsed.hasStructuredSections) {
     return (
       <div className={className}>
-        <PlanSection
-          content={markdown}
-          eyebrow="Proposed plan"
-          title="Review the proposed plan"
-          tone="default"
-        />
+        <PlanSection content={markdown} eyebrow="Proposed plan" tone="default" />
       </div>
     )
   }
@@ -213,8 +208,8 @@ export function PlanApprovalActionBar({
   approveDisabled = false,
   requestChangesDisabled = false,
   note,
-  noteDescription = 'Add optional steering notes. A note becomes required if you request changes.',
-  noteLabel = 'Review note',
+  noteDescription = 'Add optional steering notes for the next turn. A note becomes required if you request changes.',
+  noteLabel = 'Steering note',
   notePlaceholder = 'Explain what should change in the plan...',
   noteRequired = false,
   noteVisible,
@@ -243,7 +238,7 @@ export function PlanApprovalActionBar({
 }) {
   const noteRef = useRef<HTMLTextAreaElement | null>(null)
   const previousNoteVisible = useRef(noteVisible)
-  const noteToggleLabel = noteVisible ? 'Hide note' : note.trim().length > 0 ? 'Edit note' : 'Add note'
+  const noteToggleLabel = noteVisible ? 'Hide note' : note.trim().length > 0 ? 'Edit steering note' : 'Add steering note'
 
   useEffect(() => {
     if (noteVisible && !previousNoteVisible.current) {
@@ -284,7 +279,7 @@ export function PlanApprovalActionBar({
           {approveLabel}
         </Button>
         <Button
-          className="h-11 rounded-2xl px-5"
+          className="h-11 rounded-2xl border-white/12 bg-transparent px-5 text-white hover:border-white/18 hover:bg-white/[0.04]"
           disabled={requestChangesDisabled}
           type="button"
           variant="secondary"

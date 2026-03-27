@@ -36,4 +36,12 @@ Tests:
     expect(renderedCodeBlock).toHaveTextContent('plan: literal value')
     expect(renderedCodeBlock).toHaveTextContent('tests: literal value')
   })
+
+  it('renders fallback plan content without repeating the dialog title', () => {
+    render(<PlanApprovalDocument markdown={'Keep the rollout small.'} />)
+
+    expect(screen.getByText('Proposed plan')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Review the proposed plan' })).not.toBeInTheDocument()
+    expect(screen.getByText('Keep the rollout small.')).toBeInTheDocument()
+  })
 })

@@ -142,6 +142,30 @@ func TestSharedPendingInterruptsOrdersPlanApprovalsAfterEarlierAlerts(t *testing
 	}
 }
 
+func TestSharedPendingInterruptsSuppressPlanApprovalWhileRevisionIsQueued(t *testing.T) {
+	fixture := setupSharedInterruptFixture(t)
+
+	requestedAt := time.Now().UTC().Add(1 * time.Hour)
+	if err := fixture.store.SetIssuePendingPlanApproval(fixture.second.ID, "Review the proposed plan.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := fixture.store.SetIssuePendingPlanRevision(
+		fixture.second.ID,
+		"Tighten the rollout and keep the rollback explicit.",
+		requestedAt.Add(2*time.Minute),
+	); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+
+	snapshot := fixture.orch.PendingInterrupts()
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("expected only the earlier derived alert while revision is queued, got %+v", snapshot.Items)
+	}
+	if snapshot.Items[0].Kind != appserver.PendingInteractionKindAlert || snapshot.Items[0].IssueID != fixture.first.ID {
+		t.Fatalf("expected derived alert to remain visible, got %+v", snapshot.Items[0])
+	}
+}
+
 func TestPendingInterruptForIssuePrefersQueuedInteractionOverDerivedAlert(t *testing.T) {
 	fixture := setupSharedInterruptFixture(t)
 

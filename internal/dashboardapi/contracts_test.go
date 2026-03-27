@@ -28,6 +28,7 @@ type retryTrackingProvider struct {
 	retried         []string
 	runNow          []string
 	resumeThreadIDs []string
+	retryResult     map[string]interface{}
 	responseID      string
 	response        appserver.PendingInteractionResponse
 	respondErr      error
@@ -37,6 +38,13 @@ type retryTrackingProvider struct {
 
 func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	p.retried = append(p.retried, identifier)
+	if p.retryResult != nil {
+		result := make(map[string]interface{}, len(p.retryResult))
+		for key, value := range p.retryResult {
+			result[key] = value
+		}
+		return result
+	}
 	result := map[string]interface{}{"status": "queued_now", "issue": identifier}
 	if p.store != nil {
 		issue, err := p.store.GetIssueByIdentifier(identifier)
@@ -1494,6 +1502,122 @@ func TestIssueRequestPlanRevisionContractsStoresRevisionAndRedispatches(t *testi
 	}
 	if updated.PendingPlanRevisionRequestedAt == nil {
 		t.Fatalf("expected pending plan revision requested_at to be stored, got %+v", updated)
+	}
+}
+
+func TestIssueRequestPlanRevisionContractsRollsBackRevisionWhenRedispatchFails(t *testing.T) {
+	provider := &retryTrackingProvider{
+		retryResult: map[string]interface{}{
+			"status": "error",
+			"issue":  "ISS-1",
+			"error":  "dispatch unavailable",
+		},
+	}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Request plan revision failure", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", time.Date(2026, 3, 18, 13, 15, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/request-plan-revision", map[string]interface{}{
+		"note": "Keep the plan but make the rollout smaller and add a rollback check.",
+	})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.StatusCode)
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch attempt for %s, got %v", issue.Identifier, provider.retried)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to remain queued, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionMarkdown != "" || updated.PendingPlanRevisionRequestedAt != nil {
+		t.Fatalf("expected pending plan revision to roll back after dispatch failure, got %+v", updated)
+	}
+}
+
+func TestIssueRequestPlanRevisionContractsPreservesRevisionWhenDetailReloadFails(t *testing.T) {
+	provider := &retryTrackingProvider{}
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "primary.db"))
+	if err != nil {
+		t.Fatalf("NewStore primary: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	provider.store = store
+
+	brokenDetailStore, err := kanban.NewStore(filepath.Join(t.TempDir(), "detail.db"))
+	if err != nil {
+		t.Fatalf("NewStore detail: %v", err)
+	}
+	t.Cleanup(func() { _ = brokenDetailStore.Close() })
+
+	server := NewServer(store, provider)
+	server.service = providers.NewService(brokenDetailStore)
+	mux := http.NewServeMux()
+	server.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Request plan revision detail failure", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", time.Date(2026, 3, 18, 13, 15, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/request-plan-revision", map[string]interface{}{
+		"note": "Keep the plan but make the rollout smaller and add a rollback check.",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	if body["ok"] != true {
+		t.Fatalf("expected ok response, got %#v", body)
+	}
+	if _, hasIssue := body["issue"]; hasIssue {
+		t.Fatalf("expected missing issue payload when detail reload fails, got %#v", body["issue"])
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch for %s, got %v", issue.Identifier, provider.retried)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to remain queued, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionMarkdown != "Keep the plan but make the rollout smaller and add a rollback check." {
+		t.Fatalf("expected pending plan revision to remain stored, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision requested_at to remain stored, got %+v", updated)
 	}
 }
 
