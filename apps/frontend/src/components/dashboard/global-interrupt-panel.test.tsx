@@ -97,7 +97,7 @@ describe('GlobalInterruptPanel', () => {
     const footer = screen.getByTestId('global-interrupt-footer')
     expect(footer).toHaveClass('shrink-0')
     expect(footer).toContainElement(screen.getByRole('button', { name: /approve once/i }))
-    expect(screen.getAllByText('Review the proposed plan').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Review the proposed plan')).toHaveLength(1)
     expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
   })
 

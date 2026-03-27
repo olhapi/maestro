@@ -116,7 +116,7 @@ function PlanSection({
 }: {
   content: string
   eyebrow: string
-  title: string
+  title?: string
   tone?: 'default' | 'questions' | 'assumptions'
 }) {
   if (!content.trim()) {
@@ -134,7 +134,7 @@ function PlanSection({
     >
       <div className="mb-3 space-y-1.5">
         <p className="text-xs font-medium uppercase tracking-[0.12em] text-white/55">{eyebrow}</p>
-        <h3 className="text-lg font-semibold leading-7 text-white">{title}</h3>
+        {title ? <h3 className="text-lg font-semibold leading-7 text-white">{title}</h3> : null}
       </div>
       <MarkdownText className="space-y-3 text-[15px] leading-7 text-inherit" content={content} />
     </section>
@@ -157,12 +157,7 @@ export function PlanApprovalDocument({
   if (!parsed.hasStructuredSections) {
     return (
       <div className={className}>
-        <PlanSection
-          content={markdown}
-          eyebrow="Proposed plan"
-          title="Review the proposed plan"
-          tone="default"
-        />
+        <PlanSection content={markdown} eyebrow="Proposed plan" tone="default" />
       </div>
     )
   }
