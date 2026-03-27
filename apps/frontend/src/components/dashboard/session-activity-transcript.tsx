@@ -4,7 +4,7 @@ import { Check, ChevronDown, ChevronUp, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { MarkdownText } from '@/components/ui/markdown'
 import type { ActivityEntry, ActivityGroup } from '@/lib/types'
-import { formatDateTime, formatRelativeTimeCompact, toTitleCase } from '@/lib/utils'
+import { formatDateTime, toTitleCase } from '@/lib/utils'
 
 function entryTimestamp(entry: ActivityEntry) {
   return entry.completed_at ?? entry.started_at
@@ -199,7 +199,7 @@ export function SessionActivityTranscript({
                     return (
                       <article key={entry.id} className="flex min-w-0 items-start gap-3 overflow-x-hidden">
                         <div className="min-w-0 flex-1">
-                          <div className="flex min-w-0 items-start gap-2.5">
+                          <div className="flex min-w-0 items-center gap-2.5">
                             <span className={`block size-1.5 shrink-0 rounded-full ${rowMarkerClass(entry)}`} />
                             <div className="min-w-0 flex-1">
                               <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -210,7 +210,7 @@ export function SessionActivityTranscript({
                                     dateTime={timestamp}
                                     title={formatDateTime(timestamp)}
                                   >
-                                    {formatRelativeTimeCompact(timestamp)}
+                                    {formatDateTime(timestamp)}
                                   </time>
                                 ) : null}
                               </div>

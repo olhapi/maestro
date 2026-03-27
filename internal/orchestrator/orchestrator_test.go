@@ -1176,6 +1176,73 @@ func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 	}
 }
 
+func TestPendingInterruptsIncludePlanApprovalRequests(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	issue, err := store.CreateIssue("", "", "Pending plan approval", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Review the plan.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	snapshot := orch.PendingInterrupts()
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("expected one pending interrupt, got %#v", snapshot.Items)
+	}
+	current := snapshot.Items[0]
+	if current.ID != issuePlanApprovalInteractionID(issue.ID) {
+		t.Fatalf("expected plan approval interrupt id %q, got %q", issuePlanApprovalInteractionID(issue.ID), current.ID)
+	}
+	if current.Kind != appserver.PendingInteractionKindApproval {
+		t.Fatalf("expected approval interrupt, got %q", current.Kind)
+	}
+	if current.CollaborationMode != "plan" {
+		t.Fatalf("expected plan collaboration mode, got %q", current.CollaborationMode)
+	}
+	if current.Approval == nil || current.Approval.Markdown != "Review the plan." {
+		t.Fatalf("expected plan markdown in interrupt payload, got %+v", current.Approval)
+	}
+	if current.Approval.Reason != "Review the proposed plan before execution." {
+		t.Fatalf("expected plan approval reason, got %+v", current.Approval)
+	}
+	if current.LastActivity != "Plan ready for approval." {
+		t.Fatalf("expected plan approval activity summary, got %q", current.LastActivity)
+	}
+}
+
+func TestPendingInterruptsOrderPlanApprovalsByRequestedAt(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+	laterIssue, err := store.CreateIssue("", "", "Later plan approval", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue(later): %v", err)
+	}
+	earlierIssue, err := store.CreateIssue("", "", "Earlier plan approval", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue(earlier): %v", err)
+	}
+	laterRequestedAt := time.Date(2026, 3, 18, 11, 5, 0, 0, time.UTC)
+	earlierRequestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(laterIssue.ID, "Later plan body.", laterRequestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval(later): %v", err)
+	}
+	if err := store.SetIssuePendingPlanApproval(earlierIssue.ID, "Earlier plan body.", earlierRequestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval(earlier): %v", err)
+	}
+
+	snapshot := orch.PendingInterrupts()
+	if len(snapshot.Items) != 2 {
+		t.Fatalf("expected two pending interrupts, got %#v", snapshot.Items)
+	}
+	if snapshot.Items[0].IssueID != earlierIssue.ID || snapshot.Items[1].IssueID != laterIssue.ID {
+		t.Fatalf("expected plan approvals ordered by requested_at, got %#v", snapshot.Items)
+	}
+	if !snapshot.Items[0].RequestedAt.Before(snapshot.Items[1].RequestedAt) {
+		t.Fatalf("expected earlier requested_at first, got %#v", snapshot.Items)
+	}
+}
+
 func TestDispatchAllowsIssueAfterBlockerDeletion(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	runner := &countingPhaseRunner{
@@ -3448,6 +3515,51 @@ func TestRetryIssueNowPreservesPlanApprovalThreadResumeHint(t *testing.T) {
 	}
 	if retry.ResumeThreadID != "thread-plan" {
 		t.Fatalf("expected retry to preserve plan approval thread, got %+v", retry)
+	}
+}
+
+func TestRetryIssueNowQueuesPlanApprovalRetryWhenOnlyPendingFlagIsSet(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Plan approval retry without snapshot", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, kanban.WorkflowPhaseImplementation); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase: %v", err)
+	}
+	requestedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now retry result, got %#v", result)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to clear, got %+v", updated)
+	}
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected retry entry after plan approval retry")
+	}
+	if retry.ResumeThreadID != "" {
+		t.Fatalf("expected retry without snapshot to omit resume thread id, got %+v", retry)
+	}
+	if retry.Error != planApprovalStopReason {
+		t.Fatalf("expected plan approval stop reason, got %+v", retry)
 	}
 }
 

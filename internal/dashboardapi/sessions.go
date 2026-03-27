@@ -280,13 +280,20 @@ func buildPersistedSessionFeedEntry(snapshot kanban.ExecutionSessionSnapshot, re
 		updatedAt = snapshot.UpdatedAt
 	}
 	errorText := firstNonEmpty(paused.Error, retry.Error, snapshot.Error)
+	planApprovalWaiting := isPlanApprovalPendingError(errorText) || isPlanApprovalPendingError(snapshot.RunKind) || isPlanApprovalPendingError(snapshot.StopReason)
 	failureClass := normalizeFailureClass(errorText)
 	if failureClass == "" {
 		failureClass = normalizeFailureClass(snapshot.RunKind)
 	}
+	if planApprovalWaiting {
+		failureClass = ""
+		errorText = ""
+	}
 
 	status := "failed"
 	switch {
+	case planApprovalWaiting:
+		status = "waiting"
 	case strings.TrimSpace(paused.Identifier) != "" || strings.EqualFold(snapshot.RunKind, "retry_paused"):
 		status = "paused"
 	case strings.EqualFold(snapshot.RunKind, "run_completed"):
@@ -347,6 +354,8 @@ func normalizeFailureClass(value string) string {
 	switch {
 	case value == "":
 		return ""
+	case strings.Contains(value, "plan_approval_pending"):
+		return ""
 	case strings.Contains(value, "workspace_bootstrap"):
 		return "workspace_bootstrap"
 	case strings.Contains(value, "approval_required"):
@@ -364,6 +373,10 @@ func normalizeFailureClass(value string) string {
 	default:
 		return value
 	}
+}
+
+func isPlanApprovalPendingError(value string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(value)), "plan_approval_pending")
 }
 
 func firstNonEmpty(values ...string) string {

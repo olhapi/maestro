@@ -244,14 +244,17 @@ describe('SessionActivityTranscript', () => {
     expect(row).toHaveClass('min-w-0')
     expect(row).toHaveClass('overflow-x-hidden')
 
+    const markerRow = title.parentElement?.parentElement?.parentElement
+    expect(markerRow).toHaveClass('items-center')
+
     const titleRow = title.parentElement
     expect(titleRow).toHaveClass('flex-wrap')
     expect(titleRow).toHaveClass('min-w-0')
 
-    const timestamp = within(titleRow as HTMLElement).getByText('2m ago')
+    const timestamp = within(titleRow as HTMLElement).getByText(formatDateTime(completedAt))
     expect(timestamp).toHaveAttribute('dateTime', completedAt)
     expect(timestamp).toHaveAttribute('title', formatDateTime(completedAt))
-    expect(within(titleRow as HTMLElement).queryByText('30m ago')).not.toBeInTheDocument()
+    expect(within(titleRow as HTMLElement).queryByText('2m ago')).not.toBeInTheDocument()
 
     const summary = screen.getByText(/exceptionally long activity summary/i)
     expect(summary.closest('div')).toHaveClass('line-clamp-3')

@@ -1,13 +1,70 @@
 import { AlertTriangle, ChevronDown } from 'lucide-react'
+import { useState } from 'react'
 
 import { MarkdownText } from '@/components/ui/markdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
+import { Textarea } from '@/components/ui/textarea'
 import { describeFailureRuns, failureStatusLabel } from '@/lib/execution'
 import type { IssueExecutionDetail } from '@/lib/types'
 import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
+
+function PlanApprovalActions({
+  approvingPlan,
+  onApprovePlan,
+  onRequestPlanRevision,
+}: {
+  approvingPlan: boolean
+  onApprovePlan?: (note?: string) => void
+  onRequestPlanRevision?: (note: string) => void
+}) {
+  const [planRevisionNote, setPlanRevisionNote] = useState('')
+  const trimmedNote = planRevisionNote.trim()
+  const canSubmitRevision = trimmedNote.length > 0
+
+  return (
+    <div className="mt-4 grid gap-3 rounded-md border border-sky-200/15 bg-white/5 p-3">
+      <div className="grid gap-2">
+        <p className="text-xs uppercase tracking-[0.18em] text-sky-100/80">Revision note</p>
+        <p className="text-sm leading-6 text-sky-50/80">
+          Optionally describe what should change before this plan is approved.
+        </p>
+        <Textarea
+          className="border-sky-200/15 bg-black/20 text-sky-50 placeholder:text-sky-100/45 focus:border-sky-100/50"
+          disabled={approvingPlan}
+          placeholder="Add steering notes for the next planning turn..."
+          value={planRevisionNote}
+          onChange={(event) => {
+            setPlanRevisionNote(event.target.value)
+          }}
+        />
+      </div>
+      <div className="flex flex-wrap gap-3">
+        {onRequestPlanRevision ? (
+          <Button
+            disabled={approvingPlan || !canSubmitRevision}
+            onClick={() => onRequestPlanRevision(trimmedNote)}
+            type="button"
+            variant="secondary"
+          >
+            Request revision
+          </Button>
+        ) : null}
+        {onApprovePlan ? (
+          <Button
+            disabled={approvingPlan}
+            onClick={() => onApprovePlan(trimmedNote || undefined)}
+            type="button"
+          >
+            Approve plan and continue
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
 
 export function SessionExecutionCard({
   execution,
@@ -15,13 +72,15 @@ export function SessionExecutionCard({
   title = 'Execution triage',
   pausedActionHint = 'Use Retry now after checking the workspace or runtime conditions.',
   onApprovePlan,
+  onRequestPlanRevision,
   approvingPlan = false,
 }: {
   execution: IssueExecutionDetail
   issueTotalTokens: number
   title?: string
   pausedActionHint?: string
-  onApprovePlan?: () => void
+  onApprovePlan?: (note?: string) => void
+  onRequestPlanRevision?: (note: string) => void
   approvingPlan?: boolean
 }) {
   const session = execution.session
@@ -36,6 +95,14 @@ export function SessionExecutionCard({
   const pendingInterrupt = execution.pending_interrupt
   const pendingAlert = pendingInterrupt?.kind === 'alert' ? pendingInterrupt : null
   const pendingPlanApproval = execution.plan_approval
+  const pendingPlanApprovalMarkdown =
+    pendingInterrupt?.approval?.markdown?.trim() ||
+    pendingPlanApproval?.markdown?.trim() ||
+    ''
+  const isPlanApprovalPending = pendingPlanApprovalMarkdown.length > 0
+  const planApprovalDraftKey = isPlanApprovalPending
+    ? `${pendingPlanApproval?.requested_at ?? pendingInterrupt?.requested_at ?? ''}|${pendingPlanApprovalMarkdown}`
+    : ''
   const pausedRunSummary = describeFailureRuns(
     execution.consecutive_failures,
     failureSummaryReason,
@@ -43,14 +110,18 @@ export function SessionExecutionCard({
   const sessionStatusLabel = pendingInterrupt
     ? pendingAlert
       ? 'Blocked'
-      : 'Waiting for input'
+      : isPlanApprovalPending
+        ? 'Waiting for plan approval'
+        : 'Waiting for input'
     : execution.retry_state === 'paused'
-      ? 'Paused'
-    : failureLabel
-        ? failureLabel
-        : execution.active
-          ? 'Active session'
-          : 'Idle'
+      ? isPlanApprovalPending
+        ? 'Waiting for plan approval'
+        : 'Paused'
+      : failureLabel
+          ? failureLabel
+          : execution.active
+            ? 'Active session'
+            : 'Idle'
   const debugSignalCount = debugEntries.length + execution.runtime_events.length
   const workspaceRecoveryTitle = workspaceRecovery
     ? workspaceRecovery.status === 'required'
@@ -78,21 +149,23 @@ export function SessionExecutionCard({
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.session_source)}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">Attempt {execution.attempt_number || 0}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.phase || 'implementation')}</Badge>
-          {pendingInterrupt ? (
+          {(pendingInterrupt || isPlanApprovalPending) ? (
             <Badge
               className={
                 pendingAlert
                   ? 'border-rose-400/20 bg-rose-400/10 text-rose-100'
-                  : 'border-amber-400/20 bg-amber-400/10 text-amber-100'
+                  : isPlanApprovalPending
+                    ? 'border-sky-400/20 bg-sky-400/10 text-sky-100'
+                    : 'border-amber-400/20 bg-amber-400/10 text-amber-100'
               }
             >
               {pendingAlert ? 'Blocked' : 'Waiting'}
             </Badge>
           ) : null}
-          {pendingInterrupt?.collaboration_mode === 'plan' ? (
+          {pendingInterrupt?.collaboration_mode === 'plan' || isPlanApprovalPending ? (
             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
           ) : null}
-          {execution.failure_class ? (
+          {execution.failure_class && !isPlanApprovalPending ? (
             <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">{toTitleCase(execution.failure_class)}</Badge>
           ) : null}
           {execution.next_retry_at ? (
@@ -102,7 +175,7 @@ export function SessionExecutionCard({
           ) : null}
         </div>
 
-        {execution.retry_state === 'paused' ? (
+        {execution.retry_state === 'paused' && !isPlanApprovalPending ? (
           <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
@@ -118,7 +191,30 @@ export function SessionExecutionCard({
           </div>
         ) : null}
 
-        {pendingInterrupt ? (
+        {isPlanApprovalPending ? (
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/25 bg-sky-400/10 p-3.5 text-sm text-sky-50">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 size-4 text-sky-200" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-sky-100">Plan ready for approval</p>
+                <p className="mt-2 text-sky-50/90">
+                  Maestro paused after drafting the plan. Review the proposed plan, add a revision note if needed, and approve when it is ready.
+                </p>
+                <div className="mt-3 rounded-md border border-sky-200/15 bg-black/25 p-3 text-sm leading-6 text-sky-50/92">
+                  <MarkdownText content={pendingPlanApprovalMarkdown} />
+                </div>
+                {onApprovePlan || onRequestPlanRevision ? (
+                  <PlanApprovalActions
+                    key={planApprovalDraftKey}
+                    approvingPlan={approvingPlan}
+                    onApprovePlan={onApprovePlan}
+                    onRequestPlanRevision={onRequestPlanRevision}
+                  />
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : pendingInterrupt ? (
           <div
             className={
               pendingAlert
@@ -145,34 +241,6 @@ export function SessionExecutionCard({
                     ? 'Resolve the underlying blocker from the issue or project context, then re-run once the dispatch path is clear.'
                     : 'Respond from the global interrupt panel to let this thread continue on the same session.'}
                 </p>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {pendingPlanApproval ? (
-          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/25 bg-sky-400/10 p-3.5 text-sm text-sky-50">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 size-4 text-sky-200" />
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-sky-100">Plan ready for approval</p>
-                <p className="mt-2 text-sky-50/90">
-                  Maestro paused execution after the planning turn. Approve the plan to switch this issue into normal execution with full access.
-                </p>
-                <div className="mt-3 rounded-md border border-sky-200/15 bg-black/25 p-3 text-sm leading-6 text-sky-50/92">
-                  <MarkdownText content={pendingPlanApproval.markdown} />
-                </div>
-                {onApprovePlan ? (
-                  <Button
-                    className="mt-3"
-                    disabled={approvingPlan}
-                    onClick={onApprovePlan}
-                    type="button"
-                    variant="secondary"
-                  >
-                    Approve plan and continue
-                  </Button>
-                ) : null}
               </div>
             </div>
           </div>

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
+import { MarkdownText } from '@/components/ui/markdown'
+import { Textarea } from '@/components/ui/textarea'
 import type {
   PendingAlert,
   PendingApprovalDecision,
@@ -10,12 +12,14 @@ import type {
 import { cn, formatRelativeTimeCompact, toTitleCase } from '@/lib/utils'
 
 const EMPTY_QUESTIONS: PendingUserInputQuestion[] = []
+const EMPTY_DRAFT_ANSWERS: Record<string, string> = {}
 
 type InterruptResponsePayload = {
   interruptId: string
   decision?: string
   decision_payload?: Record<string, unknown>
   answers?: Record<string, string[]>
+  note?: string
 }
 
 function answerValue(draft: string) {
@@ -51,6 +55,9 @@ function interruptSummary(interrupt: PendingInterrupt) {
 }
 
 function approvalPrompt(interrupt: PendingInterrupt) {
+  if (interrupt.approval?.markdown?.trim()) {
+    return 'Review this proposed plan before the agent continues.'
+  }
   if (interrupt.approval?.command) {
     return 'Allow the agent to run this command?'
   }
@@ -58,6 +65,10 @@ function approvalPrompt(interrupt: PendingInterrupt) {
     return 'Approve this request before the agent continues.'
   }
   return 'Review this request before the agent continues.'
+}
+
+function interruptDraftKey(interrupt: PendingInterrupt) {
+  return [interrupt.requested_at, interrupt.approval?.markdown?.trim() ?? ''].join('|')
 }
 
 function classifyApprovalDecision(option: PendingApprovalDecision) {
@@ -148,6 +159,9 @@ function interruptKindLabel(interrupt: PendingInterrupt) {
   if (interrupt.kind === 'user_input') {
     return 'User input'
   }
+  if (interrupt.approval?.markdown?.trim()) {
+    return 'Plan approval'
+  }
   return 'Approval'
 }
 
@@ -185,11 +199,15 @@ export function GlobalInterruptPanel({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [interactionState, setInteractionState] = useState<{
     interruptId: string | null
+    draftKey: string
     decision: string
+    draftNote: string
     draftAnswers: Record<string, string>
   }>({
     interruptId: null,
+    draftKey: '',
     decision: '',
+    draftNote: '',
     draftAnswers: {},
   })
 
@@ -198,16 +216,20 @@ export function GlobalInterruptPanel({
     [items, selectedId],
   )
   const activeRespondableInterruptId = respondableInterruptId ?? defaultRespondableInterruptId(items)
-  const decision = interactionState.interruptId === selectedInterrupt?.id ? interactionState.decision : ''
   const questions = selectedInterrupt?.user_input?.questions ?? EMPTY_QUESTIONS
-  const draftAnswers = useMemo(
-    () => (interactionState.interruptId === selectedInterrupt?.id ? interactionState.draftAnswers : {}),
-    [interactionState.draftAnswers, interactionState.interruptId, selectedInterrupt?.id],
-  )
+  const selectedInterruptDraftKey = selectedInterrupt ? interruptDraftKey(selectedInterrupt) : ''
+  const selectedDraftMatchesInterrupt =
+    interactionState.interruptId === selectedInterrupt?.id &&
+    interactionState.draftKey === selectedInterruptDraftKey
+  const decision = selectedDraftMatchesInterrupt ? interactionState.decision : ''
+  const draftNote = selectedDraftMatchesInterrupt ? interactionState.draftNote : ''
+  const draftAnswers = selectedDraftMatchesInterrupt ? interactionState.draftAnswers : EMPTY_DRAFT_ANSWERS
   const answers = useMemo(() => buildAnswers(questions, draftAnswers), [draftAnswers, questions])
   const isApproval = selectedInterrupt?.kind === 'approval'
   const isUserInput = selectedInterrupt?.kind === 'user_input'
   const isAlert = selectedInterrupt?.kind === 'alert'
+  const approvalMarkdown = selectedInterrupt?.approval?.markdown?.trim() ?? ''
+  const isPlanApproval = isApproval && approvalMarkdown.length > 0
   const requiresExplicitSubmit =
     isUserInput && questions.some((question) => questionHasTextInput(question))
   const valid =
@@ -226,6 +248,7 @@ export function GlobalInterruptPanel({
   const canRespondToSelectedInterrupt =
     !!selectedInterrupt && selectedInterrupt.kind !== 'alert' && selectedInterrupt.id === activeRespondableInterruptId
   const responseLocked = isSubmitting || !canRespondToSelectedInterrupt
+  const canSubmitNote = draftNote.trim().length > 0
 
   if (!selectedInterrupt) {
     return null
@@ -238,21 +261,45 @@ export function GlobalInterruptPanel({
     onRespond({ interruptId: selectedInterrupt.id, ...payload })
   }
 
+  const selectedDraftState = (current: {
+    interruptId: string | null
+    draftKey: string
+    decision: string
+    draftNote: string
+    draftAnswers: Record<string, string>
+  }) =>
+    current.interruptId === selectedInterrupt.id && current.draftKey === selectedInterruptDraftKey
+
   const updateDecision = (nextDecision: string) => {
     setInteractionState((current) => ({
       interruptId: selectedInterrupt.id,
+      draftKey: selectedInterruptDraftKey,
       decision: nextDecision,
+      draftNote: selectedDraftState(current) ? current.draftNote : '',
       draftAnswers:
-        current.interruptId === selectedInterrupt.id ? current.draftAnswers : {},
+        selectedDraftState(current) ? current.draftAnswers : {},
+    }))
+  }
+
+  const updateDraftNote = (value: string) => {
+    setInteractionState((current) => ({
+      interruptId: selectedInterrupt.id,
+      draftKey: selectedInterruptDraftKey,
+      decision: selectedDraftState(current) ? current.decision : '',
+      draftNote: value,
+      draftAnswers:
+        selectedDraftState(current) ? current.draftAnswers : {},
     }))
   }
 
   const updateDraftAnswer = (questionId: string, value: string) => {
     setInteractionState((current) => ({
       interruptId: selectedInterrupt.id,
-      decision: current.interruptId === selectedInterrupt.id ? current.decision : '',
+      draftKey: selectedInterruptDraftKey,
+      decision: selectedDraftState(current) ? current.decision : '',
+      draftNote: selectedDraftState(current) ? current.draftNote : '',
       draftAnswers: {
-        ...(current.interruptId === selectedInterrupt.id ? current.draftAnswers : {}),
+        ...(selectedDraftState(current) ? current.draftAnswers : {}),
         [questionId]: value,
       },
     }))
@@ -290,8 +337,8 @@ export function GlobalInterruptPanel({
             ) : null}
           </div>
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(18rem,0.38fr)_minmax(0,1fr)]">
-            <div className="grid gap-2.5">
+          <div className="mt-4 grid items-start gap-4 xl:grid-cols-[minmax(18rem,0.38fr)_minmax(0,1fr)]">
+            <div className="grid min-w-0 items-start gap-2.5">
               {items.map((interrupt) => {
                 const selected = interrupt.id === selectedInterrupt.id
                 const issueRowLink = issueHref(interrupt)
@@ -301,20 +348,20 @@ export function GlobalInterruptPanel({
                   <div
                     key={interrupt.id}
                     className={cn(
-                      'rounded-[var(--panel-radius)] border transition',
+                      'overflow-hidden rounded-[var(--panel-radius)] border transition',
                       selected
                         ? 'border-[var(--accent)]/35 bg-[linear-gradient(135deg,rgba(196,255,87,.14),rgba(255,255,255,.06))]'
                         : 'border-white/8 bg-black/25 hover:border-white/12 hover:bg-black/30',
                     )}
                   >
                     <button
-                      className="w-full px-4 py-4 text-left"
+                      className="w-full min-w-0 px-4 py-4 text-left"
                       type="button"
                       onClick={() => {
                         setSelectedId(interrupt.id)
                       }}
                     >
-                      <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                         <Badge className="border-white/10 bg-white/5 text-white">
                           {interruptKindLabel(interrupt)}
                         </Badge>
@@ -374,7 +421,7 @@ export function GlobalInterruptPanel({
               })}
             </div>
 
-            <div className="rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]">
+            <div className="min-w-0 self-start rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]">
               <div className="min-w-0">
                 <p className="truncate text-base font-medium text-white">
                   {interruptHeading(selectedInterrupt)}
@@ -449,19 +496,7 @@ export function GlobalInterruptPanel({
                   className="mt-4 grid gap-4"
                   onSubmit={(event) => {
                     event.preventDefault()
-                    if (!valid || responseLocked) {
-                      return
-                    }
-                    if (isApproval) {
-                      const selectedDecision = selectedInterrupt.approval?.decisions.find((option) => option.value === decision)
-                      if (!selectedDecision) {
-                        return
-                      }
-                      if (selectedDecision.decision_payload) {
-                        respondToSelectedInterrupt({ decision_payload: selectedDecision.decision_payload })
-                        return
-                      }
-                      respondToSelectedInterrupt({ decision: selectedDecision.value })
+                    if (!valid || responseLocked || !isUserInput) {
                       return
                     }
                     respondToSelectedInterrupt({ answers })
@@ -477,6 +512,12 @@ export function GlobalInterruptPanel({
                               {selectedInterrupt.approval.reason}
                             </p>
                           ) : null}
+                          {isPlanApproval ? (
+                            <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-sky-400/20 bg-sky-400/10 px-4 py-4 text-sm leading-6 text-sky-50">
+                              <p className="mb-2 text-xs uppercase tracking-[0.18em] text-sky-100/80">Proposed plan</p>
+                              <MarkdownText content={approvalMarkdown} />
+                            </div>
+                          ) : null}
                           {!canRespondToSelectedInterrupt ? (
                             <p className="max-w-4xl text-sm leading-6 text-amber-100/90">
                               An earlier interrupt is still pending. Review this request now, but wait until it reaches the front of the queue before responding.
@@ -484,14 +525,16 @@ export function GlobalInterruptPanel({
                           ) : null}
                         </div>
 
-                        <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.18))] px-4 py-4">
-                          <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                            Requested command
-                          </p>
-                          <code className="mt-3 block overflow-x-auto whitespace-pre-wrap break-all rounded-[calc(var(--panel-radius)-0.45rem)] border border-white/10 bg-black/35 px-4 py-3 font-mono text-[0.96rem] leading-7 text-white">
-                            {selectedInterrupt.approval?.command || selectedInterrupt.approval?.reason || 'Operator approval required.'}
-                          </code>
-                        </div>
+                        {isPlanApproval ? null : (
+                          <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.18))] px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                              Requested command
+                            </p>
+                            <code className="mt-3 block overflow-x-auto whitespace-pre-wrap break-all rounded-[calc(var(--panel-radius)-0.45rem)] border border-white/10 bg-black/35 px-4 py-3 font-mono text-[0.96rem] leading-7 text-white">
+                              {selectedInterrupt.approval?.command || selectedInterrupt.approval?.reason || 'Operator approval required.'}
+                            </code>
+                          </div>
+                        )}
 
                         {selectedInterrupt.approval?.cwd ? (
                           <div className="flex flex-wrap items-center gap-3 rounded-[calc(var(--panel-radius)-0.3rem)] border border-white/8 bg-white/[0.03] px-4 py-3">
@@ -503,9 +546,77 @@ export function GlobalInterruptPanel({
                             </code>
                           </div>
                         ) : null}
+
+                        <label className="grid gap-2 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/8 bg-white/[0.03] p-4">
+                          <div className="space-y-1">
+                            <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                              {isPlanApproval ? 'Revision note' : 'Agent note'}
+                            </p>
+                            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+                              {isPlanApproval
+                                ? 'Send a steering note to revise the plan before approval.'
+                                : 'Send a steering note to the agent without consuming this approval.'}
+                            </p>
+                          </div>
+                          <Textarea
+                            disabled={responseLocked}
+                            placeholder={
+                              isPlanApproval
+                                ? 'Explain what should change in the plan...'
+                                : 'Add steering notes for the next turn...'
+                            }
+                            value={draftNote}
+                            onChange={(event) => {
+                              updateDraftNote(event.target.value)
+                            }}
+                          />
+                        </label>
                       </div>
 
-                      <div className="grid gap-3 border-t border-white/8 pt-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
+                      <div className="grid gap-3 border-t border-white/8 pt-4">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <button
+                            className={cn(
+                              'inline-flex h-11 items-center rounded-2xl border px-4 text-sm font-medium transition',
+                              canSubmitNote && !responseLocked
+                                ? 'border-white/12 bg-white/5 text-white hover:border-white/20 hover:bg-white/8'
+                                : 'border-white/10 bg-white/5 text-white/45',
+                            )}
+                            disabled={!canSubmitNote || responseLocked}
+                            type="button"
+                            onClick={() => {
+                              if (!canSubmitNote || responseLocked) {
+                                return
+                              }
+                              const note = draftNote.trim()
+                              setInteractionState((current) => ({
+                                interruptId: selectedInterrupt.id,
+                                draftKey: selectedInterruptDraftKey,
+                                decision: '',
+                                draftNote: current.interruptId === selectedInterrupt.id ? current.draftNote : '',
+                                draftAnswers:
+                                  current.interruptId === selectedInterrupt.id ? current.draftAnswers : {},
+                              }))
+                              respondToSelectedInterrupt({ note })
+                            }}
+                          >
+                            {isPlanApproval ? 'Request revision' : 'Send note'}
+                          </button>
+                          {isPlanApproval ? (
+                            <span className="text-sm leading-6 text-[var(--muted-foreground)]">
+                              {canSubmitNote
+                                ? 'This will restart the plan thread with your note.'
+                                : 'Optional: leave a note before approving or requesting revision.'}
+                            </span>
+                          ) : (
+                            <span className="text-sm leading-6 text-[var(--muted-foreground)]">
+                              {canSubmitNote
+                                ? 'This will queue the note without approving the request.'
+                                : 'Optional: leave a note before responding to the approval.'}
+                            </span>
+                          )}
+                        </div>
+
                         <div className="grid gap-3">
                           {approvalGroups && approvalGroups.primary.length > 0 ? (
                             <div className="flex flex-wrap gap-3">
@@ -528,10 +639,16 @@ export function GlobalInterruptPanel({
                                       }
                                       updateDecision(option.value)
                                       if (option.decision_payload) {
-                                        respondToSelectedInterrupt({ decision_payload: option.decision_payload })
+                                        respondToSelectedInterrupt({
+                                          decision_payload: option.decision_payload,
+                                          note: draftNote.trim() || undefined,
+                                        })
                                         return
                                       }
-                                      respondToSelectedInterrupt({ decision: option.value })
+                                      respondToSelectedInterrupt({
+                                        decision: option.value,
+                                        note: draftNote.trim() || undefined,
+                                      })
                                     }}
                                   >
                                     <p className="text-base font-medium">{option.label}</p>
@@ -565,10 +682,16 @@ export function GlobalInterruptPanel({
                                       }
                                       updateDecision(option.value)
                                       if (option.decision_payload) {
-                                        respondToSelectedInterrupt({ decision_payload: option.decision_payload })
+                                        respondToSelectedInterrupt({
+                                          decision_payload: option.decision_payload,
+                                          note: draftNote.trim() || undefined,
+                                        })
                                         return
                                       }
-                                      respondToSelectedInterrupt({ decision: option.value })
+                                      respondToSelectedInterrupt({
+                                        decision: option.value,
+                                        note: draftNote.trim() || undefined,
+                                      })
                                     }}
                                   >
                                     <p className="text-base font-medium">{option.label}</p>
@@ -600,20 +723,26 @@ export function GlobalInterruptPanel({
                                   disabled={responseLocked}
                                   type="button"
                                   onClick={() => {
-                                    if (responseLocked) {
-                                      return
-                                    }
-                                    updateDecision(option.value)
-                                    if (option.decision_payload) {
-                                      respondToSelectedInterrupt({ decision_payload: option.decision_payload })
-                                      return
-                                    }
-                                    respondToSelectedInterrupt({ decision: option.value })
-                                  }}
-                                >
-                                  <p className="text-base font-medium">{option.label}</p>
-                                  {option.description ? (
-                                    <p className="mt-1.5 text-sm leading-6 text-[var(--muted-foreground)]">
+                                      if (responseLocked) {
+                                        return
+                                      }
+                                      updateDecision(option.value)
+                                      if (option.decision_payload) {
+                                        respondToSelectedInterrupt({
+                                          decision_payload: option.decision_payload,
+                                          note: draftNote.trim() || undefined,
+                                        })
+                                        return
+                                      }
+                                      respondToSelectedInterrupt({
+                                        decision: option.value,
+                                        note: draftNote.trim() || undefined,
+                                      })
+                                    }}
+                                  >
+                                    <p className="text-base font-medium">{option.label}</p>
+                                    {option.description ? (
+                                      <p className="mt-1.5 text-sm leading-6 text-[var(--muted-foreground)]">
                                       {option.description}
                                     </p>
                                   ) : null}

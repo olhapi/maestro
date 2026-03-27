@@ -228,10 +228,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ permission_profile: permissionProfile }),
     }),
-  approveIssuePlan: (identifier: string) =>
+  approveIssuePlan: (identifier: string, note?: string) =>
     request<Record<string, unknown>>(`/api/v1/app/issues/${identifier}/approve-plan`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ note }),
     }),
   setIssueBlockers: (identifier: string, blockedBy: string[]) =>
     request<{ ok: boolean }>(`/api/v1/app/issues/${identifier}/blockers`, {
@@ -282,6 +282,7 @@ export const api = {
       decision?: string;
       decision_payload?: Record<string, unknown>;
       answers?: Record<string, string[]>;
+      note?: string;
     },
   ) =>
     request<{ id: string; status: string }>(`/api/v1/app/interrupts/${id}/respond`, {

@@ -543,6 +543,65 @@ func TestApplyIssueActivityEventProjectsStructuredApprovalResolutionAsSuccess(t 
 	}
 }
 
+func TestApplyIssueActivityEventProjectsPlanApprovalRows(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan approval timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 7, appserver.ActivityEvent{
+		Type:     "plan.approvalRequested",
+		ThreadID: "thread-plan",
+		TurnID:   "turn-plan",
+		Raw: map[string]interface{}{
+			"markdown": "Review the plan before execution.",
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent plan approval request: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries requested: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one plan approval request row, got %#v", entries)
+	}
+	if entries[0].Status != "plan_approval_pending" || entries[0].Tone != "default" {
+		t.Fatalf("unexpected plan approval request entry: %#v", entries[0])
+	}
+	if entries[0].Summary != "Review the plan before execution." || !strings.Contains(entries[0].Detail, "\"markdown\": \"Review the plan before execution.\"") {
+		t.Fatalf("unexpected plan approval request content: %#v", entries[0])
+	}
+
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 7, appserver.ActivityEvent{
+		Type:     "plan.approved",
+		ThreadID: "thread-plan",
+		TurnID:   "turn-plan",
+		Raw: map[string]interface{}{
+			"markdown": "Review the plan before execution.",
+			"decision": "approved",
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent plan approval resolved: %v", err)
+	}
+
+	entries, err = store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries resolved: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected merged plan approval row, got %#v", entries)
+	}
+	if entries[0].Status != "plan_approved" || entries[0].Tone != "success" {
+		t.Fatalf("unexpected plan approval resolved entry: %#v", entries[0])
+	}
+	if entries[0].Summary != "Operator approved the plan and resumed execution." {
+		t.Fatalf("unexpected plan approval resolved summary: %#v", entries[0])
+	}
+}
+
 func TestApplyIssueActivityEventProjectsSecondaryAndFailureEntries(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Secondary activity timeline", "", 0, nil)

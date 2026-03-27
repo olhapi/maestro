@@ -92,6 +92,71 @@ func TestInterruptEndpointRejectsInvalidRoutesAndMapsProviderErrors(t *testing.T
 	}
 }
 
+func TestInterruptPlanApprovalRejectsOutOfOrderResponses(t *testing.T) {
+	provider := &interruptProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	issue, err := store.CreateIssue("", "", "Plan approval should stay ordered", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	provider.interrupts = appserver.PendingInteractionSnapshot{
+		Items: []appserver.PendingInteraction{
+			{
+				ID:              "interrupt-older",
+				Kind:            appserver.PendingInteractionKindUserInput,
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				RequestedAt:     time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC),
+				UserInput: &appserver.PendingUserInput{
+					Questions: []appserver.PendingUserInputQuestion{
+						{
+							ID:       "earlier-interrupt",
+							Question: "Resolve the earlier interrupt first.",
+						},
+					},
+				},
+			},
+			{
+				ID:              "plan-approval-1",
+				Kind:            appserver.PendingInteractionKindApproval,
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				RequestedAt:     time.Date(2026, 3, 18, 11, 5, 0, 0, time.UTC),
+				Approval: &appserver.PendingApproval{
+					Markdown: "Review the proposed plan before execution.",
+					Decisions: []appserver.PendingApprovalDecision{
+						{Value: "approved", Label: "Approve plan"},
+					},
+				},
+			},
+		},
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/plan-approval-1/respond", map[string]interface{}{
+		"decision": "approved",
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+	if provider.responseID != "" {
+		t.Fatalf("expected out-of-order approval to bypass RespondToInterrupt, got %q", provider.responseID)
+	}
+}
+
+func TestInterruptAcknowledgeActionAccepted(t *testing.T) {
+	provider := &interruptProvider{}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-ack/acknowledge", nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.ackID != "interrupt-ack" {
+		t.Fatalf("expected acknowledge callback for interrupt-ack, got %q", provider.ackID)
+	}
+}
+
 func TestSessionsEndpointMarksPendingInterruptsAsWaiting(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))

@@ -237,6 +237,30 @@ func TestIssuePlanApprovalLifecyclePersistsAndPromotes(t *testing.T) {
 	}
 }
 
+func TestClearIssuePendingPlanApprovalClearsStateAndAppendsChange(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Clear plan approval", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 9, 45, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Review the rollout plan.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.ClearIssuePendingPlanApproval(issue.ID, "manual_retry"); err != nil {
+		t.Fatalf("ClearIssuePendingPlanApproval: %v", err)
+	}
+
+	cleared, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue cleared: %v", err)
+	}
+	if cleared.PlanApprovalPending || cleared.PendingPlanMarkdown != "" || cleared.PendingPlanRequestedAt != nil {
+		t.Fatalf("expected pending approval state to clear, got %+v", cleared)
+	}
+}
+
 func TestUpdateProjectPermissionProfileClearsInheritedPendingPlanApproval(t *testing.T) {
 	store := setupTestStore(t)
 	project, err := store.CreateProject("Demo", "", "", "")

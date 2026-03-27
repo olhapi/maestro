@@ -490,7 +490,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, project)
 	case http.MethodDelete:
 		if err := s.store.DeleteProject(id); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeErrorStatus(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSON(w, map[string]interface{}{"deleted": true, "id": id})
@@ -608,7 +608,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, epic)
 	case http.MethodDelete:
 		if err := s.service.DeleteEpic(id); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeErrorStatus(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSON(w, map[string]interface{}{"deleted": true, "id": id})
@@ -842,6 +842,14 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, detail)
 	case "approve-plan":
+		var body struct {
+			Note string `json:"note"`
+		}
+		if !decodeOptionalJSON(w, r, &body) {
+			return
+		}
+		note := strings.TrimSpace(body.Note)
+		hasNote := note != ""
 		issue, err := s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
 			writeErrorStatus(w, appErrorStatus(err), err)
@@ -873,6 +881,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			writeErrorStatus(w, http.StatusInternalServerError, err)
 			return
+		}
+		if hasNote {
+			if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
 		}
 		detail, err := s.service.GetIssueDetailByIdentifier(r.Context(), identifier)
 		if err != nil {
@@ -933,32 +947,7 @@ func (s *Server) handleIssueCommands(w http.ResponseWriter, r *http.Request, ide
 			writeErrorStatus(w, appErrorStatus(err), err)
 			return
 		}
-		status := kanban.IssueAgentCommandPending
-		if issue.State == kanban.StateInProgress {
-			unresolved, err := s.store.UnresolvedBlockersForIssue(issue.ID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			if len(unresolved) > 0 {
-				status = kanban.IssueAgentCommandWaitingForUnblock
-			}
-		} else {
-			if _, err := s.service.SetIssueState(r.Context(), identifier, string(kanban.StateInProgress)); err != nil {
-				if kanban.IsBlockedTransition(err) {
-					status = kanban.IssueAgentCommandWaitingForUnblock
-				} else {
-					writeError(w, appErrorStatus(err), err)
-					return
-				}
-			}
-		}
-		eventPayload := map[string]interface{}{
-			"issue_id":   issue.ID,
-			"identifier": issue.Identifier,
-			"phase":      string(issue.WorkflowPhase),
-		}
-		command, err := s.store.CreateIssueAgentCommandWithRuntimeEvent(issue.ID, body.Command, status, "manual_command_submitted", eventPayload)
+		command, err := s.submitIssueCommand(r.Context(), issue, body.Command)
 		if err != nil {
 			writeError(w, appErrorStatus(err), err)
 			return
@@ -1069,6 +1058,36 @@ func (s *Server) handleIssueAssets(w http.ResponseWriter, r *http.Request, ident
 	}
 
 	methodNotAllowed(w)
+}
+
+func (s *Server) submitIssueCommand(ctx context.Context, issue *kanban.Issue, command string) (*kanban.IssueAgentCommand, error) {
+	if issue == nil {
+		return nil, fmt.Errorf("issue is required")
+	}
+	status := kanban.IssueAgentCommandPending
+	if issue.State == kanban.StateInProgress {
+		unresolved, err := s.store.UnresolvedBlockersForIssue(issue.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(unresolved) > 0 {
+			status = kanban.IssueAgentCommandWaitingForUnblock
+		}
+	} else {
+		if _, err := s.service.SetIssueState(ctx, issue.Identifier, string(kanban.StateInProgress)); err != nil {
+			if kanban.IsBlockedTransition(err) {
+				status = kanban.IssueAgentCommandWaitingForUnblock
+			} else {
+				return nil, err
+			}
+		}
+	}
+	eventPayload := map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      string(issue.WorkflowPhase),
+	}
+	return s.store.CreateIssueAgentCommandWithRuntimeEvent(issue.ID, command, status, "manual_command_submitted", eventPayload)
 }
 
 func (s *Server) handleIssueComments(w http.ResponseWriter, r *http.Request, identifier string, rest []string) {
@@ -1353,17 +1372,152 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		Decision        string                 `json:"decision"`
 		DecisionPayload map[string]interface{} `json:"decision_payload"`
 		Answers         map[string][]string    `json:"answers"`
+		Note            string                 `json:"note"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	err := s.provider.RespondToInterrupt(r.Context(), interactionID, appserver.PendingInteractionResponse{
-		Decision:        strings.TrimSpace(body.Decision),
+	snapshot := s.provider.PendingInterrupts()
+	interaction, found := pendingInterruptByID(snapshot, interactionID)
+	var err error
+	note := strings.TrimSpace(body.Note)
+	decision := strings.TrimSpace(body.Decision)
+	hasDecisionPayload := len(body.DecisionPayload) > 0
+	hasAnswers := len(body.Answers) > 0
+	hasNote := note != ""
+	isPlanApproval := isPlanApprovalInteraction(interaction)
+	if !found {
+		err = s.provider.RespondToInterrupt(r.Context(), interactionID, appserver.PendingInteractionResponse{
+			Decision:        decision,
+			DecisionPayload: body.DecisionPayload,
+			Answers:         body.Answers,
+			Note:            note,
+		})
+		switch {
+		case err == nil:
+			writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
+				"id":     interactionID,
+				"status": "accepted",
+			})
+		case errors.Is(err, appserver.ErrPendingInteractionNotFound):
+			writeErrorStatus(w, http.StatusNotFound, err)
+		case errors.Is(err, appserver.ErrPendingInteractionConflict):
+			writeErrorStatus(w, http.StatusConflict, err)
+		case errors.Is(err, appserver.ErrInvalidInteractionResponse):
+			writeErrorStatus(w, http.StatusBadRequest, err)
+		default:
+			writeErrorStatus(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	if isPlanApproval {
+		if firstRespondableInterruptID(snapshot) != interactionID {
+			writeErrorStatus(w, http.StatusConflict, appserver.ErrPendingInteractionConflict)
+			return
+		}
+		switch {
+		case decision == "" && !hasDecisionPayload:
+			if !hasNote {
+				writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+				return
+			}
+			issue, err := s.issueForInterrupt(r.Context(), interaction)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			result := s.provider.RetryIssueNow(r.Context(), issue.Identifier)
+			if status, _ := result["status"].(string); status == "error" {
+				writeErrorStatus(w, http.StatusInternalServerError, fmt.Errorf("%v", result["error"]))
+				return
+			}
+			writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
+				"id":     interactionID,
+				"status": "accepted",
+			})
+		case strings.EqualFold(decision, "approved"):
+			issue, err := s.issueForInterrupt(r.Context(), interaction)
+			if err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			if err := s.store.ApproveIssuePlan(issue.ID); err != nil {
+				writeErrorStatus(w, appErrorStatus(err), err)
+				return
+			}
+			approvedAt := time.Now().UTC()
+			if err := s.store.AppendRuntimeEvent("plan_approved", map[string]interface{}{
+				"issue_id":    issue.ID,
+				"identifier":  issue.Identifier,
+				"phase":       string(issue.WorkflowPhase),
+				"approved_at": approvedAt.Format(time.RFC3339),
+			}); err != nil {
+				writeErrorStatus(w, http.StatusInternalServerError, err)
+				return
+			}
+			if err := s.store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 0, appserver.ActivityEvent{
+				Type: "plan.approved",
+				Raw: map[string]interface{}{
+					"approved_at": approvedAt.Format(time.RFC3339),
+				},
+			}); err != nil {
+				writeErrorStatus(w, http.StatusInternalServerError, err)
+				return
+			}
+			if hasNote {
+				if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
+					writeErrorStatus(w, appErrorStatus(err), err)
+					return
+				}
+			}
+			result := s.provider.RetryIssueNow(r.Context(), issue.Identifier)
+			if status, _ := result["status"].(string); status == "error" {
+				writeErrorStatus(w, http.StatusInternalServerError, fmt.Errorf("%v", result["error"]))
+				return
+			}
+			writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
+				"id":     interactionID,
+				"status": "accepted",
+			})
+		default:
+			writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+		}
+		return
+	}
+	if hasNote && decision == "" && !hasDecisionPayload && !hasAnswers {
+		issue, err := s.issueForInterrupt(r.Context(), interaction)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
+			"id":     interactionID,
+			"status": "accepted",
+		})
+		return
+	}
+	err = s.provider.RespondToInterrupt(r.Context(), interactionID, appserver.PendingInteractionResponse{
+		Decision:        decision,
 		DecisionPayload: body.DecisionPayload,
 		Answers:         body.Answers,
+		Note:            note,
 	})
 	switch {
 	case err == nil:
+		if hasNote {
+			// Best effort only: the interrupt response has already been accepted.
+			if issue, noteErr := s.issueForInterrupt(r.Context(), interaction); noteErr == nil {
+				_, _ = s.submitIssueCommand(r.Context(), issue, note)
+			}
+		}
 		writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
 			"id":     interactionID,
 			"status": "accepted",
@@ -1377,6 +1531,49 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusInternalServerError, err)
 	}
+}
+
+func pendingInterruptByID(snapshot appserver.PendingInteractionSnapshot, interactionID string) (*appserver.PendingInteraction, bool) {
+	for i := range snapshot.Items {
+		if snapshot.Items[i].ID != interactionID {
+			continue
+		}
+		cloned := snapshot.Items[i].Clone()
+		return &cloned, true
+	}
+	return nil, false
+}
+
+func firstRespondableInterruptID(snapshot appserver.PendingInteractionSnapshot) string {
+	for i := range snapshot.Items {
+		if snapshot.Items[i].Kind == appserver.PendingInteractionKindAlert {
+			continue
+		}
+		if id := strings.TrimSpace(snapshot.Items[i].ID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func isPlanApprovalInteraction(interaction *appserver.PendingInteraction) bool {
+	if interaction == nil || interaction.Kind != appserver.PendingInteractionKindApproval || interaction.Approval == nil {
+		return false
+	}
+	return strings.TrimSpace(interaction.Approval.Markdown) != ""
+}
+
+func (s *Server) issueForInterrupt(ctx context.Context, interaction *appserver.PendingInteraction) (*kanban.Issue, error) {
+	if interaction == nil {
+		return nil, fmt.Errorf("pending interaction is required")
+	}
+	if identifier := strings.TrimSpace(interaction.IssueIdentifier); identifier != "" {
+		return s.service.GetIssueByIdentifier(ctx, identifier)
+	}
+	if strings.TrimSpace(interaction.IssueID) != "" {
+		return s.store.GetIssue(interaction.IssueID)
+	}
+	return nil, fmt.Errorf("pending interaction is missing issue reference")
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -1466,6 +1663,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 func decodeJSON(w http.ResponseWriter, r *http.Request, out interface{}) bool {
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
+		writeErrorStatus(w, http.StatusBadRequest, err)
+		return false
+	}
+	return true
+}
+
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out interface{}) bool {
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
+		if err == io.EOF {
+			return true
+		}
 		writeErrorStatus(w, http.StatusBadRequest, err)
 		return false
 	}

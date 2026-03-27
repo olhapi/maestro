@@ -1363,6 +1363,35 @@ func (s *Store) ApproveIssuePlan(id string) error {
 		"collaboration_mode_override": CollaborationModeOverrideDefault,
 	})
 }
+
+func (s *Store) ClearIssuePendingPlanApproval(id string, reason string) error {
+	if strings.TrimSpace(id) == "" {
+		return validationErrorf("issue id is required")
+	}
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`
+		UPDATE issues
+		SET plan_approval_pending = 0,
+		    pending_plan_markdown = '',
+		    pending_plan_requested_at = NULL,
+		    updated_at = ?
+		WHERE id = ?`,
+		now, id,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
+	}
+	fields := map[string]interface{}{
+		"cleared_at": now.Format(time.RFC3339),
+	}
+	if strings.TrimSpace(reason) != "" {
+		fields["reason"] = strings.TrimSpace(reason)
+	}
+	return s.appendChange("issue", id, "plan_approval_cleared", fields)
+}
 func (s *Store) UpdateProjectState(id string, state ProjectState) error {
 	state = NormalizeProjectState(string(state))
 	res, err := s.db.Exec(`
@@ -2582,6 +2611,14 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 		query += " AND state IN (" + placeholders[:len(placeholders)-1] + ")"
 		for _, s := range states {
 			args = append(args, s)
+		}
+	}
+	if planApprovalPending, ok := filter["plan_approval_pending"].(bool); ok {
+		query += " AND plan_approval_pending = ?"
+		if planApprovalPending {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
 		}
 	}
 

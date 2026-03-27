@@ -3353,9 +3353,22 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 			issue = &detail.Issue
 		}
 	}
+	planApprovalRetry, hasPlanApprovalRetry := o.planApprovalRetryEntry(issue)
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	if issue.PlanApprovalPending {
+		// Keep the store update and the in-memory retry registration together so
+		// dispatch cannot observe the issue as runnable in between them.
+		if err := o.store.ClearIssuePendingPlanApproval(issue.ID, "manual_retry"); err != nil {
+			return map[string]interface{}{
+				"status": "error",
+				"error":  err.Error(),
+				"issue":  identifier,
+			}
+		}
+	}
 
 	if entry, ok := o.retries[issue.ID]; ok {
 		entry.DueAt = time.Now().UTC()
@@ -3412,6 +3425,26 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 		return result
 	}
 
+	if hasPlanApprovalRetry {
+		o.retries[issue.ID] = planApprovalRetry
+		o.claimed[issue.ID] = struct{}{}
+		delete(o.paused, issue.ID)
+		o.appendEventLocked("manual_retry_requested", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      planApprovalRetry.Phase,
+		})
+		result := map[string]interface{}{
+			"status":       "queued_now",
+			"issue":        identifier,
+			"retry_due_at": planApprovalRetry.DueAt.Format(time.RFC3339),
+		}
+		if planApprovalRetry.ResumeThreadID != "" {
+			result["resume_thread_id"] = planApprovalRetry.ResumeThreadID
+		}
+		return result
+	}
+
 	if issue.WorkflowPhase == kanban.WorkflowPhaseDone && issue.State == kanban.StateDone {
 		o.retries[issue.ID] = retryEntry{
 			Attempt:   0,
@@ -3452,6 +3485,62 @@ func (o *Orchestrator) planApprovalResumeThreadID(issueID string) string {
 		return ""
 	}
 	return strings.TrimSpace(snapshot.AppSession.ThreadID)
+}
+
+func (o *Orchestrator) planApprovalRetryEntry(issue *kanban.Issue) (retryEntry, bool) {
+	if issue == nil {
+		return retryEntry{}, false
+	}
+	snapshot, err := o.store.GetIssueExecutionSession(issue.ID)
+	if err == nil && snapshot != nil && strings.TrimSpace(snapshot.StopReason) == planApprovalStopReason {
+		phase := kanban.WorkflowPhase(strings.TrimSpace(snapshot.Phase))
+		if !phase.IsValid() {
+			phase = issue.WorkflowPhase
+			if !phase.IsValid() {
+				phase = kanban.DefaultWorkflowPhaseForState(issue.State)
+			}
+		}
+		attempt := snapshot.Attempt
+		if attempt <= 0 {
+			attempt = 1
+		}
+		return retryEntry{
+			Attempt:        attempt,
+			Phase:          string(phase),
+			DueAt:          time.Now().UTC(),
+			Error:          planApprovalStopReason,
+			DelayType:      "manual",
+			ResumeThreadID: strings.TrimSpace(snapshot.AppSession.ThreadID),
+		}, true
+	}
+
+	if !issue.PlanApprovalPending {
+		return retryEntry{}, false
+	}
+
+	phase := issue.WorkflowPhase
+	if !phase.IsValid() {
+		phase = kanban.DefaultWorkflowPhaseForState(issue.State)
+	}
+	attempt := 1
+	resumeThreadID := ""
+	if err == nil && snapshot != nil {
+		if phaseCandidate := kanban.WorkflowPhase(strings.TrimSpace(snapshot.Phase)); phaseCandidate.IsValid() {
+			phase = phaseCandidate
+		}
+		if snapshot.Attempt > 0 {
+			attempt = snapshot.Attempt
+		}
+		resumeThreadID = strings.TrimSpace(snapshot.AppSession.ThreadID)
+	}
+	return retryEntry{
+		Attempt:        attempt,
+		Phase:          string(phase),
+		DueAt:          time.Now().UTC(),
+		Error:          planApprovalStopReason,
+		DelayType:      "manual",
+		ResumeThreadID: resumeThreadID,
+	}, true
 }
 
 func (o *Orchestrator) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
