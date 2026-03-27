@@ -125,6 +125,19 @@ func setupTestRunner(t *testing.T, command string, mode string) (*Runner, *kanba
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workflowCommand := command
+	if strings.TrimSpace(workflowCommand) == "cat" {
+		scenario := baseRunnerAppServerScenario("thread-default", "turn-default", fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{
+					"threadId": "thread-default",
+					"turn":     map[string]interface{}{"id": "turn-default"},
+				},
+			},
+		})
+		workflowCommand, _ = fakeappserver.CommandString(t, scenario)
+	}
 
 	store, err := kanban.NewStore(dbPath)
 	if err != nil {
@@ -150,12 +163,11 @@ agent:
   max_concurrent_agents: 2
   max_turns: 3
   max_retry_backoff_ms: 10000
-  mode: ` + mode + `
 codex:
-  command: ` + command + `
+  command: ` + workflowCommand + `
   approval_policy: never
-  read_timeout_ms: 1000
-  turn_timeout_ms: 10000
+  read_timeout_ms: 5000
+  turn_timeout_ms: 20000
 ---
 Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt }}{% endif %}
 `
@@ -878,7 +890,6 @@ agent:
   max_concurrent_agents: 2
   max_turns: 3
   max_retry_backoff_ms: 10000
-  mode: stdio
 codex:
   command: cat
   approval_policy: never
@@ -972,6 +983,8 @@ func TestContinuationPrompt(t *testing.T) {
 }
 
 func TestRunAgentStdio(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Test", "Description", 0, nil)
 
@@ -982,15 +995,18 @@ func TestRunAgentStdio(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("Expected successful run, got %+v", result)
 	}
-	if !strings.Contains(result.Output, issue.Identifier) {
-		t.Fatalf("expected output to contain rendered prompt, got %q", result.Output)
+	prompt := turnStartPromptAt(t, traceFile, 0)
+	if !strings.Contains(prompt, issue.Identifier) {
+		t.Fatalf("expected prompt to contain issue identifier, got %q", prompt)
 	}
-	if !strings.Contains(result.Output, "Prefer deterministic local verification first") {
-		t.Fatalf("expected execution guidance in output, got %q", result.Output)
+	if !strings.Contains(prompt, "Prefer deterministic local verification first") {
+		t.Fatalf("expected execution guidance in prompt, got %q", prompt)
 	}
 }
 
 func TestRunAttemptIncludesAttempt(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Retry", "Body", 0, nil)
 
@@ -998,8 +1014,12 @@ func TestRunAttemptIncludesAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunAttempt failed: %v", err)
 	}
-	if !strings.Contains(result.Output, "retry 3") {
-		t.Fatalf("expected retry attempt in output, got %q", result.Output)
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run attempt, got %+v", result)
+	}
+	prompt := turnStartPromptAt(t, traceFile, 0)
+	if !strings.Contains(prompt, "retry 3") {
+		t.Fatalf("expected retry attempt in prompt, got %q", prompt)
 	}
 }
 
@@ -1046,7 +1066,49 @@ func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 }
 
 func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
-	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-commands"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-commands-one"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-commands", "turn": map[string]interface{}{"id": "turn-commands-one"}}}},
+				},
+			},
+			{
+				Match:          fakeappserver.Match{Method: "turn/start"},
+				WaitForRelease: "finish-second-turn",
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-commands-two"}}}},
+				},
+				EmitAfterRelease: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-commands", "turn": map[string]interface{}{"id": "turn-commands-two"}}}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-commands-three"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-commands", "turn": map[string]interface{}{"id": "turn-commands-three"}}}},
+				},
+			},
+		},
+	}
+	command, release := fakeappserver.CommandString(t, scenario)
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
 	issue, _ := store.CreateIssue("", "", "Prompt command", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
@@ -1060,17 +1122,33 @@ func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := runner.Run(context.Background(), issue)
-	if err != nil {
+	done := make(chan struct{})
+	resultCh := make(chan *RunResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		result, runErr := runner.Run(context.Background(), issue)
+		resultCh <- result
+		errCh <- runErr
+	}()
+	waitForTurnStartCount(t, traceFile, 2)
+	release("finish-second-turn")
+	<-done
+	result := <-resultCh
+	if err := <-errCh; err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
-	if !strings.Contains(result.Output, "Merge the branch to master.") {
-		t.Fatalf("expected output to contain command, got %q", result.Output)
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run, got %+v", result)
 	}
-	firstIndex := strings.Index(result.Output, "1. Merge the branch to master.")
-	secondIndex := strings.Index(result.Output, "2. Close the follow-up checklist.")
+	prompt := turnStartPromptAt(t, traceFile, 0)
+	if !strings.Contains(prompt, "Merge the branch to master.") {
+		t.Fatalf("expected prompt to contain command, got %q", prompt)
+	}
+	firstIndex := strings.Index(prompt, "1. Merge the branch to master.")
+	secondIndex := strings.Index(prompt, "2. Close the follow-up checklist.")
 	if firstIndex == -1 || secondIndex == -1 || firstIndex > secondIndex {
-		t.Fatalf("expected ordered command output, got %q", result.Output)
+		t.Fatalf("expected ordered command prompt, got %q", prompt)
 	}
 
 	commands, err := store.ListIssueAgentCommands(issue.ID)
@@ -1169,7 +1247,49 @@ func TestRunAgentStdioRejectsStaleCommandDeliveryAfterEdit(t *testing.T) {
 }
 
 func TestRunAgentStdioPromotesWaitingCommandsOnceDispatchable(t *testing.T) {
-	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-unblock"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-unblock-one"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-unblock", "turn": map[string]interface{}{"id": "turn-unblock-one"}}}},
+				},
+			},
+			{
+				Match:          fakeappserver.Match{Method: "turn/start"},
+				WaitForRelease: "finish-second-turn",
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-unblock-two"}}}},
+				},
+				EmitAfterRelease: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-unblock", "turn": map[string]interface{}{"id": "turn-unblock-two"}}}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-unblock-three"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-unblock", "turn": map[string]interface{}{"id": "turn-unblock-three"}}}},
+				},
+			},
+		},
+	}
+	command, release := fakeappserver.CommandString(t, scenario)
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
 	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
 	issue, _ := store.CreateIssue("", "", "Blocked follow-up", "", 0, nil)
 
@@ -1191,12 +1311,28 @@ func TestRunAgentStdioPromotesWaitingCommandsOnceDispatchable(t *testing.T) {
 	}
 	issue, _ = store.GetIssue(issue.ID)
 
-	result, err := runner.RunAttempt(context.Background(), issue, 0)
-	if err != nil {
+	done := make(chan struct{})
+	resultCh := make(chan *RunResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		result, runErr := runner.RunAttempt(context.Background(), issue, 0)
+		resultCh <- result
+		errCh <- runErr
+	}()
+	waitForTurnStartCount(t, traceFile, 2)
+	release("finish-second-turn")
+	<-done
+	result := <-resultCh
+	if err := <-errCh; err != nil {
 		t.Fatalf("RunAttempt failed: %v", err)
 	}
-	if !strings.Contains(result.Output, "Wait for unblock then merge.") {
-		t.Fatalf("expected promoted command in output, got %q", result.Output)
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run attempt, got %+v", result)
+	}
+	prompt := turnStartPromptAt(t, traceFile, 0)
+	if !strings.Contains(prompt, "Wait for unblock then merge.") {
+		t.Fatalf("expected promoted command in prompt, got %q", prompt)
 	}
 
 	commands, err := store.ListIssueAgentCommands(issue.ID)
@@ -1711,6 +1847,8 @@ func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
 }
 
 func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, err := store.CreateIssue("", "", "Rebase recovery", "", 0, nil)
 	if err != nil {
@@ -1761,11 +1899,12 @@ func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T)
 	if result == nil || !result.Success {
 		t.Fatalf("expected successful recovery run, got %+v", result)
 	}
-	if !strings.Contains(result.Output, "Workspace recovery note:") {
-		t.Fatalf("expected recovery note in prompt output, got %q", result.Output)
+	prompt := turnStartPromptAt(t, traceFile, 0)
+	if !strings.Contains(prompt, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note in prompt, got %q", prompt)
 	}
-	if !strings.Contains(result.Output, "Finish or quit the rebase") {
-		t.Fatalf("expected rebase guidance in prompt output, got %q", result.Output)
+	if !strings.Contains(prompt, "Finish or quit the rebase") {
+		t.Fatalf("expected rebase guidance in prompt, got %q", prompt)
 	}
 
 	events, err := store.ListIssueRuntimeEvents(issue.ID, 20)
@@ -2688,8 +2827,6 @@ workspace:
 hooks:
   before_remove: echo cleaned >> ` + traceFile + `
   timeout_ms: 1000
-agent:
-  mode: stdio
 codex:
   command: cat
 ---
@@ -2765,6 +2902,22 @@ func threadStartPayloads(payloads []map[string]interface{}) []map[string]interfa
 		}
 	}
 	return out
+}
+
+func turnStartPromptAt(t *testing.T, tracePath string, index int) string {
+	t.Helper()
+	payloads := turnStartPayloads(readTraceLinesIfPresent(t, tracePath))
+	if index < 0 || index >= len(payloads) {
+		t.Fatalf("expected at least %d turn/start payloads, got %#v", index+1, payloads)
+	}
+	params, _ := payloads[index]["params"].(map[string]interface{})
+	input, _ := params["input"].([]interface{})
+	if len(input) == 0 {
+		t.Fatalf("expected prompt input in turn/start payload, got %#v", params)
+	}
+	firstInput, _ := input[0].(map[string]interface{})
+	text, _ := firstInput["text"].(string)
+	return text
 }
 
 func waitForTurnStartCount(t *testing.T, tracePath string, want int) []map[string]interface{} {

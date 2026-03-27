@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +21,7 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
+	runtimelib "github.com/olhapi/maestro/internal/runtime"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -33,7 +34,7 @@ const (
 	runtimeMaintenanceInterval   = 15 * time.Minute
 	providerSyncMinInterval      = time.Second
 	gracefulShutdownStopReason   = "graceful_shutdown"
-	planApprovalStopReason       = "plan_approval_pending"
+	planApprovalStopReason       = runtimelib.PlanApprovalStopReason
 	gracefulShutdownWaitTimeout  = 5 * time.Second
 	reviewPreviewPublishTimeout  = 15 * time.Second
 	reviewPreviewDir             = ".maestro/review-preview"
@@ -815,7 +816,7 @@ func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhas
 }
 
 func classifyOrphanedResume(workflow *config.Workflow, persisted *kanban.ExecutionSessionSnapshot) (string, string) {
-	if !isAppServerWorkflow(workflow) || persisted == nil {
+	if workflow == nil || persisted == nil {
 		return "", ""
 	}
 	threadID := strings.TrimSpace(persisted.AppSession.ThreadID)
@@ -829,10 +830,6 @@ func classifyOrphanedResume(workflow *config.Workflow, persisted *kanban.Executi
 		return threadID, "opportunistic"
 	}
 	return "", ""
-}
-
-func isAppServerWorkflow(workflow *config.Workflow) bool {
-	return workflow != nil && strings.TrimSpace(workflow.Config.Agent.Mode) == config.AgentModeAppServer
 }
 
 func (o *Orchestrator) shouldAllowRunningTerminalTransition(workflow *config.Workflow, issue *kanban.Issue, runningPhase kanban.WorkflowPhase) bool {
@@ -2467,14 +2464,11 @@ func (o *Orchestrator) stopAllRunsGracefully() {
 
 	for _, run := range runs {
 		issue := run.entry.issue
-		_, workflow, err := o.runtimeForIssue(&issue)
+		_, _, err := o.runtimeForIssue(&issue)
 		if err != nil {
 			slog.Warn("Skipping graceful run marker because runtime resolution failed",
 				issueLogAttrs(&issue, run.entry.attempt, "error", err)...,
 			)
-			continue
-		}
-		if !isAppServerWorkflow(workflow) {
 			continue
 		}
 		resumeEligible := false
@@ -2630,8 +2624,8 @@ func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
 }
 
 func (o *Orchestrator) Status() map[string]interface{} {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
+	var memStats goruntime.MemStats
+	goruntime.ReadMemStats(&memStats)
 	dbStats, err := o.store.DBStats()
 	if err != nil {
 		slog.Warn("Failed to collect database stats", "error", err)

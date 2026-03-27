@@ -388,7 +388,6 @@ func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
 	for _, want := range []string{
 		"--workspace-root",
 		"--codex-command",
-		"--agent-mode",
 		"--force",
 		"--defaults",
 	} {
@@ -406,7 +405,6 @@ func TestRootInitHelpIncludesSetupFlags(t *testing.T) {
 	for _, want := range []string{
 		"--workspace-root",
 		"--codex-command",
-		"--agent-mode",
 		"--force",
 		"--defaults",
 	} {

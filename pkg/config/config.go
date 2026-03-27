@@ -71,7 +71,6 @@ type AgentConfig struct {
 	MaxTurns            int    `yaml:"max_turns"`
 	MaxRetryBackoffMs   int    `yaml:"max_retry_backoff_ms"`
 	MaxAutomaticRetries int    `yaml:"max_automatic_retries"`
-	Mode                string `yaml:"mode"`
 	DispatchMode        string `yaml:"dispatch_mode"`
 }
 
@@ -135,7 +134,6 @@ func DefaultConfig() Config {
 			MaxTurns:            4,
 			MaxRetryBackoffMs:   60000,
 			MaxAutomaticRetries: 8,
-			Mode:                AgentModeAppServer,
 			DispatchMode:        DispatchModeParallel,
 		},
 		Runtime: string(runtimepkg.BackendCodex),
@@ -522,7 +520,6 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveNumeric(out, agent, "max_turns", "max_turns")
 	moveNumeric(out, agent, "max_retry_backoff_ms", "max_retry_backoff_ms")
 	moveNumeric(out, agent, "max_automatic_retries", "max_automatic_retries")
-	moveString(out, agent, "agent_mode", "mode")
 	moveString(out, agent, "dispatch_mode", "dispatch_mode")
 	moveString(out, out, "backend", "runtime")
 	moveString(out, out, "runtime_name", "runtime")
@@ -738,9 +735,6 @@ func applyDefaults(c *Config) error {
 	if c.Agent.MaxAutomaticRetries <= 0 {
 		c.Agent.MaxAutomaticRetries = defaults.Agent.MaxAutomaticRetries
 	}
-	if strings.TrimSpace(c.Agent.Mode) == "" {
-		c.Agent.Mode = defaults.Agent.Mode
-	}
 	if strings.TrimSpace(c.Agent.DispatchMode) == "" {
 		c.Agent.DispatchMode = defaults.Agent.DispatchMode
 	}
@@ -901,9 +895,6 @@ func rawWorkflowHasLegacySandboxKeys(raw map[string]interface{}) bool {
 }
 
 func workflowApprovalPolicyBlocksInteractiveRecovery(cfg Config) bool {
-	if strings.TrimSpace(cfg.Agent.Mode) != AgentModeAppServer {
-		return false
-	}
 	policy, ok := cfg.Codex.ApprovalPolicy.(string)
 	if !ok {
 		return false
@@ -912,9 +903,6 @@ func workflowApprovalPolicyBlocksInteractiveRecovery(cfg Config) bool {
 }
 
 func workflowPlanModeBlocksInteractiveRecovery(cfg Config) bool {
-	if strings.TrimSpace(cfg.Agent.Mode) != AgentModeAppServer {
-		return false
-	}
 	if !strings.EqualFold(strings.TrimSpace(cfg.Codex.InitialCollaborationMode), InitialCollaborationModePlan) {
 		return false
 	}
@@ -950,9 +938,6 @@ func workflowUsesLegacyBranchInstructions(prompt, donePrompt string) bool {
 func validateConfig(c *Config) error {
 	if strings.TrimSpace(c.Tracker.Kind) != TrackerKindKanban {
 		return fmt.Errorf("unsupported tracker.kind %q", strings.TrimSpace(c.Tracker.Kind))
-	}
-	if strings.TrimSpace(c.Agent.Mode) != AgentModeAppServer && strings.TrimSpace(c.Agent.Mode) != AgentModeStdio {
-		return fmt.Errorf("unsupported agent.mode %q", c.Agent.Mode)
 	}
 	dispatchMode := strings.TrimSpace(c.Agent.DispatchMode)
 	if dispatchMode != DispatchModeParallel && dispatchMode != DispatchModePerProjectSerial {

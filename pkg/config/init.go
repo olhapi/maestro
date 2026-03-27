@@ -14,7 +14,6 @@ import (
 var (
 	ErrWorkflowExists               = errors.New("workflow file already exists")
 	ErrWorkflowInitCancelled        = errors.New("workflow initialization cancelled")
-	ErrInvalidInitAgentMode         = errors.New("invalid workflow init agent mode")
 	ErrInvalidInitDispatchMode      = errors.New("invalid workflow init dispatch mode")
 	ErrInvalidInitApprovalPolicy    = errors.New("invalid workflow init approval policy")
 	ErrInvalidInitCollaborationMode = errors.New("invalid workflow init collaboration mode")
@@ -23,7 +22,6 @@ var (
 type InitOptions struct {
 	WorkspaceRoot            string
 	CodexCommand             string
-	AgentMode                string
 	DispatchMode             string
 	MaxConcurrentAgents      int
 	MaxTurns                 int
@@ -99,7 +97,6 @@ func defaultInitOptions() InitOptions {
 	return InitOptions{
 		WorkspaceRoot:            cfg.Workspace.Root,
 		CodexCommand:             cfg.Codex.Command,
-		AgentMode:                cfg.Agent.Mode,
 		DispatchMode:             cfg.Agent.DispatchMode,
 		MaxConcurrentAgents:      cfg.Agent.MaxConcurrentAgents,
 		MaxTurns:                 cfg.Agent.MaxTurns,
@@ -116,13 +113,6 @@ func resolveInitOptions(path string, opts InitOptions) (InitOptions, error) {
 	}
 	if strings.TrimSpace(opts.CodexCommand) != "" {
 		answers.CodexCommand = strings.TrimSpace(opts.CodexCommand)
-	}
-	if strings.TrimSpace(opts.AgentMode) != "" {
-		mode, err := validateInitAgentMode(opts.AgentMode)
-		if err != nil {
-			return InitOptions{}, err
-		}
-		answers.AgentMode = mode
 	}
 	if strings.TrimSpace(opts.DispatchMode) != "" {
 		dispatchMode, err := validateInitDispatchMode(opts.DispatchMode)
@@ -174,9 +164,6 @@ func promptInitOptions(path string, opts InitOptions, defaults InitOptions) Init
 	if strings.TrimSpace(opts.CodexCommand) == "" {
 		defaults.CodexCommand = promptLine(reader, writer, "Codex command", defaults.CodexCommand)
 	}
-	if strings.TrimSpace(opts.AgentMode) == "" {
-		defaults.AgentMode = promptAgentMode(reader, writer, defaults.AgentMode)
-	}
 	if strings.TrimSpace(opts.DispatchMode) == "" {
 		defaults.DispatchMode = promptDispatchMode(reader, writer, defaults.DispatchMode)
 	}
@@ -189,13 +176,11 @@ func promptInitOptions(path string, opts InitOptions, defaults InitOptions) Init
 	if opts.MaxAutomaticRetries <= 0 {
 		defaults.MaxAutomaticRetries = promptPositiveInt(reader, writer, "Max automatic retries", defaults.MaxAutomaticRetries)
 	}
-	if defaults.AgentMode == AgentModeAppServer {
-		if strings.TrimSpace(opts.ApprovalPolicy) == "" {
-			defaults.ApprovalPolicy = promptApprovalPolicy(reader, writer, defaults.ApprovalPolicy)
-		}
-		if strings.TrimSpace(opts.InitialCollaborationMode) == "" {
-			defaults.InitialCollaborationMode = promptInitialCollaborationMode(reader, writer, defaults.InitialCollaborationMode)
-		}
+	if strings.TrimSpace(opts.ApprovalPolicy) == "" {
+		defaults.ApprovalPolicy = promptApprovalPolicy(reader, writer, defaults.ApprovalPolicy)
+	}
+	if strings.TrimSpace(opts.InitialCollaborationMode) == "" {
+		defaults.InitialCollaborationMode = promptInitialCollaborationMode(reader, writer, defaults.InitialCollaborationMode)
 	}
 	return defaults
 }
@@ -215,10 +200,6 @@ func newInitReader(r io.Reader) *bufio.Reader {
 		return bufio.NewReader(os.Stdin)
 	}
 	return bufio.NewReader(r)
-}
-
-func promptAgentMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
-	return promptValidatedString(reader, writer, "Agent mode (app_server|stdio)", fallback, validateInitAgentMode)
 }
 
 func promptDispatchMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
@@ -285,18 +266,6 @@ func promptLine(reader *bufio.Reader, writer io.Writer, label, fallback string) 
 	return line
 }
 
-func validateInitAgentMode(raw string) (string, error) {
-	mode := strings.TrimSpace(strings.ToLower(raw))
-	switch mode {
-	case AgentModeAppServer, AgentModeStdio:
-		return mode, nil
-	case "":
-		return "", fmt.Errorf("%w: expected %s or %s", ErrInvalidInitAgentMode, AgentModeAppServer, AgentModeStdio)
-	default:
-		return "", fmt.Errorf("%w: %q (expected %s or %s)", ErrInvalidInitAgentMode, raw, AgentModeAppServer, AgentModeStdio)
-	}
-}
-
 func validateInitDispatchMode(raw string) (string, error) {
 	mode := strings.TrimSpace(strings.ToLower(raw))
 	switch mode {
@@ -340,9 +309,6 @@ func buildWorkflowFile(opts InitOptions) string {
 	}
 	if strings.TrimSpace(opts.CodexCommand) != "" {
 		cfg.Codex.Command = strings.TrimSpace(opts.CodexCommand)
-	}
-	if strings.TrimSpace(opts.AgentMode) != "" {
-		cfg.Agent.Mode = strings.TrimSpace(opts.AgentMode)
 	}
 	if strings.TrimSpace(opts.DispatchMode) != "" {
 		cfg.Agent.DispatchMode = strings.TrimSpace(opts.DispatchMode)
@@ -428,13 +394,8 @@ agent:
   max_retry_backoff_ms: %d
   # Maximum automatic retry attempts for the same issue before Maestro stops retrying.
   max_automatic_retries: %d
-  # Agent transport. Other options: app_server, stdio.
-  mode: %s
   # Scheduling behavior. Other options: parallel, per_project_serial.
   dispatch_mode: %s
-
-# Backend runtime selection for this workflow.
-runtime: %s
 
 # Codex CLI launch and collaboration settings.
 codex:
@@ -452,7 +413,7 @@ codex:
   # Initial collaboration mode for fresh app_server threads. Other option: plan.
   # Use plan for a planning pass before implementation. Pair it with on-request
   # when you want the agent to ask questions and pause for approval.
-  # Ignored for stdio runs and resumed threads.
+  # Ignored for resumed threads.
   initial_collaboration_mode: %s
   # Maximum total runtime for one turn before Maestro cancels it.
   turn_timeout_ms: %d
@@ -463,7 +424,7 @@ codex:
 ---
 
 %s
-`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, cfg.Phases.Review.Enabled, reviewPrompt, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, cfg.Agent.Mode, cfg.Agent.DispatchMode, cfg.Runtime, cfg.Codex.Command, cfg.Codex.ExpectedVersion, cfg.Codex.ApprovalPolicy, cfg.Codex.InitialCollaborationMode, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
+`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, cfg.Phases.Review.Enabled, reviewPrompt, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, cfg.Agent.DispatchMode, cfg.Codex.Command, cfg.Codex.ExpectedVersion, cfg.Codex.ApprovalPolicy, cfg.Codex.InitialCollaborationMode, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
 }
 
 func indentBlock(text, prefix string) string {

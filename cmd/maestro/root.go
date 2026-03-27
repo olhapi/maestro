@@ -234,7 +234,6 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 	var workspaceRoot string
 	var codexCommand string
-	var agentMode string
 	var force bool
 	var defaults bool
 
@@ -252,14 +251,13 @@ func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 			if err := config.InitWorkflow(repoPath, config.InitOptions{
 				WorkspaceRoot: workspaceRoot,
 				CodexCommand:  codexCommand,
-				AgentMode:     agentMode,
 				Interactive:   interactive,
 				Force:         force,
 				Stdin:         os.Stdin,
 				Stdout:        a.stdout,
 			}); err != nil {
 				switch {
-				case errors.Is(err, config.ErrWorkflowExists), errors.Is(err, config.ErrWorkflowInitCancelled), errors.Is(err, config.ErrInvalidInitAgentMode):
+				case errors.Is(err, config.ErrWorkflowExists), errors.Is(err, config.ErrWorkflowInitCancelled):
 					return usageErrorf("%v", err)
 				}
 				return wrapRuntime(err, "failed to initialize workflow")
@@ -276,7 +274,6 @@ func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "Workspace root to write into WORKFLOW.md")
 	cmd.Flags().StringVar(&codexCommand, "codex-command", "", "Codex command to write into WORKFLOW.md")
-	cmd.Flags().StringVar(&agentMode, "agent-mode", "", "Agent mode to write into WORKFLOW.md (app_server or stdio)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing WORKFLOW.md")
 	cmd.Flags().BoolVar(&defaults, "defaults", false, "Use defaults without prompting")
 	return cmd

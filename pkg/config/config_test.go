@@ -100,9 +100,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.MaxConcurrentAgents != 3 {
 		t.Fatalf("expected max concurrent 3, got %d", cfg.Agent.MaxConcurrentAgents)
 	}
-	if cfg.Agent.Mode != AgentModeAppServer {
-		t.Fatalf("expected app_server mode, got %q", cfg.Agent.Mode)
-	}
 	if cfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
 		t.Fatalf("expected codex expected version %s, got %q", codexschema.SupportedVersion, cfg.Codex.ExpectedVersion)
 	}
@@ -159,7 +156,6 @@ agent:
   max_turns: 4
   max_retry_backoff_ms: 9000
   max_automatic_retries: 6
-  mode: stdio
 codex:
   command: codex --model test app-server
   expected_version: ` + codexschema.SupportedVersion + `
@@ -186,9 +182,6 @@ Issue {{ issue.identifier }}
 
 	if workflow.Config.Polling.IntervalMs != 1500 {
 		t.Fatalf("unexpected poll interval: %d", workflow.Config.Polling.IntervalMs)
-	}
-	if workflow.Config.Agent.Mode != AgentModeStdio {
-		t.Fatalf("unexpected agent mode: %s", workflow.Config.Agent.Mode)
 	}
 	if workflow.Config.Agent.MaxAutomaticRetries != 6 {
 		t.Fatalf("unexpected max automatic retries: %d", workflow.Config.Agent.MaxAutomaticRetries)
@@ -863,7 +856,6 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 	if err := InitWorkflow(tmpDir, InitOptions{
 		WorkspaceRoot: "./ws",
 		CodexCommand:  "codex app-server --model test",
-		AgentMode:     AgentModeStdio,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
 	}
@@ -893,14 +885,13 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"max_turns: 4",
 		"max_retry_backoff_ms: 60000",
 		"max_automatic_retries: 8",
-		"mode: stdio",
 		"Other options: parallel, per_project_serial.",
 		"codex app-server --model test",
 		"expected_version: " + codexschema.SupportedVersion,
 		"approval_policy: never",
 		"initial_collaboration_mode: default",
 		"on-request, on-failure, untrusted",
-		"Ignored for stdio runs and resumed threads.",
+		"Ignored for resumed threads.",
 		"turn_timeout_ms: 1800000",
 		"read_timeout_ms: 10000",
 		"stall_timeout_ms: 300000",
@@ -934,7 +925,6 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 	for _, want := range []string{
 		"root: ./workspaces",
 		"command: codex app-server",
-		"mode: app_server",
 		"dispatch_mode: parallel",
 		"max_concurrent_agents: 3",
 		"max_turns: 4",
@@ -950,7 +940,6 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 		"Target workflow file:",
 		"Workspace root [",
 		"Codex command [",
-		"Agent mode (app_server|stdio) [",
 		"Dispatch mode (parallel|per_project_serial) [",
 		"Max concurrent agents [",
 		"Max turns [",
@@ -986,7 +975,6 @@ func TestInitWorkflowInteractiveWizardSupportsCustomStdioTuning(t *testing.T) {
 	for _, want := range []string{
 		"root: ./ws",
 		"command: codex exec --model test",
-		"mode: stdio",
 		"dispatch_mode: per_project_serial",
 		"max_concurrent_agents: 5",
 		"max_turns: 6",
@@ -998,8 +986,8 @@ func TestInitWorkflowInteractiveWizardSupportsCustomStdioTuning(t *testing.T) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if strings.Contains(stdout.String(), "Approval policy (never|on-request|on-failure|untrusted)") || strings.Contains(stdout.String(), "Initial collaboration mode (default|plan)") {
-		t.Fatalf("expected stdio wizard to skip app_server-only prompts, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "Approval policy (never|on-request|on-failure|untrusted) [") || !strings.Contains(stdout.String(), "Initial collaboration mode (default|plan) [") {
+		t.Fatalf("expected wizard to prompt for approval and collaboration, got %q", stdout.String())
 	}
 }
 
@@ -1008,7 +996,7 @@ func TestInitWorkflowInteractiveWizardSupportsAppServerCollaborationTuning(t *te
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("./ws\ncodex app-server --model test\napp_server\nparallel\n4\n5\n6\non-request\nplan\n"),
+		Stdin:       strings.NewReader("./ws\ncodex app-server --model test\nparallel\n4\n5\n6\non-request\nplan\n"),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -1022,7 +1010,6 @@ func TestInitWorkflowInteractiveWizardSupportsAppServerCollaborationTuning(t *te
 	for _, want := range []string{
 		"root: ./ws",
 		"command: codex app-server --model test",
-		"mode: app_server",
 		"dispatch_mode: parallel",
 		"max_concurrent_agents: 4",
 		"max_turns: 5",
@@ -1045,7 +1032,7 @@ func TestInitWorkflowInteractiveWizardRepromptsOnInvalidInput(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("\n\nbad-mode\nstdio\nserial\nper_project_serial\n0\n2\nabc\n5\n-1\n6\n"),
+		Stdin:       strings.NewReader("\n\nserial\nper_project_serial\n0\n2\nabc\n5\n-1\n6\n\n\n"),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -1057,7 +1044,6 @@ func TestInitWorkflowInteractiveWizardRepromptsOnInvalidInput(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		"mode: stdio",
 		"dispatch_mode: per_project_serial",
 		"max_concurrent_agents: 2",
 		"max_turns: 5",
@@ -1079,7 +1065,6 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 		Interactive:   true,
 		WorkspaceRoot: "./flag-ws",
 		CodexCommand:  "codex exec --model custom",
-		AgentMode:     AgentModeStdio,
 		Stdin:         strings.NewReader(""),
 		Stdout:        &stdout,
 	}); err != nil {
@@ -1095,10 +1080,10 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 		"root: ./flag-ws",
 		"runtime: codex",
 		"command: codex exec --model custom",
-		"mode: stdio",
 		"dispatch_mode: parallel",
 		"max_concurrent_agents: 3",
 		"max_turns: 4",
+		"approval_policy: never",
 		"max_automatic_retries: 8",
 		"initial_collaboration_mode: default",
 	} {
@@ -1106,7 +1091,7 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if strings.Contains(stdout.String(), "Workspace root [") || strings.Contains(stdout.String(), "Codex command [") || strings.Contains(stdout.String(), "Agent mode (app_server|stdio) [") {
+	if strings.Contains(stdout.String(), "Workspace root [") || strings.Contains(stdout.String(), "Codex command [") {
 		t.Fatalf("expected explicit values to skip prompts, got %q", stdout.String())
 	}
 	assertContainsAll(t, stdout.String(),
@@ -1123,7 +1108,6 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	content := buildWorkflowFile(InitOptions{
 		WorkspaceRoot:            "./ws",
 		CodexCommand:             "codex app-server --model test",
-		AgentMode:                AgentModeAppServer,
 		DispatchMode:             DispatchModePerProjectSerial,
 		MaxConcurrentAgents:      5,
 		MaxTurns:                 6,
@@ -1146,9 +1130,6 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	}
 	if workflow.Config.Workspace.Root != filepath.Join(tmpDir, "ws") {
 		t.Fatalf("unexpected workspace root: %s", workflow.Config.Workspace.Root)
-	}
-	if workflow.Config.Agent.Mode != AgentModeAppServer {
-		t.Fatalf("unexpected agent mode: %q", workflow.Config.Agent.Mode)
 	}
 	if workflow.Config.Agent.DispatchMode != DispatchModePerProjectSerial {
 		t.Fatalf("unexpected dispatch mode: %q", workflow.Config.Agent.DispatchMode)
@@ -1255,7 +1236,6 @@ func TestLoadWorkflowWarnsWhenPlanModeUsesApprovalPolicyNever(t *testing.T) {
 tracker:
   kind: kanban
 agent:
-  mode: app_server
 codex:
   approval_policy: never
   initial_collaboration_mode: plan
@@ -1351,14 +1331,6 @@ func TestEnsureWorkflowCreatesMissingFile(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected workflow file at %s: %v", path, err)
-	}
-}
-
-func TestInitWorkflowRejectsInvalidExplicitAgentMode(t *testing.T) {
-	tmpDir := t.TempDir()
-	err := InitWorkflow(tmpDir, InitOptions{AgentMode: "invalid"})
-	if !errors.Is(err, ErrInvalidInitAgentMode) {
-		t.Fatalf("expected invalid agent mode error, got %v", err)
 	}
 }
 

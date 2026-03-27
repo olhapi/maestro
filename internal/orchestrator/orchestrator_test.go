@@ -352,10 +352,77 @@ func setupTestOrchestrator(t *testing.T, command string) (*Orchestrator, *kanban
 	return setupTestOrchestratorWithConcurrency(t, command, 2)
 }
 
+func defaultOrchestratorAppServerCommand(t *testing.T) string {
+	t.Helper()
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-default"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-default"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-default", "turn": map[string]interface{}{"id": "turn-default"}}}},
+				},
+			},
+		},
+	}
+	command, _ := fakeappserver.CommandString(t, scenario)
+	return command
+}
+
+func continuationRetryAppServerCommand(t *testing.T) string {
+	t.Helper()
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-default"}}},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-one"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-default", "turn": map[string]interface{}{"id": "turn-one"}}}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-two"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-default", "turn": map[string]interface{}{"id": "turn-two"}}}},
+				},
+			},
+		},
+	}
+	command, _ := fakeappserver.CommandString(t, scenario)
+	return command
+}
+
 func setupTestOrchestratorWithConcurrency(t *testing.T, command string, maxConcurrent int) (*Orchestrator, *kanban.Store, *config.Manager, string) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workflowCommand := command
+	if strings.TrimSpace(workflowCommand) == "cat" {
+		workflowCommand = defaultOrchestratorAppServerCommand(t)
+	}
 
 	store, err := kanban.NewStore(dbPath)
 	if err != nil {
@@ -391,7 +458,7 @@ agent:
   max_automatic_retries: 8
   mode: stdio
 codex:
-  command: ` + command + `
+  command: ` + workflowCommand + `
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -421,6 +488,10 @@ Test prompt for {{ issue.identifier }}
 }
 
 func enablePhaseWorkflow(t *testing.T, manager *config.Manager, workspaceRoot string) {
+	enablePhaseWorkflowWithCommand(t, manager, workspaceRoot, "cat")
+}
+
+func enablePhaseWorkflowWithCommand(t *testing.T, manager *config.Manager, workspaceRoot, command string) {
 	t.Helper()
 	workflowContent := `---
 tracker:
@@ -445,7 +516,7 @@ agent:
   max_automatic_retries: 8
   mode: stdio
 codex:
-  command: cat
+  command: ` + command + `
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -1011,7 +1082,7 @@ func TestManualRetryResetsAutomaticRetryLimit(t *testing.T) {
 
 func TestContinuationRetryAfterSuccess(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
-	enablePhaseWorkflow(t, manager, workspaceRoot)
+	enablePhaseWorkflowWithCommand(t, manager, workspaceRoot, continuationRetryAppServerCommand(t))
 	issue, _ := store.CreateIssue("", "", "Succeeds", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
@@ -2328,7 +2399,6 @@ func TestRunWaitsForActiveRunsDuringShutdown(t *testing.T) {
 	workflow.Config.Phases.Review.Prompt = ""
 	workflow.Config.Phases.Done.Enabled = false
 	workflow.Config.Phases.Done.Prompt = ""
-	workflow.Config.Agent.Mode = config.AgentModeAppServer
 
 	ctx, cancel := context.WithCancel(context.Background())
 	orch.startRun(ctx, workflow, runner, issue, 0)
