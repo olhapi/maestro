@@ -1,70 +1,14 @@
 import { AlertTriangle, ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 
+import { PlanApprovalActionBar, PlanApprovalDocument } from '@/components/dashboard/plan-approval-review'
 import { MarkdownText, wrappedOutputClassName } from '@/components/ui/markdown'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
-import { Textarea } from '@/components/ui/textarea'
 import { describeFailureRuns, failureStatusLabel } from '@/lib/execution'
 import type { IssueExecutionDetail } from '@/lib/types'
 import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
-
-function PlanApprovalActions({
-  approvingPlan,
-  onApprovePlan,
-  onRequestPlanRevision,
-}: {
-  approvingPlan: boolean
-  onApprovePlan?: (note?: string) => void
-  onRequestPlanRevision?: (note: string) => void
-}) {
-  const [planRevisionNote, setPlanRevisionNote] = useState('')
-  const trimmedNote = planRevisionNote.trim()
-  const canSubmitRevision = trimmedNote.length > 0
-
-  return (
-    <div className="mt-4 grid gap-3 rounded-md border border-sky-200/15 bg-white/5 p-3">
-      <div className="grid gap-2">
-        <p className="text-xs uppercase tracking-[0.18em] text-sky-100/80">Revision note</p>
-        <p className="text-sm leading-6 text-sky-50/80">
-          Optionally describe what should change before this plan is approved.
-        </p>
-        <Textarea
-          className="border-sky-200/15 bg-black/20 text-sky-50 placeholder:text-sky-100/45 focus:border-sky-100/50"
-          disabled={approvingPlan}
-          placeholder="Add steering notes for the next planning turn..."
-          value={planRevisionNote}
-          onChange={(event) => {
-            setPlanRevisionNote(event.target.value)
-          }}
-        />
-      </div>
-      <div className="flex flex-wrap gap-3">
-        {onRequestPlanRevision ? (
-          <Button
-            disabled={approvingPlan || !canSubmitRevision}
-            onClick={() => onRequestPlanRevision(trimmedNote)}
-            type="button"
-            variant="secondary"
-          >
-            Request revision
-          </Button>
-        ) : null}
-        {onApprovePlan ? (
-          <Button
-            disabled={approvingPlan}
-            onClick={() => onApprovePlan(trimmedNote || undefined)}
-            type="button"
-          >
-            Approve plan and continue
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  )
-}
 
 export function SessionExecutionCard({
   execution,
@@ -106,6 +50,17 @@ export function SessionExecutionCard({
   const planApprovalDraftKey = isPlanApprovalPending
     ? `${pendingPlanApproval?.requested_at ?? pendingInterrupt?.requested_at ?? ''}|${pendingPlanApprovalMarkdown}`
     : ''
+  const [planReviewState, setPlanReviewState] = useState({
+    draftKey: '',
+    note: '',
+    noteVisible: false,
+    noteRequired: false,
+  })
+  const planReviewMatchesDraft = isPlanApprovalPending && planReviewState.draftKey === planApprovalDraftKey
+  const planReviewNote = planReviewMatchesDraft ? planReviewState.note : ''
+  const planReviewNoteVisible = planReviewMatchesDraft ? planReviewState.noteVisible : false
+  const planReviewNoteRequired = planReviewMatchesDraft ? planReviewState.noteRequired : false
+  const trimmedPlanReviewNote = planReviewNote.trim()
   const pausedRunSummary = describeFailureRuns(
     execution.consecutive_failures,
     failureSummaryReason,
@@ -141,6 +96,32 @@ export function SessionExecutionCard({
     workspaceRecovery?.status === 'required' ? 'text-amber-100' : 'text-sky-100'
   const workspaceRecoveryBody =
     workspaceRecovery?.status === 'required' ? 'text-amber-50/90' : 'text-sky-50/90'
+
+  const handleApprovePlan = () => {
+    onApprovePlan?.(trimmedPlanReviewNote || undefined)
+  }
+
+  const handleRequestPlanChanges = () => {
+    if (!onRequestPlanRevision) {
+      return
+    }
+    if (!trimmedPlanReviewNote) {
+      setPlanReviewState({
+        draftKey: planApprovalDraftKey,
+        note: planReviewNote,
+        noteVisible: true,
+        noteRequired: true,
+      })
+      return
+    }
+    setPlanReviewState((current) => ({
+      draftKey: planApprovalDraftKey,
+      note: current.draftKey === planApprovalDraftKey ? current.note : planReviewNote,
+      noteVisible: true,
+      noteRequired: false,
+    }))
+    onRequestPlanRevision(trimmedPlanReviewNote)
+  }
 
   return (
     <Card>
@@ -200,24 +181,57 @@ export function SessionExecutionCard({
         ) : null}
 
         {isPlanApprovalPending ? (
-          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/25 bg-sky-400/10 p-3.5 text-sm text-sky-50">
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/22 bg-[linear-gradient(180deg,rgba(83,217,255,0.08),rgba(255,255,255,0.03))] p-4 text-sm text-sky-50">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 size-4 text-sky-200" />
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-sky-100">Plan ready for approval</p>
-                <p className="mt-2 text-sky-50/90">
-                  Maestro paused after drafting the plan. Review the proposed plan, add a revision note if needed, and approve when it is ready.
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className="border-sky-400/25 bg-sky-400/10 text-sky-100">Plan approval</Badge>
+                  <span className="text-sm text-sky-100/70">Review-first approval flow</span>
+                </div>
+                <p className="mt-3 text-lg font-semibold text-white">Plan ready for approval</p>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-sky-50/80">
+                  Maestro paused after drafting the plan. Review the proposal, request changes if the plan needs another pass, or approve when it is ready to continue.
                 </p>
-                <div className="mt-3 rounded-md border border-sky-200/15 bg-black/25 p-3 text-sm leading-6 text-sky-50/92">
-                  <MarkdownText content={pendingPlanApprovalMarkdown} />
+                <div className="mt-4 max-w-[58rem]">
+                  <PlanApprovalDocument markdown={pendingPlanApprovalMarkdown} />
                 </div>
                 {onApprovePlan || onRequestPlanRevision ? (
-                  <PlanApprovalActions
-                    key={planApprovalDraftKey}
-                    approvingPlan={approvingPlan}
-                    onApprovePlan={onApprovePlan}
-                    onRequestPlanRevision={onRequestPlanRevision}
-                  />
+                  <div className="mt-4 rounded-[calc(var(--panel-radius)-0.15rem)] border border-white/8 bg-[rgba(8,9,12,0.92)] p-4">
+                    <PlanApprovalActionBar
+                      approveDisabled={approvingPlan || !onApprovePlan}
+                      approveLabel="Approve plan"
+                      note={planReviewNote}
+                      noteDescription="Add optional steering notes. A note becomes required if you request changes."
+                      noteLabel="Review note"
+                      notePlaceholder="Explain what should change in the plan..."
+                      noteRequired={planReviewNoteRequired}
+                      noteVisible={planReviewNoteVisible}
+                      requestChangesDisabled={approvingPlan || !onRequestPlanRevision}
+                      onApprove={handleApprovePlan}
+                      onNoteChange={(value) => {
+                        setPlanReviewState((current) => ({
+                          draftKey: planApprovalDraftKey,
+                          note: value,
+                          noteVisible: current.draftKey === planApprovalDraftKey ? current.noteVisible : false,
+                          noteRequired:
+                            current.draftKey === planApprovalDraftKey
+                              ? current.noteRequired && value.trim().length === 0
+                              : false,
+                        }))
+                      }}
+                      onRequestChanges={handleRequestPlanChanges}
+                      onToggleNote={() => {
+                        const nextVisible = !planReviewNoteVisible
+                        setPlanReviewState((current) => ({
+                          draftKey: planApprovalDraftKey,
+                          note: current.draftKey === planApprovalDraftKey ? current.note : '',
+                          noteVisible: nextVisible,
+                          noteRequired: nextVisible && current.draftKey === planApprovalDraftKey ? current.noteRequired : false,
+                        }))
+                      }}
+                    />
+                  </div>
                 ) : null}
               </div>
             </div>

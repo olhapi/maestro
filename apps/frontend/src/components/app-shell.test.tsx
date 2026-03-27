@@ -322,8 +322,8 @@ describe('AppShell', () => {
 
     expect(screen.getAllByText('2 waiting').length).toBeGreaterThan(0)
     expect(screen.getByText('Plan turn')).toBeInTheDocument()
-    expect(screen.getByText('Project dispatch blocked')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Acknowledge' }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /queue \(2\)/i })).toBeInTheDocument()
+    expect(screen.getByText('Allow the agent to run this command?')).toBeInTheDocument()
   })
 
   it('shows a launcher for the active waiting interrupt and toggles the full-screen dialog from the header', async () => {

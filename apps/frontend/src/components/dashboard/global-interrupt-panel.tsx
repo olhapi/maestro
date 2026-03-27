@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { X } from 'lucide-react'
 
+import { PlanApprovalActionBar, PlanApprovalDocument } from '@/components/dashboard/plan-approval-review'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { MarkdownText, wrappedOutputClassName } from '@/components/ui/markdown'
+import { wrappedOutputClassName } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import type {
   PendingAlert,
@@ -123,6 +124,10 @@ function approvalDecisionGroups(decisions: PendingApprovalDecision[]) {
   )
 }
 
+function approvalDecisionVariant(option: PendingApprovalDecision) {
+  return classifyApprovalDecision(option) === 'destructive' ? 'destructive' : 'secondary'
+}
+
 function interruptHeading(interrupt: PendingInterrupt) {
   if (interrupt.kind === 'alert') {
     return interrupt.alert?.title || interrupt.issue_title || interrupt.issue_identifier || interrupt.project_name || 'Maestro alert'
@@ -211,18 +216,23 @@ export function GlobalInterruptPanel({
   onRespond: (payload: InterruptResponsePayload) => void
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [queueOpen, setQueueOpen] = useState(false)
   const [interactionState, setInteractionState] = useState<{
     interruptId: string | null
     draftKey: string
     decision: string
     draftNote: string
     draftAnswers: Record<string, string>
+    noteVisible: boolean
+    noteRequired: boolean
   }>({
     interruptId: null,
     draftKey: '',
     decision: '',
     draftNote: '',
     draftAnswers: {},
+    noteVisible: false,
+    noteRequired: false,
   })
 
   const selectedInterrupt = useMemo(
@@ -238,6 +248,8 @@ export function GlobalInterruptPanel({
   const decision = selectedDraftMatchesInterrupt ? interactionState.decision : ''
   const draftNote = selectedDraftMatchesInterrupt ? interactionState.draftNote : ''
   const draftAnswers = selectedDraftMatchesInterrupt ? interactionState.draftAnswers : EMPTY_DRAFT_ANSWERS
+  const noteVisible = selectedDraftMatchesInterrupt ? interactionState.noteVisible : false
+  const noteRequired = selectedDraftMatchesInterrupt ? interactionState.noteRequired : false
   const answers = useMemo(() => buildAnswers(questions, draftAnswers), [draftAnswers, questions])
   const isApproval = selectedInterrupt?.kind === 'approval'
   const isUserInput = selectedInterrupt?.kind === 'user_input'
@@ -257,6 +269,17 @@ export function GlobalInterruptPanel({
     isApproval
       ? approvalDecisionGroups(selectedInterrupt?.approval?.decisions ?? [])
       : null
+  const planApprovalDecisions = selectedInterrupt?.approval?.decisions ?? []
+  const primaryPlanDecision =
+    isPlanApproval
+      ? approvalGroups?.primary[0] ?? planApprovalDecisions[0] ?? null
+      : null
+  const extraPlanDecisions =
+    isPlanApproval && primaryPlanDecision
+      ? planApprovalDecisions.filter((option) => option.value !== primaryPlanDecision.value)
+      : isPlanApproval
+        ? planApprovalDecisions
+        : []
   const issueLink = selectedInterrupt ? issueHref(selectedInterrupt) : null
   const projectLink = selectedInterrupt ? projectHref(selectedInterrupt) : null
   const canRespondToSelectedInterrupt =
@@ -287,12 +310,44 @@ export function GlobalInterruptPanel({
     onRequestPlanRevision({ issueIdentifier, note })
   }
 
+  const respondWithApprovalOption = (option: PendingApprovalDecision) => {
+    if (responseLocked) {
+      return
+    }
+    updateDecision(option.value)
+    if (option.decision_payload) {
+      respondToSelectedInterrupt({
+        decision_payload: option.decision_payload,
+        note: draftNote.trim() || undefined,
+      })
+      return
+    }
+    respondToSelectedInterrupt({
+      decision: option.value,
+      note: draftNote.trim() || undefined,
+    })
+  }
+
+  const requestChangesForPlanApproval = () => {
+    if (responseLocked) {
+      return
+    }
+    const note = draftNote.trim()
+    if (!note) {
+      requireDraftNote()
+      return
+    }
+    requestRevisionForSelectedInterrupt(note)
+  }
+
   const selectedDraftState = (current: {
     interruptId: string | null
     draftKey: string
     decision: string
     draftNote: string
     draftAnswers: Record<string, string>
+    noteVisible: boolean
+    noteRequired: boolean
   }) =>
     current.interruptId === selectedInterrupt.id && current.draftKey === selectedInterruptDraftKey
 
@@ -303,6 +358,8 @@ export function GlobalInterruptPanel({
       decision: nextDecision,
       draftNote: selectedDraftState(current) ? current.draftNote : '',
       draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
+      noteVisible: selectedDraftState(current) ? current.noteVisible : false,
+      noteRequired: selectedDraftState(current) ? current.noteRequired : false,
     }))
   }
 
@@ -313,6 +370,9 @@ export function GlobalInterruptPanel({
       decision: selectedDraftState(current) ? current.decision : '',
       draftNote: value,
       draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
+      noteVisible: selectedDraftState(current) ? current.noteVisible : false,
+      noteRequired:
+        selectedDraftState(current) ? current.noteRequired && value.trim().length === 0 : false,
     }))
   }
 
@@ -326,6 +386,32 @@ export function GlobalInterruptPanel({
         ...(selectedDraftState(current) ? current.draftAnswers : {}),
         [questionId]: value,
       },
+      noteVisible: selectedDraftState(current) ? current.noteVisible : false,
+      noteRequired: selectedDraftState(current) ? current.noteRequired : false,
+    }))
+  }
+
+  const setDraftNoteVisibility = (visible: boolean) => {
+    setInteractionState((current) => ({
+      interruptId: selectedInterrupt.id,
+      draftKey: selectedInterruptDraftKey,
+      decision: selectedDraftState(current) ? current.decision : '',
+      draftNote: selectedDraftState(current) ? current.draftNote : '',
+      draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
+      noteVisible: visible,
+      noteRequired: visible && selectedDraftState(current) ? current.noteRequired : false,
+    }))
+  }
+
+  const requireDraftNote = () => {
+    setInteractionState((current) => ({
+      interruptId: selectedInterrupt.id,
+      draftKey: selectedInterruptDraftKey,
+      decision: selectedDraftState(current) ? current.decision : '',
+      draftNote: selectedDraftState(current) ? current.draftNote : '',
+      draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
+      noteVisible: true,
+      noteRequired: true,
     }))
   }
 
@@ -351,6 +437,40 @@ export function GlobalInterruptPanel({
         </span>
       </div>
     ) : null
+  ) : isPlanApproval ? (
+    <div className="mx-auto w-full max-w-[60rem]">
+      <PlanApprovalActionBar
+        approveDisabled={responseLocked || !primaryPlanDecision}
+        approveLabel={primaryPlanDecision?.label ?? 'Approve plan'}
+        extraActions={extraPlanDecisions.map((option) => ({
+          key: option.value,
+          label: option.label,
+          disabled: responseLocked,
+          variant: approvalDecisionVariant(option),
+          onClick: () => {
+            respondWithApprovalOption(option)
+          },
+        }))}
+        note={draftNote}
+        noteDescription="Add optional steering notes. A note becomes required if you request changes."
+        noteLabel="Review note"
+        notePlaceholder="Explain what should change in the plan..."
+        noteRequired={noteRequired}
+        noteVisible={noteVisible}
+        requestChangesDisabled={responseLocked || !selectedInterrupt.issue_identifier?.trim()}
+        onApprove={() => {
+          if (!primaryPlanDecision) {
+            return
+          }
+          respondWithApprovalOption(primaryPlanDecision)
+        }}
+        onNoteChange={updateDraftNote}
+        onRequestChanges={requestChangesForPlanApproval}
+        onToggleNote={() => {
+          setDraftNoteVisibility(!noteVisible)
+        }}
+      />
+    </div>
   ) : isApproval ? (
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -375,24 +495,18 @@ export function GlobalInterruptPanel({
               decision: '',
               draftNote: current.interruptId === selectedInterrupt.id ? current.draftNote : '',
               draftAnswers: current.interruptId === selectedInterrupt.id ? current.draftAnswers : {},
+              noteVisible: current.interruptId === selectedInterrupt.id ? current.noteVisible : false,
+              noteRequired: false,
             }))
-            if (isPlanApproval) {
-              requestRevisionForSelectedInterrupt(note)
-              return
-            }
             respondToSelectedInterrupt({ note })
           }}
         >
-          {isPlanApproval ? 'Request revision' : 'Send note'}
+          Send note
         </Button>
         <span className="text-sm leading-6 text-[var(--muted-foreground)]">
-          {isPlanApproval
-            ? canSubmitNote
-              ? 'This will restart the plan thread with your note.'
-              : 'Optional: leave a note before approving or requesting revision.'
-            : canSubmitNote
-              ? 'This will queue the note without approving the request.'
-              : 'Optional: leave a note before responding to the approval.'}
+          {canSubmitNote
+            ? 'This will queue the note without approving the request.'
+            : 'Optional: leave a note before responding to the approval.'}
         </span>
       </div>
 
@@ -412,21 +526,7 @@ export function GlobalInterruptPanel({
                 disabled={responseLocked}
                 type="button"
                 onClick={() => {
-                  if (responseLocked) {
-                    return
-                  }
-                  updateDecision(option.value)
-                  if (option.decision_payload) {
-                    respondToSelectedInterrupt({
-                      decision_payload: option.decision_payload,
-                      note: draftNote.trim() || undefined,
-                    })
-                    return
-                  }
-                  respondToSelectedInterrupt({
-                    decision: option.value,
-                    note: draftNote.trim() || undefined,
-                  })
+                  respondWithApprovalOption(option)
                 }}
               >
                 <p className="text-base font-medium">{option.label}</p>
@@ -455,21 +555,7 @@ export function GlobalInterruptPanel({
                 disabled={responseLocked}
                 type="button"
                 onClick={() => {
-                  if (responseLocked) {
-                    return
-                  }
-                  updateDecision(option.value)
-                  if (option.decision_payload) {
-                    respondToSelectedInterrupt({
-                      decision_payload: option.decision_payload,
-                      note: draftNote.trim() || undefined,
-                    })
-                    return
-                  }
-                  respondToSelectedInterrupt({
-                    decision: option.value,
-                    note: draftNote.trim() || undefined,
-                  })
+                  respondWithApprovalOption(option)
                 }}
               >
                 <p className="text-base font-medium">{option.label}</p>
@@ -500,21 +586,7 @@ export function GlobalInterruptPanel({
                 disabled={responseLocked}
                 type="button"
                 onClick={() => {
-                  if (responseLocked) {
-                    return
-                  }
-                  updateDecision(option.value)
-                  if (option.decision_payload) {
-                    respondToSelectedInterrupt({
-                      decision_payload: option.decision_payload,
-                      note: draftNote.trim() || undefined,
-                    })
-                    return
-                  }
-                  respondToSelectedInterrupt({
-                    decision: option.value,
-                    note: draftNote.trim() || undefined,
-                  })
+                  respondWithApprovalOption(option)
                 }}
               >
                 <p className="text-base font-medium">{option.label}</p>
@@ -545,6 +617,10 @@ export function GlobalInterruptPanel({
     </div>
   ) : null
 
+  const queueAvailable = items.length > 1
+  const detailColumnClassName =
+    queueAvailable && queueOpen ? 'min-w-0 w-full' : 'mx-auto min-w-0 w-full max-w-[60rem]'
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -553,13 +629,27 @@ export function GlobalInterruptPanel({
         className="left-0 top-0 flex h-[100dvh] w-[100vw] max-w-none -translate-x-0 -translate-y-0 flex-col overflow-hidden rounded-none border-0 bg-[rgba(8,9,12,0.98)] p-0 shadow-none"
       >
         <div className="flex h-full min-h-0 flex-col">
-          <div className="shrink-0 border-b border-white/8 bg-[rgba(8,9,12,0.95)] px-4 py-4 backdrop-blur-xl sm:px-6">
+          <div className="shrink-0 border-b border-white/8 bg-[rgba(8,9,12,0.95)] px-4 py-5 backdrop-blur-xl sm:px-6">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="border-amber-400/25 bg-amber-400/12 text-amber-100">
-                    {items.length} waiting
-                  </Badge>
+                  {queueAvailable ? (
+                    <Button
+                      aria-expanded={queueOpen}
+                      className="h-9 rounded-full border-white/10 bg-white/5 px-3 text-sm text-white hover:border-white/18 hover:bg-white/8"
+                      type="button"
+                      variant="secondary"
+                      onClick={() => {
+                        setQueueOpen((current) => !current)
+                      }}
+                    >
+                      {queueOpen ? 'Hide queue' : `Queue (${items.length})`}
+                    </Button>
+                  ) : (
+                    <Badge className="border-amber-400/25 bg-amber-400/12 text-amber-100">
+                      {items.length} waiting
+                    </Badge>
+                  )}
                   <Badge
                     className={cn(
                       'border-white/10 bg-white/5 text-white',
@@ -571,26 +661,20 @@ export function GlobalInterruptPanel({
                   {selectedInterrupt.collaboration_mode === 'plan' ? (
                     <Badge className="border-sky-400/25 bg-sky-400/12 text-sky-100">Plan turn</Badge>
                   ) : null}
-                  <Badge className="border-white/10 bg-white/5 text-white">
-                    {interruptSubject(selectedInterrupt)}
-                  </Badge>
-                  {selectedInterrupt.phase ? (
-                    <Badge className="border-white/10 bg-white/5 text-white">
-                      {toTitleCase(selectedInterrupt.phase)}
-                    </Badge>
-                  ) : null}
-                  {selectedInterrupt.attempt ? (
-                    <Badge className="border-white/10 bg-white/5 text-white">
-                      Attempt {selectedInterrupt.attempt}
-                    </Badge>
-                  ) : null}
                 </div>
-                <DialogTitle className="mt-3 truncate text-xl font-semibold text-white">
+                <DialogTitle className="mt-4 max-w-4xl text-2xl font-semibold leading-tight text-white sm:text-[2rem]">
                   {interruptHeading(selectedInterrupt)}
                 </DialogTitle>
-                <DialogDescription className="mt-2 max-w-4xl text-sm leading-6 text-[var(--muted-foreground)]">
+                <DialogDescription className="mt-3 max-w-4xl text-base leading-7 text-[var(--muted-foreground)]">
                   {interruptSummary(selectedInterrupt)}
                 </DialogDescription>
+                <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--muted-foreground)]">
+                  <span>{interruptSubject(selectedInterrupt)}</span>
+                  <span>Updated {formatRelativeTimeCompact(selectedInterrupt.last_activity_at || selectedInterrupt.requested_at)}</span>
+                  {selectedInterrupt.phase ? <span>{toTitleCase(selectedInterrupt.phase)}</span> : null}
+                  {selectedInterrupt.attempt ? <span>Attempt {selectedInterrupt.attempt}</span> : null}
+                  {queueAvailable ? <span>{items.length} waiting</span> : null}
+                </div>
               </div>
               <Button
                 aria-label="Hide waiting input dialog"
@@ -606,26 +690,35 @@ export function GlobalInterruptPanel({
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6" data-testid="global-interrupt-body">
-            {isAlert ? (
-              <div className="grid items-start gap-4 xl:grid-cols-[minmax(18rem,0.38fr)_minmax(0,1fr)]">
-                <div className="grid min-w-0 items-start gap-2.5">
-                  {items.map((interrupt) => {
-                    const selected = interrupt.id === selectedInterrupt.id
-                    const issueRowLink = issueHref(interrupt)
-                    const projectRowLink = projectHref(interrupt)
-                    const acknowledgeable = interrupt.kind === 'alert' && interruptHasAcknowledgeAction(interrupt)
-                    return (
-                      <div
-                        key={interrupt.id}
-                        className={cn(
-                          'overflow-hidden rounded-[var(--panel-radius)] border transition',
-                          selected
-                            ? 'border-[var(--accent)]/35 bg-[linear-gradient(135deg,rgba(196,255,87,.14),rgba(255,255,255,.06))]'
-                            : 'border-white/8 bg-black/25 hover:border-white/12 hover:bg-black/30',
-                        )}
-                      >
+            <div
+              className={cn(
+                'mx-auto grid w-full max-w-[88rem] items-start gap-6',
+                queueAvailable && queueOpen ? 'xl:grid-cols-[18rem_minmax(0,1fr)]' : '',
+              )}
+            >
+              {queueAvailable && queueOpen ? (
+                <aside className="min-w-0 rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3 border-b border-white/8 px-1 pb-3">
+                    <div>
+                      <p className="text-sm font-medium text-white">Waiting queue</p>
+                      <p className="text-sm text-[var(--muted-foreground)]">Switch items without losing the current draft.</p>
+                    </div>
+                  </div>
+                  <div className="grid gap-2.5">
+                    {items.map((interrupt) => {
+                      const selected = interrupt.id === selectedInterrupt.id
+                      const locked =
+                        interrupt.kind !== 'alert' && interrupt.id !== activeRespondableInterruptId
+
+                      return (
                         <button
-                          className="w-full min-w-0 px-4 py-4 text-left"
+                          key={interrupt.id}
+                          className={cn(
+                            'w-full rounded-[calc(var(--panel-radius)-0.25rem)] border px-4 py-4 text-left transition',
+                            selected
+                              ? 'border-[var(--accent)]/35 bg-[linear-gradient(135deg,rgba(196,255,87,.14),rgba(255,255,255,.06))]'
+                              : 'border-white/8 bg-black/20 hover:border-white/12 hover:bg-black/30',
+                          )}
                           type="button"
                           onClick={() => {
                             setSelectedId(interrupt.id)
@@ -641,81 +734,37 @@ export function GlobalInterruptPanel({
                               </Badge>
                             ) : null}
                           </div>
-                          <p className="mt-3 truncate text-sm font-medium text-white">
-                            {interruptHeading(interrupt)}
-                          </p>
+                          <p className="mt-3 text-sm font-medium text-white">{interruptHeading(interrupt)}</p>
                           <p className="mt-1 text-sm leading-6 text-[var(--muted-foreground)]">
                             {interruptSummary(interrupt)}
                           </p>
-                          <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                            Last activity {formatRelativeTimeCompact(interrupt.last_activity_at || interrupt.requested_at)}
-                          </p>
+                          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--muted-foreground)]">
+                            <span>Updated {formatRelativeTimeCompact(interrupt.last_activity_at || interrupt.requested_at)}</span>
+                            {locked ? <span>Waiting for earlier response</span> : null}
+                          </div>
                         </button>
-                        <div className="flex flex-wrap gap-2 border-t border-white/8 px-4 pb-4 pt-3">
-                          {issueRowLink ? (
-                            <a
-                              className="inline-flex items-center rounded-full border border-white/10 px-3 py-1.5 text-xs text-white transition hover:border-white/20 hover:bg-white/5"
-                              href={issueRowLink}
-                            >
-                              Open issue
-                            </a>
-                          ) : null}
-                          {projectRowLink ? (
-                            <a
-                              className="inline-flex items-center rounded-full border border-white/10 px-3 py-1.5 text-xs text-white transition hover:border-white/20 hover:bg-white/5"
-                              href={projectRowLink}
-                            >
-                              Open project
-                            </a>
-                          ) : null}
-                          {acknowledgeable ? (
-                            <button
-                              className="inline-flex items-center rounded-full border border-white/10 px-3 py-1.5 text-xs text-white transition hover:border-white/20 hover:bg-white/5 disabled:cursor-not-allowed disabled:text-white/45"
-                              disabled={isSubmitting}
-                              type="button"
-                              onClick={() => {
-                                if (isSubmitting) {
-                                  return
-                                }
-                                onAcknowledge(interrupt.id)
-                              }}
-                            >
-                              Acknowledge
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-
-                <div className="min-w-0 rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]">
-                  <div className="min-w-0">
-                    <p className="truncate text-base font-medium text-white">
-                      {interruptHeading(selectedInterrupt)}
-                    </p>
-                    <p className="mt-1 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {interruptSummary(selectedInterrupt)}
-                    </p>
-                    <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      Last activity {formatRelativeTimeCompact(selectedInterrupt.last_activity_at || selectedInterrupt.requested_at)}
-                    </p>
+                      )
+                    })}
                   </div>
+                </aside>
+              ) : null}
 
-                  <div className="mt-4 grid gap-4">
+              {isAlert ? (
+                <div className={cn(detailColumnClassName, 'rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]')}>
+                  <div className="grid gap-4">
                     <div
                       className={cn(
-                        'rounded-[calc(var(--panel-radius)-0.2rem)] border px-4 py-4',
+                        'rounded-[calc(var(--panel-radius)-0.2rem)] border px-5 py-5',
                         selectedInterrupt.alert?.severity === 'info' && 'border-sky-400/20 bg-sky-400/10',
                         selectedInterrupt.alert?.severity === 'warning' && 'border-amber-400/20 bg-amber-400/10',
                         (!selectedInterrupt.alert?.severity || selectedInterrupt.alert?.severity === 'error') &&
                           'border-rose-400/20 bg-rose-400/10',
                       )}
                     >
-                      <p className="text-lg font-medium text-white">
+                      <p className="text-lg font-semibold text-white">
                         {selectedInterrupt.alert?.title || 'Maestro alert'}
                       </p>
-                      <p className="mt-2 max-w-4xl text-sm leading-6 text-white/85">
+                      <p className="mt-2 max-w-4xl text-sm leading-6 text-white/88">
                         {selectedInterrupt.alert?.message || 'Maestro needs your attention before execution can continue.'}
                       </p>
                       {selectedInterrupt.alert?.detail ? (
@@ -745,326 +794,187 @@ export function GlobalInterruptPanel({
                     </div>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <form
-                id={formId}
-                className="grid items-start gap-4 xl:grid-cols-[minmax(18rem,0.38fr)_minmax(0,1fr)]"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  if (!valid || responseLocked || !isUserInput) {
-                    return
-                  }
-                  respondToSelectedInterrupt({ answers })
-                }}
-              >
-                <div className="grid min-w-0 items-start gap-2.5">
-                  {items.map((interrupt) => {
-                    const selected = interrupt.id === selectedInterrupt.id
-                    const issueRowLink = issueHref(interrupt)
-                    const projectRowLink = projectHref(interrupt)
-                    const acknowledgeable = interrupt.kind === 'alert' && interruptHasAcknowledgeAction(interrupt)
-                    return (
-                      <div
-                        key={interrupt.id}
-                        className={cn(
-                          'overflow-hidden rounded-[var(--panel-radius)] border transition',
-                          selected
-                            ? 'border-[var(--accent)]/35 bg-[linear-gradient(135deg,rgba(196,255,87,.14),rgba(255,255,255,.06))]'
-                            : 'border-white/8 bg-black/25 hover:border-white/12 hover:bg-black/30',
-                        )}
-                      >
-                        <button
-                          className="w-full min-w-0 px-4 py-4 text-left"
-                          type="button"
-                          onClick={() => {
-                            setSelectedId(interrupt.id)
-                          }}
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge className="border-white/10 bg-white/5 text-white">
-                              {interruptKindLabel(interrupt)}
-                            </Badge>
-                            {interrupt.kind === 'alert' ? (
-                              <Badge className={alertSeverityClasses(interrupt.alert)}>
-                                {toTitleCase(interrupt.alert?.severity || 'error')}
-                              </Badge>
-                            ) : null}
-                          </div>
-                          <p className="mt-3 truncate text-sm font-medium text-white">
-                            {interruptHeading(interrupt)}
+              ) : (
+                <form
+                  id={formId}
+                  className={cn(detailColumnClassName, 'rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]')}
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (!valid || responseLocked || !isUserInput) {
+                      return
+                    }
+                    respondToSelectedInterrupt({ answers })
+                  }}
+                >
+                  <div className="grid gap-4">
+                    {isPlanApproval ? (
+                      <>
+                        <div className="space-y-2">
+                          <p className="text-lg font-semibold text-white">Review the proposed plan</p>
+                          <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)]">
+                            Focus on the plan itself. Use the queue only if you need to switch to another waiting request.
                           </p>
-                          <p className="mt-1 text-sm leading-6 text-[var(--muted-foreground)]">
-                            {interruptSummary(interrupt)}
-                          </p>
-                          <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                            Last activity {formatRelativeTimeCompact(interrupt.last_activity_at || interrupt.requested_at)}
-                          </p>
-                        </button>
-                        {interrupt.kind === 'alert' ? (
-                          <div className="flex flex-wrap gap-2 border-t border-white/8 px-4 pb-4 pt-3">
-                            {issueRowLink ? (
-                              <a
-                                className="inline-flex items-center rounded-full border border-white/10 px-3 py-1.5 text-xs text-white transition hover:border-white/20 hover:bg-white/5"
-                                href={issueRowLink}
-                              >
-                                Open issue
-                              </a>
-                            ) : null}
-                            {projectRowLink ? (
-                              <a
-                                className="inline-flex items-center rounded-full border border-white/10 px-3 py-1.5 text-xs text-white transition hover:border-white/20 hover:bg-white/5"
-                                href={projectRowLink}
-                              >
-                                Open project
-                              </a>
-                            ) : null}
-                            {acknowledgeable ? (
-                              <button
-                                className="inline-flex items-center rounded-full border border-white/10 px-3 py-1.5 text-xs text-white transition hover:border-white/20 hover:bg-white/5 disabled:cursor-not-allowed disabled:text-white/45"
-                                disabled={isSubmitting}
-                                type="button"
-                                onClick={() => {
-                                  if (isSubmitting) {
-                                    return
-                                  }
-                                  onAcknowledge(interrupt.id)
-                                }}
-                              >
-                                Acknowledge
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    )
-                  })}
-                </div>
-
-                <div className="min-w-0 rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]">
-                  <div className="min-w-0">
-                    <p className="truncate text-base font-medium text-white">
-                      {interruptHeading(selectedInterrupt)}
-                    </p>
-                    <p className="mt-1 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {interruptSummary(selectedInterrupt)}
-                    </p>
-                    <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      Last activity {formatRelativeTimeCompact(selectedInterrupt.last_activity_at || selectedInterrupt.requested_at)}
-                    </p>
-                  </div>
-
-                  {isAlert ? (
-                    <div className="mt-4 grid gap-4">
-                      <div
-                        className={cn(
-                          'rounded-[calc(var(--panel-radius)-0.2rem)] border px-4 py-4',
-                          selectedInterrupt.alert?.severity === 'info' && 'border-sky-400/20 bg-sky-400/10',
-                          selectedInterrupt.alert?.severity === 'warning' && 'border-amber-400/20 bg-amber-400/10',
-                          (!selectedInterrupt.alert?.severity || selectedInterrupt.alert?.severity === 'error') &&
-                            'border-rose-400/20 bg-rose-400/10',
-                        )}
-                      >
-                        <p className="text-lg font-medium text-white">
-                          {selectedInterrupt.alert?.title || 'Maestro alert'}
-                        </p>
-                        <p className="mt-2 max-w-4xl text-sm leading-6 text-white/85">
-                          {selectedInterrupt.alert?.message || 'Maestro needs your attention before execution can continue.'}
-                        </p>
-                        {selectedInterrupt.alert?.detail ? (
-                          <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
-                            {selectedInterrupt.alert.detail}
-                          </p>
-                        ) : null}
-                      </div>
-
-                      <div className="flex flex-wrap gap-3">
-                        {issueLink ? (
-                          <a
-                            className="inline-flex h-11 items-center rounded-2xl border border-white/10 px-4 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/5"
-                            href={issueLink}
-                          >
-                            Open issue
-                          </a>
-                        ) : null}
-                        {projectLink ? (
-                          <a
-                            className="inline-flex h-11 items-center rounded-2xl border border-white/10 px-4 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/5"
-                            href={projectLink}
-                          >
-                            Open project
-                          </a>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mt-4 grid gap-4">
-                      <div className="space-y-2">
-                        <p className="text-lg font-medium text-white">
-                          {isUserInput ? 'Respond to this request' : approvalPrompt(selectedInterrupt)}
-                        </p>
-                        {isUserInput ? (
-                          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                            Provide the information the agent needs so it can continue the current turn.
-                          </p>
-                        ) : selectedInterrupt.approval?.reason ? (
-                          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                            {selectedInterrupt.approval.reason}
-                          </p>
-                        ) : null}
-                        {isPlanApproval ? (
-                          <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-sky-400/20 bg-sky-400/10 px-4 py-4 text-sm leading-6 text-sky-50">
-                            <p className="mb-2 text-xs uppercase tracking-[0.18em] text-sky-100/80">
-                              Proposed plan
-                            </p>
-                            <MarkdownText content={approvalMarkdown} />
-                          </div>
-                        ) : null}
-                        {!canRespondToSelectedInterrupt && !isUserInput ? (
-                          <p className="max-w-4xl text-sm leading-6 text-amber-100/90">
-                            An earlier interrupt is still pending. Review this request now, but wait until it reaches the front of the queue before responding.
-                          </p>
-                        ) : null}
-                        {!canRespondToSelectedInterrupt && isUserInput ? (
-                          <p className="text-sm leading-6 text-amber-100/90">
-                            An earlier interrupt is still pending. You can review these questions now, but responses stay locked until this request reaches the front of the queue.
-                          </p>
-                        ) : null}
-                      </div>
-
-                      {isApproval && !isPlanApproval ? (
-                        <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.18))] px-4 py-4">
-                          <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                            Requested command
-                          </p>
-                          <code className={`${wrappedOutputClassName} mt-3 block rounded-[calc(var(--panel-radius)-0.45rem)] border border-white/10 bg-black/35 px-4 py-3 font-mono text-[0.96rem] leading-7 text-white`}>
-                            {selectedInterrupt.approval?.command || selectedInterrupt.approval?.reason || 'Operator approval required.'}
-                          </code>
                         </div>
-                      ) : null}
-
-                      {selectedInterrupt.approval?.cwd ? (
-                        <div className="flex flex-wrap items-center gap-3 rounded-[calc(var(--panel-radius)-0.3rem)] border border-white/8 bg-white/[0.03] px-4 py-3">
-                          <span className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                            Working directory
-                          </span>
-                          <code className="truncate rounded-full border border-white/10 bg-black/25 px-3 py-1.5 font-mono text-xs text-white">
-                            {selectedInterrupt.approval.cwd}
-                          </code>
-                        </div>
-                      ) : null}
-
-                      {isApproval ? (
-                        <label className="grid gap-2 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/8 bg-white/[0.03] p-4">
-                          <div className="space-y-1">
-                            <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                              {isPlanApproval ? 'Revision note' : 'Agent note'}
-                            </p>
+                        {!canRespondToSelectedInterrupt ? (
+                          <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
+                            An earlier interrupt is still pending. You can review this plan now, but responses stay locked until it reaches the front of the queue.
+                          </p>
+                        ) : null}
+                        <PlanApprovalDocument markdown={approvalMarkdown} />
+                      </>
+                    ) : (
+                      <>
+                        <div className="space-y-2">
+                          <p className="text-lg font-semibold text-white">
+                            {isUserInput ? 'Respond to this request' : approvalPrompt(selectedInterrupt)}
+                          </p>
+                          {isUserInput ? (
                             <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                              {isPlanApproval
-                                ? 'Send a steering note to revise the plan before approval.'
-                                : 'Send a steering note to the agent without consuming this approval.'}
+                              Provide the information the agent needs so it can continue the current turn.
                             </p>
-                          </div>
-                          <Textarea
-                            disabled={responseLocked}
-                            placeholder={
-                              isPlanApproval
-                                ? 'Explain what should change in the plan...'
-                                : 'Add steering notes for the next turn...'
-                            }
-                            value={draftNote}
-                            onChange={(event) => {
-                              updateDraftNote(event.target.value)
-                            }}
-                          />
-                        </label>
-                      ) : null}
-
-                      {isUserInput ? (
-                        <div className="grid gap-3">
-                          {questions.map((question) => (
-                            <label
-                              key={question.id}
-                              className="grid gap-2 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/8 bg-white/[0.03] p-3"
-                            >
-                              <div className="space-y-1">
-                                {question.header ? (
-                                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                                    {question.header}
-                                  </p>
-                                ) : null}
-                                <p className="text-sm text-white">{question.question || question.id}</p>
-                              </div>
-                              {question.options?.length ? (
-                                <div className="grid gap-2">
-                                  {question.options.map((option) => {
-                                    const checked = draftAnswers[question.id] === option.label
-                                    return (
-                                      <button
-                                        key={option.label}
-                                        className={cn(
-                                          'rounded-xl border px-3 py-2 text-left text-sm transition',
-                                          checked
-                                            ? 'border-[var(--accent)]/50 bg-[var(--accent)]/10 text-white'
-                                            : 'border-white/10 bg-black/20 text-[var(--muted-foreground)] hover:border-white/20 hover:text-white',
-                                        )}
-                                        disabled={responseLocked}
-                                        type="button"
-                                        onClick={() => {
-                                          if (responseLocked) {
-                                            return
-                                          }
-                                          const nextDraftAnswers = {
-                                            ...draftAnswers,
-                                            [question.id]: option.label,
-                                          }
-                                          updateDraftAnswer(question.id, option.label)
-                                          if (requiresExplicitSubmit) {
-                                            return
-                                          }
-                                          const nextAnswers = buildAnswers(questions, nextDraftAnswers)
-                                          const readyToSubmit =
-                                            questions.length > 0 &&
-                                            questions.every(
-                                              (currentQuestion) =>
-                                                (nextAnswers[currentQuestion.id]?.[0] ?? '').trim().length > 0,
-                                            )
-                                          if (readyToSubmit) {
-                                            respondToSelectedInterrupt({ answers: nextAnswers })
-                                          }
-                                        }}
-                                      >
-                                        <span className="font-medium">{option.label}</span>
-                                        {option.description ? (
-                                          <span className="ml-2 text-[var(--muted-foreground)]">{option.description}</span>
-                                        ) : null}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              ) : null}
-                              {!question.options?.length || question.is_other ? (
-                                <input
-                                  className="h-11 rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-white outline-none transition focus:border-[var(--accent)]/50"
-                                  disabled={responseLocked}
-                                  placeholder={question.is_secret ? 'Enter response' : 'Type response'}
-                                  type={question.is_secret ? 'password' : 'text'}
-                                  value={draftAnswers[question.id] ?? ''}
-                                  onChange={(event) => {
-                                    updateDraftAnswer(question.id, event.target.value)
-                                  }}
-                                />
-                              ) : null}
-                            </label>
-                          ))}
+                          ) : selectedInterrupt.approval?.reason ? (
+                            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+                              {selectedInterrupt.approval.reason}
+                            </p>
+                          ) : null}
+                          {!canRespondToSelectedInterrupt && !isUserInput ? (
+                            <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
+                              An earlier interrupt is still pending. Review this request now, but wait until it reaches the front of the queue before responding.
+                            </p>
+                          ) : null}
+                          {!canRespondToSelectedInterrupt && isUserInput ? (
+                            <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
+                              An earlier interrupt is still pending. You can review these questions now, but responses stay locked until this request reaches the front of the queue.
+                            </p>
+                          ) : null}
                         </div>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
-              </form>
-            )}
+
+                        {isApproval ? (
+                          <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.18))] px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                              Requested command
+                            </p>
+                            <code className={`${wrappedOutputClassName} mt-3 block rounded-[calc(var(--panel-radius)-0.45rem)] border border-white/10 bg-black/35 px-4 py-3 font-mono text-[0.96rem] leading-7 text-white`}>
+                              {selectedInterrupt.approval?.command || selectedInterrupt.approval?.reason || 'Operator approval required.'}
+                            </code>
+                          </div>
+                        ) : null}
+
+                        {selectedInterrupt.approval?.cwd ? (
+                          <div className="flex flex-wrap items-center gap-3 rounded-[calc(var(--panel-radius)-0.3rem)] border border-white/8 bg-white/[0.03] px-4 py-3">
+                            <span className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                              Working directory
+                            </span>
+                            <code className="truncate rounded-full border border-white/10 bg-black/25 px-3 py-1.5 font-mono text-xs text-white">
+                              {selectedInterrupt.approval.cwd}
+                            </code>
+                          </div>
+                        ) : null}
+
+                        {isApproval ? (
+                          <label className="grid gap-2 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/8 bg-white/[0.03] p-4">
+                            <div className="space-y-1">
+                              <p className="text-sm font-medium text-white">Agent note</p>
+                              <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+                                Send a steering note to the agent without consuming this approval.
+                              </p>
+                            </div>
+                            <Textarea
+                              disabled={responseLocked}
+                              placeholder="Add steering notes for the next turn..."
+                              value={draftNote}
+                              onChange={(event) => {
+                                updateDraftNote(event.target.value)
+                              }}
+                            />
+                          </label>
+                        ) : null}
+
+                        {isUserInput ? (
+                          <div className="grid gap-3">
+                            {questions.map((question) => (
+                              <label
+                                key={question.id}
+                                className="grid gap-2 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/8 bg-white/[0.03] p-3"
+                              >
+                                <div className="space-y-1">
+                                  {question.header ? (
+                                    <p className="text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                                      {question.header}
+                                    </p>
+                                  ) : null}
+                                  <p className="text-sm text-white">{question.question || question.id}</p>
+                                </div>
+                                {question.options?.length ? (
+                                  <div className="grid gap-2">
+                                    {question.options.map((option) => {
+                                      const checked = draftAnswers[question.id] === option.label
+                                      return (
+                                        <button
+                                          key={option.label}
+                                          className={cn(
+                                            'rounded-xl border px-3 py-2 text-left text-sm transition',
+                                            checked
+                                              ? 'border-[var(--accent)]/50 bg-[var(--accent)]/10 text-white'
+                                              : 'border-white/10 bg-black/20 text-[var(--muted-foreground)] hover:border-white/20 hover:text-white',
+                                          )}
+                                          disabled={responseLocked}
+                                          type="button"
+                                          onClick={() => {
+                                            if (responseLocked) {
+                                              return
+                                            }
+                                            const nextDraftAnswers = {
+                                              ...draftAnswers,
+                                              [question.id]: option.label,
+                                            }
+                                            updateDraftAnswer(question.id, option.label)
+                                            if (requiresExplicitSubmit) {
+                                              return
+                                            }
+                                            const nextAnswers = buildAnswers(questions, nextDraftAnswers)
+                                            const readyToSubmit =
+                                              questions.length > 0 &&
+                                              questions.every(
+                                                (currentQuestion) =>
+                                                  (nextAnswers[currentQuestion.id]?.[0] ?? '').trim().length > 0,
+                                              )
+                                            if (readyToSubmit) {
+                                              respondToSelectedInterrupt({ answers: nextAnswers })
+                                            }
+                                          }}
+                                        >
+                                          <span className="font-medium">{option.label}</span>
+                                          {option.description ? (
+                                            <span className="ml-2 text-[var(--muted-foreground)]">{option.description}</span>
+                                          ) : null}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                ) : null}
+                                {!question.options?.length || question.is_other ? (
+                                  <input
+                                    className="h-11 rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-white outline-none transition focus:border-[var(--accent)]/50"
+                                    disabled={responseLocked}
+                                    placeholder={question.is_secret ? 'Enter response' : 'Type response'}
+                                    type={question.is_secret ? 'password' : 'text'}
+                                    value={draftAnswers[question.id] ?? ''}
+                                    onChange={(event) => {
+                                      updateDraftAnswer(question.id, event.target.value)
+                                    }}
+                                  />
+                                ) : null}
+                              </label>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                </form>
+              )}
+            </div>
           </div>
 
           {detailFooter ? (

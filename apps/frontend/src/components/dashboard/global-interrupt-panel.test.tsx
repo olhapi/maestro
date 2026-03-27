@@ -97,7 +97,8 @@ describe('GlobalInterruptPanel', () => {
     const footer = screen.getByTestId('global-interrupt-footer')
     expect(footer).toHaveClass('shrink-0')
     expect(footer).toContainElement(screen.getByRole('button', { name: /approve once/i }))
-    expect(screen.getByText('Proposed plan')).toBeInTheDocument()
+    expect(screen.getAllByText('Review the proposed plan').length).toBeGreaterThan(0)
+    expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
   })
 
   it('calls onOpenChange when the dialog is dismissed', () => {
@@ -151,22 +152,50 @@ describe('GlobalInterruptPanel', () => {
     })
   })
 
-  it('renders plan approvals with inline markdown and forwards revision notes', () => {
+  it('can collapse and restore a drafted plan note without clearing it', () => {
+    renderInterruptPanel([makePlanApprovalInterrupt()])
+
+    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+
+    const noteField = screen.getByPlaceholderText(/explain what should change in the plan/i)
+    fireEvent.change(noteField, {
+      target: { value: 'Keep the rollout small.' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /hide note/i }))
+
+    expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /edit note/i }))
+
+    expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue(
+      'Keep the rollout small.',
+    )
+  })
+
+  it('renders structured plan sections and requires a note before requesting changes', () => {
     const onRespond = vi.fn()
     const onRequestPlanRevision = vi.fn()
 
-    renderInterruptPanel([makePlanApprovalInterrupt()], { onRespond, onRequestPlanRevision })
+    renderInterruptPanel([makePlanApprovalInterrupt({
+      markdown:
+        'Questions:\n- Tighten the rollout\n\nAssumptions:\n- Keep the current deployment window\n\nPlan:\n1. Add a rollback check',
+    })], { onRespond, onRequestPlanRevision })
 
-    expect(screen.getAllByText('Plan approval').length).toBeGreaterThan(1)
-    expect(screen.getByText('Proposed plan')).toBeInTheDocument()
-    expect(screen.getByText(/tighten the rollout/i)).toBeInTheDocument()
-    expect(screen.getByText(/add a rollback check/i)).toBeInTheDocument()
+    expect(screen.getByText('Questions to resolve')).toBeInTheDocument()
+    expect(screen.getByText('Assumptions in scope')).toBeInTheDocument()
+    expect(screen.getByText('Implementation plan')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
+    fireEvent.click(screen.getByRole('button', { name: /request changes/i }))
+
+    const noteField = screen.getByPlaceholderText(/explain what should change in the plan/i)
+    expect(noteField).toHaveFocus()
+
+    fireEvent.change(noteField, {
       target: { value: 'Make the rollout smaller and add a rollback guard.' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /request revision/i }))
+    fireEvent.click(screen.getByRole('button', { name: /request changes/i }))
 
     expect(onRequestPlanRevision).toHaveBeenCalledWith({
       issueIdentifier: 'ISS-1',
@@ -196,6 +225,7 @@ describe('GlobalInterruptPanel', () => {
       />,
     )
 
+    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
     fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: 'Reduce the rollout size and add a rollback check.' },
     })
@@ -218,6 +248,8 @@ describe('GlobalInterruptPanel', () => {
       />,
     )
 
+    expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
     expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue('')
 
     fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
@@ -355,10 +387,9 @@ describe('GlobalInterruptPanel', () => {
       makeApprovalInterrupt(),
     ])
 
-    expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
-    expect(screen.getByText('2 waiting')).toBeInTheDocument()
-    expect(screen.getAllByText('Project dispatch blocked').length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: 'Acknowledge' }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /queue \(2\)/i })).toBeInTheDocument()
+    expect(screen.getByText('Allow the agent to run this command?')).toBeInTheDocument()
+    expect(screen.queryByText('Waiting queue')).not.toBeInTheDocument()
   })
 
   it('keeps later queued approvals read-only until they reach the front of the queue', () => {
@@ -378,6 +409,7 @@ describe('GlobalInterruptPanel', () => {
       },
     ], { respondableInterruptId: 'interrupt-approval', onRespond })
 
+    fireEvent.click(screen.getByRole('button', { name: /queue \(2\)/i }))
     fireEvent.click(screen.getByText('Approve deployment').closest('button')!)
 
     expect(screen.getByText(/an earlier interrupt is still pending/i)).toBeInTheDocument()

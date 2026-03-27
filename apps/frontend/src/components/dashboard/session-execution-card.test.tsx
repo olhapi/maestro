@@ -112,10 +112,11 @@ describe('SessionExecutionCard', () => {
     expect(screen.getByText('Plan ready for approval')).toBeInTheDocument()
     expect(screen.getByText('plan', { selector: 'strong' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'details' })).toHaveAttribute('href', 'https://example.com')
+    expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /approve plan and continue/i }))
+    fireEvent.click(screen.getByRole('button', { name: /approve plan/i }))
 
-    expect(onApprovePlan).toHaveBeenCalledTimes(1)
+    expect(onApprovePlan).toHaveBeenCalledWith(undefined)
   })
 
   it('forwards revision notes and approval notes from the plan approval card', () => {
@@ -137,17 +138,90 @@ describe('SessionExecutionCard', () => {
       />,
     )
 
-    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next planning turn/i), {
+    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: 'Tighten the rollout steps.' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /request revision/i }))
+    fireEvent.click(screen.getByRole('button', { name: /request changes/i }))
 
     expect(onRequestPlanRevision).toHaveBeenCalledWith('Tighten the rollout steps.')
 
-    fireEvent.click(screen.getByRole('button', { name: /approve plan and continue/i }))
+    fireEvent.click(screen.getByRole('button', { name: /approve plan/i }))
 
     expect(onApprovePlan).toHaveBeenCalledWith('Tighten the rollout steps.')
+  })
+
+  it('can collapse and restore a drafted plan note without clearing it', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the **plan** before execution.',
+            requested_at: '2026-03-18T12:00:00Z',
+            attempt: 2,
+          },
+        })}
+        issueTotalTokens={120}
+        onApprovePlan={() => {}}
+        onRequestPlanRevision={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+
+    const noteInput = screen.getByPlaceholderText(/explain what should change in the plan/i)
+    fireEvent.change(noteInput, {
+      target: { value: 'Keep the rollout small.' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /hide note/i }))
+
+    expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /edit note/i }))
+
+    expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue(
+      'Keep the rollout small.',
+    )
+  })
+
+  it('disables approval when the approve callback is not provided', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the **plan** before execution.',
+            requested_at: '2026-03-18T12:00:00Z',
+            attempt: 2,
+          },
+        })}
+        issueTotalTokens={120}
+        onRequestPlanRevision={() => {}}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: /approve plan/i })).toBeDisabled()
+  })
+
+  it('reveals the note composer when request changes is chosen without a note', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the **plan** before execution.',
+            requested_at: '2026-03-18T12:00:00Z',
+            attempt: 2,
+          },
+        })}
+        issueTotalTokens={120}
+        onRequestPlanRevision={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /request changes/i }))
+
+    expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveFocus()
   })
 
   it('clears stale revision notes when a new plan approval arrives', () => {
@@ -166,10 +240,11 @@ describe('SessionExecutionCard', () => {
       />,
     )
 
-    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next planning turn/i), {
+    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: 'Reduce the rollout size and add a rollback check.' },
     })
-    expect(screen.getByPlaceholderText(/add steering notes for the next planning turn/i)).toHaveValue(
+    expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue(
       'Reduce the rollout size and add a rollback check.',
     )
 
@@ -187,9 +262,11 @@ describe('SessionExecutionCard', () => {
       />,
     )
 
-    expect(screen.getByPlaceholderText(/add steering notes for the next planning turn/i)).toHaveValue('')
+    expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue('')
 
-    fireEvent.click(screen.getByRole('button', { name: /approve plan and continue/i }))
+    fireEvent.click(screen.getByRole('button', { name: /approve plan/i }))
 
     expect(onApprovePlan).toHaveBeenCalledWith(undefined)
   })
