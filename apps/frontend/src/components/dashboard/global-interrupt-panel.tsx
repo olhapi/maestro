@@ -452,8 +452,6 @@ export function GlobalInterruptPanel({
           },
         }))}
         note={draftNote}
-        noteDescription="Add optional steering notes. A note becomes required if you request changes."
-        noteLabel="Review note"
         notePlaceholder="Explain what should change in the plan..."
         noteRequired={noteRequired}
         noteVisible={noteVisible}

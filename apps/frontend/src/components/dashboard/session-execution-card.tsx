@@ -47,6 +47,7 @@ export function SessionExecutionCard({
   const isPlanApprovalPending = pendingPlanApprovalMarkdown.length > 0
   const pendingPlanRevisionMarkdown = pendingPlanRevision?.markdown?.trim() ?? ''
   const isPlanRevisionPending = pendingPlanRevisionMarkdown.length > 0
+  const planApprovalActionsVisible = isPlanApprovalPending && !isPlanRevisionPending && (!!onApprovePlan || !!onRequestPlanRevision)
   const planApprovalDraftKey = isPlanApprovalPending
     ? `${pendingPlanApproval?.requested_at ?? pendingInterrupt?.requested_at ?? ''}|${pendingPlanApprovalMarkdown}`
     : ''
@@ -65,7 +66,11 @@ export function SessionExecutionCard({
     execution.consecutive_failures,
     failureSummaryReason,
   )
-  const sessionStatusLabel = pendingInterrupt
+  const sessionStatusLabel = pendingAlert
+      ? 'Blocked'
+      : isPlanRevisionPending
+        ? 'Revision queued'
+      : pendingInterrupt
       ? pendingAlert
         ? 'Blocked'
         : isPlanApprovalPending
@@ -135,18 +140,14 @@ export function SessionExecutionCard({
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.session_source)}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">Attempt {execution.attempt_number || 0}</Badge>
           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(execution.phase || 'implementation')}</Badge>
-          {(pendingInterrupt || isPlanApprovalPending) ? (
+          {pendingAlert ? (
             <Badge
-              className={
-                pendingAlert
-                  ? 'border-rose-400/20 bg-rose-400/10 text-rose-100'
-                  : isPlanApprovalPending
-                    ? 'border-sky-400/20 bg-sky-400/10 text-sky-100'
-                    : 'border-amber-400/20 bg-amber-400/10 text-amber-100'
-              }
+              className="border-rose-400/20 bg-rose-400/10 text-rose-100"
             >
-              {pendingAlert ? 'Blocked' : 'Waiting'}
+              Blocked
             </Badge>
+          ) : pendingInterrupt || (isPlanApprovalPending && !isPlanRevisionPending) ? (
+            <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Waiting</Badge>
           ) : null}
           {pendingInterrupt?.collaboration_mode === 'plan' || isPlanApprovalPending ? (
             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
@@ -181,29 +182,41 @@ export function SessionExecutionCard({
         ) : null}
 
         {isPlanApprovalPending ? (
-          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/22 bg-[linear-gradient(180deg,rgba(83,217,255,0.08),rgba(255,255,255,0.03))] p-4 text-sm text-sky-50">
+          <div
+            className={
+              isPlanRevisionPending
+                ? 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-[linear-gradient(180deg,rgba(251,191,36,0.12),rgba(255,255,255,0.03))] p-4 text-sm text-amber-50'
+                : 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/22 bg-[linear-gradient(180deg,rgba(83,217,255,0.08),rgba(255,255,255,0.03))] p-4 text-sm text-sky-50'
+            }
+          >
             <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 size-4 text-sky-200" />
+              <AlertTriangle className={`mt-0.5 size-4 ${isPlanRevisionPending ? 'text-amber-200' : 'text-sky-200'}`} />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="border-sky-400/25 bg-sky-400/10 text-sky-100">Plan approval</Badge>
-                  <span className="text-sm text-sky-100/70">Review-first approval flow</span>
+                  <Badge className={isPlanRevisionPending ? 'border-amber-400/25 bg-amber-400/10 text-amber-100' : 'border-sky-400/25 bg-sky-400/10 text-sky-100'}>
+                    {isPlanRevisionPending ? 'Revision queued' : 'Plan approval'}
+                  </Badge>
+                  <span className={isPlanRevisionPending ? 'text-sm text-amber-100/70' : 'text-sm text-sky-100/70'}>
+                    Review-first approval flow
+                  </span>
                 </div>
-                <p className="mt-3 text-lg font-semibold text-white">Plan ready for approval</p>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-sky-50/80">
-                  Maestro paused after drafting the plan. Review the proposal, request changes if the plan needs another pass, or approve when it is ready to continue.
+                <p className="mt-3 text-lg font-semibold text-white">
+                  {isPlanRevisionPending ? 'Plan revision queued' : 'Plan ready for approval'}
+                </p>
+                <p className={`mt-2 max-w-3xl text-sm leading-6 ${isPlanRevisionPending ? 'text-amber-50/80' : 'text-sky-50/80'}`}>
+                  {isPlanRevisionPending
+                    ? 'Maestro queued your revision note and will carry it into the next planning turn before it asks for approval again.'
+                    : 'Maestro paused after drafting the plan. Review the proposal, request changes if the plan needs another pass, or approve when it is ready to continue.'}
                 </p>
                 <div className="mt-4 max-w-[58rem]">
                   <PlanApprovalDocument markdown={pendingPlanApprovalMarkdown} />
                 </div>
-                {onApprovePlan || onRequestPlanRevision ? (
-                  <div className="mt-4 rounded-[calc(var(--panel-radius)-0.15rem)] border border-white/8 bg-[rgba(8,9,12,0.92)] p-4">
+                {planApprovalActionsVisible ? (
+                  <div className="mt-4">
                     <PlanApprovalActionBar
                       approveDisabled={approvingPlan || !onApprovePlan}
                       approveLabel="Approve plan"
                       note={planReviewNote}
-                      noteDescription="Add optional steering notes. A note becomes required if you request changes."
-                      noteLabel="Review note"
                       notePlaceholder="Explain what should change in the plan..."
                       noteRequired={planReviewNoteRequired}
                       noteVisible={planReviewNoteVisible}

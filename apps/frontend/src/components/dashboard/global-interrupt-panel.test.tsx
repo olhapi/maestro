@@ -155,7 +155,7 @@ describe('GlobalInterruptPanel', () => {
   it('can collapse and restore a drafted plan note without clearing it', () => {
     renderInterruptPanel([makePlanApprovalInterrupt()])
 
-    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
 
     const noteField = screen.getByPlaceholderText(/explain what should change in the plan/i)
     fireEvent.change(noteField, {
@@ -166,7 +166,7 @@ describe('GlobalInterruptPanel', () => {
 
     expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /edit note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /edit steering note/i }))
 
     expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue(
       'Keep the rollout small.',
@@ -225,7 +225,7 @@ describe('GlobalInterruptPanel', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
     fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: 'Reduce the rollout size and add a rollback check.' },
     })
@@ -249,7 +249,7 @@ describe('GlobalInterruptPanel', () => {
     )
 
     expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
     expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue('')
 
     fireEvent.click(screen.getByRole('button', { name: /approve once/i }))

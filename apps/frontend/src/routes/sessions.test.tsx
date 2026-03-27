@@ -243,6 +243,31 @@ describe('SessionsPage', () => {
     )
   })
 
+  it('renders queued plan revisions as a dedicated sessions status', async () => {
+    vi.mocked(api.listSessions).mockResolvedValue({
+      ...makeSessionsResponse(),
+      entries: [
+        {
+          ...makeSessionsResponse().entries[2],
+          status: 'revision_queued',
+          last_message: 'Plan revision queued for the next planning turn.',
+          error: '',
+          failure_class: '',
+        },
+      ],
+    })
+    vi.mocked(api.listRuntimeEvents).mockResolvedValue({ events: [] })
+
+    renderWithQueryClient(<SessionsPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Revision Queued')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('session-summary-RUN-PAUSED')).toHaveTextContent(
+      'Plan revision queued for the next planning turn.',
+    )
+  })
+
   it('shows an empty state when there are no live or recent runs', async () => {
     vi.mocked(api.listSessions).mockResolvedValue({ sessions: {}, entries: [] })
     vi.mocked(api.listRuntimeEvents).mockResolvedValue({ events: [] })

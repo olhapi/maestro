@@ -34,6 +34,8 @@ function badgeClassForStatus(status: SessionFeedEntry['status']) {
       return 'border-lime-400/20 bg-lime-400/10 text-lime-100'
     case 'waiting':
       return 'border-amber-400/20 bg-amber-400/10 text-amber-100'
+    case 'revision_queued':
+      return 'border-amber-400/20 bg-amber-400/10 text-amber-100'
     case 'blocked':
       return 'border-rose-400/20 bg-rose-400/10 text-rose-100'
     case 'paused':

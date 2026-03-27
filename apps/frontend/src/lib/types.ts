@@ -402,7 +402,7 @@ export interface SessionFeedEntry {
   issue_title?: string;
   source: "live" | "persisted";
   active: boolean;
-  status: "active" | "waiting" | "blocked" | "paused" | "completed" | "failed" | "interrupted";
+  status: "active" | "waiting" | "revision_queued" | "blocked" | "paused" | "completed" | "failed" | "interrupted";
   pending_interrupt?: PendingInterrupt;
   phase?: string;
   attempt?: number;

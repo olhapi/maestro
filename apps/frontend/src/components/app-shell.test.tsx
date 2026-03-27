@@ -103,6 +103,7 @@ vi.mock('@/lib/api', () => ({
     listInterrupts: vi.fn(),
     acknowledgeInterrupt: vi.fn(),
     respondToInterrupt: vi.fn(),
+    requestIssuePlanRevision: vi.fn(),
   },
 }))
 
@@ -123,6 +124,17 @@ function makeApprovalInterrupt(id = 'interrupt-1') {
     approval: {
       command: 'gh pr view',
       decisions: [{ value: 'approved', label: 'Approve once' }],
+    },
+  }
+}
+
+function makePlanApprovalInterrupt(id = 'interrupt-1') {
+  const base = makeApprovalInterrupt(id)
+  return {
+    ...base,
+    approval: {
+      ...base.approval,
+      markdown: 'Review the proposed plan before execution.\n\n- Tighten the rollout\n- Add a rollback check',
     },
   }
 }
@@ -342,14 +354,14 @@ describe('AppShell', () => {
     expect(screen.getByTestId('global-interrupt-panel')).toBeInTheDocument()
     expect(
       screen.getAllByRole('button', {
-        name: /hide waiting input dialog: 2 waiting · approval · iss-1/i,
+        name: /hide waiting input dialog: approval · iss-1/i,
         hidden: true,
       }),
     ).toHaveLength(2)
 
     fireEvent.click(
       screen.getAllByRole('button', {
-        name: /hide waiting input dialog: 2 waiting · approval · iss-1/i,
+        name: /hide waiting input dialog: approval · iss-1/i,
         hidden: true,
       })[0]!,
     )
@@ -362,14 +374,14 @@ describe('AppShell', () => {
     })
     expect(
       screen.getAllByRole('button', {
-        name: /show waiting input dialog: 2 waiting · approval · iss-1/i,
+        name: /show waiting input dialog: approval · iss-1/i,
         hidden: true,
       }),
     ).toHaveLength(2)
 
     fireEvent.click(
       screen.getAllByRole('button', {
-        name: /show waiting input dialog: 2 waiting · approval · iss-1/i,
+        name: /show waiting input dialog: approval · iss-1/i,
         hidden: true,
       })[0]!,
     )
@@ -392,7 +404,7 @@ describe('AppShell', () => {
     await waitFor(() => {
       expect(
         screen.getAllByRole('button', {
-          name: /show waiting input dialog: 1 waiting · approval · iss-1/i,
+          name: /show waiting input dialog: approval · iss-1/i,
           hidden: true,
         }),
       ).toHaveLength(2)
@@ -401,14 +413,14 @@ describe('AppShell', () => {
     expect(screen.queryByTestId('global-interrupt-panel')).not.toBeInTheDocument()
     expect(
       screen.getAllByRole('button', {
-        name: /show waiting input dialog: 1 waiting · approval · iss-1/i,
+        name: /show waiting input dialog: approval · iss-1/i,
         hidden: true,
       }),
     ).toHaveLength(2)
 
     fireEvent.click(
       screen.getAllByRole('button', {
-        name: /show waiting input dialog: 1 waiting · approval · iss-1/i,
+        name: /show waiting input dialog: approval · iss-1/i,
         hidden: true,
       })[0]!,
     )
@@ -673,6 +685,48 @@ describe('AppShell', () => {
       resolveResponse?.({ id: 'interrupt-1', status: 'ok' })
     })
     expect(screen.getByTestId('global-interrupt-panel')).toBeInTheDocument()
+  })
+
+  it('hides a plan approval interrupt after requesting changes and the refreshed list clears it', async () => {
+    mockDashboardData()
+    vi.mocked(api.listInterrupts)
+      .mockResolvedValueOnce({ items: [makePlanApprovalInterrupt()] })
+      .mockResolvedValue({ items: [] })
+
+    let resolveRevision: ((value: { ok: boolean }) => void) | undefined
+    vi.mocked(api.requestIssuePlanRevision).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRevision = resolve
+        }),
+    )
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
+    fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
+      target: { value: 'Tighten the rollout and keep the rollback explicit.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /request changes/i }))
+
+    await waitFor(() => {
+      expect(api.requestIssuePlanRevision).toHaveBeenCalledWith(
+        'ISS-1',
+        'Tighten the rollout and keep the rollback explicit.',
+      )
+    })
+
+    await act(async () => {
+      resolveRevision?.({ ok: true })
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('global-interrupt-panel')).not.toBeInTheDocument()
+    })
   })
 
   it('optimistically hides an acknowledged alert while the request is in flight', async () => {

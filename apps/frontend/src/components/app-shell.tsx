@@ -42,9 +42,9 @@ function readInterruptPanelHidden() {
   }
 }
 
-function interruptLauncherSummary(interrupt: PendingInterrupt | null, count: number) {
+function interruptLauncherSummary(interrupt: PendingInterrupt | null) {
   if (!interrupt) {
-    return `${count} waiting`
+    return 'Waiting for input'
   }
 
   const kind = interrupt.kind === 'alert'
@@ -56,7 +56,7 @@ function interruptLauncherSummary(interrupt: PendingInterrupt | null, count: num
         : 'Approval'
   const subject = interrupt.issue_identifier || interrupt.issue_title || interrupt.project_name || 'Maestro'
 
-  return `${count} waiting · ${kind} · ${subject}`
+  return `${kind} · ${subject}`
 }
 
 function InterruptLauncher({
@@ -299,7 +299,7 @@ export function AppShell() {
   const spotlightInterrupt = useMemo(() => pickSpotlightInterrupt(visibleInterrupts), [visibleInterrupts])
   const respondableInterruptId = useMemo(() => pickRespondableInterruptId(interruptItems), [interruptItems])
   const interruptDialogOpen = visibleInterrupts.length > 0 && !interruptPanelHidden
-  const interruptSummary = interruptLauncherSummary(spotlightInterrupt, visibleInterrupts.length)
+  const interruptSummary = interruptLauncherSummary(spotlightInterrupt)
 
   const handleInterruptDialogOpenChange = (nextOpen: boolean) => {
     setInterruptPanelHidden(!nextOpen)

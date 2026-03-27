@@ -208,8 +208,8 @@ export function PlanApprovalActionBar({
   approveDisabled = false,
   requestChangesDisabled = false,
   note,
-  noteDescription = 'Add optional steering notes. A note becomes required if you request changes.',
-  noteLabel = 'Review note',
+  noteDescription = 'Add optional steering notes for the next turn. A note becomes required if you request changes.',
+  noteLabel = 'Steering note',
   notePlaceholder = 'Explain what should change in the plan...',
   noteRequired = false,
   noteVisible,
@@ -238,7 +238,7 @@ export function PlanApprovalActionBar({
 }) {
   const noteRef = useRef<HTMLTextAreaElement | null>(null)
   const previousNoteVisible = useRef(noteVisible)
-  const noteToggleLabel = noteVisible ? 'Hide note' : note.trim().length > 0 ? 'Edit note' : 'Add note'
+  const noteToggleLabel = noteVisible ? 'Hide note' : note.trim().length > 0 ? 'Edit steering note' : 'Add steering note'
 
   useEffect(() => {
     if (noteVisible && !previousNoteVisible.current) {
@@ -279,7 +279,7 @@ export function PlanApprovalActionBar({
           {approveLabel}
         </Button>
         <Button
-          className="h-11 rounded-2xl px-5"
+          className="h-11 rounded-2xl border-white/12 bg-transparent px-5 text-white hover:border-white/18 hover:bg-white/[0.04]"
           disabled={requestChangesDisabled}
           type="button"
           variant="secondary"
