@@ -160,11 +160,11 @@ test_fails_when_node_is_missing() {
   mkdir -p "$repo_dir/apps/frontend" "$repo_dir/internal/dashboardui"
   mkdir -p "$bin_dir"
 
-  if PATH="$bin_dir:/usr/bin:/bin" \
+  if PATH="$bin_dir" \
     MAESTRO_ROOT_DIR="$repo_dir" \
     MAESTRO_FRONTEND_APP_DIR="$repo_dir/apps/frontend" \
     MAESTRO_FRONTEND_DIST_DIR="$repo_dir/internal/dashboardui/dist" \
-    bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"; then
+    /bin/bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"; then
     fail "expected helper to fail when node is missing"
   fi
 
@@ -179,17 +179,23 @@ test_fails_when_package_manager_is_missing() {
 
   mkdir -p "$repo_dir/apps/frontend" "$repo_dir/internal/dashboardui" "$bin_dir"
   cat >"$bin_dir/node" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 exit 0
 EOF
+  cat >"$bin_dir/mkdir" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+/bin/mkdir "$@"
+EOF
   chmod +x "$bin_dir/node"
+  chmod +x "$bin_dir/mkdir"
 
-  if PATH="$bin_dir:/usr/bin:/bin" \
+  if PATH="$bin_dir" \
     MAESTRO_ROOT_DIR="$repo_dir" \
     MAESTRO_FRONTEND_APP_DIR="$repo_dir/apps/frontend" \
     MAESTRO_FRONTEND_DIST_DIR="$repo_dir/internal/dashboardui/dist" \
-    bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"; then
+    /bin/bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"; then
     fail "expected helper to fail when pnpm and corepack are missing"
   fi
 

@@ -1235,6 +1235,7 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 	var description string
 	var repoPath string
 	var workflowPath string
+	var runtimeName string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a project",
@@ -1248,7 +1249,7 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			project, err := svc.CreateProject(context.Background(), args[0], description, repoPath, workflowPath, kanban.ProviderKindKanban, "", nil)
+			project, err := svc.CreateProject(context.Background(), args[0], description, repoPath, workflowPath, runtimeName, kanban.ProviderKindKanban, "", nil)
 			if err != nil {
 				return err
 			}
@@ -1266,6 +1267,7 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "Project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute path to the repo")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Optional workflow path override")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "Optional runtime override")
 	return cmd
 }
 
@@ -1397,6 +1399,7 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 	var description string
 	var repoPath string
 	var workflowPath string
+	var runtimeName string
 	cmd := &cobra.Command{
 		Use:   "update <id>",
 		Short: "Update a project",
@@ -1423,7 +1426,10 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("workflow") {
 				project.WorkflowPath = workflowPath
 			}
-			if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, kanban.ProviderKindKanban, "", nil); err != nil {
+			if cmd.Flags().Changed("runtime") {
+				project.RuntimeName = runtimeName
+			}
+			if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, project.RuntimeName, kanban.ProviderKindKanban, "", nil); err != nil {
 				return err
 			}
 			updated, err := store.GetProject(project.ID)
@@ -1445,6 +1451,7 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "New project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute repo path")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Workflow path override")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "Optional runtime override")
 	return cmd
 }
 
