@@ -183,6 +183,12 @@ type IssuePlanApproval struct {
 	Attempt     int       `json:"attempt"`
 }
 
+type IssuePlanRevision struct {
+	Markdown    string    `json:"markdown"`
+	RequestedAt time.Time `json:"requested_at"`
+	Attempt     int       `json:"attempt"`
+}
+
 type WorkspaceRecovery struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
@@ -216,6 +222,7 @@ type IssueAgentCommand struct {
 	Status           IssueAgentCommandStatus `json:"status"`
 	CreatedAt        time.Time               `json:"created_at"`
 	DeliveredAt      *time.Time              `json:"delivered_at,omitempty"`
+	SteeredAt        *time.Time              `json:"steered_at,omitempty"`
 	DeliveryMode     string                  `json:"delivery_mode,omitempty"`
 	DeliveryThreadID string                  `json:"delivery_thread_id,omitempty"`
 	DeliveryAttempt  int                     `json:"delivery_attempt,omitempty"`

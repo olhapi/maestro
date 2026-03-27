@@ -3518,6 +3518,142 @@ func TestRetryIssueNowPreservesPlanApprovalThreadResumeHint(t *testing.T) {
 	}
 }
 
+func TestRetryIssueNowPreservesPendingPlanApprovalWhenRevisionIsQueued(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Plan revision retry", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, kanban.WorkflowPhaseImplementation); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase: %v", err)
+	}
+	requestedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(2*time.Minute)); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      planApprovalStopReason,
+		StopReason: planApprovalStopReason,
+		UpdatedAt:  requestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-2",
+			ThreadID:        "thread-plan",
+			TurnID:          "turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.paused[issue.ID] = pausedEntry{
+		Attempt:  2,
+		Phase:    string(kanban.WorkflowPhaseImplementation),
+		PausedAt: requestedAt,
+		Error:    planApprovalStopReason,
+	}
+	orch.mu.Unlock()
+
+	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now retry result, got %#v", result)
+	}
+	if result["resume_thread_id"] != "thread-plan" {
+		t.Fatalf("expected resume_thread_id in retry response, got %#v", result)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to remain queued when revision is present, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionMarkdown != "Tighten the rollout and add a rollback check." {
+		t.Fatalf("expected pending plan revision to remain queued, got %+v", updated)
+	}
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected retry entry after plan revision retry")
+	}
+	if retry.ResumeThreadID != "thread-plan" {
+		t.Fatalf("expected retry to preserve plan approval thread, got %+v", retry)
+	}
+}
+
+func TestProcessRetriesStartsQueuedPlanRevisionRetry(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	command, _ := fakeappserver.CommandString(t, fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{Match: fakeappserver.Match{Method: "initialize"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}}},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{Match: fakeappserver.Match{Method: "thread/start"}, Emit: []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-plan"}}}}}},
+			{Match: fakeappserver.Match{Method: "turn/start"}, Emit: []fakeappserver.Output{
+				{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-plan"}}}},
+				{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-plan", "turnId": "turn-plan"}}},
+			}},
+		},
+	})
+	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 3000)
+
+	issue, err := store.CreateIssue("", "", "Queued plan revision", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, kanban.WorkflowPhaseImplementation); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(2*time.Minute)); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+
+	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now retry result, got %#v", result)
+	}
+
+	orch.processRetries(context.Background())
+	waitForRunStartedExecutionSnapshot(t, store, issue.ID, 3*time.Second)
+	waitForNoRunning(t, orch, 3*time.Second)
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after retry: %v", err)
+	}
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to remain queued, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionMarkdown != "" || updated.PendingPlanRevisionRequestedAt != nil {
+		t.Fatalf("expected pending plan revision to be cleared after turn start, got %+v", updated)
+	}
+}
+
 func TestRetryIssueNowQueuesPlanApprovalRetryWhenOnlyPendingFlagIsSet(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 

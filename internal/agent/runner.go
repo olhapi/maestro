@@ -1043,7 +1043,13 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 		if err != nil {
 			return nil, err
 		}
-		out, err := r.executeStdioTurn(ctx, workspacePath, activeWorkflow.Config.Codex.Command, prepared.Prompt, activeWorkflow.Config.Codex.TurnTimeoutMs)
+		consumePlanRevision := turn == 1 && r.planModeForIssue(activeWorkflow, issue) && issueHasPendingPlanRevision(issue)
+		out, err := r.executeStdioTurn(ctx, workspacePath, activeWorkflow.Config.Codex.Command, prepared.Prompt, activeWorkflow.Config.Codex.TurnTimeoutMs, func() error {
+			if !consumePlanRevision {
+				return nil
+			}
+			return r.clearPendingPlanRevision(issue)
+		})
 		if out != "" {
 			if allOutput.Len() > 0 {
 				allOutput.WriteString("\n")
@@ -1143,6 +1149,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		if err != nil {
 			return nil, err
 		}
+		consumePlanRevision := turn == 1 && r.planModeForIssue(activeWorkflow, issue) && issueHasPendingPlanRevision(issue)
 		input, err := r.prepareAppServerTurnInput(workspacePath, issue, prepared.Prompt, turn == 1)
 		if err != nil {
 			return &RunResult{
@@ -1157,13 +1164,25 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			title = "Maestro turn"
 		}
 		var deliverErr error
+		var consumeErr error
 		if err := client.RunTurnWithInputsAndStartCallback(ctx, input, title, func(session *appserver.Session) {
+			if consumePlanRevision && consumeErr == nil {
+				consumeErr = r.clearPendingPlanRevision(issue)
+			}
 			deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
 		}); err != nil {
 			return &RunResult{
 				Success:    false,
 				Output:     client.Output(),
 				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+		if consumeErr != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      consumeErr,
 				AppSession: client.Session(),
 			}, nil
 		}
@@ -1247,6 +1266,18 @@ func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, se
 			"requested_at": requestedAt.Format(time.RFC3339),
 		},
 	})
+}
+
+func (r *Runner) clearPendingPlanRevision(issue *kanban.Issue) error {
+	if r.store == nil || !issueHasPendingPlanRevision(issue) {
+		return nil
+	}
+	if err := r.store.ClearIssuePendingPlanRevision(issue.ID, "turn_started"); err != nil {
+		return err
+	}
+	issue.PendingPlanRevisionMarkdown = ""
+	issue.PendingPlanRevisionRequestedAt = nil
+	return nil
 }
 
 func finalAnswerFromSession(session *appserver.Session) string {
@@ -1504,6 +1535,9 @@ Continuation guidance:
 	}
 	rendered = appendOperatorCommands(rendered, commands)
 	rendered = prependWorkspaceRecoveryNote(rendered, recoveryNote)
+	if revisionNote := pendingPlanRevisionMarkdownForPrompt(issue, planMode, turn); revisionNote != "" {
+		rendered = prependPlanRevisionNote(rendered, revisionNote)
+	}
 	guidance := firstTurnExecutionGuidance
 	if planMode {
 		guidance = firstTurnPlanningGuidance
@@ -1518,6 +1552,10 @@ Continuation guidance:
 		Prompt:   rendered + "\n\n" + strings.TrimSpace(guidance),
 		Commands: commands,
 	}, nil
+}
+
+func issueHasPendingPlanRevision(issue *kanban.Issue) bool {
+	return issue != nil && strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil
 }
 
 func workspaceRecoveryNoteForPath(workspacePath string) (string, error) {
@@ -1564,6 +1602,26 @@ func appendWorkspaceRecoveryNote(prompt, recoveryNote string) string {
 		return recoveryNote
 	}
 	return prompt + "\n\n" + recoveryNote
+}
+
+func pendingPlanRevisionMarkdownForPrompt(issue *kanban.Issue, planMode bool, turn int) string {
+	if issue == nil || !planMode || turn != 1 || !issue.PlanApprovalPending || !issueHasPendingPlanRevision(issue) {
+		return ""
+	}
+	return strings.TrimSpace(issue.PendingPlanRevisionMarkdown)
+}
+
+func prependPlanRevisionNote(prompt, revisionNote string) string {
+	prompt = strings.TrimSpace(prompt)
+	revisionNote = strings.TrimSpace(revisionNote)
+	if revisionNote == "" {
+		return prompt
+	}
+	section := "Plan revision note:\n\n" + revisionNote
+	if prompt == "" {
+		return section
+	}
+	return section + "\n\n" + prompt
 }
 
 func prependWorkspaceRecoveryNote(prompt, recoveryNote string) string {
@@ -1784,7 +1842,7 @@ func (r *Runner) runHook(parentCtx context.Context, workspacePath, hook, hookNam
 	return nil
 }
 
-func (r *Runner) executeStdioTurn(ctx context.Context, workspacePath, command, prompt string, timeoutMs int) (string, error) {
+func (r *Runner) executeStdioTurn(ctx context.Context, workspacePath, command, prompt string, timeoutMs int, onStarted func() error) (string, error) {
 	turnCtx := ctx
 	var cancel context.CancelFunc
 	if timeoutMs > 0 {
@@ -1799,7 +1857,19 @@ func (r *Runner) executeStdioTurn(ctx context.Context, workspacePath, command, p
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	if onStarted != nil {
+		if err := onStarted(); err != nil {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+			return "", err
+		}
+	}
+	err := cmd.Wait()
 	output := stdout.String()
 	if stderr.Len() > 0 {
 		if output != "" {

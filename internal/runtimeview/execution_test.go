@@ -205,6 +205,64 @@ func TestIssueExecutionPayloadIncludesPlanApprovalMetadata(t *testing.T) {
 	}
 }
 
+func TestIssueExecutionPayloadIncludesPlanRevisionMetadata(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Plan revision issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 12, 5, 0, 0, time.UTC)
+	revisionRequestedAt := requestedAt.Add(5 * time.Minute)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"plan_approval_pending":              true,
+		"pending_plan_markdown":              "Check the repo, then continue.",
+		"pending_plan_requested_at":          &requestedAt,
+		"pending_plan_revision_markdown":     "Tighten the rollout and add a rollback check.",
+		"pending_plan_revision_requested_at": &revisionRequestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    5,
+		RunKind:    "run_completed",
+		UpdatedAt:  revisionRequestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+	revision, ok := payload["plan_revision"].(kanban.IssuePlanRevision)
+	if !ok {
+		t.Fatalf("expected plan_revision payload, got %#v", payload["plan_revision"])
+	}
+	if revision.Markdown != "Tighten the rollout and add a rollback check." || revision.Attempt != 5 {
+		t.Fatalf("unexpected plan revision payload: %+v", revision)
+	}
+	if !revision.RequestedAt.Equal(revisionRequestedAt) {
+		t.Fatalf("unexpected plan revision requested_at: %+v", revision.RequestedAt)
+	}
+}
+
 func TestIssueExecutionPayloadFallsBackToPersistedDataWithoutProvider(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

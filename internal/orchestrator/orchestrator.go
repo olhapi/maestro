@@ -1069,7 +1069,7 @@ func (o *Orchestrator) processRetries(ctx context.Context) {
 			continue
 		}
 		dispatchable, reason, phase := o.isDispatchable(workflow, issue)
-		if !dispatchable {
+		if !dispatchable && !(reason == planApprovalStopReason && issueHasPendingPlanRevision(issue)) {
 			slog.Info("Dropping retry because issue is not dispatchable",
 				issueLogAttrs(issue, entry.Attempt, "reason", reason)...,
 			)
@@ -3358,7 +3358,7 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if issue.PlanApprovalPending {
+	if issue.PlanApprovalPending && !issueHasPendingPlanRevision(issue) {
 		// Keep the store update and the in-memory retry registration together so
 		// dispatch cannot observe the issue as runnable in between them.
 		if err := o.store.ClearIssuePendingPlanApproval(issue.ID, "manual_retry"); err != nil {
@@ -3474,6 +3474,13 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 		"status": "refresh_requested",
 		"issue":  identifier,
 	}
+}
+
+func issueHasPendingPlanRevision(issue *kanban.Issue) bool {
+	if issue == nil {
+		return false
+	}
+	return strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil
 }
 
 func (o *Orchestrator) planApprovalResumeThreadID(issueID string) string {
