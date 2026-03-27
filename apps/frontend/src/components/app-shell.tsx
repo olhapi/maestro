@@ -11,6 +11,7 @@ import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
 import { api } from '@/lib/api'
+import { playInterruptNotificationChime } from '@/lib/interrupt-chime'
 import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
 import { dashboardRefreshCoalesceMs, refreshDashboardQueries } from '@/lib/query-refresh'
@@ -28,8 +29,6 @@ const APP_TITLE = 'Maestro Control Center'
 const SIDEBAR_TITLE = 'Maestro'
 const INTERRUPT_PANEL_HIDDEN_STORAGE_KEY = 'maestro.interrupt-panel-hidden'
 const brandLinkClass = 'rounded-[calc(var(--panel-radius)-0.125rem)] outline-none transition hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60'
-type AudioContextConstructor = typeof AudioContext
-type InterruptAudioWindow = Window & typeof globalThis & { webkitAudioContext?: AudioContextConstructor }
 
 function readInterruptPanelHidden() {
   if (typeof window === 'undefined') {
@@ -105,56 +104,6 @@ function InterruptLauncher({
       </span>
     </Button>
   )
-}
-
-function playInterruptNotification() {
-  if (typeof window === 'undefined') {
-    return
-  }
-  const AudioContextImpl = (window as InterruptAudioWindow).AudioContext ?? (window as InterruptAudioWindow).webkitAudioContext
-  if (!AudioContextImpl) {
-    return
-  }
-
-  try {
-    const context = new AudioContextImpl()
-    const now = context.currentTime
-    const oscillator = context.createOscillator()
-    const gain = context.createGain()
-    let closed = false
-    const closeContext = () => {
-      if (closed) {
-        return
-      }
-      closed = true
-      void context.close().catch(() => {})
-    }
-
-    oscillator.type = 'triangle'
-    oscillator.frequency.setValueAtTime(880, now)
-    oscillator.frequency.linearRampToValueAtTime(1174.66, now + 0.12)
-    gain.gain.setValueAtTime(0.0001, now)
-    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.02)
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32)
-
-    oscillator.connect(gain)
-    gain.connect(context.destination)
-
-    void context.resume().catch(() => {
-      closeContext()
-    })
-    oscillator.start(now)
-    oscillator.stop(now + 0.32)
-    oscillator.addEventListener(
-      'ended',
-      () => {
-        closeContext()
-      },
-      { once: true },
-    )
-  } catch {
-    // Ignore audio failures so interrupts still render even when autoplay is blocked.
-  }
 }
 
 function getPageTitle(pathname: string) {
@@ -386,7 +335,7 @@ export function AppShell() {
       return
     }
     if (observedSpotlightInterrupt && !previousIds.has(observedSpotlightInterrupt.id)) {
-      playInterruptNotification()
+      playInterruptNotificationChime()
     }
     previouslyObservedInterruptIds.current = currentIds
   }, [interruptItems, interrupts.isFetched, observedSpotlightInterrupt])
