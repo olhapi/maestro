@@ -104,15 +104,17 @@ func TestInterruptPlanApprovalRejectsOutOfOrderResponses(t *testing.T) {
 		Items: []appserver.PendingInteraction{
 			{
 				ID:              "interrupt-older",
-				Kind:            appserver.PendingInteractionKindAlert,
+				Kind:            appserver.PendingInteractionKindUserInput,
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				RequestedAt:     time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC),
-				Alert: &appserver.PendingAlert{
-					Code:     "other_blocker",
-					Severity: appserver.PendingAlertSeverityError,
-					Title:    "Another interrupt is still pending",
-					Message:  "Resolve the earlier interrupt first.",
+				UserInput: &appserver.PendingUserInput{
+					Questions: []appserver.PendingUserInputQuestion{
+						{
+							ID:       "earlier-interrupt",
+							Question: "Resolve the earlier interrupt first.",
+						},
+					},
 				},
 			},
 			{

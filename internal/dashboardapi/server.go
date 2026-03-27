@@ -1411,7 +1411,7 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isPlanApproval {
-		if len(snapshot.Items) == 0 || snapshot.Items[0].ID != interactionID {
+		if firstRespondableInterruptID(snapshot) != interactionID {
 			writeErrorStatus(w, http.StatusConflict, appserver.ErrPendingInteractionConflict)
 			return
 		}
@@ -1513,14 +1513,9 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		if hasNote {
-			issue, err := s.issueForInterrupt(r.Context(), interaction)
-			if err != nil {
-				writeErrorStatus(w, appErrorStatus(err), err)
-				return
-			}
-			if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
-				writeErrorStatus(w, appErrorStatus(err), err)
-				return
+			// Best effort only: the interrupt response has already been accepted.
+			if issue, noteErr := s.issueForInterrupt(r.Context(), interaction); noteErr == nil {
+				_, _ = s.submitIssueCommand(r.Context(), issue, note)
 			}
 		}
 		writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
@@ -1547,6 +1542,18 @@ func pendingInterruptByID(snapshot appserver.PendingInteractionSnapshot, interac
 		return &cloned, true
 	}
 	return nil, false
+}
+
+func firstRespondableInterruptID(snapshot appserver.PendingInteractionSnapshot) string {
+	for i := range snapshot.Items {
+		if snapshot.Items[i].Kind == appserver.PendingInteractionKindAlert {
+			continue
+		}
+		if id := strings.TrimSpace(snapshot.Items[i].ID); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 func isPlanApprovalInteraction(interaction *appserver.PendingInteraction) bool {
