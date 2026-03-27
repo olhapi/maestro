@@ -322,8 +322,8 @@ describe('AppShell', () => {
 
     expect(screen.getAllByText('2 waiting').length).toBeGreaterThan(0)
     expect(screen.getByText('Plan turn')).toBeInTheDocument()
-    expect(screen.getByText('Project dispatch blocked')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Acknowledge' }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /queue \(2\)/i })).toBeInTheDocument()
+    expect(screen.getByText('Allow the agent to run this command?')).toBeInTheDocument()
   })
 
   it('shows a launcher for the active waiting interrupt and toggles the full-screen dialog from the header', async () => {
@@ -444,8 +444,23 @@ describe('AppShell', () => {
     }, { timeout: 2000 })
 
     expect(audioContextInstances).toHaveLength(1)
-    expect(audioContextInstances[0]?.createOscillator).toHaveBeenCalledTimes(1)
-    expect(audioContextInstances[0]?.createGain).toHaveBeenCalledTimes(1)
+
+    const [context] = audioContextInstances
+
+    expect(context?.createOscillator).toHaveBeenCalledTimes(1)
+    expect(context?.createGain).toHaveBeenCalledTimes(1)
+    expect(context?.oscillator.type).toBe('triangle')
+    expect(context?.oscillator.frequency.setValueAtTime).toHaveBeenNthCalledWith(1, 783.99, 0)
+    expect(context?.oscillator.frequency.setValueAtTime).toHaveBeenNthCalledWith(2, 1046.5, 0.085)
+    expect(context?.oscillator.frequency.linearRampToValueAtTime).not.toHaveBeenCalled()
+    expect(context?.gainNode.gain.setValueAtTime).toHaveBeenCalledWith(0.0001, 0)
+    expect(context?.gainNode.gain.linearRampToValueAtTime).toHaveBeenNthCalledWith(1, 0.08, 0.012)
+    expect(context?.gainNode.gain.linearRampToValueAtTime).toHaveBeenNthCalledWith(2, 0.03, 0.08)
+    expect(context?.gainNode.gain.linearRampToValueAtTime).toHaveBeenNthCalledWith(3, 0.085, 0.095)
+    expect(context?.gainNode.gain.linearRampToValueAtTime).toHaveBeenNthCalledWith(4, 0.0001, 0.29)
+    expect(context?.gainNode.gain.exponentialRampToValueAtTime).not.toHaveBeenCalled()
+    expect(context?.oscillator.start).toHaveBeenCalledWith(0)
+    expect(context?.oscillator.stop).toHaveBeenCalledWith(0.3)
   })
 
   it('does not replay the audio notification for the same spotlight interrupt id', async () => {

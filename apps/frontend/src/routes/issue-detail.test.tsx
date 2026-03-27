@@ -355,7 +355,7 @@ describe("IssueDetailPage", () => {
     });
 
     expect(screen.getByText("Plan ready for approval")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /approve plan and continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /approve plan/i }));
 
     await waitFor(() => {
       expect(api.approveIssuePlan).toHaveBeenCalledWith("ISS-1");
@@ -415,10 +415,11 @@ describe("IssueDetailPage", () => {
       expect(screen.getByText(/project's plan-first profile/i)).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next planning turn/i), {
+    fireEvent.click(screen.getByRole("button", { name: /add note/i }));
+    fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
       target: { value: "Prefer a smaller rollout and keep the rollback step explicit." },
     });
-    fireEvent.click(screen.getByRole("button", { name: /approve plan and continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /approve plan/i }));
 
     await waitFor(() => {
       expect(api.approveIssuePlan).toHaveBeenCalledWith(
@@ -506,9 +507,10 @@ describe("IssueDetailPage", () => {
       expect(screen.getByRole("button", { name: /restart plan thread/i })).toBeInTheDocument();
     });
 
-    const noteInput = screen.getByPlaceholderText(/add steering notes for the next planning turn/i);
+    fireEvent.click(screen.getByRole("button", { name: /add note/i }));
+    const noteInput = screen.getByPlaceholderText(/explain what should change in the plan/i);
     fireEvent.change(noteInput, { target: { value: "Keep the plan, then approve it." } });
-    fireEvent.click(screen.getByRole("button", { name: /approve plan and continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /approve plan/i }));
 
     await waitFor(() => {
       expect(api.approveIssuePlan).toHaveBeenCalledWith(
@@ -520,7 +522,7 @@ describe("IssueDetailPage", () => {
     expect(api.respondToInterrupt).not.toHaveBeenCalled();
 
     fireEvent.change(noteInput, { target: { value: "Call out the missing tests before approval." } });
-    fireEvent.click(screen.getByRole("button", { name: /request revision/i }));
+    fireEvent.click(screen.getByRole("button", { name: /request changes/i }));
 
     await waitFor(() => {
       expect(api.requestIssuePlanRevision).toHaveBeenCalledWith(
