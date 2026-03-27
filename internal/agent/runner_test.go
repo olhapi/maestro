@@ -376,19 +376,22 @@ func TestPermissionConfigForIssueUsesFullAccessForIssueOverride(t *testing.T) {
 		t.Fatalf("Current: %v", err)
 	}
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
 	if permissions.TurnSandboxPolicy["type"] != "dangerFullAccess" {
 		t.Fatalf("expected dangerFullAccess turn policy, got %#v", permissions.TurnSandboxPolicy)
 	}
+	if permissions.InitialCollaborationMode != config.InitialCollaborationModeDefault {
+		t.Fatalf("expected default collaboration mode, got %q", permissions.InitialCollaborationMode)
+	}
 	if workflow.Config.Codex.Command == "" {
 		t.Fatal("expected workflow to remain available")
 	}
 }
 
-func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testing.T) {
+func TestPermissionConfigForIssueUsesPlanThenFullAccessWithoutForcingPlanMode(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	project, err := store.CreateProject("Platform", "", repoPath, "")
 	if err != nil {
@@ -410,7 +413,7 @@ func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testi
 		t.Fatalf("Current: %v", err)
 	}
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
 	if !reflect.DeepEqual(permissions.ApprovalPolicy, workflow.Config.Codex.ApprovalPolicy) {
 		t.Fatalf("expected inherited approval policy, got %#v", permissions.ApprovalPolicy)
 	}
@@ -420,8 +423,8 @@ func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testi
 	if permissions.TurnSandboxPolicy != nil {
 		t.Fatalf("expected nil turn sandbox policy, got %#v", permissions.TurnSandboxPolicy)
 	}
-	if permissions.InitialCollaborationMode != config.InitialCollaborationModePlan {
-		t.Fatalf("expected plan collaboration mode, got %q", permissions.InitialCollaborationMode)
+	if permissions.InitialCollaborationMode != config.InitialCollaborationModeDefault {
+		t.Fatalf("expected default collaboration mode, got %q", permissions.InitialCollaborationMode)
 	}
 }
 
@@ -487,7 +490,7 @@ func TestPermissionConfigForIssueFallsBackToProjectProfile(t *testing.T) {
 		t.Fatalf("Current: %v", err)
 	}
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected inherited danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
@@ -512,12 +515,45 @@ func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
 		t.Fatalf("Current: %v", err)
 	}
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
 	if permissions.ThreadSandbox != "workspace-write" {
 		t.Fatalf("expected workspace-write thread sandbox, got %q", permissions.ThreadSandbox)
 	}
 	if permissions.TurnSandboxPolicy != nil {
 		t.Fatalf("expected nil turn sandbox policy for safe baseline, got %#v", permissions.TurnSandboxPolicy)
+	}
+}
+
+func TestPermissionConfigForIssueUsesIssueStartupOverride(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Plan override", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
+	if permissions.InitialCollaborationMode != config.InitialCollaborationModePlan {
+		t.Fatalf("expected plan collaboration mode override, got %q", permissions.InitialCollaborationMode)
+	}
+	if permissions.ThreadSandbox != "workspace-write" {
+		t.Fatalf("expected workspace-write thread sandbox for plan override, got %q", permissions.ThreadSandbox)
 	}
 }
 
@@ -2014,6 +2050,11 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 	if err := store.SetIssuePendingPlanRevision(issue.ID, revisionNote, requestedAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
 	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
+	}); err != nil {
+		t.Fatalf("UpdateIssue collaboration override: %v", err)
+	}
 	issue, err = store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
@@ -2106,6 +2147,11 @@ func TestRunAgentAppServerSkipsCommandDeliveryWhenPlanRevisionClearFails(t *test
 	}
 	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
+	}); err != nil {
+		t.Fatalf("UpdateIssue collaboration override: %v", err)
 	}
 	commandRecord, err := store.CreateIssueAgentCommand(issue.ID, "Review the rollout checklist before continuing.", kanban.IssueAgentCommandPending)
 	if err != nil {

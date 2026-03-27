@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/olhapi/maestro/internal/codexschema"
+	runtimepkg "github.com/olhapi/maestro/internal/runtime"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,6 +39,7 @@ type Config struct {
 	Workspace WorkspaceConfig `yaml:"workspace"`
 	Hooks     HooksConfig     `yaml:"hooks"`
 	Agent     AgentConfig     `yaml:"agent"`
+	Runtime   string          `yaml:"runtime"`
 	Codex     CodexConfig     `yaml:"codex"`
 	Phases    PhasesConfig    `yaml:"phases"`
 }
@@ -136,6 +138,7 @@ func DefaultConfig() Config {
 			Mode:                AgentModeAppServer,
 			DispatchMode:        DispatchModeParallel,
 		},
+		Runtime: string(runtimepkg.BackendCodex),
 		Codex: CodexConfig{
 			Command:         "codex app-server",
 			ExpectedVersion: codexschema.SupportedVersion,
@@ -521,6 +524,9 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveNumeric(out, agent, "max_automatic_retries", "max_automatic_retries")
 	moveString(out, agent, "agent_mode", "mode")
 	moveString(out, agent, "dispatch_mode", "dispatch_mode")
+	moveString(out, out, "backend", "runtime")
+	moveString(out, out, "runtime_name", "runtime")
+	moveString(out, out, "runtime", "runtime")
 	moveString(out, codex, "codex_command", "command")
 	moveString(out, codex, "codex_expected_version", "expected_version")
 	moveValue(out, codex, "codex_approval_policy", "approval_policy")
@@ -738,6 +744,9 @@ func applyDefaults(c *Config) error {
 	if strings.TrimSpace(c.Agent.DispatchMode) == "" {
 		c.Agent.DispatchMode = defaults.Agent.DispatchMode
 	}
+	if strings.TrimSpace(c.Runtime) == "" {
+		c.Runtime = defaults.Runtime
+	}
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		c.Codex.Command = defaults.Codex.Command
 	}
@@ -948,6 +957,9 @@ func validateConfig(c *Config) error {
 	dispatchMode := strings.TrimSpace(c.Agent.DispatchMode)
 	if dispatchMode != DispatchModeParallel && dispatchMode != DispatchModePerProjectSerial {
 		return fmt.Errorf("unsupported agent.dispatch_mode %q", c.Agent.DispatchMode)
+	}
+	if _, err := runtimepkg.ParseBackend(c.Runtime); err != nil {
+		return fmt.Errorf("unsupported runtime %q", c.Runtime)
 	}
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		return fmt.Errorf("codex.command is required")

@@ -160,7 +160,7 @@ func cloneProjectProviderConfig(providerConfig map[string]interface{}) map[strin
 	return out
 }
 
-func buildProjectValidationCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
+func buildProjectValidationCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
 	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
 	if err != nil {
 		return nil, err
@@ -170,6 +170,7 @@ func buildProjectValidationCandidate(existing *kanban.Project, name, description
 		Name:               name,
 		Description:        description,
 		State:              kanban.ProjectStateStopped,
+		RuntimeName:        strings.TrimSpace(runtimeName),
 		PermissionProfile:  kanban.PermissionProfileDefault,
 		RepoPath:           repoPath,
 		WorkflowPath:       workflowPath,
@@ -189,8 +190,8 @@ func buildProjectValidationCandidate(existing *kanban.Project, name, description
 	return project, nil
 }
 
-func (s *Service) CreateProject(ctx context.Context, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
-	candidate, err := buildProjectValidationCandidate(nil, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
+func (s *Service) CreateProject(ctx context.Context, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
+	candidate, err := buildProjectValidationCandidate(nil, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef, providerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -205,15 +206,20 @@ func (s *Service) CreateProject(ctx context.Context, name, description, repoPath
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(runtimeName) != "" {
+		if err := s.store.SetProjectRuntimeName(project.ID, runtimeName); err != nil {
+			return nil, err
+		}
+	}
 	return s.store.GetProject(project.ID)
 }
 
-func (s *Service) UpdateProject(ctx context.Context, id, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) error {
+func (s *Service) UpdateProject(ctx context.Context, id, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef string, providerConfig map[string]interface{}) error {
 	current, err := s.store.GetProject(id)
 	if err != nil {
 		return err
 	}
-	candidate, err := buildProjectValidationCandidate(current, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
+	candidate, err := buildProjectValidationCandidate(current, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef, providerConfig)
 	if err != nil {
 		return err
 	}
@@ -225,6 +231,9 @@ func (s *Service) UpdateProject(ctx context.Context, id, name, description, repo
 		return err
 	}
 	if err := s.store.UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig); err != nil {
+		return err
+	}
+	if err := s.store.SetProjectRuntimeName(id, runtimeName); err != nil {
 		return err
 	}
 	return nil
@@ -1056,6 +1065,7 @@ func providerIssueCreateLocalUpdates(providerIssue *kanban.Issue, input IssueCre
 	updates := make(map[string]interface{})
 	for key, value := range map[string]string{
 		"epic_id":      providerIssue.EpicID,
+		"runtime_name": providerIssue.RuntimeName,
 		"agent_name":   providerIssue.AgentName,
 		"agent_prompt": providerIssue.AgentPrompt,
 		"branch_name":  providerIssue.BranchName,
@@ -1088,6 +1098,7 @@ func providerIssueLocalUpdatePayload(issue *kanban.Issue, updates map[string]int
 		}
 	}
 	addString("epic_id", issue.EpicID)
+	addString("runtime_name", issue.RuntimeName)
 	addString("agent_name", issue.AgentName)
 	addString("agent_prompt", issue.AgentPrompt)
 	addString("branch_name", issue.BranchName)
@@ -1099,6 +1110,8 @@ func inputValueForKey(input IssueCreateInput, key string) string {
 	switch key {
 	case "epic_id":
 		return input.EpicID
+	case "runtime_name":
+		return input.RuntimeName
 	case "agent_name":
 		return input.AgentName
 	case "agent_prompt":

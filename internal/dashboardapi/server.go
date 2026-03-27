@@ -306,6 +306,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name         string `json:"name"`
 			Description  string `json:"description"`
+			RuntimeName  string `json:"runtime_name"`
 			RepoPath     string `json:"repo_path"`
 			WorkflowPath string `json:"workflow_path"`
 		}
@@ -326,6 +327,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(body.Description),
 			strings.TrimSpace(body.RepoPath),
 			strings.TrimSpace(body.WorkflowPath),
+			strings.TrimSpace(body.RuntimeName),
 			kanban.ProviderKindKanban,
 			"",
 			nil,
@@ -453,6 +455,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name         string `json:"name"`
 			Description  string `json:"description"`
+			RuntimeName  string `json:"runtime_name"`
 			RepoPath     string `json:"repo_path"`
 			WorkflowPath string `json:"workflow_path"`
 		}
@@ -474,6 +477,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(body.Description),
 			strings.TrimSpace(body.RepoPath),
 			strings.TrimSpace(body.WorkflowPath),
+			strings.TrimSpace(body.RuntimeName),
 			kanban.ProviderKindKanban,
 			"",
 			nil,
@@ -652,6 +656,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Enabled     *bool    `json:"enabled"`
 			Priority    int      `json:"priority"`
 			Labels      []string `json:"labels"`
+			RuntimeName string   `json:"runtime_name"`
 			AgentName   string   `json:"agent_name"`
 			AgentPrompt string   `json:"agent_prompt"`
 			State       string   `json:"state"`
@@ -672,6 +677,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Enabled:     body.Enabled,
 			Priority:    body.Priority,
 			Labels:      body.Labels,
+			RuntimeName: strings.TrimSpace(body.RuntimeName),
 			AgentName:   strings.TrimSpace(body.AgentName),
 			AgentPrompt: strings.TrimSpace(body.AgentPrompt),
 			State:       body.State,
@@ -735,6 +741,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				Enabled     *bool    `json:"enabled"`
 				Priority    int      `json:"priority"`
 				Labels      []string `json:"labels"`
+				RuntimeName string   `json:"runtime_name"`
 				AgentName   *string  `json:"agent_name"`
 				AgentPrompt *string  `json:"agent_prompt"`
 				BlockedBy   []string `json:"blocked_by"`
@@ -745,15 +752,16 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			updates := map[string]interface{}{
-				"project_id":  body.ProjectID,
-				"epic_id":     body.EpicID,
-				"title":       body.Title,
-				"description": body.Description,
-				"priority":    body.Priority,
-				"labels":      body.Labels,
-				"blocked_by":  body.BlockedBy,
-				"branch_name": body.BranchName,
-				"pr_url":      body.PRURL,
+				"project_id":   body.ProjectID,
+				"epic_id":      body.EpicID,
+				"title":        body.Title,
+				"description":  body.Description,
+				"priority":     body.Priority,
+				"labels":       body.Labels,
+				"blocked_by":   body.BlockedBy,
+				"branch_name":  body.BranchName,
+				"pr_url":       body.PRURL,
+				"runtime_name": strings.TrimSpace(body.RuntimeName),
 			}
 			if body.AgentName != nil {
 				updates["agent_name"] = strings.TrimSpace(*body.AgentName)

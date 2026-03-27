@@ -3644,6 +3644,11 @@ func TestProcessRetriesStartsQueuedPlanRevisionRetry(t *testing.T) {
 	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(2*time.Minute)); err != nil {
 		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
 	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
+	}); err != nil {
+		t.Fatalf("UpdateIssue collaboration override: %v", err)
+	}
 
 	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
 	if result["status"] != "queued_now" {

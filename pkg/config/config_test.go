@@ -112,6 +112,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.DispatchMode != DispatchModeParallel {
 		t.Fatalf("expected dispatch mode %q, got %q", DispatchModeParallel, cfg.Agent.DispatchMode)
 	}
+	if cfg.Runtime != "codex" {
+		t.Fatalf("expected default runtime codex, got %q", cfg.Runtime)
+	}
 	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
 		t.Fatalf("unexpected codex defaults: %+v", cfg.Codex)
 	}
@@ -1090,6 +1093,7 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 	text := string(data)
 	for _, want := range []string{
 		"root: ./flag-ws",
+		"runtime: codex",
 		"command: codex exec --model custom",
 		"mode: stdio",
 		"dispatch_mode: parallel",

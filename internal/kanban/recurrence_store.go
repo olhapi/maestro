@@ -10,6 +10,7 @@ type IssueCreateOptions struct {
 	IssueType   IssueType
 	Cron        string
 	Enabled     *bool
+	RuntimeName string
 	AgentName   string
 	AgentPrompt string
 }

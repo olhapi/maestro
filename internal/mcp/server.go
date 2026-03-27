@@ -93,6 +93,7 @@ func (s *Server) registerTools() {
 		objectTool("create_project", "Create a new project", map[string]interface{}{
 			"name":          stringProperty("Project name"),
 			"description":   stringProperty("Project description"),
+			"runtime_name":  stringProperty("Runtime name"),
 			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
 			"workflow_path": stringProperty("Optional workflow path override"),
 		}),
@@ -100,6 +101,7 @@ func (s *Server) registerTools() {
 			"id":            stringProperty("Project ID"),
 			"name":          stringProperty("Project name"),
 			"description":   stringProperty("Project description"),
+			"runtime_name":  stringProperty("Runtime name"),
 			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
 			"workflow_path": stringProperty("Optional workflow path override"),
 		}),
@@ -130,19 +132,20 @@ func (s *Server) registerTools() {
 			"id": stringProperty("Epic ID"),
 		}),
 		objectTool("create_issue", "Create a new issue", map[string]interface{}{
-			"title":       stringProperty("Issue title"),
-			"description": stringProperty("Issue description"),
-			"project_id":  stringProperty("Project ID"),
-			"epic_id":     stringProperty("Epic ID"),
-			"issue_type":  stringProperty("Issue type: standard or recurring"),
-			"cron":        stringProperty("Cron schedule for recurring issues"),
-			"enabled":     booleanProperty("Enable recurring scheduling"),
-			"priority":    numberProperty("Priority (lower = higher)"),
-			"labels":      stringArrayProperty("Issue labels"),
-			"state":       stringProperty("Initial state: backlog, ready, in_progress, in_review, done, cancelled"),
-			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
-			"branch_name": stringProperty("Branch name"),
-			"pr_url":      stringProperty("Pull request URL"),
+			"title":        stringProperty("Issue title"),
+			"description":  stringProperty("Issue description"),
+			"project_id":   stringProperty("Project ID"),
+			"epic_id":      stringProperty("Epic ID"),
+			"issue_type":   stringProperty("Issue type: standard or recurring"),
+			"cron":         stringProperty("Cron schedule for recurring issues"),
+			"enabled":      booleanProperty("Enable recurring scheduling"),
+			"priority":     numberProperty("Priority (lower = higher)"),
+			"labels":       stringArrayProperty("Issue labels"),
+			"runtime_name": stringProperty("Runtime name"),
+			"state":        stringProperty("Initial state: backlog, ready, in_progress, in_review, done, cancelled"),
+			"blocked_by":   stringArrayProperty("Issue identifiers that block this issue"),
+			"branch_name":  stringProperty("Branch name"),
+			"pr_url":       stringProperty("Pull request URL"),
 		}),
 		objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
@@ -163,19 +166,20 @@ func (s *Server) registerTools() {
 			"offset":     numberProperty("Number of issues to skip"),
 		}),
 		objectTool("update_issue", "Update an issue", map[string]interface{}{
-			"identifier":  stringProperty("Issue ID or identifier"),
-			"project_id":  stringProperty("Project ID"),
-			"epic_id":     stringProperty("Epic ID"),
-			"title":       stringProperty("New title"),
-			"description": stringProperty("New description"),
-			"issue_type":  stringProperty("Issue type: standard or recurring"),
-			"cron":        stringProperty("Cron schedule for recurring issues"),
-			"enabled":     booleanProperty("Enable recurring scheduling"),
-			"priority":    numberProperty("New priority"),
-			"labels":      stringArrayProperty("New labels"),
-			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
-			"branch_name": stringProperty("Branch name"),
-			"pr_url":      stringProperty("Pull request URL"),
+			"identifier":   stringProperty("Issue ID or identifier"),
+			"project_id":   stringProperty("Project ID"),
+			"epic_id":      stringProperty("Epic ID"),
+			"title":        stringProperty("New title"),
+			"description":  stringProperty("New description"),
+			"issue_type":   stringProperty("Issue type: standard or recurring"),
+			"cron":         stringProperty("Cron schedule for recurring issues"),
+			"enabled":      booleanProperty("Enable recurring scheduling"),
+			"priority":     numberProperty("New priority"),
+			"labels":       stringArrayProperty("New labels"),
+			"runtime_name": stringProperty("Runtime name"),
+			"blocked_by":   stringArrayProperty("Issue identifiers that block this issue"),
+			"branch_name":  stringProperty("Branch name"),
+			"pr_url":       stringProperty("Pull request URL"),
 		}),
 		objectTool("attach_issue_asset", "Attach a local asset to an issue from a file path", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
@@ -405,6 +409,7 @@ func (s *Server) handleCreateProject(ctx context.Context, args map[string]interf
 		asString(args["description"]),
 		repoPath,
 		asString(args["workflow_path"]),
+		asString(args["runtime_name"]),
 		kanban.ProviderKindKanban,
 		"",
 		nil,
@@ -425,7 +430,7 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("update_project", err.Error()), nil
 	}
-	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), kanban.ProviderKindKanban, "", nil); err != nil {
+	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), asString(args["runtime_name"]), kanban.ProviderKindKanban, "", nil); err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
 	}
 	project, err := s.store.GetProject(id)
@@ -522,6 +527,7 @@ func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interfac
 		Enabled:     enabled,
 		Priority:    intArg(args, "priority", 0),
 		Labels:      stringListArg(args, "labels"),
+		RuntimeName: asString(args["runtime_name"]),
 		State:       asString(args["state"]),
 		BlockedBy:   stringListArg(args, "blocked_by"),
 		BranchName:  asString(args["branch_name"]),
@@ -1148,6 +1154,9 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	}
 	if _, ok := args["labels"]; ok {
 		updates["labels"] = stringListArg(args, "labels")
+	}
+	if value, ok := args["runtime_name"]; ok {
+		updates["runtime_name"] = asString(value)
 	}
 	if _, ok := args["blocked_by"]; ok {
 		updates["blocked_by"] = stringListArg(args, "blocked_by")

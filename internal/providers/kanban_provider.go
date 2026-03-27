@@ -57,6 +57,7 @@ func (p *KanbanProvider) CreateIssue(_ context.Context, project *kanban.Project,
 		IssueType: input.IssueType,
 		Cron:      input.Cron,
 		Enabled:   input.Enabled,
+		RuntimeName: input.RuntimeName,
 	})
 	if err != nil {
 		return nil, err

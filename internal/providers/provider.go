@@ -21,6 +21,7 @@ type IssueCreateInput struct {
 	Enabled     *bool
 	Priority    int
 	Labels      []string
+	RuntimeName string
 	AgentName   string
 	AgentPrompt string
 	State       string

@@ -483,13 +483,13 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	if !strings.Contains(serverInfo.Description, "Maestro") || strings.Contains(strings.ToLower(serverInfo.Description), "symphony") {
 		t.Fatalf("unexpected server_info description: %q", serverInfo.Description)
 	}
-	assertToolProperties(t, findTool(t, tools.Tools, "create_project"), "description", "name", "repo_path", "workflow_path")
-	assertToolProperties(t, findTool(t, tools.Tools, "update_project"), "description", "id", "name", "repo_path", "workflow_path")
+	assertToolProperties(t, findTool(t, tools.Tools, "create_project"), "description", "name", "repo_path", "runtime_name", "workflow_path")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_project"), "description", "id", "name", "repo_path", "runtime_name", "workflow_path")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_projects"), "limit", "offset")
-	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "runtime_name", "state", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_epics"), "limit", "offset", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
-	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "runtime_name", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_asset"), "identifier", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue_comment"), "attachment_paths", "body", "identifier", "parent_comment_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issue_comments"), "identifier", "limit", "offset")
@@ -527,19 +527,24 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	}
 
 	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
-		"name":      "Demo",
-		"repo_path": repoPath,
+		"name":         "Demo",
+		"runtime_name": "claude",
+		"repo_path":    repoPath,
 	})
 	if err != nil {
 		t.Fatalf("create_project failed: %v", err)
 	}
 	project := decodeEnvelope(t, projectRes)["data"].(map[string]interface{})
 	projectID := asString(project["id"])
+	if project["runtime_name"] != "claude" {
+		t.Fatalf("unexpected create_project payload: %#v", project)
+	}
 
 	updateProjectRes, err := client.CallTool(context.Background(), "update_project", map[string]interface{}{
 		"id":            projectID,
 		"name":          "Demo Updated",
 		"description":   "Updated project",
+		"runtime_name":  "codex",
 		"repo_path":     repoPath,
 		"workflow_path": filepath.Join(repoPath, "WORKFLOW.md"),
 	})
@@ -548,6 +553,9 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	}
 	if got := decodeEnvelope(t, updateProjectRes)["data"].(map[string]interface{})["name"]; got != "Demo Updated" {
 		t.Fatalf("unexpected update_project payload: %#v", got)
+	}
+	if got := decodeEnvelope(t, updateProjectRes)["data"].(map[string]interface{})["runtime_name"]; got != "codex" {
+		t.Fatalf("unexpected update_project runtime payload: %#v", got)
 	}
 
 	listProjectsRes, err := client.CallTool(context.Background(), "list_projects", map[string]interface{}{})
@@ -608,14 +616,18 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	tempEpicID := asString(decodeEnvelope(t, tempEpicRes)["data"].(map[string]interface{})["id"])
 
 	issueARes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
-		"title":      "Issue A",
-		"project_id": projectID,
-		"priority":   1,
+		"title":        "Issue A",
+		"project_id":   projectID,
+		"priority":     1,
+		"runtime_name": "claude",
 	})
 	if err != nil {
 		t.Fatalf("create_issue A failed: %v", err)
 	}
 	issueA := decodeEnvelope(t, issueARes)["data"].(map[string]interface{})
+	if issueA["runtime_name"] != "claude" {
+		t.Fatalf("unexpected create_issue payload: %#v", issueA)
+	}
 
 	issueBRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
 		"title":       "Issue B",
@@ -683,16 +695,17 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	secondEpicID := asString(decodeEnvelope(t, secondEpicRes)["data"].(map[string]interface{})["id"])
 
 	updateIssueRes, err := client.CallTool(context.Background(), "update_issue", map[string]interface{}{
-		"identifier":  issueBIdentifier,
-		"project_id":  secondProjectID,
-		"epic_id":     secondEpicID,
-		"title":       "Issue B Updated",
-		"description": "Moved issue",
-		"priority":    5,
-		"labels":      []interface{}{"go", "mcp"},
-		"blocked_by":  []interface{}{},
-		"branch_name": "feat/mcp-v2",
-		"pr_url":      "https://example.com/pr/23",
+		"identifier":   issueBIdentifier,
+		"project_id":   secondProjectID,
+		"epic_id":      secondEpicID,
+		"title":        "Issue B Updated",
+		"description":  "Moved issue",
+		"priority":     5,
+		"labels":       []interface{}{"go", "mcp"},
+		"runtime_name": "codex",
+		"blocked_by":   []interface{}{},
+		"branch_name":  "feat/mcp-v2",
+		"pr_url":       "https://example.com/pr/23",
 	})
 	if err != nil {
 		t.Fatalf("update_issue failed: %v", err)
@@ -700,6 +713,9 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	updateIssue := decodeEnvelope(t, updateIssueRes)["data"].(map[string]interface{})
 	if updateIssue["project_id"] != secondProjectID || updateIssue["epic_id"] != secondEpicID {
 		t.Fatalf("unexpected update_issue payload: %#v", updateIssue)
+	}
+	if updateIssue["runtime_name"] != "codex" {
+		t.Fatalf("unexpected update_issue runtime payload: %#v", updateIssue)
 	}
 
 	createCommentRes, err := client.CallTool(context.Background(), "create_issue_comment", map[string]interface{}{
