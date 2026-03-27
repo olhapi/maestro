@@ -1169,7 +1169,9 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 			if consumePlanRevision && consumeErr == nil {
 				consumeErr = r.clearPendingPlanRevision(issue)
 			}
-			deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
+			if consumeErr == nil {
+				deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
+			}
 		}); err != nil {
 			return &RunResult{
 				Success:    false,

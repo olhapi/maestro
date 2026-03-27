@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -156,6 +157,28 @@ Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt 
 	})
 
 	return runner, store, manager, workspaceRoot, tmpDir
+}
+
+func blockIssueUpdatesForTest(t *testing.T, dbPath, issueID string) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	triggerSQL := `CREATE TRIGGER block_issue_updates
+BEFORE UPDATE ON issues
+WHEN OLD.id = '` + issueID + `'
+BEGIN
+  SELECT RAISE(ABORT, 'plan revision clear failed');
+END;`
+	if _, err := db.Exec(triggerSQL); err != nil {
+		t.Fatalf("create issue update trigger: %v", err)
+	}
 }
 
 func workspaceGitDirForTest(t *testing.T, workspacePath string) string {
@@ -1957,6 +1980,77 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 	}
 	if updated.PendingPlanRevisionMarkdown != "" || updated.PendingPlanRevisionRequestedAt != nil {
 		t.Fatalf("expected pending plan revision to be cleared after turn start, got %+v", updated)
+	}
+}
+
+func TestRunAgentAppServerSkipsCommandDeliveryWhenPlanRevisionClearFails(t *testing.T) {
+	traceFile := filepath.Join(t.TempDir(), "trace.log")
+	t.Setenv("TRACE_FILE", traceFile)
+
+	command, _ := fakeappserver.CommandString(t, baseRunnerAppServerScenario("thread-plan", "turn-plan",
+		fakeappserver.Output{
+			JSON: map[string]interface{}{
+				"method": "turn/completed",
+				"params": map[string]interface{}{
+					"threadId": "thread-plan",
+					"turn":     map[string]interface{}{"id": "turn-plan"},
+				},
+			},
+		},
+	))
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
+	issue, err := store.CreateIssue("", "", "Plan revision prompt", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 13, 15, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Original plan: ship cautiously.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(5*time.Minute)); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+	commandRecord, err := store.CreateIssueAgentCommand(issue.ID, "Review the rollout checklist before continuing.", kanban.IssueAgentCommandPending)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand: %v", err)
+	}
+	blockIssueUpdatesForTest(t, store.DBPath(), issue.ID)
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected unsuccessful run, got %+v", result)
+	}
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "plan revision clear failed") {
+		t.Fatalf("expected clear failure to surface in run result, got %+v", result)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after run: %v", err)
+	}
+	if updated.PendingPlanRevisionMarkdown != "Tighten the rollout and add a rollback check." || updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision to remain queued, got %+v", updated)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one queued command, got %+v", commands)
+	}
+	if commands[0].ID != commandRecord.ID || commands[0].Status != kanban.IssueAgentCommandPending {
+		t.Fatalf("expected command to remain pending when plan revision clear fails, got %+v", commands)
 	}
 }
 
