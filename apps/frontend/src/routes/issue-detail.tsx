@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FilePicker } from "@/components/ui/file-picker";
+import { wrappedOutputClassName } from "@/components/ui/markdown";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -123,7 +124,9 @@ function AgentCommandEntry({
   onCancelEdit,
   onSaveEdit,
   onStartDelete,
+  onStartSteer,
   updatePending,
+  steerPending,
 }: {
   command: AgentCommand;
   editingCommandID: string | null;
@@ -131,7 +134,9 @@ function AgentCommandEntry({
   onCancelEdit: () => void;
   onSaveEdit: (commandID: string, body: string) => Promise<void>;
   onStartDelete: (command: AgentCommand) => void;
+  onStartSteer: (command: AgentCommand) => void;
   updatePending: boolean;
+  steerPending: boolean;
 }) {
   const status = commandStatusMeta(command.status);
   const isMutable = isMutableAgentCommandStatus(command.status);
@@ -159,7 +164,7 @@ function AgentCommandEntry({
         </div>
       ) : (
         <>
-          <p className="mt-3 whitespace-pre-wrap break-words text-sm text-white">{command.command}</p>
+          <p className={`${wrappedOutputClassName} mt-3 text-sm text-white`}>{command.command}</p>
           <p className="mt-3 text-xs text-[var(--muted-foreground)]">Sent {formatDateTime(command.created_at)}</p>
           {command.delivered_at ? (
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
@@ -168,8 +173,18 @@ function AgentCommandEntry({
               {command.delivery_thread_id ? ` on ${command.delivery_thread_id}` : ""}
             </p>
           ) : null}
+          {command.steered_at ? (
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">Steered {formatDateTime(command.steered_at)}</p>
+          ) : null}
           {isMutable ? (
             <div className="mt-3 flex flex-wrap gap-2">
+              <CommentActionButton
+                icon={Send}
+                label="Steer command"
+                onClick={() => onStartSteer(command)}
+                variant="secondary"
+                disabled={steerPending}
+              />
               <CommentActionButton
                 icon={Pencil}
                 label="Edit command"
@@ -349,11 +364,13 @@ function CommentActionButton({
   label,
   onClick,
   variant,
+  disabled,
 }: {
   icon: ComponentType<{ className?: string }>;
   label: string;
   onClick: () => void;
   variant: ButtonProps["variant"];
+  disabled?: boolean;
 }) {
   return (
     <Tooltip>
@@ -361,6 +378,7 @@ function CommentActionButton({
         <Button
           aria-label={label}
           className={cn("shrink-0 p-0")}
+          disabled={disabled}
           onClick={onClick}
           size="icon"
           type="button"
@@ -841,6 +859,16 @@ export function IssueDetailPage() {
       await invalidate();
     },
   });
+  const steerCommandMutation = useMutation({
+    mutationFn: ({ commandID }: { commandID: string }) => api.steerIssueCommand(identifier, commandID),
+    onSuccess: async () => {
+      toast.success("Command steered");
+      await invalidate();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Unable to steer command: ${error.message}` : "Unable to steer command");
+    },
+  });
   const updateCommandMutation = useMutation({
     mutationFn: ({ commandID, command }: { commandID: string; command: string }) =>
       api.updateIssueCommand(identifier, commandID, command),
@@ -890,9 +918,7 @@ export function IssueDetailPage() {
       if (!approvalNote) {
         return Promise.reject(new Error("Revision note is required"))
       }
-      return api
-        .sendIssueCommand(identifier, approvalNote)
-        .then(() => api.retryIssue(identifier))
+      return api.requestIssuePlanRevision(identifier, approvalNote)
     },
     onSuccess: async (_, variables) => {
       toast.success(variables.approved ? "Plan approved" : "Plan revision sent");
@@ -1460,6 +1486,12 @@ export function IssueDetailPage() {
                         setDeleteCommandTarget(null);
                         setEditingCommandID(targetCommand.id);
                       }}
+                      onStartSteer={(targetCommand) => {
+                        setDeleteCommandTarget(null);
+                        setEditingCommandID(null);
+                        steerCommandMutation.mutate({ commandID: targetCommand.id });
+                      }}
+                      steerPending={steerCommandMutation.isPending}
                       updatePending={updateCommandMutation.isPending}
                     />
                   ))

@@ -189,6 +189,7 @@ describe('AppShell', () => {
     invalidateSocket.mockReset()
     audioContextInstances.length = 0
     MockAudioContext.nextResumeError = null
+    window.localStorage.clear()
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
       writable: true,
@@ -319,10 +320,105 @@ describe('AppShell', () => {
       expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
     })
 
-    expect(screen.getByText('2 waiting')).toBeInTheDocument()
+    expect(screen.getAllByText('2 waiting').length).toBeGreaterThan(0)
     expect(screen.getByText('Plan turn')).toBeInTheDocument()
     expect(screen.getByText('Project dispatch blocked')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Acknowledge' }).length).toBeGreaterThan(0)
+  })
+
+  it('shows a launcher for the active waiting interrupt and toggles the full-screen dialog from the header', async () => {
+    mockDashboardData()
+    vi.mocked(api.listInterrupts).mockResolvedValue({
+      items: [makeAlertInterrupt(), makeApprovalInterrupt()],
+    })
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
+    })
+
+    expect(screen.getByText('Plan turn')).toBeInTheDocument()
+    expect(screen.getByTestId('global-interrupt-panel')).toBeInTheDocument()
+    expect(
+      screen.getAllByRole('button', {
+        name: /hide waiting input dialog: 2 waiting · approval · iss-1/i,
+        hidden: true,
+      }),
+    ).toHaveLength(2)
+
+    fireEvent.click(
+      screen.getAllByRole('button', {
+        name: /hide waiting input dialog: 2 waiting · approval · iss-1/i,
+        hidden: true,
+      })[0]!,
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('global-interrupt-panel')).not.toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(window.localStorage.getItem('maestro.interrupt-panel-hidden')).toBe('true')
+    })
+    expect(
+      screen.getAllByRole('button', {
+        name: /show waiting input dialog: 2 waiting · approval · iss-1/i,
+        hidden: true,
+      }),
+    ).toHaveLength(2)
+
+    fireEvent.click(
+      screen.getAllByRole('button', {
+        name: /show waiting input dialog: 2 waiting · approval · iss-1/i,
+        hidden: true,
+      })[0]!,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('global-interrupt-panel')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(window.localStorage.getItem('maestro.interrupt-panel-hidden')).toBe('false')
+    })
+  })
+
+  it('restores a dismissed dialog from localStorage and keeps the header launcher visible', async () => {
+    window.localStorage.setItem('maestro.interrupt-panel-hidden', 'true')
+    mockDashboardData()
+    vi.mocked(api.listInterrupts).mockResolvedValue({ items: [makeApprovalInterrupt()] })
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('button', {
+          name: /show waiting input dialog: 1 waiting · approval · iss-1/i,
+          hidden: true,
+        }),
+      ).toHaveLength(2)
+    })
+
+    expect(screen.queryByTestId('global-interrupt-panel')).not.toBeInTheDocument()
+    expect(
+      screen.getAllByRole('button', {
+        name: /show waiting input dialog: 1 waiting · approval · iss-1/i,
+        hidden: true,
+      }),
+    ).toHaveLength(2)
+
+    fireEvent.click(
+      screen.getAllByRole('button', {
+        name: /show waiting input dialog: 1 waiting · approval · iss-1/i,
+        hidden: true,
+      })[0]!,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('global-interrupt-panel')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(window.localStorage.getItem('maestro.interrupt-panel-hidden')).toBe('false')
+    })
   })
 
   it('plays one audio notification only when a spotlight interrupt appears after initial load', async () => {

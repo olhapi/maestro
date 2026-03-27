@@ -1,9 +1,11 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import type { ComponentProps } from 'react'
 import { vi } from 'vitest'
 
 import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
+import type { PendingInterrupt } from '@/lib/types'
 
-function makeApprovalInterrupt() {
+function makeApprovalInterrupt(overrides: { command?: string } = {}) {
   return {
     id: 'interrupt-approval',
     kind: 'approval' as const,
@@ -13,7 +15,7 @@ function makeApprovalInterrupt() {
     attempt: 1,
     requested_at: '2026-03-16T10:00:00Z',
     approval: {
-      command: 'ssh-add --apple-use-keychain ~/.ssh/id_rsa ~/.ssh/squirro.key',
+      command: overrides.command ?? 'ssh-add --apple-use-keychain ~/.ssh/id_rsa ~/.ssh/squirro.key',
       cwd: '/Users/olhapi-work',
       reason: 'Add SSH keys to macOS keychain agent',
       decisions: [
@@ -52,48 +54,77 @@ function makePlanApprovalInterrupt(overrides: { requestedAt?: string; markdown?:
   }
 }
 
+type GlobalInterruptPanelProps = ComponentProps<typeof GlobalInterruptPanel>
+
+function renderInterruptPanel(
+  items: PendingInterrupt[],
+  overrides: {
+    open?: boolean
+    respondableInterruptId?: string | null
+    isSubmitting?: boolean
+    onAcknowledge?: GlobalInterruptPanelProps['onAcknowledge']
+    onOpenChange?: GlobalInterruptPanelProps['onOpenChange']
+    onRequestPlanRevision?: GlobalInterruptPanelProps['onRequestPlanRevision']
+    onRespond?: GlobalInterruptPanelProps['onRespond']
+  } = {},
+) {
+  const onOpenChange = overrides.onOpenChange ?? vi.fn()
+
+  render(
+    <GlobalInterruptPanel
+      items={items}
+      open={overrides.open ?? true}
+      respondableInterruptId={overrides.respondableInterruptId}
+      isSubmitting={overrides.isSubmitting ?? false}
+      onAcknowledge={overrides.onAcknowledge ?? (() => {})}
+      onOpenChange={onOpenChange}
+      onRequestPlanRevision={overrides.onRequestPlanRevision ?? (() => {})}
+      onRespond={overrides.onRespond ?? (() => {})}
+    />,
+  )
+
+  return { onOpenChange }
+}
+
 describe('GlobalInterruptPanel', () => {
-  it('keeps the approval queue and detail panes top-aligned instead of stretching the selected card', () => {
-    const { container } = render(
-      <GlobalInterruptPanel
-        items={[makeApprovalInterrupt()]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={() => {}}
-      />,
-    )
+  it('renders a fullscreen dialog with a pinned approval footer', () => {
+    renderInterruptPanel([makePlanApprovalInterrupt()])
 
-    const layout = container.querySelector('[data-testid="global-interrupt-panel"] > div > div > div.mt-4.grid')
-    if (!layout) {
-      throw new Error('approval layout not found')
-    }
-    expect(layout).toHaveClass('items-start')
+    const panel = screen.getByTestId('global-interrupt-panel')
+    expect(panel).toHaveClass('h-[100dvh]', 'w-[100vw]', 'overflow-hidden', 'rounded-none')
+    const body = screen.getByTestId('global-interrupt-body')
+    expect(body).toHaveClass('overflow-y-auto')
+    const footer = screen.getByTestId('global-interrupt-footer')
+    expect(footer).toHaveClass('shrink-0')
+    expect(footer).toContainElement(screen.getByRole('button', { name: /approve once/i }))
+    expect(screen.getByText('Proposed plan')).toBeInTheDocument()
+  })
 
-    const [queuePane, detailPane] = Array.from(layout.children)
-    if (!queuePane || !detailPane) {
-      throw new Error('approval layout panes not found')
-    }
-    expect(queuePane).toHaveClass('min-w-0', 'items-start')
-    expect(detailPane).toHaveClass('min-w-0', 'self-start')
+  it('calls onOpenChange when the dialog is dismissed', () => {
+    const { onOpenChange } = renderInterruptPanel([makeApprovalInterrupt()])
+
+    fireEvent.click(screen.getByRole('button', { name: /hide waiting input dialog/i }))
+
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
   it('renders the richer approval structure and auto-submits plain approval decisions', () => {
     const onRespond = vi.fn()
+    const longCommand =
+      'ssh-add --apple-use-keychain ~/.ssh/id_rsa ~/.ssh/squirro.key --with-an-exceptionally-long-token-that-should-wrap'
 
-    render(
-      <GlobalInterruptPanel
-        items={[makeApprovalInterrupt()]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={onRespond}
-      />,
-    )
+    renderInterruptPanel([makeApprovalInterrupt({ command: longCommand })], { onRespond })
 
     expect(screen.getByText('Allow the agent to run this command?')).toBeInTheDocument()
     expect(screen.getByText('Requested command')).toBeInTheDocument()
     expect(screen.getByText('Add SSH keys to macOS keychain agent')).toBeInTheDocument()
     expect(screen.getByText('Working directory')).toBeInTheDocument()
     expect(screen.getByText('/Users/olhapi-work')).toBeInTheDocument()
+    const requestedCommand = screen.getByText(
+      (content, element) => element?.tagName === 'CODE' && content.includes('exceptionally-long-token'),
+    )
+    expect(requestedCommand).toHaveClass('whitespace-pre-wrap', 'break-words')
+    expect(requestedCommand).not.toHaveClass('overflow-x-auto')
     expect(screen.queryByRole('button', { name: /submit response/i })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
@@ -104,14 +135,7 @@ describe('GlobalInterruptPanel', () => {
   it('renders a steering note field for approvals and forwards note-only responses', () => {
     const onRespond = vi.fn()
 
-    render(
-      <GlobalInterruptPanel
-        items={[makeApprovalInterrupt()]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={onRespond}
-      />,
-    )
+    renderInterruptPanel([makeApprovalInterrupt()], { onRespond })
 
     expect(screen.getByText('Agent note')).toBeInTheDocument()
 
@@ -129,15 +153,9 @@ describe('GlobalInterruptPanel', () => {
 
   it('renders plan approvals with inline markdown and forwards revision notes', () => {
     const onRespond = vi.fn()
+    const onRequestPlanRevision = vi.fn()
 
-    render(
-      <GlobalInterruptPanel
-        items={[makePlanApprovalInterrupt()]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={onRespond}
-      />,
-    )
+    renderInterruptPanel([makePlanApprovalInterrupt()], { onRespond, onRequestPlanRevision })
 
     expect(screen.getAllByText('Plan approval').length).toBeGreaterThan(1)
     expect(screen.getByText('Proposed plan')).toBeInTheDocument()
@@ -150,8 +168,8 @@ describe('GlobalInterruptPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /request revision/i }))
 
-    expect(onRespond).toHaveBeenCalledWith({
-      interruptId: 'interrupt-plan-approval',
+    expect(onRequestPlanRevision).toHaveBeenCalledWith({
+      issueIdentifier: 'ISS-1',
       note: 'Make the rollout smaller and add a rollback guard.',
     })
 
@@ -169,8 +187,11 @@ describe('GlobalInterruptPanel', () => {
     const { rerender } = render(
       <GlobalInterruptPanel
         items={[makePlanApprovalInterrupt()]}
+        open={true}
         isSubmitting={false}
         onAcknowledge={() => {}}
+        onOpenChange={() => {}}
+        onRequestPlanRevision={() => {}}
         onRespond={onRespond}
       />,
     )
@@ -188,8 +209,11 @@ describe('GlobalInterruptPanel', () => {
           requestedAt: '2026-03-16T10:15:00Z',
           markdown: 'Review the updated plan before execution.\n\n- Tighten the rollout further',
         })]}
+        open={true}
         isSubmitting={false}
         onAcknowledge={() => {}}
+        onOpenChange={() => {}}
+        onRequestPlanRevision={() => {}}
         onRespond={onRespond}
       />,
     )
@@ -207,38 +231,31 @@ describe('GlobalInterruptPanel', () => {
   it('uses decision payload when approval options provide structured responses', () => {
     const onRespond = vi.fn()
 
-    render(
-      <GlobalInterruptPanel
-        items={[{
-          id: 'interrupt-approval-structured',
-          kind: 'approval',
-          issue_identifier: 'ISS-4',
-          issue_title: 'Review network access',
-          requested_at: '2026-03-16T10:00:00Z',
-          approval: {
-            command: 'curl https://api.github.com',
-            decisions: [
-              {
-                value: 'network_policy_allow_api_github_com',
-                label: 'Persist allow rule',
-                description: 'Allow this host for future requests and keep the turn going.',
-                decision_payload: {
-                  applyNetworkPolicyAmendment: {
-                    network_policy_amendment: {
-                      action: 'allow',
-                      host: 'api.github.com',
-                    },
-                  },
+    renderInterruptPanel([{
+      id: 'interrupt-approval-structured',
+      kind: 'approval',
+      issue_identifier: 'ISS-4',
+      issue_title: 'Review network access',
+      requested_at: '2026-03-16T10:00:00Z',
+      approval: {
+        command: 'curl https://api.github.com',
+        decisions: [
+          {
+            value: 'network_policy_allow_api_github_com',
+            label: 'Persist allow rule',
+            description: 'Allow this host for future requests and keep the turn going.',
+            decision_payload: {
+              applyNetworkPolicyAmendment: {
+                network_policy_amendment: {
+                  action: 'allow',
+                  host: 'api.github.com',
                 },
               },
-            ],
+            },
           },
-        }]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={onRespond}
-      />,
-    )
+        ],
+      },
+    }], { onRespond })
 
     fireEvent.click(screen.getByRole('button', { name: /persist allow rule/i }))
 
@@ -258,29 +275,22 @@ describe('GlobalInterruptPanel', () => {
   it('auto-submits option-only user input without rendering a submit button', () => {
     const onRespond = vi.fn()
 
-    render(
-      <GlobalInterruptPanel
-        items={[{
-          id: 'interrupt-options',
-          kind: 'user_input',
-          issue_identifier: 'ISS-2',
-          issue_title: 'Choose environment',
-          requested_at: '2026-03-16T10:00:00Z',
-          user_input: {
-            questions: [
-              {
-                id: 'environment',
-                question: 'Which environment should I use?',
-                options: [{ label: 'Staging' }, { label: 'Production' }],
-              },
-            ],
+    renderInterruptPanel([{
+      id: 'interrupt-options',
+      kind: 'user_input',
+      issue_identifier: 'ISS-2',
+      issue_title: 'Choose environment',
+      requested_at: '2026-03-16T10:00:00Z',
+      user_input: {
+        questions: [
+          {
+            id: 'environment',
+            question: 'Which environment should I use?',
+            options: [{ label: 'Staging' }, { label: 'Production' }],
           },
-        }]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={onRespond}
-      />,
-    )
+        ],
+      },
+    }], { onRespond })
 
     expect(screen.queryByRole('button', { name: /submit response/i })).not.toBeInTheDocument()
 
@@ -297,30 +307,23 @@ describe('GlobalInterruptPanel', () => {
   it('keeps the submit button when user input includes an other-answer text input', () => {
     const onRespond = vi.fn()
 
-    render(
-      <GlobalInterruptPanel
-        items={[{
-          id: 'interrupt-other',
-          kind: 'user_input',
-          issue_identifier: 'ISS-3',
-          issue_title: 'Choose action',
-          requested_at: '2026-03-16T10:00:00Z',
-          user_input: {
-            questions: [
-              {
-                id: 'action',
-                question: 'How should I proceed?',
-                options: [{ label: 'Use default' }, { label: 'Skip' }],
-                is_other: true,
-              },
-            ],
+    renderInterruptPanel([{
+      id: 'interrupt-other',
+      kind: 'user_input',
+      issue_identifier: 'ISS-3',
+      issue_title: 'Choose action',
+      requested_at: '2026-03-16T10:00:00Z',
+      user_input: {
+        questions: [
+          {
+            id: 'action',
+            question: 'How should I proceed?',
+            options: [{ label: 'Use default' }, { label: 'Skip' }],
+            is_other: true,
           },
-        }]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={onRespond}
-      />,
-    )
+        ],
+      },
+    }], { onRespond })
 
     const submitButton = screen.getByRole('button', { name: /submit response/i })
     expect(submitButton).toBeDisabled()
@@ -332,32 +335,25 @@ describe('GlobalInterruptPanel', () => {
   })
 
   it('defaults the detail pane to the first actionable interrupt when alerts are also queued', () => {
-    render(
-      <GlobalInterruptPanel
-        items={[
-          {
-            id: 'alert-project-dispatch-1',
-            kind: 'alert',
-            issue_identifier: 'ISS-9',
-            issue_title: 'Blocked issue',
-            project_id: 'project-1',
-            project_name: 'Platform',
-            requested_at: '2026-03-16T10:00:00Z',
-            actions: [{ kind: 'acknowledge', label: 'Acknowledge' }],
-            alert: {
-              code: 'project_dispatch_blocked',
-              severity: 'error',
-              title: 'Project dispatch blocked',
-              message: 'Project repo is outside the current server scope (/repo/current)',
-            },
-          },
-          makeApprovalInterrupt(),
-        ]}
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={() => {}}
-      />,
-    )
+    renderInterruptPanel([
+      {
+        id: 'alert-project-dispatch-1',
+        kind: 'alert',
+        issue_identifier: 'ISS-9',
+        issue_title: 'Blocked issue',
+        project_id: 'project-1',
+        project_name: 'Platform',
+        requested_at: '2026-03-16T10:00:00Z',
+        actions: [{ kind: 'acknowledge', label: 'Acknowledge' }],
+        alert: {
+          code: 'project_dispatch_blocked',
+          severity: 'error',
+          title: 'Project dispatch blocked',
+          message: 'Project repo is outside the current server scope (/repo/current)',
+        },
+      },
+      makeApprovalInterrupt(),
+    ])
 
     expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
     expect(screen.getByText('2 waiting')).toBeInTheDocument()
@@ -368,27 +364,19 @@ describe('GlobalInterruptPanel', () => {
   it('keeps later queued approvals read-only until they reach the front of the queue', () => {
     const onRespond = vi.fn()
 
-    render(
-      <GlobalInterruptPanel
-        items={[
-          makeApprovalInterrupt(),
-          {
-            ...makeApprovalInterrupt(),
-            id: 'interrupt-approval-2',
-            issue_identifier: 'ISS-2',
-            issue_title: 'Approve deployment',
-            approval: {
-              command: 'deploy production',
-              decisions: [{ value: 'approved_once', label: 'Approve once' }],
-            },
-          },
-        ]}
-        respondableInterruptId="interrupt-approval"
-        isSubmitting={false}
-        onAcknowledge={() => {}}
-        onRespond={onRespond}
-      />,
-    )
+    renderInterruptPanel([
+      makeApprovalInterrupt(),
+      {
+        ...makeApprovalInterrupt(),
+        id: 'interrupt-approval-2',
+        issue_identifier: 'ISS-2',
+        issue_title: 'Approve deployment',
+        approval: {
+          command: 'deploy production',
+          decisions: [{ value: 'approved_once', label: 'Approve once' }],
+        },
+      },
+    ], { respondableInterruptId: 'interrupt-approval', onRespond })
 
     fireEvent.click(screen.getByText('Approve deployment').closest('button')!)
 
@@ -405,30 +393,23 @@ describe('GlobalInterruptPanel', () => {
   it('renders alert actions and deep links for issue-level maestro blockers', () => {
     const onAcknowledge = vi.fn()
 
-    render(
-      <GlobalInterruptPanel
-        items={[{
-          id: 'alert-project-dispatch-2',
-          kind: 'alert',
-          issue_identifier: 'ISS-7',
-          issue_title: 'Blocked issue',
-          project_id: 'project-1',
-          project_name: 'Platform',
-          requested_at: '2026-03-16T10:00:00Z',
-          actions: [{ kind: 'acknowledge', label: 'Acknowledge' }],
-          alert: {
-            code: 'project_dispatch_blocked',
-            severity: 'error',
-            title: 'Project dispatch blocked',
-            message: 'Project repo is outside the current server scope (/repo/current)',
-            detail: 'Blocked issue is waiting for execution until the project scope mismatch is fixed.',
-          },
-        }]}
-        isSubmitting={false}
-        onAcknowledge={onAcknowledge}
-        onRespond={() => {}}
-      />,
-    )
+    renderInterruptPanel([{
+      id: 'alert-project-dispatch-2',
+      kind: 'alert',
+      issue_identifier: 'ISS-7',
+      issue_title: 'Blocked issue',
+      project_id: 'project-1',
+      project_name: 'Platform',
+      requested_at: '2026-03-16T10:00:00Z',
+      actions: [{ kind: 'acknowledge', label: 'Acknowledge' }],
+      alert: {
+        code: 'project_dispatch_blocked',
+        severity: 'error',
+        title: 'Project dispatch blocked',
+        message: 'Project repo is outside the current server scope (/repo/current)',
+        detail: 'Blocked issue is waiting for execution until the project scope mismatch is fixed.',
+      },
+    }], { onAcknowledge })
 
     expect(screen.getAllByText('Project dispatch blocked').length).toBeGreaterThan(0)
     expect(screen.getByText('Blocked issue is waiting for execution until the project scope mismatch is fixed.')).toBeInTheDocument()

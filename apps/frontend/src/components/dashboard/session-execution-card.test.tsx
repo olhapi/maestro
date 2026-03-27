@@ -69,7 +69,12 @@ describe('SessionExecutionCard', () => {
               attempt: 2,
               phase: 'implementation',
               status: 'active',
-              entries: [makeDebugEntry()],
+              entries: [
+                makeDebugEntry({
+                  detail:
+                    '$ npm run dev -- --filter=frontend\nbackground output with-an-exceptionally-long-token-that-should-wrap',
+                }),
+              ],
             },
           ],
           runtime_events: [makeRuntimeEvent()],
@@ -81,6 +86,10 @@ describe('SessionExecutionCard', () => {
     const scrollContainer = screen.getByTestId('debug-signals-scroll')
     expect(scrollContainer).toHaveClass('max-h-[520px]')
     expect(scrollContainer).toHaveClass('overflow-y-auto')
+
+    const debugDetail = screen.getByText((content, element) => element?.tagName === 'PRE' && content.includes('with-an-exceptionally-long-token'))
+    expect(debugDetail).toHaveClass('whitespace-pre-wrap', 'break-words')
+    expect(debugDetail).not.toHaveClass('overflow-x-auto')
   })
 
   it('renders the pending plan approval card and triggers approval', () => {

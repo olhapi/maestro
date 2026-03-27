@@ -6,6 +6,7 @@ import { Activity, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RotateC
 import { CommandPalette } from '@/components/command-palette'
 import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
@@ -25,9 +26,86 @@ const nav = [
 
 const APP_TITLE = 'Maestro Control Center'
 const SIDEBAR_TITLE = 'Maestro'
+const INTERRUPT_PANEL_HIDDEN_STORAGE_KEY = 'maestro.interrupt-panel-hidden'
 const brandLinkClass = 'rounded-[calc(var(--panel-radius)-0.125rem)] outline-none transition hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60'
 type AudioContextConstructor = typeof AudioContext
 type InterruptAudioWindow = Window & typeof globalThis & { webkitAudioContext?: AudioContextConstructor }
+
+function readInterruptPanelHidden() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    return window.localStorage.getItem(INTERRUPT_PANEL_HIDDEN_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function interruptLauncherSummary(interrupt: PendingInterrupt | null, count: number) {
+  if (!interrupt) {
+    return `${count} waiting`
+  }
+
+  const kind = interrupt.kind === 'alert'
+    ? 'Alert'
+    : interrupt.approval?.markdown?.trim()
+      ? 'Plan approval'
+      : interrupt.kind === 'user_input'
+        ? 'User input'
+        : 'Approval'
+  const subject = interrupt.issue_identifier || interrupt.issue_title || interrupt.project_name || 'Maestro'
+
+  return `${count} waiting · ${kind} · ${subject}`
+}
+
+function InterruptLauncher({
+  compact = false,
+  count,
+  open,
+  summary,
+  onClick,
+}: {
+  compact?: boolean
+  count: number
+  open: boolean
+  summary: string
+  onClick: () => void
+}) {
+  return (
+    <Button
+      aria-label={`${open ? 'Hide' : 'Show'} waiting input dialog: ${summary}`}
+      className={cn(
+        'min-w-0 shrink-0 justify-between gap-3 overflow-hidden border-white/10 bg-white/5 text-white hover:border-white/14 hover:bg-white/8',
+        compact ? 'h-10 w-full px-3' : 'h-11 min-w-[18rem] max-w-[24rem] px-4',
+        open ? 'border-[var(--accent)]/35 bg-[linear-gradient(135deg,rgba(196,255,87,.14),rgba(255,255,255,.05))]' : '',
+      )}
+      size="sm"
+      type="button"
+      variant="secondary"
+      onClick={onClick}
+      title={summary}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.18em]',
+            open ? 'border-[var(--accent)]/30 bg-[var(--accent)]/12 text-white' : 'border-white/10 bg-black/20 text-white',
+          )}
+        >
+          {count} waiting
+        </span>
+        <span className={cn('truncate text-left text-sm', compact ? 'max-w-[11rem]' : 'max-w-[14rem]')}>
+          {summary}
+        </span>
+      </span>
+      <span className={cn('shrink-0 text-[11px] uppercase tracking-[0.18em] text-[var(--muted-foreground)]', compact && 'sr-only')}>
+        {open ? 'Hide' : 'Show'}
+      </span>
+    </Button>
+  )
+}
 
 function playInterruptNotification() {
   if (typeof window === 'undefined') {
@@ -106,6 +184,7 @@ export function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<string>(new Date().toISOString())
   const [optimisticHiddenInterruptIds, setOptimisticHiddenInterruptIds] = useState<string[]>([])
+  const [interruptPanelHidden, setInterruptPanelHidden] = useState<boolean>(() => readInterruptPanelHidden())
   const previouslyObservedInterruptIds = useRef<Set<string> | null>(null)
   const refreshTimerRef = useRef<number | null>(null)
   const latestPathRef = useRef(activePath)
@@ -156,6 +235,18 @@ export function AppShell() {
     onError: (_, { id }) => {
       removeOptimisticHiddenInterruptId(id)
     },
+    onSettled: async () => {
+      await invalidateInterruptViews()
+    },
+  })
+  const requestPlanRevision = useMutation({
+    mutationFn: ({
+      issueIdentifier,
+      note,
+    }: {
+      issueIdentifier: string
+      note: string
+    }) => api.requestIssuePlanRevision(issueIdentifier, note),
     onSettled: async () => {
       await invalidateInterruptViews()
     },
@@ -226,6 +317,14 @@ export function AppShell() {
   }, [])
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(INTERRUPT_PANEL_HIDDEN_STORAGE_KEY, String(interruptPanelHidden))
+    } catch {
+      // Ignore storage failures so the dialog can still be opened and closed during this session.
+    }
+  }, [interruptPanelHidden])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
@@ -250,6 +349,12 @@ export function AppShell() {
   const observedSpotlightInterrupt = useMemo(() => pickSpotlightInterrupt(interruptItems), [interruptItems])
   const spotlightInterrupt = useMemo(() => pickSpotlightInterrupt(visibleInterrupts), [visibleInterrupts])
   const respondableInterruptId = useMemo(() => pickRespondableInterruptId(interruptItems), [interruptItems])
+  const interruptDialogOpen = visibleInterrupts.length > 0 && !interruptPanelHidden
+  const interruptSummary = interruptLauncherSummary(spotlightInterrupt, visibleInterrupts.length)
+
+  const handleInterruptDialogOpenChange = (nextOpen: boolean) => {
+    setInterruptPanelHidden(!nextOpen)
+  }
 
   useEffect(() => {
     const nextTitle = getPageTitle(activePath)
@@ -383,6 +488,15 @@ export function AppShell() {
             <div className="flex flex-wrap gap-2 border-t border-white/6 px-[var(--shell-padding)] pb-3 pt-2">
               <Badge className="border-lime-400/20 bg-lime-400/10 text-lime-100">{runningCount} running</Badge>
               <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">{retryCount} retries</Badge>
+              {visibleInterrupts.length > 0 ? (
+                <InterruptLauncher
+                  compact
+                  count={visibleInterrupts.length}
+                  open={interruptDialogOpen}
+                  summary={interruptSummary}
+                  onClick={() => handleInterruptDialogOpenChange(!interruptDialogOpen)}
+                />
+              ) : null}
               <Badge className="border-white/10 bg-white/5 text-white">Updated {formatRelativeTimeCompact(lastRefresh)}</Badge>
             </div>
           </header>
@@ -397,6 +511,14 @@ export function AppShell() {
                 <RotateCcw className="size-4 text-amber-300" />
                 {retryCount} retries
               </span>
+              {visibleInterrupts.length > 0 ? (
+                <InterruptLauncher
+                  count={visibleInterrupts.length}
+                  open={interruptDialogOpen}
+                  summary={interruptSummary}
+                  onClick={() => handleInterruptDialogOpenChange(!interruptDialogOpen)}
+                />
+              ) : null}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -421,17 +543,24 @@ export function AppShell() {
             resetKeys={[spotlightInterrupt?.id ?? '', visibleInterrupts.length]}
             scope="widget"
           >
-            <GlobalInterruptPanel
-              items={visibleInterrupts}
-              respondableInterruptId={respondableInterruptId}
-              isSubmitting={respondToInterrupt.isPending || acknowledgeInterrupt.isPending}
-              onAcknowledge={(interruptId) => {
-                acknowledgeInterrupt.mutate(interruptId)
-              }}
-              onRespond={({ interruptId, ...body }) => {
-                respondToInterrupt.mutate({ id: interruptId, body })
-              }}
-            />
+            {visibleInterrupts.length > 0 ? (
+              <GlobalInterruptPanel
+                items={visibleInterrupts}
+                open={interruptDialogOpen}
+                respondableInterruptId={respondableInterruptId}
+                isSubmitting={respondToInterrupt.isPending || requestPlanRevision.isPending || acknowledgeInterrupt.isPending}
+                onAcknowledge={(interruptId) => {
+                  acknowledgeInterrupt.mutate(interruptId)
+                }}
+                onOpenChange={handleInterruptDialogOpenChange}
+                onRequestPlanRevision={({ issueIdentifier, note }) => {
+                  requestPlanRevision.mutate({ issueIdentifier, note })
+                }}
+                onRespond={({ interruptId, ...body }) => {
+                  respondToInterrupt.mutate({ id: interruptId, body })
+                }}
+              />
+            ) : null}
           </ComponentErrorBoundary>
           <div
             className={cn(

@@ -1,10 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from 'react'
 import { Check, ChevronDown, ChevronUp, Copy } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { MarkdownText } from '@/components/ui/markdown'
+import { MarkdownText, wrappedOutputClassName } from '@/components/ui/markdown'
 import type { ActivityEntry, ActivityGroup } from '@/lib/types'
 import { formatDateTime, toTitleCase } from '@/lib/utils'
+
+const autoScrollBottomThreshold = 12
 
 function entryTimestamp(entry: ActivityEntry) {
   return entry.completed_at ?? entry.started_at
@@ -48,6 +50,23 @@ function groupLabel(group: ActivityGroup) {
     labels.push(toTitleCase(group.status))
   }
   return labels.join(' · ')
+}
+
+function extractProposedPlanMarkdown(value: string) {
+  const match = value.match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i)
+  if (!match) {
+    return ''
+  }
+
+  return match[1].trim()
+}
+
+function isScrolledToBottom(node: HTMLDivElement) {
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= autoScrollBottomThreshold
+}
+
+function scrollToBottom(node: HTMLDivElement) {
+  node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight)
 }
 
 async function copyText(value: string) {
@@ -100,6 +119,7 @@ export function SessionActivityTranscript({
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
   const [copied, setCopied] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const pinnedToBottomRef = useRef(true)
   const totalEntries = groups.reduce((sum, group) => sum + group.entries.length, 0)
   // Track transcript growth without copying the full command output into a dependency key.
   const scrollVersion = groups
@@ -138,11 +158,22 @@ export function SessionActivityTranscript({
   }
 
   useLayoutEffect(() => {
-    const node = scrollContainerRef.current
-    if (!node || totalEntries === 0) {
+    if (totalEntries === 0) {
+      pinnedToBottomRef.current = true
       return
     }
-    node.scrollTop = node.scrollHeight
+
+    const node = scrollContainerRef.current
+    if (!node) {
+      return
+    }
+
+    const shouldStickToBottom = pinnedToBottomRef.current || isScrolledToBottom(node)
+    pinnedToBottomRef.current = shouldStickToBottom
+
+    if (shouldStickToBottom) {
+      scrollToBottom(node)
+    }
   }, [scrollVersion, totalEntries])
 
   return (
@@ -178,6 +209,9 @@ export function SessionActivityTranscript({
           className="mt-4 max-h-[520px] overflow-x-hidden overflow-y-auto pr-1"
           data-testid="activity-log-scroll"
           ref={scrollContainerRef}
+          onScroll={(event: UIEvent<HTMLDivElement>) => {
+            pinnedToBottomRef.current = isScrolledToBottom(event.currentTarget)
+          }}
         >
           <div className="space-y-6">
             {groups.map((group) => (
@@ -195,6 +229,11 @@ export function SessionActivityTranscript({
                   {group.entries.map((entry) => {
                     const expanded = expandedRows[entry.id] ?? false
                     const timestamp = entryTimestamp(entry)
+                    const proposedPlanMarkdown =
+                      entry.kind === 'agent' && entry.phase === 'final_answer'
+                        ? extractProposedPlanMarkdown(entry.summary)
+                        : ''
+                    const showProposedPlan = proposedPlanMarkdown.length > 0
 
                     return (
                       <article key={entry.id} className="flex min-w-0 items-start gap-3 overflow-x-hidden">
@@ -218,10 +257,22 @@ export function SessionActivityTranscript({
                           </div>
 
                           <div className="pl-4">
-                            <MarkdownText className={entrySummaryClass(entry)} content={entry.summary} />
+                            {showProposedPlan ? (
+                              <div
+                                className="rounded-md border border-sky-400/25 bg-sky-400/10 p-3 text-sm leading-6 text-sky-50/92"
+                                data-testid="proposed-plan-callout"
+                              >
+                                <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-sky-100/80">
+                                  Proposed plan
+                                </p>
+                                <MarkdownText content={proposedPlanMarkdown} />
+                              </div>
+                            ) : (
+                              <MarkdownText className={entrySummaryClass(entry)} content={entry.summary} />
+                            )}
 
                             {entry.detail && expanded ? (
-                              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all [overflow-wrap:anywhere] rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88">
+                              <pre className={`${wrappedOutputClassName} mt-3 rounded-md border border-white/10 bg-black/35 p-2.5 text-xs leading-5 text-white/88`}>
                                 {entry.detail}
                               </pre>
                             ) : null}

@@ -133,6 +133,8 @@ export interface Issue {
   next_run_at?: string;
   last_enqueued_at?: string;
   pending_rerun?: boolean;
+  pending_plan_revision_markdown?: string;
+  pending_plan_revision_requested_at?: string;
 }
 
 export interface IssueSummary extends Issue {
@@ -383,6 +385,12 @@ export interface PlanApproval {
   attempt: number;
 }
 
+export interface PlanRevision {
+  markdown: string;
+  requested_at: string;
+  attempt: number;
+}
+
 export interface WorkspaceRecovery {
   status: "recovering" | "required" | string;
   message: string;
@@ -470,6 +478,7 @@ export interface AgentCommand {
   status: "pending" | "waiting_for_unblock" | "delivered";
   created_at: string;
   delivered_at?: string;
+  steered_at?: string;
   delivery_mode?: string;
   delivery_thread_id?: string;
   delivery_attempt?: number;
@@ -497,6 +506,7 @@ export interface IssueExecutionDetail {
   agent_commands: AgentCommand[];
   pending_interrupt?: PendingInterrupt;
   plan_approval?: PlanApproval;
+  plan_revision?: PlanRevision;
   workspace_recovery?: WorkspaceRecovery;
 }
 
