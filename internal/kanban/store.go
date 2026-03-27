@@ -16,8 +16,6 @@ import (
 	"time"
 	"unicode"
 
-	_ "github.com/mattn/go-sqlite3"
-
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -195,7 +193,7 @@ func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, 
 			return store.migrate()
 		}
 	}
-	dsn := absDBPath + "?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on&_txlock=immediate"
+	dsn := sqliteDSN(absDBPath)
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)

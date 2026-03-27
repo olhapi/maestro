@@ -9,10 +9,6 @@ ARG MAESTRO_VERSION=dev
 
 WORKDIR /src
 
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY go.mod go.sum ./
 
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -25,7 +21,7 @@ COPY pkg ./pkg
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 go build -ldflags "-s -w -X main.version=${MAESTRO_VERSION}" -o /out/maestro ./cmd/maestro
+    CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${MAESTRO_VERSION}" -o /out/maestro ./cmd/maestro
 
 FROM debian:${DEBIAN_SUITE}-slim
 

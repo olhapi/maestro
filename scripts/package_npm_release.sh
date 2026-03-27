@@ -279,7 +279,7 @@ pack_leaf_package() {
   echo "Building maestro $version for $GOOS/$GOARCH"
   (
     cd "$ROOT_DIR"
-    CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" \
+    CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
       go build -ldflags "-X main.version=$version" -o "$bin_path" ./cmd/maestro
   )
   chmod 755 "$bin_path"
