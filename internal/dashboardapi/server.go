@@ -490,7 +490,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, project)
 	case http.MethodDelete:
 		if err := s.store.DeleteProject(id); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeErrorStatus(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSON(w, map[string]interface{}{"deleted": true, "id": id})
@@ -608,7 +608,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, epic)
 	case http.MethodDelete:
 		if err := s.service.DeleteEpic(id); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeErrorStatus(w, appErrorStatus(err), err)
 			return
 		}
 		writeJSON(w, map[string]interface{}{"deleted": true, "id": id})

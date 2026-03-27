@@ -142,6 +142,19 @@ func TestInterruptPlanApprovalRejectsOutOfOrderResponses(t *testing.T) {
 	}
 }
 
+func TestInterruptAcknowledgeActionAccepted(t *testing.T) {
+	provider := &interruptProvider{}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-ack/acknowledge", nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.ackID != "interrupt-ack" {
+		t.Fatalf("expected acknowledge callback for interrupt-ack, got %q", provider.ackID)
+	}
+}
+
 func TestSessionsEndpointMarksPendingInterruptsAsWaiting(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))

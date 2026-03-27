@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
@@ -356,6 +359,58 @@ func TestWorkEndpointReturnsBoundedPayload(t *testing.T) {
 	}
 	if _, ok := payload["sessions"]; !ok {
 		t.Fatalf("expected work payload to include sessions, got %#v", payload)
+	}
+}
+
+func TestWebSocketEndpointStreamsConnectedAndInvalidateEvents(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	mux := http.NewServeMux()
+	NewServer(store, testProvider{}).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/v1/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial websocket: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+
+	var connected map[string]interface{}
+	if err := conn.ReadJSON(&connected); err != nil {
+		t.Fatalf("Read connected message: %v", err)
+	}
+	if connected["type"] != "connected" {
+		t.Fatalf("expected connected message, got %#v", connected)
+	}
+
+	repoPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoPath, "WORKFLOW.md"), []byte("workflow"), 0o644); err != nil {
+		t.Fatalf("WriteFile WORKFLOW.md: %v", err)
+	}
+	if _, err := store.CreateProject("Realtime", "", repoPath, filepath.Join(repoPath, "WORKFLOW.md")); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	observability.BroadcastUpdate()
+
+	var invalidation map[string]interface{}
+	if err := conn.ReadJSON(&invalidation); err != nil {
+		t.Fatalf("Read invalidation message: %v", err)
+	}
+	if invalidation["type"] != "invalidate" {
+		t.Fatalf("expected invalidate message, got %#v", invalidation)
+	}
+	if runtimeOnly, ok := invalidation["runtime_only"].(bool); !ok || runtimeOnly {
+		t.Fatalf("expected non-runtime invalidation, got %#v", invalidation)
 	}
 }
 
