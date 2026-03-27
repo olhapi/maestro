@@ -39,7 +39,11 @@ vi.mock('@/components/command-palette', () => ({
 }))
 
 vi.mock('@/components/dashboard/global-interrupt-panel', () => ({
-  GlobalInterruptPanel: ({ items }: { items: Array<unknown> }) => {
+  GlobalInterruptPanel: ({ items, open }: { items: Array<unknown>; open?: boolean }) => {
+    if (!open) {
+      return null
+    }
+
     if (items.length > 0 && shouldThrowInterruptPanel) {
       throw new Error('interrupt panel crashed')
     }
@@ -75,6 +79,7 @@ describe('AppShell error boundaries', () => {
     shouldThrowCommandPalette = false
     shouldThrowInterruptPanel = false
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    window.localStorage.clear()
     vi.clearAllMocks()
   })
 

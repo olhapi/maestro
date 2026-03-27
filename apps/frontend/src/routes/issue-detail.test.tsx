@@ -40,7 +40,9 @@ vi.mock("@/lib/api", () => ({
     approveIssuePlan: vi.fn(),
     respondToInterrupt: vi.fn(),
     setIssueBlockers: vi.fn(),
+    requestIssuePlanRevision: vi.fn(),
     sendIssueCommand: vi.fn(),
+    steerIssueCommand: vi.fn(),
     updateIssueCommand: vi.fn(),
     deleteIssueCommand: vi.fn(),
     uploadIssueAsset: vi.fn(),
@@ -426,7 +428,7 @@ describe("IssueDetailPage", () => {
     });
   });
 
-  it("uses the direct plan routes even when the plan approval interrupt is present", async () => {
+  it("uses the dedicated revision route even when the plan approval interrupt is present", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({
       project_permission_profile: "plan-then-full-access",
@@ -494,12 +496,8 @@ describe("IssueDetailPage", () => {
       issue: { ...issue, permission_profile: "full-access" },
       dispatch: { status: "queued_now", issue: issue.identifier },
     });
-    vi.mocked(api.sendIssueCommand).mockResolvedValue({
+    vi.mocked(api.requestIssuePlanRevision).mockResolvedValue({
       ok: true,
-    });
-    vi.mocked(api.retryIssue).mockResolvedValue({
-      status: "queued_now",
-      issue: issue.identifier,
     });
 
     renderWithQueryClient(<IssueDetailPage />);
@@ -525,13 +523,13 @@ describe("IssueDetailPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /request revision/i }));
 
     await waitFor(() => {
-      expect(api.sendIssueCommand).toHaveBeenCalledWith(
+      expect(api.requestIssuePlanRevision).toHaveBeenCalledWith(
         "ISS-1",
         "Call out the missing tests before approval.",
       );
-      expect(api.retryIssue).toHaveBeenCalledWith("ISS-1");
     });
 
+    expect(api.sendIssueCommand).not.toHaveBeenCalled();
     expect(api.respondToInterrupt).not.toHaveBeenCalled();
   });
 
@@ -1200,7 +1198,7 @@ describe("IssueDetailPage", () => {
         runtime_events: [],
         agent_commands: [],
       })
-      .mockResolvedValue({
+      .mockResolvedValueOnce({
         issue_id: issue.id,
         identifier: issue.identifier,
         active: false,
@@ -1229,6 +1227,15 @@ describe("IssueDetailPage", () => {
             delivery_mode: "same_thread",
             delivery_thread_id: "thread-live",
             delivery_attempt: 1,
+          },
+          {
+            id: "cmd-3",
+            issue_id: issue.id,
+            command:
+              "Review the execution log and make sure this very-long-command-token-stays-inside-the-card without widening the rail.",
+            status: "delivered",
+            created_at: "2026-03-09T11:30:00Z",
+            delivered_at: "2026-03-09T11:35:00Z",
           },
         ],
       });
@@ -1284,6 +1291,157 @@ describe("IssueDetailPage", () => {
     expect(
       within(screen.getByTestId("agent-command-cmd-2")).queryByRole("button", { name: /delete command/i }),
     ).not.toBeInTheDocument();
+    const wrappedCommand = within(screen.getByTestId("agent-command-cmd-3")).getByText(
+      /very-long-command-token-stays-inside-the-card/,
+    );
+    expect(wrappedCommand).toHaveClass("whitespace-pre-wrap", "break-words");
+    expect(wrappedCommand).not.toHaveClass("overflow-x-auto");
+  });
+
+  it("renders a steer button for mutable commands and refreshes the command when steered", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "done" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+
+    let resolveSteer!: (value: { ok: boolean; command: Record<string, unknown> }) => void;
+    const steerPromise = new Promise<{ ok: boolean; command: Record<string, unknown> }>((resolve) => {
+      resolveSteer = resolve;
+    });
+    vi.mocked(api.steerIssueCommand).mockReturnValue(steerPromise);
+    vi.mocked(api.getIssueExecution)
+      .mockResolvedValueOnce({
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        active: false,
+        phase: "implementation",
+        attempt_number: 1,
+        retry_state: "none",
+        session_source: "persisted",
+        activity_groups: [],
+        debug_activity_groups: [],
+        runtime_events: [],
+        agent_commands: [
+          {
+            id: "cmd-1",
+            issue_id: issue.id,
+            command: "Merge the branch to master.",
+            status: "waiting_for_unblock",
+            created_at: "2026-03-09T12:10:00Z",
+          },
+          {
+            id: "cmd-2",
+            issue_id: issue.id,
+            command: "Already delivered.",
+            status: "delivered",
+            created_at: "2026-03-09T11:45:00Z",
+            delivered_at: "2026-03-09T11:50:00Z",
+            delivery_mode: "same_thread",
+            delivery_thread_id: "thread-live",
+            delivery_attempt: 1,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        active: false,
+        phase: "implementation",
+        attempt_number: 1,
+        retry_state: "none",
+        session_source: "persisted",
+        activity_groups: [],
+        debug_activity_groups: [],
+        runtime_events: [],
+        agent_commands: [
+          {
+            id: "cmd-1",
+            issue_id: issue.id,
+            command: "Merge the branch to master.",
+            status: "waiting_for_unblock",
+            created_at: "2026-03-09T12:10:00Z",
+            steered_at: "2026-03-09T12:12:00Z",
+          },
+          {
+            id: "cmd-2",
+            issue_id: issue.id,
+            command: "Already delivered.",
+            status: "delivered",
+            created_at: "2026-03-09T11:45:00Z",
+            delivered_at: "2026-03-09T11:50:00Z",
+            delivery_mode: "same_thread",
+            delivery_thread_id: "thread-live",
+            delivery_attempt: 1,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        active: false,
+        phase: "implementation",
+        attempt_number: 1,
+        retry_state: "none",
+        session_source: "persisted",
+        activity_groups: [],
+        debug_activity_groups: [],
+        runtime_events: [],
+        agent_commands: [
+          {
+            id: "cmd-1",
+            issue_id: issue.id,
+            command: "Merge the branch to master.",
+            status: "waiting_for_unblock",
+            created_at: "2026-03-09T12:10:00Z",
+            steered_at: "2026-03-09T12:12:00Z",
+          },
+          {
+            id: "cmd-2",
+            issue_id: issue.id,
+            command: "Already delivered.",
+            status: "delivered",
+            created_at: "2026-03-09T11:45:00Z",
+            delivered_at: "2026-03-09T11:50:00Z",
+            delivery_mode: "same_thread",
+            delivery_thread_id: "thread-live",
+            delivery_attempt: 1,
+          },
+        ],
+      });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-command-cmd-1")).toBeInTheDocument();
+    });
+
+    const mutableCommand = screen.getByTestId("agent-command-cmd-1");
+    const steerButton = within(mutableCommand).getByRole("button", { name: /steer command/i });
+    expect(within(screen.getByTestId("agent-command-cmd-2")).queryByRole("button", { name: /steer command/i })).toBeNull();
+
+    fireEvent.click(steerButton);
+
+    await waitFor(() => {
+      expect(steerButton).toBeDisabled();
+    });
+
+    expect(api.steerIssueCommand).toHaveBeenCalledWith(issue.identifier, "cmd-1");
+
+    resolveSteer({
+      ok: true,
+      command: {
+        id: "cmd-1",
+        issue_id: issue.id,
+        command: "Merge the branch to master.",
+        status: "waiting_for_unblock",
+        created_at: "2026-03-09T12:10:00Z",
+        steered_at: "2026-03-09T12:12:00Z",
+      },
+    });
+
+    await waitFor(() => {
+      expect(within(screen.getByTestId("agent-command-cmd-1")).getByText(/steered/i)).toBeInTheDocument();
+    });
   });
 
   it("submits agent commands on Enter", async () => {

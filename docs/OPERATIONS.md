@@ -12,6 +12,10 @@ This document collects the durable operational details for Maestro: runtime surf
 - a private loopback-only MCP daemon used by `maestro mcp`
 - an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
 
+The standard Go build/test path uses a pure-Go SQLite driver now. Only the
+standalone shell scripts under `scripts/` still shell out to the `sqlite3`
+CLI when you run them directly.
+
 `WORKFLOW.md` still governs orchestration behavior. Its `tracker.kind` remains `kanban`, which is the local tracker used for every project.
 
 ## HTTP surfaces

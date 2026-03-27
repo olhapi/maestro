@@ -41,7 +41,7 @@ func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier st
 	if p.store != nil {
 		issue, err := p.store.GetIssueByIdentifier(identifier)
 		if err == nil {
-			if issue.PlanApprovalPending {
+			if issue.PlanApprovalPending && strings.TrimSpace(issue.PendingPlanRevisionMarkdown) == "" && issue.PendingPlanRevisionRequestedAt == nil {
 				_ = p.store.ClearIssuePendingPlanApproval(issue.ID, "manual_retry")
 			}
 			if snapshot, err := p.store.GetIssueExecutionSession(issue.ID); err == nil && snapshot != nil && strings.TrimSpace(snapshot.StopReason) == "plan_approval_pending" {
@@ -1423,6 +1423,80 @@ func TestIssueApprovePlanContractsQueuesNoteAndRedispatches(t *testing.T) {
 	}
 }
 
+func TestIssueRequestPlanRevisionContractsStoresRevisionAndRedispatches(t *testing.T) {
+	provider := &retryTrackingProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+	provider.store = store
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Request plan revision", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 13, 15, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      "plan_approval_pending",
+		StopReason: "plan_approval_pending",
+		UpdatedAt:  requestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-3",
+			ThreadID:        "thread-plan",
+			TurnID:          "turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/request-plan-revision", map[string]interface{}{
+		"note": "Keep the plan but make the rollout smaller and add a rollback check.",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch for %s, got %v", issue.Identifier, provider.retried)
+	}
+	if len(provider.resumeThreadIDs) != 1 || provider.resumeThreadIDs[0] != "thread-plan" {
+		t.Fatalf("expected redispatch to preserve thread resume id, got %v", provider.resumeThreadIDs)
+	}
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected dedicated revision flow to avoid agent commands, got %#v", commands)
+	}
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to remain queued, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionMarkdown != "Keep the plan but make the rollout smaller and add a rollback check." {
+		t.Fatalf("expected pending plan revision to be stored, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision requested_at to be stored, got %+v", updated)
+	}
+}
+
 func TestInterruptPlanApprovalNoteOnlyQueuesRevisionAndRedispatch(t *testing.T) {
 	provider := &retryTrackingProvider{}
 	store, srv := setupDashboardServerTest(t, provider)
@@ -1501,18 +1575,21 @@ func TestInterruptPlanApprovalNoteOnlyQueuesRevisionAndRedispatch(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ListIssueAgentCommands: %v", err)
 	}
-	if len(commands) != 1 {
-		t.Fatalf("expected one queued steering command, got %#v", commands)
-	}
-	if commands[0].Command != "Prefer a smaller rollout and keep the rollback step explicit." {
-		t.Fatalf("unexpected queued command: %+v", commands[0])
+	if len(commands) != 0 {
+		t.Fatalf("expected dedicated revision flow to avoid agent commands, got %#v", commands)
 	}
 	updated, err := store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
-	if updated.PlanApprovalPending {
-		t.Fatalf("expected pending plan approval to clear after revision, got %+v", updated)
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to remain queued after revision, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionMarkdown != "Prefer a smaller rollout and keep the rollback step explicit." {
+		t.Fatalf("expected pending plan revision to be stored, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision requested_at to be stored, got %+v", updated)
 	}
 }
 
@@ -1607,18 +1684,21 @@ func TestInterruptPlanApprovalIgnoresLeadingAlertsWhenSelectingTheActionableItem
 	if err != nil {
 		t.Fatalf("ListIssueAgentCommands: %v", err)
 	}
-	if len(commands) != 1 {
-		t.Fatalf("expected one queued steering command, got %#v", commands)
-	}
-	if commands[0].Command != "Prefer a smaller rollout and keep the rollback step explicit." {
-		t.Fatalf("unexpected queued command: %+v", commands[0])
+	if len(commands) != 0 {
+		t.Fatalf("expected dedicated revision flow to avoid agent commands, got %#v", commands)
 	}
 	updated, err := store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
-	if updated.PlanApprovalPending {
-		t.Fatalf("expected pending plan approval to clear after revision, got %+v", updated)
+	if !updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to remain queued after revision, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionMarkdown != "Prefer a smaller rollout and keep the rollback step explicit." {
+		t.Fatalf("expected pending plan revision to be stored, got %+v", updated)
+	}
+	if updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision requested_at to be stored, got %+v", updated)
 	}
 }
 

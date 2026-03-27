@@ -1,7 +1,7 @@
 import { AlertTriangle, ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 
-import { MarkdownText } from '@/components/ui/markdown'
+import { MarkdownText, wrappedOutputClassName } from '@/components/ui/markdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -95,11 +95,14 @@ export function SessionExecutionCard({
   const pendingInterrupt = execution.pending_interrupt
   const pendingAlert = pendingInterrupt?.kind === 'alert' ? pendingInterrupt : null
   const pendingPlanApproval = execution.plan_approval
+  const pendingPlanRevision = execution.plan_revision
   const pendingPlanApprovalMarkdown =
     pendingInterrupt?.approval?.markdown?.trim() ||
     pendingPlanApproval?.markdown?.trim() ||
     ''
   const isPlanApprovalPending = pendingPlanApprovalMarkdown.length > 0
+  const pendingPlanRevisionMarkdown = pendingPlanRevision?.markdown?.trim() ?? ''
+  const isPlanRevisionPending = pendingPlanRevisionMarkdown.length > 0
   const planApprovalDraftKey = isPlanApprovalPending
     ? `${pendingPlanApproval?.requested_at ?? pendingInterrupt?.requested_at ?? ''}|${pendingPlanApprovalMarkdown}`
     : ''
@@ -108,15 +111,17 @@ export function SessionExecutionCard({
     failureSummaryReason,
   )
   const sessionStatusLabel = pendingInterrupt
-    ? pendingAlert
-      ? 'Blocked'
-      : isPlanApprovalPending
-        ? 'Waiting for plan approval'
-        : 'Waiting for input'
-    : execution.retry_state === 'paused'
-      ? isPlanApprovalPending
-        ? 'Waiting for plan approval'
-        : 'Paused'
+      ? pendingAlert
+        ? 'Blocked'
+        : isPlanApprovalPending
+          ? 'Waiting for plan approval'
+          : 'Waiting for input'
+      : isPlanRevisionPending
+        ? 'Revision queued'
+      : execution.retry_state === 'paused'
+        ? isPlanApprovalPending
+          ? 'Waiting for plan approval'
+          : 'Paused'
       : failureLabel
           ? failureLabel
           : execution.active
@@ -164,6 +169,9 @@ export function SessionExecutionCard({
           ) : null}
           {pendingInterrupt?.collaboration_mode === 'plan' || isPlanApprovalPending ? (
             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
+          ) : null}
+          {isPlanRevisionPending ? (
+            <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">Revision queued</Badge>
           ) : null}
           {execution.failure_class && !isPlanApprovalPending ? (
             <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">{toTitleCase(execution.failure_class)}</Badge>
@@ -246,6 +254,23 @@ export function SessionExecutionCard({
           </div>
         ) : null}
 
+        {isPlanRevisionPending ? (
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-amber-100">Revision note queued</p>
+                <p className="mt-2 text-amber-50/90">
+                  Maestro will prepend this note to the next planning turn, then clear it after the turn starts.
+                </p>
+                <div className="mt-3 rounded-md border border-amber-200/15 bg-black/25 p-3 text-sm leading-6 text-amber-50/92">
+                  <MarkdownText content={pendingPlanRevisionMarkdown} />
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {workspaceRecovery ? (
           <div className={`rounded-[calc(var(--panel-radius)-0.125rem)] border p-3.5 text-sm ${workspaceRecoveryTone}`}>
             <div className="flex items-start gap-3">
@@ -264,7 +289,7 @@ export function SessionExecutionCard({
         {execution.current_error ? (
           <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-rose-400/15 bg-rose-400/10 p-3.5 text-sm text-rose-100">
             <p className="text-xs uppercase tracking-[0.18em] text-rose-200/80">Current error</p>
-            <p className="mt-2 whitespace-pre-wrap break-words">{execution.current_error}</p>
+            <p className={`${wrappedOutputClassName} mt-2`}>{execution.current_error}</p>
           </div>
         ) : null}
 
@@ -327,11 +352,11 @@ export function SessionExecutionCard({
                                 {event.item_type || event.kind}
                               </span>
                             </div>
-                            <p className="mt-2 whitespace-pre-wrap break-words text-sm text-[var(--muted-foreground)]">
+                            <p className={`${wrappedOutputClassName} mt-2 text-sm text-[var(--muted-foreground)]`}>
                               {event.summary || 'Execution signal'}
                             </p>
                             {event.detail ? (
-                              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-white/10 bg-black/30 p-2.5 text-xs text-white/88">
+                              <pre className={`${wrappedOutputClassName} mt-3 rounded-md border border-white/10 bg-black/30 p-2.5 text-xs text-white/88`}>
                                 {event.detail}
                               </pre>
                             ) : null}

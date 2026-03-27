@@ -10,6 +10,8 @@ function isExternalHref(href?: string) {
   return typeof href === 'string' && /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)
 }
 
+export const wrappedOutputClassName = 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
+
 const markdownComponents: Components = {
   a({ children, href, ...props }) {
     const { node, ...anchorProps } = props as ComponentPropsWithoutRef<'a'> & { node?: unknown }
@@ -107,7 +109,7 @@ const markdownComponents: Components = {
     return <p className="m-0 leading-6 text-inherit">{children}</p>
   },
   pre({ children }) {
-    return <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/35 p-3 text-inherit">{children}</pre>
+    return <pre className={cn(wrappedOutputClassName, 'rounded-md border border-white/10 bg-black/35 p-3 text-inherit')}>{children}</pre>
   },
   table({ children }) {
     return (

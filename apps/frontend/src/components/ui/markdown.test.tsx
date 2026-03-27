@@ -28,4 +28,22 @@ describe('MarkdownText', () => {
     expect(screen.getByRole('columnheader', { name: 'Step' })).toBeInTheDocument()
     expect(screen.getByRole('cell', { name: 'done' })).toBeInTheDocument()
   })
+
+  it('wraps fenced code blocks instead of exposing horizontal scroll', () => {
+    render(
+      <MarkdownText
+        content={`Run this command:
+
+\`\`\`bash
+npm run dev -- --filter=frontend --with-an-exceptionally-long-token-that-should-wrap
+\`\`\``}
+      />,
+    )
+
+    const codeBlock = screen.getByText(/exceptionally-long-token/, { selector: 'code' })
+    const pre = codeBlock.closest('pre')
+
+    expect(pre).toHaveClass('whitespace-pre-wrap', 'break-words')
+    expect(pre).not.toHaveClass('overflow-x-auto')
+  })
 })

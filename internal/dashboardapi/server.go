@@ -898,6 +898,33 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			"issue":    detail,
 			"dispatch": s.provider.RetryIssueNow(r.Context(), identifier),
 		})
+	case "request-plan-revision":
+		var body struct {
+			Note string `json:"note"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		note := strings.TrimSpace(body.Note)
+		if note == "" {
+			writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+			return
+		}
+		issue, err := s.store.GetIssueByIdentifier(identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		if !issue.PlanApprovalPending || strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
+			writeJSONStatus(w, http.StatusConflict, map[string]interface{}{"error": "no pending plan approval"})
+			return
+		}
+		response, err := s.requestIssuePlanRevision(r.Context(), issue, note)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, response)
 	case "state":
 		var body struct {
 			State string `json:"state"`
@@ -1000,6 +1027,30 @@ func (s *Server) handleIssueCommands(w http.ResponseWriter, r *http.Request, ide
 		default:
 			methodNotAllowed(w)
 		}
+	case len(rest) == 2 && rest[1] == "steer" && r.Method == http.MethodPost:
+		commandID := strings.TrimSpace(rest[0])
+		if commandID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		issue, err := s.service.GetIssueByIdentifier(r.Context(), identifier)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		command, err := s.store.SteerIssueAgentCommand(issue.ID, commandID)
+		if err != nil {
+			writeErrorStatus(w, appErrorStatus(err), err)
+			return
+		}
+		if s.provider != nil && (!issue.PlanApprovalPending || strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil) {
+			_ = s.provider.RetryIssueNow(r.Context(), identifier)
+		}
+		writeJSON(w, map[string]interface{}{
+			"ok":      true,
+			"issue":   identifier,
+			"command": command,
+		})
 	default:
 		methodNotAllowed(w)
 	}
@@ -1426,13 +1477,8 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 				writeErrorStatus(w, appErrorStatus(err), err)
 				return
 			}
-			if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
+			if _, err := s.requestIssuePlanRevision(r.Context(), issue, note); err != nil {
 				writeErrorStatus(w, appErrorStatus(err), err)
-				return
-			}
-			result := s.provider.RetryIssueNow(r.Context(), issue.Identifier)
-			if status, _ := result["status"].(string); status == "error" {
-				writeErrorStatus(w, http.StatusInternalServerError, fmt.Errorf("%v", result["error"]))
 				return
 			}
 			writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
@@ -1683,6 +1729,36 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out interface{})
 
 func (s *Server) issueExecutionPayload(issue *kanban.Issue) (map[string]interface{}, error) {
 	return runtimeview.IssueExecutionPayload(s.store, s.provider, issue)
+}
+
+func (s *Server) requestIssuePlanRevision(ctx context.Context, issue *kanban.Issue, note string) (map[string]interface{}, error) {
+	if issue == nil {
+		return nil, fmt.Errorf("issue is required")
+	}
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return nil, appserver.ErrInvalidInteractionResponse
+	}
+	if !issue.PlanApprovalPending || strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
+		return nil, kanban.ErrBlockedTransition
+	}
+	requestedAt := time.Now().UTC()
+	if err := s.store.SetIssuePendingPlanRevision(issue.ID, note, requestedAt); err != nil {
+		return nil, err
+	}
+	detail, err := s.service.GetIssueDetailByIdentifier(ctx, issue.Identifier)
+	if err != nil {
+		return nil, err
+	}
+	dispatch := s.provider.RetryIssueNow(ctx, issue.Identifier)
+	if status, _ := dispatch["status"].(string); status == "error" {
+		return nil, fmt.Errorf("%v", dispatch["error"])
+	}
+	return map[string]interface{}{
+		"ok":       true,
+		"issue":    detail,
+		"dispatch": dispatch,
+	}, nil
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

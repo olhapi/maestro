@@ -16,8 +16,6 @@ import (
 	"time"
 	"unicode"
 
-	_ "github.com/mattn/go-sqlite3"
-
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -32,9 +30,9 @@ type Store struct {
 const (
 	sqliteMaxOpenConns = 8
 	sqliteMaxIdleConns = 4
-	issueSelectColumns = `id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, priority,
+	issueSelectColumns = `id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, pending_plan_revision_markdown, pending_plan_revision_requested_at, priority,
 	       agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at`
-	qualifiedIssueSelectColumns = `i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.collaboration_mode_override, i.plan_approval_pending, i.pending_plan_markdown, i.pending_plan_requested_at, i.priority,
+	qualifiedIssueSelectColumns = `i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.collaboration_mode_override, i.plan_approval_pending, i.pending_plan_markdown, i.pending_plan_requested_at, i.pending_plan_revision_markdown, i.pending_plan_revision_requested_at, i.priority,
 	       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at`
 )
 
@@ -195,7 +193,7 @@ func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, 
 			return store.migrate()
 		}
 	}
-	dsn := absDBPath + "?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on&_txlock=immediate"
+	dsn := sqliteDSN(absDBPath)
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -287,6 +285,8 @@ func (s *Store) migrate() error {
 			plan_approval_pending INTEGER NOT NULL DEFAULT 0,
 			pending_plan_markdown TEXT NOT NULL DEFAULT '',
 			pending_plan_requested_at DATETIME,
+			pending_plan_revision_markdown TEXT NOT NULL DEFAULT '',
+			pending_plan_revision_requested_at DATETIME,
 			priority INTEGER DEFAULT 0,
 			agent_name TEXT NOT NULL DEFAULT '',
 			agent_prompt TEXT NOT NULL DEFAULT '',
@@ -453,6 +453,7 @@ func (s *Store) migrate() error {
 			status TEXT NOT NULL DEFAULT 'pending',
 			created_at DATETIME NOT NULL,
 			delivered_at DATETIME,
+			steered_at DATETIME,
 			delivery_mode TEXT NOT NULL DEFAULT '',
 			delivery_thread_id TEXT NOT NULL DEFAULT '',
 			delivery_attempt INTEGER NOT NULL DEFAULT 0,
@@ -498,6 +499,9 @@ func (s *Store) migrate() error {
 	if err := s.ensureIssueCommentTables(); err != nil {
 		return err
 	}
+	if err := s.ensureIssueAgentCommandColumns(); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_projects_repo_path_unique`); err != nil {
 		return err
 	}
@@ -536,6 +540,8 @@ func (s *Store) ensureIssueColumns() error {
 		`ALTER TABLE issues ADD COLUMN plan_approval_pending INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE issues ADD COLUMN pending_plan_markdown TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE issues ADD COLUMN pending_plan_requested_at DATETIME`,
+		`ALTER TABLE issues ADD COLUMN pending_plan_revision_markdown TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE issues ADD COLUMN pending_plan_revision_requested_at DATETIME`,
 		`ALTER TABLE issues ADD COLUMN total_tokens_spent INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE issues ADD COLUMN last_synced_at DATETIME`,
 		`ALTER TABLE issues ADD COLUMN agent_name TEXT NOT NULL DEFAULT ''`,
@@ -594,6 +600,17 @@ func (s *Store) ensureIssueExecutionSessionColumns() error {
 	for _, stmt := range []string{
 		`ALTER TABLE issue_execution_sessions ADD COLUMN resume_eligible INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE issue_execution_sessions ADD COLUMN stop_reason TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureIssueAgentCommandColumns() error {
+	for _, stmt := range []string{
+		`ALTER TABLE issue_agent_commands ADD COLUMN steered_at DATETIME`,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
@@ -731,6 +748,8 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 			plan_approval_pending INTEGER NOT NULL DEFAULT 0,
 			pending_plan_markdown TEXT NOT NULL DEFAULT '',
 			pending_plan_requested_at DATETIME,
+			pending_plan_revision_markdown TEXT NOT NULL DEFAULT '',
+			pending_plan_revision_requested_at DATETIME,
 			priority INTEGER DEFAULT 0,
 			agent_name TEXT NOT NULL DEFAULT '',
 			agent_prompt TEXT NOT NULL DEFAULT '',
@@ -747,7 +766,7 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 		)`,
 		`INSERT INTO issues_new (
 				id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description,
-				state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
+				state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, pending_plan_revision_markdown, pending_plan_revision_requested_at, priority, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at
 			)
 		SELECT
 			legacy.id,
@@ -770,7 +789,7 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 				ELSE NULL
 			END,
 			legacy.identifier, legacy.issue_type, legacy.provider_kind, legacy.provider_issue_ref, legacy.provider_shadow, legacy.title, legacy.description,
-			legacy.state, legacy.workflow_phase, COALESCE(NULLIF(TRIM(legacy.permission_profile), ''), 'default'), COALESCE(NULLIF(TRIM(legacy.collaboration_mode_override), ''), ''), COALESCE(legacy.plan_approval_pending, 0), COALESCE(legacy.pending_plan_markdown, ''), legacy.pending_plan_requested_at, legacy.priority, COALESCE(legacy.agent_name, ''), COALESCE(legacy.agent_prompt, ''), legacy.branch_name, legacy.pr_url, legacy.created_at, legacy.updated_at, legacy.total_tokens_spent, legacy.started_at, legacy.completed_at, legacy.last_synced_at
+			legacy.state, legacy.workflow_phase, COALESCE(NULLIF(TRIM(legacy.permission_profile), ''), 'default'), COALESCE(NULLIF(TRIM(legacy.collaboration_mode_override), ''), ''), COALESCE(legacy.plan_approval_pending, 0), COALESCE(legacy.pending_plan_markdown, ''), legacy.pending_plan_requested_at, COALESCE(legacy.pending_plan_revision_markdown, ''), legacy.pending_plan_revision_requested_at, legacy.priority, COALESCE(legacy.agent_name, ''), COALESCE(legacy.agent_prompt, ''), legacy.branch_name, legacy.pr_url, legacy.created_at, legacy.updated_at, legacy.total_tokens_spent, legacy.started_at, legacy.completed_at, legacy.last_synced_at
 			FROM issues AS legacy`,
 		`DROP TABLE issues`,
 		`ALTER TABLE issues_new RENAME TO issues`,
@@ -1266,6 +1285,8 @@ func (s *Store) UpdateProjectPermissionProfile(id string, profile PermissionProf
 			    plan_approval_pending = 0,
 			    pending_plan_markdown = '',
 			    pending_plan_requested_at = NULL,
+			    pending_plan_revision_markdown = '',
+			    pending_plan_revision_requested_at = NULL,
 			    updated_at = ?
 			WHERE project_id = ? AND permission_profile = ?`,
 			now, id, PermissionProfileDefault,
@@ -1293,6 +1314,8 @@ func (s *Store) UpdateIssuePermissionProfile(id string, profile PermissionProfil
 		    plan_approval_pending = 0,
 		    pending_plan_markdown = '',
 		    pending_plan_requested_at = NULL,
+		    pending_plan_revision_markdown = '',
+		    pending_plan_revision_requested_at = NULL,
 		    updated_at = ?
 		WHERE id = ?`,
 		profile, now, id,
@@ -1320,6 +1343,8 @@ func (s *Store) SetIssuePendingPlanApproval(id, markdown string, requestedAt tim
 		    plan_approval_pending = 1,
 		    pending_plan_markdown = ?,
 		    pending_plan_requested_at = ?,
+		    pending_plan_revision_markdown = '',
+		    pending_plan_revision_requested_at = NULL,
 		    updated_at = ?
 		WHERE id = ?`,
 		markdown, requestedAt, time.Now().UTC(), id,
@@ -1348,6 +1373,8 @@ func (s *Store) ApproveIssuePlan(id string) error {
 		    plan_approval_pending = 0,
 		    pending_plan_markdown = '',
 		    pending_plan_requested_at = NULL,
+		    pending_plan_revision_markdown = '',
+		    pending_plan_revision_requested_at = NULL,
 		    updated_at = ?
 		WHERE id = ?`,
 		PermissionProfileFullAccess, CollaborationModeOverrideDefault, now, id,
@@ -1374,6 +1401,8 @@ func (s *Store) ClearIssuePendingPlanApproval(id string, reason string) error {
 		SET plan_approval_pending = 0,
 		    pending_plan_markdown = '',
 		    pending_plan_requested_at = NULL,
+		    pending_plan_revision_markdown = '',
+		    pending_plan_revision_requested_at = NULL,
 		    updated_at = ?
 		WHERE id = ?`,
 		now, id,
@@ -1391,6 +1420,62 @@ func (s *Store) ClearIssuePendingPlanApproval(id string, reason string) error {
 		fields["reason"] = strings.TrimSpace(reason)
 	}
 	return s.appendChange("issue", id, "plan_approval_cleared", fields)
+}
+
+func (s *Store) SetIssuePendingPlanRevision(id, markdown string, requestedAt time.Time) error {
+	if strings.TrimSpace(id) == "" {
+		return validationErrorf("issue id is required")
+	}
+	if strings.TrimSpace(markdown) == "" {
+		return validationErrorf("pending plan revision markdown is required")
+	}
+	requestedAt = requestedAt.UTC()
+	res, err := s.db.Exec(`
+		UPDATE issues
+		SET pending_plan_revision_markdown = ?,
+		    pending_plan_revision_requested_at = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		markdown, requestedAt, time.Now().UTC(), id,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
+	}
+	return s.appendChange("issue", id, "plan_revision_requested", map[string]interface{}{
+		"requested_at": requestedAt.Format(time.RFC3339),
+		"markdown":     markdown,
+	})
+}
+
+func (s *Store) ClearIssuePendingPlanRevision(id, reason string) error {
+	if strings.TrimSpace(id) == "" {
+		return validationErrorf("issue id is required")
+	}
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`
+		UPDATE issues
+		SET pending_plan_revision_markdown = '',
+		    pending_plan_revision_requested_at = NULL,
+		    updated_at = ?
+		WHERE id = ?`,
+		now, id,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return notFoundError("issue", id)
+	}
+	fields := map[string]interface{}{
+		"cleared_at": now.Format(time.RFC3339),
+	}
+	if strings.TrimSpace(reason) != "" {
+		fields["reason"] = strings.TrimSpace(reason)
+	}
+	return s.appendChange("issue", id, "plan_revision_cleared", fields)
 }
 func (s *Store) UpdateProjectState(id string, state ProjectState) error {
 	state = NormalizeProjectState(string(state))
@@ -1821,13 +1906,13 @@ type issueScanner interface {
 
 func scanIssueRecord(scanner issueScanner) (*Issue, error) {
 	issue := &Issue{}
-	var startedAt, completedAt, lastSyncedAt, pendingPlanRequestedAt sql.NullTime
+	var startedAt, completedAt, lastSyncedAt, pendingPlanRequestedAt, pendingPlanRevisionRequestedAt sql.NullTime
 	var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
 	var providerShadow, planApprovalPending int
 	var permissionProfile, collaborationModeOverride string
 
 	if err := scanner.Scan(
-		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &collaborationModeOverride, &planApprovalPending, &issue.PendingPlanMarkdown, &pendingPlanRequestedAt, &issue.Priority,
+		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &collaborationModeOverride, &planApprovalPending, &issue.PendingPlanMarkdown, &pendingPlanRequestedAt, &issue.PendingPlanRevisionMarkdown, &pendingPlanRevisionRequestedAt, &issue.Priority,
 		&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 	); err != nil {
 		return nil, err
@@ -1868,6 +1953,9 @@ func scanIssueRecord(scanner issueScanner) (*Issue, error) {
 	}
 	if pendingPlanRequestedAt.Valid {
 		issue.PendingPlanRequestedAt = &pendingPlanRequestedAt.Time
+	}
+	if pendingPlanRevisionRequestedAt.Valid {
+		issue.PendingPlanRevisionRequestedAt = &pendingPlanRevisionRequestedAt.Time
 	}
 	return issue, nil
 }
@@ -1942,7 +2030,7 @@ func (s *Store) listDispatchIssuesForQuery(query string, args ...interface{}) ([
 
 func scanDispatchIssueRow(rows *sql.Rows) (*DispatchIssue, error) {
 	issue := &Issue{}
-	var startedAt, completedAt, lastSyncedAt, pendingPlanRequestedAt sql.NullTime
+	var startedAt, completedAt, lastSyncedAt, pendingPlanRequestedAt, pendingPlanRevisionRequestedAt sql.NullTime
 	var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
 	var providerShadow, planApprovalPending int
 	var permissionProfile, collaborationModeOverride string
@@ -1951,7 +2039,7 @@ func scanDispatchIssueRow(rows *sql.Rows) (*DispatchIssue, error) {
 	var unresolved int
 
 	if err := rows.Scan(
-		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &collaborationModeOverride, &planApprovalPending, &issue.PendingPlanMarkdown, &pendingPlanRequestedAt, &issue.Priority,
+		&issue.ID, &projectID, &epicID, &issue.Identifier, &issue.IssueType, &issue.ProviderKind, &providerIssueRef, &providerShadow, &issue.Title, &issue.Description, &issue.State, &issue.WorkflowPhase, &permissionProfile, &collaborationModeOverride, &planApprovalPending, &issue.PendingPlanMarkdown, &pendingPlanRequestedAt, &issue.PendingPlanRevisionMarkdown, &pendingPlanRevisionRequestedAt, &issue.Priority,
 		&issue.AgentName, &issue.AgentPrompt, &branchName, &prURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 		&projectExists, &rawProjectState, &unresolved,
 	); err != nil {
@@ -1993,6 +2081,9 @@ func scanDispatchIssueRow(rows *sql.Rows) (*DispatchIssue, error) {
 	}
 	if pendingPlanRequestedAt.Valid {
 		issue.PendingPlanRequestedAt = &pendingPlanRequestedAt.Time
+	}
+	if pendingPlanRevisionRequestedAt.Valid {
+		issue.PendingPlanRevisionRequestedAt = &pendingPlanRevisionRequestedAt.Time
 	}
 
 	return &DispatchIssue{
@@ -2959,6 +3050,18 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 			args = append(args, pendingPlanRequestedAt.UTC())
 		}
 	}
+	if pendingPlanRevisionMarkdown, ok := updates["pending_plan_revision_markdown"].(string); ok {
+		query += ", pending_plan_revision_markdown = ?"
+		args = append(args, pendingPlanRevisionMarkdown)
+	}
+	if pendingPlanRevisionRequestedAt, ok := updates["pending_plan_revision_requested_at"].(*time.Time); ok {
+		query += ", pending_plan_revision_requested_at = ?"
+		if pendingPlanRevisionRequestedAt == nil {
+			args = append(args, nil)
+		} else {
+			args = append(args, pendingPlanRevisionRequestedAt.UTC())
+		}
+	}
 	if issueTypeSpecified {
 		query += ", issue_type = ?"
 		args = append(args, nextType)
@@ -3582,7 +3685,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	}
 
 	rows, err := s.db.Query(`
-			SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.collaboration_mode_override, i.plan_approval_pending, i.pending_plan_markdown, i.pending_plan_requested_at, i.priority,
+			SELECT i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.collaboration_mode_override, i.plan_approval_pending, i.pending_plan_markdown, i.pending_plan_requested_at, i.pending_plan_revision_markdown, i.pending_plan_revision_requested_at, i.priority,
 			       i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at,
 			       COALESCE(p.name, ''), COALESCE(p.description, ''), COALESCE(e.name, ''), COALESCE(e.description, ''),
 		       COALESCE(w.path, ''), COALESCE(w.run_count, 0), w.last_run_at
@@ -3603,12 +3706,12 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	for rows.Next() {
 		var item IssueSummary
 		var projectID, epicID, branchName, prURL, providerIssueRef sql.NullString
-		var startedAt, completedAt, lastRun, lastSyncedAt, pendingPlanRequestedAt sql.NullTime
+		var startedAt, completedAt, lastRun, lastSyncedAt, pendingPlanRequestedAt, pendingPlanRevisionRequestedAt sql.NullTime
 		var providerShadow, planApprovalPending int
 		var permissionProfile, collaborationModeOverride string
 		var projectDesc, epicDesc string
 		if err := rows.Scan(
-			&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &permissionProfile, &collaborationModeOverride, &planApprovalPending, &item.PendingPlanMarkdown, &pendingPlanRequestedAt, &item.Priority,
+			&item.ID, &projectID, &epicID, &item.Identifier, &item.IssueType, &item.ProviderKind, &providerIssueRef, &providerShadow, &item.Title, &item.Description, &item.State, &item.WorkflowPhase, &permissionProfile, &collaborationModeOverride, &planApprovalPending, &item.PendingPlanMarkdown, &pendingPlanRequestedAt, &item.PendingPlanRevisionMarkdown, &pendingPlanRevisionRequestedAt, &item.Priority,
 			&item.AgentName, &item.AgentPrompt, &branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
@@ -3649,6 +3752,9 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		}
 		if pendingPlanRequestedAt.Valid {
 			item.PendingPlanRequestedAt = &pendingPlanRequestedAt.Time
+		}
+		if pendingPlanRevisionRequestedAt.Valid {
+			item.PendingPlanRevisionRequestedAt = &pendingPlanRevisionRequestedAt.Time
 		}
 		if lastRun.Valid {
 			item.WorkspaceLastRun = &lastRun.Time
@@ -4361,8 +4467,8 @@ func (s *Store) createIssueAgentCommandTx(tx *sql.Tx, issueID, command string, s
 		CreatedAt: now,
 	}
 	_, err := tx.Exec(`
-		INSERT INTO issue_agent_commands (id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt)
-		VALUES (?, ?, ?, ?, ?, NULL, '', '', 0)`,
+		INSERT INTO issue_agent_commands (id, issue_id, command, status, created_at, delivered_at, steered_at, delivery_mode, delivery_thread_id, delivery_attempt)
+		VALUES (?, ?, ?, ?, ?, NULL, NULL, '', '', 0)`,
 		record.ID,
 		record.IssueID,
 		record.Command,
@@ -4384,7 +4490,7 @@ func (s *Store) createIssueAgentCommandTx(tx *sql.Tx, issueID, command string, s
 
 func (s *Store) ListIssueAgentCommands(issueID string) ([]IssueAgentCommand, error) {
 	rows, err := s.db.Query(`
-		SELECT id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt
+		SELECT id, issue_id, command, status, created_at, delivered_at, steered_at, delivery_mode, delivery_thread_id, delivery_attempt
 		FROM issue_agent_commands
 		WHERE issue_id = ?
 		ORDER BY created_at DESC`, issueID)
@@ -4414,10 +4520,10 @@ func (s *Store) UpdateIssueAgentCommandStatus(id string, status IssueAgentComman
 
 func (s *Store) ListPendingIssueAgentCommands(issueID string) ([]IssueAgentCommand, error) {
 	rows, err := s.db.Query(`
-		SELECT id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt
+		SELECT id, issue_id, command, status, created_at, delivered_at, steered_at, delivery_mode, delivery_thread_id, delivery_attempt
 		FROM issue_agent_commands
 		WHERE issue_id = ? AND status = ?
-		ORDER BY created_at ASC`, issueID, IssueAgentCommandPending)
+		ORDER BY CASE WHEN steered_at IS NULL THEN 1 ELSE 0 END ASC, steered_at DESC, created_at ASC, id ASC`, issueID, IssueAgentCommandPending)
 	if err != nil {
 		return nil, err
 	}
@@ -4544,7 +4650,7 @@ func (s *Store) UpdateIssueAgentCommand(issueID, commandID, command string) (*Is
 	}
 
 	record, err := scanIssueAgentCommandRow(tx.QueryRow(`
-		SELECT id, issue_id, command, status, created_at, delivered_at, delivery_mode, delivery_thread_id, delivery_attempt
+		SELECT id, issue_id, command, status, created_at, delivered_at, steered_at, delivery_mode, delivery_thread_id, delivery_attempt
 		FROM issue_agent_commands
 		WHERE id = ? AND issue_id = ?`,
 		commandID,
@@ -4559,6 +4665,69 @@ func (s *Store) UpdateIssueAgentCommand(issueID, commandID, command string) (*Is
 		"issue_id": issueID,
 		"command":  record.Command,
 		"status":   record.Status,
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return record, nil
+}
+
+func (s *Store) SteerIssueAgentCommand(issueID, commandID string) (*IssueAgentCommand, error) {
+	if strings.TrimSpace(issueID) == "" {
+		return nil, validationErrorf("issue id is required")
+	}
+	if strings.TrimSpace(commandID) == "" {
+		return nil, validationErrorf("command id is required")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	now := time.Now().UTC()
+	res, err := tx.Exec(`
+		UPDATE issue_agent_commands
+		SET steered_at = ?
+		WHERE id = ? AND issue_id = ? AND status IN (?, ?)`,
+		now,
+		commandID,
+		issueID,
+		IssueAgentCommandPending,
+		IssueAgentCommandWaitingForUnblock,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return nil, notFoundError("issue_agent_command", commandID)
+	}
+
+	record, err := scanIssueAgentCommandRow(tx.QueryRow(`
+		SELECT id, issue_id, command, status, created_at, delivered_at, steered_at, delivery_mode, delivery_thread_id, delivery_attempt
+		FROM issue_agent_commands
+		WHERE id = ? AND issue_id = ?`,
+		commandID,
+		issueID,
+	))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.appendChangeTx(tx, "issue_agent_command", issueID, "steered", map[string]interface{}{
+		"id":         record.ID,
+		"issue_id":   issueID,
+		"command":    record.Command,
+		"status":     record.Status,
+		"steered_at": record.SteeredAt,
 	}); err != nil {
 		return nil, err
 	}
@@ -4683,6 +4852,7 @@ type issueAgentCommandRowScanner interface {
 func scanIssueAgentCommandRow(scanner issueAgentCommandRowScanner) (*IssueAgentCommand, error) {
 	var record IssueAgentCommand
 	var deliveredAt sql.NullTime
+	var steeredAt sql.NullTime
 	if err := scanner.Scan(
 		&record.ID,
 		&record.IssueID,
@@ -4690,6 +4860,7 @@ func scanIssueAgentCommandRow(scanner issueAgentCommandRowScanner) (*IssueAgentC
 		&record.Status,
 		&record.CreatedAt,
 		&deliveredAt,
+		&steeredAt,
 		&record.DeliveryMode,
 		&record.DeliveryThreadID,
 		&record.DeliveryAttempt,
@@ -4699,6 +4870,10 @@ func scanIssueAgentCommandRow(scanner issueAgentCommandRowScanner) (*IssueAgentC
 	if deliveredAt.Valid {
 		ts := deliveredAt.Time
 		record.DeliveredAt = &ts
+	}
+	if steeredAt.Valid {
+		ts := steeredAt.Time
+		record.SteeredAt = &ts
 	}
 	return &record, nil
 }

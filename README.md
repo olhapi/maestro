@@ -83,6 +83,9 @@ For local development or unsupported platforms:
 go build -o maestro ./cmd/maestro
 ```
 
+This build path is pure Go. You do not need a C compiler or a system SQLite
+development package for the standard `make build` / `make test` flow.
+
 Local contributor Docker build:
 
 ```bash
@@ -364,6 +367,9 @@ pnpm verify
 pnpm run website:dev
 pnpm run website:check
 ```
+
+The standard Go build/test path is now toolchain-light. The remaining
+`sqlite3` CLI usage lives in a few optional shell scripts under `scripts/`.
 
 Repo-managed Git hooks stay targeted:
 

@@ -233,6 +233,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ note }),
     }),
+  requestIssuePlanRevision: (identifier: string, note: string) =>
+    request<Record<string, unknown>>(`/api/v1/app/issues/${identifier}/request-plan-revision`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
   setIssueBlockers: (identifier: string, blockedBy: string[]) =>
     request<{ ok: boolean }>(`/api/v1/app/issues/${identifier}/blockers`, {
       method: "POST",
@@ -242,6 +247,10 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/app/issues/${identifier}/commands`, {
       method: "POST",
       body: JSON.stringify({ command }),
+    }),
+  steerIssueCommand: (identifier: string, commandID: string) =>
+    request<{ ok: boolean; command: AgentCommand }>(`/api/v1/app/issues/${identifier}/commands/${commandID}/steer`, {
+      method: "POST",
     }),
   updateIssueCommand: (identifier: string, commandID: string, command: string) =>
     request<{ ok: boolean; command: AgentCommand }>(`/api/v1/app/issues/${identifier}/commands/${commandID}`, {

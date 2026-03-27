@@ -154,6 +154,13 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 			Attempt:     attempt,
 		}
 	}
+	if strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil {
+		payload["plan_revision"] = kanban.IssuePlanRevision{
+			Markdown:    issue.PendingPlanRevisionMarkdown,
+			RequestedAt: issue.PendingPlanRevisionRequestedAt.UTC(),
+			Attempt:     attempt,
+		}
+	}
 	return payload, nil
 }
 

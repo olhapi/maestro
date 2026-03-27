@@ -33,6 +33,15 @@ function makeGroups(entries: ActivityEntry[]): ActivityGroup[] {
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
 const originalExecCommandDescriptor = Object.getOwnPropertyDescriptor(document, 'execCommand')
+const originalScrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+const originalClientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+const originalScrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop')
+
+type ScrollMetrics = {
+  scrollHeight: number
+  clientHeight: number
+  scrollTop: number
+}
 
 function mockClipboard(writeText = vi.fn().mockResolvedValue(undefined)) {
   Object.defineProperty(navigator, 'clipboard', {
@@ -65,6 +74,26 @@ function mockExecCommand(result = true) {
   return execCommand
 }
 
+function mockScrollMetrics(metrics: ScrollMetrics) {
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+    configurable: true,
+    get: () => metrics.scrollHeight,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get: () => metrics.clientHeight,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+    configurable: true,
+    get: () => metrics.scrollTop,
+    set: (value: number) => {
+      metrics.scrollTop = value
+    },
+  })
+
+  return metrics
+}
+
 function restoreExecCommand() {
   if (originalExecCommandDescriptor) {
     Object.defineProperty(document, 'execCommand', originalExecCommandDescriptor)
@@ -74,11 +103,32 @@ function restoreExecCommand() {
   delete (document as typeof document & { execCommand?: unknown }).execCommand
 }
 
+function restoreScrollMetrics() {
+  if (originalScrollHeightDescriptor) {
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', originalScrollHeightDescriptor)
+  } else {
+    delete (HTMLElement.prototype as typeof HTMLElement.prototype & { scrollHeight?: unknown }).scrollHeight
+  }
+
+  if (originalClientHeightDescriptor) {
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', originalClientHeightDescriptor)
+  } else {
+    delete (HTMLElement.prototype as typeof HTMLElement.prototype & { clientHeight?: unknown }).clientHeight
+  }
+
+  if (originalScrollTopDescriptor) {
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', originalScrollTopDescriptor)
+  } else {
+    delete (HTMLElement.prototype as typeof HTMLElement.prototype & { scrollTop?: unknown }).scrollTop
+  }
+}
+
 describe('SessionActivityTranscript', () => {
   afterEach(() => {
     vi.useRealTimers()
     restoreClipboard()
     restoreExecCommand()
+    restoreScrollMetrics()
   })
 
   it('renders the transcript inside a scroll container with a fixed-width toggle', () => {
@@ -212,6 +262,35 @@ describe('SessionActivityTranscript', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
   })
 
+  it('renders proposed plans in a dedicated final-answer callout', () => {
+    render(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          {
+            id: 'attempt-1-agent-final',
+            kind: 'agent',
+            title: 'Final answer',
+            summary:
+              '<proposed_plan>\nReview the **plan** in [docs](https://example.com)\n\n- First item\n- Second item\n</proposed_plan>',
+            expandable: false,
+            phase: 'final_answer',
+            tone: 'success',
+          },
+        ])}
+      />,
+    )
+
+    expect(screen.queryByText(/<proposed_plan>/i)).not.toBeInTheDocument()
+
+    const callout = screen.getByTestId('proposed-plan-callout')
+    expect(callout).toHaveClass('border-sky-400/25')
+    expect(callout).toHaveClass('bg-sky-400/10')
+    expect(screen.getByText('Proposed plan')).toBeInTheDocument()
+    expect(screen.getByText('plan', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('href', 'https://example.com')
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+  })
+
   it('renders inline timestamps, clamps verbose summaries, and keeps the layout contained', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-10T12:00:00Z'))
@@ -227,7 +306,8 @@ describe('SessionActivityTranscript', () => {
             completed_at: completedAt,
             summary:
               'This is an exceptionally long activity summary that should stay compact inside the transcript so it does not widen the center column or push nearby panels sideways.',
-            detail: '$ npm run dev\nfirst detail chunk',
+            detail:
+              '$ npm run dev -- --filter=frontend\nfirst detail chunk with-an-exceptionally-long-token-that-should-wrap',
           }),
         ])}
       />,
@@ -258,6 +338,12 @@ describe('SessionActivityTranscript', () => {
 
     const summary = screen.getByText(/exceptionally long activity summary/i)
     expect(summary.closest('div')).toHaveClass('line-clamp-3')
+
+    fireEvent.click(screen.getByRole('button', { name: /expand/i }))
+
+    const detail = screen.getByText((content, element) => element?.tagName === 'PRE' && content.includes('with-an-exceptionally-long-token'))
+    expect(detail).toHaveClass('whitespace-pre-wrap', 'break-words')
+    expect(detail).not.toHaveClass('overflow-x-auto')
   })
 
   it('keeps an expanded command row open when the same row updates in place', () => {
@@ -291,7 +377,37 @@ describe('SessionActivityTranscript', () => {
     expect(screen.queryByText(/first detail chunk/i)).not.toBeInTheDocument()
   })
 
-  it('scrolls the activity log to the bottom when timestamp-only updates arrive', () => {
+  it('scrolls the activity log to the bottom on the initial render', () => {
+    mockScrollMetrics({
+      scrollHeight: 480,
+      clientHeight: 200,
+      scrollTop: 0,
+    })
+
+    render(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          makeCommandEntry({
+            summary: 'Initial summary',
+            detail: '$ npm run dev\nfirst detail chunk',
+            started_at: '2026-03-10T11:30:00Z',
+            completed_at: '2026-03-10T11:58:00Z',
+          }),
+        ])}
+      />,
+    )
+
+    const scrollContainer = screen.getByTestId('activity-log-scroll')
+    expect(scrollContainer.scrollTop).toBe(280)
+  })
+
+  it('keeps the current position when the user scrolls up and resumes once they return to the bottom', () => {
+    const scrollMetrics = mockScrollMetrics({
+      scrollHeight: 480,
+      clientHeight: 200,
+      scrollTop: 0,
+    })
+
     const { rerender } = render(
       <SessionActivityTranscript
         groups={makeGroups([
@@ -306,22 +422,19 @@ describe('SessionActivityTranscript', () => {
     )
 
     const scrollContainer = screen.getByTestId('activity-log-scroll')
-    Object.defineProperty(scrollContainer, 'scrollHeight', {
-      configurable: true,
-      get: () => 480,
-    })
-    Object.defineProperty(scrollContainer, 'scrollTop', {
-      configurable: true,
-      writable: true,
-      value: 0,
-    })
+    expect(scrollContainer.scrollTop).toBe(280)
+
+    scrollMetrics.scrollTop = 140
+    fireEvent.scroll(scrollContainer)
+
+    scrollMetrics.scrollHeight = 520
 
     rerender(
       <SessionActivityTranscript
         groups={makeGroups([
           makeCommandEntry({
-            summary: 'Initial summary',
-            detail: '$ npm run dev\nfirst detail chunk',
+            summary: 'Updated summary',
+            detail: '$ npm run dev\nsecond detail chunk',
             started_at: '2026-03-10T11:30:00Z',
             completed_at: '2026-03-10T11:59:00Z',
           }),
@@ -329,6 +442,68 @@ describe('SessionActivityTranscript', () => {
       />,
     )
 
-    expect(scrollContainer.scrollTop).toBe(480)
+    expect(scrollContainer.scrollTop).toBe(140)
+
+    scrollMetrics.scrollTop = 320
+    fireEvent.scroll(scrollContainer)
+    scrollMetrics.scrollHeight = 560
+
+    rerender(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          makeCommandEntry({
+            summary: 'Newest summary',
+            detail: '$ npm run dev\nthird detail chunk',
+            started_at: '2026-03-10T11:30:00Z',
+            completed_at: '2026-03-10T12:00:00Z',
+          }),
+        ])}
+      />,
+    )
+
+    expect(scrollContainer.scrollTop).toBe(360)
+  })
+
+  it('resets the pinned state when the transcript empties', () => {
+    const scrollMetrics = mockScrollMetrics({
+      scrollHeight: 480,
+      clientHeight: 200,
+      scrollTop: 0,
+    })
+
+    const { rerender } = render(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          makeCommandEntry({
+            summary: 'Initial summary',
+            detail: '$ npm run dev\nfirst detail chunk',
+          }),
+        ])}
+      />,
+    )
+
+    const scrollContainer = screen.getByTestId('activity-log-scroll')
+    expect(scrollContainer.scrollTop).toBe(280)
+
+    scrollMetrics.scrollTop = 140
+    fireEvent.scroll(scrollContainer)
+
+    rerender(<SessionActivityTranscript groups={[]} />)
+
+    scrollMetrics.scrollHeight = 520
+    scrollMetrics.scrollTop = 0
+
+    rerender(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          makeCommandEntry({
+            summary: 'Fresh summary',
+            detail: '$ npm run dev\nfresh detail chunk',
+          }),
+        ])}
+      />,
+    )
+
+    expect(screen.getByTestId('activity-log-scroll').scrollTop).toBe(320)
   })
 })

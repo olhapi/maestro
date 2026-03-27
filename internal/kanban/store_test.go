@@ -218,6 +218,22 @@ func TestIssuePlanApprovalLifecyclePersistsAndPromotes(t *testing.T) {
 		t.Fatalf("unexpected requested_at: %+v", pending.PendingPlanRequestedAt)
 	}
 
+	revisionRequestedAt := requestedAt.Add(5 * time.Minute)
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout steps.", revisionRequestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+
+	pending, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue revision pending: %v", err)
+	}
+	if pending.PendingPlanRevisionMarkdown != "Tighten the rollout steps." {
+		t.Fatalf("expected pending plan revision markdown, got %+v", pending)
+	}
+	if pending.PendingPlanRevisionRequestedAt == nil || !pending.PendingPlanRevisionRequestedAt.Equal(revisionRequestedAt) {
+		t.Fatalf("unexpected revision requested_at: %+v", pending.PendingPlanRevisionRequestedAt)
+	}
+
 	if err := store.ApproveIssuePlan(issue.ID); err != nil {
 		t.Fatalf("ApproveIssuePlan: %v", err)
 	}
@@ -234,6 +250,9 @@ func TestIssuePlanApprovalLifecyclePersistsAndPromotes(t *testing.T) {
 	}
 	if approved.PlanApprovalPending || approved.PendingPlanMarkdown != "" || approved.PendingPlanRequestedAt != nil {
 		t.Fatalf("expected cleared pending approval state, got %+v", approved)
+	}
+	if approved.PendingPlanRevisionMarkdown != "" || approved.PendingPlanRevisionRequestedAt != nil {
+		t.Fatalf("expected cleared pending revision state, got %+v", approved)
 	}
 }
 
@@ -258,6 +277,42 @@ func TestClearIssuePendingPlanApprovalClearsStateAndAppendsChange(t *testing.T) 
 	}
 	if cleared.PlanApprovalPending || cleared.PendingPlanMarkdown != "" || cleared.PendingPlanRequestedAt != nil {
 		t.Fatalf("expected pending approval state to clear, got %+v", cleared)
+	}
+}
+
+func TestIssuePlanRevisionLifecyclePersistsAndClears(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan revision lifecycle", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 10, 15, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Trim the rollout and keep the rollback explicit.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+
+	pending, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue pending revision: %v", err)
+	}
+	if pending.PendingPlanRevisionMarkdown != "Trim the rollout and keep the rollback explicit." {
+		t.Fatalf("unexpected pending revision markdown, got %+v", pending)
+	}
+	if pending.PendingPlanRevisionRequestedAt == nil || !pending.PendingPlanRevisionRequestedAt.Equal(requestedAt) {
+		t.Fatalf("unexpected pending revision requested_at, got %+v", pending.PendingPlanRevisionRequestedAt)
+	}
+
+	if err := store.ClearIssuePendingPlanRevision(issue.ID, "manual_retry"); err != nil {
+		t.Fatalf("ClearIssuePendingPlanRevision: %v", err)
+	}
+
+	cleared, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue cleared revision: %v", err)
+	}
+	if cleared.PendingPlanRevisionMarkdown != "" || cleared.PendingPlanRevisionRequestedAt != nil {
+		t.Fatalf("expected pending revision state to clear, got %+v", cleared)
 	}
 }
 
@@ -895,6 +950,78 @@ func TestIssueAgentCommandUpdateAndDelete(t *testing.T) {
 	}
 }
 
+func TestIssueAgentCommandSteerPrioritizesCommandsAfterUnblock(t *testing.T) {
+	store := setupTestStore(t)
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	issue, err := store.CreateIssue("", "", "Steerable command issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue issue: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState issue: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	first, err := store.CreateIssueAgentCommand(issue.ID, "Keep this queued follow-up behind the steered one.", IssueAgentCommandWaitingForUnblock)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand first: %v", err)
+	}
+	second, err := store.CreateIssueAgentCommand(issue.ID, "Bring this follow-up to the front once unblocked.", IssueAgentCommandWaitingForUnblock)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand second: %v", err)
+	}
+
+	beforeSteerChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq before steer: %v", err)
+	}
+	steered, err := store.SteerIssueAgentCommand(issue.ID, second.ID)
+	if err != nil {
+		t.Fatalf("SteerIssueAgentCommand: %v", err)
+	}
+	if steered.SteeredAt == nil || steered.SteeredAt.IsZero() {
+		t.Fatalf("expected steered timestamp, got %+v", steered)
+	}
+
+	afterSteerChange, err := store.LatestChangeSeq()
+	if err != nil {
+		t.Fatalf("LatestChangeSeq after steer: %v", err)
+	}
+	if afterSteerChange <= beforeSteerChange {
+		t.Fatalf("expected steer change event to advance seq: before=%d after=%d", beforeSteerChange, afterSteerChange)
+	}
+
+	if err := store.UpdateIssueState(blocker.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState blocker done: %v", err)
+	}
+	if err := store.ActivateIssueAgentCommandsIfDispatchable(issue.ID); err != nil {
+		t.Fatalf("ActivateIssueAgentCommandsIfDispatchable: %v", err)
+	}
+
+	pending, err := store.ListPendingIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected two pending commands after unblock, got %#v", pending)
+	}
+	if pending[0].ID != second.ID || pending[1].ID != first.ID {
+		t.Fatalf("expected steered command first after unblock, got %#v", pending)
+	}
+	if pending[0].SteeredAt == nil || pending[1].SteeredAt != nil {
+		t.Fatalf("unexpected steered metadata in pending commands: %#v", pending)
+	}
+}
+
 func TestIssueAgentCommandMutationsRejectDeliveredCommands(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -915,6 +1042,9 @@ func TestIssueAgentCommandMutationsRejectDeliveredCommands(t *testing.T) {
 	}
 	if err := store.DeleteIssueAgentCommand(issue.ID, command.ID); !IsNotFound(err) {
 		t.Fatalf("expected delivered command delete to be not found, got %v", err)
+	}
+	if _, err := store.SteerIssueAgentCommand(issue.ID, command.ID); !IsNotFound(err) {
+		t.Fatalf("expected delivered command steer to be not found, got %v", err)
 	}
 }
 
