@@ -234,6 +234,9 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *ob
 			return "run_interrupted"
 		}
 	}
+	if isPlanApprovalPendingError(planApprovalPendingErrorText(retry, paused, persisted)) {
+		return ""
+	}
 	switch {
 	case retry != nil:
 		if class := normalizeFailureErrorClass(retry.Error); class != "" {
@@ -264,6 +267,9 @@ func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *ob
 
 func deriveCurrentError(active bool, retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
 	if active {
+		return ""
+	}
+	if isPlanApprovalPendingError(planApprovalPendingErrorText(retry, paused, persisted)) {
 		return ""
 	}
 	switch {
@@ -372,6 +378,8 @@ func normalizeFailureErrorClass(value string) string {
 	switch {
 	case value == "":
 		return ""
+	case strings.Contains(value, "plan_approval_pending"):
+		return ""
 	case strings.Contains(value, "approval_required"):
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):
@@ -385,6 +393,23 @@ func normalizeFailureErrorClass(value string) string {
 	default:
 		return value
 	}
+}
+
+func isPlanApprovalPendingError(value string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(value)), "plan_approval_pending")
+}
+
+func planApprovalPendingErrorText(retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot) string {
+	if retry != nil && isPlanApprovalPendingError(retry.Error) {
+		return retry.Error
+	}
+	if paused != nil && isPlanApprovalPendingError(paused.Error) {
+		return paused.Error
+	}
+	if persisted != nil && isPlanApprovalPendingError(persisted.Error) {
+		return persisted.Error
+	}
+	return ""
 }
 
 func normalizeFailureKind(value string) string {

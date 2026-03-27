@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,12 +66,135 @@ func (o *Orchestrator) queuedPendingInteractionItems() []appserver.PendingIntera
 
 func (o *Orchestrator) sharedPendingInteractionItems() ([]appserver.PendingInteraction, error) {
 	items := o.queuedPendingInteractionItems()
+	planApprovals, err := o.pendingPlanApprovalItems()
+	if err != nil {
+		return items, err
+	}
 	alerts, err := o.derivedAlertItems()
 	if err != nil {
 		return items, err
 	}
-	items = append(items, alerts...)
+	derived := make([]appserver.PendingInteraction, 0, len(planApprovals)+len(alerts))
+	derived = append(derived, planApprovals...)
+	derived = append(derived, alerts...)
+	sortPendingInteractionsByRequestedAt(derived)
+	items = append(items, derived...)
 	return items, nil
+}
+
+func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteraction, error) {
+	issues, err := o.store.ListIssues(map[string]interface{}{
+		"plan_approval_pending": true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(issues) == 0 {
+		return nil, nil
+	}
+
+	projectCache := make(map[string]*kanban.Project, len(issues))
+	items := make([]appserver.PendingInteraction, 0, len(issues))
+	for i := range issues {
+		issue := issues[i]
+		if strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
+			continue
+		}
+		var project *kanban.Project
+		if projectID := strings.TrimSpace(issue.ProjectID); projectID != "" {
+			if cached, ok := projectCache[projectID]; ok {
+				project = cached
+			} else if loaded, err := o.store.GetProject(projectID); err == nil {
+				project = loaded
+				projectCache[projectID] = loaded
+			}
+		}
+		snapshot, _ := o.store.GetIssueExecutionSession(issue.ID)
+		items = append(items, buildPlanApprovalPendingInterrupt(issue, project, snapshot))
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i].RequestedAt.UTC()
+		right := items[j].RequestedAt.UTC()
+		if left.Equal(right) {
+			return items[i].ID < items[j].ID
+		}
+		return left.Before(right)
+	})
+	return items, nil
+}
+
+func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Project, snapshot *kanban.ExecutionSessionSnapshot) appserver.PendingInteraction {
+	requestedAt := time.Now().UTC()
+	if issue.PendingPlanRequestedAt != nil && !issue.PendingPlanRequestedAt.IsZero() {
+		requestedAt = issue.PendingPlanRequestedAt.UTC()
+	}
+	lastActivityAt := requestedAt
+	phase := string(issue.WorkflowPhase)
+	attempt := 0
+	sessionID := ""
+	threadID := ""
+	turnID := ""
+	if snapshot != nil {
+		if strings.TrimSpace(snapshot.Phase) != "" {
+			phase = snapshot.Phase
+		}
+		attempt = snapshot.Attempt
+		sessionID = strings.TrimSpace(snapshot.AppSession.SessionID)
+		threadID = strings.TrimSpace(snapshot.AppSession.ThreadID)
+		turnID = strings.TrimSpace(snapshot.AppSession.TurnID)
+		if !snapshot.UpdatedAt.IsZero() {
+			lastActivityAt = snapshot.UpdatedAt.UTC()
+		}
+	}
+	projectID := strings.TrimSpace(issue.ProjectID)
+	projectName := ""
+	if project != nil {
+		projectID = strings.TrimSpace(project.ID)
+		projectName = strings.TrimSpace(project.Name)
+	}
+
+	return appserver.PendingInteraction{
+		ID:                issuePlanApprovalInteractionID(issue.ID),
+		Kind:              appserver.PendingInteractionKindApproval,
+		IssueID:           strings.TrimSpace(issue.ID),
+		IssueIdentifier:   strings.TrimSpace(issue.Identifier),
+		IssueTitle:        strings.TrimSpace(issue.Title),
+		Phase:             phase,
+		Attempt:           attempt,
+		SessionID:         sessionID,
+		ThreadID:          threadID,
+		TurnID:            turnID,
+		RequestedAt:       requestedAt,
+		LastActivityAt:    &lastActivityAt,
+		LastActivity:      "Plan ready for approval.",
+		CollaborationMode: "plan",
+		ProjectID:         projectID,
+		ProjectName:       projectName,
+		Approval: &appserver.PendingApproval{
+			Reason:   "Review the proposed plan before execution.",
+			Markdown: issue.PendingPlanMarkdown,
+			Decisions: []appserver.PendingApprovalDecision{{
+				Value:       "approved",
+				Label:       "Approve plan",
+				Description: "Approve this plan and continue with the next execution phase.",
+			}},
+		},
+	}
+}
+
+func issuePlanApprovalInteractionID(issueID string) string {
+	return "plan-approval-" + strings.TrimSpace(issueID)
+}
+
+func sortPendingInteractionsByRequestedAt(items []appserver.PendingInteraction) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i].RequestedAt.UTC()
+		right := items[j].RequestedAt.UTC()
+		if left.Equal(right) {
+			return items[i].ID < items[j].ID
+		}
+		return left.Before(right)
+	})
 }
 
 func (o *Orchestrator) pendingInteractionByID(interactionID string) (*appserver.PendingInteraction, bool, error) {

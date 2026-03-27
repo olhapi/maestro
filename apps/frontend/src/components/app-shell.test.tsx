@@ -528,6 +528,42 @@ describe('AppShell', () => {
     expect(screen.queryByTestId('global-interrupt-panel')).not.toBeInTheDocument()
   })
 
+  it('keeps note-only approval responses visible while the request is in flight', async () => {
+    mockDashboardData()
+    vi.mocked(api.listInterrupts).mockResolvedValue({ items: [makeApprovalInterrupt()] })
+
+    let resolveResponse: ((value: { id: string; status: string }) => void) | undefined
+    vi.mocked(api.respondToInterrupt).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveResponse = resolve
+        }),
+    )
+
+    renderWithQueryClient(<AppShell />)
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
+    })
+
+    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next turn/i), {
+      target: { value: 'Keep the rollout in a smaller batch.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /send note/i }))
+
+    await waitFor(() => {
+      expect(api.respondToInterrupt).toHaveBeenCalledWith('interrupt-1', {
+        note: 'Keep the rollout in a smaller batch.',
+      })
+    })
+    expect(screen.getByTestId('global-interrupt-panel')).toBeInTheDocument()
+
+    await act(async () => {
+      resolveResponse?.({ id: 'interrupt-1', status: 'ok' })
+    })
+    expect(screen.getByTestId('global-interrupt-panel')).toBeInTheDocument()
+  })
+
   it('optimistically hides an acknowledged alert while the request is in flight', async () => {
     mockDashboardData()
     vi.mocked(api.listInterrupts).mockResolvedValue({ items: [makeAlertInterrupt()] })

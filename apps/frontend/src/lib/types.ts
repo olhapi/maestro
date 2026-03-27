@@ -312,6 +312,7 @@ export interface PendingApproval {
   command?: string;
   cwd?: string;
   reason?: string;
+  markdown?: string;
   decisions: PendingApprovalDecision[];
 }
 

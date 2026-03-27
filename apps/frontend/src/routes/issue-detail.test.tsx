@@ -38,6 +38,7 @@ vi.mock("@/lib/api", () => ({
     setIssueState: vi.fn(),
     setIssuePermissionProfile: vi.fn(),
     approveIssuePlan: vi.fn(),
+    respondToInterrupt: vi.fn(),
     setIssueBlockers: vi.fn(),
     sendIssueCommand: vi.fn(),
     updateIssueCommand: vi.fn(),
@@ -357,6 +358,181 @@ describe("IssueDetailPage", () => {
     await waitFor(() => {
       expect(api.approveIssuePlan).toHaveBeenCalledWith("ISS-1");
     });
+  });
+
+  it("passes approval notes through the fallback approve-plan route when the interrupt is missing", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      project_permission_profile: "plan-then-full-access",
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 2,
+      retry_state: "none",
+      session_source: "persisted",
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: "thread-plan-turn-plan",
+        thread_id: "thread-plan",
+        turn_id: "turn-plan",
+        last_event: "turn.completed",
+        last_timestamp: "2026-03-18T12:00:00Z",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        events_processed: 1,
+        turns_started: 1,
+        turns_completed: 1,
+        terminal: true,
+      },
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+      plan_approval: {
+        markdown: "Review findings and then continue.",
+        requested_at: "2026-03-18T12:00:00Z",
+        attempt: 2,
+      },
+    });
+    vi.mocked(api.approveIssuePlan).mockResolvedValue({
+      ok: true,
+      issue: { ...issue, permission_profile: "full-access" },
+      dispatch: { status: "queued_now", issue: issue.identifier },
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/project's plan-first profile/i)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next planning turn/i), {
+      target: { value: "Prefer a smaller rollout and keep the rollback step explicit." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /approve plan and continue/i }));
+
+    await waitFor(() => {
+      expect(api.approveIssuePlan).toHaveBeenCalledWith(
+        "ISS-1",
+        "Prefer a smaller rollout and keep the rollback step explicit.",
+      );
+    });
+  });
+
+  it("uses the direct plan routes even when the plan approval interrupt is present", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      project_permission_profile: "plan-then-full-access",
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 2,
+      retry_state: "paused",
+      pause_reason: "plan_approval_pending",
+      current_error: "plan_approval_pending",
+      session_source: "persisted",
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: "thread-plan-turn-plan",
+        thread_id: "thread-plan",
+        turn_id: "turn-plan",
+        last_event: "turn.completed",
+        last_timestamp: "2026-03-18T12:00:00Z",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        events_processed: 1,
+        turns_started: 1,
+        turns_completed: 1,
+        terminal: true,
+      },
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+      pending_interrupt: {
+        id: "plan-approval-interrupt",
+        kind: "approval",
+        issue_identifier: issue.identifier,
+        issue_title: issue.title,
+        phase: "implementation",
+        attempt: 2,
+        requested_at: "2026-03-18T12:00:00Z",
+        collaboration_mode: "plan",
+        approval: {
+          markdown: "Review findings and then continue.",
+          reason: "Review the proposed plan before execution.",
+          decisions: [
+            {
+              value: "approved",
+              label: "Approve plan",
+            },
+          ],
+        },
+      },
+      plan_approval: {
+        markdown: "Review findings and then continue.",
+        requested_at: "2026-03-18T12:00:00Z",
+        attempt: 2,
+      },
+    });
+    vi.mocked(api.approveIssuePlan).mockResolvedValue({
+      ok: true,
+      issue: { ...issue, permission_profile: "full-access" },
+      dispatch: { status: "queued_now", issue: issue.identifier },
+    });
+    vi.mocked(api.sendIssueCommand).mockResolvedValue({
+      ok: true,
+    });
+    vi.mocked(api.retryIssue).mockResolvedValue({
+      status: "queued_now",
+      issue: issue.identifier,
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /restart plan thread/i })).toBeInTheDocument();
+    });
+
+    const noteInput = screen.getByPlaceholderText(/add steering notes for the next planning turn/i);
+    fireEvent.change(noteInput, { target: { value: "Keep the plan, then approve it." } });
+    fireEvent.click(screen.getByRole("button", { name: /approve plan and continue/i }));
+
+    await waitFor(() => {
+      expect(api.approveIssuePlan).toHaveBeenCalledWith(
+        "ISS-1",
+        "Keep the plan, then approve it.",
+      );
+    });
+
+    expect(api.respondToInterrupt).not.toHaveBeenCalled();
+
+    fireEvent.change(noteInput, { target: { value: "Call out the missing tests before approval." } });
+    fireEvent.click(screen.getByRole("button", { name: /request revision/i }));
+
+    await waitFor(() => {
+      expect(api.sendIssueCommand).toHaveBeenCalledWith(
+        "ISS-1",
+        "Call out the missing tests before approval.",
+      );
+      expect(api.retryIssue).toHaveBeenCalledWith("ISS-1");
+    });
+
+    expect(api.respondToInterrupt).not.toHaveBeenCalled();
   });
 
   it("renders the shared progress-first activity feed for issue execution details", async () => {

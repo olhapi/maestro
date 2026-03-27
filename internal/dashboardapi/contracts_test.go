@@ -28,6 +28,9 @@ type retryTrackingProvider struct {
 	retried         []string
 	runNow          []string
 	resumeThreadIDs []string
+	responseID      string
+	response        appserver.PendingInteractionResponse
+	respondErr      error
 	store           *kanban.Store
 }
 
@@ -37,6 +40,9 @@ func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier st
 	if p.store != nil {
 		issue, err := p.store.GetIssueByIdentifier(identifier)
 		if err == nil {
+			if issue.PlanApprovalPending {
+				_ = p.store.ClearIssuePendingPlanApproval(issue.ID, "manual_retry")
+			}
 			if snapshot, err := p.store.GetIssueExecutionSession(issue.ID); err == nil && snapshot != nil && strings.TrimSpace(snapshot.StopReason) == "plan_approval_pending" {
 				if threadID := strings.TrimSpace(snapshot.AppSession.ThreadID); threadID != "" {
 					p.resumeThreadIDs = append(p.resumeThreadIDs, threadID)
@@ -51,6 +57,12 @@ func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier st
 func (p *retryTrackingProvider) RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{} {
 	p.runNow = append(p.runNow, identifier)
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
+}
+
+func (p *retryTrackingProvider) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+	p.responseID = interactionID
+	p.response = response
+	return p.respondErr
 }
 
 type webhookTrackingProvider struct {
@@ -1332,6 +1344,218 @@ func TestIssueApprovePlanContractsPromoteAndRedispatch(t *testing.T) {
 	}
 	if updated.PlanApprovalPending {
 		t.Fatalf("expected pending plan approval to clear, got %+v", updated)
+	}
+}
+
+func TestIssueApprovePlanContractsQueuesNoteAndRedispatches(t *testing.T) {
+	provider := &retryTrackingProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+	provider.store = store
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Approve plan with note", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 13, 0, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      "plan_approval_pending",
+		StopReason: "plan_approval_pending",
+		UpdatedAt:  requestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-2",
+			ThreadID:        "thread-plan",
+			TurnID:          "turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/approve-plan", map[string]interface{}{
+		"note": "Prefer a smaller rollout and keep the rollback step explicit.",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve plan expected 200, got %d", resp.StatusCode)
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch for %s, got %v", issue.Identifier, provider.retried)
+	}
+	if len(provider.resumeThreadIDs) != 1 || provider.resumeThreadIDs[0] != "thread-plan" {
+		t.Fatalf("expected redispatch to preserve thread resume id, got %v", provider.resumeThreadIDs)
+	}
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one queued steering command, got %#v", commands)
+	}
+	if commands[0].Command != "Prefer a smaller rollout and keep the rollback step explicit." {
+		t.Fatalf("unexpected queued command: %+v", commands[0])
+	}
+}
+
+func TestInterruptPlanApprovalNoteOnlyQueuesRevisionAndRedispatch(t *testing.T) {
+	provider := &retryTrackingProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+	provider.store = store
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Revise plan via shared interrupts", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 12, 45, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    2,
+		RunKind:    "retry_paused",
+		Error:      "plan_approval_pending",
+		StopReason: "plan_approval_pending",
+		UpdatedAt:  requestedAt,
+		AppSession: appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-1",
+			ThreadID:        "thread-plan",
+			TurnID:          "turn-plan",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	interactionID := "plan-approval-" + strings.TrimSpace(issue.ID)
+	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+		issue.ID: {
+			ID:              interactionID,
+			Kind:            appserver.PendingInteractionKindApproval,
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			IssueTitle:      issue.Title,
+			RequestedAt:     requestedAt,
+			Approval: &appserver.PendingApproval{
+				Markdown: "Plan body",
+				Reason:   "Review the proposed plan before execution.",
+				Decisions: []appserver.PendingApprovalDecision{{
+					Value: "approved",
+					Label: "Approve plan",
+				}},
+			},
+		},
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/"+interactionID+"/respond", map[string]interface{}{
+		"note": "Prefer a smaller rollout and keep the rollback step explicit.",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch for %s, got %v", issue.Identifier, provider.retried)
+	}
+	if len(provider.resumeThreadIDs) != 1 || provider.resumeThreadIDs[0] != "thread-plan" {
+		t.Fatalf("expected redispatch to preserve thread resume id, got %v", provider.resumeThreadIDs)
+	}
+	if provider.responseID != "" {
+		t.Fatalf("expected note-only revision to bypass RespondToInterrupt, got %q", provider.responseID)
+	}
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one queued steering command, got %#v", commands)
+	}
+	if commands[0].Command != "Prefer a smaller rollout and keep the rollback step explicit." {
+		t.Fatalf("unexpected queued command: %+v", commands[0])
+	}
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PlanApprovalPending {
+		t.Fatalf("expected pending plan approval to clear after revision, got %+v", updated)
+	}
+}
+
+func TestInterruptApprovalNoteOnlyQueuesSteeringCommand(t *testing.T) {
+	provider := &retryTrackingProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+	provider.store = store
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Regular approval with note", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+		issue.ID: {
+			ID:              "interrupt-approval-" + strings.TrimSpace(issue.ID),
+			Kind:            appserver.PendingInteractionKindApproval,
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			IssueTitle:      issue.Title,
+			RequestedAt:     time.Date(2026, 3, 18, 12, 50, 0, 0, time.UTC),
+			Approval: &appserver.PendingApproval{
+				Reason: "Approve the requested command before continuing.",
+				Decisions: []appserver.PendingApprovalDecision{{
+					Value: "approved",
+					Label: "Approve once",
+				}},
+			},
+		},
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-approval-"+strings.TrimSpace(issue.ID)+"/respond", map[string]interface{}{
+		"note": "Prefer a smaller rollout and keep the rollback step explicit.",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.responseID != "" {
+		t.Fatalf("expected note-only approval to bypass RespondToInterrupt, got %q", provider.responseID)
+	}
+	if len(provider.retried) != 0 {
+		t.Fatalf("expected note-only approval to avoid redispatch, got %v", provider.retried)
+	}
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one queued steering command, got %#v", commands)
+	}
+	if commands[0].Command != "Prefer a smaller rollout and keep the rollback step explicit." {
+		t.Fatalf("unexpected queued command: %+v", commands[0])
 	}
 }
 

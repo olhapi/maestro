@@ -144,11 +144,14 @@ export function AppShell() {
         decision?: string
         decision_payload?: Record<string, unknown>
         answers?: Record<string, string[]>
+        note?: string
       }
     }) =>
       api.respondToInterrupt(id, body),
-    onMutate: ({ id }) => {
-      addOptimisticHiddenInterruptId(id)
+    onMutate: ({ id, body }) => {
+      if (body.decision || body.decision_payload || body.answers) {
+        addOptimisticHiddenInterruptId(id)
+      }
     },
     onError: (_, { id }) => {
       removeOptimisticHiddenInterruptId(id)

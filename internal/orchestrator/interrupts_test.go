@@ -119,6 +119,29 @@ func TestSharedPendingInterruptsAppendsDerivedAlertsAfterQueuedItemsInDispatchOr
 	}
 }
 
+func TestSharedPendingInterruptsOrdersPlanApprovalsAfterEarlierAlerts(t *testing.T) {
+	fixture := setupSharedInterruptFixture(t)
+
+	requestedAt := time.Now().UTC().Add(1 * time.Hour)
+	if err := fixture.store.SetIssuePendingPlanApproval(fixture.second.ID, "Review the proposed plan.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	snapshot := fixture.orch.PendingInterrupts()
+	if len(snapshot.Items) != 2 {
+		t.Fatalf("expected one derived alert and one plan approval, got %+v", snapshot.Items)
+	}
+	if snapshot.Items[0].Kind != appserver.PendingInteractionKindAlert || snapshot.Items[0].IssueID != fixture.first.ID {
+		t.Fatalf("expected earlier alert first, got %+v", snapshot.Items[0])
+	}
+	if snapshot.Items[1].Kind != appserver.PendingInteractionKindApproval || snapshot.Items[1].IssueID != fixture.second.ID {
+		t.Fatalf("expected later plan approval second, got %+v", snapshot.Items[1])
+	}
+	if !snapshot.Items[0].RequestedAt.Before(snapshot.Items[1].RequestedAt) {
+		t.Fatalf("expected alert requested_at to be earlier than plan approval, got %+v", snapshot.Items)
+	}
+}
+
 func TestPendingInterruptForIssuePrefersQueuedInteractionOverDerivedAlert(t *testing.T) {
 	fixture := setupSharedInterruptFixture(t)
 

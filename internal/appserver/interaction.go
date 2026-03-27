@@ -69,6 +69,7 @@ type PendingApproval struct {
 	Command   string                    `json:"command,omitempty"`
 	CWD       string                    `json:"cwd,omitempty"`
 	Reason    string                    `json:"reason,omitempty"`
+	Markdown  string                    `json:"markdown,omitempty"`
 	Decisions []PendingApprovalDecision `json:"decisions"`
 }
 
@@ -109,6 +110,7 @@ type PendingInteractionResponse struct {
 	Decision        string                 `json:"decision,omitempty"`
 	DecisionPayload map[string]interface{} `json:"decision_payload,omitempty"`
 	Answers         map[string][]string    `json:"answers,omitempty"`
+	Note            string                 `json:"note,omitempty"`
 }
 
 type PendingInteractionSnapshot struct {

@@ -821,7 +821,7 @@ export function IssueDetailPage() {
   const retryMutation = useMutation({
     mutationFn: () => api.retryIssue(identifier),
     onSuccess: async () => {
-      toast.success("Retry requested");
+      toast.success(planApprovalPending ? "Plan thread restarted" : "Retry requested");
       await invalidate();
     },
   });
@@ -875,14 +875,31 @@ export function IssueDetailPage() {
       toast.error(error instanceof Error ? `Unable to update permissions: ${error.message}` : "Unable to update permissions");
     },
   });
-  const approvePlanMutation = useMutation({
-    mutationFn: () => api.approveIssuePlan(identifier),
-    onSuccess: async () => {
-      toast.success("Plan approved");
+  const planApprovalResponseMutation = useMutation({
+    mutationFn: ({
+      approved,
+      note,
+    }: {
+      approved: boolean;
+      note?: string;
+    }) => {
+      const approvalNote = note?.trim()
+      if (approved) {
+        return approvalNote ? api.approveIssuePlan(identifier, approvalNote) : api.approveIssuePlan(identifier)
+      }
+      if (!approvalNote) {
+        return Promise.reject(new Error("Revision note is required"))
+      }
+      return api
+        .sendIssueCommand(identifier, approvalNote)
+        .then(() => api.retryIssue(identifier))
+    },
+    onSuccess: async (_, variables) => {
+      toast.success(variables.approved ? "Plan approved" : "Plan revision sent");
       await invalidate();
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? `Unable to approve plan: ${error.message}` : "Unable to approve plan");
+      toast.error(error instanceof Error ? `Unable to update plan approval: ${error.message}` : "Unable to update plan approval");
     },
   });
 
@@ -1000,6 +1017,9 @@ export function IssueDetailPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
+  const planApprovalPending = Boolean(
+    execution.data.plan_approval?.markdown || execution.data.pending_interrupt?.approval?.markdown,
+  );
   const commentItems = Array.isArray(comments.data?.items)
     ? comments.data.items.map(normalizeIssueComment)
     : [];
@@ -1285,11 +1305,14 @@ export function IssueDetailPage() {
           </Card>
 
           <SessionExecutionCard
-            approvingPlan={approvePlanMutation.isPending}
+            approvingPlan={planApprovalResponseMutation.isPending}
             execution={execution.data}
             issueTotalTokens={issue.data.total_tokens_spent}
-            onApprovePlan={() => {
-              approvePlanMutation.mutate();
+            onApprovePlan={(note) => {
+              planApprovalResponseMutation.mutate({ approved: true, note });
+            }}
+            onRequestPlanRevision={(note) => {
+              planApprovalResponseMutation.mutate({ approved: false, note });
             }}
           />
         </div>
@@ -1356,8 +1379,8 @@ export function IssueDetailPage() {
                   className="h-12 w-full"
                   onClick={() => retryMutation.mutate()}
                   disabled={retryMutation.isPending}
-                  aria-label="Retry now"
-                  title="Retry now"
+                  aria-label={planApprovalPending ? "Restart plan thread" : "Retry now"}
+                  title={planApprovalPending ? "Restart plan thread" : "Retry now"}
                 >
                   <RotateCcw className="size-4" />
                 </Button>

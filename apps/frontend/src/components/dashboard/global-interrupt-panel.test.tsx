@@ -37,7 +37,46 @@ function makeApprovalInterrupt() {
   }
 }
 
+function makePlanApprovalInterrupt(overrides: { requestedAt?: string; markdown?: string } = {}) {
+  const approval = makeApprovalInterrupt()
+  return {
+    ...approval,
+    id: 'interrupt-plan-approval',
+    requested_at: overrides.requestedAt ?? approval.requested_at,
+    approval: {
+      ...approval.approval,
+      markdown:
+        overrides.markdown ??
+        'Review the proposed plan before execution.\n\n- Tighten the rollout\n- Add a rollback check',
+    },
+  }
+}
+
 describe('GlobalInterruptPanel', () => {
+  it('keeps the approval queue and detail panes top-aligned instead of stretching the selected card', () => {
+    const { container } = render(
+      <GlobalInterruptPanel
+        items={[makeApprovalInterrupt()]}
+        isSubmitting={false}
+        onAcknowledge={() => {}}
+        onRespond={() => {}}
+      />,
+    )
+
+    const layout = container.querySelector('[data-testid="global-interrupt-panel"] > div > div > div.mt-4.grid')
+    if (!layout) {
+      throw new Error('approval layout not found')
+    }
+    expect(layout).toHaveClass('items-start')
+
+    const [queuePane, detailPane] = Array.from(layout.children)
+    if (!queuePane || !detailPane) {
+      throw new Error('approval layout panes not found')
+    }
+    expect(queuePane).toHaveClass('min-w-0', 'items-start')
+    expect(detailPane).toHaveClass('min-w-0', 'self-start')
+  })
+
   it('renders the richer approval structure and auto-submits plain approval decisions', () => {
     const onRespond = vi.fn()
 
@@ -60,6 +99,109 @@ describe('GlobalInterruptPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
 
     expect(onRespond).toHaveBeenCalledWith({ interruptId: 'interrupt-approval', decision: 'approved_once' })
+  })
+
+  it('renders a steering note field for approvals and forwards note-only responses', () => {
+    const onRespond = vi.fn()
+
+    render(
+      <GlobalInterruptPanel
+        items={[makeApprovalInterrupt()]}
+        isSubmitting={false}
+        onAcknowledge={() => {}}
+        onRespond={onRespond}
+      />,
+    )
+
+    expect(screen.getByText('Agent note')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next turn/i), {
+      target: { value: 'Steer the agent toward a smaller rollout.' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /send note/i }))
+
+    expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-approval',
+      note: 'Steer the agent toward a smaller rollout.',
+    })
+  })
+
+  it('renders plan approvals with inline markdown and forwards revision notes', () => {
+    const onRespond = vi.fn()
+
+    render(
+      <GlobalInterruptPanel
+        items={[makePlanApprovalInterrupt()]}
+        isSubmitting={false}
+        onAcknowledge={() => {}}
+        onRespond={onRespond}
+      />,
+    )
+
+    expect(screen.getAllByText('Plan approval').length).toBeGreaterThan(1)
+    expect(screen.getByText('Proposed plan')).toBeInTheDocument()
+    expect(screen.getByText(/tighten the rollout/i)).toBeInTheDocument()
+    expect(screen.getByText(/add a rollback check/i)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
+      target: { value: 'Make the rollout smaller and add a rollback guard.' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /request revision/i }))
+
+    expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-plan-approval',
+      note: 'Make the rollout smaller and add a rollback guard.',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
+
+    expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-plan-approval',
+      decision: 'approved_once',
+      note: 'Make the rollout smaller and add a rollback guard.',
+    })
+  })
+
+  it('clears stale plan approval notes when the approval request changes', () => {
+    const onRespond = vi.fn()
+    const { rerender } = render(
+      <GlobalInterruptPanel
+        items={[makePlanApprovalInterrupt()]}
+        isSubmitting={false}
+        onAcknowledge={() => {}}
+        onRespond={onRespond}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/explain what should change in the plan/i), {
+      target: { value: 'Reduce the rollout size and add a rollback check.' },
+    })
+    expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue(
+      'Reduce the rollout size and add a rollback check.',
+    )
+
+    rerender(
+      <GlobalInterruptPanel
+        items={[makePlanApprovalInterrupt({
+          requestedAt: '2026-03-16T10:15:00Z',
+          markdown: 'Review the updated plan before execution.\n\n- Tighten the rollout further',
+        })]}
+        isSubmitting={false}
+        onAcknowledge={() => {}}
+        onRespond={onRespond}
+      />,
+    )
+
+    expect(screen.getByPlaceholderText(/explain what should change in the plan/i)).toHaveValue('')
+
+    fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
+
+    expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-plan-approval',
+      decision: 'approved_once',
+    })
   })
 
   it('uses decision payload when approval options provide structured responses', () => {

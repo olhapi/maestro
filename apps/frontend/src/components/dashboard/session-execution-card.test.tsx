@@ -109,6 +109,82 @@ describe('SessionExecutionCard', () => {
     expect(onApprovePlan).toHaveBeenCalledTimes(1)
   })
 
+  it('forwards revision notes and approval notes from the plan approval card', () => {
+    const onApprovePlan = vi.fn()
+    const onRequestPlanRevision = vi.fn()
+
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the **plan** before execution.\n\nSee [details](https://example.com).',
+            requested_at: '2026-03-18T12:00:00Z',
+            attempt: 2,
+          },
+        })}
+        issueTotalTokens={120}
+        onApprovePlan={onApprovePlan}
+        onRequestPlanRevision={onRequestPlanRevision}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next planning turn/i), {
+      target: { value: 'Tighten the rollout steps.' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /request revision/i }))
+
+    expect(onRequestPlanRevision).toHaveBeenCalledWith('Tighten the rollout steps.')
+
+    fireEvent.click(screen.getByRole('button', { name: /approve plan and continue/i }))
+
+    expect(onApprovePlan).toHaveBeenCalledWith('Tighten the rollout steps.')
+  })
+
+  it('clears stale revision notes when a new plan approval arrives', () => {
+    const onApprovePlan = vi.fn()
+    const { rerender } = render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the **plan** before execution.\n\nSee [details](https://example.com).',
+            requested_at: '2026-03-18T12:00:00Z',
+            attempt: 2,
+          },
+        })}
+        issueTotalTokens={120}
+        onApprovePlan={onApprovePlan}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next planning turn/i), {
+      target: { value: 'Reduce the rollout size and add a rollback check.' },
+    })
+    expect(screen.getByPlaceholderText(/add steering notes for the next planning turn/i)).toHaveValue(
+      'Reduce the rollout size and add a rollback check.',
+    )
+
+    rerender(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          plan_approval: {
+            markdown: 'Review the **updated** plan before execution.\n\nSee [details](https://example.com).',
+            requested_at: '2026-03-18T13:00:00Z',
+            attempt: 3,
+          },
+        })}
+        issueTotalTokens={120}
+        onApprovePlan={onApprovePlan}
+      />,
+    )
+
+    expect(screen.getByPlaceholderText(/add steering notes for the next planning turn/i)).toHaveValue('')
+
+    fireEvent.click(screen.getByRole('button', { name: /approve plan and continue/i }))
+
+    expect(onApprovePlan).toHaveBeenCalledWith(undefined)
+  })
+
   it('renders a workspace recovery banner for bootstrap blockers', () => {
     render(
       <SessionExecutionCard
