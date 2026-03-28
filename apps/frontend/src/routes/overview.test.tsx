@@ -6,6 +6,16 @@ import { OverviewPage } from '@/routes/overview'
 import { makeBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
+const { ResponsiveContainer } = vi.hoisted(() => ({
+  ResponsiveContainer: vi.fn(({ children }: { children: ReactNode }) => {
+    return (
+      <svg data-testid="overview-chart" role="img" aria-label="Overview chart">
+        {children}
+      </svg>
+    )
+  }),
+}))
+
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
     children,
@@ -17,13 +27,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('recharts', () => ({
-  ResponsiveContainer: ({ children }: { children: ReactNode }) => {
-    return (
-      <svg data-testid="overview-chart" role="img" aria-label="Overview chart">
-        {children}
-      </svg>
-    )
-  },
+  ResponsiveContainer,
   LineChart: ({ children }: { children: ReactNode }) => <>{children}</>,
   AreaChart: ({ children }: { children: ReactNode }) => <>{children}</>,
   Line: () => <path />,
@@ -44,7 +48,12 @@ const { api } = await import('@/lib/api')
 
 describe('OverviewPage', () => {
   it('renders overview metrics from bootstrap data', async () => {
-    vi.mocked(api.bootstrap).mockResolvedValue(makeBootstrapResponse())
+    const refreshedAt = new Date(Date.now() - 1000).toISOString()
+    const bootstrap = makeBootstrapResponse()
+    bootstrap.generated_at = refreshedAt
+    bootstrap.overview.snapshot.generated_at = refreshedAt
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
 
     renderWithQueryClient(<OverviewPage />)
 
@@ -64,5 +73,7 @@ describe('OverviewPage', () => {
     expect(screen.getByText('Execution health').closest('section') as HTMLElement).toHaveClass('lg:items-stretch')
     expect(screen.getAllByRole('link', { name: /ISS-1/i })).toHaveLength(2)
     expect(screen.getAllByTestId('overview-chart')).toHaveLength(2)
+    expect(ResponsiveContainer.mock.calls.some(([props]) => props.height === '100%')).toBe(true)
+    expect(screen.getByText(/Current running sessions only\. Snapshot refreshed \d+s ago\./)).toBeInTheDocument()
   })
 })
