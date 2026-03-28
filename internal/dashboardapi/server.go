@@ -1094,7 +1094,7 @@ func (s *Server) submitIssueCommand(ctx context.Context, issue *kanban.Issue, co
 		if _, err := s.service.SetIssueState(ctx, issue.Identifier, string(kanban.StateInProgress)); err != nil {
 			if kanban.IsBlockedTransition(err) {
 				status = kanban.IssueAgentCommandWaitingForUnblock
-				if issue.State != kanban.StateReady {
+				if issue.State == kanban.StateBacklog {
 					if _, readyErr := s.service.SetIssueState(ctx, issue.Identifier, string(kanban.StateReady)); readyErr != nil && !kanban.IsBlockedTransition(readyErr) {
 						return nil, readyErr
 					}
