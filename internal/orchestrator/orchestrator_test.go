@@ -3654,6 +3654,78 @@ func TestProcessRetriesStartsQueuedPlanRevisionRetry(t *testing.T) {
 	}
 }
 
+func TestFinishRunQueuesImmediateRetryWhenPlanRevisionArrivesBeforePlanPause(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Plan revision race", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, kanban.WorkflowPhaseImplementation); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase: %v", err)
+	}
+	requestedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+
+	workflow, err := orch.workflows.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+	result := &agent.RunResult{
+		Success:    false,
+		StopReason: planApprovalStopReason,
+		AppSession: &appserver.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-plan-turn-1",
+			ThreadID:        "thread-plan",
+			TurnID:          "turn-plan",
+		},
+	}
+
+	orch.finishRun(workflow, orch.runner, issue, kanban.WorkflowPhaseImplementation, 1, result, nil)
+
+	orch.mu.RLock()
+	retry, retryQueued := orch.retries[issue.ID]
+	_, paused := orch.paused[issue.ID]
+	orch.mu.RUnlock()
+	if !retryQueued {
+		t.Fatal("expected immediate retry to be queued when a plan revision is pending")
+	}
+	if paused {
+		t.Fatal("did not expect plan approval pause when a revision note is already queued")
+	}
+	if retry.Attempt != 2 {
+		t.Fatalf("expected retry attempt 2, got %+v", retry)
+	}
+	if retry.DelayType != "manual" {
+		t.Fatalf("expected manual retry delay type, got %+v", retry)
+	}
+	if retry.ResumeThreadID != "thread-plan" {
+		t.Fatalf("expected retry to preserve thread resume id, got %+v", retry)
+	}
+
+	events, err := store.ListRuntimeEvents(0, 10)
+	if err != nil {
+		t.Fatalf("ListRuntimeEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected runtime events after plan revision retry scheduling")
+	}
+	latest := events[0]
+	if latest.Kind != "retry_scheduled" || latest.DelayType != "manual" || latest.Error != planApprovalStopReason {
+		t.Fatalf("expected manual retry_scheduled event for plan revision, got %+v", latest)
+	}
+}
+
 func TestRetryIssueNowQueuesPlanApprovalRetryWhenOnlyPendingFlagIsSet(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 

@@ -1757,7 +1757,7 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 	for _, command := range commands {
 		ids = append(ids, command.ID)
 	}
-	if err := r.store.MarkIssueAgentCommandsDelivered(issue.ID, ids, mode, threadID, attempt); err != nil {
+	if err := r.store.MarkIssueAgentCommandsDeliveredIfUnchanged(issue.ID, commands, mode, threadID, attempt); err != nil {
 		return err
 	}
 	return r.store.AppendRuntimeEvent("manual_command_delivered", map[string]interface{}{

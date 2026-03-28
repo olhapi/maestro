@@ -228,6 +228,45 @@ describe("IssueDetailPage", () => {
     expect(screen.getByRole("button", { name: /reply/i })).toBeInTheDocument();
   });
 
+  it("renders markdown in the issue description and comment bodies", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({
+      description: "Document the **retry window** in [docs](https://example.com/docs).",
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.listIssueComments).mockResolvedValue({
+      items: [
+        makeIssueComment({
+          body: "Please keep the _backoff_ rule in [reference](https://example.com/ref).",
+        }),
+      ],
+    });
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 0,
+      retry_state: "none",
+      session_source: "none",
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    expect(await screen.findByText("retry window", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute("href", "https://example.com/docs");
+    expect(screen.getByText("backoff", { selector: "em" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "reference" })).toHaveAttribute(
+      "href",
+      "https://example.com/ref",
+    );
+  });
+
   it("renders the issue identifier only once in breadcrumbs when no epic is attached", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({

@@ -28,10 +28,6 @@ func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int,
 	if strings.TrimSpace(issueID) == "" {
 		return fmt.Errorf("missing issue_id")
 	}
-	logicalID, ok := issueActivityLogicalID(attempt, event)
-	if !ok {
-		return nil
-	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -42,6 +38,22 @@ func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int,
 			_ = tx.Rollback()
 		}
 	}()
+
+	if err := s.applyIssueActivityEventTx(tx, issueID, identifier, attempt, event); err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
+}
+
+func (s *Store) applyIssueActivityEventTx(tx *sql.Tx, issueID, identifier string, attempt int, event appserver.ActivityEvent) error {
+	logicalID, ok := issueActivityLogicalID(attempt, event)
+	if !ok {
+		return nil
+	}
 
 	now := time.Now().UTC()
 	existing, err := s.getIssueActivityEntryTx(tx, logicalID)
@@ -66,20 +78,13 @@ func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int,
 	if err := s.compactIssueActivityAttemptTx(tx, issueID, attempt, event.Type); err != nil {
 		return err
 	}
-	if err := s.appendChangeTx(tx, "issue_activity", issueID, entry.ID, map[string]interface{}{
+	return s.appendChangeTx(tx, "issue_activity", issueID, entry.ID, map[string]interface{}{
 		"issue_id":   issueID,
 		"identifier": identifier,
 		"attempt":    attempt,
 		"entry_id":   logicalID,
 		"event_type": event.Type,
-	}); err != nil {
-		return err
-	}
-	if err := s.commitTx(tx, true); err != nil {
-		return err
-	}
-	tx = nil
-	return nil
+	})
 }
 
 func (s *Store) CompactIssueActivityAttemptSuccess(issueID string, attempt int) error {
@@ -128,12 +133,14 @@ func shouldPersistIssueActivityUpdate(eventType string) bool {
 }
 
 func normalizeIssueActivityEntry(entry IssueActivityEntry) IssueActivityEntry {
-	entry.Summary = truncateActivityText(entry.Summary, activitySummaryMaxBytes)
-	entry.Detail = truncateActivityDetail(entry, activityDetailMaxBytes)
-	if raw, ok := truncateActivityValue(entry.RawPayload).(map[string]interface{}); ok {
-		entry.RawPayload = raw
-	} else {
-		entry.RawPayload = nil
+	if !isFinalAnswerActivityEntry(entry) {
+		entry.Summary = truncateActivityText(entry.Summary, activitySummaryMaxBytes)
+		entry.Detail = truncateActivityDetail(entry, activityDetailMaxBytes)
+		if raw, ok := truncateActivityValue(entry.RawPayload).(map[string]interface{}); ok {
+			entry.RawPayload = raw
+		} else {
+			entry.RawPayload = nil
+		}
 	}
 	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
 	return entry
@@ -220,6 +227,11 @@ func truncateActivityValue(value interface{}) interface{} {
 	default:
 		return value
 	}
+}
+
+func isFinalAnswerActivityEntry(entry IssueActivityEntry) bool {
+	return strings.EqualFold(strings.TrimSpace(entry.Kind), "agent") &&
+		strings.EqualFold(strings.TrimSpace(entry.Phase), "final_answer")
 }
 
 func (s *Store) compactIssueActivityAttemptTx(tx *sql.Tx, issueID string, attempt int, eventType string) error {
@@ -1042,12 +1054,36 @@ func activityRawPayload(event appserver.ActivityEvent) map[string]interface{} {
 		payload["exit_code"] = *event.ExitCode
 	}
 	if event.Item != nil {
-		payload["item"] = truncateActivityValue(event.Item)
+		if isFinalAnswerActivityEvent(event) {
+			payload["item"] = cloneActivityMap(event.Item)
+		} else {
+			payload["item"] = truncateActivityValue(event.Item)
+		}
 	}
 	if event.Raw != nil {
-		payload["raw"] = truncateActivityValue(event.Raw)
+		if isFinalAnswerActivityEvent(event) {
+			payload["raw"] = cloneActivityMap(event.Raw)
+		} else {
+			payload["raw"] = truncateActivityValue(event.Raw)
+		}
 	}
 	return payload
+}
+
+func isFinalAnswerActivityEvent(event appserver.ActivityEvent) bool {
+	return strings.EqualFold(strings.TrimSpace(event.ItemType), "agentMessage") &&
+		strings.EqualFold(strings.TrimSpace(event.ItemPhase), "final_answer")
+}
+
+func cloneActivityMap(in map[string]interface{}) map[string]interface{} {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func buildCommandDetail(command, cwd, output string, exitCode *int) string {

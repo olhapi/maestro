@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -1389,6 +1390,93 @@ func (s *Store) ApproveIssuePlan(id string) error {
 		"permission_profile":          PermissionProfileFullAccess,
 		"collaboration_mode_override": CollaborationModeOverrideDefault,
 	})
+}
+
+func (s *Store) ApproveIssuePlanWithNote(issue *Issue, approvedAt time.Time, note string, noteStatus IssueAgentCommandStatus) (*IssueAgentCommand, error) {
+	if issue == nil || strings.TrimSpace(issue.ID) == "" {
+		return nil, validationErrorf("issue is required")
+	}
+
+	approvedAt = approvedAt.UTC()
+	note = strings.TrimSpace(note)
+	if note != "" && noteStatus == "" {
+		noteStatus = IssueAgentCommandPending
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.Exec(`
+		UPDATE issues
+		SET permission_profile = ?,
+		    collaboration_mode_override = ?,
+		    plan_approval_pending = 0,
+		    pending_plan_markdown = '',
+		    pending_plan_requested_at = NULL,
+		    pending_plan_revision_markdown = '',
+		    pending_plan_revision_requested_at = NULL,
+		    updated_at = ?
+		WHERE id = ?`,
+		PermissionProfileFullAccess, CollaborationModeOverrideDefault, approvedAt, issue.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return nil, notFoundError("issue", issue.ID)
+	}
+	if err := s.appendChangeTx(tx, "issue", issue.ID, "plan_approved", map[string]interface{}{
+		"permission_profile":          PermissionProfileFullAccess,
+		"collaboration_mode_override": CollaborationModeOverrideDefault,
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.appendRuntimeEventTx(tx, "plan_approved", map[string]interface{}{
+		"issue_id":    issue.ID,
+		"identifier":  issue.Identifier,
+		"phase":       string(issue.WorkflowPhase),
+		"approved_at": approvedAt.Format(time.RFC3339),
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, 0, appserver.ActivityEvent{
+		Type: "plan.approved",
+		Raw: map[string]interface{}{
+			"approved_at": approvedAt.Format(time.RFC3339),
+		},
+	}); err != nil {
+		return nil, err
+	}
+
+	var commandRecord *IssueAgentCommand
+	if note != "" {
+		commandRecord, err = s.createIssueAgentCommandTx(tx, issue.ID, note, noteStatus)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.appendRuntimeEventTx(tx, "manual_command_submitted", map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      string(issue.WorkflowPhase),
+			"command_id": commandRecord.ID,
+			"command":    commandRecord.Command,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := s.commitTx(tx, true); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return commandRecord, nil
 }
 
 func (s *Store) ClearIssuePendingPlanApproval(id string, reason string) error {
@@ -4608,6 +4696,73 @@ func (s *Store) MarkIssueAgentCommandsDelivered(issueID string, ids []string, mo
 		"delivery_thread_id": strings.TrimSpace(threadID),
 		"delivery_attempt":   attempt,
 	})
+}
+
+func (s *Store) MarkIssueAgentCommandsDeliveredIfUnchanged(issueID string, commands []IssueAgentCommand, mode, threadID string, attempt int) error {
+	if strings.TrimSpace(issueID) == "" || len(commands) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	now := time.Now().UTC()
+	deliveredIDs := make([]string, 0, len(commands))
+	for _, command := range commands {
+		commandID := strings.TrimSpace(command.ID)
+		commandText := strings.TrimSpace(command.Command)
+		if commandID == "" || commandText == "" {
+			continue
+		}
+		res, err := tx.Exec(`
+			UPDATE issue_agent_commands
+			SET status = ?, delivered_at = ?, delivery_mode = ?, delivery_thread_id = ?, delivery_attempt = ?
+			WHERE issue_id = ? AND id = ? AND status = ? AND command = ?`,
+			IssueAgentCommandDelivered,
+			now,
+			strings.TrimSpace(mode),
+			strings.TrimSpace(threadID),
+			attempt,
+			issueID,
+			commandID,
+			IssueAgentCommandPending,
+			commandText,
+		)
+		if err != nil {
+			return err
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return validationErrorf("issue agent command changed before delivery")
+		}
+		deliveredIDs = append(deliveredIDs, commandID)
+	}
+	if len(deliveredIDs) == 0 {
+		return nil
+	}
+	if err := s.appendChangeTx(tx, "issue_agent_command", issueID, "delivered", map[string]interface{}{
+		"ids":                deliveredIDs,
+		"delivery_mode":      strings.TrimSpace(mode),
+		"delivery_thread_id": strings.TrimSpace(threadID),
+		"delivery_attempt":   attempt,
+	}); err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
 }
 
 func (s *Store) UpdateIssueAgentCommand(issueID, commandID, command string) (*IssueAgentCommand, error) {

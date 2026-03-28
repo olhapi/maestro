@@ -95,6 +95,117 @@ func TestIssueCommandsEndpointStoresWaitingForUnblockWhenTransitionFails(t *test
 	}
 }
 
+func TestIssueCommandsEndpointPromotesBlockedBacklogIssuesToReadyForQueuedCommand(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	blocked, err := store.CreateIssue("", "", "Blocked backlog issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+blocked.Identifier+"/commands", map[string]interface{}{
+		"command": "Ship this once the blocker is resolved.",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	command := body["command"].(map[string]interface{})
+	if command["status"].(string) != string(kanban.IssueAgentCommandWaitingForUnblock) {
+		t.Fatalf("expected waiting_for_unblock command, got %#v", command)
+	}
+
+	reloaded, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked: %v", err)
+	}
+	if reloaded.State != kanban.StateReady {
+		t.Fatalf("expected blocked backlog issue to move to ready, got %s", reloaded.State)
+	}
+
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	if err := store.ActivateIssueAgentCommandsIfDispatchable(blocked.ID); err != nil {
+		t.Fatalf("ActivateIssueAgentCommandsIfDispatchable: %v", err)
+	}
+
+	pending, err := store.ListPendingIssueAgentCommands(blocked.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Command != "Ship this once the blocker is resolved." {
+		t.Fatalf("expected pending command after unblock, got %#v", pending)
+	}
+}
+
+func TestIssueCommandsEndpointKeepsBlockedInReviewIssuesInReview(t *testing.T) {
+	store, srv := setupDashboardServerTest(t, testProvider{})
+
+	blocker, err := store.CreateIssue("", "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	blocked, err := store.CreateIssue("", "", "Blocked review issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocked.ID, kanban.StateInReview); err != nil {
+		t.Fatalf("UpdateIssueState blocked: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+blocked.Identifier+"/commands", map[string]interface{}{
+		"command": "Ship this review once the blocker is resolved.",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	command := body["command"].(map[string]interface{})
+	if command["status"].(string) != string(kanban.IssueAgentCommandWaitingForUnblock) {
+		t.Fatalf("expected waiting_for_unblock command, got %#v", command)
+	}
+
+	reloaded, err := store.GetIssue(blocked.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked: %v", err)
+	}
+	if reloaded.State != kanban.StateInReview {
+		t.Fatalf("expected blocked review issue to remain in_review, got %s", reloaded.State)
+	}
+
+	if err := store.UpdateIssueState(blocker.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+	if err := store.ActivateIssueAgentCommandsIfDispatchable(blocked.ID); err != nil {
+		t.Fatalf("ActivateIssueAgentCommandsIfDispatchable: %v", err)
+	}
+
+	pending, err := store.ListPendingIssueAgentCommands(blocked.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Command != "Ship this review once the blocker is resolved." {
+		t.Fatalf("expected pending command after unblock, got %#v", pending)
+	}
+}
+
 func TestIssueCommandsEndpointStoresWaitingForUnblockWhenIssueIsAlreadyBlockedInProgress(t *testing.T) {
 	store, srv := setupDashboardServerTest(t, testProvider{})
 

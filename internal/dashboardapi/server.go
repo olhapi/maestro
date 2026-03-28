@@ -849,7 +849,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		note := strings.TrimSpace(body.Note)
-		hasNote := note != ""
 		issue, err := s.store.GetIssueByIdentifier(identifier)
 		if err != nil {
 			writeErrorStatus(w, appErrorStatus(err), err)
@@ -859,45 +858,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			writeJSONStatus(w, http.StatusConflict, map[string]interface{}{"error": "no pending plan approval"})
 			return
 		}
-		if err := s.store.ApproveIssuePlan(issue.ID); err != nil {
-			writeErrorStatus(w, appErrorStatus(err), err)
-			return
-		}
-		approvedAt := time.Now().UTC()
-		if err := s.store.AppendRuntimeEvent("plan_approved", map[string]interface{}{
-			"issue_id":    issue.ID,
-			"identifier":  issue.Identifier,
-			"phase":       string(issue.WorkflowPhase),
-			"approved_at": approvedAt.Format(time.RFC3339),
-		}); err != nil {
-			writeErrorStatus(w, http.StatusInternalServerError, err)
-			return
-		}
-		if err := s.store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 0, appserver.ActivityEvent{
-			Type: "plan.approved",
-			Raw: map[string]interface{}{
-				"approved_at": approvedAt.Format(time.RFC3339),
-			},
-		}); err != nil {
-			writeErrorStatus(w, http.StatusInternalServerError, err)
-			return
-		}
-		if hasNote {
-			if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
-				writeErrorStatus(w, appErrorStatus(err), err)
-				return
-			}
-		}
-		detail, err := s.service.GetIssueDetailByIdentifier(r.Context(), identifier)
+		response, err := s.approveIssuePlan(r.Context(), issue, note)
 		if err != nil {
 			writeErrorStatus(w, appErrorStatus(err), err)
 			return
 		}
-		writeJSON(w, map[string]interface{}{
-			"ok":       true,
-			"issue":    detail,
-			"dispatch": s.provider.RetryIssueNow(r.Context(), identifier),
-		})
+		writeJSON(w, response)
 	case "request-plan-revision":
 		var body struct {
 			Note string `json:"note"`
@@ -1128,6 +1094,11 @@ func (s *Server) submitIssueCommand(ctx context.Context, issue *kanban.Issue, co
 		if _, err := s.service.SetIssueState(ctx, issue.Identifier, string(kanban.StateInProgress)); err != nil {
 			if kanban.IsBlockedTransition(err) {
 				status = kanban.IssueAgentCommandWaitingForUnblock
+				if issue.State == kanban.StateBacklog {
+					if _, readyErr := s.service.SetIssueState(ctx, issue.Identifier, string(kanban.StateReady)); readyErr != nil && !kanban.IsBlockedTransition(readyErr) {
+						return nil, readyErr
+					}
+				}
 			} else {
 				return nil, err
 			}
@@ -1491,43 +1462,15 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 				writeErrorStatus(w, appErrorStatus(err), err)
 				return
 			}
-			if err := s.store.ApproveIssuePlan(issue.ID); err != nil {
+			response, err := s.approveIssuePlan(r.Context(), issue, note)
+			if err != nil {
 				writeErrorStatus(w, appErrorStatus(err), err)
 				return
 			}
-			approvedAt := time.Now().UTC()
-			if err := s.store.AppendRuntimeEvent("plan_approved", map[string]interface{}{
-				"issue_id":    issue.ID,
-				"identifier":  issue.Identifier,
-				"phase":       string(issue.WorkflowPhase),
-				"approved_at": approvedAt.Format(time.RFC3339),
-			}); err != nil {
-				writeErrorStatus(w, http.StatusInternalServerError, err)
-				return
-			}
-			if err := s.store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 0, appserver.ActivityEvent{
-				Type: "plan.approved",
-				Raw: map[string]interface{}{
-					"approved_at": approvedAt.Format(time.RFC3339),
-				},
-			}); err != nil {
-				writeErrorStatus(w, http.StatusInternalServerError, err)
-				return
-			}
-			if hasNote {
-				if _, err := s.submitIssueCommand(r.Context(), issue, note); err != nil {
-					writeErrorStatus(w, appErrorStatus(err), err)
-					return
-				}
-			}
-			result := s.provider.RetryIssueNow(r.Context(), issue.Identifier)
-			if status, _ := result["status"].(string); status == "error" {
-				writeErrorStatus(w, http.StatusInternalServerError, fmt.Errorf("%v", result["error"]))
-				return
-			}
 			writeJSONStatus(w, http.StatusAccepted, map[string]interface{}{
-				"id":     interactionID,
-				"status": "accepted",
+				"id":       interactionID,
+				"status":   "accepted",
+				"dispatch": response["dispatch"],
 			})
 		default:
 			writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
@@ -1729,6 +1672,53 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out interface{})
 
 func (s *Server) issueExecutionPayload(issue *kanban.Issue) (map[string]interface{}, error) {
 	return runtimeview.IssueExecutionPayload(s.store, s.provider, issue)
+}
+
+func (s *Server) planApprovalNoteCommandStatus(issue *kanban.Issue) (kanban.IssueAgentCommandStatus, error) {
+	if issue == nil {
+		return kanban.IssueAgentCommandPending, fmt.Errorf("issue is required")
+	}
+	unresolved, err := s.store.UnresolvedBlockersForIssue(issue.ID)
+	if err != nil {
+		return "", err
+	}
+	if len(unresolved) > 0 {
+		return kanban.IssueAgentCommandWaitingForUnblock, nil
+	}
+	return kanban.IssueAgentCommandPending, nil
+}
+
+func (s *Server) approveIssuePlan(ctx context.Context, issue *kanban.Issue, note string) (map[string]interface{}, error) {
+	if issue == nil {
+		return nil, fmt.Errorf("issue is required")
+	}
+	if !issue.PlanApprovalPending || strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
+		return nil, kanban.ErrBlockedTransition
+	}
+
+	note = strings.TrimSpace(note)
+	noteStatus := kanban.IssueAgentCommandPending
+	var err error
+	if note != "" {
+		noteStatus, err = s.planApprovalNoteCommandStatus(issue)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	approvedAt := time.Now().UTC()
+	if _, err := s.store.ApproveIssuePlanWithNote(issue, approvedAt, note, noteStatus); err != nil {
+		return nil, err
+	}
+
+	response := map[string]interface{}{
+		"ok":       true,
+		"dispatch": s.provider.RetryIssueNow(ctx, issue.Identifier),
+	}
+	if detail, err := s.service.GetIssueDetailByIdentifier(ctx, issue.Identifier); err == nil {
+		response["issue"] = detail
+	}
+	return response, nil
 }
 
 func (s *Server) requestIssuePlanRevision(ctx context.Context, issue *kanban.Issue, note string) (map[string]interface{}, error) {

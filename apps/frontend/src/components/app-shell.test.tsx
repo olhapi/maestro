@@ -669,6 +669,9 @@ describe('AppShell', () => {
       expect(screen.getAllByText('Review migrations').length).toBeGreaterThan(0)
     })
 
+    expect(screen.queryByPlaceholderText(/add steering notes for the next turn/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
     fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next turn/i), {
       target: { value: 'Keep the rollout in a smaller batch.' },
     })

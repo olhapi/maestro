@@ -46,4 +46,20 @@ npm run dev -- --filter=frontend --with-an-exceptionally-long-token-that-should-
     expect(pre).toHaveClass('whitespace-pre-wrap', 'break-words')
     expect(pre).not.toHaveClass('overflow-x-auto')
   })
+
+  it('lets callers override how markdown elements render', () => {
+    render(
+      <MarkdownText
+        content="Read the [docs](https://example.com)."
+        components={{
+          a({ children }) {
+            return <span>{children}</span>
+          },
+        }}
+      />,
+    )
+
+    expect(screen.queryByRole('link', { name: 'docs' })).not.toBeInTheDocument()
+    expect(screen.getByText('docs')).toBeInTheDocument()
+  })
 })

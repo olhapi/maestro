@@ -87,6 +87,68 @@ func TestApplyIssueActivityEventPersistsSingleAgentEntryAcrossStreaming(t *testi
 	}
 }
 
+func TestApplyIssueActivityEventPreservesFinalAnswerTextWithoutTruncation(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Final answer timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	longFinalAnswer := strings.TrimSpace(strings.Repeat("Final answer stays intact. ", 120))
+	if len(longFinalAnswer) <= activitySummaryMaxBytes || len(longFinalAnswer) <= activityPayloadValueMaxBytes {
+		t.Fatalf("test fixture must exceed truncation thresholds, got %d bytes", len(longFinalAnswer))
+	}
+
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 1, appserver.ActivityEvent{
+		Type:      "item.completed",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
+		ItemID:    "msg-1",
+		ItemType:  "agentMessage",
+		ItemPhase: "final_answer",
+		Item: map[string]interface{}{
+			"id":    "msg-1",
+			"type":  "agentMessage",
+			"phase": "final_answer",
+			"text":  longFinalAnswer,
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one final-answer entry, got %#v", entries)
+	}
+	entry := entries[0]
+	if entry.Kind != "agent" || entry.Phase != "final_answer" || entry.Title != "Final answer" || entry.Tone != "success" {
+		t.Fatalf("unexpected final-answer entry metadata: %#v", entry)
+	}
+	if entry.Summary != longFinalAnswer {
+		t.Fatalf("expected final answer summary to stay intact, got %q", entry.Summary)
+	}
+	if len(entry.Summary) <= activitySummaryMaxBytes {
+		t.Fatalf("expected untruncated final answer summary, got %d bytes", len(entry.Summary))
+	}
+	item, ok := entry.RawPayload["item"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected final answer item payload, got %#v", entry.RawPayload)
+	}
+	text, ok := item["text"].(string)
+	if !ok {
+		t.Fatalf("expected final answer text payload, got %#v", item)
+	}
+	if text != longFinalAnswer {
+		t.Fatalf("expected final answer raw payload to stay intact, got %q", text)
+	}
+	if len(text) <= activityPayloadValueMaxBytes {
+		t.Fatalf("expected untruncated raw final answer payload, got %d bytes", len(text))
+	}
+}
+
 func TestApplyIssueActivityEventPersistsSingleCommandEntryAcrossStreaming(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Persistent command timeline", "", 0, nil)

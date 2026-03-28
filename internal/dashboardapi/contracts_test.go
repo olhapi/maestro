@@ -1431,6 +1431,66 @@ func TestIssueApprovePlanContractsQueuesNoteAndRedispatches(t *testing.T) {
 	}
 }
 
+func TestIssueApprovePlanContractsReturnsSuccessWhenRedispatchFails(t *testing.T) {
+	provider := &retryTrackingProvider{
+		retryResult: map[string]interface{}{
+			"status": "error",
+			"issue":  "ISS-1",
+			"error":  "dispatch unavailable",
+		},
+	}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Approve plan with failed redispatch", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 13, 5, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/approve-plan", map[string]interface{}{
+		"note": "Keep the rollout small and make the rollback explicit.",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve plan expected 200, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	if body["ok"] != true {
+		t.Fatalf("expected ok response, got %#v", body)
+	}
+	dispatch, ok := body["dispatch"].(map[string]interface{})
+	if !ok || dispatch["status"] != "error" {
+		t.Fatalf("expected dispatch error payload, got %#v", body["dispatch"])
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch attempt for %s, got %v", issue.Identifier, provider.retried)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PermissionProfile != kanban.PermissionProfileFullAccess || updated.PlanApprovalPending {
+		t.Fatalf("expected plan approval to remain committed, got %+v", updated)
+	}
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 || commands[0].Command != "Keep the rollout small and make the rollback explicit." {
+		t.Fatalf("expected note command to remain queued, got %#v", commands)
+	}
+}
+
 func TestIssueRequestPlanRevisionContractsStoresRevisionAndRedispatches(t *testing.T) {
 	provider := &retryTrackingProvider{}
 	store, srv := setupDashboardServerTest(t, provider)
@@ -1917,6 +1977,84 @@ func TestInterruptPlanApprovalApprovalWithNoteRedispatches(t *testing.T) {
 	}
 	if updated.PlanApprovalPending {
 		t.Fatalf("expected pending plan approval to clear after approval, got %+v", updated)
+	}
+}
+
+func TestInterruptPlanApprovalApprovalReturnsAcceptedWhenRedispatchFails(t *testing.T) {
+	provider := &retryTrackingProvider{
+		retryResult: map[string]interface{}{
+			"status": "error",
+			"issue":  "ISS-1",
+			"error":  "dispatch unavailable",
+		},
+	}
+	store, srv := setupDashboardServerTest(t, provider)
+	provider.store = store
+
+	project, err := store.CreateProject("Maestro", "", "/repo", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Approve plan via shared interrupts with failed redispatch", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 13, 18, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Plan body", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	interactionID := "plan-approval-" + strings.TrimSpace(issue.ID)
+	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+		issue.ID: {
+			ID:              interactionID,
+			Kind:            appserver.PendingInteractionKindApproval,
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			IssueTitle:      issue.Title,
+			RequestedAt:     requestedAt,
+			Approval: &appserver.PendingApproval{
+				Markdown: "Plan body",
+				Reason:   "Review the proposed plan before execution.",
+				Decisions: []appserver.PendingApprovalDecision{{
+					Value: "approved",
+					Label: "Approve plan",
+				}},
+			},
+		},
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/"+interactionID+"/respond", map[string]interface{}{
+		"decision": "approved",
+		"note":     "Keep the rollout small and make the rollback explicit.",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp)
+	dispatch, ok := body["dispatch"].(map[string]interface{})
+	if !ok || dispatch["status"] != "error" {
+		t.Fatalf("expected dispatch error payload, got %#v", body["dispatch"])
+	}
+	if len(provider.retried) != 1 || provider.retried[0] != issue.Identifier {
+		t.Fatalf("expected redispatch attempt for %s, got %v", issue.Identifier, provider.retried)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PermissionProfile != kanban.PermissionProfileFullAccess || updated.PlanApprovalPending {
+		t.Fatalf("expected plan approval to remain committed, got %+v", updated)
+	}
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 || commands[0].Command != "Keep the rollout small and make the rollback explicit." {
+		t.Fatalf("expected note command to remain queued, got %#v", commands)
 	}
 }
 

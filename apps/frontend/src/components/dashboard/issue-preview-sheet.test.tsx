@@ -223,6 +223,36 @@ describe('IssuePreviewSheet', () => {
     expect(screen.getByText('Review the hero messaging before implementation.')).toBeInTheDocument()
   })
 
+  it('renders markdown in the issue description', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const summary = makeIssueSummary()
+    vi.mocked(api.getIssue).mockResolvedValue(
+      makeIssueDetail({
+        description: 'Review the **retry window** before merge.\n\nSee [details](https://example.com).',
+      }),
+    )
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Investigate retries')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('retry window', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'details' })).toHaveAttribute(
+      'href',
+      'https://example.com',
+    )
+  })
+
   it('confirms deletion before calling the preview delete handler', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary()
