@@ -256,6 +256,61 @@ func TestIssuePlanApprovalLifecyclePersistsAndPromotes(t *testing.T) {
 	}
 }
 
+func TestApproveIssuePlanWithNotePersistsApprovalEventAndCommand(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan approval with note", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	approvedAt := time.Date(2026, 3, 18, 11, 45, 0, 0, time.UTC)
+	command, err := store.ApproveIssuePlanWithNote(issue, approvedAt, "Ship the guarded rollout.", "")
+	if err != nil {
+		t.Fatalf("ApproveIssuePlanWithNote: %v", err)
+	}
+	if command == nil {
+		t.Fatal("expected follow-up command to be created")
+	}
+	if command.Command != "Ship the guarded rollout." {
+		t.Fatalf("unexpected follow-up command: %+v", command)
+	}
+	if command.Status != IssueAgentCommandPending {
+		t.Fatalf("expected pending follow-up command, got %+v", command)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PermissionProfile != PermissionProfileFullAccess {
+		t.Fatalf("expected issue to promote to full access, got %+v", updated)
+	}
+	if updated.CollaborationModeOverride != CollaborationModeOverrideDefault {
+		t.Fatalf("expected default collaboration override after approval, got %+v", updated)
+	}
+	if updated.PlanApprovalPending {
+		t.Fatalf("expected plan approval to clear after approval, got %+v", updated)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	var approved *RuntimeEvent
+	for i := range events {
+		if events[i].Kind == "plan_approved" {
+			approved = &events[i]
+			break
+		}
+	}
+	if approved == nil {
+		t.Fatalf("expected plan_approved runtime event, got %#v", events)
+	}
+	if got := approved.Payload["approved_at"]; got != approvedAt.Format(time.RFC3339) {
+		t.Fatalf("unexpected approved_at payload: %#v", got)
+	}
+}
+
 func TestClearIssuePendingPlanApprovalClearsStateAndAppendsChange(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Clear plan approval", "", 0, nil)
@@ -313,6 +368,53 @@ func TestIssuePlanRevisionLifecyclePersistsAndClears(t *testing.T) {
 	}
 	if cleared.PendingPlanRevisionMarkdown != "" || cleared.PendingPlanRevisionRequestedAt != nil {
 		t.Fatalf("expected pending revision state to clear, got %+v", cleared)
+	}
+}
+
+func TestAppendRuntimeEventOnlyPersistsStandaloneEvent(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Standalone runtime event", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	clearedAt := requestedAt.Add(2 * time.Minute)
+	if err := store.AppendRuntimeEventOnly("plan_revision_cleared", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"title":        issue.Title,
+		"phase":        string(issue.WorkflowPhase),
+		"attempt":      2,
+		"markdown":     "Trim the rollout and keep the rollback explicit.",
+		"reason":       "turn_started",
+		"requested_at": requestedAt.Format(time.RFC3339),
+		"cleared_at":   clearedAt.Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEventOnly: %v", err)
+	}
+
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one runtime event, got %#v", events)
+	}
+	if events[0].Kind != "plan_revision_cleared" {
+		t.Fatalf("unexpected runtime event kind: %+v", events[0])
+	}
+	if got := events[0].Payload["markdown"]; got != "Trim the rollout and keep the rollback explicit." {
+		t.Fatalf("unexpected markdown payload: %#v", got)
+	}
+	if got := events[0].Payload["reason"]; got != "turn_started" {
+		t.Fatalf("unexpected reason payload: %#v", got)
+	}
+	if got := events[0].Payload["requested_at"]; got != requestedAt.Format(time.RFC3339) {
+		t.Fatalf("unexpected requested_at payload: %#v", got)
+	}
+	if got := events[0].Payload["cleared_at"]; got != clearedAt.Format(time.RFC3339) {
+		t.Fatalf("unexpected cleared_at payload: %#v", got)
 	}
 }
 

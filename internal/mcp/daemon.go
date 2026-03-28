@@ -23,6 +23,7 @@ import (
 
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 const daemonRegistryEnv = "MAESTRO_DAEMON_REGISTRY_DIR"
@@ -35,6 +36,7 @@ type DaemonEntry struct {
 	BaseURL     string    `json:"base_url"`
 	BearerToken string    `json:"bearer_token"`
 	Version     string    `json:"version"`
+	Transport   string    `json:"transport,omitempty"`
 }
 
 type DaemonHandle struct {
@@ -42,10 +44,15 @@ type DaemonHandle struct {
 	listener net.Listener
 	server   *http.Server
 	lockFile *os.File
+	cleanup  func()
 	once     sync.Once
 }
 
 func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider RuntimeProvider, registry *extensions.Registry, version string) (*DaemonHandle, error) {
+	if strings.TrimSpace(os.Getenv("MAESTRO_MCP_INPROCESS")) != "" {
+		enableInMemoryDaemonTransport()
+	}
+
 	identity := store.Identity()
 	lockFile, err := acquireDaemonLock(ctx, identity)
 	if err != nil {
@@ -67,16 +74,23 @@ func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider Runti
 		return nil, err
 	}
 
+	if useInMemoryDaemonTransport {
+		handle, err := startManagedDaemonInMemory(ctx, store, provider, registry, version, identity, lockFile, token)
+		if err != nil {
+			return nil, err
+		}
+		releaseLock = false
+		return handle, nil
+	}
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen for private MCP endpoint: %w", err)
 	}
 
-	server := NewServerWithRegistry(store, provider, registry)
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", requireBearerToken(token, server.StreamableHTTPHandler()))
+	handler := buildManagedDaemonHandler(store, provider, registry, token)
 	httpServer := &http.Server{
-		Handler: mux,
+		Handler: handler,
 	}
 
 	entry := DaemonEntry{
@@ -87,6 +101,7 @@ func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider Runti
 		BaseURL:     "http://" + ln.Addr().String() + "/mcp",
 		BearerToken: token,
 		Version:     version,
+		Transport:   daemonTransportHTTP,
 	}
 	if err := writeDaemonEntry(entry); err != nil {
 		_ = ln.Close()
@@ -121,13 +136,86 @@ func (h *DaemonHandle) Close() error {
 	h.once.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		closeErr = h.server.Shutdown(ctx)
+		if h.server != nil {
+			closeErr = h.server.Shutdown(ctx)
+		}
+		if h.listener != nil {
+			if err := h.listener.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
 		if err := closeDaemonLock(h.lockFile); err != nil && closeErr == nil {
 			closeErr = err
+		}
+		if h.cleanup != nil {
+			h.cleanup()
 		}
 		_ = removeDaemonEntryIfOwned(h.Entry)
 	})
 	return closeErr
+}
+
+func startManagedDaemonInMemory(ctx context.Context, store *kanban.Store, provider RuntimeProvider, registry *extensions.Registry, version string, identity kanban.StoreIdentity, lockFile *os.File, token string) (*DaemonHandle, error) {
+	handler := buildManagedDaemonHandler(store, provider, registry, token)
+	handler = buildInMemoryDaemonHandler(handler, token)
+	baseURL := nextInMemoryDaemonBaseURL()
+	server, err := inprocessserver.NewWithURL(baseURL, handler)
+	if err != nil {
+		return nil, err
+	}
+
+	entry := DaemonEntry{
+		StoreID:     identity.StoreID,
+		DBPath:      identity.DBPath,
+		PID:         os.Getpid(),
+		StartedAt:   time.Now().UTC(),
+		BaseURL:     baseURL,
+		BearerToken: token,
+		Version:     version,
+		Transport:   daemonTransportInProcess,
+	}
+	if err := writeDaemonEntry(entry); err != nil {
+		server.Close()
+		return nil, err
+	}
+
+	handle := &DaemonHandle{
+		Entry:    entry,
+		lockFile: lockFile,
+		cleanup:  server.Close,
+	}
+
+	go func() {
+		<-ctx.Done()
+		_ = handle.Close()
+	}()
+
+	return handle, nil
+}
+
+func buildManagedDaemonHandler(store *kanban.Store, provider RuntimeProvider, registry *extensions.Registry, token string) http.Handler {
+	server := NewServerWithRegistry(store, provider, registry)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", requireBearerToken(token, server.StreamableHTTPHandler()))
+	return mux
+}
+
+func buildInMemoryDaemonHandler(next http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if token != "" && r.Header.Get("Authorization") != "Bearer "+token {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func acquireDaemonLock(ctx context.Context, identity kanban.StoreIdentity) (*os.File, error) {
@@ -250,6 +338,10 @@ func DiscoverDaemonForDBPath(ctx context.Context, dbPath string) (*DaemonEntry, 
 }
 
 func probeDaemon(ctx context.Context, entry DaemonEntry, expected kanban.StoreIdentity) error {
+	if daemonEntryTransport(entry) == daemonTransportInProcess && entry.PID != os.Getpid() {
+		return fmt.Errorf("daemon uses process-local transport and is only reachable from process %d", entry.PID)
+	}
+
 	client, err := mcpclient.NewStreamableHttpClient(entry.BaseURL,
 		transport.WithHTTPHeaders(map[string]string{
 			"Authorization": "Bearer " + entry.BearerToken,
@@ -371,13 +463,24 @@ func removeDaemonEntryIfOwned(entry DaemonEntry) error {
 		}
 		return err
 	}
-	if current.PID != entry.PID || current.BearerToken != entry.BearerToken || current.BaseURL != entry.BaseURL {
+	if current.PID != entry.PID || current.BearerToken != entry.BearerToken || current.BaseURL != entry.BaseURL || daemonEntryTransport(*current) != daemonEntryTransport(entry) {
 		return nil
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
+}
+
+func daemonEntryTransport(entry DaemonEntry) string {
+	switch strings.TrimSpace(entry.Transport) {
+	case "", daemonTransportHTTP:
+		return daemonTransportHTTP
+	case daemonTransportInProcess:
+		return daemonTransportInProcess
+	default:
+		return daemonTransportHTTP
+	}
 }
 
 func daemonEntryPath(storeID string) (string, error) {

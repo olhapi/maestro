@@ -1,10 +1,13 @@
 package dashboardapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +19,7 @@ import (
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 type testProvider struct {
@@ -125,7 +129,7 @@ func (p testProvider) RunRecurringIssueNow(ctx context.Context, identifier strin
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
-func setupDashboardServerTest(t *testing.T, provider Provider) (*kanban.Store, *httptest.Server) {
+func setupDashboardServerTest(t *testing.T, provider Provider) (*kanban.Store, *inprocessserver.Server) {
 	t.Helper()
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -135,9 +139,72 @@ func setupDashboardServerTest(t *testing.T, provider Provider) (*kanban.Store, *
 
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 	return store, srv
+}
+
+type wsPipeResponseWriter struct {
+	conn   net.Conn
+	header http.Header
+}
+
+func (w *wsPipeResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *wsPipeResponseWriter) WriteHeader(statusCode int) {}
+
+func (w *wsPipeResponseWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (w *wsPipeResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+func dialDashboardWebSocket(t *testing.T, server *Server) (*websocket.Conn, chan error) {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		defer serverConn.Close()
+		req, err := http.ReadRequest(bufio.NewReader(serverConn))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if req.URL == nil {
+			req.URL = &url.URL{}
+		}
+		req.URL.Scheme = "ws"
+		req.URL.Host = "example.com"
+		rw := &wsPipeResponseWriter{conn: serverConn}
+		server.handleWS(rw, req)
+		errCh <- nil
+	}()
+
+	wsURL, err := url.Parse("ws://example.com/api/v1/ws")
+	if err != nil {
+		t.Fatalf("parse websocket URL: %v", err)
+	}
+	conn, resp, err := websocket.NewClient(clientConn, wsURL, nil, 1024, 1024)
+	if err != nil {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+		t.Fatalf("websocket handshake: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	return conn, errCh
 }
 
 func TestIssueExecutionEndpointReturnsLiveSession(t *testing.T) {
@@ -188,7 +255,10 @@ func TestIssueExecutionEndpointReturnsLiveSession(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
@@ -280,7 +350,10 @@ func TestBootstrapReturnsCompletedLiveSummaryInsteadOfStreamingDelta(t *testing.
 
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/bootstrap", nil)
@@ -334,7 +407,10 @@ func TestWorkEndpointReturnsBoundedPayload(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/work", nil)
@@ -369,16 +445,8 @@ func TestWebSocketEndpointStreamsConnectedAndInvalidateEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	mux := http.NewServeMux()
-	NewServer(store, testProvider{}).Register(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/v1/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("Dial websocket: %v", err)
-	}
+	server := NewServer(store, testProvider{})
+	conn, serverErrCh := dialDashboardWebSocket(t, server)
 	t.Cleanup(func() { _ = conn.Close() })
 
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -411,6 +479,18 @@ func TestWebSocketEndpointStreamsConnectedAndInvalidateEvents(t *testing.T) {
 	}
 	if runtimeOnly, ok := invalidation["runtime_only"].(bool); !ok || runtimeOnly {
 		t.Fatalf("expected non-runtime invalidation, got %#v", invalidation)
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close websocket: %v", err)
+	}
+	select {
+	case err := <-serverErrCh:
+		if err != nil {
+			t.Fatalf("websocket handler exited with error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("websocket handler did not exit after close")
 	}
 }
 
@@ -583,7 +663,10 @@ func TestIssueExecutionEndpointReturnsPersistedSessionAndRetryMetadata(t *testin
 	}
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
 		IssueID:    issue.ID,
@@ -1042,7 +1125,10 @@ func TestIssueExecutionEndpointReturnsPausedRetryMetadata(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewServer(store, testProvider{}).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
@@ -1107,7 +1193,10 @@ func TestIssueExecutionEndpointReturnsRetryLimitPauseReason(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewServer(store, testProvider{}).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{

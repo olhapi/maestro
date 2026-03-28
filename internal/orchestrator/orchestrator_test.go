@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +27,7 @@ import (
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -1977,8 +1977,8 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 	)
 	var uploadedBody string
 	var uploadedContentType string
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *inprocessserver.Server
+	server, err := inprocessserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/upload":
 			uploadedContentType = r.Header.Get("Content-Type")
@@ -2041,6 +2041,9 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 			}
 		}
 	}))
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	defer server.Close()
 	t.Setenv("STUB_PROVIDER_API_KEY", "test-token")
 
@@ -5058,8 +5061,8 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 	releaseRequests := make(chan struct{})
 	var requestCount int
 	var requestMu sync.Mutex
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *inprocessserver.Server
+	server, err := inprocessserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/upload":
 			<-releaseRequests
@@ -5114,6 +5117,9 @@ func TestDonePreviewPublicationDoesNotBlockRunCompletion(t *testing.T) {
 			}
 		}
 	}))
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	defer server.Close()
 	t.Setenv("STUB_PROVIDER_API_KEY", "test-token")
 

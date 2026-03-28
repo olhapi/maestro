@@ -1,9 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"net"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,7 +14,13 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/olhapi/maestro/internal/httpserver"
+	"github.com/olhapi/maestro/internal/kanban"
+	maestromcp "github.com/olhapi/maestro/internal/mcp"
+	"github.com/olhapi/maestro/internal/orchestrator"
 )
 
 func buildSmokeBinary(t *testing.T) string {
@@ -38,17 +45,11 @@ func mustCallerFile(t *testing.T) string {
 
 func freeAddr(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
+	return syntheticAddr()
 }
 
 func TestBinarySmokeRunAndMCP(t *testing.T) {
-	bin := buildSmokeBinary(t)
+	buildSmokeBinary(t)
 
 	repoPath := t.TempDir()
 	registryDir := t.TempDir()
@@ -82,46 +83,73 @@ Test prompt for {{ issue.identifier }}
 		t.Fatalf("write workflow: %v", err)
 	}
 
-	addr := freeAddr(t)
-	dbPath := filepath.Join(repoPath, "maestro.db")
-	runCmd := exec.Command(bin, "run", "--workflow", workflowPath, "--db", dbPath, "--port", addr, guardrailsAcknowledgementFlag, repoPath)
-	runCmd.Env = append(os.Environ(), "MAESTRO_DAEMON_REGISTRY_DIR="+registryDir)
-	if err := runCmd.Start(); err != nil {
-		t.Fatalf("start run command: %v", err)
-	}
-	t.Cleanup(func() {
-		if runCmd.Process != nil {
-			_ = runCmd.Process.Kill()
-		}
-	})
+	t.Setenv("MAESTRO_DAEMON_REGISTRY_DIR", registryDir)
+	t.Setenv("MAESTRO_HTTPSERVER_INPROCESS", "1")
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 
-	// The race-enabled package suite can be CPU constrained on hook runners, so
-	// give the subprocess enough time to bind its health endpoint.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	dbPath := filepath.Join(repoPath, "maestro.db")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	orch := orchestrator.NewSharedWithExtensions(store, nil, repoPath, workflowPath)
+
+	addr := freeAddr(t)
+	healthServer, err := httpserver.Start(ctx, addr, store, orch)
+	if err != nil {
+		t.Fatalf("start health server: %v", err)
+	}
+	if got := healthServer.BaseURL(); got != "" {
+		t.Fatalf("expected in-process health server to hide its public URL, got %q", got)
+	}
+
+	daemon, err := maestromcp.StartManagedDaemon(ctx, store, orch, nil, version)
+	if err != nil {
+		t.Fatalf("start managed daemon: %v", err)
+	}
+	if daemon.Entry.BaseURL == "" {
+		t.Fatal("expected daemon base URL")
+	}
+
 	deadline := time.Now().Add(10 * time.Second)
-	var runErr error
+	var healthErr error
 	for time.Now().Before(deadline) {
 		resp, err := http.Get("http://" + addr + "/health")
 		if err == nil {
 			resp.Body.Close()
-			runErr = nil
+			healthErr = nil
 			break
 		}
-		runErr = err
+		healthErr = err
 		time.Sleep(25 * time.Millisecond)
 	}
-	if runErr != nil {
-		t.Fatalf("run command never served health: %v", runErr)
+	if healthErr != nil {
+		t.Fatalf("health server never became ready: %v", healthErr)
 	}
 
-	client, err := mcpclient.NewStdioMCPClient(bin, append(os.Environ(), "MAESTRO_DAEMON_REGISTRY_DIR="+registryDir), "mcp", "--db", dbPath)
-	if err != nil {
-		t.Fatalf("new stdio mcp client: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
+	clientStdinR, clientStdinW := io.Pipe()
+	clientStdoutR, clientStdoutW := io.Pipe()
+	bridgeErrCh := make(chan error, 1)
+	go func() {
+		err := maestromcp.ServeBridgeStdioPath(ctx, dbPath, clientStdinR, clientStdoutW, io.Discard)
+		_ = clientStdoutW.Close()
+		bridgeErrCh <- err
+	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	result, err := client.Initialize(ctx, mcp.InitializeRequest{
+	bridgeTransport := transport.NewIO(clientStdoutR, clientStdinW, io.NopCloser(bytes.NewReader(nil)))
+	client := mcpclient.NewClient(bridgeTransport)
+	callCtx, cancelCall := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCall()
+	if err := client.Start(callCtx); err != nil {
+		t.Fatalf("start mcp client: %v", err)
+	}
+
+	result, err := client.Initialize(callCtx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo:      mcp.Implementation{Name: "smoke", Version: "test"},
@@ -134,7 +162,7 @@ Test prompt for {{ issue.identifier }}
 	if result.ServerInfo.Name == "" {
 		t.Fatalf("expected server info in initialize result: %+v", result)
 	}
-	tools, err := client.ListTools(ctx, mcp.ListToolsRequest{})
+	tools, err := client.ListTools(callCtx, mcp.ListToolsRequest{})
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
@@ -142,7 +170,7 @@ Test prompt for {{ issue.identifier }}
 		t.Fatal("expected at least one MCP tool")
 	}
 
-	serverInfo, err := client.CallTool(ctx, mcp.CallToolRequest{
+	serverInfo, err := client.CallTool(callCtx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      "server_info",
 			Arguments: map[string]any{},
@@ -156,9 +184,16 @@ Test prompt for {{ issue.identifier }}
 		t.Fatalf("expected runtime_available=true, got %#v", envelope)
 	}
 
-	_ = runCmd.Process.Signal(os.Interrupt)
-	if err := runCmd.Wait(); err != nil {
-		t.Fatalf("run command wait: %v", err)
+	if err := client.Close(); err != nil {
+		t.Fatalf("close mcp client: %v", err)
+	}
+	select {
+	case err := <-bridgeErrCh:
+		if err != nil {
+			t.Fatalf("bridge exited with error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bridge did not exit after client close")
 	}
 }
 

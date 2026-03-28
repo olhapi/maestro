@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 func runCLI(t *testing.T, args ...string) (int, string, string) {
@@ -880,7 +880,7 @@ func TestTextModeRecurringIssueCommands(t *testing.T) {
 }
 
 func TestLiveCommandsUseAPI(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, err := inprocessserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/state":
@@ -931,6 +931,9 @@ func TestLiveCommandsUseAPI(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
+	if err != nil {
+		t.Fatalf("new in-process server: %v", err)
+	}
 	defer server.Close()
 
 	tests := []struct {

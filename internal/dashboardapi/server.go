@@ -1746,6 +1746,7 @@ func (s *Server) requestIssuePlanRevision(ctx context.Context, issue *kanban.Iss
 	if status, _ := dispatch["status"].(string); status == "error" {
 		return nil, rollbackRevision("dispatch_failed", fmt.Errorf("%v", dispatch["error"]))
 	}
+	s.recordPlanRevisionRuntimeEvent(issue, "plan_revision_requested", requestedAt, note, dispatch)
 	response := map[string]interface{}{
 		"ok":       true,
 		"dispatch": dispatch,
@@ -1754,6 +1755,32 @@ func (s *Server) requestIssuePlanRevision(ctx context.Context, issue *kanban.Iss
 		response["issue"] = detail
 	}
 	return response, nil
+}
+
+func (s *Server) recordPlanRevisionRuntimeEvent(issue *kanban.Issue, kind string, requestedAt time.Time, note string, dispatch map[string]interface{}) {
+	if s.store == nil || issue == nil {
+		return
+	}
+	payload := map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"title":        issue.Title,
+		"phase":        string(issue.WorkflowPhase),
+		"requested_at": requestedAt.UTC().Format(time.RFC3339),
+		"markdown":     note,
+	}
+	if status, _ := dispatch["status"].(string); status != "" {
+		payload["dispatch_status"] = status
+	}
+	if snapshot, err := s.store.GetIssueExecutionSession(issue.ID); err == nil && snapshot != nil {
+		if snapshot.Attempt > 0 {
+			payload["attempt"] = snapshot.Attempt
+		}
+		if strings.TrimSpace(snapshot.Phase) != "" {
+			payload["phase"] = snapshot.Phase
+		}
+	}
+	_ = s.store.AppendRuntimeEventOnly(kind, payload)
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

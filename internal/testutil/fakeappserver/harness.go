@@ -3,8 +3,8 @@ package fakeappserver
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,13 +12,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
 	HelperTestName   = "TestFakeAppServerHelperProcess"
 	envHelperMode    = "MAESTRO_FAKE_APP_SERVER_HELPER"
 	envScenarioPath  = "MAESTRO_FAKE_APP_SERVER_SCENARIO"
-	envControlAddr   = "MAESTRO_FAKE_APP_SERVER_CONTROL_ADDR"
+	envReleaseFile   = "MAESTRO_FAKE_APP_SERVER_RELEASE_FILE"
 	envTraceFilePath = "TRACE_FILE"
 )
 
@@ -78,6 +79,7 @@ func NewConfig(t *testing.T, scenario Scenario) *Config {
 
 	dir := t.TempDir()
 	scenarioPath := filepath.Join(dir, "scenario.json")
+	releasePath := filepath.Join(dir, "releases.txt")
 	body, err := json.MarshalIndent(scenario, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal fake app-server scenario: %v", err)
@@ -85,12 +87,6 @@ func NewConfig(t *testing.T, scenario Scenario) *Config {
 	if err := os.WriteFile(scenarioPath, body, 0o644); err != nil {
 		t.Fatalf("write fake app-server scenario: %v", err)
 	}
-
-	control, err := newControlServer()
-	if err != nil {
-		t.Fatalf("start fake app-server control server: %v", err)
-	}
-	t.Cleanup(control.Close)
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -101,13 +97,13 @@ func NewConfig(t *testing.T, scenario Scenario) *Config {
 	env := append(os.Environ(),
 		envHelperMode+"=1",
 		envScenarioPath+"="+scenarioPath,
-		envControlAddr+"="+control.addr,
+		envReleaseFile+"="+releasePath,
 	)
 
 	commandParts := []string{
 		shellEnv(envHelperMode, "1"),
 		shellEnv(envScenarioPath, scenarioPath),
-		shellEnv(envControlAddr, control.addr),
+		shellEnv(envReleaseFile, releasePath),
 		shellQuote(exe),
 	}
 	for _, arg := range args {
@@ -119,8 +115,14 @@ func NewConfig(t *testing.T, scenario Scenario) *Config {
 		Args:       args,
 		Env:        env,
 		Command:    strings.Join(commandParts, " "),
-		closeFn:    control.Close,
-		releaseFn:  control.Release,
+		releaseFn: func(name string) {
+			f, err := os.OpenFile(releasePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			_, _ = fmt.Fprintln(f, name)
+		},
 	}
 }
 
@@ -140,6 +142,10 @@ func run() error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("missing %s", envScenarioPath)
 	}
+	releasePath := os.Getenv(envReleaseFile)
+	if strings.TrimSpace(releasePath) == "" {
+		return fmt.Errorf("missing %s", envReleaseFile)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read scenario: %w", err)
@@ -147,16 +153,6 @@ func run() error {
 	var scenario Scenario
 	if err := json.Unmarshal(data, &scenario); err != nil {
 		return fmt.Errorf("decode scenario: %w", err)
-	}
-
-	var control *json.Decoder
-	if addr := os.Getenv(envControlAddr); strings.TrimSpace(addr) != "" {
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			return fmt.Errorf("connect control server: %w", err)
-		}
-		defer conn.Close()
-		control = json.NewDecoder(conn)
 	}
 
 	tracePath := os.Getenv(envTraceFilePath)
@@ -185,10 +181,7 @@ func run() error {
 			return err
 		}
 		if step.WaitForRelease != "" {
-			if control == nil {
-				return fmt.Errorf("step %d requires release %q but no control channel configured", stepIndex, step.WaitForRelease)
-			}
-			if err := waitForRelease(control, step.WaitForRelease); err != nil {
+			if err := waitForRelease(releasePath, step.WaitForRelease); err != nil {
 				return err
 			}
 		}
@@ -260,17 +253,18 @@ func emitOutputs(outputs []Output) error {
 	return nil
 }
 
-func waitForRelease(decoder *json.Decoder, want string) error {
+func waitForRelease(path, want string) error {
 	for {
-		var msg struct {
-			Release string `json:"release"`
+		data, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read release file: %w", err)
 		}
-		if err := decoder.Decode(&msg); err != nil {
-			return fmt.Errorf("read control release: %w", err)
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == want {
+				return nil
+			}
 		}
-		if msg.Release == want {
-			return nil
-		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -296,67 +290,6 @@ func (m Match) matches(payload map[string]interface{}) bool {
 		}
 	}
 	return true
-}
-
-type controlServer struct {
-	addr     string
-	listener net.Listener
-	releases chan string
-	done     chan struct{}
-	once     sync.Once
-}
-
-func newControlServer() (*controlServer, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, err
-	}
-	server := &controlServer{
-		addr:     ln.Addr().String(),
-		listener: ln,
-		releases: make(chan string, 32),
-		done:     make(chan struct{}),
-	}
-	go server.serve()
-	return server, nil
-}
-
-func (s *controlServer) Release(name string) {
-	select {
-	case s.releases <- name:
-	case <-s.done:
-	}
-}
-
-func (s *controlServer) Close() {
-	s.once.Do(func() {
-		close(s.done)
-		_ = s.listener.Close()
-		close(s.releases)
-	})
-}
-
-func (s *controlServer) serve() {
-	conn, err := s.listener.Accept()
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	encoder := json.NewEncoder(conn)
-	for {
-		select {
-		case <-s.done:
-			return
-		case name, ok := <-s.releases:
-			if !ok {
-				return
-			}
-			if err := encoder.Encode(map[string]string{"release": name}); err != nil {
-				return
-			}
-		}
-	}
 }
 
 func shellEnv(key, value string) string {

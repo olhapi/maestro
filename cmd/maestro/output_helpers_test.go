@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/olhapi/maestro/internal/kanban"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 func TestOutputRenderersCoverTextModes(t *testing.T) {
@@ -374,7 +374,7 @@ func TestErrorHelpersAndAPIClientBranches(t *testing.T) {
 		t.Fatalf("unexpected normalized baseURL %q", client.baseURL)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, err := inprocessserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/ok":
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -402,6 +402,9 @@ func TestErrorHelpersAndAPIClientBranches(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
+	if err != nil {
+		t.Fatalf("new in-process server: %v", err)
+	}
 	defer server.Close()
 
 	client, err = newAPIClient(server.URL)

@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -61,6 +61,8 @@ func runMainHelper(t *testing.T, args ...string) (string, string, error) {
 	cmd.Env = append(os.Environ(),
 		"MAESTRO_MAIN_HELPER=1",
 		"MAESTRO_DAEMON_REGISTRY_DIR="+daemonRegistryDir,
+		"MAESTRO_HTTPSERVER_INPROCESS=1",
+		"MAESTRO_MCP_INPROCESS=1",
 		"MAESTRO_MAIN_ARGS="+strings.Join(args, "\n"),
 	)
 	var stdout lockedBuffer
@@ -73,13 +75,13 @@ func runMainHelper(t *testing.T, args ...string) (string, string, error) {
 
 func freeAddrForHelper(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
+	return syntheticAddr()
+}
+
+var helperPortCounter atomic.Uint32
+
+func syntheticAddr() string {
+	return "127.0.0.1:" + strconv.Itoa(30000+int(helperPortCounter.Add(1)))
 }
 
 func TestMainEntryUsageVersionAndErrors(t *testing.T) {
@@ -150,14 +152,13 @@ Test prompt for {{ issue.identifier }}
 	}
 
 	addr := freeAddrForHelper(t)
-	recordPath := filepath.Join(t.TempDir(), "dashboard-url.txt")
 	daemonRegistryDir := filepath.Join(t.TempDir(), "daemon-registry")
 	cmd := exec.Command(os.Args[0], "-test.run=TestMainHelperProcess")
 	cmd.Env = append(os.Environ(),
 		"MAESTRO_MAIN_HELPER=1",
 		"MAESTRO_DAEMON_REGISTRY_DIR="+daemonRegistryDir,
-		"MAESTRO_RECORD_BROWSER_OPEN="+recordPath,
-		"MAESTRO_DAEMON_REGISTRY_DIR="+daemonRegistryDir,
+		"MAESTRO_HTTPSERVER_INPROCESS=1",
+		"MAESTRO_MCP_INPROCESS=1",
 		"MAESTRO_MAIN_ARGS="+strings.Join([]string{
 			"run", "--workflow", workflowPath, "--db", dbPath, "--port", addr, "--" + strings.TrimPrefix(guardrailsAcknowledgementFlag, "--"), repoPath,
 		}, "\n"),
@@ -177,38 +178,27 @@ Test prompt for {{ issue.identifier }}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	healthURL := "http://" + addr + "/health"
 	for {
 		if ctx.Err() != nil {
-			t.Fatalf("run helper never served health: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			t.Fatalf("run helper never started daemon registry: stdout=%q stderr=%q", stdout.String(), stderr.String())
 		}
-		resp, err := http.Get(healthURL)
+		entries, err := os.ReadDir(daemonRegistryDir)
 		if err == nil {
-			resp.Body.Close()
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	expectedDashboardURL := "http://" + addr
-	expectedDashboardLine := "Dashboard: " + expectedDashboardURL
-	for {
-		if ctx.Err() != nil {
-			t.Fatalf("run helper never opened dashboard: stdout=%q stderr=%q", stdout.String(), stderr.String())
-		}
-		data, err := os.ReadFile(recordPath)
-		if err == nil {
-			if got := strings.TrimSpace(string(data)); got != expectedDashboardURL {
-				t.Fatalf("expected dashboard URL %q, got %q", expectedDashboardURL, got)
+			for _, entry := range entries {
+				if filepath.Ext(entry.Name()) == ".json" {
+					goto registryReady
+				}
 			}
-			break
 		}
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("read dashboard record: %v", err)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read daemon registry dir: %v", err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if !strings.Contains(stdout.String(), expectedDashboardLine) {
-		t.Fatalf("expected stdout to contain %q, got %q", expectedDashboardLine, stdout.String())
+
+registryReady:
+	if strings.Contains(stdout.String(), "Dashboard: ") {
+		t.Fatalf("did not expect Dashboard URL in in-process mode, got stdout=%q", stdout.String())
 	}
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("interrupt run helper: %v", err)

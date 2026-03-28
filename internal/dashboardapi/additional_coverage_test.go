@@ -11,6 +11,7 @@ import (
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 func TestDashboardWorkEpicsAndRuntimeEndpointsExposeCurrentData(t *testing.T) {
@@ -108,7 +109,10 @@ func TestDashboardOverviewEndpointsSurfaceStoreErrors(t *testing.T) {
 
 	mux := http.NewServeMux()
 	NewServer(store, testProvider{}).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	if err := store.Close(); err != nil {
@@ -268,7 +272,7 @@ func TestDashboardHelperAndDecoderCoverage(t *testing.T) {
 	})
 }
 
-func setupDashboardCoverageFixture(t *testing.T) (*httptest.Server, *kanban.Project, *kanban.Epic) {
+func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanban.Project, *kanban.Epic) {
 	t.Helper()
 
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
@@ -369,7 +373,10 @@ func setupDashboardCoverageFixture(t *testing.T) (*httptest.Server, *kanban.Proj
 
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	return srv, project, epic

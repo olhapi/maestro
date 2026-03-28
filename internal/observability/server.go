@@ -3,12 +3,16 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 // StatusProvider describes a source of runtime status.
@@ -28,6 +32,8 @@ type SessionProvider interface {
 type Server struct {
 	http *http.Server
 }
+
+const inProcessServerEnv = "MAESTRO_OBSERVABILITY_INPROCESS"
 
 func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 	if mux == nil {
@@ -153,6 +159,23 @@ func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 func Start(ctx context.Context, addr string, provider StatusProvider) (*Server, error) {
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, provider)
+
+	if strings.TrimSpace(os.Getenv(inProcessServerEnv)) != "" {
+		resolved, err := net.ResolveTCPAddr("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		srv, err := inprocessserver.NewWithURL(fmt.Sprintf("http://%s", resolved.String()), mux)
+		if err != nil {
+			return nil, err
+		}
+		go func() {
+			<-ctx.Done()
+			srv.Close()
+		}()
+		slog.Info("Observability API started", "addr", resolved.String())
+		return &Server{http: &http.Server{Addr: resolved.String()}}, nil
+	}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

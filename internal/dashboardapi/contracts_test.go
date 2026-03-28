@@ -9,7 +9,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -21,6 +20,7 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 type retryTrackingProvider struct {
@@ -178,7 +178,7 @@ func (p *blockerRejectingIssueProvider) GetIssueCommentAttachmentContent(context
 	return nil, providers.ErrUnsupportedCapability
 }
 
-func requestJSON(t *testing.T, srv *httptest.Server, method, path string, body interface{}) *http.Response {
+func requestJSON(t *testing.T, srv *inprocessserver.Server, method, path string, body interface{}) *http.Response {
 	t.Helper()
 	var reader *bytes.Reader
 	if body == nil {
@@ -202,7 +202,7 @@ func requestJSON(t *testing.T, srv *httptest.Server, method, path string, body i
 	return resp
 }
 
-func requestWebhookJSON(t *testing.T, srv *httptest.Server, token string, body interface{}) *http.Response {
+func requestWebhookJSON(t *testing.T, srv *inprocessserver.Server, token string, body interface{}) *http.Response {
 	t.Helper()
 	var reader *bytes.Reader
 	if body == nil {
@@ -229,7 +229,7 @@ func requestWebhookJSON(t *testing.T, srv *httptest.Server, token string, body i
 	return resp
 }
 
-func requestMultipart(t *testing.T, srv *httptest.Server, method, path, fieldName, filename string, content []byte) *http.Response {
+func requestMultipart(t *testing.T, srv *inprocessserver.Server, method, path, fieldName, filename string, content []byte) *http.Response {
 	t.Helper()
 	resp := requestMultipartForm(t, srv, method, path, nil, []multipartFilePayload{{
 		FieldName: fieldName,
@@ -246,7 +246,7 @@ type multipartFilePayload struct {
 	Content     []byte
 }
 
-func requestMultipartForm(t *testing.T, srv *httptest.Server, method, path string, fields map[string][]string, files []multipartFilePayload) *http.Response {
+func requestMultipartForm(t *testing.T, srv *inprocessserver.Server, method, path string, fields map[string][]string, files []multipartFilePayload) *http.Response {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -413,7 +413,10 @@ func TestBootstrapContractsExposePortfolioAndRuntimeOverview(t *testing.T) {
 
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/bootstrap", nil)
@@ -455,7 +458,10 @@ func TestIssueAssetUploadRejectsOversizedMultipartBodies(t *testing.T) {
 
 	mux := http.NewServeMux()
 	NewServer(store, testProvider{}).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	oversized := append(contractSamplePNGBytes(), bytes.Repeat([]byte{0}, int(kanban.MaxIssueAssetBytes))...)
@@ -668,7 +674,10 @@ func TestBootstrapContractsMarkProjectsOutOfScopeForScopedServer(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/bootstrap", nil)
@@ -1531,8 +1540,9 @@ func TestIssueRequestPlanRevisionContractsStoresRevisionAndRedispatches(t *testi
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
 
+	note := "Keep the plan but make the rollout smaller and add a rollback check."
 	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/request-plan-revision", map[string]interface{}{
-		"note": "Keep the plan but make the rollout smaller and add a rollback check.",
+		"note": note,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -1549,6 +1559,22 @@ func TestIssueRequestPlanRevisionContractsStoresRevisionAndRedispatches(t *testi
 	}
 	if len(commands) != 0 {
 		t.Fatalf("expected dedicated revision flow to avoid agent commands, got %#v", commands)
+	}
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one runtime event for the revision request, got %#v", events)
+	}
+	if events[0].Kind != "plan_revision_requested" {
+		t.Fatalf("expected plan_revision_requested runtime event, got %#v", events[0])
+	}
+	if events[0].Attempt != 2 {
+		t.Fatalf("expected runtime event attempt to match execution session, got %#v", events[0])
+	}
+	if got := events[0].Payload["markdown"]; got != note {
+		t.Fatalf("expected runtime event to capture the queued note, got %#v", got)
 	}
 	updated, err := store.GetIssue(issue.ID)
 	if err != nil {
@@ -1631,7 +1657,10 @@ func TestIssueRequestPlanRevisionContractsPreservesRevisionWhenDetailReloadFails
 	server.service = providers.NewService(brokenDetailStore)
 	mux := http.NewServeMux()
 	server.Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	project, err := store.CreateProject("Maestro", "", "/repo", "")
@@ -2196,7 +2225,10 @@ func TestInterruptApprovalNoteIsBestEffortAfterRespondToInterrupt(t *testing.T) 
 
 	mux := http.NewServeMux()
 	server.Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	repoDir := t.TempDir()
@@ -2433,7 +2465,10 @@ func TestWebhooksRequireBearerTokenConfigurationAndAuthorization(t *testing.T) {
 
 	mux := http.NewServeMux()
 	NewServer(store, &webhookTrackingProvider{}).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	disabled := requestWebhookJSON(t, srv, "", map[string]interface{}{
@@ -2451,7 +2486,10 @@ func TestWebhooksRequireBearerTokenConfigurationAndAuthorization(t *testing.T) {
 	t.Setenv(webhookBearerTokenEnv, "test-webhook-token")
 	mux = http.NewServeMux()
 	NewServer(store, &webhookTrackingProvider{}).Register(mux)
-	srvWithAuth := httptest.NewServer(mux)
+	srvWithAuth, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srvWithAuth.Close)
 
 	unauthorized := requestWebhookJSON(t, srvWithAuth, "wrong-token", map[string]interface{}{
@@ -2501,7 +2539,10 @@ func TestWebhooksDispatchSupportedEvents(t *testing.T) {
 	provider := &webhookTrackingProvider{}
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	testCases := []struct {
@@ -2608,7 +2649,10 @@ func TestWebhooksRejectInvalidPayloadsAndDispatchFailures(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewServer(store, provider).Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	unsupported := requestWebhookJSON(t, srv, "test-webhook-token", map[string]interface{}{
@@ -2748,7 +2792,10 @@ func TestProviderBackedIssueBlockersRouteRejectsUnsupportedMutation(t *testing.T
 
 	mux := http.NewServeMux()
 	server.Register(mux)
-	srv := httptest.NewServer(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues/"+issue.Identifier+"/blockers", map[string]interface{}{
