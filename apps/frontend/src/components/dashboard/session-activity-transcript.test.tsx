@@ -291,6 +291,30 @@ describe('SessionActivityTranscript', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
   })
 
+  it('renders final-answer summaries without clamping them', () => {
+    const finalAnswer = `${'Final answer stays fully visible. '.repeat(80)}`
+
+    render(
+      <SessionActivityTranscript
+        groups={makeGroups([
+          {
+            id: 'attempt-1-agent-final',
+            kind: 'agent',
+            title: 'Final answer',
+            summary: finalAnswer,
+            expandable: false,
+            phase: 'final_answer',
+            tone: 'success',
+          },
+        ])}
+      />,
+    )
+
+    const summary = screen.getByText(/final answer stays fully visible/i)
+    expect(summary.closest('div')).not.toHaveClass('line-clamp-3')
+    expect(summary.closest('div')).toHaveClass('whitespace-pre-wrap')
+  })
+
   it('renders inline timestamps, clamps verbose summaries, and keeps the layout contained', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-10T12:00:00Z'))

@@ -87,16 +87,16 @@ function renderInterruptPanel(
 }
 
 describe('GlobalInterruptPanel', () => {
-  it('renders a fullscreen dialog with a pinned approval footer', () => {
+  it('renders a fullscreen dialog with in-body plan review actions', () => {
     renderInterruptPanel([makePlanApprovalInterrupt()])
 
     const panel = screen.getByTestId('global-interrupt-panel')
     expect(panel).toHaveClass('h-[100dvh]', 'w-[100vw]', 'overflow-hidden', 'rounded-none')
     const body = screen.getByTestId('global-interrupt-body')
     expect(body).toHaveClass('overflow-y-auto')
-    const footer = screen.getByTestId('global-interrupt-footer')
-    expect(footer).toHaveClass('shrink-0')
-    expect(footer).toContainElement(screen.getByRole('button', { name: /approve once/i }))
+    expect(screen.queryByTestId('global-interrupt-footer')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /approve once/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /more actions/i })).toBeInTheDocument()
     expect(screen.getAllByText('Review the proposed plan')).toHaveLength(1)
     expect(screen.queryByPlaceholderText(/explain what should change in the plan/i)).not.toBeInTheDocument()
   })
@@ -112,20 +112,30 @@ describe('GlobalInterruptPanel', () => {
   it('renders the richer approval structure and auto-submits plain approval decisions', () => {
     const onRespond = vi.fn()
     const longCommand =
-      'ssh-add --apple-use-keychain ~/.ssh/id_rsa ~/.ssh/squirro.key --with-an-exceptionally-long-token-that-should-wrap'
+      'ssh-add --apple-use-keychain ~/.ssh/id_rsa ~/.ssh/squirro.key --with-an-exceptionally-long-token-that-should-wrap-and-keep-going-beyond-the-preview-threshold-for-testing'
 
     renderInterruptPanel([makeApprovalInterrupt({ command: longCommand })], { onRespond })
 
     expect(screen.getByText('Allow the agent to run this command?')).toBeInTheDocument()
+    expect(screen.getByText('Reason')).toBeInTheDocument()
     expect(screen.getByText('Requested command')).toBeInTheDocument()
     expect(screen.getByText('Add SSH keys to macOS keychain agent')).toBeInTheDocument()
     expect(screen.getByText('Working directory')).toBeInTheDocument()
     expect(screen.getByText('/Users/olhapi-work')).toBeInTheDocument()
-    const requestedCommand = screen.getByText(
-      (content, element) => element?.tagName === 'CODE' && content.includes('exceptionally-long-token'),
-    )
+    expect(screen.getByRole('button', { name: /show full command/i })).toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        (content, element) =>
+          element?.tagName === 'CODE' &&
+          content.includes('preview-threshold-for-testing') &&
+          content === longCommand,
+      ),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /show full command/i }))
+
+    const requestedCommand = screen.getByText((content, element) => element?.tagName === 'CODE' && content === longCommand)
     expect(requestedCommand).toHaveClass('whitespace-pre-wrap', 'break-words')
-    expect(requestedCommand).not.toHaveClass('overflow-x-auto')
     expect(screen.queryByRole('button', { name: /submit response/i })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /approve once/i }))
@@ -133,12 +143,80 @@ describe('GlobalInterruptPanel', () => {
     expect(onRespond).toHaveBeenCalledWith({ interruptId: 'interrupt-approval', decision: 'approved_once' })
   })
 
-  it('renders a steering note field for approvals and forwards note-only responses', () => {
+  it('keeps non-default approval actions inside More actions and forwards decision payloads', () => {
+    const onRespond = vi.fn()
+
+    renderInterruptPanel([{
+      id: 'interrupt-approval-overflow',
+      kind: 'approval',
+      issue_identifier: 'ISS-4',
+      issue_title: 'Review network access',
+      requested_at: '2026-03-16T10:00:00Z',
+      approval: {
+        command: 'curl https://api.github.com',
+        decisions: [
+          {
+            value: 'approved_once',
+            label: 'Approve once',
+            description: 'Run this request once and keep the turn going.',
+          },
+          {
+            value: 'accept_with_execpolicy_amendment',
+            label: 'Approve and store rule',
+            description: 'Run this request and allow future matching commands without prompting.',
+            decision_payload: {
+              acceptWithExecpolicyAmendment: {
+                execpolicy_amendment: ['allow command=curl https://api.github.com'],
+              },
+            },
+          },
+          {
+            value: 'approved_for_session',
+            label: 'Approve for session',
+            description: 'Allow similar requests for the rest of the session.',
+          },
+          {
+            value: 'denied',
+            label: 'Deny',
+            description: 'Reject the request and let the agent continue the turn.',
+          },
+          {
+            value: 'abort',
+            label: 'Abort',
+            description: 'Reject the request and interrupt the current turn.',
+          },
+        ],
+      },
+    }], { onRespond })
+
+    expect(screen.queryByRole('button', { name: /approve and store rule/i })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
+
+    expect(screen.getByText('Allow more broadly')).toBeInTheDocument()
+    expect(screen.getByText('Reject request')).toBeInTheDocument()
+    expect(screen.getByText('Stop current turn')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /approve and store rule/i }))
+
+    expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-approval-overflow',
+      decision_payload: {
+        acceptWithExecpolicyAmendment: {
+          execpolicy_amendment: ['allow command=curl https://api.github.com'],
+        },
+      },
+    })
+  })
+
+  it('keeps the approval note composer collapsed by default and forwards note-only responses', () => {
     const onRespond = vi.fn()
 
     renderInterruptPanel([makeApprovalInterrupt()], { onRespond })
 
-    expect(screen.getByText('Agent note')).toBeInTheDocument()
+    expect(screen.queryByText('Agent note')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /add steering note/i }))
 
     fireEvent.change(screen.getByPlaceholderText(/add steering notes for the next turn/i), {
       target: { value: 'Steer the agent toward a smaller rollout.' },
@@ -260,7 +338,7 @@ describe('GlobalInterruptPanel', () => {
     })
   })
 
-  it('uses decision payload when approval options provide structured responses', () => {
+  it('uses decision payload when the primary approval option provides a structured response', () => {
     const onRespond = vi.fn()
 
     renderInterruptPanel([{
@@ -395,16 +473,18 @@ describe('GlobalInterruptPanel', () => {
   it('keeps later queued approvals read-only until they reach the front of the queue', () => {
     const onRespond = vi.fn()
 
+    const secondInterrupt = makeApprovalInterrupt()
+
     renderInterruptPanel([
       makeApprovalInterrupt(),
       {
-        ...makeApprovalInterrupt(),
+        ...secondInterrupt,
         id: 'interrupt-approval-2',
         issue_identifier: 'ISS-2',
         issue_title: 'Approve deployment',
         approval: {
+          ...secondInterrupt.approval,
           command: 'deploy production',
-          decisions: [{ value: 'approved_once', label: 'Approve once' }],
         },
       },
     ], { respondableInterruptId: 'interrupt-approval', onRespond })
@@ -416,6 +496,7 @@ describe('GlobalInterruptPanel', () => {
 
     const approveButton = screen.getByRole('button', { name: /approve once/i })
     expect(approveButton).toBeDisabled()
+    expect(screen.getByRole('button', { name: /more actions/i })).toBeDisabled()
 
     fireEvent.click(approveButton)
 

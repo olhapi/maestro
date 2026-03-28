@@ -26,6 +26,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import { MarkdownText } from "@/components/ui/markdown";
 import type { DashboardWorkSource, IssueState, IssueSummary } from "@/lib/types";
 import {
   getPausedForIssue,
@@ -124,9 +125,21 @@ export function IssueCard({
       </div>
 
       {!compact ? (
-        <p className="mt-2.5 line-clamp-3 text-sm leading-5 text-[var(--muted-foreground)]">
-          {issue.description || "No description yet."}
-        </p>
+        issue.description?.trim() ? (
+          <MarkdownText
+            className="mt-2.5 line-clamp-3 space-y-1 text-sm leading-5 text-[var(--muted-foreground)]"
+            components={{
+              a({ children }) {
+                return <span className="font-medium text-inherit">{children}</span>;
+              },
+            }}
+            content={issue.description}
+          />
+        ) : (
+          <p className="mt-2.5 line-clamp-3 text-sm leading-5 text-[var(--muted-foreground)]">
+            No description yet.
+          </p>
+        )
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-[var(--muted-foreground)]">
@@ -169,9 +182,16 @@ export function IssueCard({
   const hoverPreview = (
     <HoverCardContent align="start" className="space-y-3.5">
       {compact ? (
-        <p className="line-clamp-5 text-sm leading-6 text-[var(--muted-foreground)]">
-          {issue.description || "No additional context yet."}
-        </p>
+        issue.description?.trim() ? (
+          <MarkdownText
+            className="line-clamp-5 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]"
+            content={issue.description}
+          />
+        ) : (
+          <p className="line-clamp-5 text-sm leading-6 text-[var(--muted-foreground)]">
+            No additional context yet.
+          </p>
+        )
       ) : null}
 
       {labels.length > 0 ? (

@@ -1,12 +1,15 @@
 import { useMemo, useState } from 'react'
 import { X } from 'lucide-react'
 
-import { PlanApprovalActionBar, PlanApprovalDocument } from '@/components/dashboard/plan-approval-review'
+import {
+  ApprovalReviewPanel,
+  PlanApprovalDocument,
+  type ApprovalReviewAction,
+  type ApprovalReviewOverflowGroup,
+} from '@/components/dashboard/plan-approval-review'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { wrappedOutputClassName } from '@/components/ui/markdown'
-import { Textarea } from '@/components/ui/textarea'
 import type {
   PendingAlert,
   PendingApprovalDecision,
@@ -80,52 +83,123 @@ function interruptDraftKey(interrupt: PendingInterrupt) {
   return [interrupt.requested_at, interrupt.approval?.markdown?.trim() ?? ''].join('|')
 }
 
-function classifyApprovalDecision(option: PendingApprovalDecision) {
-  const value = option.value.toLowerCase()
-  const label = option.label.toLowerCase()
-  if (
-    value.includes('deny') ||
-    value.includes('decline') ||
-    value.includes('abort') ||
-    value.includes('cancel') ||
-    label.includes('deny') ||
-    label.includes('decline') ||
-    label.includes('abort') ||
-    label.includes('cancel')
-  ) {
-    return 'destructive'
+type ApprovalOverflowIntent = 'allow_more' | 'reject' | 'stop' | 'other'
+
+type NormalizedApprovalDecisions = {
+  primary: PendingApprovalDecision | null
+  overflowGroups: Array<{
+    key: ApprovalOverflowIntent
+    label: string
+    options: PendingApprovalDecision[]
+  }>
+}
+
+function approvalDecisionIntent(option: PendingApprovalDecision): ApprovalOverflowIntent | 'primary' {
+  const haystack = `${option.value} ${option.label}`.toLowerCase()
+
+  if (haystack.includes('abort') || haystack.includes('cancel')) {
+    return 'stop'
   }
   if (
-    value.includes('session') ||
-    value.includes('grant') ||
-    value.includes('network_policy') ||
-    value.includes('amendment') ||
-    label.includes('session') ||
-    label.includes('store') ||
-    label.includes('persist') ||
-    label.includes('grant')
+    haystack.includes('persist deny') ||
+    haystack.includes('network_policy_deny') ||
+    haystack.includes('deny') ||
+    haystack.includes('decline')
   ) {
-    return 'secondary'
+    return 'reject'
+  }
+  if (
+    haystack.includes('session') ||
+    haystack.includes('grant') ||
+    haystack.includes('store') ||
+    haystack.includes('persist allow') ||
+    haystack.includes('network_policy_allow') ||
+    haystack.includes('amendment')
+  ) {
+    return 'allow_more'
   }
   return 'primary'
 }
 
-function approvalDecisionGroups(decisions: PendingApprovalDecision[]) {
-  return decisions.reduce(
-    (groups, option) => {
-      groups[classifyApprovalDecision(option)].push(option)
-      return groups
-    },
-    {
-      primary: [] as PendingApprovalDecision[],
-      secondary: [] as PendingApprovalDecision[],
-      destructive: [] as PendingApprovalDecision[],
-    },
-  )
+function approvalOverflowGroupLabel(intent: ApprovalOverflowIntent) {
+  switch (intent) {
+    case 'allow_more':
+      return 'Allow more broadly'
+    case 'reject':
+      return 'Reject request'
+    case 'stop':
+      return 'Stop current turn'
+    case 'other':
+    default:
+      return 'Other approval actions'
+  }
 }
 
-function approvalDecisionVariant(option: PendingApprovalDecision) {
-  return classifyApprovalDecision(option) === 'destructive' ? 'destructive' : 'secondary'
+function approvalDecisionVariant(option: PendingApprovalDecision): ApprovalReviewAction['variant'] {
+  const intent = approvalDecisionIntent(option)
+  return intent === 'reject' || intent === 'stop' ? 'destructive' : 'secondary'
+}
+
+function normalizeApprovalDecisions(decisions: PendingApprovalDecision[]): NormalizedApprovalDecisions {
+  const primary = decisions.find((option) => approvalDecisionIntent(option) === 'primary') ?? decisions[0] ?? null
+  const overflowBuckets: Record<ApprovalOverflowIntent, PendingApprovalDecision[]> = {
+    allow_more: [],
+    reject: [],
+    stop: [],
+    other: [],
+  }
+
+  for (const option of decisions) {
+    if (option === primary) {
+      continue
+    }
+    const intent = approvalDecisionIntent(option)
+    overflowBuckets[intent === 'primary' ? 'other' : intent].push(option)
+  }
+
+  return {
+    primary,
+    overflowGroups: (['allow_more', 'reject', 'stop', 'other'] as ApprovalOverflowIntent[])
+      .filter((intent) => overflowBuckets[intent].length > 0)
+      .map((intent) => ({
+        key: intent,
+        label: approvalOverflowGroupLabel(intent),
+        options: overflowBuckets[intent],
+      })),
+  }
+}
+
+function ApprovalCommandPreview({ command }: { command: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const lineCount = command.split(/\r?\n/).length
+  const shouldCollapse = command.length > 120 || lineCount > 2
+  const preview = shouldCollapse ? `${command.slice(0, 120).trimEnd()}…` : command
+  const visibleCommand = expanded || !shouldCollapse ? command : preview
+
+  return (
+    <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.18))] px-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+          Requested command
+        </p>
+        {shouldCollapse ? (
+          <Button
+            className="h-8 rounded-full px-3 text-xs"
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setExpanded((current) => !current)
+            }}
+          >
+            {expanded ? 'Show less' : 'Show full command'}
+          </Button>
+        ) : null}
+      </div>
+      <code className="mt-3 block whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-[calc(var(--panel-radius)-0.45rem)] border border-white/10 bg-black/35 px-4 py-3 font-mono text-[0.96rem] leading-7 text-white">
+        {visibleCommand}
+      </code>
+    </div>
+  )
 }
 
 function interruptHeading(interrupt: PendingInterrupt) {
@@ -245,7 +319,6 @@ export function GlobalInterruptPanel({
   const selectedDraftMatchesInterrupt =
     interactionState.interruptId === selectedInterrupt?.id &&
     interactionState.draftKey === selectedInterruptDraftKey
-  const decision = selectedDraftMatchesInterrupt ? interactionState.decision : ''
   const draftNote = selectedDraftMatchesInterrupt ? interactionState.draftNote : ''
   const draftAnswers = selectedDraftMatchesInterrupt ? interactionState.draftAnswers : EMPTY_DRAFT_ANSWERS
   const noteVisible = selectedDraftMatchesInterrupt ? interactionState.noteVisible : false
@@ -259,27 +332,13 @@ export function GlobalInterruptPanel({
   const requiresExplicitSubmit =
     isUserInput && questions.some((question) => questionHasTextInput(question))
   const valid =
-    isApproval
-      ? !!decision
-      : isUserInput
-        ? questions.length > 0 &&
-          questions.every((question) => (answers[question.id]?.[0] ?? '').trim().length > 0)
-        : false
-  const approvalGroups =
-    isApproval
-      ? approvalDecisionGroups(selectedInterrupt?.approval?.decisions ?? [])
-      : null
-  const planApprovalDecisions = selectedInterrupt?.approval?.decisions ?? []
-  const primaryPlanDecision =
-    isPlanApproval
-      ? approvalGroups?.primary[0] ?? planApprovalDecisions[0] ?? null
-      : null
-  const extraPlanDecisions =
-    isPlanApproval && primaryPlanDecision
-      ? planApprovalDecisions.filter((option) => option.value !== primaryPlanDecision.value)
-      : isPlanApproval
-        ? planApprovalDecisions
-        : []
+    isUserInput
+      ? questions.length > 0 &&
+        questions.every((question) => (answers[question.id]?.[0] ?? '').trim().length > 0)
+      : false
+  const normalizedApprovalDecisions =
+    isApproval ? normalizeApprovalDecisions(selectedInterrupt?.approval?.decisions ?? []) : null
+  const primaryApprovalDecision = normalizedApprovalDecisions?.primary ?? null
   const issueLink = selectedInterrupt ? issueHref(selectedInterrupt) : null
   const projectLink = selectedInterrupt ? projectHref(selectedInterrupt) : null
   const canRespondToSelectedInterrupt =
@@ -363,6 +422,22 @@ export function GlobalInterruptPanel({
     }))
   }
 
+  const sendNoteForSelectedInterrupt = () => {
+    if (!isApproval || !canSubmitNote || responseLocked) {
+      return
+    }
+    setInteractionState((current) => ({
+      interruptId: selectedInterrupt.id,
+      draftKey: selectedInterruptDraftKey,
+      decision: selectedDraftState(current) ? current.decision : '',
+      draftNote: selectedDraftState(current) ? current.draftNote : '',
+      draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
+      noteVisible: selectedDraftState(current) ? current.noteVisible : false,
+      noteRequired: false,
+    }))
+    respondToSelectedInterrupt({ note: draftNote.trim() })
+  }
+
   const updateDraftNote = (value: string) => {
     setInteractionState((current) => ({
       interruptId: selectedInterrupt.id,
@@ -415,6 +490,22 @@ export function GlobalInterruptPanel({
     }))
   }
 
+  const approvalOverflowGroups: ApprovalReviewOverflowGroup[] =
+    normalizedApprovalDecisions?.overflowGroups.map((group) => ({
+      key: group.key,
+      label: group.label,
+      actions: group.options.map((option) => ({
+        key: option.value,
+        label: option.label,
+        description: option.description,
+        disabled: responseLocked,
+        variant: approvalDecisionVariant(option),
+        onClick: () => {
+          respondWithApprovalOption(option)
+        },
+      })),
+    })) ?? []
+
   const detailFooter = isAlert ? (
     interruptHasAcknowledgeAction(selectedInterrupt) ? (
       <div className="flex flex-wrap items-center gap-3">
@@ -437,166 +528,6 @@ export function GlobalInterruptPanel({
         </span>
       </div>
     ) : null
-  ) : isPlanApproval ? (
-    <div className="mx-auto w-full max-w-[60rem]">
-      <PlanApprovalActionBar
-        approveDisabled={responseLocked || !primaryPlanDecision}
-        approveLabel={primaryPlanDecision?.label ?? 'Approve plan'}
-        extraActions={extraPlanDecisions.map((option) => ({
-          key: option.value,
-          label: option.label,
-          disabled: responseLocked,
-          variant: approvalDecisionVariant(option),
-          onClick: () => {
-            respondWithApprovalOption(option)
-          },
-        }))}
-        note={draftNote}
-        notePlaceholder="Explain what should change in the plan..."
-        noteRequired={noteRequired}
-        noteVisible={noteVisible}
-        requestChangesDisabled={responseLocked || !selectedInterrupt.issue_identifier?.trim()}
-        onApprove={() => {
-          if (!primaryPlanDecision) {
-            return
-          }
-          respondWithApprovalOption(primaryPlanDecision)
-        }}
-        onNoteChange={updateDraftNote}
-        onRequestChanges={requestChangesForPlanApproval}
-        onToggleNote={() => {
-          setDraftNoteVisibility(!noteVisible)
-        }}
-      />
-    </div>
-  ) : isApproval ? (
-    <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          className={cn(
-            'h-11 rounded-2xl border px-4 text-sm font-medium transition',
-            canSubmitNote && !responseLocked
-              ? 'border-white/12 bg-white/5 text-white hover:border-white/20 hover:bg-white/8'
-              : 'border-white/10 bg-white/5 text-white/45',
-          )}
-          disabled={!canSubmitNote || responseLocked}
-          type="button"
-          variant="secondary"
-          onClick={() => {
-            if (!canSubmitNote || responseLocked) {
-              return
-            }
-            const note = draftNote.trim()
-            setInteractionState((current) => ({
-              interruptId: selectedInterrupt.id,
-              draftKey: selectedInterruptDraftKey,
-              decision: '',
-              draftNote: current.interruptId === selectedInterrupt.id ? current.draftNote : '',
-              draftAnswers: current.interruptId === selectedInterrupt.id ? current.draftAnswers : {},
-              noteVisible: current.interruptId === selectedInterrupt.id ? current.noteVisible : false,
-              noteRequired: false,
-            }))
-            respondToSelectedInterrupt({ note })
-          }}
-        >
-          Send note
-        </Button>
-        <span className="text-sm leading-6 text-[var(--muted-foreground)]">
-          {canSubmitNote
-            ? 'This will queue the note without approving the request.'
-            : 'Optional: leave a note before responding to the approval.'}
-        </span>
-      </div>
-
-      {approvalGroups && approvalGroups.primary.length > 0 ? (
-        <div className="flex flex-wrap gap-3">
-          {approvalGroups.primary.map((option) => {
-            const selected = decision === option.value
-            return (
-              <button
-                key={option.value}
-                className={cn(
-                  'min-w-[12rem] rounded-[calc(var(--panel-radius)-0.25rem)] border px-4 py-3 text-left transition duration-200',
-                  selected
-                    ? 'border-[var(--accent)]/70 bg-[linear-gradient(135deg,rgba(196,255,87,.28),rgba(255,255,255,.08))] text-white shadow-[0_12px_40px_rgba(196,255,87,.15)]'
-                    : 'border-[var(--accent)]/20 bg-[linear-gradient(135deg,rgba(196,255,87,.16),rgba(255,255,255,.04))] text-white hover:border-[var(--accent)]/45 hover:bg-[linear-gradient(135deg,rgba(196,255,87,.22),rgba(255,255,255,.06))]',
-                )}
-                disabled={responseLocked}
-                type="button"
-                onClick={() => {
-                  respondWithApprovalOption(option)
-                }}
-              >
-                <p className="text-base font-medium">{option.label}</p>
-                {option.description ? (
-                  <p className="mt-1.5 text-sm leading-6 text-white/72">{option.description}</p>
-                ) : null}
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
-
-      {approvalGroups && approvalGroups.secondary.length > 0 ? (
-        <div className="flex flex-wrap gap-3">
-          {approvalGroups.secondary.map((option) => {
-            const selected = decision === option.value
-            return (
-              <button
-                key={option.value}
-                className={cn(
-                  'min-w-[13rem] rounded-[calc(var(--panel-radius)-0.25rem)] border px-4 py-3 text-left transition duration-200',
-                  selected
-                    ? 'border-white/25 bg-white/10 text-white'
-                    : 'border-white/12 bg-white/[0.04] text-white hover:border-white/18 hover:bg-white/[0.07]',
-                )}
-                disabled={responseLocked}
-                type="button"
-                onClick={() => {
-                  respondWithApprovalOption(option)
-                }}
-              >
-                <p className="text-base font-medium">{option.label}</p>
-                {option.description ? (
-                  <p className="mt-1.5 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {option.description}
-                  </p>
-                ) : null}
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
-
-      {approvalGroups && approvalGroups.destructive.length > 0 ? (
-        <div className="flex flex-wrap justify-start gap-3 xl:justify-end">
-          {approvalGroups.destructive.map((option) => {
-            const selected = decision === option.value
-            return (
-              <button
-                key={option.value}
-                className={cn(
-                  'min-w-[10rem] rounded-[calc(var(--panel-radius)-0.25rem)] border px-4 py-3 text-left transition duration-200',
-                  selected
-                    ? 'border-red-400/45 bg-red-500/15 text-white'
-                    : 'border-white/10 bg-black/20 text-white hover:border-red-300/30 hover:bg-red-500/10',
-                )}
-                disabled={responseLocked}
-                type="button"
-                onClick={() => {
-                  respondWithApprovalOption(option)
-                }}
-              >
-                <p className="text-base font-medium">{option.label}</p>
-                {option.description ? (
-                  <p className="mt-1.5 text-sm leading-6 text-[var(--muted-foreground)]">{option.description}</p>
-                ) : null}
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
-    </div>
   ) : isUserInput && requiresExplicitSubmit ? (
     <div className="flex items-center justify-end gap-3">
       <Button
@@ -806,87 +737,126 @@ export function GlobalInterruptPanel({
                 >
                   <div className="grid gap-4">
                     {isPlanApproval ? (
-                      <>
-                        <div className="space-y-2">
-                          <p className="text-lg font-semibold text-white">Review the proposed plan</p>
-                          <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)]">
-                            Focus on the plan itself. Use the queue only if you need to switch to another waiting request.
-                          </p>
-                        </div>
+                      <ApprovalReviewPanel
+                        description="Focus on the plan itself. Use the queue only if you need to switch to another waiting request."
+                        note={draftNote}
+                        noteDescription="Add optional steering notes for the next turn. A note becomes required if you request changes."
+                        notePlaceholder="Explain what should change in the plan..."
+                        noteRequired={noteRequired}
+                        noteVisible={noteVisible}
+                        overflowGroups={approvalOverflowGroups}
+                        primaryAction={
+                          primaryApprovalDecision
+                            ? {
+                                key: primaryApprovalDecision.value,
+                                label: primaryApprovalDecision.label,
+                                disabled: responseLocked,
+                                onClick: () => {
+                                  respondWithApprovalOption(primaryApprovalDecision)
+                                },
+                              }
+                            : {
+                                key: 'approve-plan',
+                                label: 'Approve plan',
+                                disabled: true,
+                                onClick: () => {},
+                              }
+                        }
+                        secondaryActions={[
+                          {
+                            key: 'request-changes',
+                            label: 'Request changes',
+                            disabled: responseLocked || !selectedInterrupt.issue_identifier?.trim(),
+                            variant: 'secondary',
+                            onClick: requestChangesForPlanApproval,
+                          },
+                        ]}
+                        title="Review the proposed plan"
+                        onNoteChange={updateDraftNote}
+                        onToggleNote={() => {
+                          setDraftNoteVisibility(!noteVisible)
+                        }}
+                      >
                         {!canRespondToSelectedInterrupt ? (
                           <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
                             An earlier interrupt is still pending. You can review this plan now, but responses stay locked until it reaches the front of the queue.
                           </p>
                         ) : null}
                         <PlanApprovalDocument markdown={approvalMarkdown} />
-                      </>
+                      </ApprovalReviewPanel>
+                    ) : isApproval ? (
+                      <ApprovalReviewPanel
+                        description="Review the request details and use More actions only when you need a broader or more disruptive response."
+                        note={draftNote}
+                        noteDescription="Send a steering note to the agent without consuming this approval."
+                        noteLabel="Agent note"
+                        notePlaceholder="Add steering notes for the next turn..."
+                        noteRequired={false}
+                        noteSubmitDescription="This note will queue without approving the request."
+                        noteSubmitDisabled={!canSubmitNote || responseLocked}
+                        noteVisible={noteVisible}
+                        overflowGroups={approvalOverflowGroups}
+                        primaryAction={
+                          primaryApprovalDecision
+                            ? {
+                                key: primaryApprovalDecision.value,
+                                label: primaryApprovalDecision.label,
+                                disabled: responseLocked,
+                                onClick: () => {
+                                  respondWithApprovalOption(primaryApprovalDecision)
+                                },
+                              }
+                            : null
+                        }
+                        title={approvalPrompt(selectedInterrupt)}
+                        onNoteChange={updateDraftNote}
+                        onNoteSubmit={sendNoteForSelectedInterrupt}
+                        onToggleNote={() => {
+                          setDraftNoteVisibility(!noteVisible)
+                        }}
+                      >
+                        {!canRespondToSelectedInterrupt ? (
+                          <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
+                            An earlier interrupt is still pending. Review this request now, but wait until it reaches the front of the queue before responding.
+                          </p>
+                        ) : null}
+                        {selectedInterrupt.approval?.reason ? (
+                          <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.04] p-5 text-white">
+                            <p className="text-xs font-medium uppercase tracking-[0.12em] text-white/55">
+                              Reason
+                            </p>
+                            <p className="mt-3 text-[15px] leading-7 text-white/88">
+                              {selectedInterrupt.approval.reason}
+                            </p>
+                          </div>
+                        ) : null}
+                        {selectedInterrupt.approval?.command ? (
+                          <ApprovalCommandPreview command={selectedInterrupt.approval.command} />
+                        ) : null}
+                        {selectedInterrupt.approval?.cwd ? (
+                          <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/8 bg-white/[0.03] px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                              Working directory
+                            </p>
+                            <code className="mt-3 inline-flex max-w-full whitespace-pre-wrap break-all rounded-full border border-white/10 bg-black/25 px-3 py-1.5 font-mono text-xs text-white">
+                              {selectedInterrupt.approval.cwd}
+                            </code>
+                          </div>
+                        ) : null}
+                      </ApprovalReviewPanel>
                     ) : (
                       <>
                         <div className="space-y-2">
-                          <p className="text-lg font-semibold text-white">
-                            {isUserInput ? 'Respond to this request' : approvalPrompt(selectedInterrupt)}
+                          <p className="text-lg font-semibold text-white">Respond to this request</p>
+                          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+                            Provide the information the agent needs so it can continue the current turn.
                           </p>
-                          {isUserInput ? (
-                            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                              Provide the information the agent needs so it can continue the current turn.
-                            </p>
-                          ) : selectedInterrupt.approval?.reason ? (
-                            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                              {selectedInterrupt.approval.reason}
-                            </p>
-                          ) : null}
-                          {!canRespondToSelectedInterrupt && !isUserInput ? (
-                            <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
-                              An earlier interrupt is still pending. Review this request now, but wait until it reaches the front of the queue before responding.
-                            </p>
-                          ) : null}
-                          {!canRespondToSelectedInterrupt && isUserInput ? (
+                          {!canRespondToSelectedInterrupt ? (
                             <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
                               An earlier interrupt is still pending. You can review these questions now, but responses stay locked until this request reaches the front of the queue.
                             </p>
                           ) : null}
                         </div>
-
-                        {isApproval ? (
-                          <div className="rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.18))] px-4 py-4">
-                            <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-                              Requested command
-                            </p>
-                            <code className={`${wrappedOutputClassName} mt-3 block rounded-[calc(var(--panel-radius)-0.45rem)] border border-white/10 bg-black/35 px-4 py-3 font-mono text-[0.96rem] leading-7 text-white`}>
-                              {selectedInterrupt.approval?.command || selectedInterrupt.approval?.reason || 'Operator approval required.'}
-                            </code>
-                          </div>
-                        ) : null}
-
-                        {selectedInterrupt.approval?.cwd ? (
-                          <div className="flex flex-wrap items-center gap-3 rounded-[calc(var(--panel-radius)-0.3rem)] border border-white/8 bg-white/[0.03] px-4 py-3">
-                            <span className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-                              Working directory
-                            </span>
-                            <code className="truncate rounded-full border border-white/10 bg-black/25 px-3 py-1.5 font-mono text-xs text-white">
-                              {selectedInterrupt.approval.cwd}
-                            </code>
-                          </div>
-                        ) : null}
-
-                        {isApproval ? (
-                          <label className="grid gap-2 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/8 bg-white/[0.03] p-4">
-                            <div className="space-y-1">
-                              <p className="text-sm font-medium text-white">Agent note</p>
-                              <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                                Send a steering note to the agent without consuming this approval.
-                              </p>
-                            </div>
-                            <Textarea
-                              disabled={responseLocked}
-                              placeholder="Add steering notes for the next turn..."
-                              value={draftNote}
-                              onChange={(event) => {
-                                updateDraftNote(event.target.value)
-                              }}
-                            />
-                          </label>
-                        ) : null}
 
                         {isUserInput ? (
                           <div className="grid gap-3">

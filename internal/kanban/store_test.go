@@ -950,6 +950,47 @@ func TestIssueAgentCommandUpdateAndDelete(t *testing.T) {
 	}
 }
 
+func TestMarkIssueAgentCommandsDeliveredIfUnchangedRejectsEditedCommands(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Edited command delivery issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	command, err := store.CreateIssueAgentCommand(issue.ID, "Ship the approved plan.", IssueAgentCommandPending)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand: %v", err)
+	}
+	if _, err := store.UpdateIssueAgentCommand(issue.ID, command.ID, "Ship the approved plan after rerunning tests."); err != nil {
+		t.Fatalf("UpdateIssueAgentCommand: %v", err)
+	}
+
+	err = store.MarkIssueAgentCommandsDeliveredIfUnchanged(issue.ID, []IssueAgentCommand{*command}, "next_run", "thread-edited", 1)
+	if err == nil {
+		t.Fatal("expected stale delivery guard to reject edited command")
+	}
+	if !strings.Contains(err.Error(), "changed before delivery") {
+		t.Fatalf("expected stale delivery error, got %v", err)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one command, got %#v", commands)
+	}
+	if commands[0].Status != IssueAgentCommandPending {
+		t.Fatalf("expected command to remain pending, got %+v", commands[0])
+	}
+	if commands[0].Command != "Ship the approved plan after rerunning tests." {
+		t.Fatalf("expected revised command text to remain stored, got %+v", commands[0])
+	}
+	if commands[0].DeliveredAt != nil {
+		t.Fatalf("expected delivered timestamp to remain unset, got %+v", commands[0])
+	}
+}
+
 func TestIssueAgentCommandSteerPrioritizesCommandsAfterUnblock(t *testing.T) {
 	store := setupTestStore(t)
 

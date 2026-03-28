@@ -33,6 +33,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { MarkdownText } from "@/components/ui/markdown";
 import { api } from "@/lib/api";
 import {
   getPausedForIssue,
@@ -335,9 +336,14 @@ export function IssuePreviewSheet({
               <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                 Description
               </p>
-              <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
-                {activeIssue.description || "No description provided."}
-              </p>
+              {activeIssue.description?.trim() ? (
+                <MarkdownText
+                  className="mt-3 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]"
+                  content={activeIssue.description}
+                />
+              ) : (
+                <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">No description provided.</p>
+              )}
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">

@@ -1377,14 +1377,31 @@ func (o *Orchestrator) finishRun(workflow *config.Workflow, runner runnerExecuto
 		)
 	case result != nil && result.StopReason == planApprovalStopReason:
 		next := nextAttempt(attempt)
+		latest := current
+		if refreshed, getErr := o.store.GetIssue(issue.ID); getErr == nil && refreshed != nil {
+			latest = refreshed
+		}
+		resumeThreadID := ""
+		if result.AppSession != nil {
+			resumeThreadID = strings.TrimSpace(result.AppSession.ThreadID)
+		}
+		if issueHasPendingPlanRevision(latest) {
+			o.mu.Lock()
+			o.scheduleRetryLockedAt(latest, next, phase, "manual", planApprovalStopReason, time.Now().UTC(), resumeThreadID)
+			o.mu.Unlock()
+			slog.Info("Agent run queued revised plan turn",
+				issueLogAttrs(latest, attempt, "phase", phase, "next_attempt", next)...,
+			)
+			break
+		}
 		o.mu.Lock()
 		fields := map[string]interface{}{}
 		attachResultMetrics(fields, result)
-		o.pauseRetryLocked(current, next, phase, planApprovalStopReason, fields)
+		o.pauseRetryLocked(latest, next, phase, planApprovalStopReason, fields)
 		o.mu.Unlock()
-		o.persistExecutionSession(current, phase, next, "retry_paused", planApprovalStopReason, false, planApprovalStopReason, result.AppSession)
+		o.persistExecutionSession(latest, phase, next, "retry_paused", planApprovalStopReason, false, planApprovalStopReason, result.AppSession)
 		slog.Info("Agent run paused pending plan approval",
-			issueLogAttrs(current, attempt, "phase", phase, "next_attempt", next)...,
+			issueLogAttrs(latest, attempt, "phase", phase, "next_attempt", next)...,
 		)
 	case result != nil && !result.Success:
 		errText := "unsuccessful"

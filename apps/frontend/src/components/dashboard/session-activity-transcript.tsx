@@ -34,6 +34,10 @@ function entryHeadingClass(entry: ActivityEntry) {
 }
 
 function entrySummaryClass(entry: ActivityEntry) {
+  if (entry.kind === 'agent' && entry.phase === 'final_answer') {
+    return 'mt-1.5 min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[15px] leading-6 text-white/92'
+  }
+
   if (entry.kind === 'status') {
     return 'mt-1 min-w-0 line-clamp-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-white/82'
   }

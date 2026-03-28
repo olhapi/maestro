@@ -81,6 +81,20 @@ describe('IssueCard', () => {
     expect(screen.getByText('144 tokens')).toBeInTheDocument()
   })
 
+  it('renders issue descriptions as markdown without nesting links inside the button', () => {
+    renderWithQueryClient(
+      <IssueCard
+        issue={makeIssueSummary({
+          description: 'Review the **retry window** and [docs](https://example.com).',
+        })}
+        onOpen={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('retry window', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'docs' })).not.toBeInTheDocument()
+  })
+
   it('allows draggable surfaces to override the card cursor affordance', () => {
     renderWithQueryClient(<IssueCard issue={makeIssueSummary()} className="cursor-grab active:cursor-grabbing" onOpen={vi.fn()} />)
 

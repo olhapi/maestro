@@ -43,6 +43,24 @@ func gitTestEnv() []string {
 	return filtered
 }
 
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
 func initGitRepoForTest(t *testing.T, repoPath string) {
 	t.Helper()
 	runGitForTest(t, repoPath, "init")
@@ -1056,6 +1074,61 @@ func TestRunAgentStdioKeepsCommandsPendingWhenTurnFails(t *testing.T) {
 	}
 	if len(commands) != 1 || commands[0].ID != command.ID || commands[0].Status != kanban.IssueAgentCommandPending {
 		t.Fatalf("expected command to remain pending, got %+v", commands)
+	}
+}
+
+func TestRunAgentStdioRejectsStaleCommandDeliveryAfterEdit(t *testing.T) {
+	startedFile := filepath.Join(t.TempDir(), "started")
+	releaseFile := filepath.Join(t.TempDir(), "release")
+	command := "cat >/dev/null; touch " + shellQuote(startedFile) + "; while [ ! -f " + shellQuote(releaseFile) + " ]; do sleep 0.05; done"
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeStdio)
+	issue, _ := store.CreateIssue("", "", "Edited queued command", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
+
+	queued, err := store.CreateIssueAgentCommand(issue.ID, "Ship the original rollout.", kanban.IssueAgentCommandPending)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resultCh := make(chan *RunResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := runner.Run(context.Background(), issue)
+		resultCh <- result
+		errCh <- err
+	}()
+
+	waitForFile(t, startedFile, 3*time.Second)
+	if _, err := store.UpdateIssueAgentCommand(issue.ID, queued.ID, "Ship the revised rollout."); err != nil {
+		t.Fatalf("UpdateIssueAgentCommand: %v", err)
+	}
+	if err := os.WriteFile(releaseFile, []byte("go"), 0o644); err != nil {
+		t.Fatalf("WriteFile release: %v", err)
+	}
+
+	result := <-resultCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected unsuccessful run, got %+v", result)
+	}
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "changed before delivery") {
+		t.Fatalf("expected stale delivery error, got %+v", result)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one queued command, got %+v", commands)
+	}
+	if commands[0].Status != kanban.IssueAgentCommandPending || commands[0].Command != "Ship the revised rollout." {
+		t.Fatalf("expected revised command to remain pending, got %+v", commands)
 	}
 }
 

@@ -143,7 +143,15 @@ const markdownComponents: Components = {
   },
 }
 
-export function MarkdownText({ content, className }: { content: string; className?: string }) {
+export function MarkdownText({
+  content,
+  className,
+  components,
+}: {
+  content: string;
+  className?: string;
+  components?: Components;
+}) {
   if (!content.trim()) {
     return null
   }
@@ -179,7 +187,7 @@ export function MarkdownText({ content, className }: { content: string; classNam
           'tr',
           'ul',
         ]}
-        components={markdownComponents}
+        components={components ? { ...markdownComponents, ...components } : markdownComponents}
         remarkPlugins={[remarkGfm, remarkBreaks]}
         unwrapDisallowed
       >

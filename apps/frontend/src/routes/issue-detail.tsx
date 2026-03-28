@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FilePicker } from "@/components/ui/file-picker";
-import { wrappedOutputClassName } from "@/components/ui/markdown";
+import { MarkdownText, wrappedOutputClassName } from "@/components/ui/markdown";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -641,9 +641,16 @@ function IssueCommentEntry({
       </div>
       {!isEditing ? (
         <>
-          <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
-            {normalizedComment.deleted_at ? "[deleted]" : normalizedComment.body || "No text"}
-          </p>
+          {normalizedComment.deleted_at ? (
+            <p className="text-sm leading-6 text-[var(--muted-foreground)]">[deleted]</p>
+          ) : normalizedComment.body?.trim() ? (
+            <MarkdownText
+              className="space-y-2 text-sm leading-6 text-[var(--muted-foreground)]"
+              content={normalizedComment.body}
+            />
+          ) : (
+            <p className="text-sm leading-6 text-[var(--muted-foreground)]">No text</p>
+          )}
           {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {attachments.map((attachment) => (
@@ -1159,9 +1166,14 @@ export function IssueDetailPage() {
               <CardTitle>Description</CardTitle>
             </CardHeader>
             <CardContent className="pt-0 pb-3.5">
-              <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--muted-foreground)]">
-                {issue.data.description || "No description provided."}
-              </p>
+              {issue.data.description?.trim() ? (
+                <MarkdownText
+                  className="space-y-2 text-sm leading-6 text-[var(--muted-foreground)]"
+                  content={issue.data.description}
+                />
+              ) : (
+                <p className="text-sm leading-6 text-[var(--muted-foreground)]">No description provided.</p>
+              )}
             </CardContent>
           </Card>
 
