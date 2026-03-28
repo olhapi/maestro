@@ -200,6 +200,9 @@ registryReady:
 	if strings.Contains(stdout.String(), "Dashboard: ") {
 		t.Fatalf("did not expect Dashboard URL in in-process mode, got stdout=%q", stdout.String())
 	}
+	// The registry file appears slightly before the run command installs its
+	// signal handler, so give the helper a brief window to enter the main loop.
+	time.Sleep(250 * time.Millisecond)
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("interrupt run helper: %v", err)
 	}
