@@ -15,9 +15,10 @@ var (
 type PendingInteractionKind string
 
 const (
-	PendingInteractionKindApproval  PendingInteractionKind = "approval"
-	PendingInteractionKindUserInput PendingInteractionKind = "user_input"
-	PendingInteractionKindAlert     PendingInteractionKind = "alert"
+	PendingInteractionKindApproval    PendingInteractionKind = "approval"
+	PendingInteractionKindUserInput   PendingInteractionKind = "user_input"
+	PendingInteractionKindElicitation PendingInteractionKind = "elicitation"
+	PendingInteractionKindAlert       PendingInteractionKind = "alert"
 )
 
 type PendingAlertSeverity string
@@ -57,6 +58,7 @@ type PendingInteraction struct {
 	Actions           []PendingInteractionAction `json:"actions,omitempty"`
 	Approval          *PendingApproval           `json:"approval,omitempty"`
 	UserInput         *PendingUserInput          `json:"user_input,omitempty"`
+	Elicitation       *PendingElicitation        `json:"elicitation,omitempty"`
 	Alert             *PendingAlert              `json:"alert,omitempty"`
 }
 
@@ -101,6 +103,16 @@ type PendingUserInputOption struct {
 	Description string `json:"description,omitempty"`
 }
 
+type PendingElicitation struct {
+	ServerName      string                 `json:"server_name"`
+	Message         string                 `json:"message"`
+	Mode            string                 `json:"mode"`
+	RequestedSchema map[string]interface{} `json:"requested_schema,omitempty"`
+	ElicitationID   string                 `json:"elicitation_id,omitempty"`
+	URL             string                 `json:"url,omitempty"`
+	Meta            interface{}            `json:"_meta,omitempty"`
+}
+
 type PendingAlert struct {
 	Code     string               `json:"code"`
 	Severity PendingAlertSeverity `json:"severity"`
@@ -114,6 +126,8 @@ type PendingInteractionResponse struct {
 	DecisionPayload map[string]interface{} `json:"decision_payload,omitempty"`
 	Answers         map[string][]string    `json:"answers,omitempty"`
 	Note            string                 `json:"note,omitempty"`
+	Action          string                 `json:"action,omitempty"`
+	Content         interface{}            `json:"content,omitempty"`
 }
 
 type PendingInteractionSnapshot struct {
@@ -140,6 +154,12 @@ func (interaction PendingInteraction) Clone() PendingInteraction {
 			userInput.Questions[i].Options = append([]PendingUserInputOption(nil), userInput.Questions[i].Options...)
 		}
 		cloned.UserInput = &userInput
+	}
+	if interaction.Elicitation != nil {
+		elicitation := *interaction.Elicitation
+		elicitation.RequestedSchema = cloneJSONMap(interaction.Elicitation.RequestedSchema)
+		elicitation.Meta = cloneJSONValue(interaction.Elicitation.Meta)
+		cloned.Elicitation = &elicitation
 	}
 	if interaction.Alert != nil {
 		alert := *interaction.Alert

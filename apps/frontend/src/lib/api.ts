@@ -292,6 +292,8 @@ export const api = {
       decision_payload?: Record<string, unknown>;
       answers?: Record<string, string[]>;
       note?: string;
+      action?: "accept" | "decline" | "cancel";
+      content?: unknown;
     },
   ) =>
     request<{ id: string; status: string }>(`/api/v1/app/interrupts/${id}/respond`, {

@@ -66,6 +66,90 @@ func TestApplyIssueActivityEventProjectsSubmittedUserInputAsResolved(t *testing.
 	}
 }
 
+func TestApplyIssueActivityEventProjectsElicitationRows(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Elicitation timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 7, appserver.ActivityEvent{
+		Type:      "mcpServer.elicitation.request",
+		RequestID: "req-elicitation",
+		ThreadID:  "thread-7",
+		TurnID:    "turn-7",
+		Reason:    "Need contact details",
+		Raw: map[string]interface{}{
+			"params": map[string]interface{}{
+				"message": "Need contact details",
+				"mode":    "form",
+				"requestedSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"email": map[string]interface{}{
+							"type":    "string",
+							"default": "ops@example.com",
+						},
+					},
+					"required": []interface{}{"email"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent elicitation request: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries request: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one elicitation request row, got %#v", entries)
+	}
+	if entries[0].Status != "elicitation_required" || entries[0].Title != "Elicitation required" || entries[0].Summary != "Need contact details" {
+		t.Fatalf("unexpected elicitation request row: %#v", entries[0])
+	}
+	if !strings.Contains(entries[0].Detail, "\"requestedSchema\"") || !strings.Contains(entries[0].Detail, "\"ops@example.com\"") {
+		t.Fatalf("expected elicitation request detail to include schema defaults, got %#v", entries[0].Detail)
+	}
+
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 7, appserver.ActivityEvent{
+		Type:      "mcpServer.elicitation.resolved",
+		RequestID: "req-elicitation",
+		ThreadID:  "thread-7",
+		TurnID:    "turn-7",
+		Status:    "accept",
+		Raw: map[string]interface{}{
+			"action": "accept",
+			"content": map[string]interface{}{
+				"email": "ops@example.com",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent elicitation resolved: %v", err)
+	}
+
+	entries, err = store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries resolved: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one merged elicitation row, got %#v", entries)
+	}
+	if entries[0].Status != "accept" || entries[0].Title != "Elicitation resolved" || entries[0].Tone != "success" {
+		t.Fatalf("unexpected elicitation resolved row: %#v", entries[0])
+	}
+	if entries[0].Summary != "Operator accepted the elicitation." {
+		t.Fatalf("unexpected elicitation summary: %#v", entries[0])
+	}
+	if !strings.Contains(entries[0].Detail, "\"email\": \"ops@example.com\"") {
+		t.Fatalf("expected elicitation response detail to include content, got %#v", entries[0].Detail)
+	}
+	if count := countIssueActivityUpdates(t, store, issue.ID); count != 2 {
+		t.Fatalf("expected request and resolved updates, got %d", count)
+	}
+}
+
 func TestApprovalDecisionSummaryAndTone(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

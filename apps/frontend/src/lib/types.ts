@@ -339,6 +339,17 @@ export interface PendingUserInput {
   questions: PendingUserInputQuestion[];
 }
 
+export type PendingElicitationMode = "form" | "url";
+
+export interface PendingElicitation {
+  server_name: string;
+  message: string;
+  mode: PendingElicitationMode;
+  requested_schema?: Record<string, unknown>;
+  elicitation_id?: string;
+  url?: string;
+}
+
 export interface PendingAlert {
   code: string;
   severity: "info" | "warning" | "error";
@@ -355,7 +366,7 @@ export interface PendingInterruptAction {
 export interface PendingInterrupt {
   id: string;
   request_id?: string;
-  kind: "approval" | "user_input" | "alert";
+  kind: "approval" | "user_input" | "elicitation" | "alert";
   method?: string;
   issue_id?: string;
   issue_identifier?: string;
@@ -375,6 +386,7 @@ export interface PendingInterrupt {
   actions?: PendingInterruptAction[];
   approval?: PendingApproval;
   user_input?: PendingUserInput;
+  elicitation?: PendingElicitation;
   alert?: PendingAlert;
 }
 

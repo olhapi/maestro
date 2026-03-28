@@ -2094,6 +2094,14 @@ func TestRunErrorAndInputHelpers(t *testing.T) {
 	if !needsInput("turn/approval_required", nil) {
 		t.Fatal("expected turn approval to require input")
 	}
+	if err := legacyPendingInteractionError(protocol.MethodMCPServerElicitationRequest, nil); err == nil {
+		t.Fatal("expected elicitation fallback error")
+	} else {
+		var runErr *RunError
+		if !errors.As(err, &runErr) || runErr.Kind != "turn_input_required" {
+			t.Fatalf("expected elicitation fallback to require input, got %v", err)
+		}
+	}
 	if !needsInput("", map[string]interface{}{"requiresInput": true}) {
 		t.Fatal("expected requiresInput field to require input")
 	}

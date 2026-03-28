@@ -1395,6 +1395,8 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		DecisionPayload map[string]interface{} `json:"decision_payload"`
 		Answers         map[string][]string    `json:"answers"`
 		Note            string                 `json:"note"`
+		Action          string                 `json:"action"`
+		Content         interface{}            `json:"content"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1404,9 +1406,11 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 	var err error
 	note := strings.TrimSpace(body.Note)
 	decision := strings.TrimSpace(body.Decision)
+	responseAction := strings.ToLower(strings.TrimSpace(body.Action))
 	hasDecisionPayload := len(body.DecisionPayload) > 0
 	hasAnswers := len(body.Answers) > 0
 	hasNote := note != ""
+	hasContent := body.Content != nil
 	isPlanApproval := isPlanApprovalInteraction(interaction)
 	if !found {
 		err = s.provider.RespondToInterrupt(r.Context(), interactionID, appserver.PendingInteractionResponse{
@@ -1414,6 +1418,8 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 			DecisionPayload: body.DecisionPayload,
 			Answers:         body.Answers,
 			Note:            note,
+			Action:          responseAction,
+			Content:         body.Content,
 		})
 		switch {
 		case err == nil:
@@ -1431,6 +1437,27 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 			writeErrorStatus(w, http.StatusInternalServerError, err)
 		}
 		return
+	}
+	if interaction.Kind == appserver.PendingInteractionKindElicitation {
+		switch responseAction {
+		case "":
+			if !hasContent {
+				writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+				return
+			}
+			responseAction = "accept"
+		case "accept":
+			if !hasContent {
+				writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+				return
+			}
+		case "decline", "cancel":
+			body.Content = nil
+			hasContent = false
+		default:
+			writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+			return
+		}
 	}
 	if isPlanApproval {
 		if firstRespondableInterruptID(snapshot) != interactionID {
@@ -1477,7 +1504,7 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if hasNote && decision == "" && !hasDecisionPayload && !hasAnswers {
+	if hasNote && decision == "" && responseAction == "" && !hasDecisionPayload && !hasAnswers && !hasContent && interruptNoteCommandAllowed(interaction) {
 		issue, err := s.issueForInterrupt(r.Context(), interaction)
 		if err != nil {
 			writeErrorStatus(w, appErrorStatus(err), err)
@@ -1498,10 +1525,12 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		DecisionPayload: body.DecisionPayload,
 		Answers:         body.Answers,
 		Note:            note,
+		Action:          responseAction,
+		Content:         body.Content,
 	})
 	switch {
 	case err == nil:
-		if hasNote {
+		if hasNote && interruptNoteCommandAllowed(interaction) {
 			// Best effort only: the interrupt response has already been accepted.
 			if issue, noteErr := s.issueForInterrupt(r.Context(), interaction); noteErr == nil {
 				_, _ = s.submitIssueCommand(r.Context(), issue, note)
@@ -1550,6 +1579,10 @@ func isPlanApprovalInteraction(interaction *appserver.PendingInteraction) bool {
 		return false
 	}
 	return strings.TrimSpace(interaction.Approval.Markdown) != ""
+}
+
+func interruptNoteCommandAllowed(interaction *appserver.PendingInteraction) bool {
+	return interaction != nil && interaction.Kind != appserver.PendingInteractionKindElicitation
 }
 
 func (s *Server) issueForInterrupt(ctx context.Context, interaction *appserver.PendingInteraction) (*kanban.Issue, error) {

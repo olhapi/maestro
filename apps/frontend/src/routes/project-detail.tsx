@@ -4,18 +4,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play, Plus, Square } from "lucide-react";
 import { toast } from "sonner";
 
-import { KanbanBoard } from "@/components/dashboard/kanban-board";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ProjectDispatchBadge } from "@/components/dashboard/project-dispatch-badge";
 import {
   ProjectPermissionProfileButton,
 } from "@/components/dashboard/project-permission-profile-button";
 import { IssuePreviewBoundary } from "@/components/dashboard/issue-preview-boundary";
+import { WorkIssueSurface } from "@/components/dashboard/work-issue-surface";
 import { EpicDialog, IssueDialog } from "@/components/forms";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { api } from "@/lib/api";
 import { getStateMeta } from "@/lib/dashboard";
 import {
@@ -114,12 +113,13 @@ export function ProjectDetailPage() {
   const { projectId } = useParams({ from: "/projects/$projectId" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const isMobileLayout = useIsMobileLayout();
   const [epicDialogOpen, setEpicDialogOpen] = useState(false);
   const [issueDialogInitial, setIssueDialogInitial] = useState<
     Partial<IssueDetail>
   >({ project_id: projectId, state: "backlog" });
   const [issueDialogOpen, setIssueDialogOpen] = useState(false);
+  const [sort, setSort] = useState("priority_asc");
+  const [view, setView] = useState<"board" | "list">("board");
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
 
   const bootstrap = useQuery({
@@ -364,10 +364,15 @@ export function ProjectDetailPage() {
         </Card>
       </div>
 
-      <KanbanBoard
+      <WorkIssueSurface
+        title="Project work"
+        description="Sort this project's issues, switch between board and list views, and inspect issues in place."
         items={project.data.issues.items}
         bootstrap={bootstrap.data}
-        mode={isMobileLayout ? "grouped" : "board"}
+        sort={sort}
+        view={view}
+        onSortChange={setSort}
+        onViewChange={setView}
         onOpenIssue={setPreviewIssue}
         onMoveIssue={(issue, nextState) =>
           stateMutation.mutate({ identifier: issue.identifier, nextState })
@@ -379,6 +384,7 @@ export function ProjectDetailPage() {
           });
           setIssueDialogOpen(true);
         }}
+        showProjectColumn={false}
       />
 
       <IssueDialog

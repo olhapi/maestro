@@ -299,7 +299,7 @@ func TestThreadStartedNotificationDecodesNestedSubAgentSource(t *testing.T) {
 	if params.Thread.Source == nil || params.Thread.Source.FluffySessionSource == nil || params.Thread.Source.FluffySessionSource.SubAgent == nil || params.Thread.Source.FluffySessionSource.SubAgent.Enum == nil {
 		t.Fatalf("expected nested sub-agent session source, got %+v", params.Thread.Source)
 	}
-	if *params.Thread.Source.FluffySessionSource.SubAgent.Enum != gen.Review {
+	if *params.Thread.Source.FluffySessionSource.SubAgent.Enum != gen.SubAgentSourceReview {
 		t.Fatalf("unexpected sub-agent source: %+v", *params.Thread.Source.FluffySessionSource.SubAgent.Enum)
 	}
 }

@@ -4034,6 +4034,9 @@ func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAt
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
+	if err := s.deleteIssuePlanningTx(tx, id); err != nil {
+		return nil, nil, "", nil, err
+	}
 	if _, err := tx.Exec(`DELETE FROM issue_recurrences WHERE issue_id = ?`, id); err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -4068,6 +4071,16 @@ func (s *Store) deleteIssueTx(tx *sql.Tx, id string) ([]string, []IssueCommentAt
 		return nil, nil, "", nil, err
 	}
 	return assetPaths, commentAttachments, filepath.Join(s.IssueAssetRoot(), id), blockedIssueIDs, nil
+}
+
+func (s *Store) deleteIssuePlanningTx(tx *sql.Tx, issueID string) error {
+	if _, err := tx.Exec(`DELETE FROM issue_plan_versions WHERE session_id IN (SELECT id FROM issue_plan_sessions WHERE issue_id = ?)`, issueID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_plan_sessions WHERE issue_id = ?`, issueID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) DeleteIssue(id string) error {

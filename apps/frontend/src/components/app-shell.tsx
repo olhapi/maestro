@@ -49,6 +49,8 @@ function interruptLauncherSummary(interrupt: PendingInterrupt | null) {
 
   const kind = interrupt.kind === 'alert'
     ? 'Alert'
+    : interrupt.kind === 'elicitation'
+      ? 'MCP elicitation'
     : interrupt.approval?.markdown?.trim()
       ? 'Plan approval'
       : interrupt.kind === 'user_input'
@@ -173,11 +175,13 @@ export function AppShell() {
         decision_payload?: Record<string, unknown>
         answers?: Record<string, string[]>
         note?: string
+        action?: 'accept' | 'decline' | 'cancel'
+        content?: unknown
       }
     }) =>
       api.respondToInterrupt(id, body),
     onMutate: ({ id, body }) => {
-      if (body.decision || body.decision_payload || body.answers) {
+      if (body.decision || body.decision_payload || body.answers || body.action || body.content !== undefined) {
         addOptimisticHiddenInterruptId(id)
       }
     },

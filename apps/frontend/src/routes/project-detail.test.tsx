@@ -4,8 +4,8 @@ import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
 import { projectPermissionProfileButtonCopy } from "@/lib/project-permission-profiles";
-import { makeBootstrapResponse } from "@/test/fixtures";
-import { renderWithQueryClient } from "@/test/test-utils";
+import { makeBootstrapResponse, makeIssueSummary } from "@/test/fixtures";
+import { renderWithQueryClient, selectOption } from "@/test/test-utils";
 import type { PermissionProfile } from "@/lib/types";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -129,6 +129,66 @@ describe("ProjectDetailPage", () => {
     });
   });
 
+  it("sorts project work and switches between list and board views", async () => {
+    const bootstrap = makeBootstrapResponse()
+    const projectIssues = {
+      items: [
+        makeIssueSummary({
+          id: "issue-1",
+          identifier: "ISS-1",
+          title: "Triage release",
+          priority: 5,
+          state: "ready",
+        }),
+        makeIssueSummary({
+          id: "issue-2",
+          identifier: "ISS-2",
+          title: "Investigate retries",
+          priority: 1,
+          state: "in_progress",
+        }),
+      ],
+      total: 2,
+      limit: 200,
+      offset: 0,
+    }
+
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+    vi.mocked(api.getProject).mockResolvedValue({
+      project: bootstrap.projects[0],
+      epics: bootstrap.epics,
+      issues: projectIssues,
+    })
+
+    renderWithQueryClient(<ProjectDetailPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText("Project work")).toBeInTheDocument()
+    })
+
+    expect(screen.getByRole("combobox", { name: /sort issues/i })).toHaveTextContent("Highest priority")
+    expect(screen.getByRole("radio", { name: "Board view" })).toHaveAttribute("data-state", "on")
+
+    fireEvent.click(screen.getByRole("radio", { name: "List view" }))
+
+    await waitFor(() => {
+      expect(screen.getByRole("columnheader", { name: "Issue" })).toBeInTheDocument()
+    })
+
+    const table = screen.getByRole("table")
+    expect(within(table).getAllByRole("button")[0]).toHaveTextContent("ISS-2")
+    expect(within(table).getAllByRole("button")[1]).toHaveTextContent("ISS-1")
+    expect(screen.queryByRole("columnheader", { name: "Project" })).not.toBeInTheDocument()
+
+    await selectOption(/sort issues/i, /identifier a-z/i)
+
+    await waitFor(() => {
+      const sortedButtons = within(screen.getByRole("table")).getAllByRole("button")
+      expect(sortedButtons[0]).toHaveTextContent("ISS-1")
+      expect(sortedButtons[1]).toHaveTextContent("ISS-2")
+    })
+  });
+
   it("renders grouped status row collapse controls on mobile layouts", async () => {
     const initialInnerWidth = window.innerWidth;
     Object.defineProperty(window, "innerWidth", {
@@ -157,6 +217,12 @@ describe("ProjectDetailPage", () => {
         ).toBeInTheDocument();
       });
 
+      expect(
+        screen.queryByRole("radio", { name: "Board view" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("radio", { name: "List view" }),
+      ).not.toBeInTheDocument();
       expect(
         screen.getByRole("button", { name: /collapse backlog status row/i }),
       ).toHaveAttribute("aria-expanded", "true");

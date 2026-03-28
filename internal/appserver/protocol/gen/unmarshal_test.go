@@ -172,7 +172,7 @@ func TestSubAgentSourceUnmarshalJSON(t *testing.T) {
 		if err := json.Unmarshal([]byte(`"review"`), &got); err != nil {
 			t.Fatalf("unmarshal purple sub-agent enum: %v", err)
 		}
-		if got.Enum == nil || *got.Enum != Review {
+		if got.Enum == nil || *got.Enum != SubAgentSourceReview {
 			t.Fatalf("unexpected enum value: %+v", got.Enum)
 		}
 		if got.PurpleSubAgentSource != nil {

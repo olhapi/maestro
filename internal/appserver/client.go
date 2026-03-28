@@ -906,6 +906,8 @@ func (c *Client) handleRequest(ctx context.Context, payload protocol.Message) (b
 			c.emitMessage("approval_auto_approved", map[string]interface{}{"payload": payload.Raw})
 		}
 		return true, nil
+	case protocol.MethodMCPServerElicitationRequest:
+		return c.waitForPendingInteraction(ctx, payload)
 	case protocol.MethodToolCall:
 		var params gen.DynamicToolCallParams
 		if err := payload.UnmarshalParams(&params); err != nil {
@@ -952,11 +954,22 @@ func (c *Client) waitForPendingInteraction(ctx context.Context, payload protocol
 	waiter := c.registerPendingInteraction(*interaction, payload.ID)
 	defer c.clearPendingInteraction(interaction.ID)
 
-	c.logger.Warn("Codex operator input required",
+	logMessage := "Codex operator input required"
+	if interaction.Kind == PendingInteractionKindElicitation {
+		logMessage = "Codex MCP elicitation required"
+	}
+	logFields := []any{
 		"method", interaction.Method,
 		"interaction_id", interaction.ID,
 		"issue_identifier", c.cfg.IssueIdentifier,
-	)
+	}
+	if interaction.Elicitation != nil {
+		logFields = append(logFields,
+			"server_name", interaction.Elicitation.ServerName,
+			"mode", interaction.Elicitation.Mode,
+		)
+	}
+	c.logger.Warn(logMessage, logFields...)
 	response, err := c.awaitPendingInteractionResponse(ctx, waiter)
 	if err != nil {
 		return true, err
@@ -982,6 +995,8 @@ func (c *Client) supportsPendingInteractionQueue() bool {
 func legacyPendingInteractionError(method string, payload map[string]interface{}) error {
 	switch method {
 	case protocol.MethodToolRequestUserInput:
+		return &RunError{Kind: "turn_input_required", Payload: payload}
+	case protocol.MethodMCPServerElicitationRequest:
 		return &RunError{Kind: "turn_input_required", Payload: payload}
 	default:
 		return &RunError{Kind: "approval_required", Payload: payload}
@@ -1101,6 +1116,29 @@ func (c *Client) newPendingInteraction(payload protocol.Message) (*PendingIntera
 			questions = append(questions, converted)
 		}
 		interaction.UserInput = &PendingUserInput{Questions: questions}
+	case protocol.MethodMCPServerElicitationRequest:
+		var params gen.MCPServerElicitationRequestParams
+		if err := payload.UnmarshalParams(&params); err != nil {
+			return nil, err
+		}
+		requestedSchema, err := jsonMapFromValue(params.RequestedSchema)
+		if err != nil {
+			return nil, fmt.Errorf("decode elicitation schema: %w", err)
+		}
+		interaction.Kind = PendingInteractionKindElicitation
+		interaction.ItemID = firstNonEmptyInteractionValue(strings.TrimSpace(stringPtrValue(params.ElicitationID)), strings.TrimSpace(params.ServerName))
+		interaction.ThreadID = firstNonEmptyInteractionValue(interaction.ThreadID, strings.TrimSpace(params.ThreadID))
+		interaction.TurnID = firstNonEmptyInteractionValue(interaction.TurnID, strings.TrimSpace(stringPtrValue(params.TurnID)))
+		interaction.ID = buildPendingInteractionID(interaction.IssueID, interaction.ThreadID, interaction.TurnID, interaction.ItemID, requestID)
+		interaction.Elicitation = &PendingElicitation{
+			ServerName:      strings.TrimSpace(params.ServerName),
+			Message:         strings.TrimSpace(params.Message),
+			Mode:            strings.TrimSpace(string(params.Mode)),
+			RequestedSchema: requestedSchema,
+			ElicitationID:   strings.TrimSpace(stringPtrValue(params.ElicitationID)),
+			URL:             strings.TrimSpace(stringPtrValue(params.URL)),
+			Meta:            cloneJSONValue(params.Meta),
+		}
 	default:
 		return nil, fmt.Errorf("unsupported interactive method %q", payload.Method)
 	}
@@ -1206,6 +1244,8 @@ func (c *Client) sendPendingInteractionResponse(interaction PendingInteraction, 
 			answers[questionID] = gen.ToolRequestUserInputAnswer{Answers: append([]string(nil), values...)}
 		}
 		return c.sendMessage(protocol.ToolRequestUserInputResult(payloadID, answers))
+	case protocol.MethodMCPServerElicitationRequest:
+		return c.sendMessage(protocol.MCPServerElicitationRequestResult(payloadID, gen.MCPServerElicitationAction(strings.TrimSpace(response.Action)), response.Content))
 	default:
 		return fmt.Errorf("unsupported interactive method %q", interaction.Method)
 	}
@@ -1244,6 +1284,33 @@ func (c *Client) emitResolvedInteractionActivity(interaction PendingInteraction,
 			Raw: map[string]interface{}{
 				"answers": sanitizePendingInteractionAnswers(interaction, response.Answers),
 			},
+		})
+	case PendingInteractionKindElicitation:
+		raw := map[string]interface{}{
+			"action": strings.TrimSpace(response.Action),
+		}
+		if content := cloneJSONValue(response.Content); content != nil {
+			raw["content"] = content
+		}
+		if interaction.Elicitation != nil {
+			if mode := strings.TrimSpace(interaction.Elicitation.Mode); mode != "" {
+				raw["mode"] = mode
+			}
+			if serverName := strings.TrimSpace(interaction.Elicitation.ServerName); serverName != "" {
+				raw["server_name"] = serverName
+			}
+			if url := strings.TrimSpace(interaction.Elicitation.URL); url != "" {
+				raw["url"] = url
+			}
+		}
+		c.emitActivityEvent(ActivityEvent{
+			Type:      "mcpServer.elicitation.resolved",
+			RequestID: interaction.RequestID,
+			ThreadID:  interaction.ThreadID,
+			TurnID:    interaction.TurnID,
+			ItemID:    interaction.ItemID,
+			Status:    strings.TrimSpace(response.Action),
+			Raw:       raw,
 		})
 	}
 }
@@ -1294,6 +1361,25 @@ func normalizePendingInteractionResponse(interaction PendingInteraction, respons
 			normalized[question.ID] = []string{answer}
 		}
 		return PendingInteractionResponse{Answers: normalized}, nil
+	case PendingInteractionKindElicitation:
+		action := strings.ToLower(strings.TrimSpace(response.Action))
+		if action == "" && response.Content != nil {
+			action = string(gen.MCPServerElicitationActionAccept)
+		}
+		switch action {
+		case string(gen.MCPServerElicitationActionAccept):
+			if response.Content == nil {
+				return PendingInteractionResponse{}, fmt.Errorf("%w: missing content", ErrInvalidInteractionResponse)
+			}
+			return PendingInteractionResponse{
+				Action:  action,
+				Content: cloneJSONValue(response.Content),
+			}, nil
+		case string(gen.MCPServerElicitationActionDecline), string(gen.MCPServerElicitationActionCancel):
+			return PendingInteractionResponse{Action: action}, nil
+		default:
+			return PendingInteractionResponse{}, fmt.Errorf("%w: unsupported elicitation action %q", ErrInvalidInteractionResponse, action)
+		}
 	default:
 		return PendingInteractionResponse{}, fmt.Errorf("%w: unsupported interaction kind %q", ErrInvalidInteractionResponse, interaction.Kind)
 	}
@@ -1341,7 +1427,7 @@ func interactionApprovalDecisions(interaction PendingInteraction) []PendingAppro
 
 func commandExecutionApprovalDecisions(params gen.CommandExecutionRequestApprovalParams) []PendingApprovalDecision {
 	decisions := []PendingApprovalDecision{
-		{Value: string(gen.Accept), Label: "Accept once", Description: "Run this request once and keep the turn going."},
+		{Value: string(gen.FileChangeApprovalDecisionAccept), Label: "Accept once", Description: "Run this request once and keep the turn going."},
 	}
 	if len(params.ProposedExecpolicyAmendment) > 0 {
 		amendment := make([]interface{}, 0, len(params.ProposedExecpolicyAmendment))
@@ -1391,8 +1477,8 @@ func commandExecutionApprovalDecisions(params gen.CommandExecutionRequestApprova
 		})
 	}
 	decisions = append(decisions,
-		PendingApprovalDecision{Value: string(gen.Decline), Label: "Decline", Description: "Reject the request and let the agent continue the turn."},
-		PendingApprovalDecision{Value: string(gen.Cancel), Label: "Cancel", Description: "Reject the request and interrupt the current turn."},
+		PendingApprovalDecision{Value: string(gen.FileChangeApprovalDecisionDecline), Label: "Decline", Description: "Reject the request and let the agent continue the turn."},
+		PendingApprovalDecision{Value: string(gen.FileChangeApprovalDecisionCancel), Label: "Cancel", Description: "Reject the request and interrupt the current turn."},
 	)
 	return decisions
 }
@@ -1405,10 +1491,10 @@ func fileChangeApprovalDecisions(grantRoot string) []PendingApprovalDecision {
 		acceptForSessionDescription = fmt.Sprintf("Allow writes under %s for the rest of the session.", grantRoot)
 	}
 	return []PendingApprovalDecision{
-		{Value: string(gen.Accept), Label: "Accept once", Description: "Run this request once and keep the turn going."},
+		{Value: string(gen.FileChangeApprovalDecisionAccept), Label: "Accept once", Description: "Run this request once and keep the turn going."},
 		{Value: string(gen.AcceptForSession), Label: acceptForSessionLabel, Description: acceptForSessionDescription},
-		{Value: string(gen.Decline), Label: "Decline", Description: "Reject the request and let the agent continue the turn."},
-		{Value: string(gen.Cancel), Label: "Cancel", Description: "Reject the request and interrupt the current turn."},
+		{Value: string(gen.FileChangeApprovalDecisionDecline), Label: "Decline", Description: "Reject the request and let the agent continue the turn."},
+		{Value: string(gen.FileChangeApprovalDecisionCancel), Label: "Cancel", Description: "Reject the request and interrupt the current turn."},
 	}
 }
 
@@ -1500,6 +1586,17 @@ func pendingInteractionSummary(interaction PendingInteraction) string {
 			return header
 		}
 		return "Operator input required."
+	case PendingInteractionKindElicitation:
+		if interaction.Elicitation == nil {
+			return "MCP elicitation required."
+		}
+		if message := strings.TrimSpace(interaction.Elicitation.Message); message != "" {
+			return message
+		}
+		if url := strings.TrimSpace(interaction.Elicitation.URL); url != "" {
+			return url
+		}
+		return "MCP elicitation required."
 	default:
 		return "Operator input required."
 	}
@@ -1564,6 +1661,21 @@ func stringPtrValue(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func jsonMapFromValue(value interface{}) (map[string]interface{}, error) {
+	if value == nil {
+		return nil, nil
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func boolPtrValue(value *bool) bool {

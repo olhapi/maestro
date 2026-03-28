@@ -50,6 +50,8 @@ schema_files=(
   "$SCHEMA_DIR/FileChangeRequestApprovalResponse.json"
   "$SCHEMA_DIR/ToolRequestUserInputParams.json"
   "$SCHEMA_DIR/ToolRequestUserInputResponse.json"
+  "$SCHEMA_DIR/McpServerElicitationRequestParams.json"
+  "$SCHEMA_DIR/McpServerElicitationRequestResponse.json"
   "$SCHEMA_DIR/DynamicToolCallParams.json"
   "$SCHEMA_DIR/DynamicToolCallResponse.json"
 )

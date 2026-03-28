@@ -412,7 +412,7 @@ func shouldAlwaysKeepCompactedStatus(entry IssueActivityEntry) bool {
 		return false
 	}
 	switch strings.TrimSpace(entry.Title) {
-	case "Approval required", "User input required", "Approval resolved", "User input submitted":
+	case "Approval required", "User input required", "Elicitation required", "Approval resolved", "User input submitted", "Elicitation resolved":
 		return true
 	default:
 		return false
@@ -662,6 +662,10 @@ func projectIssueActivityEntry(issueID, identifier, logicalID string, attempt in
 		return projectInputStatus(entry, now, event), true
 	case "item.tool.userInputSubmitted":
 		return projectInputResolved(entry, now, event), true
+	case "mcpServer.elicitation.request":
+		return projectElicitationStatus(entry, now, event), true
+	case "mcpServer.elicitation.resolved":
+		return projectElicitationResolved(entry, now, event), true
 	case "plan.sessionStarted":
 		return projectPlanSessionStarted(entry, now, event), true
 	case "plan.versionPublished", "plan.approvalRequested":
@@ -928,6 +932,38 @@ func projectInputResolved(entry IssueActivityEntry, now time.Time, event appserv
 	return entry
 }
 
+func projectElicitationStatus(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "status"
+	entry.Tier = "primary"
+	entry.Status = "elicitation_required"
+	entry.Title = "Elicitation required"
+	entry.Summary = firstNonEmptyString(cleanActivityText(event.Reason), "The server requested elicitation.")
+	entry.Detail = approvalDetail(event.Raw)
+	entry.Tone = "error"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	entry.StartedAt = &ts
+	return entry
+}
+
+func projectElicitationResolved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "status"
+	entry.Tier = "primary"
+	action := strings.TrimSpace(event.Status)
+	entry.Status = firstNonEmptyString(action, "elicitation_resolved")
+	entry.Title = "Elicitation resolved"
+	entry.Summary = elicitationResponseSummary(action)
+	entry.Detail = approvalResponseDetail(event.Raw)
+	entry.Tone = elicitationResponseTone(action)
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	if entry.StartedAt == nil {
+		entry.StartedAt = &ts
+	}
+	entry.CompletedAt = &ts
+	return entry
+}
+
 func projectPlanSessionStarted(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "plan_session_started"
 	entry.Tier = "primary"
@@ -1063,13 +1099,13 @@ func issueActivityLogicalID(attempt int, event appserver.ActivityEvent) (string,
 			return "", false
 		}
 		return fmt.Sprintf("attempt:%d:status:%s:%s:%s", attempt, threadID, turnID, event.Type), true
-	case "item.commandExecution.requestApproval", "item.fileChange.requestApproval", "execCommandApproval", "applyPatchApproval", "item.tool.requestUserInput":
+	case "item.commandExecution.requestApproval", "item.fileChange.requestApproval", "execCommandApproval", "applyPatchApproval", "item.tool.requestUserInput", "mcpServer.elicitation.request":
 		suffix := firstNonEmptyString(strings.TrimSpace(event.RequestID), itemID)
 		if suffix == "" {
 			return "", false
 		}
 		return fmt.Sprintf("attempt:%d:status:%s:%s:%s", attempt, threadID, turnID, suffix), true
-	case "item.commandExecution.approvalResolved", "item.fileChange.approvalResolved", "execCommandApproval.resolved", "applyPatchApproval.resolved", "item.tool.userInputSubmitted":
+	case "item.commandExecution.approvalResolved", "item.fileChange.approvalResolved", "execCommandApproval.resolved", "applyPatchApproval.resolved", "item.tool.userInputSubmitted", "mcpServer.elicitation.resolved":
 		suffix := firstNonEmptyString(strings.TrimSpace(event.RequestID), itemID)
 		if suffix == "" {
 			return "", false
@@ -1558,6 +1594,28 @@ func inputResponseDetail(raw map[string]interface{}) string {
 		return ""
 	}
 	return string(body)
+}
+
+func elicitationResponseSummary(action string) string {
+	switch strings.TrimSpace(action) {
+	case "accept":
+		return "Operator accepted the elicitation."
+	case "decline":
+		return "Operator declined the elicitation."
+	case "cancel":
+		return "Operator cancelled the elicitation."
+	default:
+		return "Operator resolved the elicitation."
+	}
+}
+
+func elicitationResponseTone(action string) string {
+	switch strings.TrimSpace(action) {
+	case "accept":
+		return "success"
+	default:
+		return "error"
+	}
 }
 
 func appendActivityText(current, delta string) string {

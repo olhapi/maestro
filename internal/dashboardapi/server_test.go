@@ -560,6 +560,118 @@ func TestInterruptEndpointForwardsStructuredDecisionPayloads(t *testing.T) {
 	}
 }
 
+func TestInterruptEndpointForwardsMCPServerElicitationResponses(t *testing.T) {
+	provider := &interruptProvider{
+		interrupts: appserver.PendingInteractionSnapshot{
+			Items: []appserver.PendingInteraction{{
+				ID:          "elicitation-1",
+				Kind:        appserver.PendingInteractionKindElicitation,
+				ThreadID:    "thread-1",
+				TurnID:      "turn-1",
+				RequestedAt: time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
+				ItemID:      "support-bot",
+				Elicitation: &appserver.PendingElicitation{
+					ServerName: "support-bot",
+					Message:    "Need contact details",
+					Mode:       "form",
+				},
+			}},
+		},
+	}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/elicitation-1/respond", map[string]interface{}{
+		"action": "accept",
+		"content": map[string]interface{}{
+			"email": "ops@example.com",
+		},
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.responseID != "elicitation-1" {
+		t.Fatalf("expected interaction id to be forwarded, got %q", provider.responseID)
+	}
+	if provider.response.Action != "accept" {
+		t.Fatalf("expected elicitation action to be forwarded, got %+v", provider.response)
+	}
+	content, ok := provider.response.Content.(map[string]interface{})
+	if !ok || content["email"] != "ops@example.com" {
+		t.Fatalf("expected structured elicitation content, got %+v", provider.response.Content)
+	}
+}
+
+func TestInterruptEndpointDoesNotCreateCommandsForElicitationNotes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       map[string]interface{}
+		respondErr error
+		wantStatus int
+	}{
+		{
+			name: "note only",
+			body: map[string]interface{}{
+				"note": "Please use ops@example.com",
+			},
+			respondErr: appserver.ErrInvalidInteractionResponse,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "note with content",
+			body: map[string]interface{}{
+				"action": "accept",
+				"note":   "Please use ops@example.com",
+				"content": map[string]interface{}{
+					"email": "ops@example.com",
+				},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &interruptProvider{
+				interrupts: appserver.PendingInteractionSnapshot{
+					Items: []appserver.PendingInteraction{{
+						ID:              "elicitation-1",
+						Kind:            appserver.PendingInteractionKindElicitation,
+						IssueID:         "issue-1",
+						IssueIdentifier: "ISS-1",
+						ThreadID:        "thread-1",
+						TurnID:          "turn-1",
+						RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
+						Elicitation: &appserver.PendingElicitation{
+							ServerName: "support-bot",
+							Message:    "Need contact details",
+							Mode:       "form",
+						},
+					}},
+				},
+				respondErr: tc.respondErr,
+			}
+			store, srv := setupDashboardServerTest(t, provider)
+			issue, err := store.CreateIssue("", "", "Elicitation note issue", "", 0, nil)
+			if err != nil {
+				t.Fatalf("CreateIssue: %v", err)
+			}
+			provider.interrupts.Items[0].IssueID = issue.ID
+			provider.interrupts.Items[0].IssueIdentifier = issue.Identifier
+
+			resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/elicitation-1/respond", tc.body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("expected %d, got %d", tc.wantStatus, resp.StatusCode)
+			}
+
+			commands, err := store.ListIssueAgentCommands(issue.ID)
+			if err != nil {
+				t.Fatalf("ListIssueAgentCommands: %v", err)
+			}
+			if len(commands) != 0 {
+				t.Fatalf("expected no issue commands for elicitation notes, got %#v", commands)
+			}
+		})
+	}
+}
+
 func TestInterruptEndpointExposesProviderSuppliedAlertItems(t *testing.T) {
 	provider := &interruptProvider{
 		interrupts: appserver.PendingInteractionSnapshot{
