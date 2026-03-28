@@ -66,11 +66,14 @@ type PendingInteractionAction struct {
 }
 
 type PendingApproval struct {
-	Command   string                    `json:"command,omitempty"`
-	CWD       string                    `json:"cwd,omitempty"`
-	Reason    string                    `json:"reason,omitempty"`
-	Markdown  string                    `json:"markdown,omitempty"`
-	Decisions []PendingApprovalDecision `json:"decisions"`
+	Command           string                    `json:"command,omitempty"`
+	CWD               string                    `json:"cwd,omitempty"`
+	Reason            string                    `json:"reason,omitempty"`
+	Markdown          string                    `json:"markdown,omitempty"`
+	PlanStatus        string                    `json:"plan_status,omitempty"`
+	PlanVersionNumber int                       `json:"plan_version_number,omitempty"`
+	PlanRevisionNote  string                    `json:"plan_revision_note,omitempty"`
+	Decisions         []PendingApprovalDecision `json:"decisions"`
 }
 
 type PendingApprovalDecision struct {

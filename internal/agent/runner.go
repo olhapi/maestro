@@ -1248,7 +1248,13 @@ func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, se
 		return false, nil
 	}
 	requestedAt := time.Now().UTC()
-	if err := r.store.SetIssuePendingPlanApproval(issue.ID, planMarkdown, requestedAt); err != nil {
+	threadID := ""
+	turnID := ""
+	if session != nil {
+		threadID = strings.TrimSpace(session.ThreadID)
+		turnID = strings.TrimSpace(session.TurnID)
+	}
+	if err := r.store.SetIssuePendingPlanApprovalWithContext(issue, planMarkdown, requestedAt, attempt, threadID, turnID); err != nil {
 		return false, err
 	}
 	if err := r.store.AppendRuntimeEvent("plan_approval_requested", map[string]interface{}{
@@ -1261,13 +1267,7 @@ func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, se
 	}); err != nil {
 		return false, err
 	}
-	return true, r.store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, attempt, appserver.ActivityEvent{
-		Type: "plan.approvalRequested",
-		Raw: map[string]interface{}{
-			"markdown":     planMarkdown,
-			"requested_at": requestedAt.Format(time.RFC3339),
-		},
-	})
+	return true, nil
 }
 
 func (r *Runner) clearPendingPlanRevision(issue *kanban.Issue, attempt int) error {

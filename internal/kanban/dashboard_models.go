@@ -189,6 +189,52 @@ type IssuePlanRevision struct {
 	Attempt     int       `json:"attempt"`
 }
 
+type IssuePlanningStatus string
+
+const (
+	IssuePlanningStatusDrafting          IssuePlanningStatus = "drafting"
+	IssuePlanningStatusAwaitingApproval  IssuePlanningStatus = "awaiting_approval"
+	IssuePlanningStatusRevisionRequested IssuePlanningStatus = "revision_requested"
+	IssuePlanningStatusApproved          IssuePlanningStatus = "approved"
+	IssuePlanningStatusAbandoned         IssuePlanningStatus = "abandoned"
+)
+
+type IssuePlanVersion struct {
+	ID            string    `json:"id"`
+	SessionID     string    `json:"session_id"`
+	VersionNumber int       `json:"version_number"`
+	Markdown      string    `json:"markdown"`
+	RevisionNote  string    `json:"revision_note,omitempty"`
+	Attempt       int       `json:"attempt,omitempty"`
+	ThreadID      string    `json:"thread_id,omitempty"`
+	TurnID        string    `json:"turn_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type IssuePlanning struct {
+	SessionID            string              `json:"session_id"`
+	Status               IssuePlanningStatus `json:"status"`
+	CurrentVersionNumber int                 `json:"current_version_number"`
+	CurrentVersion       *IssuePlanVersion   `json:"current_version,omitempty"`
+	Versions             []IssuePlanVersion  `json:"versions,omitempty"`
+	PendingRevisionNote  string              `json:"pending_revision_note,omitempty"`
+	OpenedAt             time.Time           `json:"opened_at"`
+	UpdatedAt            time.Time           `json:"updated_at"`
+	ClosedAt             *time.Time          `json:"closed_at,omitempty"`
+	ClosedReason         string              `json:"closed_reason,omitempty"`
+}
+
+type IssuePlanningSummary struct {
+	SessionID            string              `json:"session_id"`
+	Status               IssuePlanningStatus `json:"status"`
+	CurrentVersionNumber int                 `json:"current_version_number"`
+	CurrentVersion       *IssuePlanVersion   `json:"current_version,omitempty"`
+	PendingRevisionNote  string              `json:"pending_revision_note,omitempty"`
+	OpenedAt             time.Time           `json:"opened_at"`
+	UpdatedAt            time.Time           `json:"updated_at"`
+	ClosedAt             *time.Time          `json:"closed_at,omitempty"`
+}
+
 type WorkspaceRecovery struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
@@ -235,6 +281,7 @@ type SessionFeedEntry struct {
 	Source           string                        `json:"source"`
 	Active           bool                          `json:"active"`
 	Status           string                        `json:"status"`
+	Planning         *IssuePlanningSummary         `json:"planning,omitempty"`
 	PendingInterrupt *appserver.PendingInteraction `json:"pending_interrupt,omitempty"`
 	Phase            string                        `json:"phase,omitempty"`
 	Attempt          int                           `json:"attempt,omitempty"`

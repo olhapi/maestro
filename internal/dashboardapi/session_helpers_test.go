@@ -75,6 +75,7 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 		observability.RetryEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
 		observability.PausedEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
 		nil,
+		nil,
 		"Plan approval issue",
 	)
 
@@ -125,6 +126,12 @@ func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
 			Identifier:                     "ISS-1",
 			PendingPlanRevisionMarkdown:    "Tighten the rollout and keep the rollback explicit.",
 			PendingPlanRevisionRequestedAt: &revisionRequestedAt,
+		},
+		&kanban.IssuePlanning{
+			SessionID:           "plan-session-1",
+			Status:              kanban.IssuePlanningStatusRevisionRequested,
+			PendingRevisionNote: "Tighten the rollout and keep the rollback explicit.",
+			UpdatedAt:           revisionRequestedAt,
 		},
 		"Plan approval issue",
 	)

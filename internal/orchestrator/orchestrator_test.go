@@ -1207,7 +1207,16 @@ func TestPendingInterruptsIncludePlanApprovalRequests(t *testing.T) {
 	if current.Approval.Reason != "Review the proposed plan before execution." {
 		t.Fatalf("expected plan approval reason, got %+v", current.Approval)
 	}
-	if current.LastActivity != "Plan ready for approval." {
+	if current.Approval.PlanStatus != "awaiting_approval" {
+		t.Fatalf("expected plan status in interrupt payload, got %+v", current.Approval)
+	}
+	if current.Approval.PlanVersionNumber != 1 {
+		t.Fatalf("expected plan version number in interrupt payload, got %+v", current.Approval)
+	}
+	if current.Approval.PlanRevisionNote != "" {
+		t.Fatalf("expected no pending revision note in interrupt payload, got %+v", current.Approval)
+	}
+	if current.LastActivity != "Plan v1 ready for approval." {
 		t.Fatalf("expected plan approval activity summary, got %q", current.LastActivity)
 	}
 }

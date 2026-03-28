@@ -662,10 +662,18 @@ func projectIssueActivityEntry(issueID, identifier, logicalID string, attempt in
 		return projectInputStatus(entry, now, event), true
 	case "item.tool.userInputSubmitted":
 		return projectInputResolved(entry, now, event), true
-	case "plan.approvalRequested":
+	case "plan.sessionStarted":
+		return projectPlanSessionStarted(entry, now, event), true
+	case "plan.versionPublished", "plan.approvalRequested":
 		return projectPlanApprovalRequested(entry, now, event), true
+	case "plan.revisionRequested":
+		return projectPlanRevisionRequested(entry, now, event), true
+	case "plan.revisionApplied":
+		return projectPlanRevisionApplied(entry, now, event), true
 	case "plan.approved":
 		return projectPlanApproved(entry, now, event), true
+	case "plan.abandoned":
+		return projectPlanAbandoned(entry, now, event), true
 	default:
 		return IssueActivityEntry{}, false
 	}
@@ -920,12 +928,12 @@ func projectInputResolved(entry IssueActivityEntry, now time.Time, event appserv
 	return entry
 }
 
-func projectPlanApprovalRequested(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
-	entry.Kind = "status"
+func projectPlanSessionStarted(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "plan_session_started"
 	entry.Tier = "primary"
-	entry.Status = "plan_approval_pending"
-	entry.Title = "Plan ready for approval"
-	entry.Summary = firstNonEmptyString(planApprovalMarkdown(event.Raw), "The agent produced a final plan for approval.")
+	entry.Status = "drafting"
+	entry.Title = "Planning session started"
+	entry.Summary = "Maestro opened a planning session for this issue."
 	entry.Detail = planApprovalDetail(event.Raw)
 	entry.Tone = "default"
 	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
@@ -935,14 +943,80 @@ func projectPlanApprovalRequested(entry IssueActivityEntry, now time.Time, event
 	return entry
 }
 
+func projectPlanApprovalRequested(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "plan_version_published"
+	entry.Tier = "primary"
+	entry.Status = "plan_approval_pending"
+	versionNumber := firstString(event.Raw, "version_number")
+	entry.Title = "Plan ready for approval"
+	if strings.TrimSpace(versionNumber) != "" {
+		entry.Title = fmt.Sprintf("Plan v%s ready for approval", strings.TrimSpace(versionNumber))
+	}
+	entry.Summary = firstNonEmptyString(planApprovalMarkdown(event.Raw), "The agent produced a final plan for approval.")
+	entry.Detail = planApprovalDetail(event.Raw)
+	entry.Tone = "default"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	entry.StartedAt = &ts
+	entry.CompletedAt = &ts
+	return entry
+}
+
+func projectPlanRevisionRequested(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "plan_revision_requested"
+	entry.Tier = "primary"
+	entry.Status = "revision_requested"
+	entry.Title = "Plan revision requested"
+	entry.Summary = firstNonEmptyString(cleanActivityText(firstString(event.Raw, "revision_note", "markdown")), "Operator requested changes to the plan.")
+	entry.Detail = planApprovalDetail(event.Raw)
+	entry.Tone = "default"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	entry.StartedAt = &ts
+	entry.CompletedAt = &ts
+	return entry
+}
+
+func projectPlanRevisionApplied(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "plan_revision_applied"
+	entry.Tier = "primary"
+	entry.Status = "drafting"
+	entry.Title = "Plan revision in progress"
+	entry.Summary = firstNonEmptyString(cleanActivityText(firstString(event.Raw, "revision_note")), "Maestro started the next planning turn with the queued revision note.")
+	entry.Detail = planApprovalDetail(event.Raw)
+	entry.Tone = "default"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	entry.StartedAt = &ts
+	entry.CompletedAt = &ts
+	return entry
+}
+
 func projectPlanApproved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
-	entry.Kind = "status"
+	entry.Kind = "plan_approved"
 	entry.Tier = "primary"
 	entry.Status = "plan_approved"
 	entry.Title = "Plan approved"
 	entry.Summary = "Operator approved the plan and resumed execution."
 	entry.Detail = planApprovalDetail(event.Raw)
 	entry.Tone = "success"
+	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
+	ts := now
+	if entry.StartedAt == nil {
+		entry.StartedAt = &ts
+	}
+	entry.CompletedAt = &ts
+	return entry
+}
+
+func projectPlanAbandoned(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+	entry.Kind = "plan_session_abandoned"
+	entry.Tier = "primary"
+	entry.Status = "abandoned"
+	entry.Title = "Planning session abandoned"
+	entry.Summary = firstNonEmptyString(cleanActivityText(firstString(event.Raw, "reason")), "The pending plan was cleared without approval.")
+	entry.Detail = planApprovalDetail(event.Raw)
+	entry.Tone = "error"
 	entry.Expandable = activityEntryExpandable(entry.Detail, entry.Summary)
 	ts := now
 	if entry.StartedAt == nil {
@@ -1001,8 +1075,27 @@ func issueActivityLogicalID(attempt int, event appserver.ActivityEvent) (string,
 			return "", false
 		}
 		return fmt.Sprintf("attempt:%d:status:%s:%s:%s", attempt, threadID, turnID, suffix), true
-	case "plan.approvalRequested", "plan.approved":
-		return fmt.Sprintf("attempt:%d:status:plan-approval", attempt), true
+	case "plan.sessionStarted":
+		suffix := firstNonEmptyString(firstString(event.Raw, "session_id"), turnID, event.Type)
+		return fmt.Sprintf("attempt:%d:planning:%s:session-start", attempt, suffix), true
+	case "plan.versionPublished", "plan.approvalRequested":
+		sessionID := firstNonEmptyString(firstString(event.Raw, "session_id"), "planning")
+		version := firstNonEmptyString(firstString(event.Raw, "version_number"), "current")
+		return fmt.Sprintf("attempt:%d:planning:%s:version:%s", attempt, sessionID, version), true
+	case "plan.revisionRequested":
+		sessionID := firstNonEmptyString(firstString(event.Raw, "session_id"), "planning")
+		requestedAt := firstNonEmptyString(firstString(event.Raw, "requested_at"), firstString(event.Raw, "cleared_at"), "requested")
+		return fmt.Sprintf("attempt:%d:planning:%s:revision-requested:%s", attempt, sessionID, requestedAt), true
+	case "plan.revisionApplied":
+		sessionID := firstNonEmptyString(firstString(event.Raw, "session_id"), "planning")
+		requestedAt := firstNonEmptyString(firstString(event.Raw, "requested_at"), firstString(event.Raw, "cleared_at"), "applied")
+		return fmt.Sprintf("attempt:%d:planning:%s:revision-applied:%s", attempt, sessionID, requestedAt), true
+	case "plan.approved":
+		sessionID := firstNonEmptyString(firstString(event.Raw, "session_id"), "planning")
+		return fmt.Sprintf("attempt:%d:planning:%s:approved", attempt, sessionID), true
+	case "plan.abandoned":
+		sessionID := firstNonEmptyString(firstString(event.Raw, "session_id"), "planning")
+		return fmt.Sprintf("attempt:%d:planning:%s:abandoned", attempt, sessionID), true
 	default:
 		return "", false
 	}

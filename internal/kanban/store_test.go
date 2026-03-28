@@ -256,6 +256,186 @@ func TestIssuePlanApprovalLifecyclePersistsAndPromotes(t *testing.T) {
 	}
 }
 
+func TestIssuePlanningTracksContextAndPublishedVersions(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Planning context timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 9, 30, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApprovalWithContext(
+		issue,
+		"Investigate the current rollout and publish the safest path.",
+		requestedAt,
+		4,
+		"thread-plan-1",
+		"turn-plan-1",
+	); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext(v1): %v", err)
+	}
+
+	planning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning(v1): %v", err)
+	}
+	if planning == nil {
+		t.Fatal("expected planning record after publishing the first plan")
+	}
+	if planning.Status != IssuePlanningStatusAwaitingApproval {
+		t.Fatalf("expected awaiting approval after first plan, got %+v", planning)
+	}
+	if planning.CurrentVersionNumber != 1 || planning.CurrentVersion == nil {
+		t.Fatalf("expected current version 1, got %+v", planning)
+	}
+	if len(planning.Versions) != 1 {
+		t.Fatalf("expected one published version, got %+v", planning.Versions)
+	}
+	if planning.CurrentVersion.Markdown != "Investigate the current rollout and publish the safest path." {
+		t.Fatalf("unexpected current version markdown: %+v", planning.CurrentVersion)
+	}
+	if planning.CurrentVersion.Attempt != 4 || planning.CurrentVersion.ThreadID != "thread-plan-1" || planning.CurrentVersion.TurnID != "turn-plan-1" {
+		t.Fatalf("expected planning context to persist on the first version, got %+v", planning.CurrentVersion)
+	}
+
+	revisionRequestedAt := requestedAt.Add(5 * time.Minute)
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and keep the rollback explicit.", revisionRequestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+	planning, err = store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning(revision requested): %v", err)
+	}
+	if planning.Status != IssuePlanningStatusRevisionRequested || planning.PendingRevisionNote != "Tighten the rollout and keep the rollback explicit." {
+		t.Fatalf("expected queued revision state, got %+v", planning)
+	}
+
+	if err := store.ClearIssuePendingPlanRevision(issue.ID, "turn_started"); err != nil {
+		t.Fatalf("ClearIssuePendingPlanRevision(turn_started): %v", err)
+	}
+	planning, err = store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning(drafting): %v", err)
+	}
+	if planning.Status != IssuePlanningStatusDrafting {
+		t.Fatalf("expected drafting status while the revised turn is running, got %+v", planning)
+	}
+	if planning.PendingRevisionNote != "Tighten the rollout and keep the rollback explicit." {
+		t.Fatalf("expected revision note to remain attached during drafting, got %+v", planning)
+	}
+
+	republishedAt := revisionRequestedAt.Add(5 * time.Minute)
+	if err := store.SetIssuePendingPlanApprovalWithContext(
+		issue,
+		"Publish the tightened rollout with an explicit rollback step.",
+		republishedAt,
+		5,
+		"thread-plan-2",
+		"turn-plan-2",
+	); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext(v2): %v", err)
+	}
+
+	planning, err = store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning(v2): %v", err)
+	}
+	if planning.Status != IssuePlanningStatusAwaitingApproval {
+		t.Fatalf("expected awaiting approval after republishing, got %+v", planning)
+	}
+	if planning.CurrentVersionNumber != 2 || planning.CurrentVersion == nil {
+		t.Fatalf("expected current version 2, got %+v", planning)
+	}
+	if len(planning.Versions) != 2 {
+		t.Fatalf("expected two published versions, got %+v", planning.Versions)
+	}
+	if planning.CurrentVersion.Markdown != "Publish the tightened rollout with an explicit rollback step." {
+		t.Fatalf("unexpected republished plan markdown: %+v", planning.CurrentVersion)
+	}
+	if planning.CurrentVersion.RevisionNote != "Tighten the rollout and keep the rollback explicit." {
+		t.Fatalf("expected republished plan to capture the revision note, got %+v", planning.CurrentVersion)
+	}
+	if planning.CurrentVersion.Attempt != 5 || planning.CurrentVersion.ThreadID != "thread-plan-2" || planning.CurrentVersion.TurnID != "turn-plan-2" {
+		t.Fatalf("expected updated planning context on the second version, got %+v", planning.CurrentVersion)
+	}
+	if planning.PendingRevisionNote != "" {
+		t.Fatalf("expected pending revision note to clear after republishing, got %+v", planning)
+	}
+	if planning.Versions[0].SessionID != planning.SessionID || planning.Versions[1].SessionID != planning.SessionID {
+		t.Fatalf("expected all versions to stay in the same planning session, got %+v", planning.Versions)
+	}
+}
+
+func TestBackfillOpenIssuePlanSessionsHydratesLegacyPlanningState(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Legacy planning backfill", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 8, 45, 0, 0, time.UTC)
+	revisionRequestedAt := requestedAt.Add(10 * time.Minute)
+	if _, err := store.db.Exec(`
+		UPDATE issues
+		SET plan_approval_pending = 1,
+		    pending_plan_markdown = ?,
+		    pending_plan_requested_at = ?,
+		    pending_plan_revision_markdown = ?,
+		    pending_plan_revision_requested_at = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		"Legacy plan body",
+		requestedAt,
+		"Need a tighter rollback path.",
+		revisionRequestedAt,
+		revisionRequestedAt,
+		issue.ID,
+	); err != nil {
+		t.Fatalf("UPDATE issues legacy planning state: %v", err)
+	}
+	if _, err := store.db.Exec(`DELETE FROM store_metadata WHERE key = ?`, "issue_plan_sessions_open_backfill_v1"); err != nil {
+		t.Fatalf("DELETE store_metadata backfill marker: %v", err)
+	}
+
+	if err := store.backfillOpenIssuePlanSessions(); err != nil {
+		t.Fatalf("backfillOpenIssuePlanSessions: %v", err)
+	}
+
+	planning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning(backfilled): %v", err)
+	}
+	if planning == nil {
+		t.Fatal("expected planning state after backfill")
+	}
+	if planning.Status != IssuePlanningStatusRevisionRequested {
+		t.Fatalf("expected revision requested status after backfill, got %+v", planning)
+	}
+	if planning.CurrentVersionNumber != 1 || planning.CurrentVersion == nil {
+		t.Fatalf("expected backfilled current version metadata, got %+v", planning)
+	}
+	if planning.CurrentVersion.Markdown != "Legacy plan body" {
+		t.Fatalf("unexpected backfilled markdown: %+v", planning.CurrentVersion)
+	}
+	if planning.PendingRevisionNote != "Need a tighter rollback path." {
+		t.Fatalf("unexpected backfilled revision note: %+v", planning)
+	}
+	if len(planning.Versions) != 1 {
+		t.Fatalf("expected one backfilled version, got %+v", planning.Versions)
+	}
+
+	if err := store.backfillOpenIssuePlanSessions(); err != nil {
+		t.Fatalf("backfillOpenIssuePlanSessions second run: %v", err)
+	}
+	planning, err = store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning(backfilled second run): %v", err)
+	}
+	if len(planning.Versions) != 1 {
+		t.Fatalf("expected backfill to stay idempotent, got %+v", planning.Versions)
+	}
+}
+
 func TestApproveIssuePlanWithNotePersistsApprovalEventAndCommand(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Plan approval with note", "", 0, nil)
