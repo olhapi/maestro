@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
 import type { BootstrapResponse } from '@/lib/types'
-import { formatCompactNumber, formatNumber, formatRelativeTime } from '@/lib/utils'
+import { cn, formatCompactNumber, formatNumber, formatRelativeTime, formatRelativeTimeCompact } from '@/lib/utils'
 
 type SeriesPoint = BootstrapResponse['overview']['series'][number]
 
@@ -159,7 +159,7 @@ function ExecutionHealthChart({ series }: { series: SeriesPoint[] }) {
 
 function TokenBurnChart({ series }: { series: SeriesPoint[] }) {
   return (
-    <ResponsiveContainer width="100%" height={220}>
+    <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
         <defs>
           <linearGradient id="tokenBurn" x1="0" x2="0" y1="0" y2="1">
@@ -207,6 +207,7 @@ function OverviewTrendCard({
   action,
   boundaryLabel,
   minHeight,
+  chartClassName,
   resetKey,
   children,
 }: {
@@ -217,11 +218,12 @@ function OverviewTrendCard({
   action?: ReactNode
   boundaryLabel: string
   minHeight: string
+  chartClassName: string
   resetKey: string
   children: ReactNode
 }) {
   return (
-    <Card className="h-full overflow-hidden">
+    <Card className="flex h-full flex-col overflow-hidden">
       <CardHeader className="flex-col items-start gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <Badge>{badge}</Badge>
@@ -231,9 +233,11 @@ function OverviewTrendCard({
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
       </CardHeader>
-      <ComponentErrorBoundary className={minHeight} label={boundaryLabel} resetKeys={[resetKey]} scope="widget">
-        <CardContent className="min-w-0 pt-0">{children}</CardContent>
-      </ComponentErrorBoundary>
+      <CardContent className="flex min-h-0 flex-1 flex-col pt-0">
+        <ComponentErrorBoundary className={minHeight} label={boundaryLabel} resetKeys={[resetKey]} scope="widget">
+          <div className={cn('min-h-0', chartClassName)}>{children}</div>
+        </ComponentErrorBoundary>
+      </CardContent>
     </Card>
   )
 }
@@ -260,7 +264,7 @@ export function OverviewPage() {
         <Metric
           label="Live token load"
           value={formatCompactNumber(snapshot.codex_totals.total_tokens)}
-          detail={`Current running sessions only. Snapshot refreshed ${formatRelativeTime(data.generated_at)}.`}
+          detail={`Current running sessions only. Snapshot refreshed ${formatRelativeTimeCompact(data.generated_at)}.`}
           icon={Activity}
         />
       </section>
@@ -273,6 +277,7 @@ export function OverviewPage() {
           legend={executionHealthSeries}
           boundaryLabel="overview execution health chart"
           minHeight="min-h-[340px]"
+          chartClassName="h-[320px]"
           resetKey={data.generated_at}
         >
           <ExecutionHealthChart series={data.overview.series} />
@@ -285,6 +290,7 @@ export function OverviewPage() {
           action={<Badge className="border-white/10 bg-white/5 text-white/90">{formatCompactNumber(burnTotal)} total</Badge>}
           boundaryLabel="overview token burn chart"
           minHeight="min-h-[260px]"
+          chartClassName="h-[220px] lg:h-full"
           resetKey={data.generated_at}
         >
           <TokenBurnChart series={data.overview.series} />
