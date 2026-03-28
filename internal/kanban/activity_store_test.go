@@ -3,6 +3,7 @@ package kanban
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/olhapi/maestro/internal/appserver"
 )
@@ -664,6 +665,46 @@ func TestApplyIssueActivityEventProjectsPlanApprovalRows(t *testing.T) {
 	}
 	if entries[1].Summary != "Operator approved the plan and resumed execution." {
 		t.Fatalf("unexpected plan approval resolved summary: %#v", entries[1])
+	}
+}
+
+func TestApplyIssueActivityEventProjectsPlanRevisionAppliedRow(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan revision applied timeline", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 9, 35, 0, 0, time.UTC)
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 7, appserver.ActivityEvent{
+		Type: "plan.revisionApplied",
+		Raw: map[string]interface{}{
+			"session_id":    "plan-session-1",
+			"requested_at":  requestedAt.Format(time.RFC3339),
+			"revision_note": "Tighten the rollout and keep the rollback explicit.",
+		},
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent plan revision applied: %v", err)
+	}
+
+	entries, err := store.ListIssueActivityEntries(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueActivityEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one plan revision applied row, got %#v", entries)
+	}
+	if entries[0].Kind != "plan_revision_applied" || entries[0].Status != "drafting" {
+		t.Fatalf("unexpected plan revision applied entry: %#v", entries[0])
+	}
+	if entries[0].Summary != "Tighten the rollout and keep the rollback explicit." {
+		t.Fatalf("unexpected plan revision applied summary: %#v", entries[0])
+	}
+	if entries[0].CompletedAt == nil {
+		t.Fatalf("expected plan revision applied row to resolve immediately, got %#v", entries[0])
+	}
+	if !strings.Contains(entries[0].Detail, "\"requested_at\": \""+requestedAt.Format(time.RFC3339)+"\"") {
+		t.Fatalf("expected detail to retain revision request context, got %#v", entries[0])
 	}
 }
 
