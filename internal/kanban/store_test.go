@@ -3235,6 +3235,74 @@ func TestDeleteIssueReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteIssueRemovesPlanningHistory(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Planned issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	firstRequestedAt := time.Date(2026, 3, 18, 9, 30, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApprovalWithContext(
+		issue,
+		"Investigate the rollout path and keep rollback explicit.",
+		firstRequestedAt,
+		1,
+		"thread-plan-1",
+		"turn-plan-1",
+	); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext first version: %v", err)
+	}
+
+	secondRequestedAt := firstRequestedAt.Add(15 * time.Minute)
+	if err := store.SetIssuePendingPlanApprovalWithContext(
+		issue,
+		"Publish the tightened rollout with the rollback step called out.",
+		secondRequestedAt,
+		2,
+		"thread-plan-2",
+		"turn-plan-2",
+	); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext second version: %v", err)
+	}
+
+	planning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning before delete: %v", err)
+	}
+	if planning == nil {
+		t.Fatal("expected planning history before delete")
+	}
+	if planning.SessionID == "" {
+		t.Fatal("expected planning session id before delete")
+	}
+	if len(planning.Versions) != 2 {
+		t.Fatalf("expected two planning versions before delete, got %+v", planning.Versions)
+	}
+
+	if err := store.DeleteIssue(issue.ID); err != nil {
+		t.Fatalf("DeleteIssue with planning history: %v", err)
+	}
+
+	for _, tc := range []struct {
+		query string
+		args  []interface{}
+		want  int
+	}{
+		{query: `SELECT COUNT(*) FROM issue_plan_sessions WHERE issue_id = ?`, args: []interface{}{issue.ID}, want: 0},
+		{query: `SELECT COUNT(*) FROM issue_plan_versions WHERE session_id = ?`, args: []interface{}{planning.SessionID}, want: 0},
+	} {
+		var got int
+		if err := store.db.QueryRow(tc.query, tc.args...).Scan(&got); err != nil {
+			t.Fatalf("query %q: %v", tc.query, err)
+		}
+		if got != tc.want {
+			t.Fatalf("query %q = %d, want %d", tc.query, got, tc.want)
+		}
+	}
+}
+
 func TestDeleteIssueRemovesIncomingBlockersAndReactivatesCommands(t *testing.T) {
 	store := setupTestStore(t)
 

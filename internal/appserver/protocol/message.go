@@ -22,6 +22,7 @@ const (
 	MethodExecCommandApproval          = "execCommandApproval"
 	MethodApplyPatchApproval           = "applyPatchApproval"
 	MethodToolRequestUserInput         = "item/tool/requestUserInput"
+	MethodMCPServerElicitationRequest  = "mcpServer/elicitation/request"
 	MethodToolCall                     = "item/tool/call"
 )
 

@@ -154,6 +154,130 @@ func TestWaitForPendingInteractionAllowsSynchronousResponse(t *testing.T) {
 	}
 }
 
+func TestWaitForPendingInteractionSupportsMCPServerElicitationRequests(t *testing.T) {
+	stdin := &bufferWriteCloser{}
+	doneIDs := make(chan string, 1)
+	interactionIDs := make(chan *PendingInteraction, 1)
+	responseErrs := make(chan error, 1)
+	client := &Client{
+		cfg: ClientConfig{
+			IssueID:         "issue-1",
+			IssueIdentifier: "ISS-1",
+			Workspace:       t.TempDir(),
+			ReadTimeout:     100 * time.Millisecond,
+			OnPendingInteractionDone: func(interactionID string) {
+				doneIDs <- interactionID
+			},
+		},
+		stdin:               stdin,
+		lines:               make(chan string),
+		lineErr:             make(chan error, 1),
+		waitCh:              make(chan error, 1),
+		session:             &Session{SessionID: "session-1", ThreadID: "thread-1", TurnID: "turn-1", MaxHistory: 4},
+		logger:              discardLogger(),
+		pendingInteractions: make(map[string]*interactionWaiter),
+	}
+	client.cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction == nil {
+			responseErrs <- fmt.Errorf("nil interaction")
+			return
+		}
+		cloned := interaction.Clone()
+		interactionIDs <- &cloned
+		responseErrs <- client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+			Action: "accept",
+			Content: map[string]interface{}{
+				"email": "ops@example.com",
+			},
+		})
+	}
+
+	msg, ok := protocol.DecodeMessage(`{"id":99,"method":"mcpServer/elicitation/request","params":{"serverName":"support-bot","threadId":"thread-1","turnId":"turn-1","message":"Need contact details","mode":"form","requestedSchema":{"type":"object","properties":{"email":{"type":"string","default":"ops@example.com"},"notify":{"type":"boolean","default":true},"priority":{"type":"number","default":3.5}},"required":["email"]}}}`)
+	if !ok {
+		t.Fatal("expected test payload to decode")
+	}
+
+	resultCh := make(chan error, 1)
+	go func() {
+		handled, err := client.waitForPendingInteraction(context.Background(), msg)
+		if err != nil {
+			resultCh <- err
+			return
+		}
+		if !handled {
+			resultCh <- fmt.Errorf("expected request to be handled")
+			return
+		}
+		resultCh <- nil
+	}()
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("waitForPendingInteraction failed: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for synchronous elicitation response")
+	}
+
+	select {
+	case err := <-responseErrs:
+		if err != nil {
+			t.Fatalf("synchronous response failed: %v", err)
+		}
+	default:
+		t.Fatal("expected callback to respond synchronously")
+	}
+
+	var interaction *PendingInteraction
+	select {
+	case interaction = <-interactionIDs:
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected callback to observe pending interaction")
+	}
+	if interaction.Kind != PendingInteractionKindElicitation {
+		t.Fatalf("expected elicitation interaction, got %+v", interaction)
+	}
+	if interaction.Elicitation == nil || interaction.Elicitation.Mode != "form" || interaction.Elicitation.ServerName != "support-bot" || interaction.Elicitation.Message != "Need contact details" {
+		t.Fatalf("unexpected elicitation payload: %+v", interaction)
+	}
+	if got := interaction.Elicitation.RequestedSchema["type"]; got != "object" {
+		t.Fatalf("expected requested schema to survive round trip, got %#v", got)
+	}
+	properties, ok := interaction.Elicitation.RequestedSchema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected requested schema properties to survive round trip, got %#v", interaction.Elicitation.RequestedSchema["properties"])
+	}
+	email, ok := properties["email"].(map[string]interface{})
+	if !ok || email["default"] != "ops@example.com" {
+		t.Fatalf("expected string default to survive round trip, got %#v", properties["email"])
+	}
+	notify, ok := properties["notify"].(map[string]interface{})
+	if !ok || notify["default"] != true {
+		t.Fatalf("expected boolean default to survive round trip, got %#v", properties["notify"])
+	}
+	priority, ok := properties["priority"].(map[string]interface{})
+	if !ok || priority["default"] != 3.5 {
+		t.Fatalf("expected number default to survive round trip, got %#v", properties["priority"])
+	}
+
+	select {
+	case doneID := <-doneIDs:
+		if doneID != interaction.ID {
+			t.Fatalf("expected pending interaction %q to be cleared, got %q", interaction.ID, doneID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected pending interaction cleanup callback")
+	}
+
+	if len(client.pendingInteractions) != 0 {
+		t.Fatalf("expected pending interactions to be cleared, got %#v", client.pendingInteractions)
+	}
+	if !strings.Contains(stdin.String(), `"action":"accept"`) || !strings.Contains(stdin.String(), `"email":"ops@example.com"`) {
+		t.Fatalf("expected elicitation response in output, got %q", stdin.String())
+	}
+}
+
 func TestAwaitTurnCompletionFailsFastOnUnsupportedIdBearingRequest(t *testing.T) {
 	client := &Client{
 		cfg: ClientConfig{

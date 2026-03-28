@@ -90,7 +90,7 @@ codex:
   # Exact command Maestro launches for the agent.
   command: codex app-server
   # Expected codex --version. Mismatches warn but do not hard-fail.
-  expected_version: 0.116.0
+  expected_version: 0.117.0
   # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
   # A structured granular object is also supported for per-category approval policies.
   # `on-request` keeps the run interactive so permission recovery can happen through approvals.

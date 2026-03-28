@@ -150,18 +150,18 @@ func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 			return ActivityEvent{}, false
 		}
 		return ActivityEvent{
-			Type:     normalizeEventType(method),
-			ThreadID: strings.TrimSpace(firstStr(params, "threadId", "thread_id")),
-			TurnID:   strings.TrimSpace(firstStr(params, "turnId", "turn_id")),
-			ItemID:   strings.TrimSpace(firstStr(params, "itemId", "item_id", "callId", "call_id")),
-			ItemType: "commandExecution",
-			Delta:    firstStr(params, "delta", "chunk"),
-			Command:  strings.TrimSpace(firstStr(params, "command")),
-			CWD:      strings.TrimSpace(firstStr(params, "cwd")),
-			Raw:      cloneRawMap(msg.Raw),
-		}, firstStr(params, "threadId", "thread_id") != "" ||
-			firstStr(params, "turnId", "turn_id") != "" ||
-			firstStr(params, "itemId", "item_id", "callId", "call_id") != ""
+				Type:     normalizeEventType(method),
+				ThreadID: strings.TrimSpace(firstStr(params, "threadId", "thread_id")),
+				TurnID:   strings.TrimSpace(firstStr(params, "turnId", "turn_id")),
+				ItemID:   strings.TrimSpace(firstStr(params, "itemId", "item_id", "callId", "call_id")),
+				ItemType: "commandExecution",
+				Delta:    firstStr(params, "delta", "chunk"),
+				Command:  strings.TrimSpace(firstStr(params, "command")),
+				CWD:      strings.TrimSpace(firstStr(params, "cwd")),
+				Raw:      cloneRawMap(msg.Raw),
+			}, firstStr(params, "threadId", "thread_id") != "" ||
+				firstStr(params, "turnId", "turn_id") != "" ||
+				firstStr(params, "itemId", "item_id", "callId", "call_id") != ""
 	case "item/commandExecution/terminalInteraction":
 		var payload struct {
 			ThreadID  string `json:"threadId"`
@@ -183,12 +183,15 @@ func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 			Stdin:     payload.Stdin,
 			Raw:       cloneRawMap(msg.Raw),
 		}, payload.ThreadID != "" || payload.TurnID != "" || payload.ItemID != ""
-	case protocol.MethodItemCommandExecutionApproval, protocol.MethodItemFileChangeApproval, protocol.MethodExecCommandApproval, protocol.MethodApplyPatchApproval, protocol.MethodToolRequestUserInput:
+	case protocol.MethodItemCommandExecutionApproval, protocol.MethodItemFileChangeApproval, protocol.MethodExecCommandApproval, protocol.MethodApplyPatchApproval, protocol.MethodToolRequestUserInput, protocol.MethodMCPServerElicitationRequest:
 		params, ok := messageParamsMap(msg)
 		if !ok {
 			return ActivityEvent{}, false
 		}
 		event := activityEventFromParams(normalizeEventType(method), requestIDString(msg), params, nil, msg.Raw)
+		if method == protocol.MethodMCPServerElicitationRequest {
+			event.Reason = strings.TrimSpace(firstStr(params, "message", "url"))
+		}
 		return event, event.ThreadID != "" || event.TurnID != "" || event.ItemID != "" || event.RequestID != ""
 	default:
 		return ActivityEvent{}, false

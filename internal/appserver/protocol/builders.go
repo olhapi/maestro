@@ -170,6 +170,16 @@ func ToolRequestUserInputResult(id RequestID, answers map[string]gen.ToolRequest
 	}
 }
 
+func MCPServerElicitationRequestResult(id RequestID, action gen.MCPServerElicitationAction, content interface{}) SuccessResponse[gen.MCPServerElicitationRequestResponse] {
+	return SuccessResponse[gen.MCPServerElicitationRequestResponse]{
+		ID: id,
+		Result: gen.MCPServerElicitationRequestResponse{
+			Action:  action,
+			Content: content,
+		},
+	}
+}
+
 func DynamicToolCallResult(id RequestID, success bool, text string) SuccessResponse[gen.DynamicToolCallResponse] {
 	return SuccessResponse[gen.DynamicToolCallResponse]{
 		ID: id,

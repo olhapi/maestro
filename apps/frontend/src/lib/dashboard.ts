@@ -2,6 +2,13 @@ import type { DashboardRuntimeSource, IssueState, IssueSummary, PausedEntry, Ret
 
 export const issueStates: IssueState[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled']
 
+export const issueSortOptions = [
+  { value: 'updated_desc', label: 'Recently updated' },
+  { value: 'priority_asc', label: 'Highest priority' },
+  { value: 'identifier_asc', label: 'Identifier A-Z' },
+  { value: 'state_asc', label: 'State grouping' },
+] as const
+
 export const stateMeta: Record<string, { label: string; accent: string; boardTint: string; progressFill: string }> = {
   backlog: { label: 'Backlog', accent: 'text-slate-200', boardTint: 'from-slate-500/20 to-slate-900/20', progressFill: 'bg-slate-400/90' },
   ready: { label: 'Ready', accent: 'text-cyan-200', boardTint: 'from-cyan-500/20 to-slate-900/20', progressFill: 'bg-cyan-400/90' },
@@ -43,6 +50,59 @@ export function issueStatesFor(items: IssueSummary[], preferredStates: string[] 
     ordered.push(item.state)
   }
   return ordered
+}
+
+function compareDatesDescending(left: string, right: string) {
+  return new Date(right).getTime() - new Date(left).getTime()
+}
+
+function compareDatesAscending(left: string, right: string) {
+  return new Date(left).getTime() - new Date(right).getTime()
+}
+
+export function sortIssues(items: IssueSummary[], sort: string) {
+  return [...items].sort((left, right) => {
+    switch (sort) {
+      case 'created_asc':
+        return compareDatesAscending(left.created_at, right.created_at)
+      case 'priority_asc': {
+        const leftPriorityGroup = left.priority > 0 ? 0 : 1
+        const rightPriorityGroup = right.priority > 0 ? 0 : 1
+        if (leftPriorityGroup !== rightPriorityGroup) {
+          return leftPriorityGroup - rightPriorityGroup
+        }
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority
+        }
+        return compareDatesDescending(left.updated_at, right.updated_at)
+      }
+      case 'identifier_asc':
+        return left.identifier.localeCompare(right.identifier)
+      case 'state_asc': {
+        const stateDelta = left.state.localeCompare(right.state)
+        if (stateDelta !== 0) {
+          return stateDelta
+        }
+        const leftPriorityGroup = left.priority > 0 ? 0 : 1
+        const rightPriorityGroup = right.priority > 0 ? 0 : 1
+        if (leftPriorityGroup !== rightPriorityGroup) {
+          return leftPriorityGroup - rightPriorityGroup
+        }
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority
+        }
+        return compareDatesDescending(left.updated_at, right.updated_at)
+      }
+      case 'updated_desc':
+      default: {
+        const updatedDelta = compareDatesDescending(left.updated_at, right.updated_at)
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return compareDatesDescending(left.created_at, right.created_at)
+      }
+    }
+  })
 }
 
 function matchesIssue(issueID: string, issueIdentifier: string | undefined, candidateIssueID?: string, candidateIdentifier?: string) {

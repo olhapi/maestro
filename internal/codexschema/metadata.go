@@ -3,7 +3,7 @@ package codexschema
 import "path/filepath"
 
 const (
-	SupportedVersion = "0.116.0"
+	SupportedVersion = "0.117.0"
 	QuicktypeVersion = "23.2.6"
 )
 
@@ -27,6 +27,8 @@ var ConsumedSchemaFiles = []string{
 	"FileChangeRequestApprovalResponse.json",
 	"ToolRequestUserInputParams.json",
 	"ToolRequestUserInputResponse.json",
+	"McpServerElicitationRequestParams.json",
+	"McpServerElicitationRequestResponse.json",
 	"DynamicToolCallParams.json",
 	"DynamicToolCallResponse.json",
 }

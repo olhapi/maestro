@@ -1,14 +1,12 @@
 import { useDeferredValue, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
-import { LayoutGrid, List, Pencil, Trash2 } from "lucide-react";
+import { List, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { KanbanBoard } from "@/components/dashboard/kanban-board";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { IssuePreviewBoundary } from "@/components/dashboard/issue-preview-boundary";
+import { WorkIssueSurface } from "@/components/dashboard/work-issue-surface";
 import { IssueDialog } from "@/components/forms";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
@@ -20,7 +18,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
@@ -29,9 +26,7 @@ import {
   applyIssueAssetChanges,
   summarizeIssueAssetFailures,
 } from "@/lib/issue-assets";
-import { appRoutes } from "@/lib/routes";
 import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
 
 const allProjectsValue = "__all-projects__";
 const allStatesValue = "__all-states__";
@@ -123,7 +118,6 @@ export function WorkPage() {
   }
 
   const availableStates = issueStatesFor(issues.data.items);
-  const showBoardView = isMobileLayout || view === "board";
 
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -215,152 +209,53 @@ export function WorkPage() {
         </CardHeader>
       </Card>
 
-      <Card className="bg-white/[0.04]">
-        <CardHeader className="flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-lg font-semibold text-white">
-            {isMobileLayout ? "Review work state by state" : "Triage, route, and monitor work in one surface"}
-          </h2>
-          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Select value={sort} onValueChange={(value) => updateWorkOverviewFilters({ sort: value })}>
-              <SelectTrigger
-                aria-label="Sort issues"
-                className={isMobileLayout ? "h-9 w-full text-xs" : "h-9 w-[176px] text-xs"}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="updated_desc">Recently updated</SelectItem>
-                <SelectItem value="priority_asc">Highest priority</SelectItem>
-                <SelectItem value="identifier_asc">Identifier A-Z</SelectItem>
-                <SelectItem value="state_asc">State grouping</SelectItem>
-              </SelectContent>
-            </Select>
-            {!isMobileLayout ? (
-              <ToggleGroup
-                aria-label="Switch work view"
-                className="inline-flex rounded-[var(--panel-radius)] border border-white/10 bg-black/20 p-0.75"
-                type="single"
-                value={view}
-                onValueChange={(next) => {
-                  if (next === "board" || next === "list") {
-                    setView(next);
-                  }
-                }}
-              >
-                <ToggleGroupItem aria-label="Board view" className="px-2.5 py-1.5" title="Board view" value="board">
-                  <LayoutGrid className="size-4" />
-                </ToggleGroupItem>
-                <ToggleGroupItem aria-label="List view" className="px-2.5 py-1.5" title="List view" value="list">
-                  <List className="size-4" />
-                </ToggleGroupItem>
-              </ToggleGroup>
-            ) : null}
-          </div>
-        </CardHeader>
-      </Card>
-
-      {showBoardView ? (
-        <div className="m-0">
-          <KanbanBoard
-            items={issues.data.items}
-            bootstrap={bootstrap.data}
-            mode={isMobileLayout ? "grouped" : "board"}
-            onOpenIssue={setPreviewIssue}
-            onMoveIssue={(issue, nextState) => stateMutation.mutate({ identifier: issue.identifier, nextState })}
-            onCreateIssue={(nextState) => {
-              setEditing(undefined);
-              setComposerDefaults({
-                state: nextState ?? "backlog",
-                project_id: bootstrap.data?.projects[0]?.id,
-              });
-              setDialogOpen(true);
-            }}
-          />
-        </div>
-      ) : (
-        <div className="m-0">
-          <Card>
-            <CardContent className="overflow-x-auto pt-[var(--panel-padding)]">
-              <table className="w-full min-w-[960px] text-left text-sm">
-                <thead className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                  <tr>
-                    <th className="pb-4">Issue</th>
-                    <th className="pb-4">State</th>
-                    <th className="pb-4">Project</th>
-                    <th className="pb-4">Epic</th>
-                    <th className="pb-4">Updated</th>
-                    <th className="pb-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {issues.data.items.map((issue) => (
-                    <tr key={issue.id} className="border-t border-white/6">
-                      <td className="py-4">
-                        <button className="text-left" onClick={() => setPreviewIssue(issue)}>
-                          <p className="font-medium text-white">{issue.identifier}</p>
-                          <p className="max-w-[420px] text-sm text-[var(--muted-foreground)]">{issue.title}</p>
-                        </button>
-                      </td>
-                      <td className="py-4">
-                        <Badge className="border-white/10 bg-white/5 text-white">
-                          {getStateMeta(issue.state).label}
-                        </Badge>
-                      </td>
-                      <td className="py-4 text-[var(--muted-foreground)]">
-                        {issue.project_id ? (
-                          <Link params={{ projectId: issue.project_id }} to={appRoutes.projectDetail}>
-                            {issue.project_name || "Unassigned"}
-                          </Link>
-                        ) : (
-                          "Unassigned"
-                        )}
-                      </td>
-                      <td className="py-4 text-[var(--muted-foreground)]">
-                        {issue.epic_id ? (
-                          <Link params={{ epicId: issue.epic_id }} to={appRoutes.epicDetail}>
-                            {issue.epic_name || "None"}
-                          </Link>
-                        ) : (
-                          "None"
-                        )}
-                      </td>
-                      <td className="py-4 text-[var(--muted-foreground)]">{formatRelativeTime(issue.updated_at)}</td>
-                      <td className="py-4">
-                        <div className="flex justify-end gap-2">
-                          <Button variant="ghost" size="icon" onClick={() => setPreviewIssue(issue)}>
-                            <List className="size-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={async () => {
-                              const detail = await api.getIssue(issue.identifier);
-                              setEditing(detail);
-                              setDialogOpen(true);
-                            }}
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Delete issue"
-                            title="Delete issue"
-                            disabled={deleteMutation.isPending}
-                            onClick={() => setIssuePendingDelete(issue)}
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      <WorkIssueSurface
+        title={isMobileLayout ? "Review work state by state" : "Triage, route, and monitor work in one surface"}
+        items={issues.data.items}
+        bootstrap={bootstrap.data}
+        sort={sort}
+        view={view}
+        onSortChange={(value) => updateWorkOverviewFilters({ sort: value })}
+        onViewChange={setView}
+        onOpenIssue={setPreviewIssue}
+        onMoveIssue={(issue, nextState) => stateMutation.mutate({ identifier: issue.identifier, nextState })}
+        onCreateIssue={(nextState) => {
+          setEditing(undefined);
+          setComposerDefaults({
+            state: nextState ?? "backlog",
+            project_id: bootstrap.data?.projects[0]?.id,
+          });
+          setDialogOpen(true);
+        }}
+        renderListActions={(issue) => (
+          <>
+            <Button variant="ghost" size="icon" onClick={() => setPreviewIssue(issue)}>
+              <List className="size-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={async () => {
+                const detail = await api.getIssue(issue.identifier);
+                setEditing(detail);
+                setDialogOpen(true);
+              }}
+            >
+              <Pencil className="size-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Delete issue"
+              title="Delete issue"
+              disabled={deleteMutation.isPending}
+              onClick={() => setIssuePendingDelete(issue)}
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          </>
+        )}
+      />
 
       <ConfirmationDialog
         open={issuePendingDelete !== null}

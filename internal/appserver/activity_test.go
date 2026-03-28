@@ -256,4 +256,25 @@ func TestActivityEventFromMessageParsesApprovalAndInputRequests(t *testing.T) {
 	if inputRequest.Raw == nil {
 		t.Fatalf("expected raw input request payload to be retained: %#v", inputRequest)
 	}
+
+	elicitation, ok := ActivityEventFromMessage(mustDecodeActivityMessage(t, map[string]interface{}{
+		"id":     "req-8",
+		"method": protocol.MethodMCPServerElicitationRequest,
+		"params": map[string]interface{}{
+			"serverName": "support-bot",
+			"threadId":   "thread-1",
+			"turnId":     "turn-1",
+			"mode":       "form",
+			"message":    "Need contact details",
+		},
+	}))
+	if !ok {
+		t.Fatal("expected elicitation activity event")
+	}
+	if elicitation.Type != "mcpServer.elicitation.request" || elicitation.RequestID != "req-8" {
+		t.Fatalf("unexpected elicitation identity: %#v", elicitation)
+	}
+	if elicitation.Reason != "Need contact details" {
+		t.Fatalf("expected elicitation prompt to be captured, got %#v", elicitation)
+	}
 }

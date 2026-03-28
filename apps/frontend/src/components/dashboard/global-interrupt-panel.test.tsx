@@ -54,6 +54,36 @@ function makePlanApprovalInterrupt(overrides: { requestedAt?: string; markdown?:
   }
 }
 
+function makeElicitationInterrupt(overrides: {
+  mode?: 'form' | 'url'
+  message?: string
+  url?: string
+  requestedSchema?: Record<string, unknown>
+} = {}) {
+  return {
+    id: 'interrupt-elicitation',
+    kind: 'elicitation' as const,
+    issue_identifier: 'ISS-8',
+    issue_title: 'Fill contact details',
+    requested_at: '2026-03-16T10:00:00Z',
+    elicitation: {
+      server_name: 'support-bot',
+      message: overrides.message ?? 'Need contact details',
+      mode: overrides.mode ?? 'form',
+      requested_schema:
+        overrides.requestedSchema ?? {
+          type: 'object',
+          properties: {
+            email: { type: 'string' },
+          },
+          required: ['email'],
+        },
+      url: overrides.url,
+      elicitation_id: overrides.mode === 'url' ? 'elicitation-42' : 'elicitation-7',
+    },
+  }
+}
+
 type GlobalInterruptPanelProps = ComponentProps<typeof GlobalInterruptPanel>
 
 function renderInterruptPanel(
@@ -380,6 +410,45 @@ describe('GlobalInterruptPanel', () => {
         },
       },
     })
+  })
+
+  it('renders elicitation prompts and forwards accepted structured content', () => {
+    const onRespond = vi.fn()
+
+    renderInterruptPanel([makeElicitationInterrupt()], { onRespond })
+
+    expect(screen.getByText('MCP elicitation')).toBeInTheDocument()
+    expect(screen.getAllByText('Form')).toHaveLength(2)
+    expect(screen.getByText('Requested schema')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '{"email":"ops@example.com"}' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /accept and continue/i }))
+
+    expect(onRespond).toHaveBeenCalledWith({
+      interruptId: 'interrupt-elicitation',
+      action: 'accept',
+      content: {
+        email: 'ops@example.com',
+      },
+    })
+  })
+
+  it('renders url-mode elicitation links', () => {
+    renderInterruptPanel([
+      makeElicitationInterrupt({
+        mode: 'url',
+        url: 'https://example.com/forms/contact',
+      }),
+    ])
+
+    expect(screen.getAllByText('URL')).toHaveLength(2)
+    expect(screen.getByRole('link', { name: /open url/i })).toHaveAttribute(
+      'href',
+      'https://example.com/forms/contact',
+    )
   })
 
   it('auto-submits option-only user input without rendering a submit button', () => {

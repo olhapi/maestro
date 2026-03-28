@@ -1,5 +1,11 @@
 package gen
 
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+)
+
 type InitializeParams struct {
 	Capabilities *InitializeCapabilities `json:"capabilities"`
 	ClientInfo   ClientInfo              `json:"clientInfo"`
@@ -21,6 +27,8 @@ type ClientInfo struct {
 }
 
 type InitializeResponse struct {
+	// Absolute path to the server's $CODEX_HOME directory.
+	CodexHome string `json:"codexHome"`
 	// Platform family for the running app-server target, for example `"unix"` or `"windows"`.
 	PlatformFamily string `json:"platformFamily"`
 	// Operating system for the running app-server target, for example `"macos"`, `"linux"`, or
@@ -154,6 +162,7 @@ type PurpleSubAgentSource struct {
 
 type PurpleThreadSpawn struct {
 	AgentNickname  *string `json:"agent_nickname"`
+	AgentPath      *string `json:"agent_path"`
 	AgentRole      *string `json:"agent_role"`
 	Depth          int64   `json:"depth"`
 	ParentThreadID string  `json:"parent_thread_id"`
@@ -186,11 +195,19 @@ type PurpleTurnError struct {
 // The response SSE stream disconnected in the middle of a turn before completion.
 //
 // Reached the retry limit for responses.
+//
+// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+// cannot accept same-turn steering, for example `/review` or manual `/compact`.
 type PurpleCodexErrorInfo struct {
 	HTTPConnectionFailed           *PurpleHTTPConnectionFailed           `json:"httpConnectionFailed,omitempty"`
 	ResponseStreamConnectionFailed *PurpleResponseStreamConnectionFailed `json:"responseStreamConnectionFailed,omitempty"`
 	ResponseStreamDisconnected     *PurpleResponseStreamDisconnected     `json:"responseStreamDisconnected,omitempty"`
 	ResponseTooManyFailedAttempts  *PurpleResponseTooManyFailedAttempts  `json:"responseTooManyFailedAttempts,omitempty"`
+	ActiveTurnNotSteerable         *PurpleActiveTurnNotSteerable         `json:"activeTurnNotSteerable,omitempty"`
+}
+
+type PurpleActiveTurnNotSteerable struct {
+	TurnKind NonSteerableTurnKind `json:"turnKind"`
 }
 
 type PurpleHTTPConnectionFailed struct {
@@ -214,12 +231,13 @@ type PurpleResponseTooManyFailedAttempts struct {
 type PurpleThreadItem struct {
 	Content []PurpleContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID             string                `json:"id"`
-	Type           ThreadItemType        `json:"type"`
-	MemoryCitation *PurpleMemoryCitation `json:"memoryCitation"`
-	Phase          *MessagePhase         `json:"phase"`
-	Text           *string               `json:"text,omitempty"`
-	Summary        []string              `json:"summary,omitempty"`
+	ID             string                     `json:"id"`
+	Type           ThreadItemType             `json:"type"`
+	Fragments      []PurpleHookPromptFragment `json:"fragments,omitempty"`
+	MemoryCitation *PurpleMemoryCitation      `json:"memoryCitation"`
+	Phase          *MessagePhase              `json:"phase"`
+	Text           *string                    `json:"text,omitempty"`
+	Summary        []string                   `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -239,7 +257,8 @@ type PurpleThreadItem struct {
 	// The command's exit code.
 	ExitCode *int64 `json:"exitCode"`
 	// Identifier for the underlying PTY process (when available).
-	ProcessID *string `json:"processId"`
+	ProcessID *string                 `json:"processId"`
+	Source    *CommandExecutionSource `json:"source,omitempty"`
 	// Current status of the collab tool call.
 	Status    *string                  `json:"status,omitempty"`
 	Changes   []PurpleFileUpdateChange `json:"changes,omitempty"`
@@ -268,6 +287,7 @@ type PurpleThreadItem struct {
 	Query          *string                `json:"query,omitempty"`
 	Path           *string                `json:"path,omitempty"`
 	RevisedPrompt  *string                `json:"revisedPrompt"`
+	SavedPath      *string                `json:"savedPath"`
 	Review         *string                `json:"review,omitempty"`
 }
 
@@ -334,6 +354,11 @@ type PurpleDynamicToolCallOutputContentItem struct {
 
 type PurpleMCPToolCallError struct {
 	Message string `json:"message"`
+}
+
+type PurpleHookPromptFragment struct {
+	HookRunID string `json:"hookRunId"`
+	Text      string `json:"text"`
 }
 
 type PurpleMemoryCitation struct {
@@ -454,11 +479,19 @@ type FluffyTurnError struct {
 // The response SSE stream disconnected in the middle of a turn before completion.
 //
 // Reached the retry limit for responses.
+//
+// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+// cannot accept same-turn steering, for example `/review` or manual `/compact`.
 type FluffyCodexErrorInfo struct {
 	HTTPConnectionFailed           *FluffyHTTPConnectionFailed           `json:"httpConnectionFailed,omitempty"`
 	ResponseStreamConnectionFailed *FluffyResponseStreamConnectionFailed `json:"responseStreamConnectionFailed,omitempty"`
 	ResponseStreamDisconnected     *FluffyResponseStreamDisconnected     `json:"responseStreamDisconnected,omitempty"`
 	ResponseTooManyFailedAttempts  *FluffyResponseTooManyFailedAttempts  `json:"responseTooManyFailedAttempts,omitempty"`
+	ActiveTurnNotSteerable         *FluffyActiveTurnNotSteerable         `json:"activeTurnNotSteerable,omitempty"`
+}
+
+type FluffyActiveTurnNotSteerable struct {
+	TurnKind NonSteerableTurnKind `json:"turnKind"`
 }
 
 type FluffyHTTPConnectionFailed struct {
@@ -482,12 +515,13 @@ type FluffyResponseTooManyFailedAttempts struct {
 type FluffyThreadItem struct {
 	Content []FluffyContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID             string                `json:"id"`
-	Type           ThreadItemType        `json:"type"`
-	MemoryCitation *FluffyMemoryCitation `json:"memoryCitation"`
-	Phase          *MessagePhase         `json:"phase"`
-	Text           *string               `json:"text,omitempty"`
-	Summary        []string              `json:"summary,omitempty"`
+	ID             string                     `json:"id"`
+	Type           ThreadItemType             `json:"type"`
+	Fragments      []FluffyHookPromptFragment `json:"fragments,omitempty"`
+	MemoryCitation *FluffyMemoryCitation      `json:"memoryCitation"`
+	Phase          *MessagePhase              `json:"phase"`
+	Text           *string                    `json:"text,omitempty"`
+	Summary        []string                   `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -507,7 +541,8 @@ type FluffyThreadItem struct {
 	// The command's exit code.
 	ExitCode *int64 `json:"exitCode"`
 	// Identifier for the underlying PTY process (when available).
-	ProcessID *string `json:"processId"`
+	ProcessID *string                 `json:"processId"`
+	Source    *CommandExecutionSource `json:"source,omitempty"`
 	// Current status of the collab tool call.
 	Status    *string                  `json:"status,omitempty"`
 	Changes   []FluffyFileUpdateChange `json:"changes,omitempty"`
@@ -536,6 +571,7 @@ type FluffyThreadItem struct {
 	Query          *string                `json:"query,omitempty"`
 	Path           *string                `json:"path,omitempty"`
 	RevisedPrompt  *string                `json:"revisedPrompt"`
+	SavedPath      *string                `json:"savedPath"`
 	Review         *string                `json:"review,omitempty"`
 }
 
@@ -602,6 +638,11 @@ type FluffyDynamicToolCallOutputContentItem struct {
 
 type FluffyMCPToolCallError struct {
 	Message string `json:"message"`
+}
+
+type FluffyHookPromptFragment struct {
+	HookRunID string `json:"hookRunId"`
+	Text      string `json:"text"`
 }
 
 type FluffyMemoryCitation struct {
@@ -679,6 +720,7 @@ type FluffySubAgentSource struct {
 
 type FluffyThreadSpawn struct {
 	AgentNickname  *string `json:"agent_nickname"`
+	AgentPath      *string `json:"agent_path"`
 	AgentRole      *string `json:"agent_role"`
 	Depth          int64   `json:"depth"`
 	ParentThreadID string  `json:"parent_thread_id"`
@@ -711,11 +753,19 @@ type TentacledTurnError struct {
 // The response SSE stream disconnected in the middle of a turn before completion.
 //
 // Reached the retry limit for responses.
+//
+// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+// cannot accept same-turn steering, for example `/review` or manual `/compact`.
 type TentacledCodexErrorInfo struct {
 	HTTPConnectionFailed           *TentacledHTTPConnectionFailed           `json:"httpConnectionFailed,omitempty"`
 	ResponseStreamConnectionFailed *TentacledResponseStreamConnectionFailed `json:"responseStreamConnectionFailed,omitempty"`
 	ResponseStreamDisconnected     *TentacledResponseStreamDisconnected     `json:"responseStreamDisconnected,omitempty"`
 	ResponseTooManyFailedAttempts  *TentacledResponseTooManyFailedAttempts  `json:"responseTooManyFailedAttempts,omitempty"`
+	ActiveTurnNotSteerable         *TentacledActiveTurnNotSteerable         `json:"activeTurnNotSteerable,omitempty"`
+}
+
+type TentacledActiveTurnNotSteerable struct {
+	TurnKind NonSteerableTurnKind `json:"turnKind"`
 }
 
 type TentacledHTTPConnectionFailed struct {
@@ -739,12 +789,13 @@ type TentacledResponseTooManyFailedAttempts struct {
 type TentacledThreadItem struct {
 	Content []TentacledContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID             string                   `json:"id"`
-	Type           ThreadItemType           `json:"type"`
-	MemoryCitation *TentacledMemoryCitation `json:"memoryCitation"`
-	Phase          *MessagePhase            `json:"phase"`
-	Text           *string                  `json:"text,omitempty"`
-	Summary        []string                 `json:"summary,omitempty"`
+	ID             string                        `json:"id"`
+	Type           ThreadItemType                `json:"type"`
+	Fragments      []TentacledHookPromptFragment `json:"fragments,omitempty"`
+	MemoryCitation *TentacledMemoryCitation      `json:"memoryCitation"`
+	Phase          *MessagePhase                 `json:"phase"`
+	Text           *string                       `json:"text,omitempty"`
+	Summary        []string                      `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -764,7 +815,8 @@ type TentacledThreadItem struct {
 	// The command's exit code.
 	ExitCode *int64 `json:"exitCode"`
 	// Identifier for the underlying PTY process (when available).
-	ProcessID *string `json:"processId"`
+	ProcessID *string                 `json:"processId"`
+	Source    *CommandExecutionSource `json:"source,omitempty"`
 	// Current status of the collab tool call.
 	Status    *string                     `json:"status,omitempty"`
 	Changes   []TentacledFileUpdateChange `json:"changes,omitempty"`
@@ -793,6 +845,7 @@ type TentacledThreadItem struct {
 	Query          *string                   `json:"query,omitempty"`
 	Path           *string                   `json:"path,omitempty"`
 	RevisedPrompt  *string                   `json:"revisedPrompt"`
+	SavedPath      *string                   `json:"savedPath"`
 	Review         *string                   `json:"review,omitempty"`
 }
 
@@ -861,6 +914,11 @@ type TentacledMCPToolCallError struct {
 	Message string `json:"message"`
 }
 
+type TentacledHookPromptFragment struct {
+	HookRunID string `json:"hookRunId"`
+	Text      string `json:"text"`
+}
+
 type TentacledMemoryCitation struct {
 	Entries   []TentacledMemoryCitationEntry `json:"entries"`
 	ThreadIDS []string                       `json:"threadIds"`
@@ -904,11 +962,19 @@ type StickyTurnError struct {
 // The response SSE stream disconnected in the middle of a turn before completion.
 //
 // Reached the retry limit for responses.
+//
+// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+// cannot accept same-turn steering, for example `/review` or manual `/compact`.
 type StickyCodexErrorInfo struct {
 	HTTPConnectionFailed           *StickyHTTPConnectionFailed           `json:"httpConnectionFailed,omitempty"`
 	ResponseStreamConnectionFailed *StickyResponseStreamConnectionFailed `json:"responseStreamConnectionFailed,omitempty"`
 	ResponseStreamDisconnected     *StickyResponseStreamDisconnected     `json:"responseStreamDisconnected,omitempty"`
 	ResponseTooManyFailedAttempts  *StickyResponseTooManyFailedAttempts  `json:"responseTooManyFailedAttempts,omitempty"`
+	ActiveTurnNotSteerable         *StickyActiveTurnNotSteerable         `json:"activeTurnNotSteerable,omitempty"`
+}
+
+type StickyActiveTurnNotSteerable struct {
+	TurnKind NonSteerableTurnKind `json:"turnKind"`
 }
 
 type StickyHTTPConnectionFailed struct {
@@ -932,12 +998,13 @@ type StickyResponseTooManyFailedAttempts struct {
 type StickyThreadItem struct {
 	Content []StickyContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID             string                `json:"id"`
-	Type           ThreadItemType        `json:"type"`
-	MemoryCitation *StickyMemoryCitation `json:"memoryCitation"`
-	Phase          *MessagePhase         `json:"phase"`
-	Text           *string               `json:"text,omitempty"`
-	Summary        []string              `json:"summary,omitempty"`
+	ID             string                     `json:"id"`
+	Type           ThreadItemType             `json:"type"`
+	Fragments      []StickyHookPromptFragment `json:"fragments,omitempty"`
+	MemoryCitation *StickyMemoryCitation      `json:"memoryCitation"`
+	Phase          *MessagePhase              `json:"phase"`
+	Text           *string                    `json:"text,omitempty"`
+	Summary        []string                   `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -957,7 +1024,8 @@ type StickyThreadItem struct {
 	// The command's exit code.
 	ExitCode *int64 `json:"exitCode"`
 	// Identifier for the underlying PTY process (when available).
-	ProcessID *string `json:"processId"`
+	ProcessID *string                 `json:"processId"`
+	Source    *CommandExecutionSource `json:"source,omitempty"`
 	// Current status of the collab tool call.
 	Status    *string                  `json:"status,omitempty"`
 	Changes   []StickyFileUpdateChange `json:"changes,omitempty"`
@@ -986,6 +1054,7 @@ type StickyThreadItem struct {
 	Query          *string                `json:"query,omitempty"`
 	Path           *string                `json:"path,omitempty"`
 	RevisedPrompt  *string                `json:"revisedPrompt"`
+	SavedPath      *string                `json:"savedPath"`
 	Review         *string                `json:"review,omitempty"`
 }
 
@@ -1054,6 +1123,11 @@ type StickyMCPToolCallError struct {
 	Message string `json:"message"`
 }
 
+type StickyHookPromptFragment struct {
+	HookRunID string `json:"hookRunId"`
+	Text      string `json:"text"`
+}
+
 type StickyMemoryCitation struct {
 	Entries   []StickyMemoryCitationEntry `json:"entries"`
 	ThreadIDS []string                    `json:"threadIds"`
@@ -1097,11 +1171,19 @@ type IndigoTurnError struct {
 // The response SSE stream disconnected in the middle of a turn before completion.
 //
 // Reached the retry limit for responses.
+//
+// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+// cannot accept same-turn steering, for example `/review` or manual `/compact`.
 type IndigoCodexErrorInfo struct {
 	HTTPConnectionFailed           *IndigoHTTPConnectionFailed           `json:"httpConnectionFailed,omitempty"`
 	ResponseStreamConnectionFailed *IndigoResponseStreamConnectionFailed `json:"responseStreamConnectionFailed,omitempty"`
 	ResponseStreamDisconnected     *IndigoResponseStreamDisconnected     `json:"responseStreamDisconnected,omitempty"`
 	ResponseTooManyFailedAttempts  *IndigoResponseTooManyFailedAttempts  `json:"responseTooManyFailedAttempts,omitempty"`
+	ActiveTurnNotSteerable         *IndigoActiveTurnNotSteerable         `json:"activeTurnNotSteerable,omitempty"`
+}
+
+type IndigoActiveTurnNotSteerable struct {
+	TurnKind NonSteerableTurnKind `json:"turnKind"`
 }
 
 type IndigoHTTPConnectionFailed struct {
@@ -1125,12 +1207,13 @@ type IndigoResponseTooManyFailedAttempts struct {
 type IndigoThreadItem struct {
 	Content []IndigoContent `json:"content,omitempty"`
 	// Unique identifier for this collab tool call.
-	ID             string                `json:"id"`
-	Type           ThreadItemType        `json:"type"`
-	MemoryCitation *IndigoMemoryCitation `json:"memoryCitation"`
-	Phase          *MessagePhase         `json:"phase"`
-	Text           *string               `json:"text,omitempty"`
-	Summary        []string              `json:"summary,omitempty"`
+	ID             string                     `json:"id"`
+	Type           ThreadItemType             `json:"type"`
+	Fragments      []IndigoHookPromptFragment `json:"fragments,omitempty"`
+	MemoryCitation *IndigoMemoryCitation      `json:"memoryCitation"`
+	Phase          *MessagePhase              `json:"phase"`
+	Text           *string                    `json:"text,omitempty"`
+	Summary        []string                   `json:"summary,omitempty"`
 	// The command's output, aggregated from stdout and stderr.
 	AggregatedOutput *string `json:"aggregatedOutput"`
 	// The command to be executed.
@@ -1150,7 +1233,8 @@ type IndigoThreadItem struct {
 	// The command's exit code.
 	ExitCode *int64 `json:"exitCode"`
 	// Identifier for the underlying PTY process (when available).
-	ProcessID *string `json:"processId"`
+	ProcessID *string                 `json:"processId"`
+	Source    *CommandExecutionSource `json:"source,omitempty"`
 	// Current status of the collab tool call.
 	Status    *string                  `json:"status,omitempty"`
 	Changes   []IndigoFileUpdateChange `json:"changes,omitempty"`
@@ -1179,6 +1263,7 @@ type IndigoThreadItem struct {
 	Query          *string                `json:"query,omitempty"`
 	Path           *string                `json:"path,omitempty"`
 	RevisedPrompt  *string                `json:"revisedPrompt"`
+	SavedPath      *string                `json:"savedPath"`
 	Review         *string                `json:"review,omitempty"`
 }
 
@@ -1245,6 +1330,11 @@ type IndigoDynamicToolCallOutputContentItem struct {
 
 type IndigoMCPToolCallError struct {
 	Message string `json:"message"`
+}
+
+type IndigoHookPromptFragment struct {
+	HookRunID string `json:"hookRunId"`
+	Text      string `json:"text"`
 }
 
 type IndigoMemoryCitation struct {
@@ -1483,6 +1573,75 @@ type ToolRequestUserInputAnswer struct {
 	Answers []string `json:"answers"`
 }
 
+type MCPServerElicitationRequestParams struct {
+	ServerName string `json:"serverName"`
+	ThreadID   string `json:"threadId"`
+	// Active Codex turn when this elicitation was observed, if app-server could correlate one.
+	//
+	// This is nullable because MCP models elicitation as a standalone server-to-client request
+	// identified by the MCP server request id. It may be triggered during a turn, but turn
+	// context is app-server correlation rather than part of the protocol identity of the
+	// elicitation itself.
+	TurnID          *string               `json:"turnId"`
+	Meta            interface{}           `json:"_meta"`
+	Message         string                `json:"message"`
+	Mode            Mode                  `json:"mode"`
+	RequestedSchema *MCPElicitationSchema `json:"requestedSchema,omitempty"`
+	ElicitationID   *string               `json:"elicitationId,omitempty"`
+	URL             *string               `json:"url,omitempty"`
+}
+
+// Typed form schema for MCP `elicitation/create` requests.
+//
+// This matches the `requestedSchema` shape from the MCP 2025-11-25
+// `ElicitRequestFormParams` schema.
+type MCPElicitationSchema struct {
+	Schema     *string                                  `json:"$schema"`
+	Properties map[string]MCPElicitationPrimitiveSchema `json:"properties"`
+	Required   []string                                 `json:"required"`
+	Type       MCPElicitationObjectType                 `json:"type"`
+}
+
+type MCPElicitationPrimitiveSchema struct {
+	Default     *Title                         `json:"default"`
+	Description *string                        `json:"description"`
+	Enum        []string                       `json:"enum,omitempty"`
+	Title       *string                        `json:"title"`
+	Type        MCPElicitationType             `json:"type"`
+	OneOf       []MCPElicitationConstOption    `json:"oneOf,omitempty"`
+	Items       *MCPElicitationTitledEnumItems `json:"items,omitempty"`
+	MaxItems    *int64                         `json:"maxItems"`
+	MinItems    *int64                         `json:"minItems"`
+	EnumNames   []string                       `json:"enumNames"`
+	Format      *MCPElicitationStringFormat    `json:"format"`
+	MaxLength   *int64                         `json:"maxLength"`
+	MinLength   *int64                         `json:"minLength"`
+	Maximum     *float64                       `json:"maximum"`
+	Minimum     *float64                       `json:"minimum"`
+}
+
+type MCPElicitationTitledEnumItems struct {
+	Enum  []string                    `json:"enum,omitempty"`
+	Type  *MCPElicitationStringType   `json:"type,omitempty"`
+	AnyOf []MCPElicitationConstOption `json:"anyOf,omitempty"`
+}
+
+type MCPElicitationConstOption struct {
+	Const string `json:"const"`
+	Title string `json:"title"`
+}
+
+type MCPServerElicitationRequestResponse struct {
+	// Optional client metadata for form-mode action handling.
+	Meta   interface{}                `json:"_meta"`
+	Action MCPServerElicitationAction `json:"action"`
+	// Structured user input for accepted elicitations, mirroring RMCP
+	// `CreateElicitationResult`.
+	//
+	// This is nullable because decline/cancel responses have no content.
+	Content interface{} `json:"content"`
+}
+
 type DynamicToolCallParams struct {
 	Arguments interface{} `json:"arguments"`
 	CallID    string      `json:"callId"`
@@ -1586,9 +1745,9 @@ const (
 type SubAgentSource string
 
 const (
-	Compact             SubAgentSource = "compact"
-	MemoryConsolidation SubAgentSource = "memory_consolidation"
-	Review              SubAgentSource = "review"
+	MemoryConsolidation   SubAgentSource = "memory_consolidation"
+	SubAgentSourceCompact SubAgentSource = "compact"
+	SubAgentSourceReview  SubAgentSource = "review"
 )
 
 type SessionSource string
@@ -1615,6 +1774,13 @@ const (
 	Idle        ThreadStatusType = "idle"
 	NotLoaded   ThreadStatusType = "notLoaded"
 	SystemError ThreadStatusType = "systemError"
+)
+
+type NonSteerableTurnKind string
+
+const (
+	NonSteerableTurnKindCompact NonSteerableTurnKind = "compact"
+	NonSteerableTurnKindReview  NonSteerableTurnKind = "review"
 )
 
 type CodexErrorInfoEnum string
@@ -1698,6 +1864,15 @@ const (
 	FinalAnswer MessagePhase = "final_answer"
 )
 
+type CommandExecutionSource string
+
+const (
+	Agent                  CommandExecutionSource = "agent"
+	UnifiedExecInteraction CommandExecutionSource = "unifiedExecInteraction"
+	UnifiedExecStartup     CommandExecutionSource = "unifiedExecStartup"
+	UserShell              CommandExecutionSource = "userShell"
+)
+
 type ThreadItemType string
 
 const (
@@ -1708,6 +1883,7 @@ const (
 	DynamicToolCall          ThreadItemType = "dynamicToolCall"
 	EnteredReviewMode        ThreadItemType = "enteredReviewMode"
 	ExitedReviewMode         ThreadItemType = "exitedReviewMode"
+	HookPrompt               ThreadItemType = "hookPrompt"
 	ImageGeneration          ThreadItemType = "imageGeneration"
 	ImageView                ThreadItemType = "imageView"
 	MCPToolCall              ThreadItemType = "mcpToolCall"
@@ -1801,10 +1977,56 @@ const (
 type FileChangeApprovalDecision string
 
 const (
-	Accept           FileChangeApprovalDecision = "accept"
-	AcceptForSession FileChangeApprovalDecision = "acceptForSession"
-	Cancel           FileChangeApprovalDecision = "cancel"
-	Decline          FileChangeApprovalDecision = "decline"
+	AcceptForSession                  FileChangeApprovalDecision = "acceptForSession"
+	FileChangeApprovalDecisionAccept  FileChangeApprovalDecision = "accept"
+	FileChangeApprovalDecisionCancel  FileChangeApprovalDecision = "cancel"
+	FileChangeApprovalDecisionDecline FileChangeApprovalDecision = "decline"
+)
+
+type Mode string
+
+const (
+	Form Mode = "form"
+	URL  Mode = "url"
+)
+
+type MCPElicitationStringFormat string
+
+const (
+	Date     MCPElicitationStringFormat = "date"
+	DateTime MCPElicitationStringFormat = "date-time"
+	Email    MCPElicitationStringFormat = "email"
+	URI      MCPElicitationStringFormat = "uri"
+)
+
+type MCPElicitationStringType string
+
+const (
+	MCPElicitationStringTypeString MCPElicitationStringType = "string"
+)
+
+type MCPElicitationType string
+
+const (
+	Array                    MCPElicitationType = "array"
+	Boolean                  MCPElicitationType = "boolean"
+	Integer                  MCPElicitationType = "integer"
+	MCPElicitationTypeString MCPElicitationType = "string"
+	Number                   MCPElicitationType = "number"
+)
+
+type MCPElicitationObjectType string
+
+const (
+	Object MCPElicitationObjectType = "object"
+)
+
+type MCPServerElicitationAction string
+
+const (
+	MCPServerElicitationActionAccept  MCPServerElicitationAction = "accept"
+	MCPServerElicitationActionCancel  MCPServerElicitationAction = "cancel"
+	MCPServerElicitationActionDecline MCPServerElicitationAction = "decline"
 )
 
 type ThreadStartParamsApprovalPolicy struct {
@@ -1940,4 +2162,69 @@ type ApplyPatchApprovalResponseReviewDecision struct {
 type CommandExecutionApprovalDecision struct {
 	Enum                                            *FileChangeApprovalDecision
 	PolicyAmendmentCommandExecutionApprovalDecision *PolicyAmendmentCommandExecutionApprovalDecision
+}
+
+type Title struct {
+	Bool        *bool
+	Double      *float64
+	String      *string
+	StringArray []string
+}
+
+func (t *Title) UnmarshalJSON(data []byte) error {
+	if t == nil {
+		return nil
+	}
+	if isNullJSON(data) {
+		*t = Title{}
+		return nil
+	}
+
+	var boolValue bool
+	boolErr := json.Unmarshal(data, &boolValue)
+	if boolErr == nil {
+		*t = Title{Bool: &boolValue}
+		return nil
+	}
+
+	var doubleValue float64
+	doubleErr := json.Unmarshal(data, &doubleValue)
+	if doubleErr == nil {
+		*t = Title{Double: &doubleValue}
+		return nil
+	}
+
+	var stringValue string
+	stringErr := json.Unmarshal(data, &stringValue)
+	if stringErr == nil {
+		*t = Title{String: &stringValue}
+		return nil
+	}
+
+	var stringArrayValue []string
+	stringArrayErr := json.Unmarshal(data, &stringArrayValue)
+	if stringArrayErr == nil {
+		*t = Title{StringArray: stringArrayValue}
+		return nil
+	}
+
+	return fmt.Errorf("decode title union: %w", errors.Join(boolErr, doubleErr, stringErr, stringArrayErr))
+}
+
+func (t *Title) MarshalJSON() ([]byte, error) {
+	if t == nil {
+		return []byte("null"), nil
+	}
+	switch {
+	case t.Bool != nil:
+		return json.Marshal(*t.Bool)
+	case t.Double != nil:
+		return json.Marshal(*t.Double)
+	case t.String != nil:
+		return json.Marshal(*t.String)
+	case t.StringArray != nil:
+		return json.Marshal(t.StringArray)
+	default:
+		return []byte("null"), nil
+	}
 }
