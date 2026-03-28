@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 type testProvider struct{}
@@ -22,6 +24,22 @@ type staticAddr string
 
 func (a staticAddr) Network() string { return "tcp" }
 func (a staticAddr) String() string  { return string(a) }
+
+type stubListener struct {
+	addr net.Addr
+}
+
+func (l *stubListener) Accept() (net.Conn, error) {
+	return nil, errors.New("accept not used")
+}
+
+func (l *stubListener) Close() error {
+	return nil
+}
+
+func (l *stubListener) Addr() net.Addr {
+	return l.addr
+}
 
 func (testProvider) Status() map[string]interface{} {
 	return map[string]interface{}{"active_runs": 1}
@@ -160,10 +178,13 @@ func TestNewHandlerProxiesDashboardToDevServerWhenConfigured(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	devServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	devServer, err := inprocessserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, "vite-dev:"+r.URL.Path)
 	}))
+	if err != nil {
+		t.Fatalf("in-process dev server failed: %v", err)
+	}
 	defer devServer.Close()
 
 	t.Setenv(uiDevProxyEnv, devServer.URL)
@@ -224,16 +245,15 @@ func TestStartServesAndShutsDownWithContext(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	addr := nextFakeAddr()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if _, err := Start(ctx, addr, store, testProvider{}); err != nil {
+	server, err := Start(ctx, addr, store, testProvider{})
+	if err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+	if got := server.BaseURL(); got != "" {
+		t.Fatalf("expected no public BaseURL for in-process server, got %q", got)
 	}
 
 	var resp *http.Response
@@ -263,6 +283,86 @@ func TestStartServesAndShutsDownWithContext(t *testing.T) {
 	t.Fatalf("expected server shutdown for %s", addr)
 }
 
+func TestStartUsesListenerAndServeHooksWithoutBinding(t *testing.T) {
+	t.Setenv(inProcessServerEnv, "")
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	originalListen := listenTCP
+	originalServe := serveHTTP
+	t.Cleanup(func() {
+		listenTCP = originalListen
+		serveHTTP = originalServe
+	})
+
+	addr := "127.0.0.1:4321"
+	served := make(chan struct{})
+	releaseServe := make(chan struct{})
+	listenTCP = func(network, address string) (net.Listener, error) {
+		if network != "tcp" {
+			t.Fatalf("listen network = %q, want tcp", network)
+		}
+		if address != addr {
+			t.Fatalf("listen address = %q, want %q", address, addr)
+		}
+		return &stubListener{addr: staticAddr(addr)}, nil
+	}
+	serveHTTP = func(srv *http.Server, ln net.Listener) error {
+		close(served)
+		<-releaseServe
+		return errors.New("serve stopped")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	server, err := Start(ctx, addr, store, testProvider{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if server.http == nil {
+		t.Fatal("expected HTTP server to be initialized")
+	}
+	if got := server.BaseURL(); got != "http://127.0.0.1:4321" {
+		t.Fatalf("BaseURL() = %q, want %q", got, "http://127.0.0.1:4321")
+	}
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("serve hook was not called")
+	}
+
+	cancel()
+	close(releaseServe)
+	time.Sleep(20 * time.Millisecond)
+}
+
+func TestStartReturnsListenErrorWhenListenerSetupFails(t *testing.T) {
+	t.Setenv(inProcessServerEnv, "")
+
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	originalListen := listenTCP
+	t.Cleanup(func() {
+		listenTCP = originalListen
+	})
+	listenTCP = func(network, address string) (net.Listener, error) {
+		return nil, errors.New("listen failed")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := Start(ctx, "127.0.0.1:4321", store, testProvider{}); err == nil {
+		t.Fatal("expected Start to fail when listener setup fails")
+	}
+}
+
 func TestStartFailsWhenPortIsOccupied(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -270,15 +370,16 @@ func TestStartFailsWhenPortIsOccupied(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	addr := nextFakeAddr()
+	occupied, err := inprocessserver.NewWithURL("http://"+addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		t.Fatalf("occupy fake addr: %v", err)
 	}
-	defer ln.Close()
+	defer occupied.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := Start(ctx, ln.Addr().String(), store, testProvider{}); err == nil {
+	if _, err := Start(ctx, addr, store, testProvider{}); err == nil {
 		t.Fatal("expected Start to fail on an occupied port")
 	}
 }

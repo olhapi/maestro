@@ -84,7 +84,12 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	case persistedSession != nil && persistedSession.Attempt > 0:
 		attempt = persistedSession.Attempt
 	case len(events) > 0:
-		attempt = events[len(events)-1].Attempt
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Attempt > 0 {
+				attempt = events[i].Attempt
+				break
+			}
+		}
 	}
 
 	phase := string(issue.WorkflowPhase)
@@ -195,25 +200,40 @@ func findPersistedPausedEntry(events []kanban.RuntimeEvent) *observability.Pause
 	if len(events) == 0 {
 		return nil
 	}
-	latest := events[len(events)-1]
-	if latest.Kind != "retry_paused" {
-		return nil
-	}
-	pausedAt := latest.TS
-	if raw, ok := latest.Payload["paused_at"].(string); ok && raw != "" {
-		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
-			pausedAt = parsed
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Kind != "retry_paused" {
+			if isPersistedPauseResetEvent(event.Kind) {
+				return nil
+			}
+			continue
+		}
+		pausedAt := event.TS
+		if raw, ok := event.Payload["paused_at"].(string); ok && raw != "" {
+			if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+				pausedAt = parsed
+			}
+		}
+		return &observability.PausedEntry{
+			IssueID:             event.IssueID,
+			Identifier:          event.Identifier,
+			Phase:               event.Phase,
+			Attempt:             event.Attempt,
+			PausedAt:            pausedAt,
+			Error:               event.Error,
+			ConsecutiveFailures: asPayloadInt(event.Payload["consecutive_failures"]),
+			PauseThreshold:      asPayloadInt(event.Payload["pause_threshold"]),
 		}
 	}
-	return &observability.PausedEntry{
-		IssueID:             latest.IssueID,
-		Identifier:          latest.Identifier,
-		Phase:               latest.Phase,
-		Attempt:             latest.Attempt,
-		PausedAt:            pausedAt,
-		Error:               latest.Error,
-		ConsecutiveFailures: asPayloadInt(latest.Payload["consecutive_failures"]),
-		PauseThreshold:      asPayloadInt(latest.Payload["pause_threshold"]),
+	return nil
+}
+
+func isPersistedPauseResetEvent(kind string) bool {
+	switch kind {
+	case "run_started", "run_completed", "run_failed", "run_unsuccessful", "run_interrupted", "retry_scheduled", "manual_retry_requested":
+		return true
+	default:
+		return false
 	}
 }
 

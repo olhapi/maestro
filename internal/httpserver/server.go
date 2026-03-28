@@ -17,14 +17,22 @@ import (
 	"github.com/olhapi/maestro/internal/dashboardui"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 type Server struct {
 	http         *http.Server
 	listenerAddr net.Addr
+	baseURL      *string
 }
 
 const uiDevProxyEnv = "MAESTRO_UI_DEV_PROXY_URL"
+const inProcessServerEnv = "MAESTRO_HTTPSERVER_INPROCESS"
+
+var listenTCP = net.Listen
+var serveHTTP = func(srv *http.Server, ln net.Listener) error {
+	return srv.Serve(ln)
+}
 
 func newHandler(store *kanban.Store, provider dashboardapi.Provider) http.Handler {
 	mux := http.NewServeMux()
@@ -89,7 +97,11 @@ func newDashboardDevProxy(rawURL string, fallback http.Handler) (http.Handler, e
 }
 
 func Start(ctx context.Context, addr string, store *kanban.Store, provider dashboardapi.Provider) (*Server, error) {
-	ln, err := net.Listen("tcp", addr)
+	if strings.TrimSpace(os.Getenv(inProcessServerEnv)) != "" {
+		return startInProcess(ctx, addr, store, provider)
+	}
+
+	ln, err := listenTCP("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -104,15 +116,45 @@ func Start(ctx context.Context, addr string, store *kanban.Store, provider dashb
 
 	go func() {
 		slog.Info("HTTP API started", "addr", ln.Addr().String())
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := serveHTTP(srv, ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP API failed", "error", err)
 		}
 	}()
 
-	return &Server{http: srv, listenerAddr: ln.Addr()}, nil
+	baseURL := baseURLForAddr(ln.Addr())
+	return &Server{http: srv, listenerAddr: ln.Addr(), baseURL: &baseURL}, nil
+}
+
+func startInProcess(ctx context.Context, addr string, store *kanban.Store, provider dashboardapi.Provider) (*Server, error) {
+	resolved, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	handler := newHandler(store, provider)
+	internalURL := baseURLForAddr(resolved)
+	helperServer, err := inprocessserver.NewWithURL(internalURL, handler)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		<-ctx.Done()
+		helperServer.Close()
+	}()
+
+	slog.Info("HTTP API started", "addr", resolved.String())
+	baseURL := ""
+	return &Server{listenerAddr: resolved, baseURL: &baseURL}, nil
 }
 
 func (s *Server) BaseURL() string {
+	if s == nil {
+		return ""
+	}
+	if s.baseURL != nil {
+		return *s.baseURL
+	}
 	return baseURLForAddr(s.listenerAddr)
 }
 

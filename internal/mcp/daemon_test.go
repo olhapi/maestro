@@ -98,6 +98,34 @@ func TestManagedDaemonReplacesStaleRegistryEntry(t *testing.T) {
 	}
 }
 
+func TestDiscoverDaemonForStoreRejectsProcessLocalEntryFromAnotherProcess(t *testing.T) {
+	t.Setenv(daemonRegistryEnv, t.TempDir())
+
+	store := testStore(t, filepath.Join(t.TempDir(), "maestro.db"))
+	identity := store.Identity()
+	entry := DaemonEntry{
+		StoreID:     identity.StoreID,
+		DBPath:      identity.DBPath,
+		PID:         os.Getpid() + 1,
+		StartedAt:   time.Now().UTC(),
+		BaseURL:     "http://127.0.0.1:20001/mcp",
+		BearerToken: "process-local",
+		Version:     "test-version",
+		Transport:   daemonTransportInProcess,
+	}
+	if err := writeDaemonEntry(entry); err != nil {
+		t.Fatalf("write process-local daemon entry: %v", err)
+	}
+
+	_, err := DiscoverDaemonForStore(context.Background(), identity)
+	if err == nil {
+		t.Fatal("expected process-local daemon discovery to fail from another process")
+	}
+	if !strings.Contains(err.Error(), "process-local transport") {
+		t.Fatalf("expected process-local discovery error, got %v", err)
+	}
+}
+
 func TestManagedDaemonRejectsSecondOwnerForSameStore(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 

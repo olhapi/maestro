@@ -4136,6 +4136,26 @@ func (s *Store) AppendRuntimeEvent(kind string, payload map[string]interface{}) 
 	return nil
 }
 
+func (s *Store) AppendRuntimeEventOnly(kind string, payload map[string]interface{}) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := s.appendRuntimeEventOnlyTx(tx, kind, payload); err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
+}
+
 func (s *Store) appendRuntimeEventTx(tx *sql.Tx, kind string, payload map[string]interface{}) error {
 	if payload == nil {
 		payload = map[string]interface{}{}
@@ -4170,6 +4190,39 @@ func (s *Store) appendRuntimeEventTx(tx *sql.Tx, kind string, payload map[string
 		return err
 	}
 	return s.appendChangeTx(tx, "runtime_event", asString(payload["issue_id"]), kind, payload)
+}
+
+func (s *Store) appendRuntimeEventOnlyTx(tx *sql.Tx, kind string, payload map[string]interface{}) error {
+	if payload == nil {
+		payload = map[string]interface{}{}
+	}
+	ts := time.Now().UTC()
+	if raw, ok := payload["ts"].(string); ok && raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			ts = parsed
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
+		INSERT INTO runtime_events (kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		kind,
+		asString(payload["issue_id"]),
+		asString(payload["identifier"]),
+		asString(payload["title"]),
+		asInt(payload["attempt"]),
+		asString(payload["delay_type"]),
+		asInt(payload["input_tokens"]),
+		asInt(payload["output_tokens"]),
+		asInt(payload["total_tokens"]),
+		asString(payload["error"]),
+		ts,
+		string(body),
+	)
+	return err
 }
 
 func (s *Store) appendChange(entityType, entityID, action string, payload map[string]interface{}) error {
@@ -4377,7 +4430,7 @@ func (s *Store) ListIssueRuntimeEvents(issueID string, limit int) ([]RuntimeEven
 		SELECT seq, kind, issue_id, identifier, title, attempt, delay_type, input_tokens, output_tokens, total_tokens, error, event_ts, payload_json
 		FROM runtime_events
 		WHERE issue_id = ?
-			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed', 'workspace_bootstrap_created', 'workspace_bootstrap_reused', 'workspace_bootstrap_preserved', 'workspace_bootstrap_recovery', 'workspace_bootstrap_failed')
+			AND kind IN ('run_started', 'run_interrupted', 'run_failed', 'run_unsuccessful', 'retry_scheduled', 'retry_paused', 'manual_retry_requested', 'run_completed', 'workspace_bootstrap_created', 'workspace_bootstrap_reused', 'workspace_bootstrap_preserved', 'workspace_bootstrap_recovery', 'workspace_bootstrap_failed', 'plan_approval_requested', 'plan_approved', 'plan_revision_requested', 'plan_revision_cleared')
 		ORDER BY seq DESC`
 	var (
 		rows *sql.Rows

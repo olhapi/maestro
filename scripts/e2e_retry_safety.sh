@@ -63,7 +63,7 @@ yaml_quote() {
 
 sql_value() {
   local sql="$1"
-  sqlite3 -noheader "$DB_PATH" "$sql"
+  sqlite3 -noheader "$DB_PATH" ".timeout 5000" "$sql"
 }
 
 issue_id() {
@@ -213,7 +213,7 @@ start_project() {
   local id="$1"
   # Projects are created stopped by default; mark them running so the shared
   # orchestrator can dispatch the harness issues.
-  sqlite3 "$DB_PATH" "UPDATE projects SET state = 'running', updated_at = datetime('now') WHERE id = '$id';"
+  sqlite3 "$DB_PATH" ".timeout 5000" "UPDATE projects SET state = 'running', updated_at = datetime('now') WHERE id = '$id';"
 }
 
 require_cmd go

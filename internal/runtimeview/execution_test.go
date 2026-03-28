@@ -763,6 +763,16 @@ func TestIssueExecutionPayloadReturnsRetryLimitPauseReason(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendRuntimeEvent: %v", err)
 	}
+	if err := store.AppendRuntimeEvent("plan_revision_requested", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"phase":        "implementation",
+		"attempt":      0,
+		"markdown":     "Tighten the rollout and add a rollback check.",
+		"requested_at": pausedAt.Add(time.Minute).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent plan_revision_requested: %v", err)
+	}
 
 	payload, err := IssueExecutionPayload(store, nil, issue)
 	if err != nil {
@@ -774,6 +784,81 @@ func TestIssueExecutionPayloadReturnsRetryLimitPauseReason(t *testing.T) {
 	}
 	if payload["failure_class"] != "retry_limit_reached" {
 		t.Fatalf("unexpected failure class: %#v", payload["failure_class"])
+	}
+	if payload["attempt_number"].(int) != 4 {
+		t.Fatalf("expected attempt number to remain anchored to the paused retry, got %#v", payload["attempt_number"])
+	}
+}
+
+func TestIssueExecutionPayloadClearsPersistedPauseAfterRunCompletes(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Recovered retry issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	pausedAt := time.Date(2026, 3, 9, 12, 20, 0, 0, time.UTC)
+	for _, event := range []struct {
+		kind    string
+		attempt int
+		fields  map[string]interface{}
+	}{
+		{
+			kind:    "retry_paused",
+			attempt: 4,
+			fields: map[string]interface{}{
+				"paused_at":       pausedAt.Format(time.RFC3339),
+				"error":           "retry_limit_reached",
+				"pause_threshold": 8,
+			},
+		},
+		{
+			kind:    "plan_revision_requested",
+			attempt: 0,
+			fields: map[string]interface{}{
+				"markdown":     "Tighten the rollout and add a rollback check.",
+				"requested_at": pausedAt.Add(time.Minute).Format(time.RFC3339),
+			},
+		},
+		{
+			kind:    "run_started",
+			attempt: 4,
+			fields:  map[string]interface{}{},
+		},
+		{
+			kind:    "run_completed",
+			attempt: 4,
+			fields:  map[string]interface{}{},
+		},
+	} {
+		payload := map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+			"attempt":    event.attempt,
+		}
+		for key, value := range event.fields {
+			payload[key] = value
+		}
+		if err := store.AppendRuntimeEvent(event.kind, payload); err != nil {
+			t.Fatalf("AppendRuntimeEvent %s: %v", event.kind, err)
+		}
+	}
+
+	result, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if result["retry_state"] != "none" {
+		t.Fatalf("expected completed run to clear persisted pause metadata, got %#v", result)
+	}
+	if _, ok := result["pause_reason"]; ok {
+		t.Fatalf("did not expect pause_reason once a later run completed, got %#v", result["pause_reason"])
 	}
 }
 

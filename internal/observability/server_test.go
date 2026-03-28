@@ -3,10 +3,11 @@ package observability
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 type testProvider struct{}
@@ -60,12 +61,7 @@ func TestServerStartsAndServesState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	addr := nextFakeAddr()
 	if _, err := Start(ctx, addr, testProvider{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -173,13 +169,14 @@ func TestStartFailsWhenPortIsOccupied(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	addr := nextFakeAddr()
+	occupied, err := inprocessserver.NewWithURL("http://"+addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		t.Fatalf("occupy fake addr: %v", err)
 	}
-	defer ln.Close()
+	defer occupied.Close()
 
-	if _, err := Start(ctx, ln.Addr().String(), testProvider{}); err == nil {
+	if _, err := Start(ctx, addr, testProvider{}); err == nil {
 		t.Fatal("expected Start to fail on an occupied port")
 	}
 }

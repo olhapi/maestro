@@ -2010,7 +2010,8 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 	if err := store.SetIssuePendingPlanApproval(issue.ID, "Original plan: ship cautiously.", requestedAt); err != nil {
 		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
 	}
-	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(5*time.Minute)); err != nil {
+	revisionNote := "Tighten the rollout and add a rollback check."
+	if err := store.SetIssuePendingPlanRevision(issue.ID, revisionNote, requestedAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
 	}
 	issue, err = store.GetIssue(issue.ID)
@@ -2042,6 +2043,26 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Tighten the rollout and add a rollback check.") {
 		t.Fatalf("expected revision note in prompt, got %q", prompt)
+	}
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	var cleared *kanban.RuntimeEvent
+	for i := range events {
+		if events[i].Kind == "plan_revision_cleared" {
+			cleared = &events[i]
+			break
+		}
+	}
+	if cleared == nil {
+		t.Fatalf("expected plan_revision_cleared runtime event, got %#v", events)
+	}
+	if got := cleared.Payload["markdown"]; got != revisionNote {
+		t.Fatalf("expected runtime event to preserve the consumed note, got %#v", got)
+	}
+	if got := cleared.Payload["reason"]; got != "turn_started" {
+		t.Fatalf("expected runtime event to capture the clear reason, got %#v", got)
 	}
 
 	updated, err := store.GetIssue(issue.ID)

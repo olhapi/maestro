@@ -3,18 +3,22 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 func TestOpenDashboardWhenReadyLaunchesBrowser(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, err := inprocessserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
+	if err != nil {
+		t.Fatalf("new in-process server: %v", err)
+	}
 	defer server.Close()
 
 	oldLauncher := dashboardBrowserLauncher

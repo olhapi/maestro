@@ -1048,7 +1048,7 @@ func (r *Runner) executeStdioTurns(ctx context.Context, workflow *config.Workflo
 			if !consumePlanRevision {
 				return nil
 			}
-			return r.clearPendingPlanRevision(issue)
+			return r.clearPendingPlanRevision(issue, attempt)
 		})
 		if out != "" {
 			if allOutput.Len() > 0 {
@@ -1167,7 +1167,7 @@ func (r *Runner) executeAppServerTurns(ctx context.Context, workflow *config.Wor
 		var consumeErr error
 		if err := client.RunTurnWithInputsAndStartCallback(ctx, input, title, func(session *appserver.Session) {
 			if consumePlanRevision && consumeErr == nil {
-				consumeErr = r.clearPendingPlanRevision(issue)
+				consumeErr = r.clearPendingPlanRevision(issue, attempt)
 			}
 			if consumeErr == nil {
 				deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
@@ -1270,16 +1270,39 @@ func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, se
 	})
 }
 
-func (r *Runner) clearPendingPlanRevision(issue *kanban.Issue) error {
+func (r *Runner) clearPendingPlanRevision(issue *kanban.Issue, attempt int) error {
 	if r.store == nil || !issueHasPendingPlanRevision(issue) {
 		return nil
 	}
+	revisionMarkdown := strings.TrimSpace(issue.PendingPlanRevisionMarkdown)
+	requestedAt := issue.PendingPlanRevisionRequestedAt
 	if err := r.store.ClearIssuePendingPlanRevision(issue.ID, "turn_started"); err != nil {
 		return err
 	}
 	issue.PendingPlanRevisionMarkdown = ""
 	issue.PendingPlanRevisionRequestedAt = nil
+	r.recordPlanRevisionRuntimeEvent(issue, "plan_revision_cleared", attempt, requestedAt, revisionMarkdown, "turn_started")
 	return nil
+}
+
+func (r *Runner) recordPlanRevisionRuntimeEvent(issue *kanban.Issue, kind string, attempt int, requestedAt *time.Time, markdown, reason string) {
+	if r.store == nil || issue == nil {
+		return
+	}
+	payload := map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"title":      issue.Title,
+		"phase":      string(issue.WorkflowPhase),
+		"attempt":    attempt,
+		"markdown":   markdown,
+		"reason":     reason,
+		"cleared_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if requestedAt != nil && !requestedAt.IsZero() {
+		payload["requested_at"] = requestedAt.UTC().Format(time.RFC3339)
+	}
+	_ = r.store.AppendRuntimeEventOnly(kind, payload)
 }
 
 func finalAnswerFromSession(session *appserver.Session) string {
