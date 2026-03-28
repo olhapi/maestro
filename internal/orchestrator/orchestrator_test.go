@@ -634,6 +634,7 @@ func setWorkflowDispatchMode(t *testing.T, manager *config.Manager, dispatchMode
 
 func waitForLiveSession(t *testing.T, orch *Orchestrator, identifier string, timeout time.Duration) appserver.Session {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
@@ -648,6 +649,7 @@ func waitForLiveSession(t *testing.T, orch *Orchestrator, identifier string, tim
 
 func waitForWorkspaceRemoval(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration) {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if _, err := store.GetWorkspace(issueID); err != nil {
@@ -660,6 +662,7 @@ func waitForWorkspaceRemoval(t *testing.T, store *kanban.Store, issueID string, 
 
 func waitForExecutionSnapshot(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration) *kanban.ExecutionSessionSnapshot {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		snapshot, err := store.GetIssueExecutionSession(issueID)
@@ -674,6 +677,7 @@ func waitForExecutionSnapshot(t *testing.T, store *kanban.Store, issueID string,
 
 func waitForRunStartedExecutionSnapshot(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration) *kanban.ExecutionSessionSnapshot {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		snapshot, err := store.GetIssueExecutionSession(issueID)
@@ -688,6 +692,7 @@ func waitForRunStartedExecutionSnapshot(t *testing.T, store *kanban.Store, issue
 
 func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		orch.mu.RLock()
@@ -703,6 +708,7 @@ func waitForNoRunning(t *testing.T, orch *Orchestrator, timeout time.Duration) {
 
 func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if check() {
@@ -762,6 +768,7 @@ while True:
 
 func waitForRunningCount(t *testing.T, orch *Orchestrator, expected int, timeout time.Duration) {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		orch.mu.RLock()
@@ -777,6 +784,7 @@ func waitForRunningCount(t *testing.T, orch *Orchestrator, expected int, timeout
 
 func waitForPendingInterruptCount(t *testing.T, orch *Orchestrator, expected int, timeout time.Duration) appserver.PendingInteractionSnapshot {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		snapshot := orch.PendingInterrupts()
@@ -811,6 +819,7 @@ func forceRetryDue(t *testing.T, orch *Orchestrator, issueID string) {
 
 func waitForRetryEntry(t *testing.T, orch *Orchestrator, issueID string, timeout time.Duration) retryEntry {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		orch.mu.RLock()
@@ -827,6 +836,7 @@ func waitForRetryEntry(t *testing.T, orch *Orchestrator, issueID string, timeout
 
 func waitForIssuePauseReason(t *testing.T, store *kanban.Store, issueID, reason string, timeout time.Duration) {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		events, err := store.ListIssueRuntimeEvents(issueID, 20)
@@ -843,6 +853,7 @@ func waitForIssuePauseReason(t *testing.T, store *kanban.Store, issueID, reason 
 
 func waitForIssueRetryState(t *testing.T, store *kanban.Store, issueID, delayType string, timeout time.Duration) {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		events, err := store.ListIssueRuntimeEvents(issueID, 20)
@@ -866,6 +877,7 @@ func waitForIssueStateAndPhase(
 	timeout time.Duration,
 ) *kanban.Issue {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		issue, err := store.GetIssue(issueID)
@@ -4448,6 +4460,7 @@ func (r *terminalTransitionRunner) CleanupWorkspace(ctx context.Context, issue *
 
 func (r *terminalTransitionRunner) waitForMovedToDone(t *testing.T, timeout time.Duration) {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	select {
 	case <-r.movedToDone:
 	case <-time.After(timeout):
@@ -4521,6 +4534,7 @@ func (r *controlledRunner) complete(identifier string) {
 
 func (r *controlledRunner) waitForStarts(t *testing.T, expected int, timeout time.Duration) []string {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		r.mu.Lock()
@@ -4586,6 +4600,7 @@ func (r *cancelledResultRunner) CleanupWorkspace(ctx context.Context, issue *kan
 
 func (r *cancelledResultRunner) waitForStarts(t *testing.T, expected int, timeout time.Duration) []string {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		r.mu.Lock()

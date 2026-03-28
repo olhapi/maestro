@@ -14,6 +14,8 @@ import (
 	"github.com/olhapi/maestro/pkg/config"
 )
 
+const eventuallyTimeoutFloor = 5 * time.Second
+
 type retryTestRunner struct {
 	runCalls     chan string
 	cleanupCalls chan string
@@ -76,6 +78,7 @@ func (r *interruptedFailureRunner) CleanupWorkspace(ctx context.Context, issue *
 
 func waitForRunCall(t *testing.T, ch <-chan string, timeout time.Duration) string {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	select {
 	case identifier := <-ch:
 		return identifier
@@ -87,6 +90,7 @@ func waitForRunCall(t *testing.T, ch <-chan string, timeout time.Duration) strin
 
 func waitForCleanupCall(t *testing.T, ch <-chan string, timeout time.Duration) string {
 	t.Helper()
+	timeout = normalizeEventuallyTimeout(timeout)
 	select {
 	case identifier := <-ch:
 		return identifier
@@ -94,6 +98,13 @@ func waitForCleanupCall(t *testing.T, ch <-chan string, timeout time.Duration) s
 		t.Fatal("timed out waiting for cleanup call")
 		return ""
 	}
+}
+
+func normalizeEventuallyTimeout(timeout time.Duration) time.Duration {
+	if timeout < eventuallyTimeoutFloor {
+		return eventuallyTimeoutFloor
+	}
+	return timeout
 }
 
 func TestProcessRetriesAndRunLoopHelpers(t *testing.T) {
