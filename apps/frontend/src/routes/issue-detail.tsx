@@ -1051,6 +1051,10 @@ export function IssueDetailPage() {
   }
 
   const planApprovalPending = Boolean(
+    execution.data.planning &&
+      execution.data.planning.status !== "approved" &&
+      execution.data.planning.status !== "abandoned",
+  ) || Boolean(
     execution.data.plan_approval?.markdown || execution.data.pending_interrupt?.approval?.markdown,
   );
   const commentItems = Array.isArray(comments.data?.items)

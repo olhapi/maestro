@@ -59,6 +59,29 @@ function makeExecutionDetail(overrides: Partial<IssueExecutionDetail> = {}): Iss
   }
 }
 
+function makePlanning(
+  overrides: Partial<NonNullable<IssueExecutionDetail['planning']>> = {},
+): NonNullable<IssueExecutionDetail['planning']> {
+  const version = {
+    id: 'plan-version-1',
+    session_id: 'plan-session-1',
+    version_number: 1,
+    markdown: 'Ship with a guarded rollout.',
+    created_at: '2026-03-18T12:00:00Z',
+  }
+
+  return {
+    session_id: 'plan-session-1',
+    status: 'awaiting_approval',
+    current_version_number: 1,
+    current_version: version,
+    versions: [version],
+    opened_at: '2026-03-18T11:50:00Z',
+    updated_at: '2026-03-18T12:05:00Z',
+    ...overrides,
+  }
+}
+
 describe('SessionExecutionCard', () => {
   it('caps the debug signals panel height and makes it scrollable', () => {
     render(
@@ -298,6 +321,42 @@ describe('SessionExecutionCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /approve plan/i }))
 
     expect(onApprovePlan).toHaveBeenCalledWith(undefined)
+  })
+
+  it('keeps the live execution status when an approved plan is only historical context', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          active: true,
+          planning: makePlanning({
+            status: 'approved',
+            closed_at: '2026-03-18T12:12:00Z',
+          }),
+        })}
+        issueTotalTokens={120}
+      />,
+    )
+
+    expect(screen.getByText('Active session')).toBeInTheDocument()
+    expect(screen.queryByText(/^Waiting$/)).not.toBeInTheDocument()
+  })
+
+  it('does not show a waiting state for abandoned planning history', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          failure_class: 'workspace_bootstrap',
+          planning: makePlanning({
+            status: 'abandoned',
+            closed_at: '2026-03-18T12:12:00Z',
+          }),
+        })}
+        issueTotalTokens={120}
+      />,
+    )
+
+    expect(screen.queryByText(/^Waiting$/)).not.toBeInTheDocument()
+    expect(screen.getByText('Workspace Bootstrap')).toBeInTheDocument()
   })
 
   it('renders a workspace recovery banner for bootstrap blockers', () => {

@@ -328,6 +328,9 @@ export function GlobalInterruptPanel({
   const isUserInput = selectedInterrupt?.kind === 'user_input'
   const isAlert = selectedInterrupt?.kind === 'alert'
   const approvalMarkdown = selectedInterrupt?.approval?.markdown?.trim() ?? ''
+  const approvalPlanVersion = selectedInterrupt?.approval?.plan_version_number ?? 0
+  const approvalPlanStatus = selectedInterrupt?.approval?.plan_status ?? ''
+  const approvalRevisionNote = selectedInterrupt?.approval?.plan_revision_note?.trim() ?? ''
   const isPlanApproval = isApproval && approvalMarkdown.length > 0
   const requiresExplicitSubmit =
     isUserInput && questions.some((question) => questionHasTextInput(question))
@@ -781,6 +784,32 @@ export function GlobalInterruptPanel({
                           <p className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100/90">
                             An earlier interrupt is still pending. You can review this plan now, but responses stay locked until it reaches the front of the queue.
                           </p>
+                        ) : null}
+                        {approvalPlanVersion > 0 || approvalPlanStatus || approvalRevisionNote ? (
+                          <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.03] p-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {approvalPlanVersion > 0 ? (
+                                <Badge className="border-white/10 bg-white/5 text-white">
+                                  Version {approvalPlanVersion}
+                                </Badge>
+                              ) : null}
+                              {approvalPlanStatus ? (
+                                <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">
+                                  {toTitleCase(approvalPlanStatus.replace(/_/g, ' '))}
+                                </Badge>
+                              ) : null}
+                            </div>
+                            {approvalRevisionNote ? (
+                              <div>
+                                <p className="text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                                  Latest revision note
+                                </p>
+                                <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                                  {approvalRevisionNote}
+                                </p>
+                              </div>
+                            ) : null}
+                          </div>
                         ) : null}
                         <PlanApprovalDocument markdown={approvalMarkdown} />
                       </ApprovalReviewPanel>

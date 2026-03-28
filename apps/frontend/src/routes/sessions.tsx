@@ -28,6 +28,23 @@ function summaryText(entry: SessionFeedEntry) {
   return entry.last_message || entry.error || entry.last_event || 'No progress details yet.'
 }
 
+function planningBadge(entry: SessionFeedEntry) {
+  switch (entry.planning?.status) {
+    case 'drafting':
+      return 'Drafting'
+    case 'awaiting_approval':
+      return 'Awaiting approval'
+    case 'revision_requested':
+      return 'Revision queued'
+    case 'approved':
+      return 'Approved'
+    case 'abandoned':
+      return 'Abandoned'
+    default:
+      return ''
+  }
+}
+
 function badgeClassForStatus(status: SessionFeedEntry['status']) {
   switch (status) {
     case 'active':
@@ -111,8 +128,23 @@ export function SessionsPage() {
                           <p className="font-medium text-white">{title}</p>
                           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(entry.source)}</Badge>
                           <Badge className={badgeClassForStatus(entry.status)}>{toTitleCase(entry.status)}</Badge>
-                          {entry.pending_interrupt?.collaboration_mode === 'plan' ? (
+                          {entry.pending_interrupt?.collaboration_mode === 'plan' || !!entry.planning ? (
                             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
+                          ) : null}
+                          {planningBadge(entry) ? (
+                            <Badge
+                              className={
+                                entry.planning?.status === 'approved'
+                                  ? 'border-lime-400/20 bg-lime-400/10 text-lime-100'
+                                  : entry.planning?.status === 'abandoned'
+                                    ? 'border-rose-400/20 bg-rose-400/10 text-rose-100'
+                                    : entry.planning?.status === 'drafting' || entry.planning?.status === 'revision_requested'
+                                      ? 'border-amber-400/20 bg-amber-400/10 text-amber-100'
+                                      : 'border-sky-400/20 bg-sky-400/10 text-sky-100'
+                              }
+                            >
+                              {planningBadge(entry)}
+                            </Badge>
                           ) : null}
                           {quiet ? <Badge className="border-orange-400/20 bg-orange-400/10 text-orange-100">Quiet</Badge> : null}
                         </div>

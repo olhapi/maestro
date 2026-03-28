@@ -113,7 +113,8 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteractio
 			}
 		}
 		snapshot, _ := o.store.GetIssueExecutionSession(issue.ID)
-		items = append(items, buildPlanApprovalPendingInterrupt(issue, project, snapshot))
+		planning, _ := o.store.GetIssuePlanning(&issue)
+		items = append(items, buildPlanApprovalPendingInterrupt(issue, project, snapshot, planning))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		left := items[i].RequestedAt.UTC()
@@ -126,7 +127,7 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteractio
 	return items, nil
 }
 
-func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Project, snapshot *kanban.ExecutionSessionSnapshot) appserver.PendingInteraction {
+func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Project, snapshot *kanban.ExecutionSessionSnapshot, planning *kanban.IssuePlanning) appserver.PendingInteraction {
 	requestedAt := time.Now().UTC()
 	if issue.PendingPlanRequestedAt != nil && !issue.PendingPlanRequestedAt.IsZero() {
 		requestedAt = issue.PendingPlanRequestedAt.UTC()
@@ -155,6 +156,25 @@ func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Proje
 		projectID = strings.TrimSpace(project.ID)
 		projectName = strings.TrimSpace(project.Name)
 	}
+	planMarkdown := strings.TrimSpace(issue.PendingPlanMarkdown)
+	planStatus := ""
+	planVersionNumber := 0
+	planRevisionNote := ""
+	if planning != nil {
+		planStatus = string(planning.Status)
+		planVersionNumber = planning.CurrentVersionNumber
+		planRevisionNote = strings.TrimSpace(planning.PendingRevisionNote)
+		if planning.CurrentVersion != nil && strings.TrimSpace(planning.CurrentVersion.Markdown) != "" {
+			planMarkdown = strings.TrimSpace(planning.CurrentVersion.Markdown)
+		}
+		if !planning.UpdatedAt.IsZero() {
+			lastActivityAt = planning.UpdatedAt.UTC()
+		}
+	}
+	lastActivity := "Plan ready for approval."
+	if planVersionNumber > 0 {
+		lastActivity = fmt.Sprintf("Plan v%d ready for approval.", planVersionNumber)
+	}
 
 	return appserver.PendingInteraction{
 		ID:                issuePlanApprovalInteractionID(issue.ID),
@@ -169,13 +189,16 @@ func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Proje
 		TurnID:            turnID,
 		RequestedAt:       requestedAt,
 		LastActivityAt:    &lastActivityAt,
-		LastActivity:      "Plan ready for approval.",
+		LastActivity:      lastActivity,
 		CollaborationMode: "plan",
 		ProjectID:         projectID,
 		ProjectName:       projectName,
 		Approval: &appserver.PendingApproval{
-			Reason:   "Review the proposed plan before execution.",
-			Markdown: issue.PendingPlanMarkdown,
+			Reason:            "Review the proposed plan before execution.",
+			Markdown:          planMarkdown,
+			PlanStatus:        planStatus,
+			PlanVersionNumber: planVersionNumber,
+			PlanRevisionNote:  planRevisionNote,
 			Decisions: []appserver.PendingApprovalDecision{{
 				Value:       "approved",
 				Label:       "Approve plan",

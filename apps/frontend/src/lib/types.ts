@@ -315,6 +315,9 @@ export interface PendingApproval {
   cwd?: string;
   reason?: string;
   markdown?: string;
+  plan_status?: "drafting" | "awaiting_approval" | "revision_requested" | "approved" | "abandoned" | string;
+  plan_version_number?: number;
+  plan_revision_note?: string;
   decisions: PendingApprovalDecision[];
 }
 
@@ -391,6 +394,42 @@ export interface PlanRevision {
   attempt: number;
 }
 
+export interface IssuePlanVersion {
+  id: string;
+  session_id: string;
+  version_number: number;
+  markdown: string;
+  revision_note?: string;
+  attempt?: number;
+  thread_id?: string;
+  turn_id?: string;
+  created_at: string;
+}
+
+export interface IssuePlanning {
+  session_id: string;
+  status: "drafting" | "awaiting_approval" | "revision_requested" | "approved" | "abandoned" | string;
+  current_version_number: number;
+  current_version?: IssuePlanVersion;
+  versions: IssuePlanVersion[];
+  pending_revision_note?: string;
+  opened_at: string;
+  updated_at: string;
+  closed_at?: string;
+  closed_reason?: string;
+}
+
+export interface IssuePlanningSummary {
+  session_id: string;
+  status: "drafting" | "awaiting_approval" | "revision_requested" | "approved" | "abandoned" | string;
+  current_version_number: number;
+  current_version?: IssuePlanVersion;
+  pending_revision_note?: string;
+  opened_at: string;
+  updated_at: string;
+  closed_at?: string;
+}
+
 export interface WorkspaceRecovery {
   status: "recovering" | "required" | string;
   message: string;
@@ -403,6 +442,7 @@ export interface SessionFeedEntry {
   source: "live" | "persisted";
   active: boolean;
   status: "active" | "waiting" | "revision_queued" | "blocked" | "paused" | "completed" | "failed" | "interrupted";
+  planning?: IssuePlanningSummary;
   pending_interrupt?: PendingInterrupt;
   phase?: string;
   attempt?: number;
@@ -451,7 +491,17 @@ export interface DashboardWorkSource extends DashboardRuntimeSource {
 
 export interface ActivityEntry {
   id: string;
-  kind: "agent" | "command" | "status" | "secondary";
+  kind:
+    | "agent"
+    | "command"
+    | "status"
+    | "secondary"
+    | "plan_session_started"
+    | "plan_version_published"
+    | "plan_revision_requested"
+    | "plan_revision_applied"
+    | "plan_approved"
+    | "plan_session_abandoned";
   title: string;
   summary: string;
   detail?: string;
@@ -505,6 +555,7 @@ export interface IssueExecutionDetail {
   debug_activity_groups?: ActivityGroup[];
   agent_commands: AgentCommand[];
   pending_interrupt?: PendingInterrupt;
+  planning?: IssuePlanning;
   plan_approval?: PlanApproval;
   plan_revision?: PlanRevision;
   workspace_recovery?: WorkspaceRecovery;

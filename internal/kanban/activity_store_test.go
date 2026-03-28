@@ -653,14 +653,17 @@ func TestApplyIssueActivityEventProjectsPlanApprovalRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIssueActivityEntries resolved: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected merged plan approval row, got %#v", entries)
+	if len(entries) != 2 {
+		t.Fatalf("expected separate plan publication and approval rows, got %#v", entries)
 	}
-	if entries[0].Status != "plan_approved" || entries[0].Tone != "success" {
-		t.Fatalf("unexpected plan approval resolved entry: %#v", entries[0])
+	if entries[0].Kind != "plan_version_published" || entries[0].Status != "plan_approval_pending" {
+		t.Fatalf("unexpected plan version entry: %#v", entries[0])
 	}
-	if entries[0].Summary != "Operator approved the plan and resumed execution." {
-		t.Fatalf("unexpected plan approval resolved summary: %#v", entries[0])
+	if entries[1].Kind != "plan_approved" || entries[1].Status != "plan_approved" || entries[1].Tone != "success" {
+		t.Fatalf("unexpected plan approval resolved entry: %#v", entries[1])
+	}
+	if entries[1].Summary != "Operator approved the plan and resumed execution." {
+		t.Fatalf("unexpected plan approval resolved summary: %#v", entries[1])
 	}
 }
 

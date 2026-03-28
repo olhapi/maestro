@@ -10,6 +10,38 @@ import { describeFailureRuns, failureStatusLabel } from '@/lib/execution'
 import type { IssueExecutionDetail } from '@/lib/types'
 import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
 
+function planningHeadline(status: string | undefined) {
+  switch (status) {
+    case 'drafting':
+      return 'Revising the plan'
+    case 'revision_requested':
+      return 'Plan revision queued'
+    case 'approved':
+      return 'Plan approved'
+    case 'abandoned':
+      return 'Planning session abandoned'
+    case 'awaiting_approval':
+    default:
+      return 'Plan ready for approval'
+  }
+}
+
+function planningSummary(status: string | undefined) {
+  switch (status) {
+    case 'drafting':
+      return 'Maestro started the next planning turn with your latest revision note. The last published draft stays visible until the revised plan is ready.'
+    case 'revision_requested':
+      return 'Maestro queued your revision note and will carry it into the next planning turn before it asks for approval again.'
+    case 'approved':
+      return 'The planning session is complete. Maestro can continue the implementation flow from this approved draft.'
+    case 'abandoned':
+      return 'The pending plan was cleared without approval. The latest published draft is still available here for reference.'
+    case 'awaiting_approval':
+    default:
+      return 'Maestro paused after drafting the plan. Review the proposal, request changes if the plan needs another pass, or approve when it is ready to continue.'
+  }
+}
+
 export function SessionExecutionCard({
   execution,
   issueTotalTokens,
@@ -38,18 +70,50 @@ export function SessionExecutionCard({
     execution.pause_reason || execution.failure_class || execution.current_error
   const pendingInterrupt = execution.pending_interrupt
   const pendingAlert = pendingInterrupt?.kind === 'alert' ? pendingInterrupt : null
+  const planning = execution.planning
+  const planningVersions = planning?.versions ?? []
+  const currentPlanVersion = planning?.current_version ?? (planningVersions.length > 0 ? planningVersions[planningVersions.length - 1] : undefined)
   const pendingPlanApproval = execution.plan_approval
   const pendingPlanRevision = execution.plan_revision
-  const pendingPlanApprovalMarkdown =
+  const activePlanApprovalMarkdown =
     pendingInterrupt?.approval?.markdown?.trim() ||
     pendingPlanApproval?.markdown?.trim() ||
     ''
-  const isPlanApprovalPending = pendingPlanApprovalMarkdown.length > 0
-  const pendingPlanRevisionMarkdown = pendingPlanRevision?.markdown?.trim() ?? ''
-  const isPlanRevisionPending = pendingPlanRevisionMarkdown.length > 0
-  const planApprovalActionsVisible = isPlanApprovalPending && !isPlanRevisionPending && (!!onApprovePlan || !!onRequestPlanRevision)
-  const planApprovalDraftKey = isPlanApprovalPending
-    ? `${pendingPlanApproval?.requested_at ?? pendingInterrupt?.requested_at ?? ''}|${pendingPlanApprovalMarkdown}`
+  const displayedPlanMarkdown =
+    currentPlanVersion?.markdown?.trim() ||
+    activePlanApprovalMarkdown ||
+    ''
+  const pendingPlanRevisionMarkdown =
+    planning?.pending_revision_note?.trim() ||
+    pendingInterrupt?.approval?.plan_revision_note?.trim() ||
+    pendingPlanRevision?.markdown?.trim() ||
+    ''
+  const hasPlanningSession =
+    !!planning ||
+    displayedPlanMarkdown.length > 0 ||
+    pendingPlanRevisionMarkdown.length > 0
+  const hasLegacyQueuedRevision = !planning && pendingPlanRevisionMarkdown.length > 0
+  const effectivePlanningStatus =
+    planning?.status ||
+    (hasLegacyQueuedRevision ? 'revision_requested' : activePlanApprovalMarkdown.length > 0 ? 'awaiting_approval' : undefined)
+  const isPlanDrafting = effectivePlanningStatus === 'drafting'
+  const isPlanAwaitingApproval = effectivePlanningStatus === 'awaiting_approval'
+  const isPlanRevisionPending = effectivePlanningStatus === 'revision_requested'
+  const isPlanApproved = effectivePlanningStatus === 'approved'
+  const isPlanAbandoned = effectivePlanningStatus === 'abandoned'
+  const hasOpenPlanningSession =
+    isPlanAwaitingApproval ||
+    isPlanDrafting ||
+    isPlanRevisionPending
+  const planApprovalActionsVisible =
+    !isPlanDrafting &&
+    !isPlanRevisionPending &&
+    !isPlanApproved &&
+    !isPlanAbandoned &&
+    activePlanApprovalMarkdown.length > 0 &&
+    (!!onApprovePlan || !!onRequestPlanRevision)
+  const planApprovalDraftKey = hasPlanningSession
+    ? `${planning?.session_id ?? pendingInterrupt?.session_id ?? ''}|${planning?.current_version_number ?? pendingPlanApproval?.attempt ?? 0}|${activePlanApprovalMarkdown}`
     : ''
   const [planReviewState, setPlanReviewState] = useState({
     draftKey: '',
@@ -57,7 +121,7 @@ export function SessionExecutionCard({
     noteVisible: false,
     noteRequired: false,
   })
-  const planReviewMatchesDraft = isPlanApprovalPending && planReviewState.draftKey === planApprovalDraftKey
+  const planReviewMatchesDraft = isPlanAwaitingApproval && planReviewState.draftKey === planApprovalDraftKey
   const planReviewNote = planReviewMatchesDraft ? planReviewState.note : ''
   const planReviewNoteVisible = planReviewMatchesDraft ? planReviewState.noteVisible : false
   const planReviewNoteRequired = planReviewMatchesDraft ? planReviewState.noteRequired : false
@@ -66,20 +130,34 @@ export function SessionExecutionCard({
     execution.consecutive_failures,
     failureSummaryReason,
   )
+  const planningBadgeLabel =
+    effectivePlanningStatus === 'drafting'
+      ? 'Drafting'
+      : effectivePlanningStatus === 'revision_requested'
+        ? 'Revision queued'
+        : effectivePlanningStatus === 'approved'
+          ? 'Approved'
+          : effectivePlanningStatus === 'abandoned'
+            ? 'Abandoned'
+            : hasPlanningSession
+              ? 'Awaiting approval'
+              : ''
   const sessionStatusLabel = pendingAlert
       ? 'Blocked'
+      : isPlanDrafting
+        ? 'Drafting'
       : isPlanRevisionPending
         ? 'Revision queued'
       : pendingInterrupt
       ? pendingAlert
         ? 'Blocked'
-        : isPlanApprovalPending
+        : isPlanAwaitingApproval
           ? 'Waiting for plan approval'
           : 'Waiting for input'
       : isPlanRevisionPending
         ? 'Revision queued'
       : execution.retry_state === 'paused'
-        ? isPlanApprovalPending
+        ? isPlanAwaitingApproval
           ? 'Waiting for plan approval'
           : 'Paused'
       : failureLabel
@@ -146,16 +224,26 @@ export function SessionExecutionCard({
             >
               Blocked
             </Badge>
-          ) : pendingInterrupt || (isPlanApprovalPending && !isPlanRevisionPending) ? (
+          ) : pendingInterrupt || isPlanAwaitingApproval ? (
             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Waiting</Badge>
           ) : null}
-          {pendingInterrupt?.collaboration_mode === 'plan' || isPlanApprovalPending ? (
+          {pendingInterrupt?.collaboration_mode === 'plan' || hasOpenPlanningSession ? (
             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
           ) : null}
-          {isPlanRevisionPending ? (
-            <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">Revision queued</Badge>
+          {planningBadgeLabel ? (
+            <Badge className={
+              effectivePlanningStatus === 'approved'
+                ? 'border-lime-400/20 bg-lime-400/10 text-lime-100'
+                : effectivePlanningStatus === 'abandoned'
+                  ? 'border-rose-400/20 bg-rose-400/10 text-rose-100'
+                  : effectivePlanningStatus === 'drafting' || effectivePlanningStatus === 'revision_requested'
+                    ? 'border-amber-400/20 bg-amber-400/10 text-amber-100'
+                    : 'border-sky-400/20 bg-sky-400/10 text-sky-100'
+            }>
+              {planningBadgeLabel}
+            </Badge>
           ) : null}
-          {execution.failure_class && !isPlanApprovalPending ? (
+          {execution.failure_class && !hasOpenPlanningSession ? (
             <Badge className="border-rose-400/20 bg-rose-400/10 text-rose-100">{toTitleCase(execution.failure_class)}</Badge>
           ) : null}
           {execution.next_retry_at ? (
@@ -165,7 +253,7 @@ export function SessionExecutionCard({
           ) : null}
         </div>
 
-        {execution.retry_state === 'paused' && !isPlanApprovalPending ? (
+        {execution.retry_state === 'paused' && !hasOpenPlanningSession ? (
           <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
@@ -181,36 +269,117 @@ export function SessionExecutionCard({
           </div>
         ) : null}
 
-        {isPlanApprovalPending ? (
+        {hasPlanningSession && (displayedPlanMarkdown.length > 0 || pendingPlanRevisionMarkdown.length > 0) ? (
           <div
             className={
-              isPlanRevisionPending
+              isPlanRevisionPending || isPlanDrafting
                 ? 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-[linear-gradient(180deg,rgba(251,191,36,0.12),rgba(255,255,255,0.03))] p-4 text-sm text-amber-50'
-                : 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/22 bg-[linear-gradient(180deg,rgba(83,217,255,0.08),rgba(255,255,255,0.03))] p-4 text-sm text-sky-50'
+                : isPlanApproved
+                  ? 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-lime-400/22 bg-[linear-gradient(180deg,rgba(132,204,22,0.12),rgba(255,255,255,0.03))] p-4 text-sm text-lime-50'
+                  : isPlanAbandoned
+                    ? 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-rose-400/22 bg-[linear-gradient(180deg,rgba(244,63,94,0.12),rgba(255,255,255,0.03))] p-4 text-sm text-rose-50'
+                    : 'rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/22 bg-[linear-gradient(180deg,rgba(83,217,255,0.08),rgba(255,255,255,0.03))] p-4 text-sm text-sky-50'
             }
           >
             <div className="flex items-start gap-3">
-              <AlertTriangle className={`mt-0.5 size-4 ${isPlanRevisionPending ? 'text-amber-200' : 'text-sky-200'}`} />
+              <AlertTriangle
+                className={`mt-0.5 size-4 ${
+                  isPlanRevisionPending || isPlanDrafting
+                    ? 'text-amber-200'
+                    : isPlanApproved
+                      ? 'text-lime-200'
+                      : isPlanAbandoned
+                        ? 'text-rose-200'
+                        : 'text-sky-200'
+                }`}
+              />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge className={isPlanRevisionPending ? 'border-amber-400/25 bg-amber-400/10 text-amber-100' : 'border-sky-400/25 bg-sky-400/10 text-sky-100'}>
-                    {isPlanRevisionPending ? 'Revision queued' : 'Plan approval'}
+                  <Badge
+                    className={
+                      isPlanRevisionPending || isPlanDrafting
+                        ? 'border-amber-400/25 bg-amber-400/10 text-amber-100'
+                        : isPlanApproved
+                          ? 'border-lime-400/25 bg-lime-400/10 text-lime-100'
+                          : isPlanAbandoned
+                            ? 'border-rose-400/25 bg-rose-400/10 text-rose-100'
+                            : 'border-sky-400/25 bg-sky-400/10 text-sky-100'
+                    }
+                  >
+                    {planningBadgeLabel || 'Plan approval'}
                   </Badge>
-                  <span className={isPlanRevisionPending ? 'text-sm text-amber-100/70' : 'text-sm text-sky-100/70'}>
-                    Review-first approval flow
+                  <span
+                    className={
+                      isPlanRevisionPending || isPlanDrafting
+                        ? 'text-sm text-amber-100/70'
+                        : isPlanApproved
+                          ? 'text-sm text-lime-100/70'
+                          : isPlanAbandoned
+                            ? 'text-sm text-rose-100/70'
+                            : 'text-sm text-sky-100/70'
+                    }
+                  >
+                    Planning session
                   </span>
                 </div>
                 <p className="mt-3 text-lg font-semibold text-white">
-                  {isPlanRevisionPending ? 'Plan revision queued' : 'Plan ready for approval'}
+                  {planningHeadline(effectivePlanningStatus)}
                 </p>
-                <p className={`mt-2 max-w-3xl text-sm leading-6 ${isPlanRevisionPending ? 'text-amber-50/80' : 'text-sky-50/80'}`}>
-                  {isPlanRevisionPending
-                    ? 'Maestro queued your revision note and will carry it into the next planning turn before it asks for approval again.'
-                    : 'Maestro paused after drafting the plan. Review the proposal, request changes if the plan needs another pass, or approve when it is ready to continue.'}
+                <p
+                  className={`mt-2 max-w-3xl text-sm leading-6 ${
+                    isPlanRevisionPending || isPlanDrafting
+                      ? 'text-amber-50/80'
+                      : isPlanApproved
+                        ? 'text-lime-50/80'
+                        : isPlanAbandoned
+                          ? 'text-rose-50/80'
+                          : 'text-sky-50/80'
+                  }`}
+                >
+                  {planningSummary(effectivePlanningStatus)}
                 </p>
-                <div className="mt-4 max-w-[58rem]">
-                  <PlanApprovalDocument markdown={pendingPlanApprovalMarkdown} />
-                </div>
+                {pendingPlanRevisionMarkdown && (isPlanRevisionPending || isPlanDrafting) ? (
+                  <div className="mt-4 rounded-md border border-amber-200/15 bg-black/25 p-3 text-sm leading-6 text-amber-50/92">
+                    <p className="text-xs uppercase tracking-[0.16em] text-amber-100/70">
+                      {isPlanRevisionPending ? 'Revision note queued' : 'Revision note'}
+                    </p>
+                    <div className="mt-2">
+                      <MarkdownText content={pendingPlanRevisionMarkdown} />
+                    </div>
+                  </div>
+                ) : null}
+                {displayedPlanMarkdown ? (
+                  <div className="mt-4 max-w-[58rem]">
+                    <PlanApprovalDocument markdown={displayedPlanMarkdown} />
+                  </div>
+                ) : null}
+                {planningVersions.length > 0 ? (
+                  <div className="mt-4 grid gap-2">
+                    <p className="text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">Revision history</p>
+                    <div className="grid gap-2">
+                      {[...planningVersions].reverse().map((version) => (
+                        <div key={version.id || `${version.session_id}-${version.version_number}`} className="rounded-md border border-white/8 bg-black/20 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge className="border-white/10 bg-white/5 text-white">Version {version.version_number}</Badge>
+                            {planning?.current_version_number === version.version_number ? (
+                              <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Current</Badge>
+                            ) : null}
+                            <span className="text-xs text-[var(--muted-foreground)]">{formatDateTime(version.created_at)}</span>
+                          </div>
+                          {version.revision_note ? (
+                            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                              From revision note: {version.revision_note}
+                            </p>
+                          ) : (
+                            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                              Initial plan draft.
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 {planApprovalActionsVisible ? (
                   <div className="mt-4">
                     <PlanApprovalActionBar
@@ -276,23 +445,6 @@ export function SessionExecutionCard({
                     ? 'Resolve the underlying blocker from the issue or project context, then re-run once the dispatch path is clear.'
                     : 'Respond from the global interrupt panel to let this thread continue on the same session.'}
                 </p>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {isPlanRevisionPending ? (
-          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 size-4 text-amber-200" />
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-amber-100">Revision note queued</p>
-                <p className="mt-2 text-amber-50/90">
-                  Maestro will prepend this note to the next planning turn, then clear it after the turn starts.
-                </p>
-                <div className="mt-3 rounded-md border border-amber-200/15 bg-black/25 p-3 text-sm leading-6 text-amber-50/92">
-                  <MarkdownText content={pendingPlanRevisionMarkdown} />
-                </div>
               </div>
             </div>
           </div>

@@ -29,6 +29,10 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if err != nil {
 		return nil, err
 	}
+	planning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		return nil, err
+	}
 
 	runtimeAvailable := provider != nil
 	snapshot := observability.Snapshot{}
@@ -133,6 +137,9 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		"debug_activity_groups": debugActivityGroups,
 		"runtime_available":     runtimeAvailable,
 		"agent_commands":        commands,
+	}
+	if planning != nil {
+		payload["planning"] = planning
 	}
 	if workspaceRecovery != nil {
 		payload["workspace_recovery"] = workspaceRecovery
