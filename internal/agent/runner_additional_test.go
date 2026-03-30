@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1274,6 +1275,60 @@ func TestRunnerRunAttemptFailsWhenIssueStateUpdateIsBlocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "plan revision clear failed") {
 		t.Fatalf("expected blocked update error, got %v", err)
+	}
+}
+
+func TestRunnerRunAttemptAbortsStdioTurnWhenPlanRevisionClearFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stdio shell behavior differs on Windows")
+	}
+
+	traceFile := filepath.Join(t.TempDir(), "stdio-turn-started")
+	t.Setenv("TRACE_FILE", traceFile)
+
+	runner, store, _, _, repoPath := setupTestRunner(t, `printf started >> "$TRACE_FILE"; cat`, config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Plan revision clear abort", "", 0, nil)
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"branch_name": deterministicIssueBranch(issue)}); err != nil {
+		t.Fatalf("UpdateIssue branch_name: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 13, 15, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+	issue, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	blockIssueUpdatesForTest(t, store.DBPath(), issue.ID)
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected unsuccessful run, got %+v", result)
+	}
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "plan revision clear failed") {
+		t.Fatalf("expected clear failure to surface in run result, got %+v", result)
+	}
+	if _, statErr := os.Stat(traceFile); statErr == nil {
+		t.Fatalf("expected stdio turn not to start, but %s was created", traceFile)
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("expected trace file to be absent, got %v", statErr)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after run: %v", err)
+	}
+	if updated.PendingPlanRevisionMarkdown != "Tighten the rollout and add a rollback check." || updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision to remain queued, got %+v", updated)
 	}
 }
 

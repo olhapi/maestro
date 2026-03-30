@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -132,6 +134,67 @@ func TestHelperCoverageBranches(t *testing.T) {
 			t.Fatalf("close read-only store: %v", err)
 		}
 	}
+}
+
+func TestOpenStoreForReadCommandsFallbackPolicy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "fallback.db")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close writable store: %v", err)
+	}
+
+	t.Run("permission errors fall back to read-only", func(t *testing.T) {
+		var writableCalls, readOnlyCalls int
+		readOnlyStore, err := openStoreForReadCommandsWith(dbPath,
+			func(string) (*kanban.Store, error) {
+				writableCalls++
+				return nil, fs.ErrPermission
+			},
+			func(path string) (*kanban.Store, error) {
+				readOnlyCalls++
+				return kanban.NewReadOnlyStore(path)
+			},
+		)
+		if err != nil {
+			t.Fatalf("openStoreForReadCommandsWith permission fallback: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = readOnlyStore.Close()
+		})
+		if writableCalls != 1 || readOnlyCalls != 1 {
+			t.Fatalf("expected one writable and one read-only open, got writable=%d readOnly=%d", writableCalls, readOnlyCalls)
+		}
+		if !readOnlyStore.ReadOnly() {
+			t.Fatal("expected fallback store to be read-only")
+		}
+	})
+
+	t.Run("other errors do not fall back", func(t *testing.T) {
+		var writableCalls, readOnlyCalls int
+		sentinel := errors.New("migration failed")
+		readOnlyStore, err := openStoreForReadCommandsWith(dbPath,
+			func(string) (*kanban.Store, error) {
+				writableCalls++
+				return nil, sentinel
+			},
+			func(string) (*kanban.Store, error) {
+				readOnlyCalls++
+				return nil, nil
+			},
+		)
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("expected migration error to surface, got %v", err)
+		}
+		if readOnlyStore != nil {
+			t.Fatalf("expected nil store on migration failure, got %#v", readOnlyStore)
+		}
+		if writableCalls != 1 || readOnlyCalls != 0 {
+			t.Fatalf("expected writable open only, got writable=%d readOnly=%d", writableCalls, readOnlyCalls)
+		}
+	})
 }
 
 func TestResolveCLIRepoPathBranches(t *testing.T) {

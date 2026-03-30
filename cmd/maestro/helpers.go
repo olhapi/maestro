@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/logsink"
 	"github.com/olhapi/maestro/internal/providers"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const guardrailsAcknowledgementFlag = "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
@@ -112,15 +116,42 @@ func openReadOnlyProviderService(dbPath string) (*kanban.Store, *providers.Servi
 }
 
 func openStoreForReadCommands(dbPath string) (*kanban.Store, error) {
-	store, err := openStore(dbPath)
+	return openStoreForReadCommandsWith(dbPath, openStore, openReadOnlyStore)
+}
+
+func openStoreForReadCommandsWith(dbPath string, writableOpener, readOnlyOpener func(string) (*kanban.Store, error)) (*kanban.Store, error) {
+	store, err := writableOpener(dbPath)
 	if err == nil {
 		return store, nil
 	}
-	readOnlyStore, roErr := openReadOnlyStore(dbPath)
+	if !shouldFallbackToReadOnly(err) {
+		return nil, err
+	}
+	readOnlyStore, roErr := readOnlyOpener(dbPath)
 	if roErr == nil {
 		return readOnlyStore, nil
 	}
 	return nil, err
+}
+
+func shouldFallbackToReadOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrPermission) || os.IsPermission(err) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() & 0xff {
+		case sqlite3.SQLITE_PERM, sqlite3.SQLITE_READONLY:
+			return true
+		}
+		if sqliteErr.Code() == sqlite3.SQLITE_IOERR|(13<<8) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveDatabasePath(dbPath string) (string, error) {

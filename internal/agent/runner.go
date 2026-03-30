@@ -1122,13 +1122,19 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 		if title == ":" {
 			title = "Maestro turn"
 		}
-		var deliverErr error
-		var consumeErr error
-		if err := client.RunTurn(ctx, agentruntime.TurnRequest{Title: title, Input: input}, func(session *agentruntime.Session) {
-			if consumePlanRevision && consumeErr == nil {
-				consumeErr = r.clearPendingPlanRevision(issue, attempt)
+		if consumePlanRevision {
+			if err := r.clearPendingPlanRevision(issue, attempt); err != nil {
+				return &RunResult{
+					Success:    false,
+					Output:     client.Output(),
+					Error:      err,
+					AppSession: client.Session(),
+				}, nil
 			}
-			if consumeErr == nil && client.Capabilities().SupportsResume() {
+		}
+		var deliverErr error
+		if err := client.RunTurn(ctx, agentruntime.TurnRequest{Title: title, Input: input}, func(session *agentruntime.Session) {
+			if client.Capabilities().SupportsResume() {
 				deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
 			}
 		}); err != nil {
@@ -1136,14 +1142,6 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 				Success:    false,
 				Output:     client.Output(),
 				Error:      err,
-				AppSession: client.Session(),
-			}, nil
-		}
-		if consumeErr != nil {
-			return &RunResult{
-				Success:    false,
-				Output:     client.Output(),
-				Error:      consumeErr,
 				AppSession: client.Session(),
 			}, nil
 		}
