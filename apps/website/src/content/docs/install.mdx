@@ -13,11 +13,27 @@ import DocsMcpSetupAccordion from "./_components/DocsMcpSetupAccordion.astro";
 
 Install is the one-time setup. Once `maestro` is on your `PATH`, you can start a local loop in any repo and come back to the same control surface when work is in flight.
 
-If you are on a supported platform, the published npm package is the fastest path to install or upgrade:
+The published npm package is the fastest path to install or upgrade the Docker-backed launcher:
 
 <DocsCommandField command={`npm install -g @olhapi/maestro`} />
 
 The installed command name is still `maestro`.
+
+This package installs a thin host launcher, not a native platform binary. Docker is required for normal CLI use.
+
+The launcher resolves its runtime image in this order:
+
+- `MAESTRO_IMAGE`
+- the locally pinned image from `~/.maestro/launcher/runtime.json`
+- the npm package version you installed
+
+Pull and pin the latest runtime image explicitly:
+
+<DocsCommandField command={`maestro self-update`} />
+
+Validate Docker access, the runtime pin, and launcher prerequisites:
+
+<DocsCommandField command={`maestro doctor install`} />
 
 ## Install the Maestro skill bundle
 
@@ -27,21 +43,17 @@ If you want Codex and Claude Code to pick up Maestro-specific guidance automatic
 
 That copies the skill into `~/.agents/skills/maestro` for Codex and `~/.claude/skills/maestro` for Claude Code.
 
+## Install without npm
+
+If you want the same launcher without npm, use the repository install script:
+
+<DocsCommandField command={`curl -fsSL https://raw.githubusercontent.com/olhapi/maestro/main/scripts/install_maestro.sh | sh`} />
+
 ## Add the MCP server to your coding agent
 
 Once `maestro` is on your `PATH`, pick the setup path that matches your coding agent. Codex and Claude Code have direct `mcp add` commands, and the fallback section covers agents that want a manual MCP server entry.
 
 <DocsMcpSetupAccordion />
-
-Official npm builds currently cover:
-
-- macOS arm64
-- macOS x64
-- Linux x64 (glibc)
-- Linux arm64 (glibc)
-- Windows x64
-
-Linux npm packages target glibc only. Alpine and other musl-based distros should build from source or use Docker.
 
 ## Docker image
 
@@ -63,10 +75,11 @@ Contributor Docker build:
 
 ## What to install first
 
+- Install Docker before you try to run the launcher-installed `maestro` command.
 - Install `go` if you need source builds or local development.
 - Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
 - Install an MCP-capable coding agent if you want to connect to the local queue interactively.
-- Use the npm package when you want the shortest path from machine setup to the `mcp add` command or config entry your coding agent expects.
+- Use the npm package or the curl installer when you want the shortest path from machine setup to the `mcp add` command or config entry your coding agent expects.
 
 ## Contributor tooling
 
@@ -87,13 +100,14 @@ If you contribute regularly across multiple machines or rely on CI often, you ca
 For website work, the most useful root commands are:
 
 - `pnpm verify` for the full local verification suite before pushing
-- `pnpm run verify:pre-push` for the exact pre-push hook suite, including current-host npm smoke and retry-safety coverage
+- `pnpm run verify:pre-push` for the exact pre-push hook suite, including real Docker image smoke, tarball install smoke, local-registry install smoke, curl-installer smoke, and retry-safety coverage
+- `pnpm run verify:ci` for the lean GitHub Actions gate
 - `pnpm run website:dev` for the local Astro docs server
 - `pnpm run website:check` for type and content validation
 - `pnpm run website:test` for the website test suite
 - `pnpm run website:build` for a production build check
 
-The hooks stay targeted. Frontend changes run frontend lint and tests, website changes run Astro checks and website tests, workspace and hook changes run the full `pnpm verify` suite, and `pre-push` runs `pnpm run verify:pre-push` before the push proceeds with current-host npm smoke and the retry-safety harness included.
+The hooks stay targeted. Frontend changes run frontend lint and tests, website changes run Astro checks and website tests, workspace and hook changes run the full `pnpm verify` suite, and `pre-push` runs `pnpm run verify:pre-push` before the push proceeds with Docker/image/distribution smoke and the retry-safety harness included. GitHub Actions stays on the smaller `pnpm run verify:ci` gate.
 
 ## Next step
 

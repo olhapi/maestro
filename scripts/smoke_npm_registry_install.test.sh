@@ -57,7 +57,7 @@ EOF
   chmod +x "$bin_dir/node" "$bin_dir/npm" "$bin_dir/npx"
 }
 
-test_registry_smoke_only_requires_selected_leaf() {
+test_registry_smoke_requires_only_root_tarball() {
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   local pack_dir="$tmp_dir/dist/npm"
@@ -65,37 +65,34 @@ test_registry_smoke_only_requires_selected_leaf() {
   local output="$tmp_dir/output.log"
 
   make_tarball "$pack_dir" "olhapi-maestro-0.0.0-ci.tgz"
-  make_tarball "$pack_dir" "olhapi-maestro-linux-x64-gnu-0.0.0-ci.tgz"
   write_mock_commands "$bin_dir"
 
-  if ! PATH="$bin_dir:$PATH" PACK_DIR="$pack_dir" "$SCRIPT_UNDER_TEST" 0.0.0-ci linux-x64-gnu >"$output" 2>&1; then
+  if ! PATH="$bin_dir:$PATH" PACK_DIR="$pack_dir" MAESTRO_SMOKE_IMAGE="maestro-smoke:test" "$SCRIPT_UNDER_TEST" 0.0.0-ci >"$output" 2>&1; then
     cat "$output" >&2
-    fail "expected smoke script to succeed with only the selected leaf tarball"
+    fail "expected smoke script to succeed with the launcher tarball"
   fi
 
-  assert_contains "$output" "Registry smoke test passed for linux-x64-gnu"
+  assert_contains "$output" "Registry smoke test passed"
 }
 
-test_registry_smoke_requires_selected_leaf() {
+test_registry_smoke_requires_root_tarball() {
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   local pack_dir="$tmp_dir/dist/npm"
   local output="$tmp_dir/output.log"
 
-  make_tarball "$pack_dir" "olhapi-maestro-0.0.0-ci.tgz"
-
-  if PATH="$PATH" PACK_DIR="$pack_dir" "$SCRIPT_UNDER_TEST" 0.0.0-ci linux-x64-gnu >"$output" 2>&1; then
+  if PATH="$PATH" PACK_DIR="$pack_dir" "$SCRIPT_UNDER_TEST" 0.0.0-ci >"$output" 2>&1; then
     cat "$output" >&2
-    fail "expected smoke script to fail when the selected leaf tarball is missing"
+    fail "expected smoke script to fail when the launcher tarball is missing"
   fi
 
-  assert_contains "$output" "missing leaf tarball:"
-  assert_contains "$output" "olhapi-maestro-linux-x64-gnu-0.0.0-ci.tgz"
+  assert_contains "$output" "missing root tarball:"
+  assert_contains "$output" "olhapi-maestro-0.0.0-ci.tgz"
 }
 
 main() {
-  test_registry_smoke_only_requires_selected_leaf
-  test_registry_smoke_requires_selected_leaf
+  test_registry_smoke_requires_only_root_tarball
+  test_registry_smoke_requires_root_tarball
 }
 
 main "$@"
