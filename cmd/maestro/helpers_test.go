@@ -103,6 +103,12 @@ func TestHelperCoverageBranches(t *testing.T) {
 	if _, err := openStoreForReadCommands("$HOME/.maestro/$TEAM/maestro.db"); err == nil {
 		t.Fatal("expected unresolved db path to fail")
 	}
+	if _, _, err := openProviderService("$HOME/.maestro/$TEAM/maestro.db"); err == nil {
+		t.Fatal("expected unresolved db path to fail")
+	}
+	if _, _, err := openReadOnlyProviderService("$HOME/.maestro/$TEAM/maestro.db"); err == nil {
+		t.Fatal("expected unresolved db path to fail")
+	}
 
 	dbPath := filepath.Join(t.TempDir(), "helpers.db")
 	store, svc, err := openProviderService(dbPath)
@@ -193,6 +199,30 @@ func TestOpenStoreForReadCommandsFallbackPolicy(t *testing.T) {
 		}
 		if writableCalls != 1 || readOnlyCalls != 0 {
 			t.Fatalf("expected writable open only, got writable=%d readOnly=%d", writableCalls, readOnlyCalls)
+		}
+	})
+
+	t.Run("nil error does not fall back", func(t *testing.T) {
+		if shouldFallbackToReadOnly(nil) {
+			t.Fatal("expected nil error to skip read-only fallback")
+		}
+	})
+
+	t.Run("sqlite readonly errors qualify", func(t *testing.T) {
+		readOnlyStore, err := kanban.NewReadOnlyStore(dbPath)
+		if err != nil {
+			t.Fatalf("NewReadOnlyStore: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = readOnlyStore.Close()
+		})
+
+		_, writeErr := readOnlyStore.CreateProject("Read-only write", "", "", "")
+		if writeErr == nil {
+			t.Fatal("expected read-only write to fail")
+		}
+		if !shouldFallbackToReadOnly(writeErr) {
+			t.Fatalf("expected sqlite readonly error to qualify, got %v", writeErr)
 		}
 	})
 }
