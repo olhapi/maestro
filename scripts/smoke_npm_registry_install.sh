@@ -15,27 +15,27 @@ REGISTRY_START_TIMEOUT_MS="${REGISTRY_START_TIMEOUT_MS:-60000}"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/smoke_npm_registry_install.sh <version> <target>
+Usage: scripts/smoke_npm_registry_install.sh <version>
 
 Publishes the packed Maestro npm packages to a temporary local registry, then
-verifies that installing only @olhapi/maestro resolves the correct optional
-dependency for the current platform and still serves the dashboard.
+verifies that installing only @olhapi/maestro resolves the launcher package and
+still serves the dashboard through Docker.
 
 Examples:
-  scripts/smoke_npm_registry_install.sh v1.2.3 darwin-arm64
-  scripts/smoke_npm_registry_install.sh 1.2.3 linux-x64-gnu
+  scripts/smoke_npm_registry_install.sh v1.2.3
+  MAESTRO_SMOKE_IMAGE=maestro-smoke:local scripts/smoke_npm_registry_install.sh 1.2.3
 EOF
 }
 
-if [[ $# -ne 2 ]]; then
+if [[ $# -ne 1 ]]; then
   usage >&2
   exit 1
 fi
 
 RAW_VERSION="$1"
 VERSION="${RAW_VERSION#v}"
-TARGET="$2"
 PUBLISH_TAG="latest"
+SMOKE_IMAGE="${MAESTRO_SMOKE_IMAGE:-ghcr.io/olhapi/maestro:${VERSION}}"
 
 if [[ "$VERSION" == *-* ]]; then
   PUBLISH_TAG="smoke"
@@ -46,32 +46,9 @@ tarball_filename() {
   printf '%s-%s.tgz\n' "${package_name#@}" "$VERSION" | tr '/' '-'
 }
 
-leaf_package_name() {
-  case "$1" in
-    darwin-arm64) echo "@olhapi/maestro-darwin-arm64" ;;
-    darwin-x64) echo "@olhapi/maestro-darwin-x64" ;;
-    linux-x64-gnu) echo "@olhapi/maestro-linux-x64-gnu" ;;
-    linux-arm64-gnu) echo "@olhapi/maestro-linux-arm64-gnu" ;;
-    win32-x64) echo "@olhapi/maestro-win32-x64" ;;
-    *)
-      echo "unsupported target: $1" >&2
-      exit 1
-      ;;
-  esac
-}
-
 ROOT_TARBALL="$PACK_DIR/$(tarball_filename "$ROOT_PACKAGE_NAME")"
 if [[ ! -f "$ROOT_TARBALL" ]]; then
   echo "missing root tarball: $ROOT_TARBALL" >&2
-  exit 1
-fi
-
-EXPECTED_LEAF_PACKAGE="$(leaf_package_name "$TARGET")"
-EXPECTED_LEAF_TARBALL="$PACK_DIR/$(tarball_filename "$EXPECTED_LEAF_PACKAGE")"
-# The root package exposes all platform leaves as optional dependencies, but
-# this smoke test only needs the current platform leaf to verify install flow.
-if [[ ! -f "$EXPECTED_LEAF_TARBALL" ]]; then
-  echo "missing leaf tarball: $EXPECTED_LEAF_TARBALL" >&2
   exit 1
 fi
 
@@ -151,33 +128,25 @@ fi
 export npm_config_userconfig="$NPM_CONFIG_FILE"
 export NPM_CONFIG_USERCONFIG="$NPM_CONFIG_FILE"
 
-echo "Publishing root package and selected leaf tarball to temporary registry"
-run_clean_npm publish --registry "$REGISTRY_URL" --access public --tag "$PUBLISH_TAG" "$EXPECTED_LEAF_TARBALL" >/dev/null
+echo "Publishing root package to temporary registry"
 run_clean_npm publish --registry "$REGISTRY_URL" --access public --tag "$PUBLISH_TAG" "$ROOT_TARBALL" >/dev/null
 
-echo "Smoke testing registry-backed install of $ROOT_PACKAGE_NAME on $TARGET"
+echo "Smoke testing registry-backed install of $ROOT_PACKAGE_NAME"
 (
   cd "$TMP_DIR"
   run_clean_npm init -y >/dev/null 2>&1
   run_clean_npm install --registry "$REGISTRY_URL" --no-package-lock "${ROOT_PACKAGE_NAME}@${VERSION}" >/dev/null
 
-  node -e '
-const assert = require("node:assert/strict");
-const expected = process.argv[1];
-const pkg = require(require.resolve(`${expected}/package.json`, { paths: [process.cwd()] }));
-assert.equal(pkg.name, expected);
-' "$EXPECTED_LEAF_PACKAGE"
-
-  VERSION_OUTPUT="$(run_clean_npx --no-install maestro version)"
+  VERSION_OUTPUT="$(MAESTRO_IMAGE="$SMOKE_IMAGE" run_clean_npx --no-install maestro version)"
   if [[ "$VERSION_OUTPUT" != "maestro $VERSION" ]]; then
     echo "unexpected version output: $VERSION_OUTPUT" >&2
     exit 1
   fi
 
-  run_clean_npx --no-install maestro --help >/dev/null
+  MAESTRO_IMAGE="$SMOKE_IMAGE" run_clean_npx --no-install maestro --help >/dev/null
 
   set +e
-  run_clean_npx --no-install maestro does-not-exist >/dev/null 2>&1
+  MAESTRO_IMAGE="$SMOKE_IMAGE" run_clean_npx --no-install maestro does-not-exist >/dev/null 2>&1
   STATUS=$?
   set -e
   if [[ "$STATUS" -eq 0 ]]; then
@@ -185,7 +154,7 @@ assert.equal(pkg.name, expected);
     exit 1
   fi
 
-  node "$ROOT_DIR/scripts/smoke_installed_dashboard.mjs" "$TMP_DIR"
+  MAESTRO_IMAGE="$SMOKE_IMAGE" node "$ROOT_DIR/scripts/smoke_installed_dashboard.mjs" "$TMP_DIR"
 )
 
-echo "Registry smoke test passed for $TARGET"
+echo "Registry smoke test passed"

@@ -1,6 +1,6 @@
 # npm Release Runbook
 
-This runbook covers the first public npm publish for Maestro and the steady-state tag flow after trusted publishing is enabled.
+This runbook covers the Docker-backed launcher release flow for `@olhapi/maestro`.
 
 ## One-command release
 
@@ -13,61 +13,40 @@ Use the release helper when you want the repository to drive the full publish fl
 The script will:
 
 - fetch tags and fast-forward `main` from `origin/main`
-- run `pnpm verify:pre-push`
+- run `pnpm verify:pre-push`, including Docker image build smoke plus tarball, registry, and curl-installer launcher install smokes
 - create and push the annotated release tag
 - wait for `.github/workflows/release-npm.yml`
 - verify npm dist-tags when GitHub trusted publishing succeeds
-- fall back to downloading the workflow artifacts and running local `npm publish` in leaf-first order when the workflow build/smoke jobs succeed but `publish-npm` is skipped or fails
+- fall back to downloading the root launcher artifact and publishing it locally when the workflow built the Docker image and launcher package successfully but `publish-npm` was skipped or failed
 
-If the tag already exists on `origin`, rerunning the helper will resume that release instead of trying to recreate the tag. This is intended for cases where the GitHub workflow finished but npm publish still needs the local artifact fallback.
+If the tag already exists on `origin`, rerunning the helper resumes that release instead of trying to recreate the tag.
 
-If the fallback path is used, npm may pause for browser-based account confirmation before it can publish the tarballs.
+## Release workflow jobs
 
-## First public prerelease bootstrap
-
-Leave the GitHub repository variable `NPM_PUBLISH_ENABLED` unset or set to `false`. The release workflow will still build all five native tarballs, build the root package, and run both smoke-test stages, but the `publish-npm` job will stay skipped until trusted publishing is ready.
-
-Cut and push the first public tag:
-
-```bash
-git tag v0.1.0-rc.1
-git push origin v0.1.0-rc.1
-```
-
-Wait for the `Release npm Package` workflow to finish these jobs successfully:
+`Release npm Package` now runs these stages:
 
 - `go-test`
-- `build-leaf-packages`
+- `publish-ghcr`
 - `build-root-package`
 - `registry-install-smoke`
+- `publish-npm`
 
-Download the six npm artifacts from that workflow run:
+`publish-ghcr` builds and pushes the multi-arch runtime image to GHCR before the npm smoke tests run. The smoke jobs install only the launcher package and point it at the just-published image tag.
 
-- `npm-leaf-darwin-arm64`
-- `npm-leaf-darwin-x64`
-- `npm-leaf-linux-x64-gnu`
-- `npm-leaf-linux-arm64-gnu`
-- `npm-leaf-win32-x64`
-- `npm-root-package`
+## Manual fallback publish
 
-On a maintainer machine that is already logged in to npm for the `@olhapi` scope with 2FA enabled, publish the five leaf tarballs first, then publish the root tarball last so its optional dependencies already exist:
+Leave the GitHub repository variable `NPM_PUBLISH_ENABLED` unset or set to `false` if you want to exercise the workflow without GitHub-side npm publishing. The workflow will still build and publish the GHCR image, pack the launcher tarball, and run the launcher install smokes.
+
+If `publish-npm` is skipped or fails after the image and launcher smoke jobs succeed, the helper downloads the `npm-root-package` artifact and publishes:
 
 ```bash
 VERSION=0.1.0-rc.1
 
 npm whoami
-
-for tarball in \
-  "dist/npm/olhapi-maestro-darwin-arm64-${VERSION}.tgz" \
-  "dist/npm/olhapi-maestro-darwin-x64-${VERSION}.tgz" \
-  "dist/npm/olhapi-maestro-linux-x64-gnu-${VERSION}.tgz" \
-  "dist/npm/olhapi-maestro-linux-arm64-gnu-${VERSION}.tgz" \
-  "dist/npm/olhapi-maestro-win32-x64-${VERSION}.tgz"; do
-  npm publish --access public --tag next "$tarball"
-done
-
 npm publish --access public --tag next "dist/npm/olhapi-maestro-${VERSION}.tgz"
 ```
+
+For stable tags, use `--tag latest`.
 
 If `npm whoami` fails with `E401`, refresh the maintainer session before publishing:
 
@@ -76,51 +55,25 @@ npm login --scope=@olhapi --registry=https://registry.npmjs.org/
 npm whoami
 ```
 
-If `npm whoami` succeeds but `npm publish` still returns `404 Not Found` for an `@olhapi/*` package, the authenticated account does not have publish rights for the `@olhapi` scope.
-
-Verify the bootstrap publish before enabling CI publishing:
-
-```bash
-npm view @olhapi/maestro dist-tags --json
-npm view @olhapi/maestro-darwin-arm64 version
-npm view @olhapi/maestro-darwin-x64 version
-npm view @olhapi/maestro-linux-x64-gnu version
-npm view @olhapi/maestro-linux-arm64-gnu version
-npm view @olhapi/maestro-win32-x64 version
-npm install -g @olhapi/maestro@next
-maestro version
-```
-
-The root package should report `next: 0.1.0-rc.1`, every leaf package should exist at `0.1.0-rc.1`, and the installed CLI should report `maestro 0.1.0-rc.1`.
-
 ## Enable trusted publishing
 
-After the bootstrap publish succeeds, configure npm trusted publishers for all six packages:
+Configure npm trusted publishing for `@olhapi/maestro`:
 
 - GitHub owner: `olhapi`
 - GitHub repository: `maestro`
 - Workflow file: `.github/workflows/release-npm.yml`
 - Workflow filename in npm settings: `release-npm.yml`
 
-Repeat that configuration for:
-
-- `@olhapi/maestro`
-- `@olhapi/maestro-darwin-arm64`
-- `@olhapi/maestro-darwin-x64`
-- `@olhapi/maestro-linux-x64-gnu`
-- `@olhapi/maestro-linux-arm64-gnu`
-- `@olhapi/maestro-win32-x64`
-
-Once all six packages trust the release workflow:
+Once trusted publishing is enabled:
 
 1. Set the GitHub repository variable `NPM_PUBLISH_ENABLED=true`.
-2. Leave `NPM_TOKEN` unset; the workflow now publishes through GitHub Actions OIDC.
+2. Leave `NPM_TOKEN` unset; the workflow publishes through GitHub Actions OIDC.
 3. Keep npm package 2FA protection enabled and remove or restrict legacy automation tokens.
 
 ## Ongoing tag flow
 
-Future tags use the same workflow and artifact order:
+Future tags use the same workflow:
 
-- prerelease tags such as `v0.1.0-rc.2` publish to the npm `next` dist-tag
-- stable tags such as `v0.1.0` publish to the npm `latest` dist-tag
-- CI publishing uses `npm publish --provenance` with trusted publishing, so no long-lived npm token is required in GitHub Actions
+- prerelease tags such as `v0.1.0-rc.2` publish the launcher to the npm `next` dist-tag
+- stable tags such as `v0.1.0` publish the launcher to the npm `latest` dist-tag
+- the GHCR runtime image publishes for every tag and is what the launcher runs by default

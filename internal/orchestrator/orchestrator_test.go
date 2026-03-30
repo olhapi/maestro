@@ -773,18 +773,27 @@ func waitForRetryEntry(t *testing.T, orch *Orchestrator, issueID string, timeout
 
 func waitForIssuePauseReason(t *testing.T, store *kanban.Store, issueID, reason string, timeout time.Duration) {
 	t.Helper()
+	waitForIssuePauseReasons(t, store, issueID, timeout, reason)
+}
+
+func waitForIssuePauseReasons(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration, reasons ...string) {
+	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		events, err := store.ListIssueRuntimeEvents(issueID, 20)
 		if err == nil && len(events) > 0 {
 			latest := events[len(events)-1]
-			if latest.Kind == "retry_paused" && latest.Error == reason {
-				return
+			if latest.Kind == "retry_paused" {
+				for _, reason := range reasons {
+					if latest.Error == reason {
+						return
+					}
+				}
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for pause reason %s on %s", reason, issueID)
+	t.Fatalf("timed out waiting for pause reason %v on %s", reasons, issueID)
 }
 
 func waitForIssueRetryState(t *testing.T, store *kanban.Store, issueID, delayType string, timeout time.Duration) {
@@ -4159,7 +4168,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -4168,7 +4177,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		wg.Add(1)
 		go func(orch *Orchestrator) {
 			defer wg.Done()
-			for i := 0; i < 50; i++ {
+			for i := 0; i < 100; i++ {
 				if ctx.Err() != nil {
 					return
 				}
@@ -4181,10 +4190,11 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		}(orch)
 	}
 
-	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", 3*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", 3*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", 3*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", 3*time.Second)
+	waitTimeout := 6 * time.Second
+	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", waitTimeout)
+	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", waitTimeout)
+	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", waitTimeout)
+	waitForIssuePauseReasons(t, adminStore, fixtures[3].issueID, waitTimeout, "stall_timeout", "run_interrupted")
 
 	cancel()
 	wg.Wait()

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { IssueDetailPage } from "@/routes/issue-detail";
@@ -1032,7 +1032,10 @@ describe("IssueDetailPage", () => {
     expect(editButton.querySelector("svg")).not.toBeNull();
     expect(deleteButton.querySelector("svg")).not.toBeNull();
 
-    fireEvent.focus(editButton);
+    await act(async () => {
+      fireEvent.focus(editButton);
+      await Promise.resolve();
+    });
 
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Edit");
   });

@@ -23,6 +23,8 @@ main() {
   assert_contains "$DOCKERFILE" "COPY internal ./internal"
   assert_contains "$DOCKERFILE" "COPY pkg ./pkg"
   assert_contains "$DOCKERFILE" "COPY skills ./skills"
+  assert_contains "$DOCKERFILE" "apt-get install -y --no-install-recommends ca-certificates git nodejs npm"
+  assert_contains "$DOCKERFILE" "npm install -g \"@openai/codex@\${CODEX_VERSION}\""
 }
 
 main "$@"

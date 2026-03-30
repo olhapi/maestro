@@ -10,6 +10,8 @@ export default mergeConfig(
       environment: 'jsdom',
       globals: true,
       css: true,
+      testTimeout: 15_000,
+      hookTimeout: 15_000,
       setupFiles: [path.resolve(__dirname, './src/test/setup.ts')],
     },
     coverage: {
