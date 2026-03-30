@@ -3,7 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
-const { openDashboardWhenReady } = require("./browser");
+const { browserOpenDisabled, openDashboardWhenReady } = require("./browser");
 const { planDockerInvocation } = require("./docker-plan");
 const { installBundledSkills } = require("./install-skills");
 const {
@@ -48,6 +48,9 @@ function createDeps(options) {
     stdout: options.stdout || process.stdout,
     stderr: options.stderr || process.stderr,
     uid: options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined),
+    exit: options.exit || ((code) => process.exit(code)),
+    openDashboardWhenReady: options.openDashboardWhenReady || openDashboardWhenReady,
+    planDockerInvocation: options.planDockerInvocation || planDockerInvocation,
   };
 }
 
@@ -105,7 +108,7 @@ async function runContainerized(argv, deps) {
   });
   ensureImageAvailable(imageRef, deps);
 
-  const plan = await planDockerInvocation(argv, {
+  const plan = await deps.planDockerInvocation(argv, {
     cwd: deps.cwd,
     env: deps.env,
     fs: deps.fs,
@@ -122,8 +125,9 @@ async function runContainerized(argv, deps) {
   });
 
   let browserPromise = Promise.resolve();
-  if (plan.commandPath[0] === "run" && plan.hostBaseURL) {
-    browserPromise = openDashboardWhenReady(plan.hostBaseURL, {
+  if (plan.commandPath[0] === "run" && plan.hostBaseURL && !browserOpenDisabled(deps.env)) {
+    browserPromise = deps.openDashboardWhenReady(plan.hostBaseURL, {
+      env: deps.env,
       streams: { stdout: deps.stdout, stderr: deps.stderr },
       platform: deps.platform,
     }).catch(() => {});
@@ -156,7 +160,7 @@ async function runContainerized(argv, deps) {
     process.off(signal, handler);
   }
   await browserPromise;
-  process.exit(exitCode);
+  deps.exit(exitCode);
 }
 
 function printInstalledTargets(targets, stdout) {
@@ -287,4 +291,5 @@ module.exports = {
   main,
   parseSelfUpdateArgs,
   printInstalledTargets,
+  runContainerized,
 };

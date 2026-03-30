@@ -7,6 +7,11 @@ function terminalsInteractive(streams = process) {
   return Boolean(streams.stdout && streams.stdout.isTTY && streams.stderr && streams.stderr.isTTY);
 }
 
+function browserOpenDisabled(env = process.env) {
+  const value = env && env.MAESTRO_DISABLE_BROWSER_OPEN;
+  return typeof value === "string" && value.trim() !== "";
+}
+
 function browserCommandFor(platform, url) {
   switch (platform) {
     case "darwin":
@@ -51,7 +56,7 @@ async function waitForHealthy(url, options = {}) {
 }
 
 async function openDashboardWhenReady(baseURL, options = {}) {
-  if (!baseURL || !terminalsInteractive(options.streams || process)) {
+  if (!baseURL || browserOpenDisabled(options.env || process.env) || !terminalsInteractive(options.streams || process)) {
     return;
   }
 
@@ -66,6 +71,7 @@ async function openDashboardWhenReady(baseURL, options = {}) {
 }
 
 module.exports = {
+  browserOpenDisabled,
   browserCommandFor,
   openDashboardWhenReady,
   terminalsInteractive,

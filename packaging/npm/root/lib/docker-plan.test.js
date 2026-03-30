@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  parsePublishedPort,
   planDockerInvocation,
   rewriteLocalAPIURL,
   toContainerPath,
@@ -73,6 +74,14 @@ test("rewriteLocalAPIURL leaves non-local api urls unchanged", () => {
   assert.deepEqual(rewriteLocalAPIURL("https://maestro.example.com"), {
     usesHostGateway: false,
     value: "https://maestro.example.com",
+  });
+});
+
+test("parsePublishedPort preserves bracketed IPv6 hosts", () => {
+  assert.deepEqual(parsePublishedPort("[::1]:8787"), {
+    hostBinding: "[::1]:8787:8787",
+    containerPortFlag: "0.0.0.0:8787",
+    hostBaseURL: "http://[::1]:8787",
   });
 });
 

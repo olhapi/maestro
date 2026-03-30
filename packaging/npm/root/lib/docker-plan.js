@@ -176,11 +176,18 @@ function parsePublishedPort(rawValue) {
     return null;
   }
 
-  const host = hostPortMatch.groups.host.replace(/^\[(.*)\]$/, "$1");
+  const rawHost = hostPortMatch.groups.host;
+  const host = rawHost.replace(/^\[(.*)\]$/, "$1");
   const port = hostPortMatch.groups.port;
-  const bindHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const publishedHost = rawHost.startsWith("[") ? rawHost : host;
+  let bindHost = publishedHost;
+  if (host === "0.0.0.0") {
+    bindHost = "127.0.0.1";
+  } else if (host === "::") {
+    bindHost = "[::1]";
+  }
   return {
-    hostBinding: `${host}:${port}:${port}`,
+    hostBinding: `${publishedHost}:${port}:${port}`,
     containerPortFlag: `0.0.0.0:${port}`,
     hostBaseURL: `http://${bindHost}:${port}`,
   };
