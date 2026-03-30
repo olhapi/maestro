@@ -1,6 +1,7 @@
 {
   "extends": "astro/tsconfigs/strict",
   "compilerOptions": {
+    "jsx": "react-jsx",
     "types": ["vitest/globals", "@testing-library/jest-dom"]
   }
 }
