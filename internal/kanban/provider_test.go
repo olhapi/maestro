@@ -3,11 +3,15 @@ package kanban
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/olhapi/maestro/internal/agentruntime"
+	"github.com/olhapi/maestro/internal/appserver"
 )
 
 const testProviderKind = "stub"
@@ -263,6 +267,117 @@ func TestProviderIssueLifecycle(t *testing.T) {
 	}
 }
 
+func TestUpsertProviderIssuePrunesStaleShadowData(t *testing.T) {
+	store := setupTestStore(t)
+	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", testProviderKind, "STUB-PROJ", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider failed: %v", err)
+	}
+
+	keep, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "EXT-KEEP",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-keep",
+		Title:            "Keep me",
+		State:            StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue keep failed: %v", err)
+	}
+	stale, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "EXT-STALE",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-stale",
+		Title:            "Stale issue",
+		State:            StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue stale failed: %v", err)
+	}
+
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	if _, err := store.CreateWorkspace(stale.ID, workspacePath); err != nil {
+		t.Fatalf("CreateWorkspace stale failed: %v", err)
+	}
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	asset, err := store.CreateIssueAsset(stale.ID, "preview.png", bytes.NewReader([]byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}))
+	if err != nil {
+		t.Fatalf("CreateIssueAsset stale failed: %v", err)
+	}
+	commentDir := t.TempDir()
+	commentAttachmentPath := filepath.Join(commentDir, "stale.txt")
+	if err := os.WriteFile(commentAttachmentPath, []byte("stale comment"), 0o644); err != nil {
+		t.Fatalf("WriteFile stale attachment: %v", err)
+	}
+	commentBody := "Stale issue comment"
+	comment, err := store.CreateIssueComment(stale.ID, IssueCommentInput{
+		Body: &commentBody,
+		Attachments: []IssueCommentAttachmentInput{{
+			Path: commentAttachmentPath,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueComment stale failed: %v", err)
+	}
+	if _, err := store.CreateIssueAgentCommand(stale.ID, "Stale follow-up", IssueAgentCommandPending); err != nil {
+		t.Fatalf("CreateIssueAgentCommand stale failed: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 12, 15, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApprovalWithContext(stale, "Stale plan", requestedAt, 2, "thread-stale", "turn-stale"); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext stale failed: %v", err)
+	}
+
+	syncedAt := time.Date(2026, 3, 18, 12, 30, 0, 0, time.UTC)
+	updatedKeep, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       keep.Identifier,
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: keep.ProviderIssueRef,
+		Title:            "Keep me updated",
+		Description:      "refreshed",
+		State:            StateDone,
+		Labels:           []string{"synced"},
+		UpdatedAt:        time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC),
+		LastSyncedAt:     &syncedAt,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue keep update failed: %v", err)
+	}
+	if updatedKeep.ID != keep.ID {
+		t.Fatalf("expected keep issue to be updated in place, got %#v", updatedKeep)
+	}
+
+	if err := store.DeleteProviderIssuesExcept(project.ID, testProviderKind, []string{keep.ProviderIssueRef}); err != nil {
+		t.Fatalf("DeleteProviderIssuesExcept stale cleanup failed: %v", err)
+	}
+	if _, err := store.GetIssue(stale.ID); !IsNotFound(err) {
+		t.Fatalf("expected stale provider issue to be deleted, got %v", err)
+	}
+	if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale workspace to be removed, got %v", err)
+	}
+	if _, err := store.GetIssueAsset(stale.ID, asset.ID); !IsNotFound(err) {
+		t.Fatalf("expected stale asset to be deleted, got %v", err)
+	}
+	if _, _, err := store.GetIssueCommentAttachmentContent(stale.ID, comment.ID, comment.Attachments[0].ID); !IsNotFound(err) {
+		t.Fatalf("expected stale comment attachment to be deleted, got %v", err)
+	}
+	if commands, err := store.ListIssueAgentCommands(stale.ID); err != nil || len(commands) != 0 {
+		t.Fatalf("expected stale issue commands to be deleted, got %#v err=%v", commands, err)
+	}
+}
+
 func TestUpsertProviderIssueNormalizesWorkflowPhaseAndUpdatedAt(t *testing.T) {
 	store := setupTestStore(t)
 	project, err := store.CreateProjectWithProvider("Provider Project", "", "", "", testProviderKind, "STUB-PROJ", nil)
@@ -339,6 +454,9 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	if err != nil {
 		t.Fatalf("CreateProjectWithProvider failed: %v", err)
 	}
+	if err := store.UpdateProjectState(project.ID, ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState failed: %v", err)
+	}
 
 	keep, err := store.UpsertProviderIssue(project.ID, &Issue{
 		Identifier:       "EXT-KEEP",
@@ -389,6 +507,97 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	})); err != nil {
 		t.Fatalf("CreateIssueAsset stale failed: %v", err)
 	}
+	plannedAt := time.Date(2026, 3, 18, 12, 15, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApprovalWithContext(stale, "Stale plan", plannedAt, 2, "thread-stale", "turn-stale"); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext stale failed: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(stale.ID, "Stale revision", plannedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision stale failed: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(ExecutionSessionSnapshot{
+		IssueID:    stale.ID,
+		Identifier: stale.Identifier,
+		Phase:      string(WorkflowPhaseImplementation),
+		Attempt:    1,
+		RunKind:    "run_started",
+		UpdatedAt:  plannedAt,
+		AppSession: appserver.Session{
+			IssueID:         stale.ID,
+			IssueIdentifier: stale.Identifier,
+			SessionID:       "session-stale",
+			ThreadID:        "thread-stale",
+			TurnID:          "turn-stale",
+			LastEvent:       "turn.started",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession stale failed: %v", err)
+	}
+	if err := store.ApplyIssueActivityEvent(stale.ID, stale.Identifier, 1, agentruntime.ActivityEvent{
+		Type:     "turn.started",
+		ThreadID: "thread-stale",
+		TurnID:   "turn-stale",
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent started stale failed: %v", err)
+	}
+	if err := store.ApplyIssueActivityEvent(stale.ID, stale.Identifier, 1, agentruntime.ActivityEvent{
+		Type:     "turn.completed",
+		ThreadID: "thread-stale",
+		TurnID:   "turn-stale",
+	}); err != nil {
+		t.Fatalf("ApplyIssueActivityEvent completed stale failed: %v", err)
+	}
+	commentDir := t.TempDir()
+	commentAttachmentPath := filepath.Join(commentDir, "stale.txt")
+	if err := os.WriteFile(commentAttachmentPath, []byte("stale comment"), 0o644); err != nil {
+		t.Fatalf("WriteFile stale attachment: %v", err)
+	}
+	commentBody := "Stale issue comment"
+	comment, err := store.CreateIssueComment(stale.ID, IssueCommentInput{
+		Body: &commentBody,
+		Attachments: []IssueCommentAttachmentInput{{
+			Path: commentAttachmentPath,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueComment stale failed: %v", err)
+	}
+	replyBody := "Stale issue reply"
+	if _, err := store.CreateIssueComment(stale.ID, IssueCommentInput{
+		Body:            &replyBody,
+		ParentCommentID: comment.ID,
+	}); err != nil {
+		t.Fatalf("CreateIssueComment reply stale failed: %v", err)
+	}
+	if _, err := store.CreateIssueAgentCommand(stale.ID, "Stale follow-up", IssueAgentCommandPending); err != nil {
+		t.Fatalf("CreateIssueAgentCommand stale failed: %v", err)
+	}
+	blockedIssue, err := store.CreateIssue(project.ID, "", "Blocked by stale", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked failed: %v", err)
+	}
+	if err := store.UpdateIssueState(blockedIssue.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocked failed: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blockedIssue.ID, []string{stale.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers blocked failed: %v", err)
+	}
+	blockedCommand, err := store.CreateIssueAgentCommand(blockedIssue.ID, "Resume after stale deletion.", IssueAgentCommandWaitingForUnblock)
+	if err != nil {
+		t.Fatalf("CreateIssueAgentCommand blocked failed: %v", err)
+	}
+	nextRunAt := plannedAt.Add(2 * time.Hour)
+	if _, err := store.db.Exec(`
+		INSERT INTO issue_recurrences (issue_id, cron, enabled, next_run_at, last_enqueued_at, pending_rerun, created_at, updated_at)
+		VALUES (?, ?, 1, ?, ?, 0, ?, ?)`,
+		stale.ID,
+		"0 * * * *",
+		nextRunAt,
+		plannedAt,
+		plannedAt,
+		plannedAt,
+	); err != nil {
+		t.Fatalf("insert stale recurrence: %v", err)
+	}
 
 	lastSyncedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
 	if err := store.ReconcileProviderIssues(project.ID, testProviderKind, []Issue{
@@ -438,6 +647,35 @@ func TestReconcileProviderIssuesBatchesUpdatesPreservesLocalFieldsAndPrunesStale
 	}
 	if _, err := store.GetWorkspace(stale.ID); err == nil {
 		t.Fatal("expected stale workspace to be removed")
+	}
+	if _, err := store.GetIssueComment(stale.ID, comment.ID); !IsNotFound(err) {
+		t.Fatalf("expected stale comments to be removed, got %v", err)
+	}
+	if recurrence, err := store.GetIssueRecurrence(stale.ID); err != nil || recurrence != nil {
+		t.Fatalf("expected stale recurrence to be removed, got %#v err=%v", recurrence, err)
+	}
+	if session, err := store.GetIssueExecutionSession(stale.ID); !errors.Is(err, sql.ErrNoRows) || session != nil {
+		t.Fatalf("expected stale execution session to be removed, got %#v err=%v", session, err)
+	}
+	if activities, err := store.ListIssueActivityEntries(stale.ID); err != nil || len(activities) != 0 {
+		t.Fatalf("expected stale activity entries to be removed, got %#v err=%v", activities, err)
+	}
+	if commands, err := store.ListIssueAgentCommands(stale.ID); err != nil || len(commands) != 0 {
+		t.Fatalf("expected stale commands to be removed, got %#v err=%v", commands, err)
+	}
+	updatedBlocked, err := store.GetIssue(blockedIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue blocked after reconcile failed: %v", err)
+	}
+	if len(updatedBlocked.BlockedBy) != 0 {
+		t.Fatalf("expected blocked issue to be unblocked, got %#v", updatedBlocked.BlockedBy)
+	}
+	pending, err := store.ListPendingIssueAgentCommands(blockedIssue.ID)
+	if err != nil {
+		t.Fatalf("ListPendingIssueAgentCommands blocked after reconcile failed: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != blockedCommand.ID {
+		t.Fatalf("expected blocked command to be reactivated, got %#v", pending)
 	}
 	if _, err := store.GetIssueByProviderRef(testProviderKind, "ext-new"); err != nil {
 		t.Fatalf("expected new provider issue to be inserted, got %v", err)
@@ -522,4 +760,458 @@ func TestDispatchIssueStateQueriesReflectProjectAndBlockerStatus(t *testing.T) {
 	if freeState.ProjectExists || freeState.ProjectState != ProjectStateStopped || freeState.HasUnresolvedBlockers {
 		t.Fatalf("unexpected free issue dispatch state: %#v", freeState)
 	}
+}
+
+func TestDispatchIssueQueryHydratesOptionalFieldsAndRecurrence(t *testing.T) {
+	store := setupTestStore(t)
+	project, err := store.CreateProject("Dispatch Hydration Project", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	if err := store.UpdateProjectState(project.ID, ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState failed: %v", err)
+	}
+	epic, err := store.CreateEpic(project.ID, "Dispatch Hydration Epic", "")
+	if err != nil {
+		t.Fatalf("CreateEpic failed: %v", err)
+	}
+	blocker, err := store.CreateIssue(project.ID, "", "Dispatch blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker failed: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker failed: %v", err)
+	}
+
+	providerIssue, err := store.UpsertProviderIssue(project.ID, &Issue{
+		Identifier:       "EXT-PROVIDER",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-provider",
+		Title:            "Provider issue",
+		Description:      "provider desc",
+		State:            StateReady,
+		Priority:         2,
+		Labels:           []string{"alpha", "beta"},
+		BlockedBy:        []string{blocker.Identifier},
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue failed: %v", err)
+	}
+	if err := store.UpdateIssue(providerIssue.ID, map[string]interface{}{
+		"branch_name": "feature/provider-dispatch",
+		"pr_url":      "https://example.com/pr/provider",
+	}); err != nil {
+		t.Fatalf("UpdateIssue provider metadata failed: %v", err)
+	}
+
+	recurringIssue, err := store.CreateIssueWithOptions(project.ID, epic.ID, "Recurring issue", "recurring desc", 3, []string{"recurring"}, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "*/30 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring failed: %v", err)
+	}
+	if err := store.UpdateIssue(recurringIssue.ID, map[string]interface{}{
+		"branch_name": "feature/recurring-dispatch",
+		"pr_url":      "https://example.com/pr/recurring",
+	}); err != nil {
+		t.Fatalf("UpdateIssue recurring metadata failed: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 13, 0, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(recurringIssue.ID, "Approve the recurring dispatch issue", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval failed: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(recurringIssue.ID, "Revise the recurring dispatch issue", requestedAt.Add(10*time.Minute)); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision failed: %v", err)
+	}
+	if err := store.UpdateIssueState(recurringIssue.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState recurring ready failed: %v", err)
+	}
+	if err := store.UpdateIssueState(recurringIssue.ID, StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState recurring in_progress failed: %v", err)
+	}
+	if err := store.UpdateIssueState(recurringIssue.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState recurring done failed: %v", err)
+	}
+	lastSyncedAt := requestedAt.Add(20 * time.Minute)
+	nextRunAt := requestedAt.Add(1 * time.Hour)
+	if _, err := store.db.Exec(`UPDATE issues SET last_synced_at = ? WHERE id = ?`, lastSyncedAt, recurringIssue.ID); err != nil {
+		t.Fatalf("UPDATE issues last_synced_at failed: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE issue_recurrences SET next_run_at = ?, last_enqueued_at = ?, pending_rerun = 1 WHERE issue_id = ?`, nextRunAt, requestedAt, recurringIssue.ID); err != nil {
+		t.Fatalf("UPDATE issue_recurrences failed: %v", err)
+	}
+
+	dispatchIssues, err := store.ListDispatchIssues([]string{string(StateReady), string(StateDone)})
+	if err != nil {
+		t.Fatalf("ListDispatchIssues failed: %v", err)
+	}
+
+	var providerFound, recurringFound bool
+	for _, item := range dispatchIssues {
+		switch item.Identifier {
+		case providerIssue.Identifier:
+			providerFound = true
+			if item.ProjectID != project.ID || !item.DispatchState.ProjectExists || item.DispatchState.ProjectState != ProjectStateRunning || !item.DispatchState.HasUnresolvedBlockers {
+				t.Fatalf("unexpected provider dispatch state: %#v", item)
+			}
+			if item.ProviderKind != testProviderKind || item.ProviderIssueRef != "ext-provider" || !item.ProviderShadow {
+				t.Fatalf("unexpected provider metadata: %#v", item)
+			}
+			if !reflect.DeepEqual(item.Labels, []string{"alpha", "beta"}) || !reflect.DeepEqual(item.BlockedBy, []string{blocker.Identifier}) {
+				t.Fatalf("expected provider labels and blockers to hydrate, got %#v", item)
+			}
+			if item.BranchName != "feature/provider-dispatch" || item.PRURL != "https://example.com/pr/provider" {
+				t.Fatalf("unexpected provider branch metadata: %#v", item)
+			}
+		case recurringIssue.Identifier:
+			recurringFound = true
+			if item.ProjectID != project.ID || item.EpicID != epic.ID {
+				t.Fatalf("unexpected recurring dispatch associations: %#v", item)
+			}
+			if item.State != StateDone || item.WorkflowPhase != WorkflowPhaseComplete {
+				t.Fatalf("unexpected recurring dispatch state: %#v", item)
+			}
+			if item.BranchName != "feature/recurring-dispatch" || item.PRURL != "https://example.com/pr/recurring" {
+				t.Fatalf("unexpected recurring branch metadata: %#v", item)
+			}
+			if item.LastSyncedAt == nil || !item.LastSyncedAt.Equal(lastSyncedAt) {
+				t.Fatalf("expected last_synced_at to round-trip, got %#v", item.LastSyncedAt)
+			}
+			if item.PendingPlanMarkdown == "" || item.PendingPlanRevisionMarkdown == "" || item.PendingPlanRequestedAt == nil || item.PendingPlanRevisionRequestedAt == nil {
+				t.Fatalf("expected pending plan metadata to hydrate, got %#v", item)
+			}
+			if item.Cron != "*/30 * * * *" || !item.Enabled || item.NextRunAt == nil || !item.NextRunAt.Equal(nextRunAt) || item.LastEnqueuedAt == nil || !item.LastEnqueuedAt.Equal(requestedAt) || !item.PendingRerun {
+				t.Fatalf("expected recurrence overlay to hydrate, got %#v", item)
+			}
+		}
+	}
+	if !providerFound || !recurringFound {
+		t.Fatalf("expected provider and recurring issues to be returned, got %#v", dispatchIssues)
+	}
+}
+
+func TestReconcileProviderIssuesFailureBranches(t *testing.T) {
+	const providerKind = "asana"
+
+	t.Run("validation and query failure", func(t *testing.T) {
+		store := setupTestStore(t)
+		project, err := store.CreateProjectWithProvider("Provider Coverage", "", "", "", providerKind, "ASA-PROJ", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider failed: %v", err)
+		}
+
+		if err := store.ReconcileProviderIssues("", providerKind, nil); !errors.Is(err, ErrValidation) {
+			t.Fatalf("expected blank project id to fail validation, got %v", err)
+		}
+		if err := store.ReconcileProviderIssues(project.ID, ProviderKindKanban, nil); !errors.Is(err, ErrValidation) {
+			t.Fatalf("expected kanban provider kind to fail validation, got %v", err)
+		}
+		if err := store.ReconcileProviderIssues(project.ID, providerKind, []Issue{{ProviderKind: "", ProviderIssueRef: "ext-1", Title: "missing kind"}}); !errors.Is(err, ErrValidation) {
+			t.Fatalf("expected missing provider kind on incoming issue to fail validation, got %v", err)
+		}
+
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+		faulty := openFaultyMigratedSQLiteStoreAt(t, filepath.Join(t.TempDir(), "reconcile-query.db"), "select id, project_id, provider_issue_ref, provider_shadow")
+		if err := faulty.ReconcileProviderIssues(project.ID, providerKind, nil); err == nil {
+			t.Fatal("expected ReconcileProviderIssues to fail when issue query is injected")
+		}
+	})
+
+	t.Run("update branch failure", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "reconcile-update.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider Update Coverage", "", "", "", providerKind, "ASA-UPD", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider failed: %v", err)
+		}
+		if _, err := base.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EXT-1",
+			ProviderKind:     providerKind,
+			ProviderIssueRef: "ext-1",
+			Title:            "Existing provider issue",
+			State:            StateBacklog,
+		}); err != nil {
+			t.Fatalf("UpsertProviderIssue existing failed: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultyMigratedSQLiteStoreAt(t, dbPath, "insert into change_events")
+		if err := faulty.ReconcileProviderIssues(project.ID, providerKind, []Issue{
+			{
+				Identifier:       "EXT-1",
+				ProviderKind:     providerKind,
+				ProviderIssueRef: "ext-1",
+				Title:            "Updated provider issue",
+				Description:      "updated",
+				State:            StateReady,
+				Labels:           []string{"synced"},
+			},
+		}); err == nil {
+			t.Fatal("expected update branch to fail when change-events write is injected")
+		}
+	})
+
+	t.Run("create branch failure", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "reconcile-create.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider Create Coverage", "", "", "", providerKind, "ASA-NEW", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider failed: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultyMigratedSQLiteStoreAt(t, dbPath, "insert into change_events")
+		if err := faulty.ReconcileProviderIssues(project.ID, providerKind, []Issue{
+			{
+				Identifier:       "EXT-NEW",
+				ProviderKind:     providerKind,
+				ProviderIssueRef: "ext-new",
+				Title:            "New provider issue",
+				State:            StateReady,
+				Labels:           []string{"fresh"},
+			},
+		}); err == nil {
+			t.Fatal("expected create branch to fail when change-events write is injected")
+		}
+	})
+
+	t.Run("delete branch failure", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "reconcile-delete.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider Delete Coverage", "", "", "", providerKind, "ASA-DEL", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider failed: %v", err)
+		}
+		if _, err := base.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EXT-STALE",
+			ProviderKind:     providerKind,
+			ProviderIssueRef: "ext-stale",
+			Title:            "Stale provider issue",
+			State:            StateReady,
+		}); err != nil {
+			t.Fatalf("UpsertProviderIssue stale failed: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultyMigratedSQLiteStoreAt(t, dbPath, "insert into change_events")
+		if err := faulty.ReconcileProviderIssues(project.ID, providerKind, nil); err == nil {
+			t.Fatal("expected delete branch to fail when change-events write is injected")
+		}
+	})
+}
+
+func TestUpsertProviderIssueFailureBranches(t *testing.T) {
+	t.Run("lookup query failure", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "provider-query.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider query project", "", "", "", testProviderKind, "QUERY", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultySQLiteStoreAt(t, dbPath, "select id from issues where provider_kind = ? and provider_issue_ref = ?")
+		if err := faulty.configureConnection(); err != nil {
+			t.Fatalf("configureConnection faulty store: %v", err)
+		}
+		if _, err := faulty.UpsertProviderIssue(project.ID, &Issue{
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "query-1",
+			Title:            "Query failure",
+			State:            StateReady,
+		}); err == nil {
+			t.Fatal("expected UpsertProviderIssue to fail when the provider lookup query is injected")
+		}
+	})
+
+	t.Run("create path rollback", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "provider-create.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider create project", "", "", "", testProviderKind, "CREATE", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultySQLiteStoreAt(t, dbPath, "insert into change_events")
+		if err := faulty.configureConnection(); err != nil {
+			t.Fatalf("configureConnection faulty store: %v", err)
+		}
+		_, err = faulty.UpsertProviderIssue(project.ID, &Issue{
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "create-1",
+			Title:            "Create failure",
+			State:            StateReady,
+			BlockedBy:        []string{"BLOCKER"},
+		})
+		if err == nil {
+			t.Fatal("expected UpsertProviderIssue to fail on create rollback")
+		}
+		issues, err := faulty.ListIssues(map[string]interface{}{"project_id": project.ID, "provider_kind": testProviderKind})
+		if err != nil {
+			t.Fatalf("ListIssues after create failure: %v", err)
+		}
+		if len(issues) != 0 {
+			t.Fatalf("expected create rollback to leave no provider issues, got %#v", issues)
+		}
+	})
+
+	t.Run("update path rollback", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "provider-update.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider update project", "", "", "", testProviderKind, "UPDATE", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+		existing, err := base.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EX-1",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "update-1",
+			Title:            "Original title",
+			State:            StateBacklog,
+		})
+		if err != nil {
+			t.Fatalf("UpsertProviderIssue existing: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultySQLiteStoreAt(t, dbPath, "delete from issue_blockers")
+		if err := faulty.configureConnection(); err != nil {
+			t.Fatalf("configureConnection faulty store: %v", err)
+		}
+		updated, err := faulty.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EX-1",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "update-1",
+			Title:            "Updated title",
+			State:            StateReady,
+			BlockedBy:        []string{"BLOCKER"},
+		})
+		if err == nil {
+			t.Fatal("expected UpsertProviderIssue update to fail")
+		}
+		if updated != nil {
+			t.Fatalf("expected update failure to return nil issue, got %#v", updated)
+		}
+		loaded, err := faulty.GetIssue(existing.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after update failure: %v", err)
+		}
+		if loaded.Title != existing.Title || loaded.State != existing.State {
+			t.Fatalf("expected provider issue rollback to preserve original row, got %#v", loaded)
+		}
+	})
+
+	t.Run("update change-events rollback", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "provider-update-change-events.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider update change-events project", "", "", "", testProviderKind, "UPDATE-CHANGE", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+		existing, err := base.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EX-2",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "update-2",
+			Title:            "Original title",
+			State:            StateBacklog,
+		})
+		if err != nil {
+			t.Fatalf("UpsertProviderIssue existing: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultySQLiteStoreAt(t, dbPath, "insert into change_events")
+		if err := faulty.configureConnection(); err != nil {
+			t.Fatalf("configureConnection faulty store: %v", err)
+		}
+		updated, err := faulty.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EX-2",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "update-2",
+			Title:            "Updated title",
+			State:            StateReady,
+			BlockedBy:        []string{"BLOCKER"},
+		})
+		if err == nil {
+			t.Fatal("expected UpsertProviderIssue update to fail on change-events append")
+		}
+		if updated != nil {
+			t.Fatalf("expected update failure to return nil issue, got %#v", updated)
+		}
+		loaded, err := faulty.GetIssue(existing.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after change-events failure: %v", err)
+		}
+		if loaded.Title != existing.Title || loaded.State != existing.State {
+			t.Fatalf("expected provider issue rollback to preserve original row, got %#v", loaded)
+		}
+	})
+
+	t.Run("stale cleanup failure", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "provider-cleanup.db")
+		base := openSQLiteStoreAt(t, dbPath)
+		project, err := base.CreateProjectWithProvider("Provider cleanup project", "", "", "", testProviderKind, "CLEANUP", nil)
+		if err != nil {
+			t.Fatalf("CreateProjectWithProvider: %v", err)
+		}
+		keep, err := base.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EX-KEEP",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "cleanup-keep",
+			Title:            "Keep issue",
+			State:            StateBacklog,
+		})
+		if err != nil {
+			t.Fatalf("UpsertProviderIssue keep: %v", err)
+		}
+		stale, err := base.UpsertProviderIssue(project.ID, &Issue{
+			Identifier:       "EX-STALE",
+			ProviderKind:     testProviderKind,
+			ProviderIssueRef: "cleanup-stale",
+			Title:            "Stale issue",
+			State:            StateReady,
+		})
+		if err != nil {
+			t.Fatalf("UpsertProviderIssue stale: %v", err)
+		}
+		workspacePath := filepath.Join(t.TempDir(), "workspace")
+		if _, err := base.CreateWorkspace(stale.ID, workspacePath); err != nil {
+			t.Fatalf("CreateWorkspace stale: %v", err)
+		}
+		if err := base.Close(); err != nil {
+			t.Fatalf("Close base store: %v", err)
+		}
+
+		faulty := openFaultySQLiteStoreAt(t, dbPath, "delete from workspaces")
+		if err := faulty.configureConnection(); err != nil {
+			t.Fatalf("configureConnection faulty store: %v", err)
+		}
+		if err := faulty.DeleteProviderIssuesExcept(project.ID, testProviderKind, []string{keep.ProviderIssueRef}); err == nil {
+			t.Fatal("expected DeleteProviderIssuesExcept to fail when workspace deletion is injected")
+		}
+		if _, err := faulty.GetIssue(stale.ID); err != nil {
+			t.Fatalf("expected stale issue to survive rollback, got %v", err)
+		}
+		if _, err := os.Stat(workspacePath); !os.IsNotExist(err) {
+			t.Fatalf("expected stale workspace to remain after cleanup failure, got %v", err)
+		}
+	})
 }

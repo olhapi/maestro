@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/logsink"
 	"github.com/olhapi/maestro/internal/providers"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const guardrailsAcknowledgementFlag = "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
@@ -74,15 +78,22 @@ func setupLoggerWithWriter(stdout io.Writer, logsRoot string, maxBytes int64, ma
 }
 
 func openStore(dbPath string) (*kanban.Store, error) {
-	rawPath := dbPath
-	dbPath = kanban.ResolveDBPath(dbPath)
-	if kanban.HasUnresolvedExpandedEnvPath(rawPath, dbPath) {
-		return nil, fmt.Errorf("failed to resolve database path: unresolved environment variable in %q", dbPath)
-	}
-	if err := ensureDir(filepath.Dir(dbPath)); err != nil {
+	resolvedPath, err := resolveDatabasePath(dbPath)
+	if err != nil {
 		return nil, err
 	}
-	return kanban.NewStore(dbPath)
+	if err := ensureDir(filepath.Dir(resolvedPath)); err != nil {
+		return nil, err
+	}
+	return kanban.NewStore(resolvedPath)
+}
+
+func openReadOnlyStore(dbPath string) (*kanban.Store, error) {
+	resolvedPath, err := resolveDatabasePath(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return kanban.NewReadOnlyStore(resolvedPath)
 }
 
 func openProviderService(dbPath string) (*kanban.Store, *providers.Service, error) {
@@ -91,6 +102,65 @@ func openProviderService(dbPath string) (*kanban.Store, *providers.Service, erro
 		return nil, nil, err
 	}
 	return store, providers.NewService(store), nil
+}
+
+func openReadOnlyProviderService(dbPath string) (*kanban.Store, *providers.Service, error) {
+	store, err := openStoreForReadCommands(dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if store.ReadOnly() {
+		return store, providers.NewReadOnlyService(store), nil
+	}
+	return store, providers.NewService(store), nil
+}
+
+func openStoreForReadCommands(dbPath string) (*kanban.Store, error) {
+	return openStoreForReadCommandsWith(dbPath, openStore, openReadOnlyStore)
+}
+
+func openStoreForReadCommandsWith(dbPath string, writableOpener, readOnlyOpener func(string) (*kanban.Store, error)) (*kanban.Store, error) {
+	store, err := writableOpener(dbPath)
+	if err == nil {
+		return store, nil
+	}
+	if !shouldFallbackToReadOnly(err) {
+		return nil, err
+	}
+	readOnlyStore, roErr := readOnlyOpener(dbPath)
+	if roErr == nil {
+		return readOnlyStore, nil
+	}
+	return nil, err
+}
+
+func shouldFallbackToReadOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrPermission) || os.IsPermission(err) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() & 0xff {
+		case sqlite3.SQLITE_PERM, sqlite3.SQLITE_READONLY:
+			return true
+		}
+		if sqliteErr.Code() == sqlite3.SQLITE_IOERR|(13<<8) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveDatabasePath(dbPath string) (string, error) {
+	rawPath := dbPath
+	resolvedPath := kanban.ResolveDBPath(dbPath)
+	if kanban.HasUnresolvedExpandedEnvPath(rawPath, resolvedPath) {
+		return "", fmt.Errorf("failed to resolve database path: unresolved environment variable in %q", resolvedPath)
+	}
+	return filepath.Abs(resolvedPath)
 }
 
 func ensureDir(path string) error {

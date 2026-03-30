@@ -17,7 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
@@ -30,9 +30,9 @@ type Provider interface {
 	observability.SessionProvider
 	observability.EventProvider
 	observability.RefreshProvider
-	PendingInterrupts() appserver.PendingInteractionSnapshot
-	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
-	RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error
+	PendingInterrupts() agentruntime.PendingInteractionSnapshot
+	PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool)
+	RespondToInterrupt(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error
 	AcknowledgeInterrupt(ctx context.Context, interactionID string) error
 	RetryIssueNow(ctx context.Context, identifier string) map[string]interface{}
 	RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{}
@@ -873,7 +873,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		note := strings.TrimSpace(body.Note)
 		if note == "" {
-			writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+			writeErrorStatus(w, http.StatusBadRequest, agentruntime.ErrInvalidInteractionResponse)
 			return
 		}
 		issue, err := s.store.GetIssueByIdentifier(identifier)
@@ -1376,9 +1376,9 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 				"id":     interactionID,
 				"status": "accepted",
 			})
-		case errors.Is(err, appserver.ErrPendingInteractionNotFound):
+		case errors.Is(err, agentruntime.ErrPendingInteractionNotFound):
 			writeErrorStatus(w, http.StatusNotFound, err)
-		case errors.Is(err, appserver.ErrInvalidInteractionResponse):
+		case errors.Is(err, agentruntime.ErrInvalidInteractionResponse):
 			writeErrorStatus(w, http.StatusBadRequest, err)
 		default:
 			writeError(w, http.StatusInternalServerError, err)
@@ -1413,7 +1413,7 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 	hasContent := body.Content != nil
 	isPlanApproval := isPlanApprovalInteraction(interaction)
 	if !found {
-		err = s.provider.RespondToInterrupt(r.Context(), interactionID, appserver.PendingInteractionResponse{
+		err = s.provider.RespondToInterrupt(r.Context(), interactionID, agentruntime.PendingInteractionResponse{
 			Decision:        decision,
 			DecisionPayload: body.DecisionPayload,
 			Answers:         body.Answers,
@@ -1427,47 +1427,47 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 				"id":     interactionID,
 				"status": "accepted",
 			})
-		case errors.Is(err, appserver.ErrPendingInteractionNotFound):
+		case errors.Is(err, agentruntime.ErrPendingInteractionNotFound):
 			writeErrorStatus(w, http.StatusNotFound, err)
-		case errors.Is(err, appserver.ErrPendingInteractionConflict):
+		case errors.Is(err, agentruntime.ErrPendingInteractionConflict):
 			writeErrorStatus(w, http.StatusConflict, err)
-		case errors.Is(err, appserver.ErrInvalidInteractionResponse):
+		case errors.Is(err, agentruntime.ErrInvalidInteractionResponse):
 			writeErrorStatus(w, http.StatusBadRequest, err)
 		default:
 			writeErrorStatus(w, http.StatusInternalServerError, err)
 		}
 		return
 	}
-	if interaction.Kind == appserver.PendingInteractionKindElicitation {
+	if interaction.Kind == agentruntime.PendingInteractionKindElicitation {
 		switch responseAction {
 		case "":
 			if !hasContent {
-				writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+				writeErrorStatus(w, http.StatusBadRequest, agentruntime.ErrInvalidInteractionResponse)
 				return
 			}
 			responseAction = "accept"
 		case "accept":
 			if !hasContent {
-				writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+				writeErrorStatus(w, http.StatusBadRequest, agentruntime.ErrInvalidInteractionResponse)
 				return
 			}
 		case "decline", "cancel":
 			body.Content = nil
 			hasContent = false
 		default:
-			writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+			writeErrorStatus(w, http.StatusBadRequest, agentruntime.ErrInvalidInteractionResponse)
 			return
 		}
 	}
 	if isPlanApproval {
 		if firstRespondableInterruptID(snapshot) != interactionID {
-			writeErrorStatus(w, http.StatusConflict, appserver.ErrPendingInteractionConflict)
+			writeErrorStatus(w, http.StatusConflict, agentruntime.ErrPendingInteractionConflict)
 			return
 		}
 		switch {
 		case decision == "" && !hasDecisionPayload:
 			if !hasNote {
-				writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+				writeErrorStatus(w, http.StatusBadRequest, agentruntime.ErrInvalidInteractionResponse)
 				return
 			}
 			issue, err := s.issueForInterrupt(r.Context(), interaction)
@@ -1500,7 +1500,7 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 				"dispatch": response["dispatch"],
 			})
 		default:
-			writeErrorStatus(w, http.StatusBadRequest, appserver.ErrInvalidInteractionResponse)
+			writeErrorStatus(w, http.StatusBadRequest, agentruntime.ErrInvalidInteractionResponse)
 		}
 		return
 	}
@@ -1520,7 +1520,7 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	err = s.provider.RespondToInterrupt(r.Context(), interactionID, appserver.PendingInteractionResponse{
+	err = s.provider.RespondToInterrupt(r.Context(), interactionID, agentruntime.PendingInteractionResponse{
 		Decision:        decision,
 		DecisionPayload: body.DecisionPayload,
 		Answers:         body.Answers,
@@ -1540,18 +1540,18 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 			"id":     interactionID,
 			"status": "accepted",
 		})
-	case errors.Is(err, appserver.ErrPendingInteractionNotFound):
+	case errors.Is(err, agentruntime.ErrPendingInteractionNotFound):
 		writeErrorStatus(w, http.StatusNotFound, err)
-	case errors.Is(err, appserver.ErrPendingInteractionConflict):
+	case errors.Is(err, agentruntime.ErrPendingInteractionConflict):
 		writeErrorStatus(w, http.StatusConflict, err)
-	case errors.Is(err, appserver.ErrInvalidInteractionResponse):
+	case errors.Is(err, agentruntime.ErrInvalidInteractionResponse):
 		writeErrorStatus(w, http.StatusBadRequest, err)
 	default:
 		writeError(w, http.StatusInternalServerError, err)
 	}
 }
 
-func pendingInterruptByID(snapshot appserver.PendingInteractionSnapshot, interactionID string) (*appserver.PendingInteraction, bool) {
+func pendingInterruptByID(snapshot agentruntime.PendingInteractionSnapshot, interactionID string) (*agentruntime.PendingInteraction, bool) {
 	for i := range snapshot.Items {
 		if snapshot.Items[i].ID != interactionID {
 			continue
@@ -1562,9 +1562,9 @@ func pendingInterruptByID(snapshot appserver.PendingInteractionSnapshot, interac
 	return nil, false
 }
 
-func firstRespondableInterruptID(snapshot appserver.PendingInteractionSnapshot) string {
+func firstRespondableInterruptID(snapshot agentruntime.PendingInteractionSnapshot) string {
 	for i := range snapshot.Items {
-		if snapshot.Items[i].Kind == appserver.PendingInteractionKindAlert {
+		if snapshot.Items[i].Kind == agentruntime.PendingInteractionKindAlert {
 			continue
 		}
 		if id := strings.TrimSpace(snapshot.Items[i].ID); id != "" {
@@ -1574,18 +1574,18 @@ func firstRespondableInterruptID(snapshot appserver.PendingInteractionSnapshot) 
 	return ""
 }
 
-func isPlanApprovalInteraction(interaction *appserver.PendingInteraction) bool {
-	if interaction == nil || interaction.Kind != appserver.PendingInteractionKindApproval || interaction.Approval == nil {
+func isPlanApprovalInteraction(interaction *agentruntime.PendingInteraction) bool {
+	if interaction == nil || interaction.Kind != agentruntime.PendingInteractionKindApproval || interaction.Approval == nil {
 		return false
 	}
 	return strings.TrimSpace(interaction.Approval.Markdown) != ""
 }
 
-func interruptNoteCommandAllowed(interaction *appserver.PendingInteraction) bool {
-	return interaction != nil && interaction.Kind != appserver.PendingInteractionKindElicitation
+func interruptNoteCommandAllowed(interaction *agentruntime.PendingInteraction) bool {
+	return interaction != nil && interaction.Kind != agentruntime.PendingInteractionKindElicitation
 }
 
-func (s *Server) issueForInterrupt(ctx context.Context, interaction *appserver.PendingInteraction) (*kanban.Issue, error) {
+func (s *Server) issueForInterrupt(ctx context.Context, interaction *agentruntime.PendingInteraction) (*kanban.Issue, error) {
 	if interaction == nil {
 		return nil, fmt.Errorf("pending interaction is required")
 	}
@@ -1760,7 +1760,7 @@ func (s *Server) requestIssuePlanRevision(ctx context.Context, issue *kanban.Iss
 	}
 	note = strings.TrimSpace(note)
 	if note == "" {
-		return nil, appserver.ErrInvalidInteractionResponse
+		return nil, agentruntime.ErrInvalidInteractionResponse
 	}
 	if !issue.PlanApprovalPending || strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
 		return nil, kanban.ErrBlockedTransition

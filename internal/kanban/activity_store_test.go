@@ -379,6 +379,85 @@ func TestTruncateCommandDetailFallsBackWhenMetadataConsumesBudget(t *testing.T) 
 	}
 }
 
+func TestActivityProjectionHelperEdgeCases(t *testing.T) {
+	if got := secondaryItemSummary("plan", nil); got != "Plan updated." {
+		t.Fatalf("secondaryItemSummary(plan nil) = %q", got)
+	}
+	if got := secondaryItemSummary("reasoning", map[string]interface{}{}); got != "Reasoning updated." {
+		t.Fatalf("secondaryItemSummary(reasoning empty) = %q", got)
+	}
+	if got := secondaryItemSummary("fileChange", map[string]interface{}{"changes": "not-a-slice"}); got != "File change ready." {
+		t.Fatalf("secondaryItemSummary(fileChange fallback) = %q", got)
+	}
+	if got := secondaryItemSummary("mcpToolCall", map[string]interface{}{}); got != "McpToolCall" {
+		t.Fatalf("secondaryItemSummary(tool fallback) = %q", got)
+	}
+	if got := secondaryItemSummary("enteredReviewMode", map[string]interface{}{}); got != "EnteredReviewMode" {
+		t.Fatalf("secondaryItemSummary(review fallback) = %q", got)
+	}
+	if got := secondaryItemSummary("imageGeneration", map[string]interface{}{}); got != "Image generated." {
+		t.Fatalf("secondaryItemSummary(imageGeneration fallback) = %q", got)
+	}
+	if got := secondaryItemSummary("custom_event", nil); got != "Custom Event" {
+		t.Fatalf("secondaryItemSummary(default) = %q", got)
+	}
+
+	if got := secondaryItemDetail(map[string]interface{}{"bad": make(chan int)}); got != "" {
+		t.Fatalf("secondaryItemDetail marshal failure = %q", got)
+	}
+	if got := approvalDetail(map[string]interface{}{}); got != "" {
+		t.Fatalf("approvalDetail missing params = %q", got)
+	}
+	if got := approvalDetail(map[string]interface{}{"params": map[string]interface{}{"bad": make(chan int)}}); got != "" {
+		t.Fatalf("approvalDetail marshal failure = %q", got)
+	}
+	if got := inputRequestSummary(map[string]interface{}{}); got != "The agent requested user input." {
+		t.Fatalf("inputRequestSummary missing params = %q", got)
+	}
+	if got := inputRequestSummary(map[string]interface{}{"params": map[string]interface{}{"questions": []interface{}{map[string]interface{}{"question": "  "}}}}); got != "The agent requested user input." {
+		t.Fatalf("inputRequestSummary blank question = %q", got)
+	}
+	if got := inputRequestSummary(map[string]interface{}{"params": map[string]interface{}{"questions": []interface{}{map[string]interface{}{"question": "Which environment?"}}}}); got != "Which environment?" {
+		t.Fatalf("inputRequestSummary question = %q", got)
+	}
+	if got := inputRequestDetail(map[string]interface{}{}); got != "" {
+		t.Fatalf("inputRequestDetail missing params = %q", got)
+	}
+	if got := inputRequestDetail(map[string]interface{}{"params": map[string]interface{}{"bad": make(chan int)}}); got != "" {
+		t.Fatalf("inputRequestDetail marshal failure = %q", got)
+	}
+	if got := planApprovalDetail(map[string]interface{}{"bad": make(chan int)}); got != "" {
+		t.Fatalf("planApprovalDetail marshal failure = %q", got)
+	}
+	if got := approvalResponseDetail(map[string]interface{}{"bad": make(chan int)}); got != "" {
+		t.Fatalf("approvalResponseDetail marshal failure = %q", got)
+	}
+	if got := inputResponseSummary(map[string]interface{}{}); got != "Operator submitted input." {
+		t.Fatalf("inputResponseSummary empty = %q", got)
+	}
+	if got := inputResponseSummary(map[string]interface{}{"answers": map[string]interface{}{"path": []string{"  chosen  "}}}); got != "chosen" {
+		t.Fatalf("inputResponseSummary []string = %q", got)
+	}
+	if got := inputResponseSummary(map[string]interface{}{"answers": map[string]interface{}{"path": []interface{}{"  chosen  "}}}); got != "chosen" {
+		t.Fatalf("inputResponseSummary []interface{} = %q", got)
+	}
+	if got := inputResponseDetail(map[string]interface{}{"bad": make(chan int)}); got != "" {
+		t.Fatalf("inputResponseDetail marshal failure = %q", got)
+	}
+	if got := firstMeaningfulLine("\n\n   \nfirst\nsecond"); got != "first" {
+		t.Fatalf("firstMeaningfulLine = %q", got)
+	}
+	if got := firstMeaningfulLine("   \n\t"); got != "" {
+		t.Fatalf("firstMeaningfulLine empty = %q", got)
+	}
+	if got := humanizeActivityLabel(""); got != "Activity" {
+		t.Fatalf("humanizeActivityLabel empty = %q", got)
+	}
+	if got := humanizeActivityLabel("turn.completed/status_update"); got != "Turn Completed Status Update" {
+		t.Fatalf("humanizeActivityLabel separators = %q", got)
+	}
+}
+
 func TestCompactIssueActivityAttemptHelpers(t *testing.T) {
 	store := setupTestStore(t)
 	successIssue, err := store.CreateIssue("", "", "Compaction success", "", 0, nil)

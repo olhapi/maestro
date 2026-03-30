@@ -14,6 +14,14 @@ func init() {
 }
 
 func sqliteDSN(dbPath string) string {
+	return sqliteDSNWithMode(dbPath, false)
+}
+
+func sqliteReadOnlyDSN(dbPath string) string {
+	return sqliteDSNWithMode(dbPath, true)
+}
+
+func sqliteDSNWithMode(dbPath string, readOnly bool) string {
 	path := filepath.ToSlash(dbPath)
 	if isWindowsDrivePath(path) {
 		path = "/" + path
@@ -26,10 +34,14 @@ func sqliteDSN(dbPath string) string {
 
 	q := u.Query()
 	q.Add("_pragma", "busy_timeout(10000)")
-	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "synchronous(NORMAL)")
 	q.Add("_pragma", "foreign_keys(ON)")
-	q.Set("_txlock", "immediate")
+	if readOnly {
+		q.Set("mode", "ro")
+	} else {
+		q.Add("_pragma", "journal_mode(WAL)")
+		q.Add("_pragma", "synchronous(NORMAL)")
+		q.Set("_txlock", "immediate")
+	}
 	u.RawQuery = q.Encode()
 
 	return u.String()

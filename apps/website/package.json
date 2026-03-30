@@ -11,7 +11,8 @@
     "check": "astro check",
     "smoke": "node ./scripts/smoke.mjs",
     "test": "vitest",
-    "test:ci": "vitest run"
+    "test:ci": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
@@ -36,6 +37,7 @@
     "@types/node": "^25.5.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@vitest/coverage-v8": "^4.1.0",
     "@vitejs/plugin-react": "^6.0.1",
     "jsdom": "^29.0.0",
     "tailwindcss": "^4.2.1",

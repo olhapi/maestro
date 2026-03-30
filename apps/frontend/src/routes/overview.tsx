@@ -315,12 +315,12 @@ export function OverviewPage() {
                   params={{ identifier: entry.identifier }}
                   to={appRoutes.issueDetail}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-medium text-white">{entry.identifier}</p>
-                      <p className="text-sm text-[var(--muted-foreground)]">{entry.last_message || 'Waiting for next event'}</p>
+                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="min-w-0 break-words [overflow-wrap:anywhere] font-medium text-white">{entry.identifier}</p>
+                      <p className="min-w-0 break-words [overflow-wrap:anywhere] text-sm text-[var(--muted-foreground)]">{entry.last_message || 'Waiting for next event'}</p>
                     </div>
-                    <Badge>{formatCompactNumber(entry.tokens.total_tokens)} tokens</Badge>
+                    <Badge className="self-start shrink-0">{formatCompactNumber(entry.tokens.total_tokens)} tokens</Badge>
                   </div>
                 </Link>
               ))
@@ -345,12 +345,12 @@ export function OverviewPage() {
                   params={{ identifier: entry.identifier }}
                   to={appRoutes.issueDetail}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-medium text-white">{entry.identifier}</p>
-                      <p className="text-sm text-[var(--muted-foreground)]">{entry.error || 'Awaiting retry'}</p>
+                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="min-w-0 break-words [overflow-wrap:anywhere] font-medium text-white">{entry.identifier}</p>
+                      <p className="min-w-0 break-words [overflow-wrap:anywhere] text-sm text-[var(--muted-foreground)]">{entry.error || 'Awaiting retry'}</p>
                     </div>
-                    <Badge>{formatRelativeTime(entry.due_at)}</Badge>
+                    <Badge className="self-start shrink-0">{formatRelativeTime(entry.due_at)}</Badge>
                   </div>
                 </Link>
               ))

@@ -189,7 +189,7 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	client.session.IssueIdentifier = cfg.IssueIdentifier
 	client.logger = client.newLogger()
 	client.warnOnCodexVersionMismatch()
-	client.session.AppServerPID = cmd.Process.Pid
+	client.session.ProcessID = cmd.Process.Pid
 	client.logger.Info("Codex app-server process started", "pid", cmd.Process.Pid)
 
 	var wg sync.WaitGroup
@@ -1794,7 +1794,7 @@ func (c *Client) hasTurnStarted(turnID string) bool {
 	if c.session == nil || strings.TrimSpace(turnID) == "" {
 		return false
 	}
-	if c.session.startedTurnID == turnID {
+	if c.session.HasStartedTurn(turnID) {
 		return true
 	}
 	for i := len(c.session.History) - 1; i >= 0; i-- {

@@ -21,6 +21,21 @@ func assertContainsAll(t *testing.T, text string, wants ...string) {
 	}
 }
 
+func assertInitWizardChoicePrompt(t *testing.T, text, label string, choices ...string) {
+	t.Helper()
+	assertContainsAll(t, text,
+		label+":",
+		"Press Enter to keep the default:",
+		"Enter a number, alias, unique prefix, or full value.",
+		"Selection:",
+	)
+	for _, choice := range choices {
+		if !strings.Contains(text, choice) {
+			t.Fatalf("expected wizard output to contain %q, got %q", choice, text)
+		}
+	}
+}
+
 func assertGranularApprovalPolicy(t *testing.T, policy interface{}) {
 	t.Helper()
 	root, ok := policy.(map[string]interface{})
@@ -117,6 +132,9 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
 		t.Fatalf("expected initial collaboration mode %q, got %q", InitialCollaborationModeDefault, cfg.Codex.InitialCollaborationMode)
+	}
+	if cfg.Workspace.Root != "~/.maestro/worktrees" {
+		t.Fatalf("expected default workspace root ~/.maestro/worktrees, got %q", cfg.Workspace.Root)
 	}
 	assertGranularApprovalPolicy(t, cfg.Codex.ApprovalPolicy)
 	assertDefaultPromptSemantics(t, DefaultPromptTemplate())
@@ -891,12 +909,15 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"max_retry_backoff_ms: 60000",
 		"max_automatic_retries: 8",
 		"mode: stdio",
-		"Other options: parallel, per_project_serial.",
+		"Available values: app_server, stdio. Fresh maestro init default: app_server.",
+		"Available values: parallel, per_project_serial. Fresh maestro init default: parallel.",
+		"dispatch_mode=per_project_serial forces effective per-project concurrency to 1.",
 		"codex app-server --model test",
 		"expected_version: " + codexschema.SupportedVersion,
 		"approval_policy: never",
 		"initial_collaboration_mode: default",
-		"on-request, on-failure, untrusted",
+		"Available values: never, on-request, on-failure, untrusted. Fresh maestro init default: never.",
+		"Available values: default, plan. Fresh maestro init default: default.",
 		"Ignored for stdio runs and resumed threads.",
 		"turn_timeout_ms: 1800000",
 		"read_timeout_ms: 10000",
@@ -929,7 +950,7 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		"root: ./workspaces",
+		"root: ~/.maestro/worktrees",
 		"command: codex app-server",
 		"mode: app_server",
 		"dispatch_mode: parallel",
@@ -943,22 +964,18 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	for _, want := range []string{
+	assertContainsAll(t, stdout.String(),
 		"Target workflow file:",
 		"Workspace root [",
 		"Codex command [",
-		"Agent mode (app_server|stdio) [",
-		"Dispatch mode (parallel|per_project_serial) [",
 		"Max concurrent agents [",
 		"Max turns [",
 		"Max automatic retries [",
-		"Approval policy (never|on-request|on-failure|untrusted) [",
-		"Initial collaboration mode (default|plan) [",
-	} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("expected wizard output to contain %q, got %q", want, stdout.String())
-		}
-	}
+	)
+	assertInitWizardChoicePrompt(t, stdout.String(), "Agent mode", "1. app_server", "2. stdio")
+	assertInitWizardChoicePrompt(t, stdout.String(), "Dispatch mode", "1. parallel", "2. per_project_serial")
+	assertInitWizardChoicePrompt(t, stdout.String(), "Approval policy", "1. never", "2. on-request", "3. on-failure", "4. untrusted")
+	assertInitWizardChoicePrompt(t, stdout.String(), "Initial collaboration mode", "1. default", "2. plan")
 	if strings.Contains(stdout.String(), "Runtime setup:") {
 		t.Fatalf("expected wizard output, got %q", stdout.String())
 	}
@@ -969,7 +986,7 @@ func TestInitWorkflowInteractiveWizardSupportsCustomStdioTuning(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("./ws\ncodex exec --model test\nstdio\nper_project_serial\n5\n6\n7\n"),
+		Stdin:       strings.NewReader("./ws\ncodex exec --model test\nstd\nserial\n5\n6\n7\n"),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -995,17 +1012,17 @@ func TestInitWorkflowInteractiveWizardSupportsCustomStdioTuning(t *testing.T) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if strings.Contains(stdout.String(), "Approval policy (never|on-request|on-failure|untrusted)") || strings.Contains(stdout.String(), "Initial collaboration mode (default|plan)") {
+	if strings.Contains(stdout.String(), "Approval policy:") || strings.Contains(stdout.String(), "Initial collaboration mode:") {
 		t.Fatalf("expected stdio wizard to skip app_server-only prompts, got %q", stdout.String())
 	}
 }
 
-func TestInitWorkflowInteractiveWizardSupportsAppServerCollaborationTuning(t *testing.T) {
+func TestInitWorkflowInteractiveWizardSupportsNumericSelections(t *testing.T) {
 	tmpDir := t.TempDir()
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("./ws\ncodex app-server --model test\napp_server\nparallel\n4\n5\n6\non-request\nplan\n"),
+		Stdin:       strings.NewReader("./ws\ncodex app-server --model test\n1\n2\n4\n5\n6\n2\n2\n"),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -1020,6 +1037,41 @@ func TestInitWorkflowInteractiveWizardSupportsAppServerCollaborationTuning(t *te
 		"root: ./ws",
 		"command: codex app-server --model test",
 		"mode: app_server",
+		"dispatch_mode: per_project_serial",
+		"max_concurrent_agents: 4",
+		"max_turns: 5",
+		"max_automatic_retries: 6",
+		"approval_policy: on-request",
+		"initial_collaboration_mode: plan",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q", want)
+		}
+	}
+	assertInitWizardChoicePrompt(t, stdout.String(), "Agent mode", "1. app_server", "2. stdio")
+	assertInitWizardChoicePrompt(t, stdout.String(), "Dispatch mode", "1. parallel", "2. per_project_serial")
+	assertInitWizardChoicePrompt(t, stdout.String(), "Approval policy", "1. never", "2. on-request", "3. on-failure", "4. untrusted")
+	assertInitWizardChoicePrompt(t, stdout.String(), "Initial collaboration mode", "1. default", "2. plan")
+}
+
+func TestInitWorkflowInteractiveWizardSupportsUniquePrefixSelection(t *testing.T) {
+	tmpDir := t.TempDir()
+	var stdout bytes.Buffer
+	if err := InitWorkflow(tmpDir, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader("./ws\ncodex app-server --model test\napp-s\nparal\n4\n5\n6\nrequ\npl\n"),
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"mode: app_server",
 		"dispatch_mode: parallel",
 		"max_concurrent_agents: 4",
 		"max_turns: 5",
@@ -1031,9 +1083,30 @@ func TestInitWorkflowInteractiveWizardSupportsAppServerCollaborationTuning(t *te
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
+	assertInitWizardChoicePrompt(t, stdout.String(), "Approval policy", "2. on-request")
+}
+
+func TestInitWorkflowInteractiveWizardRejectsAmbiguousChoicePrefixes(t *testing.T) {
+	tmpDir := t.TempDir()
+	var stdout bytes.Buffer
+	if err := InitWorkflow(tmpDir, InitOptions{
+		Interactive: true,
+		Stdin:       strings.NewReader(strings.Repeat("\n", 7) + "on\nreq\n\n"),
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("InitWorkflow: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "approval_policy: on-request") {
+		t.Fatalf("expected ambiguous approval policy prompt to recover to on-request, got %q", text)
+	}
 	assertContainsAll(t, stdout.String(),
-		"Approval policy (never|on-request|on-failure|untrusted) [",
-		"Initial collaboration mode (default|plan) [",
+		`Invalid value: invalid workflow init approval policy: "on" is ambiguous (matches on-request or on-failure)`,
 	)
 }
 
@@ -1042,7 +1115,7 @@ func TestInitWorkflowInteractiveWizardRepromptsOnInvalidInput(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
 		Interactive: true,
-		Stdin:       strings.NewReader("\n\nbad-mode\nstdio\nserial\nper_project_serial\n0\n2\nabc\n5\n-1\n6\n"),
+		Stdin:       strings.NewReader("\n\nbad-mode\nstdio\n0\n1\nabc\n2\n-1\n5\n0\n6\n"),
 		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
@@ -1055,7 +1128,7 @@ func TestInitWorkflowInteractiveWizardRepromptsOnInvalidInput(t *testing.T) {
 	text := string(data)
 	for _, want := range []string{
 		"mode: stdio",
-		"dispatch_mode: per_project_serial",
+		"dispatch_mode: parallel",
 		"max_concurrent_agents: 2",
 		"max_turns: 5",
 		"max_automatic_retries: 6",
@@ -1073,12 +1146,18 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 	tmpDir := t.TempDir()
 	var stdout bytes.Buffer
 	if err := InitWorkflow(tmpDir, InitOptions{
-		Interactive:   true,
-		WorkspaceRoot: "./flag-ws",
-		CodexCommand:  "codex exec --model custom",
-		AgentMode:     AgentModeStdio,
-		Stdin:         strings.NewReader(""),
-		Stdout:        &stdout,
+		Interactive:              true,
+		WorkspaceRoot:            "./flag-ws",
+		CodexCommand:             "codex exec --model custom",
+		AgentMode:                "server",
+		DispatchMode:             "pps",
+		MaxConcurrentAgents:      9,
+		MaxTurns:                 10,
+		MaxAutomaticRetries:      11,
+		ApprovalPolicy:           "on_request",
+		InitialCollaborationMode: "def",
+		Stdin:                    strings.NewReader(""),
+		Stdout:                   &stdout,
 	}); err != nil {
 		t.Fatalf("InitWorkflow: %v", err)
 	}
@@ -1091,26 +1170,29 @@ func TestInitWorkflowExplicitOverridesTakePrecedence(t *testing.T) {
 	for _, want := range []string{
 		"root: ./flag-ws",
 		"command: codex exec --model custom",
-		"mode: stdio",
-		"dispatch_mode: parallel",
-		"max_concurrent_agents: 3",
-		"max_turns: 4",
-		"max_automatic_retries: 8",
+		"mode: app_server",
+		"dispatch_mode: per_project_serial",
+		"max_concurrent_agents: 9",
+		"max_turns: 10",
+		"max_automatic_retries: 11",
+		"approval_policy: on-request",
 		"initial_collaboration_mode: default",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected generated workflow to contain %q", want)
 		}
 	}
-	if strings.Contains(stdout.String(), "Workspace root [") || strings.Contains(stdout.String(), "Codex command [") || strings.Contains(stdout.String(), "Agent mode (app_server|stdio) [") {
+	if strings.Contains(stdout.String(), "Workspace root [") ||
+		strings.Contains(stdout.String(), "Codex command [") ||
+		strings.Contains(stdout.String(), "Agent mode:") ||
+		strings.Contains(stdout.String(), "Dispatch mode:") ||
+		strings.Contains(stdout.String(), "Max concurrent agents [") ||
+		strings.Contains(stdout.String(), "Max turns [") ||
+		strings.Contains(stdout.String(), "Max automatic retries [") ||
+		strings.Contains(stdout.String(), "Approval policy:") ||
+		strings.Contains(stdout.String(), "Initial collaboration mode:") {
 		t.Fatalf("expected explicit values to skip prompts, got %q", stdout.String())
 	}
-	assertContainsAll(t, stdout.String(),
-		"Dispatch mode (parallel|per_project_serial) [",
-		"Max concurrent agents [",
-		"Max turns [",
-		"Max automatic retries [",
-	)
 }
 
 func TestGeneratedWorkflowRoundTrips(t *testing.T) {
@@ -1355,6 +1437,43 @@ func TestInitWorkflowRejectsInvalidExplicitAgentMode(t *testing.T) {
 	err := InitWorkflow(tmpDir, InitOptions{AgentMode: "invalid"})
 	if !errors.Is(err, ErrInvalidInitAgentMode) {
 		t.Fatalf("expected invalid agent mode error, got %v", err)
+	}
+}
+
+func TestValidateInitOptionAliasesAndPrefixes(t *testing.T) {
+	tests := []struct {
+		name     string
+		validate func(string) (string, error)
+		input    string
+		want     string
+	}{
+		{name: "agent alias", validate: validateInitAgentMode, input: "server", want: AgentModeAppServer},
+		{name: "dispatch alias", validate: validateInitDispatchMode, input: "pps", want: DispatchModePerProjectSerial},
+		{name: "approval underscore alias", validate: validateInitApprovalPolicy, input: "on_request", want: "on-request"},
+		{name: "collaboration alias", validate: validateInitCollaborationMode, input: "def", want: InitialCollaborationModeDefault},
+		{name: "approval prefix", validate: validateInitApprovalPolicy, input: "requ", want: "on-request"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.validate(tc.input)
+			if err != nil {
+				t.Fatalf("validate %q: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestValidateInitApprovalPolicyRejectsAmbiguousPrefix(t *testing.T) {
+	_, err := validateInitApprovalPolicy("on")
+	if !errors.Is(err, ErrInvalidInitApprovalPolicy) {
+		t.Fatalf("expected invalid approval policy error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous error, got %v", err)
 	}
 }
 

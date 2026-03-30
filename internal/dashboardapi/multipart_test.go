@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,70 @@ func newMultipartRequest(t *testing.T, fields map[string][]string, files []multi
 	req := httptest.NewRequest(http.MethodPost, "/upload", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req, httptest.NewRecorder()
+}
+
+func buildMultipartBody(t *testing.T, fields map[string][]string, files []multipartFilePayload) (string, []byte) {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for name, values := range fields {
+		for _, value := range values {
+			if err := writer.WriteField(name, value); err != nil {
+				t.Fatalf("WriteField(%s): %v", name, err)
+			}
+		}
+	}
+	for _, file := range files {
+		var (
+			part io.Writer
+			err  error
+		)
+		if strings.TrimSpace(file.ContentType) != "" {
+			header := make(textproto.MIMEHeader)
+			header.Set("Content-Disposition", `form-data; name="`+file.FieldName+`"; filename="`+file.Filename+`"`)
+			header.Set("Content-Type", file.ContentType)
+			part, err = writer.CreatePart(header)
+		} else {
+			part, err = writer.CreateFormFile(file.FieldName, file.Filename)
+		}
+		if err != nil {
+			t.Fatalf("CreatePart(%s): %v", file.FieldName, err)
+		}
+		if _, err := part.Write(file.Content); err != nil {
+			t.Fatalf("part.Write(%s): %v", file.Filename, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close: %v", err)
+	}
+
+	return writer.FormDataContentType(), body.Bytes()
+}
+
+type failingReader struct {
+	data      []byte
+	failAfter int
+	pos       int
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	if r.failAfter >= 0 && r.pos >= r.failAfter {
+		return 0, io.ErrUnexpectedEOF
+	}
+	limit := len(r.data)
+	if r.failAfter >= 0 && r.failAfter < limit {
+		limit = r.failAfter
+	}
+	n := copy(p, r.data[r.pos:limit])
+	r.pos += n
+	if r.failAfter >= 0 && r.pos >= r.failAfter {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, nil
 }
 
 func TestReadIssueAssetUploadHelper(t *testing.T) {
@@ -159,6 +224,101 @@ func TestReadIssueCommentMultipartHelper(t *testing.T) {
 		cleanup()
 		t.Fatal("expected multipart parsing error")
 	}
+}
+
+func TestReadIssueCommentMultipartErrorBranches(t *testing.T) {
+	t.Run("missing boundary", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("plain text"))
+		req.Header.Set("Content-Type", "multipart/form-data")
+		if _, cleanup, err := readIssueCommentMultipart(httptest.NewRecorder(), req, "UI"); err == nil {
+			cleanup()
+			t.Fatal("expected missing multipart boundary to fail")
+		}
+	})
+
+	t.Run("temp dir failure", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "tmpdir-file")
+		if err := os.WriteFile(tmpFile, []byte("tmp"), 0o644); err != nil {
+			t.Fatalf("WriteFile tmp file: %v", err)
+		}
+		t.Setenv("TMPDIR", tmpFile)
+		contentType, raw := buildMultipartBody(t, map[string][]string{
+			"body": {"Comment body"},
+		}, nil)
+		req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", contentType)
+		if _, cleanup, err := readIssueCommentMultipart(httptest.NewRecorder(), req, "UI"); err == nil {
+			cleanup()
+			t.Fatal("expected temp dir creation to fail")
+		}
+	})
+
+	t.Run("body read error", func(t *testing.T) {
+		contentType, raw := buildMultipartBody(t, map[string][]string{
+			"body": {"Comment body with enough data to trip the reader"},
+		}, nil)
+		cutoff := bytes.Index(raw, []byte("Comment body with enough data to trip the reader")) + 10
+		req := httptest.NewRequest(http.MethodPost, "/upload", &failingReader{data: raw, failAfter: cutoff})
+		req.Header.Set("Content-Type", contentType)
+		if _, cleanup, err := readIssueCommentMultipart(httptest.NewRecorder(), req, "UI"); err == nil {
+			cleanup()
+			t.Fatal("expected body read error")
+		}
+	})
+
+	t.Run("parent comment read error", func(t *testing.T) {
+		contentType, raw := buildMultipartBody(t, map[string][]string{
+			"parent_comment_id": {"parent-id-that-is-long-enough"},
+		}, nil)
+		cutoff := bytes.Index(raw, []byte("parent-id-that-is-long-enough")) + 6
+		req := httptest.NewRequest(http.MethodPost, "/upload", &failingReader{data: raw, failAfter: cutoff})
+		req.Header.Set("Content-Type", contentType)
+		if _, cleanup, err := readIssueCommentMultipart(httptest.NewRecorder(), req, "UI"); err == nil {
+			cleanup()
+			t.Fatal("expected parent comment read error")
+		}
+	})
+
+	t.Run("remove attachment read error", func(t *testing.T) {
+		contentType, raw := buildMultipartBody(t, map[string][]string{
+			"remove_attachment_ids": {"attachment-id-that-is-long-enough"},
+		}, nil)
+		cutoff := bytes.Index(raw, []byte("attachment-id-that-is-long-enough")) + 8
+		req := httptest.NewRequest(http.MethodPost, "/upload", &failingReader{data: raw, failAfter: cutoff})
+		req.Header.Set("Content-Type", contentType)
+		if _, cleanup, err := readIssueCommentMultipart(httptest.NewRecorder(), req, "UI"); err == nil {
+			cleanup()
+			t.Fatal("expected attachment removal read error")
+		}
+	})
+
+	t.Run("next part error", func(t *testing.T) {
+		contentType, raw := buildMultipartBody(t, map[string][]string{
+			"body": {"Body that parses successfully"},
+		}, nil)
+		req := httptest.NewRequest(http.MethodPost, "/upload", &failingReader{data: raw, failAfter: len(raw) - 1})
+		req.Header.Set("Content-Type", contentType)
+		if _, cleanup, err := readIssueCommentMultipart(httptest.NewRecorder(), req, "UI"); err == nil {
+			cleanup()
+			t.Fatal("expected next part read error")
+		}
+	})
+
+	t.Run("file copy error", func(t *testing.T) {
+		contentType, raw := buildMultipartBody(t, nil, []multipartFilePayload{{
+			FieldName:   "files",
+			Filename:    "attachment.txt",
+			ContentType: "text/plain",
+			Content:     []byte("file content that is long enough to fail"),
+		}})
+		cutoff := bytes.Index(raw, []byte("file content that is long enough to fail")) + 10
+		req := httptest.NewRequest(http.MethodPost, "/upload", &failingReader{data: raw, failAfter: cutoff})
+		req.Header.Set("Content-Type", contentType)
+		if _, cleanup, err := readIssueCommentMultipart(httptest.NewRecorder(), req, "UI"); err == nil {
+			cleanup()
+			t.Fatal("expected file copy error")
+		}
+	})
 }
 
 func TestIssueCommentAndAssetRoutesRejectInvalidMethods(t *testing.T) {

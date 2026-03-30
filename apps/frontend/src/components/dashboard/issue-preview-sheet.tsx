@@ -347,11 +347,11 @@ export function IssuePreviewSheet({
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5">
+              <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.04] p-3.5">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                   Workspace
                 </p>
-                <p className="mt-3 break-all text-sm text-white">
+                <p className="mt-3 max-w-full overflow-x-auto whitespace-nowrap text-sm text-white">
                   {activeIssue.workspace_path || "Not created yet"}
                 </p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">

@@ -2,10 +2,12 @@ package extensions
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadFileAndSpecs(t *testing.T) {
@@ -85,6 +87,127 @@ func TestLoadFileRejectsInvalidInputSchema(t *testing.T) {
 			t.Fatalf("expected invalid input_schema to fail for %s", tc)
 		}
 	}
+}
+
+func TestLoadFileEmptyPathReturnsEmptyRegistry(t *testing.T) {
+	reg, err := LoadFile("")
+	if err != nil {
+		t.Fatalf("LoadFile empty path: %v", err)
+	}
+	if reg == nil || reg.HasTools() {
+		t.Fatalf("expected empty registry, got %#v", reg)
+	}
+}
+
+func TestRegistryNamesAndExecuteBranches(t *testing.T) {
+	workdir := t.TempDir()
+	t.Setenv("MAESTRO_EXTENSION_SECRET", "topsecret")
+
+	reg := NewRegistry([]Tool{
+		{Name: "  first  ", Command: "echo ok"},
+		{Name: "disabled", Command: "echo no", Allowed: func() *bool { v := false; return &v }()},
+		{Name: "args", Command: "test -n \"$MAESTRO_ARGS_JSON\" && echo args", RequireArgs: true},
+		{Name: "wd", Command: "pwd", WorkingDir: workdir},
+		{Name: "noenv", Command: "test -z \"$MAESTRO_EXTENSION_SECRET\" && echo ok", DenyEnvPassthrough: true},
+		{Name: "slow", Command: "sleep 2", TimeoutSec: 1},
+	})
+
+	if got := reg.Names(); len(got) != 6 || got[0] != "first" || got[1] != "disabled" {
+		t.Fatalf("unexpected registry names: %#v", got)
+	}
+	if reg.tools["first"].TimeoutSec != 15 {
+		t.Fatalf("expected default timeout, got %d", reg.tools["first"].TimeoutSec)
+	}
+
+	out, err := reg.Execute(context.Background(), "first", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("Execute first: %v", err)
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("unexpected output from first tool: %q", out)
+	}
+
+	if _, err := reg.Execute(context.Background(), "disabled", map[string]interface{}{}); err == nil || !strings.Contains(err.Error(), "disabled by policy") {
+		t.Fatalf("expected disabled tool error, got %v", err)
+	}
+	if _, err := reg.Execute(context.Background(), "args", map[string]interface{}{}); err == nil || !strings.Contains(err.Error(), "requires args object") {
+		t.Fatalf("expected args validation error, got %v", err)
+	}
+
+	out, err = reg.Execute(context.Background(), "wd", map[string]interface{}{"args": map[string]interface{}{}})
+	if err != nil {
+		t.Fatalf("Execute wd: %v", err)
+	}
+	expectedWorkdir := workdir
+	if resolved, err := filepath.EvalSymlinks(workdir); err == nil {
+		expectedWorkdir = resolved
+	}
+	if strings.TrimSpace(out) != expectedWorkdir {
+		t.Fatalf("expected working directory to be applied, got %q want %q", out, expectedWorkdir)
+	}
+
+	out, err = reg.Execute(context.Background(), "noenv", map[string]interface{}{"args": map[string]interface{}{}})
+	if err != nil {
+		t.Fatalf("Execute noenv: %v", err)
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("expected env passthrough to be disabled, got %q", out)
+	}
+
+	if _, err := reg.Execute(context.Background(), "slow", map[string]interface{}{}); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if _, err := (*Registry)(nil).Execute(context.Background(), "missing", nil); err == nil {
+		t.Fatal("expected nil registry to reject execution")
+	}
+}
+
+func TestEmptyArgsHelpers(t *testing.T) {
+	if !isEmptyArgs(nil) {
+		t.Fatal("expected nil args to be empty")
+	}
+	if !isEmptyArgs(map[string]interface{}{}) {
+		t.Fatal("expected empty map to be empty")
+	}
+	if !isEmptyArgs(map[string]interface{}{"args": map[string]interface{}{}}) {
+		t.Fatal("expected empty nested args to be empty")
+	}
+	if isEmptyArgs(map[string]interface{}{"args": map[string]interface{}{"x": 1}}) {
+		t.Fatal("expected populated nested args to be non-empty")
+	}
+}
+
+func TestCloneMapAndValidationErrors(t *testing.T) {
+	src := map[string]interface{}{
+		"nested": map[string]interface{}{
+			"key": "value",
+		},
+	}
+	cloned := cloneMap(src)
+	cloned["nested"].(map[string]interface{})["key"] = "changed"
+	if src["nested"].(map[string]interface{})["key"] != "value" {
+		t.Fatal("expected cloneMap to deep clone nested maps")
+	}
+
+	if err := validateInputSchema(Tool{Name: "bad", InputSchema: map[string]interface{}{"type": "string"}}); err == nil {
+		t.Fatal("expected invalid schema type to fail")
+	}
+	if err := validateInputSchema(Tool{Name: "bad", InputSchema: map[string]interface{}{"type": "object", "properties": []string{"nope"}}}); err == nil {
+		t.Fatal("expected invalid schema properties to fail")
+	}
+
+	if err := validateInputSchema(Tool{Name: "ok", InputSchema: map[string]interface{}{"type": "object"}}); err != nil {
+		t.Fatalf("expected valid object schema, got %v", err)
+	}
+	if got := inputSchemaForTool(Tool{Name: "explicit", InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}}}}); got["type"] != "object" {
+		t.Fatalf("unexpected cloned input schema: %#v", got)
+	}
+
+	if _, err := LoadFile(filepath.Join(t.TempDir(), "missing.json")); err == nil {
+		t.Fatal("expected missing registry file to fail")
+	}
+	_ = errors.New
+	_ = time.Second
 }
 
 func TestExecuteSuccess(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	codexruntime "github.com/olhapi/maestro/internal/agentruntime/codex"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -62,7 +62,7 @@ func Run(repoPath, dbPath string) Result {
 					res.Remediation[advisory.Code] = advisory.Remediation
 				}
 			}
-			status, err := appserver.DetectCodexVersion(workflow.Config.Codex.Command)
+			status, err := codexruntime.DetectVersion(workflow.Config.Codex.Command)
 			switch {
 			case err != nil && status.Command != "":
 				res.Warnings = append(res.Warnings, fmt.Sprintf("codex_version: %v", err))

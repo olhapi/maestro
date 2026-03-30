@@ -105,14 +105,26 @@ func initGitRepoForStoreTest(t *testing.T, repoPath string) {
 }
 
 func TestDefaultDBPathUsesHomeDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Run("uses home dir", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
 
-	got := DefaultDBPath()
-	want := filepath.Join(home, ".maestro", "maestro.db")
-	if got != want {
-		t.Fatalf("DefaultDBPath() = %q, want %q", got, want)
-	}
+		got := DefaultDBPath()
+		want := filepath.Join(home, ".maestro", "maestro.db")
+		if got != want {
+			t.Fatalf("DefaultDBPath() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("falls back when home is unset", func(t *testing.T) {
+		t.Setenv("HOME", "")
+
+		got := DefaultDBPath()
+		want := filepath.Join(".", ".maestro", "maestro.db")
+		if got != want {
+			t.Fatalf("DefaultDBPath() = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestResolveDBPathUsesDefaultWhenEmpty(t *testing.T) {
@@ -189,6 +201,55 @@ func TestNewStoreRejectsUnresolvedEnvironmentDatabasePaths(t *testing.T) {
 	_, err := NewStore("$MAESTRO_DB_DIR/maestro.db")
 	if err == nil || !strings.Contains(err.Error(), "unresolved environment variable") {
 		t.Fatalf("expected unresolved environment variable error, got %v", err)
+	}
+}
+
+func TestNewReadOnlyStoreOpensExistingDatabaseWithoutMigrations(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only database permissions behave differently on Windows")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "readonly.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	project, err := store.CreateProject("Readonly Project", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Readonly issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close writable store: %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Fatalf("Chmod read-only db: %v", err)
+	}
+	readOnlyStore, err := NewReadOnlyStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewReadOnlyStore: %v", err)
+	}
+	defer readOnlyStore.Close()
+	if !readOnlyStore.ReadOnly() {
+		t.Fatal("expected store to report read-only mode")
+	}
+
+	loadedProject, err := readOnlyStore.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if loadedProject.Name != project.Name {
+		t.Fatalf("unexpected project: %+v", loadedProject)
+	}
+	issues, err := readOnlyStore.ListIssues(nil)
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Identifier != issue.Identifier {
+		t.Fatalf("unexpected issues: %+v", issues)
 	}
 }
 
@@ -954,6 +1015,41 @@ func TestIssueAssetContentMissingFileReturnsNotFoundAndCleanupHelpersAreSafe(t *
 	removeIfEmpty(nonEmptyDir)
 	if _, err := os.Stat(nonEmptyDir); err != nil {
 		t.Fatalf("expected non-empty dir to remain, got %v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		t.Run("cleanup helpers tolerate permission failures", func(t *testing.T) {
+			readonlyDir := filepath.Join(t.TempDir(), "readonly")
+			if err := os.MkdirAll(readonlyDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll readonly dir: %v", err)
+			}
+			blockedPath := filepath.Join(readonlyDir, "blocked.txt")
+			if err := os.WriteFile(blockedPath, []byte("blocked"), 0o644); err != nil {
+				t.Fatalf("WriteFile blocked.txt: %v", err)
+			}
+			emptyDir := filepath.Join(readonlyDir, "empty-dir")
+			if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll empty dir: %v", err)
+			}
+			if err := os.Chmod(readonlyDir, 0o555); err != nil {
+				t.Fatalf("Chmod readonly dir: %v", err)
+			}
+			t.Cleanup(func() {
+				_ = os.Chmod(readonlyDir, 0o755)
+				_ = os.Remove(blockedPath)
+				_ = os.Remove(emptyDir)
+			})
+
+			removeIssueAssetFile(blockedPath)
+			if _, err := os.Stat(blockedPath); err != nil {
+				t.Fatalf("expected blocked file to remain after failed removal, got %v", err)
+			}
+
+			removeIfEmpty(emptyDir)
+			if _, err := os.Stat(emptyDir); err != nil {
+				t.Fatalf("expected empty dir to remain after failed removal, got %v", err)
+			}
+		})
 	}
 }
 
@@ -3662,7 +3758,7 @@ func makeReadOnlyWorkspaceTree(t *testing.T, root string) {
 	if err := os.Chmod(testFile, 0o444); err != nil {
 		t.Fatalf("Chmod decode_test.go: %v", err)
 	}
-	if err := os.Chmod(moduleDir, 0o555); err != nil {
+	if err := os.Chmod(moduleDir, 0o000); err != nil {
 		t.Fatalf("Chmod module dir: %v", err)
 	}
 }
@@ -3834,6 +3930,138 @@ func TestListIssueSummariesSupportsBlockedAndProjectNameFilters(t *testing.T) {
 	}
 	if len(items[0].BlockedBy) != 1 || items[0].BlockedBy[0] != resolvedBlocker.Identifier {
 		t.Fatalf("expected %s blockers [%s], got %v", resolved.Identifier, resolvedBlocker.Identifier, items[0].BlockedBy)
+	}
+}
+
+func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProject("Matrix", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	epic, err := store.CreateEpic(project.ID, "Matrix epic", "")
+	if err != nil {
+		t.Fatalf("CreateEpic: %v", err)
+	}
+
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "blocker", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+
+	ready, err := store.CreateIssue(project.ID, epic.ID, "Ready alpha", "alpha search token", 3, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue ready: %v", err)
+	}
+	if err := store.UpdateIssueState(ready.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState ready: %v", err)
+	}
+
+	recurring, err := store.CreateIssueWithOptions(project.ID, epic.ID, "Recurring beta", "beta search token", 5, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	if err := store.UpdateIssueState(recurring.ID, StateInReview); err != nil {
+		t.Fatalf("UpdateIssueState recurring: %v", err)
+	}
+
+	done, err := store.CreateIssue(project.ID, "", "Done gamma", "gamma search token", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue done: %v", err)
+	}
+	if err := store.UpdateIssueState(done.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+
+	blocked, err := store.CreateIssue(project.ID, "", "Blocked delta", "delta search token", 2, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers blocked: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		query     IssueQuery
+		wantTotal int
+	}{
+		{
+			name:      "project id sort created",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 20},
+			wantTotal: 5,
+		},
+		{
+			name:      "project id sort identifier",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "identifier_asc", Limit: 20},
+			wantTotal: 5,
+		},
+		{
+			name:      "project id sort state",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "state_asc", Limit: 20},
+			wantTotal: 5,
+		},
+		{
+			name:      "epic id and issue type",
+			query:     IssueQuery{ProjectID: project.ID, EpicID: epic.ID, IssueType: string(IssueTypeRecurring), Sort: "updated_desc", Limit: 20},
+			wantTotal: 1,
+		},
+		{
+			name:      "search and blocked filter",
+			query:     IssueQuery{ProjectName: "matrix", Search: "search token", Blocked: func() *bool { v := true; return &v }(), Limit: 20},
+			wantTotal: 1,
+		},
+		{
+			name:      "offset pagination",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 1, Offset: 1},
+			wantTotal: 5,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := store.ListIssueSummaries(tc.query)
+			if err != nil {
+				t.Fatalf("ListIssueSummaries: %v", err)
+			}
+			if total != tc.wantTotal {
+				t.Fatalf("expected total %d, got %d", tc.wantTotal, total)
+			}
+			if len(items) == 0 {
+				t.Fatal("expected at least one issue summary")
+			}
+		})
+	}
+
+	items, _, err := store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries created_asc: %v", err)
+	}
+	if len(items) != 5 || items[0].Identifier != blocker.Identifier || items[4].Identifier != blocked.Identifier {
+		t.Fatalf("unexpected created_asc order: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "identifier_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries identifier_asc: %v", err)
+	}
+	if len(items) != 5 || items[0].Identifier != blocker.Identifier {
+		t.Fatalf("unexpected identifier_asc order: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "state_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries state_asc: %v", err)
+	}
+	if len(items) != 5 || items[0].State == "" {
+		t.Fatalf("unexpected state_asc results: %#v", items)
 	}
 }
 

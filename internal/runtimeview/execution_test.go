@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -14,7 +14,7 @@ import (
 type testProvider struct {
 	snapshot          observability.Snapshot
 	sessions          map[string]interface{}
-	pendingInterrupts map[string]appserver.PendingInteraction
+	pendingInterrupts map[string]agentruntime.PendingInteraction
 }
 
 func (p testProvider) Snapshot() observability.Snapshot {
@@ -25,7 +25,7 @@ func (p testProvider) LiveSessions() map[string]interface{} {
 	return map[string]interface{}{"sessions": p.sessions}
 }
 
-func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool) {
 	if interaction, ok := p.pendingInterrupts[issueID]; ok {
 		cloned := interaction.Clone()
 		return &cloned, true
@@ -56,7 +56,7 @@ func TestIssueExecutionPayloadUsesLiveRuntimeWhenAvailable(t *testing.T) {
 		RunKind:    "run_failed",
 		Error:      "approval_required",
 		UpdatedAt:  time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC),
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-persisted-turn-persisted",
@@ -86,7 +86,7 @@ func TestIssueExecutionPayloadUsesLiveRuntimeWhenAvailable(t *testing.T) {
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.Identifier: appserver.Session{
+			issue.Identifier: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-live-turn-live",
@@ -130,10 +130,10 @@ func TestIssueExecutionPayloadIncludesPendingInterruptMetadata(t *testing.T) {
 				Attempt:    1,
 			}},
 		},
-		pendingInterrupts: map[string]appserver.PendingInteraction{
+		pendingInterrupts: map[string]agentruntime.PendingInteraction{
 			issue.ID: {
 				ID:              "interrupt-1",
-				Kind:            appserver.PendingInteractionKindApproval,
+				Kind:            agentruntime.PendingInteractionKindApproval,
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
@@ -144,7 +144,7 @@ func TestIssueExecutionPayloadIncludesPendingInterruptMetadata(t *testing.T) {
 		t.Fatalf("IssueExecutionPayload: %v", err)
 	}
 
-	pending, ok := payload["pending_interrupt"].(*appserver.PendingInteraction)
+	pending, ok := payload["pending_interrupt"].(*agentruntime.PendingInteraction)
 	if !ok || pending.ID != "interrupt-1" {
 		t.Fatalf("expected pending interrupt payload, got %#v", payload["pending_interrupt"])
 	}
@@ -176,7 +176,7 @@ func TestIssueExecutionPayloadIncludesPlanApprovalMetadata(t *testing.T) {
 		Attempt:    5,
 		RunKind:    "run_completed",
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-plan",
@@ -234,7 +234,7 @@ func TestIssueExecutionPayloadIncludesPlanRevisionMetadata(t *testing.T) {
 		Attempt:    5,
 		RunKind:    "run_completed",
 		UpdatedAt:  revisionRequestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-plan",
@@ -282,7 +282,7 @@ func TestIssueExecutionPayloadFallsBackToPersistedDataWithoutProvider(t *testing
 		RunKind:    "run_unsuccessful",
 		Error:      "turn_input_required",
 		UpdatedAt:  time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC),
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-persisted-turn-persisted",
@@ -338,7 +338,7 @@ func TestIssueExecutionPayloadMarksStaleRunStartedSnapshotAsInterrupted(t *testi
 		Attempt:    2,
 		RunKind:    "run_started",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-stale-turn-stale",
@@ -389,7 +389,7 @@ func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *te
 		Attempt:    2,
 		RunKind:    "run_started",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-recovered-turn-recovered",
@@ -432,7 +432,7 @@ func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *te
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.Identifier: appserver.Session{
+			issue.Identifier: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-live-turn-live",
@@ -697,7 +697,7 @@ func TestIssueExecutionPayloadReturnsPausedRetryMetadata(t *testing.T) {
 		RunKind:    "retry_paused",
 		Error:      "stall_timeout",
 		UpdatedAt:  pausedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-paused-turn-paused",
@@ -890,8 +890,8 @@ func TestIssueExecutionPayloadGroupsPersistentActivityByAttempt(t *testing.T) {
 		t.Fatalf("AppendRuntimeEvent run_completed: %v", err)
 	}
 
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{Type: "turn.started", ThreadID: "thread-1", TurnID: "turn-1"})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{Type: "turn.started", ThreadID: "thread-1", TurnID: "turn-1"})
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:      "item.started",
 		ThreadID:  "thread-1",
 		TurnID:    "turn-1",
@@ -900,14 +900,14 @@ func TestIssueExecutionPayloadGroupsPersistentActivityByAttempt(t *testing.T) {
 		ItemPhase: "commentary",
 		Item:      map[string]interface{}{"id": "agent-1", "type": "agentMessage", "phase": "commentary", "text": "Plan"},
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:     "item.agentMessage.delta",
 		ThreadID: "thread-1",
 		TurnID:   "turn-1",
 		ItemID:   "agent-1",
 		Delta:    "ning the fix",
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:      "item.completed",
 		ThreadID:  "thread-1",
 		TurnID:    "turn-1",
@@ -916,7 +916,7 @@ func TestIssueExecutionPayloadGroupsPersistentActivityByAttempt(t *testing.T) {
 		ItemPhase: "commentary",
 		Item:      map[string]interface{}{"id": "agent-1", "type": "agentMessage", "phase": "commentary", "text": "Planning the fix"},
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:     "item.started",
 		ThreadID: "thread-1",
 		TurnID:   "turn-1",
@@ -931,14 +931,14 @@ func TestIssueExecutionPayloadGroupsPersistentActivityByAttempt(t *testing.T) {
 			"cwd":     "/repo",
 		},
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:     "item.commandExecution.outputDelta",
 		ThreadID: "thread-1",
 		TurnID:   "turn-1",
 		ItemID:   "cmd-1",
 		Delta:    "all checks green",
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:             "item.completed",
 		ThreadID:         "thread-1",
 		TurnID:           "turn-1",
@@ -959,7 +959,7 @@ func TestIssueExecutionPayloadGroupsPersistentActivityByAttempt(t *testing.T) {
 			"status":           "completed",
 		},
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{Type: "turn.completed", ThreadID: "thread-1", TurnID: "turn-1"})
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{Type: "turn.completed", ThreadID: "thread-1", TurnID: "turn-1"})
 
 	payload, err := IssueExecutionPayload(store, nil, issue)
 	if err != nil {
@@ -1014,8 +1014,8 @@ func TestIssueExecutionPayloadKeepsHistoricalAttemptsVisible(t *testing.T) {
 			t.Fatalf("AppendRuntimeEvent(%s): %v", event.kind, err)
 		}
 	}
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{Type: "turn.started", ThreadID: "thread-1", TurnID: "turn-1"})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{Type: "turn.started", ThreadID: "thread-1", TurnID: "turn-1"})
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:      "item.completed",
 		ThreadID:  "thread-1",
 		TurnID:    "turn-1",
@@ -1024,8 +1024,8 @@ func TestIssueExecutionPayloadKeepsHistoricalAttemptsVisible(t *testing.T) {
 		ItemPhase: "commentary",
 		Item:      map[string]interface{}{"id": "agent-1", "type": "agentMessage", "phase": "commentary", "text": "First attempt"},
 	})
-	mustApplyActivityEvent(t, store, issue, 2, appserver.ActivityEvent{Type: "turn.started", ThreadID: "thread-2", TurnID: "turn-2"})
-	mustApplyActivityEvent(t, store, issue, 2, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 2, agentruntime.ActivityEvent{Type: "turn.started", ThreadID: "thread-2", TurnID: "turn-2"})
+	mustApplyActivityEvent(t, store, issue, 2, agentruntime.ActivityEvent{
 		Type:      "item.completed",
 		ThreadID:  "thread-2",
 		TurnID:    "turn-2",
@@ -1060,7 +1060,7 @@ func TestIssueExecutionPayloadUsesCompletedItemAsAuthoritativeAgentText(t *testi
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:      "item.started",
 		ThreadID:  "thread-1",
 		TurnID:    "turn-1",
@@ -1069,9 +1069,9 @@ func TestIssueExecutionPayloadUsesCompletedItemAsAuthoritativeAgentText(t *testi
 		ItemPhase: "commentary",
 		Item:      map[string]interface{}{"id": "agent-1", "type": "agentMessage", "phase": "commentary", "text": "Pl"},
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{Type: "item.agentMessage.delta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "agent-1", Delta: "ann"})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{Type: "item.agentMessage.delta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "agent-1", Delta: "ing the fi"})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{Type: "item.agentMessage.delta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "agent-1", Delta: "ann"})
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{Type: "item.agentMessage.delta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "agent-1", Delta: "ing the fi"})
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:      "item.completed",
 		ThreadID:  "thread-1",
 		TurnID:    "turn-1",
@@ -1106,7 +1106,7 @@ func TestIssueExecutionPayloadCollapsesCommandStreamingIntoOnePersistentRow(t *t
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:     "item.started",
 		ThreadID: "thread-1",
 		TurnID:   "turn-1",
@@ -1121,9 +1121,9 @@ func TestIssueExecutionPayloadCollapsesCommandStreamingIntoOnePersistentRow(t *t
 			"cwd":     "/repo/apps/frontend",
 		},
 	})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{Type: "item.commandExecution.outputDelta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "cmd-1", Delta: "ready line 1\n"})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{Type: "item.commandExecution.outputDelta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "cmd-1", Delta: "ready line 2"})
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{Type: "item.commandExecution.outputDelta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "cmd-1", Delta: "ready line 1\n"})
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{Type: "item.commandExecution.outputDelta", ThreadID: "thread-1", TurnID: "turn-1", ItemID: "cmd-1", Delta: "ready line 2"})
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:             "item.completed",
 		ThreadID:         "thread-1",
 		TurnID:           "turn-1",
@@ -1174,7 +1174,7 @@ func TestIssueExecutionPayloadRoutesNonPrimaryItemsToDebugGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	mustApplyActivityEvent(t, store, issue, 1, appserver.ActivityEvent{
+	mustApplyActivityEvent(t, store, issue, 1, agentruntime.ActivityEvent{
 		Type:     "item.completed",
 		ThreadID: "thread-1",
 		TurnID:   "turn-1",
@@ -1200,7 +1200,7 @@ func TestIssueExecutionPayloadRoutesNonPrimaryItemsToDebugGroups(t *testing.T) {
 	}
 }
 
-func mustApplyActivityEvent(t *testing.T, store *kanban.Store, issue *kanban.Issue, attempt int, event appserver.ActivityEvent) {
+func mustApplyActivityEvent(t *testing.T, store *kanban.Store, issue *kanban.Issue, attempt int, event agentruntime.ActivityEvent) {
 	t.Helper()
 	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, attempt, event); err != nil {
 		t.Fatalf("ApplyIssueActivityEvent(%s): %v", event.Type, err)

@@ -16,7 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
@@ -26,16 +26,16 @@ type testProvider struct {
 	snapshot                 observability.Snapshot
 	sessions                 map[string]interface{}
 	status                   map[string]interface{}
-	pendingInterruptsByIssue map[string]appserver.PendingInteraction
+	pendingInterruptsByIssue map[string]agentruntime.PendingInteraction
 	projectRefreshes         []string
 	projectStops             []string
 }
 
 type interruptProvider struct {
 	testProvider
-	interrupts appserver.PendingInteractionSnapshot
+	interrupts agentruntime.PendingInteractionSnapshot
 	responseID string
-	response   appserver.PendingInteractionResponse
+	response   agentruntime.PendingInteractionResponse
 	respondErr error
 	ackID      string
 	ackErr     error
@@ -59,8 +59,8 @@ func (p testProvider) LiveSessions() map[string]interface{} {
 	return map[string]interface{}{"sessions": p.sessions}
 }
 
-func (p testProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
-	items := make([]appserver.PendingInteraction, 0, len(p.pendingInterruptsByIssue))
+func (p testProvider) PendingInterrupts() agentruntime.PendingInteractionSnapshot {
+	items := make([]agentruntime.PendingInteraction, 0, len(p.pendingInterruptsByIssue))
 	seen := make(map[string]struct{}, len(p.pendingInterruptsByIssue))
 	for _, interaction := range p.pendingInterruptsByIssue {
 		if _, ok := seen[interaction.ID]; ok {
@@ -69,10 +69,10 @@ func (p testProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
 		seen[interaction.ID] = struct{}{}
 		items = append(items, interaction.Clone())
 	}
-	return appserver.PendingInteractionSnapshot{Items: items}
+	return agentruntime.PendingInteractionSnapshot{Items: items}
 }
 
-func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool) {
 	for _, key := range []string{issueID, identifier} {
 		if interaction, ok := p.pendingInterruptsByIssue[key]; ok {
 			cloned := interaction.Clone()
@@ -82,7 +82,7 @@ func (p testProvider) PendingInterruptForIssue(issueID, identifier string) (*app
 	return nil, false
 }
 
-func (p testProvider) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+func (p testProvider) RespondToInterrupt(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {
 	return nil
 }
 
@@ -90,11 +90,11 @@ func (p testProvider) AcknowledgeInterrupt(ctx context.Context, interactionID st
 	return nil
 }
 
-func (p *interruptProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
+func (p *interruptProvider) PendingInterrupts() agentruntime.PendingInteractionSnapshot {
 	return p.interrupts
 }
 
-func (p *interruptProvider) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+func (p *interruptProvider) RespondToInterrupt(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {
 	p.responseID = interactionID
 	p.response = response
 	return p.respondErr
@@ -235,7 +235,7 @@ func TestIssueExecutionEndpointReturnsLiveSession(t *testing.T) {
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.Identifier: appserver.Session{
+			issue.Identifier: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-live-turn-live",
@@ -246,7 +246,7 @@ func TestIssueExecutionEndpointReturnsLiveSession(t *testing.T) {
 				LastMessage:     "Working",
 				TotalTokens:     30,
 				TurnsStarted:    3,
-				History: []appserver.Event{
+				History: []agentruntime.Event{
 					{Type: "turn.started", Message: "Started"},
 					{Type: "tool_call_completed", Message: "Ran tests"},
 				},
@@ -303,8 +303,8 @@ func TestBootstrapReturnsCompletedLiveSummaryInsteadOfStreamingDelta(t *testing.
 		t.Fatalf("CreateIssue failed: %v", err)
 	}
 
-	session := &appserver.Session{}
-	session.ApplyEvent(appserver.Event{
+	session := &agentruntime.Session{}
+	session.ApplyEvent(agentruntime.Event{
 		Type:      "item.completed",
 		ThreadID:  "thread-live",
 		TurnID:    "turn-live",
@@ -313,7 +313,7 @@ func TestBootstrapReturnsCompletedLiveSummaryInsteadOfStreamingDelta(t *testing.
 		ItemPhase: "commentary",
 		Message:   "Completed summary",
 	})
-	session.ApplyEvent(appserver.Event{
+	session.ApplyEvent(agentruntime.Event{
 		Type:     "item.agentMessage.delta",
 		ThreadID: "thread-live",
 		TurnID:   "turn-live",
@@ -394,7 +394,7 @@ func TestWorkEndpointReturnsBoundedPayload(t *testing.T) {
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.Identifier: appserver.Session{
+			issue.Identifier: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-live-turn-live",
@@ -496,15 +496,15 @@ func TestWebSocketEndpointStreamsConnectedAndInvalidateEvents(t *testing.T) {
 
 func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
 	provider := &interruptProvider{
-		interrupts: appserver.PendingInteractionSnapshot{
-			Items: []appserver.PendingInteraction{{
+		interrupts: agentruntime.PendingInteractionSnapshot{
+			Items: []agentruntime.PendingInteraction{{
 				ID:              "interrupt-1",
-				Kind:            appserver.PendingInteractionKindApproval,
+				Kind:            agentruntime.PendingInteractionKindApproval,
 				IssueIdentifier: "ISS-1",
 				IssueTitle:      "Review migrations",
 				RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
-				Approval: &appserver.PendingApproval{
-					Decisions: []appserver.PendingApprovalDecision{
+				Approval: &agentruntime.PendingApproval{
+					Decisions: []agentruntime.PendingApprovalDecision{
 						{Value: "approved", Label: "Approve once"},
 					},
 				},
@@ -562,15 +562,15 @@ func TestInterruptEndpointForwardsStructuredDecisionPayloads(t *testing.T) {
 
 func TestInterruptEndpointForwardsMCPServerElicitationResponses(t *testing.T) {
 	provider := &interruptProvider{
-		interrupts: appserver.PendingInteractionSnapshot{
-			Items: []appserver.PendingInteraction{{
+		interrupts: agentruntime.PendingInteractionSnapshot{
+			Items: []agentruntime.PendingInteraction{{
 				ID:          "elicitation-1",
-				Kind:        appserver.PendingInteractionKindElicitation,
+				Kind:        agentruntime.PendingInteractionKindElicitation,
 				ThreadID:    "thread-1",
 				TurnID:      "turn-1",
 				RequestedAt: time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
 				ItemID:      "support-bot",
-				Elicitation: &appserver.PendingElicitation{
+				Elicitation: &agentruntime.PendingElicitation{
 					ServerName: "support-bot",
 					Message:    "Need contact details",
 					Mode:       "form",
@@ -613,7 +613,7 @@ func TestInterruptEndpointDoesNotCreateCommandsForElicitationNotes(t *testing.T)
 			body: map[string]interface{}{
 				"note": "Please use ops@example.com",
 			},
-			respondErr: appserver.ErrInvalidInteractionResponse,
+			respondErr: agentruntime.ErrInvalidInteractionResponse,
 			wantStatus: http.StatusBadRequest,
 		},
 		{
@@ -630,16 +630,16 @@ func TestInterruptEndpointDoesNotCreateCommandsForElicitationNotes(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := &interruptProvider{
-				interrupts: appserver.PendingInteractionSnapshot{
-					Items: []appserver.PendingInteraction{{
+				interrupts: agentruntime.PendingInteractionSnapshot{
+					Items: []agentruntime.PendingInteraction{{
 						ID:              "elicitation-1",
-						Kind:            appserver.PendingInteractionKindElicitation,
+						Kind:            agentruntime.PendingInteractionKindElicitation,
 						IssueID:         "issue-1",
 						IssueIdentifier: "ISS-1",
 						ThreadID:        "thread-1",
 						TurnID:          "turn-1",
 						RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
-						Elicitation: &appserver.PendingElicitation{
+						Elicitation: &agentruntime.PendingElicitation{
 							ServerName: "support-bot",
 							Message:    "Need contact details",
 							Mode:       "form",
@@ -674,21 +674,21 @@ func TestInterruptEndpointDoesNotCreateCommandsForElicitationNotes(t *testing.T)
 
 func TestInterruptEndpointExposesProviderSuppliedAlertItems(t *testing.T) {
 	provider := &interruptProvider{
-		interrupts: appserver.PendingInteractionSnapshot{
-			Items: []appserver.PendingInteraction{{
+		interrupts: agentruntime.PendingInteractionSnapshot{
+			Items: []agentruntime.PendingInteraction{{
 				ID:              "alert-1",
-				Kind:            appserver.PendingInteractionKindAlert,
+				Kind:            agentruntime.PendingInteractionKindAlert,
 				IssueIdentifier: "ISS-7",
 				IssueTitle:      "Blocked issue",
 				ProjectName:     "Out of scope project",
 				RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
-				Actions: []appserver.PendingInteractionAction{{
-					Kind:  appserver.PendingInteractionActionAcknowledge,
+				Actions: []agentruntime.PendingInteractionAction{{
+					Kind:  agentruntime.PendingInteractionActionAcknowledge,
 					Label: "Acknowledge",
 				}},
-				Alert: &appserver.PendingAlert{
+				Alert: &agentruntime.PendingAlert{
 					Code:     "project_dispatch_blocked",
-					Severity: appserver.PendingAlertSeverityError,
+					Severity: agentruntime.PendingAlertSeverityError,
 					Title:    "Project dispatch blocked",
 					Message:  "Project repo is outside the current server scope (/repo/current)",
 				},
@@ -708,7 +708,7 @@ func TestInterruptEndpointExposesProviderSuppliedAlertItems(t *testing.T) {
 		t.Fatalf("expected one interrupt item, got %#v", payload)
 	}
 	current := items[0].(map[string]interface{})
-	if current["id"] != "alert-1" || current["kind"] != string(appserver.PendingInteractionKindAlert) {
+	if current["id"] != "alert-1" || current["kind"] != string(agentruntime.PendingInteractionKindAlert) {
 		t.Fatalf("expected provider alert item, got %#v", current)
 	}
 }
@@ -727,7 +727,7 @@ func TestInterruptAcknowledgeEndpointForwardsAcknowledgeRequests(t *testing.T) {
 }
 
 func TestInterruptRespondEndpointRejectsInvalidAlertResponses(t *testing.T) {
-	provider := &interruptProvider{respondErr: appserver.ErrInvalidInteractionResponse}
+	provider := &interruptProvider{respondErr: agentruntime.ErrInvalidInteractionResponse}
 	_, srv := setupDashboardServerTest(t, provider)
 
 	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/alert-1/respond", map[string]interface{}{
@@ -739,7 +739,7 @@ func TestInterruptRespondEndpointRejectsInvalidAlertResponses(t *testing.T) {
 }
 
 func TestInterruptAcknowledgeEndpointRejectsNonAcknowledgeableItems(t *testing.T) {
-	provider := &interruptProvider{ackErr: appserver.ErrInvalidInteractionResponse}
+	provider := &interruptProvider{ackErr: agentruntime.ErrInvalidInteractionResponse}
 	_, srv := setupDashboardServerTest(t, provider)
 
 	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/interrupt-1/acknowledge", map[string]interface{}{})
@@ -788,14 +788,14 @@ func TestIssueExecutionEndpointReturnsPersistedSessionAndRetryMetadata(t *testin
 		RunKind:    "run_failed",
 		Error:      "approval_required",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-persisted-turn-persisted",
 			LastEvent:       "turn.approval_required",
 			LastTimestamp:   now,
 			LastMessage:     "Waiting for approval",
-			History: []appserver.Event{
+			History: []agentruntime.Event{
 				{Type: "turn.started", Message: "Started"},
 				{Type: "turn.approval_required", Message: "Waiting for approval"},
 			},
@@ -862,7 +862,7 @@ func TestIssueExecutionEndpointReturnsGroupedPersistentActivityHistory(t *testin
 			t.Fatalf("AppendRuntimeEvent(%s) failed: %v", kind, err)
 		}
 	}
-	for _, event := range []appserver.ActivityEvent{
+	for _, event := range []agentruntime.ActivityEvent{
 		{
 			Type:      "item.completed",
 			ThreadID:  "thread-1",
@@ -979,7 +979,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			RunKind:    "run_failed",
 			Error:      "approval_required",
 			UpdatedAt:  now.Add(-1 * time.Minute),
-			AppSession: appserver.Session{
+			AppSession: agentruntime.Session{
 				IssueID:         liveIssue.ID,
 				IssueIdentifier: liveIssue.Identifier,
 				SessionID:       "thread-live-old-turn-live-old",
@@ -996,7 +996,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			RunKind:    "run_failed",
 			Error:      "approval_required",
 			UpdatedAt:  now.Add(-90 * time.Second),
-			AppSession: appserver.Session{
+			AppSession: agentruntime.Session{
 				IssueID:         liveAlphaIssue.ID,
 				IssueIdentifier: liveAlphaIssue.Identifier,
 				SessionID:       "thread-live-alpha-old-turn-live-alpha-old",
@@ -1013,7 +1013,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			RunKind:    "retry_paused",
 			Error:      "stall_timeout",
 			UpdatedAt:  now.Add(-2 * time.Minute),
-			AppSession: appserver.Session{
+			AppSession: agentruntime.Session{
 				IssueID:         pausedIssue.ID,
 				IssueIdentifier: pausedIssue.Identifier,
 				SessionID:       "thread-paused-turn-paused",
@@ -1029,7 +1029,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			Attempt:    1,
 			RunKind:    "run_completed",
 			UpdatedAt:  now.Add(-3 * time.Minute),
-			AppSession: appserver.Session{
+			AppSession: agentruntime.Session{
 				IssueID:         completedIssue.ID,
 				IssueIdentifier: completedIssue.Identifier,
 				SessionID:       "thread-complete-turn-complete",
@@ -1047,7 +1047,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			Attempt:    4,
 			RunKind:    "run_started",
 			UpdatedAt:  now.Add(-4 * time.Minute),
-			AppSession: appserver.Session{
+			AppSession: agentruntime.Session{
 				IssueID:         interruptedIssue.ID,
 				IssueIdentifier: interruptedIssue.Identifier,
 				SessionID:       "thread-interrupted-turn-interrupted",
@@ -1064,7 +1064,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			RunKind:    "run_failed",
 			Error:      "approval_required",
 			UpdatedAt:  now.Add(-5 * time.Minute),
-			AppSession: appserver.Session{
+			AppSession: agentruntime.Session{
 				IssueID:         failedIssue.ID,
 				IssueIdentifier: failedIssue.Identifier,
 				SessionID:       "thread-failed-turn-failed",
@@ -1121,7 +1121,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			}},
 		},
 		sessions: map[string]interface{}{
-			liveIssue.Identifier: appserver.Session{
+			liveIssue.Identifier: agentruntime.Session{
 				IssueID:         liveIssue.ID,
 				IssueIdentifier: liveIssue.Identifier,
 				SessionID:       "thread-live-turn-live",
@@ -1134,11 +1134,11 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 				EventsProcessed: 6,
 				TurnsStarted:    5,
 				TurnsCompleted:  4,
-				History: []appserver.Event{
+				History: []agentruntime.Event{
 					{Type: "turn.started", Message: "Applying changes"},
 				},
 			},
-			liveAlphaIssue.Identifier: appserver.Session{
+			liveAlphaIssue.Identifier: agentruntime.Session{
 				IssueID:         liveAlphaIssue.ID,
 				IssueIdentifier: liveAlphaIssue.Identifier,
 				SessionID:       "thread-live-alpha-turn-live-alpha",
@@ -1151,7 +1151,7 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 				EventsProcessed: 4,
 				TurnsStarted:    2,
 				TurnsCompleted:  1,
-				History: []appserver.Event{
+				History: []agentruntime.Event{
 					{Type: "turn.started", Message: "Reviewing alpha changes"},
 				},
 			},
@@ -1251,7 +1251,7 @@ func TestIssueExecutionEndpointReturnsPausedRetryMetadata(t *testing.T) {
 		RunKind:    "retry_paused",
 		Error:      "stall_timeout",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-paused-turn-paused",

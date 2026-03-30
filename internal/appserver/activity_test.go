@@ -278,3 +278,38 @@ func TestActivityEventFromMessageParsesApprovalAndInputRequests(t *testing.T) {
 		t.Fatalf("expected elicitation prompt to be captured, got %#v", elicitation)
 	}
 }
+
+func TestActivityEventFromMessageEdgeBranches(t *testing.T) {
+	if evt, ok := ActivityEventFromMessage(protocol.Message{}); ok || evt.Type != "" {
+		t.Fatalf("expected empty method to be ignored, got %+v ok=%v", evt, ok)
+	}
+	if evt, ok := ActivityEventFromMessage(protocol.Message{Method: protocol.MethodThreadStarted, Params: []byte(`{"thread":1}`)}); ok || evt.ThreadID != "" {
+		t.Fatalf("expected malformed thread payload to fail, got %+v ok=%v", evt, ok)
+	}
+	if evt, ok := ActivityEventFromMessage(mustDecodeActivityMessage(t, map[string]interface{}{
+		"method": protocol.MethodThreadTokenUsageUpdated,
+		"params": map[string]interface{}{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"tokenUsage": map[string]interface{}{
+				"last": map[string]interface{}{
+					"inputTokens":  4,
+					"outputTokens": 5,
+				},
+			},
+		},
+	})); !ok || evt.TotalTokens != 9 {
+		t.Fatalf("expected token usage last fallback, got %+v ok=%v", evt, ok)
+	}
+	if evt, ok := ActivityEventFromMessage(mustDecodeActivityMessage(t, map[string]interface{}{
+		"id":     "req-9",
+		"method": protocol.MethodMCPServerElicitationRequest,
+		"params": map[string]interface{}{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"url":      "https://example.com/help",
+		},
+	})); !ok || evt.Reason != "https://example.com/help" {
+		t.Fatalf("expected elicitation URL fallback, got %+v ok=%v", evt, ok)
+	}
+}

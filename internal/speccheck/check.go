@@ -19,6 +19,14 @@ type Report struct {
 	Checks map[string]string `json:"checks"`
 }
 
+var (
+	defaultConfigFunc     = config.DefaultConfig
+	defaultInitConfigFunc = config.DefaultInitConfig
+	installMaestroFunc    = skills.InstallMaestro
+	bundledPathsFunc      = skills.BundledPaths
+	readBundledFileFunc   = skills.ReadBundledFile
+)
+
 // Run performs semantic conformance checks against the Maestro spec areas.
 func Run(repoRoot string) Report {
 	if repoRoot == "" {
@@ -109,8 +117,8 @@ func sampleWorkflowPromptContext() map[string]interface{} {
 }
 
 func validateDefaultConfig() error {
-	cfg := config.DefaultConfig()
-	initCfg := config.DefaultInitConfig()
+	cfg := defaultConfigFunc()
+	initCfg := defaultInitConfigFunc()
 
 	if cfg.Tracker.Kind != config.TrackerKindKanban {
 		return fmt.Errorf("default tracker kind = %q", cfg.Tracker.Kind)
@@ -178,11 +186,11 @@ func validateSkillInstall() error {
 	defer os.RemoveAll(tmpDir)
 
 	dest := filepath.Join(tmpDir, "skills", "maestro")
-	if err := skills.InstallMaestro(dest); err != nil {
+	if err := installMaestroFunc(dest); err != nil {
 		return err
 	}
 
-	wantPaths, err := skills.BundledPaths()
+	wantPaths, err := bundledPathsFunc()
 	if err != nil {
 		return err
 	}
@@ -204,7 +212,7 @@ func validateSkillInstall() error {
 	}
 
 	for _, rel := range wantPaths {
-		want, err := skills.ReadBundledFile(rel)
+		want, err := readBundledFileFunc(rel)
 		if err != nil {
 			return fmt.Errorf("read bundled skill file %s: %w", rel, err)
 		}

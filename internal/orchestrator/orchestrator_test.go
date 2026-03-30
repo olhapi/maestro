@@ -22,7 +22,8 @@ import (
 	"time"
 
 	"github.com/olhapi/maestro/internal/agent"
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
+	codexruntime "github.com/olhapi/maestro/internal/agentruntime/codex"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
@@ -420,6 +421,22 @@ Test prompt for {{ issue.identifier }}
 	return orch, store, manager, workspaceRoot
 }
 
+func createRunningProjectIssue(t *testing.T, store *kanban.Store, title, body string, priority int, labels []string) (*kanban.Project, *kanban.Issue) {
+	t.Helper()
+	project, err := store.CreateProject("Platform", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", title, body, priority, labels)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	return project, issue
+}
+
 func enablePhaseWorkflow(t *testing.T, manager *config.Manager, workspaceRoot string) {
 	t.Helper()
 	workflowContent := `---
@@ -561,18 +578,18 @@ func setWorkflowDispatchMode(t *testing.T, manager *config.Manager, dispatchMode
 	}
 }
 
-func waitForLiveSession(t *testing.T, orch *Orchestrator, identifier string, timeout time.Duration) appserver.Session {
+func waitForLiveSession(t *testing.T, orch *Orchestrator, identifier string, timeout time.Duration) agentruntime.Session {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		sessions := orch.LiveSessions()["sessions"].(map[string]interface{})
-		if session, ok := sessions[identifier].(appserver.Session); ok {
+		sessions := agentruntime.SessionsFromMap(orch.LiveSessions()["sessions"].(map[string]interface{}))
+		if session, ok := sessions[identifier]; ok {
 			return session
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for live session %s", identifier)
-	return appserver.Session{}
+	return agentruntime.Session{}
 }
 
 func waitForWorkspaceRemoval(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration) {
@@ -704,7 +721,7 @@ func waitForRunningCount(t *testing.T, orch *Orchestrator, expected int, timeout
 	t.Fatalf("timed out waiting for running count %d", expected)
 }
 
-func waitForPendingInterruptCount(t *testing.T, orch *Orchestrator, expected int, timeout time.Duration) appserver.PendingInteractionSnapshot {
+func waitForPendingInterruptCount(t *testing.T, orch *Orchestrator, expected int, timeout time.Duration) agentruntime.PendingInteractionSnapshot {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -715,10 +732,10 @@ func waitForPendingInterruptCount(t *testing.T, orch *Orchestrator, expected int
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for pending interrupt count %d", expected)
-	return appserver.PendingInteractionSnapshot{}
+	return agentruntime.PendingInteractionSnapshot{}
 }
 
-func firstPendingInterrupt(snapshot appserver.PendingInteractionSnapshot) *appserver.PendingInteraction {
+func firstPendingInterrupt(snapshot agentruntime.PendingInteractionSnapshot) *agentruntime.PendingInteraction {
 	if len(snapshot.Items) == 0 {
 		return nil
 	}
@@ -888,7 +905,7 @@ Shared retry stress harness for {{ issue.identifier }}
 
 func TestDispatchCreatesWorkspace(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
-	issue, _ := store.CreateIssue("", "", "Ready Issue", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Ready Issue", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -907,7 +924,7 @@ func TestDispatchCreatesWorkspace(t *testing.T) {
 
 func TestFailureRetryScheduling(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "false")
-	issue, _ := store.CreateIssue("", "", "Fails", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Fails", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -927,7 +944,7 @@ func TestAutomaticRetryLimitPausesRunawayFailures(t *testing.T) {
 	orch, store, manager, _ := setupTestOrchestrator(t, "false")
 	setWorkflowMaxAutomaticRetries(t, manager, 2)
 
-	issue, _ := store.CreateIssue("", "", "Retry limited", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Retry limited", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -968,7 +985,7 @@ func TestManualRetryResetsAutomaticRetryLimit(t *testing.T) {
 	orch, store, manager, _ := setupTestOrchestrator(t, "false")
 	setWorkflowMaxAutomaticRetries(t, manager, 1)
 
-	issue, _ := store.CreateIssue("", "", "Retry reset", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Retry reset", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -1012,7 +1029,7 @@ func TestManualRetryResetsAutomaticRetryLimit(t *testing.T) {
 func TestContinuationRetryAfterSuccess(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)
-	issue, _ := store.CreateIssue("", "", "Succeeds", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Succeeds", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -1033,7 +1050,7 @@ func TestImplementationSuccessTransitionsToReviewPhase(t *testing.T) {
 	enablePhaseWorkflow(t, manager, workspaceRoot)
 	orch.runner = &phaseScriptRunner{store: store}
 
-	issue, _ := store.CreateIssue("", "", "Needs review", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Needs review", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -1058,7 +1075,7 @@ func TestImplementationSuccessWithoutStateTransitionPausesAutomaticRetry(t *test
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	orch.runner = &phaseScriptRunner{store: store}
 
-	issue, _ := store.CreateIssue("", "", "No transition", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "No transition", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -1107,7 +1124,7 @@ func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(
 		},
 	}
 
-	issue, _ := store.CreateIssue("", "", "Review disabled continuation", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Review disabled continuation", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -1144,10 +1161,7 @@ func TestImplementationSuccessWithReviewDisabledRequeuesAfterInReviewTransition(
 
 func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
-	issue, err := store.CreateIssue("", "", "Pending plan approval", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createRunningProjectIssue(t, store, "Pending plan approval", "", 0, nil)
 	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
 	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
 		"plan_approval_pending":     true,
@@ -1156,7 +1170,7 @@ func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpdateIssue: %v", err)
 	}
-	issue, err = store.GetIssue(issue.ID)
+	issue, err := store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
@@ -1178,10 +1192,7 @@ func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 
 func TestPendingInterruptsIncludePlanApprovalRequests(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
-	issue, err := store.CreateIssue("", "", "Pending plan approval", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createRunningProjectIssue(t, store, "Pending plan approval", "", 0, nil)
 	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
 	if err := store.SetIssuePendingPlanApproval(issue.ID, "Review the plan.", requestedAt); err != nil {
 		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
@@ -1195,7 +1206,7 @@ func TestPendingInterruptsIncludePlanApprovalRequests(t *testing.T) {
 	if current.ID != issuePlanApprovalInteractionID(issue.ID) {
 		t.Fatalf("expected plan approval interrupt id %q, got %q", issuePlanApprovalInteractionID(issue.ID), current.ID)
 	}
-	if current.Kind != appserver.PendingInteractionKindApproval {
+	if current.Kind != agentruntime.PendingInteractionKindApproval {
 		t.Fatalf("expected approval interrupt, got %q", current.Kind)
 	}
 	if current.CollaborationMode != "plan" {
@@ -1223,14 +1234,8 @@ func TestPendingInterruptsIncludePlanApprovalRequests(t *testing.T) {
 
 func TestPendingInterruptsOrderPlanApprovalsByRequestedAt(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
-	laterIssue, err := store.CreateIssue("", "", "Later plan approval", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue(later): %v", err)
-	}
-	earlierIssue, err := store.CreateIssue("", "", "Earlier plan approval", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue(earlier): %v", err)
-	}
+	_, laterIssue := createRunningProjectIssue(t, store, "Later plan approval", "", 0, nil)
+	_, earlierIssue := createRunningProjectIssue(t, store, "Earlier plan approval", "", 0, nil)
 	laterRequestedAt := time.Date(2026, 3, 18, 11, 5, 0, 0, time.UTC)
 	earlierRequestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
 	if err := store.SetIssuePendingPlanApproval(laterIssue.ID, "Later plan body.", laterRequestedAt); err != nil {
@@ -1260,13 +1265,10 @@ func TestDispatchAllowsIssueAfterBlockerDeletion(t *testing.T) {
 	}
 	orch.runner = runner
 
-	blocker, err := store.CreateIssue("", "", "Deleted blocker", "", 0, nil)
+	project, issue := createRunningProjectIssue(t, store, "Blocked issue", "", 0, nil)
+	blocker, err := store.CreateIssue(project.ID, "", "Deleted blocker", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue blocker: %v", err)
-	}
-	issue, err := store.CreateIssue("", "", "Blocked issue", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue issue: %v", err)
 	}
 	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
 		t.Fatalf("SetIssueBlockers: %v", err)
@@ -1303,16 +1305,13 @@ func TestDispatchHydratesIssueRelationsForRunner(t *testing.T) {
 		},
 	}
 
-	blocker, err := store.CreateIssue("", "", "Resolved blocker", "", 0, nil)
+	project, issue := createRunningProjectIssue(t, store, "Tagged issue", "", 0, []string{"ops"})
+	blocker, err := store.CreateIssue(project.ID, "", "Resolved blocker", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue blocker: %v", err)
 	}
 	if err := store.UpdateIssueState(blocker.ID, kanban.StateDone); err != nil {
 		t.Fatalf("UpdateIssueState blocker: %v", err)
-	}
-	issue, err := store.CreateIssue("", "", "Tagged issue", "", 0, []string{"ops"})
-	if err != nil {
-		t.Fatalf("CreateIssue issue: %v", err)
 	}
 	if _, err := store.SetIssueBlockers(issue.ID, []string{blocker.Identifier}); err != nil {
 		t.Fatalf("SetIssueBlockers: %v", err)
@@ -1348,16 +1347,13 @@ func TestPlanApprovalStopDoesNotAdvanceImplementationPhase(t *testing.T) {
 				return &agent.RunResult{
 					Success:    false,
 					StopReason: planApprovalStopReason,
-					AppSession: &appserver.Session{ThreadID: "thread-plan", SessionID: "thread-plan-turn-1", TotalTokens: 7},
+					AppSession: &agentruntime.Session{ThreadID: "thread-plan", SessionID: "thread-plan-turn-1", TotalTokens: 7},
 				}, nil
 			},
 		},
 	}
 
-	issue, err := store.CreateIssue("", "", "Plan approval pause", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createRunningProjectIssue(t, store, "Plan approval pause", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
@@ -1413,10 +1409,7 @@ func TestFinishRunKeepsIssueRunningUntilPauseBookkeepingCompletes(t *testing.T) 
 	}
 	orch.runner = runner
 
-	issue, err := store.CreateIssue("", "", "Finish run bookkeeping", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createRunningProjectIssue(t, store, "Finish run bookkeeping", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
@@ -1638,7 +1631,7 @@ func TestImplementationSuccessCanSkipReviewAndQueueDonePhase(t *testing.T) {
 		},
 	}
 
-	issue, _ := store.CreateIssue("", "", "Skip review", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Skip review", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -1671,7 +1664,7 @@ func TestReviewFailureMovesIssueBackToImplementation(t *testing.T) {
 		},
 	}
 
-	issue, _ := store.CreateIssue("", "", "Review failure", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Review failure", "", 0, nil)
 	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview); err != nil {
 		t.Fatal(err)
 	}
@@ -1699,7 +1692,7 @@ func TestReviewSuccessTransitionsToDonePhase(t *testing.T) {
 	enablePhaseWorkflow(t, manager, workspaceRoot)
 	orch.runner = &phaseScriptRunner{store: store}
 
-	issue, _ := store.CreateIssue("", "", "Review success", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Review success", "", 0, nil)
 	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateInReview, kanban.WorkflowPhaseReview); err != nil {
 		t.Fatal(err)
 	}
@@ -1734,7 +1727,7 @@ func TestDoneFailureRetriesInDonePhase(t *testing.T) {
 		},
 	}
 
-	issue, _ := store.CreateIssue("", "", "Done failure", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Done failure", "", 0, nil)
 	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone); err != nil {
 		t.Fatal(err)
 	}
@@ -1790,7 +1783,7 @@ func TestReconcileDoesNotKillImplementationRunThatMovedIssueToDone(t *testing.T)
 	runner := newTerminalTransitionRunner(store)
 	orch.runner = runner
 
-	issue, _ := store.CreateIssue("", "", "Skip review race", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Skip review race", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
 	}
@@ -1826,7 +1819,7 @@ func TestDoneSuccessMarksIssueCompleteAndAllowsCleanup(t *testing.T) {
 	enablePhaseWorkflow(t, manager, workspaceRoot)
 	orch.runner = &phaseScriptRunner{store: store}
 
-	issue, _ := store.CreateIssue("", "", "Done success", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Done success", "", 0, nil)
 	if err := store.UpdateIssueStateAndPhase(issue.ID, kanban.StateDone, kanban.WorkflowPhaseDone); err != nil {
 		t.Fatal(err)
 	}
@@ -1904,7 +1897,7 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 				kanban.WorkflowPhaseDone: func(issue *kanban.Issue) (*agent.RunResult, error) {
 					return &agent.RunResult{
 						Success: true,
-						AppSession: &appserver.Session{
+						AppSession: &agentruntime.Session{
 							LastMessage: "Preview generated and validation passed.",
 						},
 					}, nil
@@ -2106,7 +2099,7 @@ func TestDoneSuccessPublishesPreviewCommentWhenVideoExists(t *testing.T) {
 			kanban.WorkflowPhaseDone: func(issue *kanban.Issue) (*agent.RunResult, error) {
 				return &agent.RunResult{
 					Success: true,
-					AppSession: &appserver.Session{
+					AppSession: &agentruntime.Session{
 						LastMessage: "Preview generated and validation passed.",
 					},
 				}, nil
@@ -2188,7 +2181,7 @@ func TestLiveSessionsTracksOnlyActiveRuns(t *testing.T) {
 	}())
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 0)
 
-	issue, _ := store.CreateIssue("", "", "Live Session", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Live Session", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2228,7 +2221,7 @@ func TestPendingInterruptRunPersistsLatestExecutionSessionSnapshot(t *testing.T)
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "on_request", 3000, 3000)
 
-	issue, _ := store.CreateIssue("", "", "Approval snapshot", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Approval snapshot", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2255,7 +2248,7 @@ func TestPendingInterruptRunPersistsLatestExecutionSessionSnapshot(t *testing.T)
 		t.Fatalf("expected live session while interrupt is pending, got %#v", sessions)
 	}
 
-	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, agentruntime.PendingInteractionResponse{
 		Decision: "acceptForSession",
 	}); err != nil {
 		t.Fatalf("respond to pending interrupt: %v", err)
@@ -2282,7 +2275,7 @@ func TestGracefulShutdownMarksActiveAppServerRunResumeEligible(t *testing.T) {
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 6000, 0)
 
-	issue, _ := store.CreateIssue("", "", "Graceful shutdown", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Graceful shutdown", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2400,7 +2393,7 @@ func TestOrphanedGracefulAppServerRunSchedulesImmediateResumeRetry(t *testing.T)
 		ResumeEligible: true,
 		StopReason:     gracefulShutdownStopReason,
 		UpdatedAt:      now,
-		AppSession:     appserver.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, SessionID: "thread-graceful-turn-stale", ThreadID: "thread-graceful"},
+		AppSession:     agentruntime.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, SessionID: "thread-graceful-turn-stale", ThreadID: "thread-graceful"},
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
@@ -2456,7 +2449,7 @@ func TestOrphanedAppServerRunWithoutGracefulMarkerOpportunisticallyResumes(t *te
 		Attempt:    1,
 		RunKind:    "run_started",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, ThreadID: "thread-opportunistic"},
+		AppSession: agentruntime.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, ThreadID: "thread-opportunistic"},
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
@@ -2504,7 +2497,7 @@ func TestOrphanedAppServerRunWithoutThreadIDKeepsFreshStartBackoff(t *testing.T)
 		Attempt:    2,
 		RunKind:    "run_started",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, SessionID: "thread-missing-turn-missing"},
+		AppSession: agentruntime.Session{IssueID: issue.ID, IssueIdentifier: issue.Identifier, SessionID: "thread-missing-turn-missing"},
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
@@ -2549,10 +2542,7 @@ func TestProcessRetriesResumesOrphanedAppServerRunAndFallsBackToFreshStart(t *te
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 0)
 
-	issue, err := store.CreateIssue("", "", "Resume fallback", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createRunningProjectIssue(t, store, "Resume fallback", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
@@ -2601,10 +2591,7 @@ func TestProcessRetriesFallsBackToFreshStartWhenResumedThreadDisappearsBeforeTur
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 0)
 
-	issue, err := store.CreateIssue("", "", "Turn-start fallback", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createRunningProjectIssue(t, store, "Turn-start fallback", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
@@ -2648,7 +2635,7 @@ func TestStalledRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 6000, 2500)
 
-	issue, _ := store.CreateIssue("", "", "Stall snapshot", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Stall snapshot", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2692,7 +2679,7 @@ func TestTurnInputRequiredPausesAutomaticRetries(t *testing.T) {
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 3000)
 
-	issue, _ := store.CreateIssue("", "", "Input required", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Input required", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2753,7 +2740,7 @@ func TestInteractiveAppServerInterruptQueueUsesFIFOAndPromotesNextRequest(t *tes
 	})
 	writeAppServerWorkflowWithConcurrency(t, manager, workspaceRoot, command, "on-request", 3000, 3000, 2)
 
-	first, _ := store.CreateIssue("", "", "First interactive issue", "", 0, nil)
+	_, first := createRunningProjectIssue(t, store, "First interactive issue", "", 0, nil)
 	_ = store.UpdateIssueState(first.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2765,7 +2752,7 @@ func TestInteractiveAppServerInterruptQueueUsesFIFOAndPromotesNextRequest(t *tes
 		t.Fatalf("expected FIFO current interrupt for first issue, got %+v", snapshot)
 	}
 
-	second, _ := store.CreateIssue("", "", "Second interactive issue", "", 0, nil)
+	_, second := createRunningProjectIssue(t, store, "Second interactive issue", "", 0, nil)
 	_ = store.UpdateIssueState(second.ID, kanban.StateReady)
 	if err := orch.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
@@ -2776,7 +2763,7 @@ func TestInteractiveAppServerInterruptQueueUsesFIFOAndPromotesNextRequest(t *tes
 		t.Fatalf("expected first issue to stay at the front of the queue, got %+v", snapshot)
 	}
 
-	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, agentruntime.PendingInteractionResponse{
 		Decision: "acceptForSession",
 	}); err != nil {
 		t.Fatalf("respond to first interrupt: %v", err)
@@ -2787,7 +2774,7 @@ func TestInteractiveAppServerInterruptQueueUsesFIFOAndPromotesNextRequest(t *tes
 	if current == nil || current.IssueID != second.ID {
 		t.Fatalf("expected second issue to be promoted, got %+v", snapshot)
 	}
-	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, agentruntime.PendingInteractionResponse{
 		Decision: "acceptForSession",
 	}); err != nil {
 		t.Fatalf("respond to second interrupt: %v", err)
@@ -2831,7 +2818,7 @@ func TestInteractiveAppServerRedactsSecretUserInputFromPersistedActivity(t *test
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "on-request", 3000, 3000)
 
-	issue, _ := store.CreateIssue("", "", "Secret input issue", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Secret input issue", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2843,7 +2830,7 @@ func TestInteractiveAppServerRedactsSecretUserInputFromPersistedActivity(t *test
 		t.Fatal("expected pending interrupt")
 	}
 	secret := "super-secret-token"
-	if err := orch.RespondToInterrupt(context.Background(), current.ID, appserver.PendingInteractionResponse{
+	if err := orch.RespondToInterrupt(context.Background(), current.ID, agentruntime.PendingInteractionResponse{
 		Answers: map[string][]string{
 			"token": []string{secret},
 		},
@@ -2882,7 +2869,7 @@ func TestCompletedRunPersistsLatestExecutionSessionSnapshot(t *testing.T) {
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 3000)
 
-	issue, _ := store.CreateIssue("", "", "Completion snapshot", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Completion snapshot", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -2932,19 +2919,19 @@ func TestCleanupTerminalAppServerProcessKillsLiveSessionProcessGroup(t *testing.
 		Phase:      string(kanban.WorkflowPhaseComplete),
 		RunKind:    "run_completed",
 		UpdatedAt:  time.Now().UTC(),
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
-			AppServerPID:    cmd.Process.Pid,
+			ProcessID:       cmd.Process.Pid,
 		},
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
 
-	orch.liveSessions[issue.ID] = &appserver.Session{
+	orch.liveSessions[issue.ID] = &agentruntime.Session{
 		IssueID:         issue.ID,
 		IssueIdentifier: issue.Identifier,
-		AppServerPID:    cmd.Process.Pid,
+		ProcessID:       cmd.Process.Pid,
 	}
 
 	cleanupCalled := 0
@@ -2954,7 +2941,7 @@ func TestCleanupTerminalAppServerProcessKillsLiveSessionProcessGroup(t *testing.
 	}
 
 	t.Cleanup(func() {
-		_ = appserver.CleanupLingeringAppServerProcess(cmd.Process.Pid)
+		_ = codexruntime.CleanupLingeringProcess(cmd.Process.Pid)
 		_ = cmd.Wait()
 	})
 
@@ -2967,7 +2954,7 @@ func TestCleanupTerminalAppServerProcessKillsLiveSessionProcessGroup(t *testing.
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.AppSession.AppServerPID != 0 {
+	if snapshot.AppSession.ProcessID != 0 {
 		t.Fatalf("expected terminal cleanup to retire app-server pid, got %+v", snapshot.AppSession)
 	}
 }
@@ -3004,17 +2991,17 @@ func TestCleanupTerminalWorkspacesRetiresPersistedPIDWithoutKillingUnknownProces
 		ResumeEligible: true,
 		StopReason:     gracefulShutdownStopReason,
 		UpdatedAt:      time.Now().UTC(),
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
-			AppServerPID:    cmd.Process.Pid,
+			ProcessID:       cmd.Process.Pid,
 		},
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
 
 	t.Cleanup(func() {
-		_ = appserver.CleanupLingeringAppServerProcess(cmd.Process.Pid)
+		_ = codexruntime.CleanupLingeringProcess(cmd.Process.Pid)
 		_ = cmd.Wait()
 	})
 
@@ -3027,7 +3014,7 @@ func TestCleanupTerminalWorkspacesRetiresPersistedPIDWithoutKillingUnknownProces
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.ResumeEligible || snapshot.AppSession.AppServerPID != 0 {
+	if snapshot.ResumeEligible || snapshot.AppSession.ProcessID != 0 {
 		t.Fatalf("expected terminal cleanup to retire graceful-shutdown metadata, got %+v", snapshot)
 	}
 	if _, err := store.GetWorkspace(issue.ID); err == nil {
@@ -3051,7 +3038,7 @@ func TestCleanupTerminalAppServerProcessKeepsPidRetiredAcrossLaterPersistence(t 
 		RunKind:        "run_completed",
 		ResumeEligible: true,
 		UpdatedAt:      time.Now().UTC(),
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			ThreadID:        "thread-terminal",
@@ -3062,18 +3049,18 @@ func TestCleanupTerminalAppServerProcessKeepsPidRetiredAcrossLaterPersistence(t 
 
 	orch.cleanupTerminalAppServerProcess(issue)
 
-	orch.persistExecutionSession(issue, kanban.WorkflowPhaseComplete, 1, "run_completed", "", false, "", &appserver.Session{
+	orch.persistExecutionSession(issue, kanban.WorkflowPhaseComplete, 1, "run_completed", "", false, "", &agentruntime.Session{
 		IssueID:         issue.ID,
 		IssueIdentifier: issue.Identifier,
 		ThreadID:        "thread-terminal",
-		AppServerPID:    4242,
+		ProcessID:       4242,
 	})
 
 	snapshot, err := store.GetIssueExecutionSession(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.AppSession.AppServerPID != 0 {
+	if snapshot.AppSession.ProcessID != 0 {
 		t.Fatalf("expected retired app-server pid to remain cleared, got %+v", snapshot.AppSession)
 	}
 }
@@ -3082,7 +3069,7 @@ func TestReconcileStopsCancelledRunsAndCleansWorkspace(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	runner := newControlledRunner(store)
 	orch.runner = runner
-	issue, _ := store.CreateIssue("", "", "Sleep", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Sleep", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -3109,7 +3096,7 @@ func TestReconcileStopsCancelledRunsWithoutRetryWhenRunnerReturnsCancelledResult
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 	runner := newCancelledResultRunner(store)
 	orch.runner = runner
-	issue, _ := store.CreateIssue("", "", "Sleep", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Sleep", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := orch.dispatch(context.Background()); err != nil {
@@ -3139,7 +3126,7 @@ func TestReconcileStopsCancelledRunsWithoutRetryWhenRunnerReturnsCancelledResult
 
 func TestCleanupTerminalWorkspacesOnStartup(t *testing.T) {
 	orch, store, _, workspaceRoot := setupTestOrchestrator(t, "cat")
-	issue, _ := store.CreateIssue("", "", "Done", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Done", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateDone)
 	wsPath := filepath.Join(workspaceRoot, issue.Identifier)
 	if err := os.MkdirAll(wsPath, 0o755); err != nil {
@@ -3158,7 +3145,7 @@ func TestCleanupTerminalWorkspacesOnStartup(t *testing.T) {
 
 func TestDispatchBlockedByInvalidWorkflowReloadKeepsLastGood(t *testing.T) {
 	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
-	issue, _ := store.CreateIssue("", "", "Ready", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Ready", "", 0, nil)
 	_ = store.UpdateIssueState(issue.ID, kanban.StateReady)
 
 	if err := os.WriteFile(manager.Path(), []byte("---\ntracker:\n  kind: stub\n---\nlegacy"), 0o644); err != nil {
@@ -3189,7 +3176,7 @@ func TestStatusIncludesWorkflowAndRetryFields(t *testing.T) {
 
 func TestStatusLiveSessionsUseIssueIdentifiers(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
-	issue, _ := store.CreateIssue("", "", "Tracked session", "", 0, nil)
+	_, issue := createRunningProjectIssue(t, store, "Tracked session", "", 0, nil)
 	orch.mu.Lock()
 	orch.running[issue.ID] = runningEntry{
 		cancel:    func() {},
@@ -3197,7 +3184,7 @@ func TestStatusLiveSessionsUseIssueIdentifiers(t *testing.T) {
 		attempt:   1,
 		startedAt: time.Now().UTC(),
 	}
-	orch.liveSessions[issue.ID] = &appserver.Session{
+	orch.liveSessions[issue.ID] = &agentruntime.Session{
 		SessionID:       "thread-turn",
 		IssueID:         issue.ID,
 		IssueIdentifier: issue.Identifier,
@@ -3205,7 +3192,7 @@ func TestStatusLiveSessionsUseIssueIdentifiers(t *testing.T) {
 	orch.mu.Unlock()
 
 	status := orch.Status()
-	live, ok := status["live_sessions"].(map[string]*appserver.Session)
+	live, ok := status["live_sessions"].(map[string]*agentruntime.Session)
 	if !ok {
 		t.Fatalf("unexpected live_sessions payload: %#v", status["live_sessions"])
 	}
@@ -3297,7 +3284,7 @@ func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
 		phase:     kanban.WorkflowPhaseImplementation,
 		startedAt: startedAt,
 	}
-	orch.liveSessions[runningIssue.ID] = &appserver.Session{
+	orch.liveSessions[runningIssue.ID] = &agentruntime.Session{
 		SessionID:       "thread-live-turn-live",
 		ThreadID:        "thread-live",
 		TurnID:          "turn-live",
@@ -3334,7 +3321,7 @@ func TestSnapshotAndRetryNowExposeDashboardScenarioShape(t *testing.T) {
 	}
 
 	live := orch.LiveSessions()["sessions"].(map[string]interface{})
-	session, ok := live[runningIssue.Identifier].(appserver.Session)
+	session, ok := agentruntime.SessionFromAny(live[runningIssue.Identifier])
 	if !ok {
 		t.Fatalf("expected live session for %s, got %#v", runningIssue.Identifier, live)
 	}
@@ -3491,7 +3478,7 @@ func TestRetryIssueNowPreservesPlanApprovalThreadResumeHint(t *testing.T) {
 		Error:      planApprovalStopReason,
 		StopReason: planApprovalStopReason,
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-1",
@@ -3559,7 +3546,7 @@ func TestRetryIssueNowPreservesPendingPlanApprovalWhenRevisionIsQueued(t *testin
 		Error:      planApprovalStopReason,
 		StopReason: planApprovalStopReason,
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-2",
@@ -3624,10 +3611,7 @@ func TestProcessRetriesStartsQueuedPlanRevisionRetry(t *testing.T) {
 	})
 	writeAppServerWorkflow(t, manager, workspaceRoot, command, "never", 3000, 3000)
 
-	issue, err := store.CreateIssue("", "", "Queued plan revision", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createRunningProjectIssue(t, store, "Queued plan revision", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
@@ -3694,7 +3678,7 @@ func TestFinishRunQueuesImmediateRetryWhenPlanRevisionArrivesBeforePlanPause(t *
 	result := &agent.RunResult{
 		Success:    false,
 		StopReason: planApprovalStopReason,
-		AppSession: &appserver.Session{
+		AppSession: &agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-1",
@@ -4970,7 +4954,7 @@ func TestFindReviewPreviewVideoReturnsNewestArtifact(t *testing.T) {
 func TestBuildIssuePreviewCommentBodyIncludesSummaryAndFilename(t *testing.T) {
 	body := buildIssuePreviewCommentBody(&agent.RunResult{
 		Output: "fallback output",
-		AppSession: &appserver.Session{
+		AppSession: &agentruntime.Session{
 			LastMessage: "Validation passed and the feature is ready.",
 		},
 	}, "/tmp/preview.mp4")

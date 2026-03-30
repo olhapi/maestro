@@ -346,7 +346,7 @@ for raw in sys.stdin:
 		WorkspaceRoot: workspaceRoot,
 		Prompt:        "prompt",
 		Title:         "close failure",
-		ReadTimeout:   200 * time.Millisecond,
+		ReadTimeout:   1 * time.Second,
 		TurnTimeout:   2 * time.Second,
 	})
 	if err == nil {

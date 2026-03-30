@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -13,7 +13,7 @@ import (
 type ExecutionProvider interface {
 	observability.SnapshotProvider
 	observability.SessionProvider
-	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
+	PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool)
 }
 
 func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issue *kanban.Issue) (map[string]interface{}, error) {
@@ -44,13 +44,13 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	retry := findRetryEntry(snapshot.Retrying, issue.ID, issue.Identifier)
 	paused := findPausedEntry(snapshot.Paused, issue.ID, issue.Identifier)
 
-	var liveSession *appserver.Session
+	var liveSession *agentruntime.Session
 	if runtimeAvailable {
 		if session, ok := findLiveSession(provider.LiveSessions(), issue.Identifier); ok {
 			liveSession = &session
 		}
 	}
-	var pendingInterrupt *appserver.PendingInteraction
+	var pendingInterrupt *agentruntime.PendingInteraction
 	if runtimeAvailable {
 		if interaction, ok := provider.PendingInterruptForIssue(issue.ID, issue.Identifier); ok {
 			pendingInterrupt = interaction
@@ -244,16 +244,16 @@ func isPersistedPauseResetEvent(kind string) bool {
 	}
 }
 
-func findLiveSession(all map[string]interface{}, identifier string) (appserver.Session, bool) {
+func findLiveSession(all map[string]interface{}, identifier string) (agentruntime.Session, bool) {
 	sessions, ok := all["sessions"].(map[string]interface{})
 	if !ok {
-		return appserver.Session{}, false
+		return agentruntime.Session{}, false
 	}
 	raw, ok := sessions[identifier]
 	if !ok {
-		return appserver.Session{}, false
+		return agentruntime.Session{}, false
 	}
-	return appserver.SessionFromAny(raw)
+	return agentruntime.SessionFromAny(raw)
 }
 
 func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {

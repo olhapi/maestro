@@ -5,34 +5,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/appserver/protocol"
 )
 
-// ActivityEvent is the strict, documented app-server event shape used for
-// persistent issue activity timelines.
-type ActivityEvent struct {
-	Type             string                 `json:"type"`
-	RequestID        string                 `json:"request_id,omitempty"`
-	ThreadID         string                 `json:"thread_id"`
-	TurnID           string                 `json:"turn_id"`
-	ItemID           string                 `json:"item_id,omitempty"`
-	ItemType         string                 `json:"item_type,omitempty"`
-	ItemPhase        string                 `json:"item_phase,omitempty"`
-	Delta            string                 `json:"delta,omitempty"`
-	Stdin            string                 `json:"stdin,omitempty"`
-	ProcessID        string                 `json:"process_id,omitempty"`
-	Command          string                 `json:"command,omitempty"`
-	CWD              string                 `json:"cwd,omitempty"`
-	AggregatedOutput string                 `json:"aggregated_output,omitempty"`
-	Status           string                 `json:"status,omitempty"`
-	Reason           string                 `json:"reason,omitempty"`
-	InputTokens      int                    `json:"input_tokens,omitempty"`
-	OutputTokens     int                    `json:"output_tokens,omitempty"`
-	TotalTokens      int                    `json:"total_tokens,omitempty"`
-	ExitCode         *int                   `json:"exit_code,omitempty"`
-	Item             map[string]interface{} `json:"item,omitempty"`
-	Raw              map[string]interface{} `json:"raw,omitempty"`
-}
+type ActivityEvent = agentruntime.ActivityEvent
 
 func ActivityEventFromMessage(msg protocol.Message) (ActivityEvent, bool) {
 	method := strings.TrimSpace(msg.Method)

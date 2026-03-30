@@ -10,12 +10,12 @@ const (
 	daemonTransportInProcess = "in_process"
 )
 
-var useInMemoryDaemonTransport bool
+var useInMemoryDaemonTransport atomic.Bool
 
 var inMemoryDaemonBasePort atomic.Uint32
 
 func enableInMemoryDaemonTransport() {
-	useInMemoryDaemonTransport = true
+	useInMemoryDaemonTransport.Store(true)
 }
 
 func nextInMemoryDaemonBaseURL() string {

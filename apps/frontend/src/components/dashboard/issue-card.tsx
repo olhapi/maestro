@@ -252,7 +252,7 @@ export function IssueCard({
               <PlayCircle className="size-3.5 text-lime-300" />
               Workspace ready
             </div>
-            <div className="break-all pl-[1.375rem] text-[11px] text-[var(--muted-foreground)]">
+            <div className="overflow-x-auto whitespace-nowrap pl-[1.375rem] text-[11px] text-[var(--muted-foreground)]">
               {issue.workspace_path}
             </div>
             {issue.workspace_last_run ? (

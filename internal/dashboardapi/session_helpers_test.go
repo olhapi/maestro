@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -19,7 +19,7 @@ func TestIssueForInterruptResolvesByIdentifierAndID(t *testing.T) {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 
-	byIdentifier, err := server.issueForInterrupt(context.Background(), &appserver.PendingInteraction{
+	byIdentifier, err := server.issueForInterrupt(context.Background(), &agentruntime.PendingInteraction{
 		IssueIdentifier: issue.Identifier,
 	})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestIssueForInterruptResolvesByIdentifierAndID(t *testing.T) {
 		t.Fatalf("unexpected issue resolved by identifier: %+v", byIdentifier)
 	}
 
-	byID, err := server.issueForInterrupt(context.Background(), &appserver.PendingInteraction{
+	byID, err := server.issueForInterrupt(context.Background(), &agentruntime.PendingInteraction{
 		IssueID: issue.ID,
 	})
 	if err != nil {
@@ -42,7 +42,7 @@ func TestIssueForInterruptResolvesByIdentifierAndID(t *testing.T) {
 	if _, err := server.issueForInterrupt(context.Background(), nil); err == nil {
 		t.Fatal("expected nil interaction to fail")
 	}
-	if _, err := server.issueForInterrupt(context.Background(), &appserver.PendingInteraction{}); err == nil {
+	if _, err := server.issueForInterrupt(context.Background(), &agentruntime.PendingInteraction{}); err == nil {
 		t.Fatal("expected missing issue reference to fail")
 	}
 }
@@ -58,7 +58,7 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         "issue-1",
 			IssueIdentifier: "ISS-1",
 			LastTimestamp:   now.Add(-30 * time.Second),
@@ -105,7 +105,7 @@ func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         "issue-1",
 			IssueIdentifier: "ISS-1",
 			LastTimestamp:   now.Add(-30 * time.Second),

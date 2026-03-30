@@ -186,6 +186,51 @@ func TestOpenStoreAllowsLiteralDollarSignInPathSegment(t *testing.T) {
 	}
 }
 
+func TestIssueListWorksWithReadOnlyDatabase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only file permissions behave differently on Windows")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := setupRepo(t)
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	project, err := store.CreateProject("Platform", "", repoPath, filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Ship tests", "", 1, []string{"smoke"})
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Fatalf("Chmod failed: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "issue", "list", "--project-name", project.Name, "--json", "--limit", "1", "--sort", "identifier_asc")
+	if code != 0 {
+		t.Fatalf("issue list failed: %d stderr=%s", code, stderr)
+	}
+
+	var issueList struct {
+		Items []struct {
+			Identifier string `json:"identifier"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &issueList); err != nil {
+		t.Fatalf("decode issue list: %v\n%s", err, stdout)
+	}
+	if issueList.Total != 1 || len(issueList.Items) != 1 || issueList.Items[0].Identifier != issue.Identifier {
+		t.Fatalf("unexpected issue list payload: %+v", issueList)
+	}
+}
+
 func TestGuardrailsAcknowledgementBannerMentionsFlag(t *testing.T) {
 	banner := guardrailsAcknowledgementBanner()
 	for _, want := range []string{

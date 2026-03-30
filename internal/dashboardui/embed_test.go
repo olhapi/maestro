@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestHandlerServesIndexForRootAndClientRoutes(t *testing.T) {
@@ -75,5 +76,15 @@ func TestHandlerServesEmbeddedAssetsWithoutSPAFallback(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("expected at least one embedded asset")
+	}
+}
+
+func TestServeIndexReturnsNotFoundWhenIndexMissing(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	serveIndex(fstest.MapFS{}, rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when index is missing, got %d", rec.Code)
 	}
 }
