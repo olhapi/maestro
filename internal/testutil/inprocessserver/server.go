@@ -28,6 +28,10 @@ var sharedTransport = newTransport(http.DefaultTransport)
 
 var nextPort atomic.Uint32
 
+func init() {
+	http.DefaultTransport = sharedTransport
+}
+
 func New(handler http.Handler) (*Server, error) {
 	return NewWithURL(nextURL(), handler)
 }
@@ -42,7 +46,6 @@ func NewWithURL(rawURL string, handler http.Handler) (*Server, error) {
 		return nil, err
 	}
 
-	ensureTransportInstalled()
 	if err := sharedTransport.register(key, handler); err != nil {
 		return nil, err
 	}
@@ -73,13 +76,6 @@ func (s *Server) Client() *http.Client {
 		return nil
 	}
 	return s.client
-}
-
-func ensureTransportInstalled() {
-	if sharedTransport == nil {
-		sharedTransport = newTransport(http.DefaultTransport)
-	}
-	http.DefaultTransport = sharedTransport
 }
 
 func nextURL() string {

@@ -17,7 +17,7 @@ func TestManagedDaemonRegistryLifecycle(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -72,7 +72,7 @@ func TestManagedDaemonReplacesStaleRegistryEntry(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -112,7 +112,7 @@ func TestDiscoverDaemonForStoreRejectsProcessLocalEntryFromAnotherProcess(t *tes
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -145,7 +145,7 @@ func TestManagedDaemonRejectsSecondOwnerForSameStore(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -170,7 +170,7 @@ func TestManagedDaemonClaimsOwnershipAtomically(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -229,7 +229,7 @@ func TestManagedDaemonAllowsDifferentStores(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -259,7 +259,7 @@ func TestManagedDaemonPrivateEndpointRequiresBearerToken(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 

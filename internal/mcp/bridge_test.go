@@ -19,7 +19,7 @@ func TestServeBridgeStdioPathForwardsRequestsToDaemon(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -193,7 +193,7 @@ func TestBridgeHelperFunctions(t *testing.T) {
 func TestBridgeReconnectReplaysHandshakeAndRetriesRequest(t *testing.T) {
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 	ctx := context.Background()
@@ -302,7 +302,7 @@ func TestBridgeReconnectReplaysHandshakeAndRetriesRequest(t *testing.T) {
 func TestBridgeReconnectRetriesInitializedNotification(t *testing.T) {
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 	ctx := context.Background()
@@ -370,7 +370,7 @@ func TestBridgeReconnectRetriesInitializedNotification(t *testing.T) {
 func TestBridgeReconnectDoesNotReplayNonIdempotentRequests(t *testing.T) {
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 	ctx := context.Background()
@@ -476,7 +476,7 @@ func TestBridgeSurvivesDaemonRestartWithoutRestartingBridge(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -520,7 +520,7 @@ func TestBridgeReconnectWaitsForReplacementDaemon(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -579,7 +579,7 @@ func TestBridgeReconnectFailsCleanlyWhenDaemonDoesNotReturn(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 

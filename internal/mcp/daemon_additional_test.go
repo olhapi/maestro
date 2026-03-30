@@ -2,17 +2,17 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"encoding/hex"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
-	"sync"
 )
 
 func TestMCPDaemonRegistryAndLockHelpers(t *testing.T) {
@@ -158,10 +158,10 @@ func TestMCPDaemonRegistryAndLockHelpers(t *testing.T) {
 func TestMCPInMemoryDaemonLifecycle(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
-	useInMemoryDaemonTransport = false
+	useInMemoryDaemonTransport.Store(false)
 	inMemoryDaemonBasePort.Store(0)
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -264,9 +264,9 @@ func (l *fakeDaemonListener) Addr() net.Addr {
 func TestMCPManagedDaemonListenFailure(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "")
-	useInMemoryDaemonTransport = false
+	useInMemoryDaemonTransport.Store(false)
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 	})
 
 	prevListen := listenFunc
@@ -287,10 +287,10 @@ func TestMCPManagedDaemonListenFailure(t *testing.T) {
 func TestMCPManagedDaemonNetworkLifecycleWithFakeListener(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "")
-	useInMemoryDaemonTransport = false
+	useInMemoryDaemonTransport.Store(false)
 	inMemoryDaemonBasePort.Store(0)
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 

@@ -30,7 +30,7 @@ func TestMCPBridgeServeBridgeStdioSuccess(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
 	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
 	t.Cleanup(func() {
-		useInMemoryDaemonTransport = false
+		useInMemoryDaemonTransport.Store(false)
 		inMemoryDaemonBasePort.Store(0)
 	})
 
@@ -218,7 +218,7 @@ func TestMCPBridgeReconnectContextCanceledAndOpenError(t *testing.T) {
 	bridge = &stdioBridge{
 		dbPath:                "db",
 		reconnectWindow:       25 * time.Millisecond,
-		reconnectPollInterval:  1 * time.Millisecond,
+		reconnectPollInterval: 1 * time.Millisecond,
 		discover: func(context.Context, string) (*DaemonEntry, error) {
 			return &DaemonEntry{BaseURL: "http://example/mcp", BearerToken: "token"}, nil
 		},

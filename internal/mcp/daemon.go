@@ -76,7 +76,7 @@ func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider Runti
 		return nil, err
 	}
 
-	if useInMemoryDaemonTransport {
+	if useInMemoryDaemonTransport.Load() {
 		handle, err := startManagedDaemonInMemory(ctx, store, provider, registry, version, identity, lockFile, token)
 		if err != nil {
 			return nil, err
