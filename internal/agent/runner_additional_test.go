@@ -725,7 +725,7 @@ func TestRunnerRepoAndWorkspaceCoverage(t *testing.T) {
 			runGitForTest(t, repo, "remote", "add", "origin", remote)
 			runGitForTest(t, repo, "push", "-u", "origin", "release:main")
 			runGitForTest(t, repo, "fetch", "origin")
-			runGitForTest(t, repo, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+			runGitForTest(t, repo, "remote", "set-head", "origin", "-d")
 
 			branch, err := resolveRepoDefaultBranch(context.Background(), repo)
 			if err != nil {

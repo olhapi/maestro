@@ -2,7 +2,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODULE_PATH="$(awk '/^module / {print $2; exit}' "$ROOT_DIR/go.mod")"
 
 "$ROOT_DIR/scripts/ensure_dashboard_dist.sh"
 
@@ -36,21 +35,44 @@ unset IFS
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
-printf '%-28s %10s %10s\n' "PACKAGE" "COVERAGE" "THRESHOLD"
+# Set COVERAGE_VERBOSE=1 to print the full per-package table.
+verbose="${COVERAGE_VERBOSE:-0}"
+threshold="90"
+if [[ "$verbose" == "1" ]]; then
+  printf '%-28s %10s %10s\n' "PACKAGE" "COVERAGE" "THRESHOLD"
+else
+  printf 'Checking coverage for %d packages at %s%% threshold\n' "${#packages[@]}" "$threshold"
+fi
 
 status=0
-threshold="90"
+failed_packages=()
 for rel in "${packages[@]}"; do
-  pkg="$MODULE_PATH/$rel"
   profile="$tmpdir/$(echo "$rel" | tr '/.' '_').cover"
 
   go test -coverprofile="$profile" "./$rel" >/dev/null
   coverage="$(go tool cover -func="$profile" | awk '/^total:/ {gsub("%","",$3); print $3}')"
-  printf '%-28s %9s%% %9s%%\n' "./$rel" "$coverage" "$threshold"
 
   if ! awk -v actual="$coverage" -v threshold="$threshold" 'BEGIN { exit !(actual + 0 >= threshold + 0) }'; then
     status=1
+    if [[ "$verbose" == "1" ]]; then
+      printf '%-28s %9s%% %9s%%\n' "./$rel" "$coverage" "$threshold"
+    else
+      failed_packages+=("./$rel ${coverage}% < ${threshold}%")
+    fi
+  elif [[ "$verbose" == "1" ]]; then
+    printf '%-28s %9s%% %9s%%\n' "./$rel" "$coverage" "$threshold"
   fi
 done
+
+if [[ "$verbose" != "1" ]]; then
+  if [[ ${#failed_packages[@]} -eq 0 ]]; then
+    printf 'Coverage check passed: %d packages at or above %s%%\n' "${#packages[@]}" "$threshold"
+  else
+    printf 'Coverage check failed: %d of %d packages below %s%%\n' "${#failed_packages[@]}" "${#packages[@]}" "$threshold"
+    for line in "${failed_packages[@]}"; do
+      printf '  %s\n' "$line"
+    done
+  fi
+fi
 
 exit "$status"
