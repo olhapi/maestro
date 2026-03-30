@@ -25,11 +25,13 @@ create_fixture_tarball() {
   local fixture_root="$tmp_dir/package"
 
   mkdir -p "$fixture_root/bin"
-  cat >"$fixture_root/bin/maestro" <<EOF
-#!/usr/bin/env sh
-printf 'fixture maestro ${version}\n'
+  cp "$ROOT_DIR/packaging/npm/root/bin/maestro" "$fixture_root/bin/maestro"
+  cat >"$fixture_root/bin/maestro.js" <<EOF
+#!/usr/bin/env node
+process.stdout.write('fixture maestro ${version}\n');
 EOF
   chmod +x "$fixture_root/bin/maestro"
+  chmod +x "$fixture_root/bin/maestro.js"
   tar -czf "$archive_path" -C "$tmp_dir" package
 }
 

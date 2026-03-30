@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -90,43 +90,78 @@ func TestBrowserCommandForKnownPlatforms(t *testing.T) {
 }
 
 func TestLaunchBrowserURL(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("browser launcher test uses a shell stub")
+	oldStarter := browserCommandStarter
+	t.Cleanup(func() {
+		browserCommandStarter = oldStarter
+	})
+
+	var gotCommand string
+	var gotArgs []string
+	browserCommandStarter = func(_ context.Context, command string, args []string) error {
+		gotCommand = command
+		gotArgs = append([]string(nil), args...)
+		return nil
 	}
 
-	command, _, err := browserCommandFor(runtime.GOOS, "https://example.com/docs")
+	const rawURL = "https://example.com/docs"
+	wantCommand, wantArgs, err := browserCommandFor(runtime.GOOS, rawURL)
 	if err != nil {
 		t.Fatalf("browserCommandFor returned error: %v", err)
 	}
 
-	dir := t.TempDir()
-	calledPath := filepath.Join(dir, "called-url.txt")
-	launcherPath := filepath.Join(dir, command)
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$1\" > %q\n", calledPath)
-	if err := os.WriteFile(launcherPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write launcher stub: %v", err)
-	}
-
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
-
-	if err := launchBrowserURL(context.Background(), "https://example.com/docs"); err != nil {
+	if err := launchBrowserURL(context.Background(), rawURL); err != nil {
 		t.Fatalf("launchBrowserURL returned error: %v", err)
 	}
 
-	// Give the launched shell stub enough room to start under heavier CI load.
-	deadline := time.Now().Add(5 * time.Second)
+	if gotCommand != wantCommand {
+		t.Fatalf("launchBrowserURL command = %q, want %q", gotCommand, wantCommand)
+	}
+	if !slices.Equal(gotArgs, wantArgs) {
+		t.Fatalf("launchBrowserURL args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestStartBrowserCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell helper test is POSIX-specific")
+	}
+
+	dir := t.TempDir()
+	markerPath := filepath.Join(dir, "started.txt")
+	scriptPath := filepath.Join(dir, "launcher.sh")
+	script := "#!/bin/sh\nprintf 'ok' > \"$1\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write launcher helper: %v", err)
+	}
+
+	if err := startBrowserCommand(context.Background(), "sh", []string{scriptPath, markerPath}); err != nil {
+		t.Fatalf("startBrowserCommand returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(calledPath)
+		data, err := os.ReadFile(markerPath)
 		if err == nil {
-			if got := string(data); got != "https://example.com/docs" {
-				t.Fatalf("launcher argument = %q, want %q", got, "https://example.com/docs")
+			if string(data) != "ok" {
+				t.Fatalf("marker payload = %q, want %q", string(data), "ok")
 			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("expected launcher stub to be invoked at %s", calledPath)
+	t.Fatalf("expected helper marker at %s", markerPath)
+}
+
+func TestStartBrowserCommandReturnsStartError(t *testing.T) {
+	if err := startBrowserCommand(context.Background(), "definitely-not-a-real-browser-command", nil); err == nil {
+		t.Fatal("expected startBrowserCommand to return an error for a missing executable")
+	}
+}
+
+func TestBrowserCommandForUnsupportedPlatform(t *testing.T) {
+	if _, _, err := browserCommandFor("plan9", "https://example.com/docs"); err == nil {
+		t.Fatal("expected unsupported platform error")
+	}
 }
 
 func TestTerminalsInteractiveUsesStdoutAndStderr(t *testing.T) {

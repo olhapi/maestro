@@ -42,7 +42,7 @@ describe("ProjectDetailPage", () => {
     vi.clearAllMocks();
   });
 
-  it("renders a run-stop toggle for the project and triggers the actions", async () => {
+  it("renders a run project toggle and triggers the run action", async () => {
     const bootstrap = makeBootstrapResponse({
       projects: [{ ...makeBootstrapResponse().projects[0], state: "stopped" }],
     });
@@ -105,22 +105,24 @@ describe("ProjectDetailPage", () => {
       expect(api.runProject).toHaveBeenCalledWith("project-1");
     });
 
-    const runningBootstrap = makeBootstrapResponse({
-      projects: [{ ...bootstrap.projects[0], state: "running" }],
+  });
+
+  it("renders a stop project toggle and triggers the stop action", async () => {
+    const bootstrap = makeBootstrapResponse({
+      projects: [{ ...makeBootstrapResponse().projects[0], state: "running" }],
     });
-    vi.mocked(api.bootstrap).mockResolvedValue(runningBootstrap);
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
     vi.mocked(api.getProject).mockResolvedValue({
-      project: runningBootstrap.projects[0],
-      epics: runningBootstrap.epics,
-      issues: runningBootstrap.issues,
+      project: bootstrap.projects[0],
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
     });
+    vi.mocked(api.stopProject).mockResolvedValue({ status: "stopped" });
 
     renderWithQueryClient(<ProjectDetailPage />);
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /stop project/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /stop project/i })).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: /stop project/i }));

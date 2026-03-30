@@ -18,6 +18,7 @@ import (
 var (
 	dashboardBrowserLauncher  = launchBrowserURL
 	dashboardInteractiveCheck = terminalsInteractive
+	browserCommandStarter     = startBrowserCommand
 	dashboardHTTPClient       = &http.Client{
 		Timeout: 250 * time.Millisecond,
 	}
@@ -94,6 +95,10 @@ func launchBrowserURL(ctx context.Context, rawURL string) error {
 		return err
 	}
 
+	return browserCommandStarter(ctx, command, args)
+}
+
+func startBrowserCommand(ctx context.Context, command string, args []string) error {
 	cmd := exec.CommandContext(ctx, command, args...)
 	if err := cmd.Start(); err != nil {
 		return err
