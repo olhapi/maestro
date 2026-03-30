@@ -121,11 +121,11 @@ export function SessionsPage() {
                   .join(' · ')
 
                 return (
-                  <div key={`${entry.source}-${entry.issue_identifier}`} className="rounded-[var(--panel-radius)] border border-white/8 bg-black/20 p-[var(--panel-padding)]">
+                  <div key={`${entry.source}-${entry.issue_identifier}`} className="min-w-0 rounded-[var(--panel-radius)] border border-white/8 bg-black/20 p-[var(--panel-padding)]">
                     <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-medium text-white">{title}</p>
+                          <p className="min-w-0 break-words [overflow-wrap:anywhere] font-medium text-white">{title}</p>
                           <Badge className="border-white/10 bg-white/5 text-white">{toTitleCase(entry.source)}</Badge>
                           <Badge className={badgeClassForStatus(entry.status)}>{toTitleCase(entry.status)}</Badge>
                           {entry.pending_interrupt?.collaboration_mode === 'plan' || !!entry.planning ? (
@@ -148,11 +148,11 @@ export function SessionsPage() {
                           ) : null}
                           {quiet ? <Badge className="border-orange-400/20 bg-orange-400/10 text-orange-100">Quiet</Badge> : null}
                         </div>
-                        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{context}</p>
+                        <p className="mt-2 min-w-0 break-words [overflow-wrap:anywhere] text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{context}</p>
                         <p data-testid={`session-summary-${entry.issue_identifier}`} className="mt-2 line-clamp-2 text-sm text-[var(--muted-foreground)]">
                           {summaryText(entry)}
                         </p>
-                        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                        <p className="mt-2 min-w-0 break-words [overflow-wrap:anywhere] text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
                           Updated {formatRelativeTime(entry.updated_at)} · {formatDateTime(entry.updated_at)}
                         </p>
                       </div>

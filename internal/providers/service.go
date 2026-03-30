@@ -36,16 +36,30 @@ type Service struct {
 	providers map[string]Provider
 	syncMu    sync.Mutex
 	lastSync  map[string]time.Time
+	readOnly  bool
 }
 
 func NewService(store *kanban.Store) *Service {
+	return newService(store, false)
+}
+
+func NewReadOnlyService(store *kanban.Store) *Service {
+	return newService(store, true)
+}
+
+func newService(store *kanban.Store, readOnly bool) *Service {
 	return &Service{
 		store: store,
 		providers: map[string]Provider{
 			kanban.ProviderKindKanban: NewKanbanProvider(store),
 		},
 		lastSync: make(map[string]time.Time),
+		readOnly: readOnly,
 	}
+}
+
+func (s *Service) isReadOnlyStore() bool {
+	return s != nil && (s.readOnly || (s.store != nil && s.store.ReadOnly()))
 }
 
 func (s *Service) RegisterProvider(provider Provider) {
@@ -309,6 +323,9 @@ func (s *Service) ListEpicSummaries(projectID string) ([]kanban.EpicSummary, err
 }
 
 func (s *Service) SyncIssues(ctx context.Context, query kanban.IssueQuery) error {
+	if s.isReadOnlyStore() {
+		return nil
+	}
 	return s.syncIssuesWithMode(ctx, query, syncModeBlocking)
 }
 
@@ -454,6 +471,9 @@ func (s *Service) RefreshIssue(ctx context.Context, issue *kanban.Issue) (*kanba
 	if err != nil {
 		return nil, err
 	}
+	if s.isReadOnlyStore() {
+		return issue, nil
+	}
 	if provider.Kind() == kanban.ProviderKindKanban {
 		return s.store.GetIssue(issue.ID)
 	}
@@ -484,6 +504,9 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 			return nil, providerErr
 		}
 		if provider != nil && provider.Kind() != kanban.ProviderKindKanban {
+			if s.isReadOnlyStore() {
+				return issue, nil
+			}
 			readCtx, cancel, propagateParentContext := s.newReadSyncContext(ctx)
 			defer cancel()
 			refreshed, refreshErr := s.RefreshIssue(readCtx, issue)
@@ -507,6 +530,9 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 		return issue, nil
 	}
 	if err != sql.ErrNoRows {
+		return nil, err
+	}
+	if s.isReadOnlyStore() {
 		return nil, err
 	}
 	projects, listErr := s.store.ListProjects()
@@ -952,6 +978,9 @@ func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 }
 
 func (s *Service) syncIssueListIfNeeded(ctx context.Context, query kanban.IssueQuery) error {
+	if s.isReadOnlyStore() {
+		return nil
+	}
 	syncQuery := authoritativeProviderSyncQuery(query)
 	if !s.shouldSyncListQuery(syncQuery) {
 		return nil

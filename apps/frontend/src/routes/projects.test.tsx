@@ -4,6 +4,7 @@ import { beforeEach, vi } from "vitest";
 
 import { ProjectsPage } from "@/routes/projects";
 import { projectPermissionProfileButtonCopy } from "@/lib/project-permission-profiles";
+import { summaryTotalCount } from "@/lib/projects";
 import { makeBootstrapResponse } from "@/test/fixtures";
 import { renderWithQueryClient } from "@/test/test-utils";
 import type { PermissionProfile } from "@/lib/types";
@@ -91,13 +92,22 @@ describe("ProjectsPage", () => {
     expect(description).not.toHaveClass("max-w-xl");
 
     const statsGrid = screen.getByTestId("project-card-stats");
-    expect(statsGrid).toHaveClass("grid", "grid-cols-1", "gap-2.5");
-    expect(statsGrid).toHaveClass("sm:grid-cols-2");
+    expect(statsGrid).toHaveClass("grid", "grid-cols-2", "gap-2.5");
     expect(statsGrid).toHaveClass("lg:grid-cols-4");
     expect(within(statsGrid).getByText("Total")).toBeInTheDocument();
     expect(within(statsGrid).getByText("Done")).toBeInTheDocument();
     expect(within(statsGrid).getByText("Blocked/active")).toBeInTheDocument();
     expect(within(statsGrid).getByText("Tokens")).toBeInTheDocument();
+
+    const totalCard = within(statsGrid).getByText("Total").closest("div");
+    expect(totalCard).not.toBeNull();
+    expect(within(totalCard!).getByText(String(summaryTotalCount(bootstrap.projects[0])))).toHaveClass(
+      "font-display",
+      "text-[calc(var(--metric-value-size)-0.625rem)]",
+      "leading-none",
+      "text-white",
+    );
+
     expect(screen.queryByText("/repo")).not.toBeInTheDocument();
     expect(screen.queryByText("kanban")).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /provider/i })).not.toBeInTheDocument();

@@ -12,5 +12,22 @@ export default mergeConfig(
       css: true,
       setupFiles: [path.resolve(__dirname, './src/test/setup.ts')],
     },
+    coverage: {
+      provider: 'v8',
+      all: true,
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.test.*',
+        'src/**/*.spec.*',
+        'src/test/**',
+        'src/**/*.d.ts',
+      ],
+      thresholds: {
+        branches: 90,
+        functions: 90,
+        lines: 90,
+        statements: 90,
+      },
+    },
   }),
 )

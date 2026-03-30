@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { vi } from 'vitest'
 
@@ -412,28 +412,65 @@ describe('GlobalInterruptPanel', () => {
     })
   })
 
-  it('renders elicitation prompts and forwards accepted structured content', () => {
+  it('renders elicitation prompts and accepts an empty confirmation', () => {
     const onRespond = vi.fn()
 
-    renderInterruptPanel([makeElicitationInterrupt()], { onRespond })
+    renderInterruptPanel([
+      makeElicitationInterrupt({
+        requestedSchema: {
+          type: 'object',
+          properties: {},
+        },
+      }),
+    ], { onRespond })
 
     expect(screen.getByText('MCP elicitation')).toBeInTheDocument()
     expect(screen.getAllByText('Form')).toHaveLength(2)
-    expect(screen.getByText('Requested schema')).toBeInTheDocument()
-
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '{"email":"ops@example.com"}' },
-    })
+    expect(screen.getByRole('button', { name: /accept and continue/i })).toBeEnabled()
 
     fireEvent.click(screen.getByRole('button', { name: /accept and continue/i }))
 
     expect(onRespond).toHaveBeenCalledWith({
       interruptId: 'interrupt-elicitation',
       action: 'accept',
-      content: {
-        email: 'ops@example.com',
+      content: {},
+    })
+  })
+
+  it('preserves elicitation drafts when switching between queued interrupts', () => {
+    renderInterruptPanel([
+      makeElicitationInterrupt({
+        message: 'Need billing contact email',
+      }),
+      {
+        ...makeElicitationInterrupt({
+          message: 'Need shipping contact email',
+        }),
+        id: 'interrupt-elicitation-2',
+        issue_identifier: 'ISS-9',
+        issue_title: 'Fill shipping contact',
+        requested_at: '2026-03-16T10:05:00Z',
+      },
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: /queue \(2\)/i }))
+
+    const queue = screen.getByText('Waiting queue').closest('aside')
+    expect(queue).not.toBeNull()
+
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: {
+        value: 'billing@example.com',
       },
     })
+
+    fireEvent.click(within(queue!).getByText('Need shipping contact email').closest('button')!)
+
+    expect(screen.getByLabelText(/email/i)).toHaveValue('')
+
+    fireEvent.click(within(queue!).getByText('Need billing contact email').closest('button')!)
+
+    expect(screen.getByLabelText(/email/i)).toHaveValue('billing@example.com')
   })
 
   it('renders url-mode elicitation links', () => {

@@ -35,6 +35,8 @@ type Server struct {
 
 const inProcessServerEnv = "MAESTRO_OBSERVABILITY_INPROCESS"
 
+var listenFunc = net.Listen
+
 func RegisterRoutes(mux *http.ServeMux, provider StatusProvider) {
 	if mux == nil {
 		return
@@ -177,7 +179,7 @@ func Start(ctx context.Context, addr string, provider StatusProvider) (*Server, 
 		return &Server{http: &http.Server{Addr: resolved.String()}}, nil
 	}
 
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listenFunc("tcp", addr)
 	if err != nil {
 		return nil, err
 	}

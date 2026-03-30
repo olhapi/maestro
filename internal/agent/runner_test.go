@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
+	fakeruntime "github.com/olhapi/maestro/internal/agentruntime/fake"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
@@ -177,6 +179,34 @@ Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt 
 	return runner, store, manager, workspaceRoot, tmpDir
 }
 
+func createWorkspaceProject(t *testing.T, store *kanban.Store, name, repoPath string) *kanban.Project {
+	t.Helper()
+	project, err := store.CreateProject(name, "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	return project
+}
+
+func createWorkspaceProjectIssue(t *testing.T, store *kanban.Store, name, repoPath, title, body string, priority int, labels []string) (*kanban.Project, *kanban.Issue) {
+	t.Helper()
+	project := createWorkspaceProject(t, store, name, repoPath)
+	issue, err := store.CreateIssue(project.ID, "", title, body, priority, labels)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	return project, issue
+}
+
+func createWorkspaceProjectWithRef(t *testing.T, store *kanban.Store, name, repoPath, providerRef string) *kanban.Project {
+	t.Helper()
+	project, err := store.CreateProjectWithProvider(name, "", repoPath, "", kanban.ProviderKindKanban, providerRef, nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	return project
+}
+
 func blockIssueUpdatesForTest(t *testing.T, dbPath, issueID string) {
 	t.Helper()
 
@@ -268,7 +298,7 @@ func TestFakeAppServerHelperProcess(t *testing.T) {
 
 func TestGetOrCreateWorkspace(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Test Issue", "", 0, nil)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Test Issue", "", 0, nil)
 
 	workflow, err := runner.workflowProvider.Current()
 	if err != nil {
@@ -279,7 +309,7 @@ func TestGetOrCreateWorkspace(t *testing.T) {
 		t.Fatalf("Failed to create workspace: %v", err)
 	}
 
-	expectedPath := filepath.Join(workspaceRoot, issue.Identifier)
+	expectedPath := workspacePathForIssue(workspaceRoot, project, issue)
 	if workspace.Path != expectedPath {
 		t.Errorf("Expected path %s, got %s", expectedPath, workspace.Path)
 	}
@@ -572,8 +602,8 @@ func TestCapturePendingPlanApprovalPersistsPlanRequestForPlanMode(t *testing.T) 
 		t.Fatalf("GetIssue: %v", err)
 	}
 
-	session := &appserver.Session{
-		History: []appserver.Event{{
+	session := &agentruntime.Session{
+		History: []agentruntime.Event{{
 			Type:      "item.completed",
 			ItemType:  "agentMessage",
 			ItemPhase: "final_answer",
@@ -615,6 +645,202 @@ func TestCapturePendingPlanApprovalPersistsPlanRequestForPlanMode(t *testing.T) 
 		t.Fatalf("unexpected runtime event: %+v", latest)
 	}
 }
+
+func TestRunAgentFakeRuntimeRequestsPlanApproval(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Runtime plan approval", "", 0, nil)
+	var err error
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	starter := fakeruntime.NewStarter(fakeruntime.Scenario{
+		Capabilities: agentruntime.Capabilities{
+			PlanGating:               true,
+			RuntimePermissionUpdates: true,
+		},
+		Turns: []fakeruntime.Turn{{
+			StartedSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-plan",
+				TurnID:          "turn-plan",
+				SessionID:       "thread-plan-turn-plan",
+				MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+			},
+			FinalSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-plan",
+				TurnID:          "turn-plan",
+				SessionID:       "thread-plan-turn-plan",
+				History: []agentruntime.Event{{
+					Type:      "item.completed",
+					ThreadID:  "thread-plan",
+					TurnID:    "turn-plan",
+					ItemID:    "final-answer",
+					ItemType:  "agentMessage",
+					ItemPhase: "final_answer",
+					Message:   "<proposed_plan>\nKeep the rollout explicit.\n</proposed_plan>",
+				}},
+				MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+			},
+			Output: "<proposed_plan>\nKeep the rollout explicit.\n</proposed_plan>",
+		}},
+	})
+	runner.runtimeStarter = starter.Start
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected stop-result for plan approval, got %+v", result)
+	}
+	if result.StopReason != planApprovalStopReason {
+		t.Fatalf("expected stop reason %q, got %+v", planApprovalStopReason, result)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue updated: %v", err)
+	}
+	if !updated.PlanApprovalPending || updated.PendingPlanMarkdown != "Keep the rollout explicit." {
+		t.Fatalf("expected persisted pending plan approval, got %+v", updated)
+	}
+
+	clients := starter.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("expected one fake runtime client, got %d", len(clients))
+	}
+	if len(clients[0].PermissionUpdates()) == 0 {
+		t.Fatal("expected permission updates to reach the fake runtime")
+	}
+}
+
+func TestRunAgentFakeRuntimeDeliversCommandsInSameThread(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Runtime follow-up command", "", 0, nil)
+	var err error
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	starter := fakeruntime.NewStarter(fakeruntime.Scenario{
+		Capabilities: agentruntime.Capabilities{
+			Resume:                   true,
+			RuntimePermissionUpdates: true,
+		},
+		Turns: []fakeruntime.Turn{
+			{
+				StartedSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-one",
+					SessionID:       "thread-live-turn-one",
+					MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+				},
+				AfterStarted: func() error {
+					_, err := store.CreateIssueAgentCommand(issue.ID, "Follow the queued instruction.", kanban.IssueAgentCommandPending)
+					return err
+				},
+				FinalSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-one",
+					SessionID:       "thread-live-turn-one",
+					History: []agentruntime.Event{{
+						Type:      "item.completed",
+						ThreadID:  "thread-live",
+						TurnID:    "turn-one",
+						ItemID:    "final-answer",
+						ItemType:  "agentMessage",
+						ItemPhase: "final_answer",
+						Message:   "Initial answer",
+					}},
+					MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+				},
+				Output: "Initial answer",
+			},
+			{
+				Match: func(request agentruntime.TurnRequest) error {
+					if len(request.Input) == 0 || !strings.Contains(request.Input[0].Text, "Follow the queued instruction.") {
+						return fmt.Errorf("expected same-thread follow-up prompt, got %+v", request.Input)
+					}
+					return nil
+				},
+				StartedSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-two",
+					SessionID:       "thread-live-turn-two",
+					MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+				},
+				FinalSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-two",
+					SessionID:       "thread-live-turn-two",
+					History: []agentruntime.Event{{
+						Type:      "item.completed",
+						ThreadID:  "thread-live",
+						TurnID:    "turn-two",
+						ItemID:    "final-answer",
+						ItemType:  "agentMessage",
+						ItemPhase: "final_answer",
+						Message:   "Follow-up answer",
+					}},
+					MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+				},
+				Output: "Follow-up answer",
+			},
+		},
+	})
+	runner.runtimeStarter = starter.Start
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run, got %+v", result)
+	}
+	if !strings.Contains(result.Output, "Initial answer") || !strings.Contains(result.Output, "Follow-up answer") {
+		t.Fatalf("expected accumulated fake runtime output, got %q", result.Output)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one delivered command, got %+v", commands)
+	}
+	if commands[0].Status != kanban.IssueAgentCommandDelivered || commands[0].DeliveryMode != "same_thread" || commands[0].DeliveryThreadID != "thread-live" {
+		t.Fatalf("expected same-thread command delivery, got %+v", commands[0])
+	}
+
+	clients := starter.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("expected one fake runtime client, got %d", len(clients))
+	}
+	if len(clients[0].Requests()) != 2 {
+		t.Fatalf("expected two runtime turns, got %+v", clients[0].Requests())
+	}
+}
+
 func TestBuildTurnPromptIncludesProjectContextInDefaultPhasePrompts(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	workflow := defaultPromptWorkflowForTest()
@@ -937,7 +1163,7 @@ func TestContinuationPrompt(t *testing.T) {
 
 func TestRunAgentStdio(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Test", "Description", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Test", "Description", 0, nil)
 
 	result, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -956,7 +1182,7 @@ func TestRunAgentStdio(t *testing.T) {
 
 func TestRunAttemptIncludesAttempt(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Retry", "Body", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Retry", "Body", 0, nil)
 
 	result, err := runner.RunAttempt(context.Background(), issue, 3)
 	if err != nil {
@@ -969,8 +1195,15 @@ func TestRunAttemptIncludesAttempt(t *testing.T) {
 
 func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
-	blocked, _ := store.CreateIssue("", "", "Blocked", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", "")
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	blocked, err := store.CreateIssue(project.ID, "", "Blocked", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
 
 	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState blocker: %v", err)
@@ -981,7 +1214,7 @@ func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
 		t.Fatalf("SetIssueBlockers: %v", err)
 	}
-	blocked, err := store.GetIssue(blocked.ID)
+	blocked, err = store.GetIssue(blocked.ID)
 	if err != nil {
 		t.Fatalf("GetIssue blocked: %v", err)
 	}
@@ -1011,7 +1244,7 @@ func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 
 func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Prompt command", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Prompt command", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
 	}
@@ -1053,7 +1286,7 @@ func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
 
 func TestRunAgentStdioKeepsCommandsPendingWhenTurnFails(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "command-that-does-not-exist", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Broken stdio command", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Broken stdio command", "", 0, nil)
 
 	command, err := store.CreateIssueAgentCommand(issue.ID, "Retry after the command is fixed.", kanban.IssueAgentCommandPending)
 	if err != nil {
@@ -1082,7 +1315,7 @@ func TestRunAgentStdioRejectsStaleCommandDeliveryAfterEdit(t *testing.T) {
 	releaseFile := filepath.Join(t.TempDir(), "release")
 	command := "cat >/dev/null; touch " + shellQuote(startedFile) + "; while [ ! -f " + shellQuote(releaseFile) + " ]; do sleep 0.05; done"
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Edited queued command", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Edited queued command", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
 	}
@@ -1134,8 +1367,18 @@ func TestRunAgentStdioRejectsStaleCommandDeliveryAfterEdit(t *testing.T) {
 
 func TestRunAgentStdioPromotesWaitingCommandsOnceDispatchable(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
-	issue, _ := store.CreateIssue("", "", "Blocked follow-up", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", "")
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState: %v", err)
+	}
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Blocked follow-up", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue issue: %v", err)
+	}
 
 	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
@@ -1237,7 +1480,7 @@ done
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	runner, store, _, _, _ := setupTestRunner(t, "sh "+scriptPath, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Live follow-up", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Live follow-up", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
 	}
@@ -1295,7 +1538,8 @@ done
 
 func TestWorkspaceDeterministic(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", "")
+	issue, _ := store.CreateIssue(project.ID, "", "Test", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
 	ws1, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
@@ -1309,9 +1553,57 @@ func TestWorkspaceDeterministic(t *testing.T) {
 	if ws1.Path != ws2.Path {
 		t.Error("Expected deterministic workspace path")
 	}
-	expected := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	expected := workspacePathForIssue(workspaceRoot, project, issue)
 	if ws1.Path != expected {
 		t.Errorf("Expected path %s, got %s", expected, ws1.Path)
+	}
+}
+
+func TestWorkspaceBootstrapUsesProviderProjectRefSlug(t *testing.T) {
+	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project := createWorkspaceProjectWithRef(t, store, "Ignored Project Name", "", "Team Alpha")
+	issue, err := store.CreateIssue(project.ID, "", "Slug precedence", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	expected := workspacePathForIssue(workspaceRoot, project, issue)
+	if ws.Path != expected {
+		t.Fatalf("expected workspace path %s, got %s", expected, ws.Path)
+	}
+	if got := projectWorkspaceSlug(project); got != "team-alpha" {
+		t.Fatalf("expected provider ref slug team-alpha, got %s", got)
+	}
+}
+
+func TestWorkspaceBootstrapSupportsProjectlessIssues(t *testing.T) {
+	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, err := store.CreateIssue("", "", "Projectless", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	expected := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	if ws.Path != expected {
+		t.Fatalf("expected projectless workspace path %s, got %s", expected, ws.Path)
 	}
 }
 
@@ -1325,7 +1617,8 @@ func TestWorkspaceBootstrapUsesFreshRemoteDefaultBranch(t *testing.T) {
 	localMainHead := runGitForTest(t, repoPath, "rev-parse", "main")
 	remoteHead := advanceRemoteDevelopForTest(t, remotePath)
 
-	issue, err := store.CreateIssue("", "", "Fresh remote workspace", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, err := store.CreateIssue(project.ID, "", "Fresh remote workspace", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
@@ -1371,7 +1664,8 @@ func TestWorkspaceBootstrapFallsBackWhenRemoteTrackingBranchIsUnavailable(t *tes
 	localMainHead := runGitForTest(t, repoPath, "rev-parse", "main")
 	advanceRemoteDevelopForTest(t, remotePath)
 
-	issue, err := store.CreateIssue("", "", "Fallback remote workspace", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, err := store.CreateIssue(project.ID, "", "Fallback remote workspace", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
@@ -1448,14 +1742,15 @@ func TestWorkspaceBootstrapLeavesStalePathUntouchedWhenRefreshFails(t *testing.T
 	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
 	runGitForTest(t, repoPath, "push", "-u", "origin", "main")
 
-	issue, err := store.CreateIssue("", "", "Refresh failure", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, err := store.CreateIssue(project.ID, "", "Refresh failure", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 
-	stalePath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
-	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
-		t.Fatalf("MkdirAll workspace root: %v", err)
+	stalePath := workspacePathForIssue(workspaceRoot, project, issue)
+	if err := os.MkdirAll(filepath.Dir(stalePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll stale workspace parent: %v", err)
 	}
 	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
 		t.Fatalf("WriteFile stale workspace: %v", err)
@@ -1536,10 +1831,11 @@ func TestSanitizeWorkspaceKey(t *testing.T) {
 
 func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Stale", "", 0, nil)
-	path := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	project := createWorkspaceProject(t, store, "Platform", "")
+	issue, _ := store.CreateIssue(project.ID, "", "Stale", "", 0, nil)
+	path := workspacePathForIssue(workspaceRoot, project, issue)
 
-	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
@@ -1594,7 +1890,8 @@ func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
 
 func TestWorkspaceBootstrapDetachedHeadUsesHEADBase(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Detached head workspace", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, _ := store.CreateIssue(project.ID, "", "Detached head workspace", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
 	head := runGitForTest(t, repoPath, "rev-parse", "HEAD")
@@ -1676,10 +1973,7 @@ func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
 
 func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Rebase recovery", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Rebase recovery", "", 0, nil)
 
 	workflow, err := manager.Current()
 	if err != nil {
@@ -1750,10 +2044,7 @@ func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T)
 
 func TestPrepareTurnPromptWithWorkspaceAddsRecoveryNoteOnlyWhileRebaseActive(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Prompt recovery", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Prompt recovery", "", 0, nil)
 	workflow, err := runner.workflowProvider.Current()
 	if err != nil {
 		t.Fatalf("Current: %v", err)
@@ -1826,10 +2117,7 @@ func TestPrepareTurnPromptWithWorkspaceAddsRecoveryNoteOnlyWhileRebaseActive(t *
 
 func TestGetOrCreateWorkspaceTreatsRepoLevelRebaseAsRecoverable(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Repo rebase recovery", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Repo rebase recovery", "", 0, nil)
 	workflow, err := runner.workflowProvider.Current()
 	if err != nil {
 		t.Fatalf("Current: %v", err)
@@ -1905,10 +2193,7 @@ func TestCleanupWorkspaceRemovesGitWorktree(t *testing.T) {
 
 func TestWorkspaceReusedBranchRenameCreatesMissingBranch(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Renamed branch workspace", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Renamed branch workspace", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
@@ -1969,7 +2254,7 @@ func TestRunAgentAppServerModeTracksSession(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "AppServer", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "AppServer", "", 0, nil)
 
 	res, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -1999,10 +2284,8 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, err := store.CreateIssue("", "", "Plan revision prompt", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Plan revision prompt", "", 0, nil)
+	var err error
 	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
 		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
 	}
@@ -2093,10 +2376,8 @@ func TestRunAgentAppServerSkipsCommandDeliveryWhenPlanRevisionClearFails(t *test
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, err := store.CreateIssue("", "", "Plan revision prompt", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Plan revision prompt", "", 0, nil)
+	var err error
 	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
 		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
 	}
@@ -2164,7 +2445,7 @@ func TestRunAgentAppServerStagesImageAssetsOnFirstFreshTurn(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Issue assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Issue assets", "", 0, nil)
 
 	imageOne, err := store.CreateIssueAsset(issue.ID, "screen-one.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
@@ -2251,7 +2532,7 @@ func TestRunAgentAppServerWithoutImageAssetsSendsTextOnly(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "No assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "No assets", "", 0, nil)
 
 	result, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -2296,7 +2577,7 @@ func TestRunAgentAppServerFailsWhenIssueAssetStagingFails(t *testing.T) {
 		},
 	})
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Missing image asset", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Missing image asset", "", 0, nil)
 
 	image, err := store.CreateIssueAsset(issue.ID, "broken.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
@@ -2364,7 +2645,7 @@ func TestRunAgentAppServerDoesNotResendImageAssetsOnContinuationTurn(t *testing.
 	}
 	command, release := fakeappserver.CommandString(t, scenario)
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Continuation assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Continuation assets", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
@@ -2445,7 +2726,7 @@ func TestRunAgentAppServerResumedThreadIncludesIssueAssetInputsOnFirstTurn(t *te
 	}
 	command, _ := fakeappserver.CommandString(t, scenario)
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Resumed assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Resumed assets", "", 0, nil)
 	image, err := store.CreateIssueAsset(issue.ID, "resume.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
 		t.Fatalf("CreateIssueAsset: %v", err)
@@ -2523,7 +2804,7 @@ done
 	runner = NewRunnerWithExtensions(manager, store, extensions.NewRegistry([]extensions.Tool{
 		{Name: "ext_echo", Description: "echo tool", Command: "echo $MAESTRO_ARGS_JSON"},
 	}))
-	issue, _ := store.CreateIssue("", "", "Dynamic Tools", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Dynamic Tools", "", 0, nil)
 
 	res, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -2600,7 +2881,7 @@ done
 	runner = NewRunnerWithExtensions(manager, store, extensions.NewRegistry([]extensions.Tool{
 		{Name: "ext_fail", Description: "fail tool", Command: "echo nope && exit 1"},
 	}))
-	issue, _ := store.CreateIssue("", "", "Dynamic Tool Failures", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Dynamic Tool Failures", "", 0, nil)
 
 	if _, err := runner.Run(context.Background(), issue); err != nil {
 		t.Fatalf("run: %v", err)
@@ -2632,7 +2913,7 @@ func TestCleanupWorkspaceRunsBeforeRemoveHook(t *testing.T) {
 	traceFile := filepath.Join(traceFileDir, "cleanup.log")
 	command := "cat"
 	runner, store, manager, workspaceRoot, repoDir := setupTestRunner(t, command, config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Cleanup", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Cleanup", "", 0, nil)
 
 	workflowText := `---
 tracker:

@@ -8,3 +8,5 @@ node_modules/
 .turbo/
 .astro/
 .husky/_/
+coverage/
+test-results/

@@ -17,6 +17,11 @@ import (
 
 func TestServeBridgeStdioPathForwardsRequestsToDaemon(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	store := testStore(t, dbPath)
@@ -186,6 +191,11 @@ func TestBridgeHelperFunctions(t *testing.T) {
 }
 
 func TestBridgeReconnectReplaysHandshakeAndRetriesRequest(t *testing.T) {
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 
@@ -290,6 +300,11 @@ func TestBridgeReconnectReplaysHandshakeAndRetriesRequest(t *testing.T) {
 }
 
 func TestBridgeReconnectRetriesInitializedNotification(t *testing.T) {
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 
@@ -353,6 +368,11 @@ func TestBridgeReconnectRetriesInitializedNotification(t *testing.T) {
 }
 
 func TestBridgeReconnectDoesNotReplayNonIdempotentRequests(t *testing.T) {
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 
@@ -454,6 +474,11 @@ func TestBridgeReconnectDoesNotReplayNonIdempotentRequests(t *testing.T) {
 
 func TestBridgeSurvivesDaemonRestartWithoutRestartingBridge(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	store := testStore(t, dbPath)
@@ -493,6 +518,11 @@ func TestBridgeSurvivesDaemonRestartWithoutRestartingBridge(t *testing.T) {
 
 func TestBridgeReconnectWaitsForReplacementDaemon(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	store := testStore(t, dbPath)
@@ -547,6 +577,11 @@ func TestBridgeReconnectWaitsForReplacementDaemon(t *testing.T) {
 
 func TestBridgeReconnectFailsCleanlyWhenDaemonDoesNotReturn(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	store := testStore(t, dbPath)

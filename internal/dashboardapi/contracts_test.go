@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
@@ -30,10 +30,10 @@ type retryTrackingProvider struct {
 	resumeThreadIDs []string
 	retryResult     map[string]interface{}
 	responseID      string
-	response        appserver.PendingInteractionResponse
+	response        agentruntime.PendingInteractionResponse
 	respondErr      error
 	store           *kanban.Store
-	interrupts      appserver.PendingInteractionSnapshot
+	interrupts      agentruntime.PendingInteractionSnapshot
 }
 
 func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier string) map[string]interface{} {
@@ -63,13 +63,13 @@ func (p *retryTrackingProvider) RetryIssueNow(ctx context.Context, identifier st
 	return result
 }
 
-func (p *retryTrackingProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
+func (p *retryTrackingProvider) PendingInterrupts() agentruntime.PendingInteractionSnapshot {
 	if len(p.interrupts.Items) > 0 {
-		items := make([]appserver.PendingInteraction, len(p.interrupts.Items))
+		items := make([]agentruntime.PendingInteraction, len(p.interrupts.Items))
 		for i := range p.interrupts.Items {
 			items[i] = p.interrupts.Items[i].Clone()
 		}
-		return appserver.PendingInteractionSnapshot{Items: items}
+		return agentruntime.PendingInteractionSnapshot{Items: items}
 	}
 	return p.testProvider.PendingInterrupts()
 }
@@ -79,7 +79,7 @@ func (p *retryTrackingProvider) RunRecurringIssueNow(ctx context.Context, identi
 	return map[string]interface{}{"status": "queued_now", "issue": identifier}
 }
 
-func (p *retryTrackingProvider) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+func (p *retryTrackingProvider) RespondToInterrupt(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {
 	p.responseID = interactionID
 	p.response = response
 	return p.respondErr
@@ -399,7 +399,7 @@ func TestBootstrapContractsExposePortfolioAndRuntimeOverview(t *testing.T) {
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.ID: appserver.Session{
+			issue.ID: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-1-turn-1",
@@ -836,7 +836,7 @@ func TestDeleteProjectEndpointRemovesProjectsWithIssueActivityHistory(t *testing
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 1, appserver.ActivityEvent{
+	if err := store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, 1, agentruntime.ActivityEvent{
 		Type:      "item.completed",
 		ThreadID:  "thread-1",
 		TurnID:    "turn-1",
@@ -924,7 +924,7 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	provider := &retryTrackingProvider{
 		testProvider: testProvider{
 			sessions: map[string]interface{}{
-				"ISS-1": appserver.Session{
+				"ISS-1": agentruntime.Session{
 					IssueID:         "issue-1",
 					IssueIdentifier: "ISS-1",
 					SessionID:       "thread-1-turn-1",
@@ -1033,7 +1033,7 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 		Attempt:    2,
 		RunKind:    "run_completed",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issueID,
 			IssueIdentifier: identifier,
 			SessionID:       "thread-1-turn-1",
@@ -1328,7 +1328,7 @@ func TestIssueApprovePlanContractsPromoteAndRedispatch(t *testing.T) {
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-1",
@@ -1405,7 +1405,7 @@ func TestIssueApprovePlanContractsQueuesNoteAndRedispatches(t *testing.T) {
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-2",
@@ -1529,7 +1529,7 @@ func TestIssueRequestPlanRevisionContractsStoresRevisionAndRedispatches(t *testi
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-3",
@@ -1739,7 +1739,7 @@ func TestInterruptPlanApprovalNoteOnlyQueuesRevisionAndRedispatch(t *testing.T) 
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-1",
@@ -1750,18 +1750,18 @@ func TestInterruptPlanApprovalNoteOnlyQueuesRevisionAndRedispatch(t *testing.T) 
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
 	interactionID := "plan-approval-" + strings.TrimSpace(issue.ID)
-	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+	provider.pendingInterruptsByIssue = map[string]agentruntime.PendingInteraction{
 		issue.ID: {
 			ID:              interactionID,
-			Kind:            appserver.PendingInteractionKindApproval,
+			Kind:            agentruntime.PendingInteractionKindApproval,
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			IssueTitle:      issue.Title,
 			RequestedAt:     requestedAt,
-			Approval: &appserver.PendingApproval{
+			Approval: &agentruntime.PendingApproval{
 				Markdown: "Plan body",
 				Reason:   "Review the proposed plan before execution.",
-				Decisions: []appserver.PendingApprovalDecision{{
+				Decisions: []agentruntime.PendingApprovalDecision{{
 					Value: "approved",
 					Label: "Approve plan",
 				}},
@@ -1835,7 +1835,7 @@ func TestInterruptPlanApprovalIgnoresLeadingAlertsWhenSelectingTheActionableItem
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-alert",
@@ -1846,30 +1846,30 @@ func TestInterruptPlanApprovalIgnoresLeadingAlertsWhenSelectingTheActionableItem
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
 	interactionID := "plan-approval-" + strings.TrimSpace(issue.ID)
-	provider.interrupts = appserver.PendingInteractionSnapshot{
-		Items: []appserver.PendingInteraction{
+	provider.interrupts = agentruntime.PendingInteractionSnapshot{
+		Items: []agentruntime.PendingInteraction{
 			{
 				ID:          "alert-1",
-				Kind:        appserver.PendingInteractionKindAlert,
+				Kind:        agentruntime.PendingInteractionKindAlert,
 				RequestedAt: requestedAt,
-				Alert: &appserver.PendingAlert{
+				Alert: &agentruntime.PendingAlert{
 					Code:     "scope_warning",
-					Severity: appserver.PendingAlertSeverityWarning,
+					Severity: agentruntime.PendingAlertSeverityWarning,
 					Title:    "Scoped alert",
 					Message:  "This alert should not block the plan approval.",
 				},
 			},
 			{
 				ID:              interactionID,
-				Kind:            appserver.PendingInteractionKindApproval,
+				Kind:            agentruntime.PendingInteractionKindApproval,
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				IssueTitle:      issue.Title,
 				RequestedAt:     requestedAt,
-				Approval: &appserver.PendingApproval{
+				Approval: &agentruntime.PendingApproval{
 					Markdown: "Plan body",
 					Reason:   "Review the proposed plan before execution.",
-					Decisions: []appserver.PendingApprovalDecision{{
+					Decisions: []agentruntime.PendingApprovalDecision{{
 						Value: "approved",
 						Label: "Approve plan",
 					}},
@@ -1944,7 +1944,7 @@ func TestInterruptPlanApprovalApprovalWithNoteRedispatches(t *testing.T) {
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  requestedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-plan-turn-3",
@@ -1955,18 +1955,18 @@ func TestInterruptPlanApprovalApprovalWithNoteRedispatches(t *testing.T) {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
 	}
 	interactionID := "plan-approval-" + strings.TrimSpace(issue.ID)
-	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+	provider.pendingInterruptsByIssue = map[string]agentruntime.PendingInteraction{
 		issue.ID: {
 			ID:              interactionID,
-			Kind:            appserver.PendingInteractionKindApproval,
+			Kind:            agentruntime.PendingInteractionKindApproval,
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			IssueTitle:      issue.Title,
 			RequestedAt:     requestedAt,
-			Approval: &appserver.PendingApproval{
+			Approval: &agentruntime.PendingApproval{
 				Markdown: "Plan body",
 				Reason:   "Review the proposed plan before execution.",
-				Decisions: []appserver.PendingApprovalDecision{{
+				Decisions: []agentruntime.PendingApprovalDecision{{
 					Value: "approved",
 					Label: "Approve plan",
 				}},
@@ -2036,18 +2036,18 @@ func TestInterruptPlanApprovalApprovalReturnsAcceptedWhenRedispatchFails(t *test
 		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
 	}
 	interactionID := "plan-approval-" + strings.TrimSpace(issue.ID)
-	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+	provider.pendingInterruptsByIssue = map[string]agentruntime.PendingInteraction{
 		issue.ID: {
 			ID:              interactionID,
-			Kind:            appserver.PendingInteractionKindApproval,
+			Kind:            agentruntime.PendingInteractionKindApproval,
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			IssueTitle:      issue.Title,
 			RequestedAt:     requestedAt,
-			Approval: &appserver.PendingApproval{
+			Approval: &agentruntime.PendingApproval{
 				Markdown: "Plan body",
 				Reason:   "Review the proposed plan before execution.",
-				Decisions: []appserver.PendingApprovalDecision{{
+				Decisions: []agentruntime.PendingApprovalDecision{{
 					Value: "approved",
 					Label: "Approve plan",
 				}},
@@ -2100,17 +2100,17 @@ func TestInterruptApprovalNoteOnlyQueuesSteeringCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+	provider.pendingInterruptsByIssue = map[string]agentruntime.PendingInteraction{
 		issue.ID: {
 			ID:              "interrupt-approval-" + strings.TrimSpace(issue.ID),
-			Kind:            appserver.PendingInteractionKindApproval,
+			Kind:            agentruntime.PendingInteractionKindApproval,
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			IssueTitle:      issue.Title,
 			RequestedAt:     time.Date(2026, 3, 18, 12, 50, 0, 0, time.UTC),
-			Approval: &appserver.PendingApproval{
+			Approval: &agentruntime.PendingApproval{
 				Reason: "Approve the requested command before continuing.",
-				Decisions: []appserver.PendingApprovalDecision{{
+				Decisions: []agentruntime.PendingApprovalDecision{{
 					Value: "approved",
 					Label: "Approve once",
 				}},
@@ -2155,17 +2155,17 @@ func TestInterruptApprovalDecisionPayloadAndNoteForwardsToProvider(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	provider.pendingInterruptsByIssue = map[string]appserver.PendingInteraction{
+	provider.pendingInterruptsByIssue = map[string]agentruntime.PendingInteraction{
 		issue.ID: {
 			ID:              "interrupt-approval-" + strings.TrimSpace(issue.ID),
-			Kind:            appserver.PendingInteractionKindApproval,
+			Kind:            agentruntime.PendingInteractionKindApproval,
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			IssueTitle:      issue.Title,
 			RequestedAt:     time.Date(2026, 3, 18, 12, 55, 0, 0, time.UTC),
-			Approval: &appserver.PendingApproval{
+			Approval: &agentruntime.PendingApproval{
 				Reason: "Approve the requested command before continuing.",
-				Decisions: []appserver.PendingApprovalDecision{{
+				Decisions: []agentruntime.PendingApprovalDecision{{
 					Value: "approved",
 					Label: "Approve once",
 				}},
@@ -2254,17 +2254,17 @@ func TestInterruptApprovalNoteIsBestEffortAfterRespondToInterrupt(t *testing.T) 
 		t.Fatalf("UpsertProviderIssue: %v", err)
 	}
 	interactionID := "interrupt-" + strings.TrimSpace(issue.Identifier)
-	provider.interrupts = appserver.PendingInteractionSnapshot{
-		Items: []appserver.PendingInteraction{{
+	provider.interrupts = agentruntime.PendingInteractionSnapshot{
+		Items: []agentruntime.PendingInteraction{{
 			ID:              interactionID,
-			Kind:            appserver.PendingInteractionKindApproval,
+			Kind:            agentruntime.PendingInteractionKindApproval,
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			IssueTitle:      issue.Title,
 			RequestedAt:     time.Date(2026, 3, 18, 13, 26, 0, 0, time.UTC),
-			Approval: &appserver.PendingApproval{
+			Approval: &agentruntime.PendingApproval{
 				Reason: "Approve the requested command before continuing.",
-				Decisions: []appserver.PendingApprovalDecision{{
+				Decisions: []agentruntime.PendingApprovalDecision{{
 					Value: "approved",
 					Label: "Approve once",
 				}},

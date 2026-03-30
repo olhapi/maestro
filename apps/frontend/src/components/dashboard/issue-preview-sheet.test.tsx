@@ -223,6 +223,34 @@ describe('IssuePreviewSheet', () => {
     expect(screen.getByText('Review the hero messaging before implementation.')).toBeInTheDocument()
   })
 
+  it('keeps the workspace path on a single scrollable line', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const summary = makeIssueSummary({
+      workspace_path: '/home/olhapi/projects/mvphotography/workspaces/issues/2026/03/29/a-very-long-workspace-path',
+    })
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail(summary))
+
+    renderWithQueryClient(
+      <IssuePreviewSheet
+        issue={summary}
+        bootstrap={bootstrap}
+        open
+        onOpenChange={vi.fn()}
+        onInvalidate={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Workspace')).toBeInTheDocument()
+    })
+
+    const workspaceCard = screen.getByText('Workspace').closest('div')
+    expect(workspaceCard).toHaveClass('min-w-0')
+
+    const workspacePath = within(workspaceCard!).getByText(summary.workspace_path)
+    expect(workspacePath).toHaveClass('max-w-full', 'overflow-x-auto', 'whitespace-nowrap')
+  })
+
   it('renders markdown in the issue description', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary()

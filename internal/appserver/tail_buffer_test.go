@@ -39,3 +39,45 @@ func TestTailBufferPreservesUtf8Boundaries(t *testing.T) {
 		t.Fatalf("expected valid utf-8, got %q", got)
 	}
 }
+
+func TestTailBufferWriteByteAndTinyLimits(t *testing.T) {
+	var buffer tailBuffer
+	if err := buffer.WriteByte('x'); err != nil {
+		t.Fatalf("WriteByte: %v", err)
+	}
+	if buffer.maxBytes != defaultOutputBufferLimitBytes {
+		t.Fatalf("expected default maxBytes to be applied, got %d", buffer.maxBytes)
+	}
+	if got := buffer.String(); got != "x" {
+		t.Fatalf("unexpected buffer contents after WriteByte: %q", got)
+	}
+
+	if got := trimToTrailingBytes([]byte("hello"), 0); string(got) != "hello" {
+		t.Fatalf("expected non-positive trim budget to keep original bytes, got %q", got)
+	}
+
+	tiny := tailBuffer{maxBytes: len(tailBufferTruncationMarker) - 1}
+	if _, err := tiny.WriteString(strings.Repeat("z", len(tailBufferTruncationMarker)+3)); err != nil {
+		t.Fatalf("WriteString tiny: %v", err)
+	}
+	if got := tiny.String(); got != string(tailBufferTruncationMarker[:len(tailBufferTruncationMarker)-1]) {
+		t.Fatalf("unexpected tiny buffer contents: %q", got)
+	}
+
+	leading := tailBuffer{maxBytes: len(tailBufferTruncationMarker) + 4}
+	if _, err := leading.WriteString(strings.Repeat("x", 32) + "\nabc"); err != nil {
+		t.Fatalf("WriteString leading: %v", err)
+	}
+	if strings.Contains(leading.String(), "\n\nabc") {
+		t.Fatalf("expected trimming to remove the extra leading newline, got %q", leading.String())
+	}
+}
+
+func TestMinInt(t *testing.T) {
+	if got := minInt(3, 7); got != 3 {
+		t.Fatalf("minInt(3, 7) = %d, want 3", got)
+	}
+	if got := minInt(9, -2); got != -2 {
+		t.Fatalf("minInt(9, -2) = %d, want -2", got)
+	}
+}

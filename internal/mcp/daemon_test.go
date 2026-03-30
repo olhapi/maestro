@@ -15,6 +15,11 @@ import (
 
 func TestManagedDaemonRegistryLifecycle(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	store := testStore(t, filepath.Join(t.TempDir(), "maestro.db"))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -65,6 +70,11 @@ func TestManagedDaemonRegistryLifecycle(t *testing.T) {
 
 func TestManagedDaemonReplacesStaleRegistryEntry(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	store := testStore(t, filepath.Join(t.TempDir(), "maestro.db"))
 	identity := store.Identity()
@@ -100,6 +110,11 @@ func TestManagedDaemonReplacesStaleRegistryEntry(t *testing.T) {
 
 func TestDiscoverDaemonForStoreRejectsProcessLocalEntryFromAnotherProcess(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	store := testStore(t, filepath.Join(t.TempDir(), "maestro.db"))
 	identity := store.Identity()
@@ -128,6 +143,11 @@ func TestDiscoverDaemonForStoreRejectsProcessLocalEntryFromAnotherProcess(t *tes
 
 func TestManagedDaemonRejectsSecondOwnerForSameStore(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	store := testStore(t, filepath.Join(t.TempDir(), "maestro.db"))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,6 +168,11 @@ func TestManagedDaemonRejectsSecondOwnerForSameStore(t *testing.T) {
 
 func TestManagedDaemonClaimsOwnershipAtomically(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	storeA := testStore(t, dbPath)
@@ -202,6 +227,11 @@ func TestManagedDaemonClaimsOwnershipAtomically(t *testing.T) {
 
 func TestManagedDaemonAllowsDifferentStores(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	storeA := testStore(t, filepath.Join(t.TempDir(), "a.db"))
 	storeB := testStore(t, filepath.Join(t.TempDir(), "b.db"))
@@ -227,6 +257,11 @@ func TestManagedDaemonAllowsDifferentStores(t *testing.T) {
 
 func TestManagedDaemonPrivateEndpointRequiresBearerToken(t *testing.T) {
 	t.Setenv(daemonRegistryEnv, t.TempDir())
+	t.Setenv("MAESTRO_MCP_INPROCESS", "1")
+	t.Cleanup(func() {
+		useInMemoryDaemonTransport = false
+		inMemoryDaemonBasePort.Store(0)
+	})
 
 	store := testStore(t, filepath.Join(t.TempDir(), "maestro.db"))
 	ctx, cancel := context.WithCancel(context.Background())

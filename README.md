@@ -286,7 +286,7 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 
 - `tracker.kind: kanban`
 - `polling.interval_ms: 10000`
-- `workspace.root: ./workspaces`
+- `workspace.root: ~/.maestro/worktrees`
 - `agent.max_concurrent_agents: 3`
 - `agent.max_turns: 4`
 - `agent.max_retry_backoff_ms: 60000`
@@ -303,7 +303,11 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 
 `initial_collaboration_mode: default` keeps unattended runs execution-first for a fresh `app_server` thread. Use `plan` only when you explicitly want a plan-gated startup mode. Interactive approvals and `requestUserInput` prompts still depend on using a non-`never` approval policy, and those prompts are queued through the dashboard's global interrupt panel. Resumed threads and `stdio` runs do not use that startup-mode path.
 
-Interactive `maestro workflow init` now walks through `workspace.root`, `codex.command`, `agent.mode`, `agent.dispatch_mode`, `agent.max_concurrent_agents`, `agent.max_turns`, and `agent.max_automatic_retries`, then asks for `codex.approval_policy` and `codex.initial_collaboration_mode` only for `app_server`. Those extra tuning knobs remain interactive-only; `--defaults` stays the stable scripted path, and the existing flags still override only the workspace root, Codex command, and agent mode.
+Interactive `maestro workflow init` now walks through `workspace.root`, `codex.command`, `agent.mode`, `agent.dispatch_mode`, `agent.max_concurrent_agents`, `agent.max_turns`, and `agent.max_automatic_retries`, then asks for `codex.approval_policy` and `codex.initial_collaboration_mode` only for `app_server`.
+
+Enum prompts now render numbered menus. You can press Enter to keep the default, or enter the number, an alias, a unique prefix, or the full value. Examples: `server` for `app_server`, `serial` or `pps` for `per_project_serial`, `req` for `on-request`, and `def` for `default`. Ambiguous prefixes such as `on` are rejected and reprompted.
+
+`--defaults` remains the stable scripted path, and the same setup knobs are available as flags: `--workspace-root`, `--codex-command`, `--agent-mode`, `--dispatch-mode`, `--max-concurrent-agents`, `--max-turns`, `--max-automatic-retries`, `--approval-policy`, and `--initial-collaboration-mode`.
 
 Supported prompt-template variables are:
 

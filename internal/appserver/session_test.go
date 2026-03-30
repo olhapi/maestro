@@ -268,7 +268,7 @@ func TestSessionSummaryAndCoercionHelpers(t *testing.T) {
 		SessionID:       "session-1",
 		ThreadID:        "thread-1",
 		TurnID:          "turn-1",
-		AppServerPID:    99,
+		ProcessID:       99,
 		LastEvent:       "turn.completed",
 		LastTimestamp:   timestamp,
 		LastMessage:     "all done",

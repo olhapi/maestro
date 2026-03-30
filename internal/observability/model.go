@@ -12,6 +12,7 @@ type TokenTotals struct {
 type RunningEntry struct {
 	IssueID           string      `json:"issue_id"`
 	Identifier        string      `json:"identifier"`
+	WorkspacePath     string      `json:"workspace_path,omitempty"`
 	State             string      `json:"state"`
 	Phase             string      `json:"phase,omitempty"`
 	Attempt           int         `json:"attempt,omitempty"`
@@ -26,19 +27,21 @@ type RunningEntry struct {
 }
 
 type RetryEntry struct {
-	IssueID    string    `json:"issue_id"`
-	Identifier string    `json:"identifier"`
-	Phase      string    `json:"phase,omitempty"`
-	Attempt    int       `json:"attempt"`
-	DueAt      time.Time `json:"due_at"`
-	DueInMs    int64     `json:"due_in_ms"`
-	Error      string    `json:"error,omitempty"`
-	DelayType  string    `json:"delay_type,omitempty"`
+	IssueID       string    `json:"issue_id"`
+	Identifier    string    `json:"identifier"`
+	WorkspacePath string    `json:"workspace_path,omitempty"`
+	Phase         string    `json:"phase,omitempty"`
+	Attempt       int       `json:"attempt"`
+	DueAt         time.Time `json:"due_at"`
+	DueInMs       int64     `json:"due_in_ms"`
+	Error         string    `json:"error,omitempty"`
+	DelayType     string    `json:"delay_type,omitempty"`
 }
 
 type PausedEntry struct {
 	IssueID             string    `json:"issue_id"`
 	Identifier          string    `json:"identifier"`
+	WorkspacePath       string    `json:"workspace_path,omitempty"`
 	Phase               string    `json:"phase,omitempty"`
 	Attempt             int       `json:"attempt"`
 	PausedAt            time.Time `json:"paused_at"`

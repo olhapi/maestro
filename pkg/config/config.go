@@ -126,7 +126,7 @@ func DefaultConfig() Config {
 			TerminalStates: []string{"done", "cancelled"},
 		},
 		Polling:   PollingConfig{IntervalMs: 10000},
-		Workspace: WorkspaceConfig{Root: "./workspaces"},
+		Workspace: WorkspaceConfig{Root: "~/.maestro/worktrees"},
 		Hooks:     HooksConfig{TimeoutMs: 60000},
 		Agent: AgentConfig{
 			MaxConcurrentAgents: 3,

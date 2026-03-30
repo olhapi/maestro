@@ -189,6 +189,28 @@ describe('SessionsPage', () => {
     expect(screen.getByTestId('session-summary-RUN-LIVE-A')).toHaveClass('line-clamp-2')
   })
 
+  it('wraps long session titles on narrow screens', async () => {
+    vi.mocked(api.listSessions).mockResolvedValue({
+      ...makeSessionsResponse(),
+      entries: [
+        {
+          ...makeSessionsResponse().entries[0],
+          issue_title:
+            'AR-01 — ADR: freeze runtime vocabulary and session trace names so the feed stays readable on mobile',
+        },
+      ],
+    })
+    vi.mocked(api.listRuntimeEvents).mockResolvedValue({ events: [] })
+
+    renderWithQueryClient(<SessionsPage />)
+
+    const title = await screen.findByText(
+      'AR-01 — ADR: freeze runtime vocabulary and session trace names so the feed stays readable on mobile',
+    )
+
+    expect(title).toHaveClass('break-words', '[overflow-wrap:anywhere]')
+  })
+
   it('marks stale live sessions as quiet', async () => {
     vi.mocked(api.listSessions).mockResolvedValue({
       ...makeSessionsResponse(),

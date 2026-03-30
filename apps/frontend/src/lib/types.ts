@@ -205,6 +205,7 @@ export interface TokenTotals {
 export interface RunningEntry {
   issue_id: string;
   identifier: string;
+  workspace_path?: string;
   state: string;
   phase?: string;
   session_id?: string;
@@ -219,6 +220,7 @@ export interface RunningEntry {
 export interface RetryEntry {
   issue_id: string;
   identifier: string;
+  workspace_path?: string;
   phase?: string;
   attempt: number;
   due_at: string;
@@ -230,6 +232,7 @@ export interface RetryEntry {
 export interface PausedEntry {
   issue_id: string;
   identifier: string;
+  workspace_path?: string;
   phase?: string;
   attempt: number;
   paused_at: string;

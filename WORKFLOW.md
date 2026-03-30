@@ -20,7 +20,7 @@ polling:
 # Where Maestro creates per-issue workspaces. Relative paths resolve from the repo root;
 # absolute paths, $ENV_VAR paths, and ~/ paths are also supported.
 workspace:
-  root: ./workspaces
+  root: ~/.maestro/worktrees
 
 # Optional shell hooks that run inside the issue workspace.
 hooks:
@@ -38,7 +38,7 @@ hooks:
 # Optional extra prompts for later workflow phases.
 phases:
   review:
-    # Enable a dedicated review pass after implementation. Other option: false.
+    # Enable a dedicated review pass after implementation. Available values: true, false. Fresh maestro init default: true.
     enabled: true
     # Prompt rendered when the issue enters review. Uses the same template variables
     # as the main prompt, such as issue.*, project.*, phase, and attempt.
@@ -51,7 +51,7 @@ phases:
       {% endif %}
       Run focused verification, fix any issues you find, move the issue back to in_progress if more work is needed, and move it to done when review is complete.
   done:
-    # Enable a dedicated finalization pass after implementation is otherwise complete.
+    # Enable a dedicated finalization pass after implementation is otherwise complete. Available values: true, false. Fresh maestro init default: true.
     enabled: true
     # Prompt rendered when the issue enters done for project-specific wrap-up steps.
     prompt: |
@@ -73,6 +73,7 @@ phases:
 # Agent runtime settings.
 agent:
   # Maximum concurrent issues per project when dispatch_mode is parallel.
+  # dispatch_mode=per_project_serial forces effective per-project concurrency to 1.
   max_concurrent_agents: 2
   # Maximum turns Maestro gives Codex before ending an attempt.
   max_turns: 50
@@ -80,9 +81,9 @@ agent:
   max_retry_backoff_ms: 60000
   # Maximum automatic retry attempts for the same issue before Maestro stops retrying.
   max_automatic_retries: 8
-  # Agent transport. Other options: app_server, stdio.
+  # Agent transport. Available values: app_server, stdio. Fresh maestro init default: app_server.
   mode: app_server
-  # Scheduling behavior. Other options: parallel, per_project_serial.
+  # Scheduling behavior. Available values: parallel, per_project_serial. Fresh maestro init default: parallel.
   dispatch_mode: per_project_serial
 
 # Codex CLI launch and collaboration settings.
@@ -91,13 +92,13 @@ codex:
   command: codex app-server
   # Expected codex --version. Mismatches warn but do not hard-fail.
   expected_version: 0.117.0
-  # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
+  # Approval mode for Codex. Available values: never, on-request, on-failure, untrusted. Fresh maestro init default: never.
   # A structured granular object is also supported for per-category approval policies.
   # `on-request` keeps the run interactive so permission recovery can happen through approvals.
   # Use on-request when initial_collaboration_mode is plan so the agent can ask
   # questions and pause for approval before Maestro promotes the run to full access.
   approval_policy: on-request
-  # Initial collaboration mode for fresh app_server threads. Other option: plan.
+  # Initial collaboration mode for fresh app_server threads. Available values: default, plan. Fresh maestro init default: default.
   # Use plan for a planning pass before implementation. Pair it with on-request
   # when you want the agent to ask questions and pause for approval.
   # Ignored for stdio runs and resumed threads.

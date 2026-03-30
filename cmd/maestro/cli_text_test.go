@@ -389,6 +389,12 @@ func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
 		"--workspace-root",
 		"--codex-command",
 		"--agent-mode",
+		"--dispatch-mode",
+		"--max-concurrent-agents",
+		"--max-turns",
+		"--max-automatic-retries",
+		"--approval-policy",
+		"--initial-collaboration-mode",
 		"--force",
 		"--defaults",
 	} {
@@ -407,11 +413,63 @@ func TestRootInitHelpIncludesSetupFlags(t *testing.T) {
 		"--workspace-root",
 		"--codex-command",
 		"--agent-mode",
+		"--dispatch-mode",
+		"--max-concurrent-agents",
+		"--max-turns",
+		"--max-automatic-retries",
+		"--approval-policy",
+		"--initial-collaboration-mode",
 		"--force",
 		"--defaults",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected root init help to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestWorkflowInitAcceptsExtendedSetupFlagsAndAliases(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := t.TempDir()
+	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+
+	code, stdout, stderr := runCLI(
+		t,
+		"--db", dbPath,
+		"workflow", "init", repoPath,
+		"--defaults",
+		"--workspace-root", "./tmp/workspaces",
+		"--codex-command", codexPath+" app-server",
+		"--agent-mode", "server",
+		"--dispatch-mode", "pps",
+		"--max-concurrent-agents", "4",
+		"--max-turns", "5",
+		"--max-automatic-retries", "6",
+		"--approval-policy", "on_request",
+		"--initial-collaboration-mode", "plan",
+	)
+	if code != 0 {
+		t.Fatalf("workflow init with extended flags failed: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"root: ./tmp/workspaces",
+		"command: " + codexPath + " app-server",
+		"mode: app_server",
+		"dispatch_mode: per_project_serial",
+		"max_concurrent_agents: 4",
+		"max_turns: 5",
+		"max_automatic_retries: 6",
+		"approval_policy: on-request",
+		"initial_collaboration_mode: plan",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q, got %q", want, text)
 		}
 	}
 }

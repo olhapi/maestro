@@ -16,16 +16,17 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
 // Store manages persistence for the kanban board
 type Store struct {
-	db      *sql.DB
-	dbPath  string
-	storeID string
+	db       *sql.DB
+	dbPath   string
+	storeID  string
+	readOnly bool
 }
 
 const (
@@ -176,10 +177,19 @@ func resolveConfiguredPath(raw string) (string, error) {
 
 // NewStore creates a new store with the given database path
 func NewStore(dbPath string) (*Store, error) {
-	return newStoreWithMigrator(dbPath, nil)
+	return newStoreWithMode(dbPath, false, nil)
+}
+
+// NewReadOnlyStore opens an existing store without running migrations or backfills.
+func NewReadOnlyStore(dbPath string) (*Store, error) {
+	return newStoreWithMode(dbPath, true, nil)
 }
 
 func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, error) {
+	return newStoreWithMode(dbPath, false, migrateFn)
+}
+
+func newStoreWithMode(dbPath string, readOnly bool, migrateFn func(*Store) error) (*Store, error) {
 	rawPath := dbPath
 	dbPath = ResolveDBPath(dbPath)
 	if HasUnresolvedExpandedEnvPath(rawPath, dbPath) {
@@ -195,6 +205,9 @@ func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, 
 		}
 	}
 	dsn := sqliteDSN(absDBPath)
+	if readOnly {
+		dsn = sqliteReadOnlyDSN(absDBPath)
+	}
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -202,18 +215,20 @@ func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, 
 	db.SetMaxOpenConns(sqliteMaxOpenConns)
 	db.SetMaxIdleConns(sqliteMaxIdleConns)
 
-	store := &Store{db: db, dbPath: absDBPath}
+	store := &Store{db: db, dbPath: absDBPath, readOnly: readOnly}
 	if err := store.configureConnection(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to configure sqlite connection: %w", err)
 	}
-	if err := migrateFn(store); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to migrate: %w", err)
-	}
-	if err := store.backfillLegacyProjectPermissionProfiles(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to backfill legacy project permissions: %w", err)
+	if !readOnly {
+		if err := migrateFn(store); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to migrate: %w", err)
+		}
+		if err := store.backfillLegacyProjectPermissionProfiles(); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to backfill legacy project permissions: %w", err)
+		}
 	}
 
 	return store, nil
@@ -221,10 +236,14 @@ func newStoreWithMigrator(dbPath string, migrateFn func(*Store) error) (*Store, 
 
 func (s *Store) configureConnection() error {
 	pragmas := []string{
-		`PRAGMA journal_mode=WAL`,
 		`PRAGMA busy_timeout=10000`,
-		`PRAGMA synchronous=NORMAL`,
 		`PRAGMA foreign_keys=ON`,
+	}
+	if !s.readOnly {
+		pragmas = append([]string{
+			`PRAGMA journal_mode=WAL`,
+			`PRAGMA synchronous=NORMAL`,
+		}, pragmas...)
 	}
 	for _, pragma := range pragmas {
 		if _, err := s.db.Exec(pragma); err != nil {
@@ -237,6 +256,11 @@ func (s *Store) configureConnection() error {
 // Close closes the database connection
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// ReadOnly reports whether the store was opened without migration/write support.
+func (s *Store) ReadOnly() bool {
+	return s != nil && s.readOnly
 }
 
 func (s *Store) migrate() error {
@@ -1857,7 +1881,7 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 		return err
 	}
 	if sessionStarted {
-		if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, attempt, appserver.ActivityEvent{
+		if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, attempt, agentruntime.ActivityEvent{
 			Type:     "plan.sessionStarted",
 			ThreadID: strings.TrimSpace(threadID),
 			TurnID:   strings.TrimSpace(turnID),
@@ -1869,7 +1893,7 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 			return err
 		}
 	}
-	return s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, attempt, appserver.ActivityEvent{
+	return s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, attempt, agentruntime.ActivityEvent{
 		Type:     "plan.versionPublished",
 		ThreadID: strings.TrimSpace(threadID),
 		TurnID:   strings.TrimSpace(turnID),
@@ -1954,7 +1978,7 @@ func (s *Store) approveIssuePlanTx(tx *sql.Tx, issue *Issue, approvedAt time.Tim
 		if session != nil {
 			sessionID = session.ID
 		}
-		return s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, 0, appserver.ActivityEvent{
+		return s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, 0, agentruntime.ActivityEvent{
 			Type: "plan.approved",
 			Raw: map[string]interface{}{
 				"approved_at": approvedAt.Format(time.RFC3339),
@@ -2078,7 +2102,7 @@ func (s *Store) ClearIssuePendingPlanApproval(id string, reason string) error {
 		return err
 	}
 	if session != nil {
-		if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, session.OriginAttempt, appserver.ActivityEvent{
+		if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, session.OriginAttempt, agentruntime.ActivityEvent{
 			Type: "plan.abandoned",
 			Raw: map[string]interface{}{
 				"session_id":   session.ID,
@@ -2167,7 +2191,7 @@ func (s *Store) SetIssuePendingPlanRevision(id, markdown string, requestedAt tim
 		return err
 	}
 	if session != nil {
-		if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, session.OriginAttempt, appserver.ActivityEvent{
+		if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, session.OriginAttempt, agentruntime.ActivityEvent{
 			Type: "plan.revisionRequested",
 			Raw: map[string]interface{}{
 				"session_id":    session.ID,
@@ -2250,7 +2274,7 @@ func (s *Store) ClearIssuePendingPlanRevision(id, reason string) error {
 			return err
 		}
 		if strings.EqualFold(strings.TrimSpace(reason), "turn_started") {
-			if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, session.OriginAttempt, appserver.ActivityEvent{
+			if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, session.OriginAttempt, agentruntime.ActivityEvent{
 				Type: "plan.revisionApplied",
 				Raw: map[string]interface{}{
 					"session_id":    session.ID,

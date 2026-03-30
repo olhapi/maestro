@@ -31,7 +31,7 @@ function StatCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 p-3">
       <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">{label}</p>
-      <p className="mt-1.5 font-display text-[calc(var(--metric-value-size)-0.375rem)] leading-none text-white">
+      <p className="mt-1.5 font-display text-[calc(var(--metric-value-size)-0.625rem)] leading-none text-white">
         {value}
       </p>
     </div>
@@ -215,7 +215,7 @@ export function ProjectsPage() {
               <CardContent className="grid gap-3">
                 <div
                   data-testid="project-card-stats"
-                  className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4"
+                  className="grid grid-cols-2 gap-2.5 lg:grid-cols-4"
                 >
                   <StatCard label="Total" value={String(summaryTotalCount(project))} />
                   <StatCard label="Done" value={String(summaryDoneCount(project))} />

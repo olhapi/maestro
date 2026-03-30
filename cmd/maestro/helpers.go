@@ -74,15 +74,22 @@ func setupLoggerWithWriter(stdout io.Writer, logsRoot string, maxBytes int64, ma
 }
 
 func openStore(dbPath string) (*kanban.Store, error) {
-	rawPath := dbPath
-	dbPath = kanban.ResolveDBPath(dbPath)
-	if kanban.HasUnresolvedExpandedEnvPath(rawPath, dbPath) {
-		return nil, fmt.Errorf("failed to resolve database path: unresolved environment variable in %q", dbPath)
-	}
-	if err := ensureDir(filepath.Dir(dbPath)); err != nil {
+	resolvedPath, err := resolveDatabasePath(dbPath)
+	if err != nil {
 		return nil, err
 	}
-	return kanban.NewStore(dbPath)
+	if err := ensureDir(filepath.Dir(resolvedPath)); err != nil {
+		return nil, err
+	}
+	return kanban.NewStore(resolvedPath)
+}
+
+func openReadOnlyStore(dbPath string) (*kanban.Store, error) {
+	resolvedPath, err := resolveDatabasePath(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return kanban.NewReadOnlyStore(resolvedPath)
 }
 
 func openProviderService(dbPath string) (*kanban.Store, *providers.Service, error) {
@@ -91,6 +98,38 @@ func openProviderService(dbPath string) (*kanban.Store, *providers.Service, erro
 		return nil, nil, err
 	}
 	return store, providers.NewService(store), nil
+}
+
+func openReadOnlyProviderService(dbPath string) (*kanban.Store, *providers.Service, error) {
+	store, err := openStoreForReadCommands(dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if store.ReadOnly() {
+		return store, providers.NewReadOnlyService(store), nil
+	}
+	return store, providers.NewService(store), nil
+}
+
+func openStoreForReadCommands(dbPath string) (*kanban.Store, error) {
+	store, err := openStore(dbPath)
+	if err == nil {
+		return store, nil
+	}
+	readOnlyStore, roErr := openReadOnlyStore(dbPath)
+	if roErr == nil {
+		return readOnlyStore, nil
+	}
+	return nil, err
+}
+
+func resolveDatabasePath(dbPath string) (string, error) {
+	rawPath := dbPath
+	resolvedPath := kanban.ResolveDBPath(dbPath)
+	if kanban.HasUnresolvedExpandedEnvPath(rawPath, resolvedPath) {
+		return "", fmt.Errorf("failed to resolve database path: unresolved environment variable in %q", resolvedPath)
+	}
+	return filepath.Abs(resolvedPath)
 }
 
 func ensureDir(path string) error {

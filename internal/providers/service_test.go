@@ -5,7 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,6 +118,95 @@ func withProviderProjectSyncTimeout(t *testing.T, timeout time.Duration) {
 	t.Cleanup(func() {
 		providerProjectSyncTimeout = previous
 	})
+}
+
+func TestServiceReadOnlyStoreSkipsProviderSyncAndRefresh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only database permissions behave differently on Windows")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "readonly.db")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	project, err := store.CreateProjectWithProvider("Readonly project", "", "", "", "stub", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		Identifier:       "STUB-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "remote-1",
+		Title:            "Read only issue",
+		Description:      "cached",
+		State:            kanban.StateBacklog,
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close writable store: %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Fatalf("Chmod read-only db: %v", err)
+	}
+
+	readOnlyStore, err := kanban.NewReadOnlyStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewReadOnlyStore: %v", err)
+	}
+	defer readOnlyStore.Close()
+	if !readOnlyStore.ReadOnly() {
+		t.Fatal("expected store to report read-only mode")
+	}
+
+	var listCalls atomic.Int32
+	var getCalls atomic.Int32
+	svc := NewService(readOnlyStore)
+	svc.RegisterProvider(&stubProvider{
+		kind: "stub",
+		listFunc: func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+			listCalls.Add(1)
+			return nil, nil
+		},
+		getFunc: func(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
+			getCalls.Add(1)
+			return &kanban.Issue{
+				Identifier:       "STUB-1",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "remote-1",
+				Title:            "Refreshed title",
+				State:            kanban.StateDone,
+				UpdatedAt:        time.Now().UTC(),
+			}, nil
+		},
+	})
+
+	issues, total, err := svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{ProjectID: project.ID})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries: %v", err)
+	}
+	if listCalls.Load() != 0 {
+		t.Fatalf("expected read-only list to skip provider sync, got %d calls", listCalls.Load())
+	}
+	if total != 1 || len(issues) != 1 || issues[0].Identifier != issue.Identifier {
+		t.Fatalf("unexpected issue list payload: total=%d issues=%#v", total, issues)
+	}
+
+	fetched, err := svc.GetIssueByIdentifier(context.Background(), issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier: %v", err)
+	}
+	if getCalls.Load() != 0 {
+		t.Fatalf("expected read-only issue lookup to skip provider refresh, got %d calls", getCalls.Load())
+	}
+	if fetched.Identifier != issue.Identifier || fetched.Title != issue.Title {
+		t.Fatalf("unexpected fetched issue: %+v", fetched)
+	}
 }
 
 func withProviderListSyncMinInterval(t *testing.T, interval time.Duration) {
@@ -694,6 +785,85 @@ func TestServiceListIssueSummariesServesCachedDataWhenReadSyncTimesOut(t *testin
 	}
 	if items[0].Identifier != "STUB-KEEP" {
 		t.Fatalf("unexpected cached issue payload: %#v", items[0])
+	}
+}
+
+func TestReadOnlyServiceSkipsProviderSyncAndRefresh(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Stub Project",
+		"",
+		"",
+		"",
+		"stub",
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	cachedIssue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-keep",
+		Identifier:       "STUB-KEEP",
+		Title:            "Cached issue",
+		State:            kanban.StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	var listCalls, getCalls atomic.Int32
+	svc := NewReadOnlyService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
+		listFunc: func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+			listCalls.Add(1)
+			return []kanban.Issue{{
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-remote",
+				Identifier:       "STUB-REMOTE",
+				Title:            "Remote issue",
+				State:            kanban.StateDone,
+			}}, nil
+		},
+		getFunc: func(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
+			getCalls.Add(1)
+			return &kanban.Issue{
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-remote",
+				Identifier:       "STUB-REMOTE",
+				Title:            "Remote issue",
+				State:            kanban.StateDone,
+			}, nil
+		},
+	}
+
+	items, total, err := svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{ProjectID: project.ID})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries: %v", err)
+	}
+	if got := listCalls.Load(); got != 0 {
+		t.Fatalf("expected read-only service to skip provider sync, got %d calls", got)
+	}
+	if total != 1 || len(items) != 1 || items[0].Identifier != cachedIssue.Identifier {
+		t.Fatalf("unexpected read-only list payload: total=%d items=%#v", total, items)
+	}
+
+	issue, err := svc.GetIssueByIdentifier(context.Background(), cachedIssue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier: %v", err)
+	}
+	if got := getCalls.Load(); got != 0 {
+		t.Fatalf("expected read-only service to skip provider refresh, got %d calls", got)
+	}
+	if issue.Identifier != cachedIssue.Identifier {
+		t.Fatalf("unexpected cached issue returned: %#v", issue)
 	}
 }
 

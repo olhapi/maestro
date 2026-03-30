@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { OverviewPage } from '@/routes/overview'
@@ -75,5 +75,23 @@ describe('OverviewPage', () => {
     expect(screen.getAllByTestId('overview-chart')).toHaveLength(2)
     expect(ResponsiveContainer.mock.calls.some(([props]) => props.height === '100%')).toBe(true)
     expect(screen.getByText(/Current running sessions only\. Snapshot refreshed \d+s ago\./)).toBeInTheDocument()
+  })
+
+  it('stacks active run rows on mobile to keep badges in view', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+
+    renderWithQueryClient(<OverviewPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Active runs')).toBeInTheDocument()
+    })
+
+    const activeRunLink = screen.getAllByRole('link', { name: /ISS-1/i })[0]
+    const row = activeRunLink.querySelector('div')
+
+    expect(row).toHaveClass('flex', 'min-w-0', 'flex-col', 'gap-2')
+    expect(row).toHaveClass('sm:flex-row', 'sm:items-start', 'sm:justify-between')
+    expect(within(row!).getByText('ISS-1')).toHaveClass('break-words', '[overflow-wrap:anywhere]')
   })
 })

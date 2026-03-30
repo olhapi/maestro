@@ -42,3 +42,23 @@ func TestSQLiteDSN(t *testing.T) {
 		})
 	}
 }
+
+func TestSQLiteReadOnlyDSN(t *testing.T) {
+	got := sqliteReadOnlyDSN("/tmp/maestro.db")
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", got, err)
+	}
+	if u.Scheme != "file" {
+		t.Fatalf("scheme = %q, want %q", u.Scheme, "file")
+	}
+	if u.Path != "/tmp/maestro.db" {
+		t.Fatalf("path = %q, want %q", u.Path, "/tmp/maestro.db")
+	}
+	if u.Query().Get("mode") != "ro" {
+		t.Fatalf("mode = %q, want %q", u.Query().Get("mode"), "ro")
+	}
+	if u.Query().Get("_txlock") != "" {
+		t.Fatalf("did not expect txlock on read-only DSN: %q", got)
+	}
+}

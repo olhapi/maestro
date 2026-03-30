@@ -27,6 +27,47 @@ func TestRunVerification(t *testing.T) {
 	}
 }
 
+func TestRunVerificationSucceedsForValidWorkflow(t *testing.T) {
+	tmp := t.TempDir()
+	workflow := `---
+tracker:
+  kind: kanban
+agent:
+  mode: stdio
+codex:
+  command: cat
+  approval_policy: never
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if !res.OK {
+		t.Fatalf("expected valid workflow to pass verification, got %+v", res)
+	}
+	if res.Checks["workflow"] != "ok" || res.Checks["workflow_load"] != "ok" || res.Checks["db_open"] != "ok" {
+		t.Fatalf("expected healthy checks, got %+v", res.Checks)
+	}
+}
+
+func TestRunVerificationReportsWorkflowDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, "WORKFLOW.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if res.Checks["workflow"] != "fail" || res.Checks["workflow_load"] != "fail" {
+		t.Fatalf("expected directory workflow to fail, got %+v", res.Checks)
+	}
+	if len(res.Errors) == 0 || !strings.Contains(strings.Join(res.Errors, "\n"), "is a directory") {
+		t.Fatalf("expected directory error, got %+v", res.Errors)
+	}
+}
+
 func TestRunVerificationUsesHomeDefaultDBPath(t *testing.T) {
 	tmp := t.TempDir()
 	home := t.TempDir()
@@ -111,6 +152,54 @@ Issue {{ issue.identifier }}
 	}
 	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "expected "+codexschema.SupportedVersion+", found 9.9.9") {
 		t.Fatalf("unexpected warnings: %+v", res.Warnings)
+	}
+}
+
+func TestRunVerificationReportsWorkflowLoadFailure(t *testing.T) {
+	tmp := t.TempDir()
+	workflow := `---
+- not-a-map
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if res.Checks["workflow_load"] != "fail" {
+		t.Fatalf("expected workflow_load to fail, got %+v", res.Checks)
+	}
+	if res.Checks["db_dir"] != "ok" || res.Checks["db_open"] != "ok" {
+		t.Fatalf("expected database checks to still succeed, got %+v", res.Checks)
+	}
+}
+
+func TestRunVerificationReportsDbDirFailure(t *testing.T) {
+	tmp := t.TempDir()
+	blocked := filepath.Join(tmp, "blocked")
+	if err := os.WriteFile(blocked, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: cat
+  approval_policy: never
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Run(tmp, filepath.Join(blocked, "maestro.db"))
+	if res.Checks["db_dir"] != "fail" {
+		t.Fatalf("expected db_dir to fail, got %+v", res.Checks)
+	}
+	if res.Checks["db_open"] != "skipped" && res.Checks["db_open"] != "fail" {
+		t.Fatalf("expected db_open to be skipped or fail after db_dir error, got %+v", res.Checks)
 	}
 }
 

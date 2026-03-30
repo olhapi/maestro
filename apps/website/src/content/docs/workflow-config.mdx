@@ -50,7 +50,7 @@ codex:
 - `agent.mode`: use `app_server` for the Codex app-server protocol or `stdio` for `codex exec` style runners.
 - `agent.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
 - `agent.max_turns`: limit how many turns Maestro gives the agent before ending an attempt.
-- `agent.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time.
+- `agent.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time. `per_project_serial` effectively caps per-project concurrency at `1`.
 - `codex.command`: exact command Maestro launches.
 - `codex.expected_version`: version Maestro expects from `codex --version`.
 - `codex.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
@@ -110,7 +110,7 @@ Start with the non-interactive baseline when you want a predictable scaffold:
 That scaffold currently includes:
 
 - the local `kanban` tracker with `ready`, `in_progress`, and `in_review` as active states
-- `workspace.root: ./workspaces`
+- `workspace.root: ~/.maestro/worktrees`
 - hook stubs with a `timeout_ms` budget
 - enabled `review` and `done` phases with starter prompt text already filled in, including done-phase guidance focused on merge-back, worktree cleanup, PR readiness, and blocker reporting
 - `agent.max_concurrent_agents: 3`, `max_turns: 4`, `max_automatic_retries: 8`, and `dispatch_mode: parallel`
@@ -121,25 +121,29 @@ When `--defaults` is not set and both stdin and stdout are TTYs, `workflow init`
 
 1. `Workspace root`
 2. `Codex command`
-3. `Agent mode (app_server|stdio)`
-4. `Dispatch mode (parallel|per_project_serial)`
+3. `Agent mode`
+4. `Dispatch mode`
 5. `Max concurrent agents`
 6. `Max turns`
 7. `Max automatic retries`
-8. If `agent.mode` is `app_server`, `Approval policy (never|on-request|on-failure|untrusted)`
-9. If `agent.mode` is `app_server`, `Initial collaboration mode (default|plan)`
+8. If `agent.mode` is `app_server`, `Approval policy`
+9. If `agent.mode` is `app_server`, `Initial collaboration mode`
 
-The additional dispatch, retry, approval, and collaboration choices are interactive-only. `--defaults` remains the stable non-interactive scaffold, and the existing flags still override only `workspace.root`, `codex.command`, and `agent.mode`.
+Enum prompts render numbered menus. Press Enter to keep the default, or enter the number, an alias, a unique prefix, or the full value. Common shorthand includes `server` for `app_server`, `serial` or `pps` for `per_project_serial`, `req` for `on-request`, and `def` for `default`. Ambiguous prefixes such as `on` are rejected and reprompted.
+
+`--defaults` remains the stable non-interactive scaffold, and the same setup knobs are also available as flags.
 
 Use flags when you want to skip prompts but still override part of the scaffold:
 
 <DocsCommandField
-  command={`maestro workflow init . --defaults --workspace-root ./tmp/workspaces --codex-command "codex app-server" --agent-mode app_server`}
+  command={`maestro workflow init . --defaults --workspace-root ./tmp/workspaces --codex-command "codex app-server" --agent-mode server --dispatch-mode pps --max-concurrent-agents 4 --max-turns 5 --max-automatic-retries 6 --approval-policy on_request --initial-collaboration-mode plan`}
 />
 
 - `--workspace-root` sets `workspace.root`
 - `--codex-command` sets the exact command Maestro launches
-- `--agent-mode` accepts `app_server` or `stdio`
+- `--agent-mode` accepts numbered choices, aliases, unique prefixes, or `app_server` / `stdio`
+- `--dispatch-mode`, `--approval-policy`, and `--initial-collaboration-mode` accept the same shorthand as the wizard and write canonical values into `WORKFLOW.md`
+- `--max-concurrent-agents`, `--max-turns`, and `--max-automatic-retries` set the matching numeric fields
 - `--force` overwrites an existing `WORKFLOW.md`
 
 Overwrite behavior is intentional. In non-interactive mode, an existing `WORKFLOW.md` is left alone unless you pass `--force`. In interactive mode, Maestro asks for confirmation before replacing the file.

@@ -28,6 +28,8 @@ import (
 
 const daemonRegistryEnv = "MAESTRO_DAEMON_REGISTRY_DIR"
 
+var listenFunc = net.Listen
+
 type DaemonEntry struct {
 	StoreID     string    `json:"store_id"`
 	DBPath      string    `json:"db_path"`
@@ -83,7 +85,7 @@ func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider Runti
 		return handle, nil
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listenFunc("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen for private MCP endpoint: %w", err)
 	}
