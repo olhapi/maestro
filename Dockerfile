@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.25.0
+ARG GO_VERSION=1.25
 ARG DEBIAN_SUITE=bookworm
 ARG CODEX_VERSION=0.117.0
 
