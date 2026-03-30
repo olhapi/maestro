@@ -25,11 +25,12 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
       - name: Enable pnpm
         run: |
           corepack enable
+          corepack prepare "$(node -p "require('./package.json').packageManager")" --activate
           pnpm --version
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
       - name: Run lean CI verification
         run: pnpm verify:ci
