@@ -17,8 +17,10 @@ trap cleanup EXIT INT TERM
 export OUT_ROOT="$TMP_ROOT"
 export STAGE_DIR="$OUT_ROOT/npm-package"
 export PACK_DIR="$OUT_ROOT/npm"
+export MAESTRO_SMOKE_IMAGE="maestro-smoke:pre-push"
 
-HOST_TARGET="$(./scripts/package_npm_release.sh print-current-target)"
-
+run_step docker build -t "$MAESTRO_SMOKE_IMAGE" --build-arg MAESTRO_VERSION=0.0.0-pre-push .
 run_step ./scripts/package_npm_release.sh 0.0.0-pre-push
-run_step ./scripts/smoke_npm_package.sh 0.0.0-pre-push "$HOST_TARGET"
+run_step ./scripts/smoke_npm_package.sh 0.0.0-pre-push
+run_step ./scripts/smoke_npm_registry_install.sh 0.0.0-pre-push
+run_step ./scripts/smoke_install_script.sh 0.0.0-pre-push

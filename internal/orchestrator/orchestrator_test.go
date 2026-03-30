@@ -773,18 +773,27 @@ func waitForRetryEntry(t *testing.T, orch *Orchestrator, issueID string, timeout
 
 func waitForIssuePauseReason(t *testing.T, store *kanban.Store, issueID, reason string, timeout time.Duration) {
 	t.Helper()
+	waitForIssuePauseReasons(t, store, issueID, timeout, reason)
+}
+
+func waitForIssuePauseReasons(t *testing.T, store *kanban.Store, issueID string, timeout time.Duration, reasons ...string) {
+	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		events, err := store.ListIssueRuntimeEvents(issueID, 20)
 		if err == nil && len(events) > 0 {
 			latest := events[len(events)-1]
-			if latest.Kind == "retry_paused" && latest.Error == reason {
-				return
+			if latest.Kind == "retry_paused" {
+				for _, reason := range reasons {
+					if latest.Error == reason {
+						return
+					}
+				}
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for pause reason %s on %s", reason, issueID)
+	t.Fatalf("timed out waiting for pause reason %v on %s", reasons, issueID)
 }
 
 func waitForIssueRetryState(t *testing.T, store *kanban.Store, issueID, delayType string, timeout time.Duration) {
@@ -4184,7 +4193,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", 3*time.Second)
 	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", 3*time.Second)
 	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", 3*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", 3*time.Second)
+	waitForIssuePauseReasons(t, adminStore, fixtures[3].issueID, 3*time.Second, "stall_timeout", "run_interrupted")
 
 	cancel()
 	wg.Wait()

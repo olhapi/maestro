@@ -210,6 +210,25 @@ func TestMaybeOpenDashboardAndTerminalHelpers(t *testing.T) {
 	maybeOpenDashboard(context.Background(), "http://127.0.0.1:8787")
 }
 
+func TestMaybeOpenDashboardRespectsDisableEnv(t *testing.T) {
+	oldInteractive := dashboardInteractiveCheck
+	oldLauncher := dashboardBrowserLauncher
+	t.Cleanup(func() {
+		dashboardInteractiveCheck = oldInteractive
+		dashboardBrowserLauncher = oldLauncher
+	})
+
+	t.Setenv("MAESTRO_DISABLE_BROWSER_OPEN", "1")
+	dashboardInteractiveCheck = func() bool { return true }
+	dashboardBrowserLauncher = func(context.Context, string) error {
+		t.Fatal("expected browser launch to be disabled by env")
+		return nil
+	}
+
+	maybeOpenDashboard(context.Background(), "http://127.0.0.1:8787")
+	time.Sleep(25 * time.Millisecond)
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

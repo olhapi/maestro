@@ -1,0 +1,13 @@
+PackageIdentifier: Olhapi.Maestro
+PackageVersion: __VERSION__
+InstallerType: zip
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://registry.npmjs.org/@olhapi/maestro/-/olhapi-maestro-__VERSION__.tgz
+    InstallerSha256: __SHA256__
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: package/bin/maestro.cmd
+        PortableCommandAlias: maestro
+ManifestType: installer
+ManifestVersion: 1.6.0

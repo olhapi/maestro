@@ -29,7 +29,7 @@ The docs site is organized around the same operator flow the product uses:
 
 ### npm
 
-Current public npm install on supported platforms:
+Install the launcher package:
 
 ```bash
 npm install -g @olhapi/maestro
@@ -43,19 +43,44 @@ npm install -g @olhapi/maestro@next
 
 The installed command name is still `maestro`.
 
-Official npm builds currently cover:
+This package no longer ships native platform binaries. It installs a thin host
+launcher that runs Maestro from the published Docker image, so Docker is now a
+first-party runtime requirement for normal CLI use.
 
-| Platform | Arch | Notes |
-| --- | --- | --- |
-| macOS | arm64 | native package |
-| macOS | x64 | native package |
-| Linux | x64 | glibc only |
-| Linux | arm64 | glibc only |
-| Windows | x64 | native package |
+The launcher resolves its runtime image in this order:
 
-Linux npm packages currently target glibc only. Alpine and other musl-based distros should build from source or use Docker.
+- `MAESTRO_IMAGE`
+- the locally pinned image from `~/.maestro/launcher/runtime.json`
+- the npm package version you installed
 
-### Docker
+Pull and pin the latest runtime image explicitly:
+
+```bash
+maestro self-update
+```
+
+Pin a specific image version:
+
+```bash
+maestro self-update --version 0.117.0
+```
+
+Validate the local launcher install, Docker access, and runtime pin:
+
+```bash
+maestro doctor install
+```
+
+### Curl Installer
+
+If you want the same launcher without npm, install it with the repository
+script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/olhapi/maestro/main/scripts/install_maestro.sh | sh
+```
+
+### Docker Runtime
 
 Published image:
 
@@ -77,7 +102,8 @@ docker run --rm -v ./repo:/repo -v ./data:/data ghcr.io/olhapi/maestro:latest ru
 
 ### Build From Source
 
-For local development or unsupported platforms:
+For local development, contributor workflows, or environments where Docker is
+not the right runtime:
 
 ```bash
 go build -o maestro ./cmd/maestro
@@ -382,9 +408,10 @@ Repo-managed Git hooks stay targeted:
 - staged website changes run Astro checks and website tests
 - staged workspace and hook changes run the full `pnpm verify` suite
 - `pnpm verify` runs the JS lint/test/check/smoke flow, npm packaging unit test, and Go build/test/coverage/race gates
-- `pnpm run verify:pre-push` adds current-host npm packaging smoke, the shared retry stress test, and the full retry-safety harness on top of `pnpm verify`
+- `pnpm run verify:pre-push` adds real Docker image build smoke, tarball install smoke, local-registry install smoke, curl-installer smoke, the shared retry stress test, and the full retry-safety harness on top of `pnpm verify`
+- `pnpm run verify:ci` is the lean GitHub Actions gate: web verification, launcher packaging tests, and `go test ./...`
 - package-scoped root commands such as `pnpm run frontend:test` and `pnpm run website:build` now go through `turbo --filter=...` so they benefit from task caching too
-- `pre-push` now runs `pnpm run verify:pre-push`, leaving GitHub Actions with the cross-platform packaging matrix and registry smoke coverage
+- `pre-push` now runs `pnpm run verify:pre-push`, while GitHub Actions stays on the smaller `pnpm run verify:ci` gate
 
 ## License
 

@@ -27,7 +27,7 @@ var (
 
 func maybeOpenDashboard(ctx context.Context, baseURL string) {
 	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" || !dashboardInteractiveCheck() {
+	if baseURL == "" || browserOpenDisabled() || !dashboardInteractiveCheck() {
 		return
 	}
 
@@ -36,6 +36,10 @@ func maybeOpenDashboard(ctx context.Context, baseURL string) {
 			slog.Warn("Failed to open dashboard automatically", "url", baseURL, "error", err)
 		}
 	}()
+}
+
+func browserOpenDisabled() bool {
+	return strings.TrimSpace(os.Getenv("MAESTRO_DISABLE_BROWSER_OPEN")) != ""
 }
 
 func openDashboardWhenReady(ctx context.Context, baseURL string) error {
