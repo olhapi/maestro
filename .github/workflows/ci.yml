@@ -25,5 +25,11 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          pnpm --version
       - name: Run lean CI verification
         run: pnpm verify:ci
