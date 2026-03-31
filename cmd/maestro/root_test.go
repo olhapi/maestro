@@ -497,6 +497,7 @@ func TestCommandUpdateAndErrorBranches(t *testing.T) {
 		"--enabled=false",
 		"--labels", "alpha,beta",
 		"--priority", "5",
+		"--permission-profile", "full-access",
 		"--project", otherProject.ID,
 		"--epic", epic.ID,
 		"--branch", "feature/coverage",
@@ -521,6 +522,9 @@ func TestCommandUpdateAndErrorBranches(t *testing.T) {
 	}
 	if updated["title"] != "Updated title" || updated["project_id"] != otherProject.ID {
 		t.Fatalf("unexpected updated issue payload: %#v", updated)
+	}
+	if updated["permission_profile"] != "full-access" {
+		t.Fatalf("unexpected issue permission profile: %#v", updated)
 	}
 
 	code, _, stderr = runCLI(t, "--db", dbPath, "issue", "update", issue.Identifier, "--clear-project")

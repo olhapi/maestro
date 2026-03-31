@@ -642,6 +642,7 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	var projectID string
 	var epicID string
 	var issueType string
+	var permissionProfile string
 	var cronSpec string
 	var enabled bool
 	var labels string
@@ -676,6 +677,9 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("desc") {
 				updates["description"] = description
+			}
+			if cmd.Flags().Changed("permission-profile") {
+				updates["permission_profile"] = permissionProfile
 			}
 			if cmd.Flags().Changed("type") {
 				updates["issue_type"] = strings.TrimSpace(issueType)
@@ -754,6 +758,7 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&description, "desc", "", "New description")
+	cmd.Flags().StringVar(&permissionProfile, "permission-profile", "", "Issue permission profile: default, full-access, plan-then-full-access")
 	cmd.Flags().StringVar(&issueType, "type", "", "Issue type: standard or recurring")
 	cmd.Flags().StringVar(&cronSpec, "cron", "", "Cron schedule for recurring issues")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Enable recurring scheduling")

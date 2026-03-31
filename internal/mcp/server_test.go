@@ -489,7 +489,7 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_epics"), "limit", "offset", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
-	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "permission_profile", "pr_url", "priority", "project_id", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_asset"), "identifier", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue_comment"), "attachment_paths", "body", "identifier", "parent_comment_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issue_comments"), "identifier", "limit", "offset")
@@ -683,16 +683,17 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	secondEpicID := asString(decodeEnvelope(t, secondEpicRes)["data"].(map[string]interface{})["id"])
 
 	updateIssueRes, err := client.CallTool(context.Background(), "update_issue", map[string]interface{}{
-		"identifier":  issueBIdentifier,
-		"project_id":  secondProjectID,
-		"epic_id":     secondEpicID,
-		"title":       "Issue B Updated",
-		"description": "Moved issue",
-		"priority":    5,
-		"labels":      []interface{}{"go", "mcp"},
-		"blocked_by":  []interface{}{},
-		"branch_name": "feat/mcp-v2",
-		"pr_url":      "https://example.com/pr/23",
+		"identifier":         issueBIdentifier,
+		"project_id":         secondProjectID,
+		"epic_id":            secondEpicID,
+		"title":              "Issue B Updated",
+		"description":        "Moved issue",
+		"permission_profile": string(kanban.PermissionProfileFullAccess),
+		"priority":           5,
+		"labels":             []interface{}{"go", "mcp"},
+		"blocked_by":         []interface{}{},
+		"branch_name":        "feat/mcp-v2",
+		"pr_url":             "https://example.com/pr/23",
 	})
 	if err != nil {
 		t.Fatalf("update_issue failed: %v", err)
@@ -700,6 +701,9 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	updateIssue := decodeEnvelope(t, updateIssueRes)["data"].(map[string]interface{})
 	if updateIssue["project_id"] != secondProjectID || updateIssue["epic_id"] != secondEpicID {
 		t.Fatalf("unexpected update_issue payload: %#v", updateIssue)
+	}
+	if updateIssue["permission_profile"] != string(kanban.PermissionProfileFullAccess) {
+		t.Fatalf("unexpected permission profile payload: %#v", updateIssue)
 	}
 
 	createCommentRes, err := client.CallTool(context.Background(), "create_issue_comment", map[string]interface{}{

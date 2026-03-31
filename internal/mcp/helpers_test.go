@@ -175,13 +175,13 @@ func TestMCPJSONAndSchemaHelpers(t *testing.T) {
 
 	t.Run("argument helpers", func(t *testing.T) {
 		args := map[string]any{
-			"float":  float64(7),
-			"int":    8,
-			"int64":  int64(9),
-			"list":   []any{"alpha", 1, "beta"},
+			"float":   float64(7),
+			"int":     8,
+			"int64":   int64(9),
+			"list":    []any{"alpha", 1, "beta"},
 			"strings": []string{"one", "two"},
-			"bool":   true,
-			"object": map[string]any{"nested": "value"},
+			"bool":    true,
+			"object":  map[string]any{"nested": "value"},
 		}
 
 		if got := intArg(args, "float", 1); got != 7 {
@@ -576,8 +576,8 @@ func TestMCPServerHelpers(t *testing.T) {
 		}
 
 		lookupServer := &Server{
-			store: store,
-			service: providers.NewService(store),
+			store:    store,
+			service:  providers.NewService(store),
 			provider: testRuntimeProvider{store: store},
 		}
 		if got, err := lookupServer.lookupIssue(context.Background(), createdIssue.Identifier); err != nil || got.Identifier != createdIssue.Identifier {
@@ -601,18 +601,19 @@ func TestMCPServerHelpers(t *testing.T) {
 		}
 
 		updates := issueMutationArgs(map[string]any{
-			"project_id":  "project-1",
-			"epic_id":     "epic-1",
-			"title":       "Updated title",
-			"description": "Updated description",
-			"issue_type":   "task",
-			"cron":        "0 0 * * *",
-			"enabled":     true,
-			"priority":    float64(3),
-			"labels":      []any{"one", "two"},
-			"blocked_by":  []string{"ISSUE-1"},
-			"branch_name": "feature/branch",
-			"pr_url":      "https://example.com/pr/1",
+			"project_id":         "project-1",
+			"epic_id":            "epic-1",
+			"title":              "Updated title",
+			"description":        "Updated description",
+			"permission_profile": "full-access",
+			"issue_type":         "task",
+			"cron":               "0 0 * * *",
+			"enabled":            true,
+			"priority":           float64(3),
+			"labels":             []any{"one", "two"},
+			"blocked_by":         []string{"ISSUE-1"},
+			"branch_name":        "feature/branch",
+			"pr_url":             "https://example.com/pr/1",
 		}, true)
 		if updates["priority"] != 3 || updates["enabled"] != true || !reflect.DeepEqual(updates["labels"], []string{"one", "two"}) {
 			t.Fatalf("unexpected issue mutation updates: %#v", updates)
@@ -620,11 +621,14 @@ func TestMCPServerHelpers(t *testing.T) {
 		if updates["project_id"] != "project-1" || updates["epic_id"] != "epic-1" {
 			t.Fatalf("expected project fields to be included: %#v", updates)
 		}
+		if updates["permission_profile"] != "full-access" {
+			t.Fatalf("expected permission profile to be included: %#v", updates)
+		}
 
 		commentInput := issueCommentMutationArgs(map[string]any{
-			"parent_comment_id":    "parent-1",
-			"body":                 "hello",
-			"attachment_paths":     []any{"/tmp/one", "/tmp/two"},
+			"parent_comment_id":     "parent-1",
+			"body":                  "hello",
+			"attachment_paths":      []any{"/tmp/one", "/tmp/two"},
 			"remove_attachment_ids": []string{"att-1"},
 		})
 		if commentInput.ParentCommentID != "parent-1" || commentInput.Body == nil || *commentInput.Body != "hello" {
