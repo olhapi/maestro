@@ -61,7 +61,7 @@ phases:
       {{ project.description }}
 
       {% endif %}
-      The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
+      The done phase owns merge-back and finalization. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 
       - Commit all remaining changes to the prepared issue branch.
       - Merge the issue branch into the repository default branch.
@@ -76,7 +76,7 @@ agent:
   # dispatch_mode=per_project_serial forces effective per-project concurrency to 1.
   max_concurrent_agents: 2
   # Maximum turns Maestro gives Codex before ending an attempt.
-  max_turns: 50
+  max_turns: 40
   # Maximum delay between automatic retries after failed attempts.
   max_retry_backoff_ms: 60000
   # Maximum automatic retry attempts for the same issue before Maestro stops retrying.
@@ -93,18 +93,19 @@ codex:
   # Expected codex --version. Mismatches warn but do not hard-fail.
   expected_version: 0.117.0
   # Approval mode for Codex. Available values: never, on-request, on-failure, untrusted. Fresh maestro init default: never.
-  # A structured granular object is also supported for per-category approval policies.
-  # `on-request` keeps the run interactive so permission recovery can happen through approvals.
+  # "never" keeps unattended runs non-interactive, so permission recovery must come
+  # from the project or issue permission profile rather than live approval prompts.
   # Use on-request when initial_collaboration_mode is plan so the agent can ask
-  # questions and pause for approval before Maestro promotes the run to full access.
-  approval_policy: on-request
+  # questions and recover through approvals before Maestro promotes the run.
+  # A structured granular object is also supported for per-category approval policies.
+  approval_policy: never
   # Initial collaboration mode for fresh app_server threads. Available values: default, plan. Fresh maestro init default: default.
   # Use plan for a planning pass before implementation. Pair it with on-request
   # when you want the agent to ask questions and pause for approval.
   # Ignored for stdio runs and resumed threads.
-  initial_collaboration_mode: plan
+  initial_collaboration_mode: default
   # Maximum total runtime for one turn before Maestro cancels it.
-  turn_timeout_ms: 3600000
+  turn_timeout_ms: 1800000
   # Maximum time to wait for streamed output before considering the stream stalled.
   read_timeout_ms: 10000
   # Maximum idle time without Codex activity before Maestro aborts the turn.
@@ -120,6 +121,7 @@ Continuation attempt: {{ attempt }}
 {% endif %}
 
 Title: {{ issue.title }}
+State: {{ issue.state }}
 {% if project.description %}
 Project context:
 {{ project.description }}
@@ -138,7 +140,7 @@ No description provided.
 - Open the Maestro Workpad comment immediately and update it before new implementation work.
 - Plan before coding. Design verification before changing code.
 {% if plan_mode %}
-- This is a planning turn. Ask the clarifying questions you need, validate assumptions, and stop with a single `<proposed_plan>` block once the approach is ready.
+- This is a planning turn. Ask the clarifying questions you need, validate assumptions, and stop with a single <proposed_plan> block once the approach is ready.
 - Do not start implementation until the plan is approved.
 {% endif %}
 - Reproduce or inspect current behavior first so the target is explicit.
@@ -147,6 +149,7 @@ No description provided.
 - If you find meaningful out-of-scope work, file a separate maestro CLI issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
 - Move status only when the quality bar for that status is met.
 - Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
+- In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
 
 ## Instructions
 
