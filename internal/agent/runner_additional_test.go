@@ -1139,6 +1139,12 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 		if got := finalAnswerFromSession(&agentruntime.Session{}); got != "" {
 			t.Fatalf("expected empty final answer, got %q", got)
 		}
+		if got := extractProposedPlanMarkdown("prefix <proposed_plan>\nShip the guarded rollout.\n</proposed_plan> suffix"); got != "Ship the guarded rollout." {
+			t.Fatalf("unexpected proposed plan extraction: %q", got)
+		}
+		if got := extractProposedPlanMarkdown("no plan block here"); got != "" {
+			t.Fatalf("expected missing proposed plan block to stay empty, got %q", got)
+		}
 	})
 }
 
