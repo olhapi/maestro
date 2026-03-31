@@ -656,7 +656,10 @@ func TestRunnerBranchAndPromptCoverage(t *testing.T) {
 func TestRunnerRepoAndWorkspaceCoverage(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Workspace branches", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
 		t.Fatalf("getOrCreateWorkspace: %v", err)
@@ -792,6 +795,20 @@ func TestRunnerRepoAndWorkspaceCoverage(t *testing.T) {
 		}
 	})
 
+	t.Run("git_command_env", func(t *testing.T) {
+		t.Setenv("GIT_DIR", "/tmp/git-dir")
+		t.Setenv("GIT_WORK_TREE", "/tmp/git-work-tree")
+		t.Setenv("GIT_INDEX_FILE", "/tmp/git-index")
+		t.Setenv("GIT_COMMON_DIR", "/tmp/git-common")
+		t.Setenv("GIT_PREFIX", "prefix")
+		joinedEnv := strings.Join(gitCommandEnv(), "\n")
+		for _, prefix := range []string{"GIT_DIR=", "GIT_WORK_TREE=", "GIT_INDEX_FILE=", "GIT_COMMON_DIR=", "GIT_PREFIX="} {
+			if strings.Contains(joinedEnv, prefix) {
+				t.Fatalf("expected %s to be removed from git env: %q", prefix, joinedEnv)
+			}
+		}
+	})
+
 	t.Run("repo_and_workspace_helpers", func(t *testing.T) {
 		if has, err := repoHasRemote(context.Background(), repoPath, ""); err != nil || has {
 			t.Fatalf("expected blank remote name to be false, got %v %v", has, err)
@@ -861,6 +878,9 @@ func TestRunnerRepoAndWorkspaceCoverage(t *testing.T) {
 		plainRoot := filepath.Join(t.TempDir(), "plain")
 		if err := os.MkdirAll(plainRoot, 0o755); err != nil {
 			t.Fatalf("MkdirAll plainRoot: %v", err)
+		}
+		if got := pathWithinRoot(plainRoot, plainRoot); !got {
+			t.Fatal("expected root path to be within root")
 		}
 		if got := pathWithinRoot(filepath.Join(plainRoot, "child"), plainRoot); !got {
 			t.Fatal("expected child path to be within root")
@@ -983,11 +1003,17 @@ func TestRunnerRepoAndWorkspaceCoverage(t *testing.T) {
 		if linked, err := isLinkedWorktree(context.Background(), workspace.Path); err != nil || !linked {
 			t.Fatalf("expected linked worktree, got %v %v", linked, err)
 		}
+		if linked, err := isLinkedWorktree(context.Background(), plainDir); err != nil || linked {
+			t.Fatalf("expected plain dir to be treated as non-worktree, got %v %v", linked, err)
+		}
 		if err := removeManagedWorkspace(context.Background(), cleanupDir); err != nil {
 			t.Fatalf("removeManagedWorkspace plain dir: %v", err)
 		}
 		if _, err := os.Stat(cleanupDir); !os.IsNotExist(err) {
 			t.Fatalf("expected plain dir to be removed, got %v", err)
+		}
+		if err := removeManagedWorkspace(context.Background(), filepath.Join(t.TempDir(), "missing-cleanup")); err != nil {
+			t.Fatalf("removeManagedWorkspace missing dir: %v", err)
 		}
 		if matched, err := workspaceMatchesRepo(context.Background(), workspace.Path, repoPath); err != nil || !matched {
 			t.Fatalf("expected workspace to match repo, got %v %v", matched, err)
@@ -1240,7 +1266,13 @@ func TestRunnerRunAttemptZeroTurnsBootstrapsWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssue ready: %v", err)
 	}
+	baseWorkflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 	workflow := defaultPromptWorkflowForTest()
+	workflow.Config.Workspace.Root = baseWorkflow.Config.Workspace.Root
+	workflow.Path = baseWorkflow.Path
 	workflow.Config.Agent.MaxTurns = 0
 	runner.workflowProvider = staticWorkflowProvider{workflow: workflow}
 	runner.runtimeStarter = func(context.Context, runtimefactory.WorkflowStartRequest, agentruntime.Observers) (agentruntime.Client, error) {
@@ -1524,16 +1556,22 @@ func TestRepoBootstrapLockBranches(t *testing.T) {
 func TestRunAttemptHookAndPlanApprovalBranches(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Hook and plan coverage", "", 0, nil)
+	baseWorkflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
-	issue, err := store.GetIssue(issue.ID)
+	issue, err = store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
 
 	t.Run("before_run_hook_error", func(t *testing.T) {
 		workflow := defaultPromptWorkflowForTest()
+		workflow.Config.Workspace.Root = baseWorkflow.Config.Workspace.Root
+		workflow.Path = baseWorkflow.Path
 		workflow.Config.Hooks.BeforeRun = "exit 1"
 		runner.workflowProvider = staticWorkflowProvider{workflow: workflow}
 		runner.runtimeStarter = func(context.Context, runtimefactory.WorkflowStartRequest, agentruntime.Observers) (agentruntime.Client, error) {
@@ -1547,6 +1585,8 @@ func TestRunAttemptHookAndPlanApprovalBranches(t *testing.T) {
 
 	t.Run("template_render_error", func(t *testing.T) {
 		workflow := defaultPromptWorkflowForTest()
+		workflow.Config.Workspace.Root = baseWorkflow.Config.Workspace.Root
+		workflow.Path = baseWorkflow.Path
 		workflow.PromptTemplate = "{{"
 		workflow.Config.Agent.MaxTurns = 1
 		workflow.Config.Hooks.BeforeRun = ""
@@ -1562,6 +1602,8 @@ func TestRunAttemptHookAndPlanApprovalBranches(t *testing.T) {
 
 	t.Run("plan_approval_requested", func(t *testing.T) {
 		workflow := defaultPromptWorkflowForTest()
+		workflow.Config.Workspace.Root = baseWorkflow.Config.Workspace.Root
+		workflow.Path = baseWorkflow.Path
 		workflow.Config.Agent.MaxTurns = 1
 		runner.workflowProvider = staticWorkflowProvider{workflow: workflow}
 		if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
@@ -1751,10 +1793,377 @@ func TestGetOrCreateWorkspaceRecoversForeignPathOutsideCurrentRoot(t *testing.T)
 	}
 }
 
+func TestWorkspaceProjectForIssueBranches(t *testing.T) {
+	if project, err := workspaceProjectForIssue(nil, nil); err != nil || project != nil {
+		t.Fatalf("expected nil store/issue to return nil project, got project=%#v err=%v", project, err)
+	}
+
+	_, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+
+	standalone, err := store.CreateIssue("", "", "Standalone", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue standalone: %v", err)
+	}
+	if project, err := workspaceProjectForIssue(store, standalone); err != nil || project != nil {
+		t.Fatalf("expected standalone issue to have no project, got project=%#v err=%v", project, err)
+	}
+
+	if project, err := workspaceProjectForIssue(store, &kanban.Issue{ProjectID: "missing"}); err != nil || project != nil {
+		t.Fatalf("expected missing project to return nil, got project=%#v err=%v", project, err)
+	}
+
+	createdProject, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	projectIssue, err := store.CreateIssue(createdProject.ID, "", "Project issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue project issue: %v", err)
+	}
+	project, err := workspaceProjectForIssue(store, projectIssue)
+	if err != nil {
+		t.Fatalf("workspaceProjectForIssue: %v", err)
+	}
+	if project == nil || project.ID != createdProject.ID {
+		t.Fatalf("expected project %s, got %#v", createdProject.ID, project)
+	}
+
+	_, closedStore, _, _, closedRepoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	closedProject, err := closedStore.CreateProject("Closed", "", closedRepoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject closed: %v", err)
+	}
+	if err := closedStore.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+	if _, err := workspaceProjectForIssue(closedStore, &kanban.Issue{ProjectID: closedProject.ID}); err == nil || !strings.Contains(err.Error(), "load project for workspace bootstrap") {
+		t.Fatalf("expected closed store lookup to fail, got %v", err)
+	}
+}
+
+func TestWorkspaceRootHelpers(t *testing.T) {
+	t.Run("workspace_root_allows_rehome", func(t *testing.T) {
+		if workspaceRootAllowsRehome("") {
+			t.Fatal("expected empty root to reject rehome")
+		}
+		if workspaceRootAllowsRehome("   ") {
+			t.Fatal("expected blank root to reject rehome")
+		}
+		if workspaceRootAllowsRehome("~/worktrees") {
+			t.Fatal("expected tilde root to reject rehome")
+		}
+		if workspaceRootAllowsRehome("$HOME/worktrees") {
+			t.Fatal("expected env root to reject rehome")
+		}
+		if workspaceRootAllowsRehome("relative/worktrees") {
+			t.Fatal("expected relative root to reject rehome")
+		}
+		if !workspaceRootAllowsRehome(filepath.Join(t.TempDir(), "worktrees")) {
+			t.Fatal("expected absolute root to allow rehome")
+		}
+	})
+
+	t.Run("canonical_path_falls_back_for_missing_paths", func(t *testing.T) {
+		missingPath := filepath.Join(t.TempDir(), "missing", "..", "missing", "child")
+		expected, err := filepath.Abs(missingPath)
+		if err != nil {
+			t.Fatalf("filepath.Abs: %v", err)
+		}
+		if got := canonicalPath(missingPath); got != filepath.Clean(expected) {
+			t.Fatalf("expected missing path to clean absolute path, got %q want %q", got, filepath.Clean(expected))
+		}
+	})
+}
+
+func TestWorkspaceCanMoveToRootBranches(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+
+	if got, err := workspaceCanMoveToRoot(context.Background(), filepath.Join(t.TempDir(), "missing"), repoPath); err != nil || got {
+		t.Fatalf("expected missing path to be non-movable, got move=%v err=%v", got, err)
+	}
+
+	filePath := filepath.Join(t.TempDir(), "workspace-file")
+	if err := os.WriteFile(filePath, []byte("workspace"), 0o644); err != nil {
+		t.Fatalf("WriteFile workspace file: %v", err)
+	}
+	if got, err := workspaceCanMoveToRoot(context.Background(), filePath, repoPath); err != nil || got {
+		t.Fatalf("expected file path to be non-movable, got move=%v err=%v", got, err)
+	}
+
+	plainDir := filepath.Join(t.TempDir(), "plain-workspace")
+	if err := os.MkdirAll(plainDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll plain workspace: %v", err)
+	}
+	if got, err := workspaceCanMoveToRoot(context.Background(), plainDir, repoPath); err != nil || got {
+		t.Fatalf("expected plain directory to be non-movable, got move=%v err=%v", got, err)
+	}
+
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Moveable workspace", "", 0, nil)
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+	if got, err := workspaceCanMoveToRoot(context.Background(), workspace.Path, repoPath); err != nil || !got {
+		t.Fatalf("expected linked worktree to be movable, got move=%v err=%v", got, err)
+	}
+}
+
+func TestMoveWorkspaceToRootBranches(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Move workspace", "", 0, nil)
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	targetRoot := filepath.Join(t.TempDir(), "new-workspace-root")
+	targetPath := workspacePathForIssue(targetRoot, project, issue)
+	if err := moveWorkspaceToRoot(context.Background(), repoPath, workspace.Path, filepath.Join(targetRoot, "..", "outside"), targetRoot); err == nil || !strings.Contains(err.Error(), "workspace path escape") {
+		t.Fatalf("expected target outside root to fail, got %v", err)
+	}
+	if err := moveWorkspaceToRoot(context.Background(), filepath.Join(t.TempDir(), "missing-repo"), workspace.Path, targetPath, targetRoot); err == nil || !strings.Contains(err.Error(), "lock workspace bootstrap") {
+		t.Fatalf("expected missing repo to fail before validation, got %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll target parent: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("WriteFile stale target: %v", err)
+	}
+
+	if err := moveWorkspaceToRoot(context.Background(), repoPath, workspace.Path, targetPath, targetRoot); err != nil {
+		t.Fatalf("moveWorkspaceToRoot: %v", err)
+	}
+	if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected original workspace path removed after move, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, ".git")); err != nil {
+		t.Fatalf("expected moved git worktree metadata: %v", err)
+	}
+	if err := moveWorkspaceToRoot(context.Background(), repoPath, targetPath, targetPath, targetRoot); err != nil {
+		t.Fatalf("moveWorkspaceToRoot same path: %v", err)
+	}
+}
+
+func TestMoveWorkspaceToRootErrorBranches(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Move workspace errors", "", 0, nil)
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	nonGitRepo := filepath.Join(t.TempDir(), "non-git-repo")
+	if err := os.MkdirAll(nonGitRepo, 0o755); err != nil {
+		t.Fatalf("MkdirAll non-git repo: %v", err)
+	}
+	targetRoot := filepath.Join(t.TempDir(), "target-root")
+	targetPath := workspacePathForIssue(targetRoot, project, issue)
+	if err := moveWorkspaceToRoot(context.Background(), nonGitRepo, workspace.Path, targetPath, targetRoot); err == nil || !strings.Contains(err.Error(), "lock workspace bootstrap") {
+		t.Fatalf("expected non-git repo lock failure, got %v", err)
+	}
+
+	parentRoot := filepath.Join(t.TempDir(), "target-parent-root")
+	if err := os.MkdirAll(parentRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll parent root: %v", err)
+	}
+	lockedParent := filepath.Join(parentRoot, "locked-parent")
+	if err := os.MkdirAll(lockedParent, 0o755); err != nil {
+		t.Fatalf("MkdirAll locked parent: %v", err)
+	}
+	if err := os.Chmod(lockedParent, 0o555); err != nil {
+		t.Fatalf("Chmod locked parent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(lockedParent, 0o755)
+	})
+	if err := moveWorkspaceToRoot(context.Background(), repoPath, workspace.Path, filepath.Join(lockedParent, "child", "workspace"), parentRoot); err == nil || !strings.Contains(err.Error(), "create target workspace parent") {
+		t.Fatalf("expected target parent creation failure, got %v", err)
+	}
+
+	plainWorkspace := filepath.Join(t.TempDir(), "plain-workspace")
+	if err := os.MkdirAll(plainWorkspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll plain workspace: %v", err)
+	}
+	plainTargetRoot := filepath.Join(t.TempDir(), "plain-target-root")
+	if err := moveWorkspaceToRoot(context.Background(), repoPath, plainWorkspace, filepath.Join(plainTargetRoot, "workspace"), plainTargetRoot); err == nil || !strings.Contains(err.Error(), "move git worktree") {
+		t.Fatalf("expected plain workspace move failure, got %v", err)
+	}
+}
+
+func TestRecoverWorkspaceToCurrentRootBranches(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Recover workspace root", "", 0, nil)
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+
+	targetRoot := filepath.Join(t.TempDir(), "new-workspace-root")
+	targetPath := workspacePathForIssue(targetRoot, project, issue)
+	foreignPath := filepath.Join(t.TempDir(), "foreign-workspaces", sanitizeWorkspaceKey(issue.Identifier))
+	if err := os.MkdirAll(foreignPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll foreign workspace: %v", err)
+	}
+	if err := runner.recoverWorkspaceToCurrentRoot(context.Background(), workflow, issue, foreignPath, targetPath, targetRoot); err != nil {
+		t.Fatalf("recoverWorkspaceToCurrentRoot foreign path: %v", err)
+	}
+	if _, err := os.Stat(foreignPath); err != nil {
+		t.Fatalf("expected foreign workspace to remain untouched, got %v", err)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("expected helper-only recovery to leave target path absent, got %v", err)
+	}
+	if err := runner.recoverWorkspaceToCurrentRoot(context.Background(), workflow, issue, targetPath, targetPath, targetRoot); err != nil {
+		t.Fatalf("recoverWorkspaceToCurrentRoot same path: %v", err)
+	}
+
+	standalone, err := store.CreateIssue("", "", "No repo context", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue standalone: %v", err)
+	}
+	missingRepoWorkflow := defaultPromptWorkflowForTest()
+	missingRepoWorkflow.Path = ""
+	if err := runner.recoverWorkspaceToCurrentRoot(context.Background(), missingRepoWorkflow, standalone, foreignPath, targetPath, targetRoot); err == nil || !strings.Contains(err.Error(), "missing repository path") {
+		t.Fatalf("expected missing repo context to fail recovery, got %v", err)
+	}
+	if err := runner.recoverWorkspaceToCurrentRoot(context.Background(), workflow, issue, foreignPath, filepath.Join(targetRoot, "..", "outside"), targetRoot); err == nil || !strings.Contains(err.Error(), "workspace path escape") {
+		t.Fatalf("expected escaped target path to fail recovery, got %v", err)
+	}
+}
+
+func TestRecoverWorkspaceToCurrentRootPropagatesMoveFailure(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Recover workspace move failure", "", 0, nil)
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	targetRoot := filepath.Join(t.TempDir(), "recover-target-root")
+	targetPath := filepath.Join(targetRoot, "locked-parent", "workspace")
+	if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll target root: %v", err)
+	}
+	lockedParent := filepath.Dir(targetPath)
+	if err := os.Chmod(lockedParent, 0o555); err != nil {
+		t.Fatalf("Chmod locked parent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(lockedParent, 0o755)
+	})
+	if err := runner.recoverWorkspaceToCurrentRoot(context.Background(), workflow, issue, workspace.Path, targetPath, targetRoot); err == nil || !strings.Contains(err.Error(), "remove target workspace") {
+		t.Fatalf("expected move failure to propagate, got %v", err)
+	}
+}
+
+func TestGetOrCreateWorkspaceFailsOutsideCurrentRootWithoutRepoContext(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, err := store.CreateIssue("", "", "Missing repo context", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	foreignPath := filepath.Join(t.TempDir(), "foreign-workspaces", sanitizeWorkspaceKey(issue.Identifier))
+	if _, err := store.CreateWorkspace(issue.ID, foreignPath); err != nil {
+		t.Fatalf("CreateWorkspace foreign path: %v", err)
+	}
+
+	workflow := defaultPromptWorkflowForTest()
+	workflow.Path = ""
+	workflow.Config.Workspace.Root = filepath.Join(t.TempDir(), "new-workspace-root")
+
+	if _, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue); err == nil || !strings.Contains(err.Error(), "workspace_bootstrap: missing repository path") {
+		t.Fatalf("expected missing repo context to fail workspace bootstrap, got %v", err)
+	}
+	events, err := store.ListIssueRuntimeEvents(issue.ID, 10)
+	if err != nil {
+		t.Fatalf("ListIssueRuntimeEvents: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "workspace_bootstrap_failed" {
+			found = true
+			if event.Payload["target_path"] == "" {
+				t.Fatalf("expected target_path in failure payload, got %#v", event.Payload)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected workspace_bootstrap_failed event, got %+v", events)
+	}
+}
+
+func TestRemoveManagedWorkspaceRemovesLinkedWorktree(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Remove linked workspace", "", 0, nil)
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	if err := removeManagedWorkspace(context.Background(), workspace.Path); err != nil {
+		t.Fatalf("removeManagedWorkspace linked worktree: %v", err)
+	}
+	if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected linked workspace path removed, got %v", err)
+	}
+	if output := runGitForTest(t, repoPath, "worktree", "list", "--porcelain"); strings.Contains(output, workspace.Path) {
+		t.Fatalf("expected linked worktree removed from listing, got %q", output)
+	}
+}
+
+func TestResolveRepoPathForIssueBranches(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, err := store.CreateProject("Platform", "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	projectIssue, err := store.CreateIssue(project.ID, "", "Repo path project", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue project: %v", err)
+	}
+	if got, err := runner.resolveRepoPathForIssue(nil, projectIssue); err != nil || got != repoPath {
+		t.Fatalf("expected project repo path %s, got %q err=%v", repoPath, got, err)
+	}
+
+	workflow := defaultPromptWorkflowForTest()
+	workflow.Path = filepath.Join(repoPath, "maestro.yml")
+	if got, err := runner.resolveRepoPathForIssue(workflow, &kanban.Issue{}); err != nil || got != repoPath {
+		t.Fatalf("expected workflow repo path %s, got %q err=%v", repoPath, got, err)
+	}
+	if _, err := runner.resolveRepoPathForIssue(&config.Workflow{}, &kanban.Issue{}); err == nil || !strings.Contains(err.Error(), "missing repository path") {
+		t.Fatalf("expected missing repo path error, got %v", err)
+	}
+}
+
 func TestGetOrCreateWorkspaceFallsBackAfterInsertError(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Workspace insert fallback", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 	failWorkspaceInsertsAfterRowForTest(t, store.DBPath(), issue.ID)
 
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
@@ -1772,7 +2181,10 @@ func TestGetOrCreateWorkspaceFallsBackAfterInsertError(t *testing.T) {
 func TestGetOrCreateWorkspaceAfterCreateHookError(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Workspace hook error", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 	workflow.Config.Hooks.AfterCreate = "exit 1"
 
 	if _, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue); err == nil || !strings.Contains(err.Error(), "workspace hook failed") {
@@ -1783,7 +2195,10 @@ func TestGetOrCreateWorkspaceAfterCreateHookError(t *testing.T) {
 func TestGetOrCreateWorkspaceFailsWhenRepoBootstrapLockUnavailable(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Workspace lock error", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 
 	if _, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue); err != nil {
 		t.Fatalf("getOrCreateWorkspace initial: %v", err)
@@ -1889,7 +2304,10 @@ func TestRunnerHelperBranchCoverage(t *testing.T) {
 func TestWorkspaceReuseSwitchesToExistingBranch(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Reuse existing branch", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
@@ -1920,7 +2338,10 @@ func TestWorkspaceReuseSwitchesToExistingBranch(t *testing.T) {
 func TestWorkspaceReuseCreatesBranchFromDetachedHead(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Reuse detached head branch", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
@@ -1951,7 +2372,10 @@ func TestWorkspaceReuseCreatesBranchFromDetachedHead(t *testing.T) {
 func TestWorkspaceBootstrapUsesExistingBranchWithoutRefresh(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Existing branch bootstrap", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 	branchName := deterministicIssueBranch(issue)
 	runGitForTest(t, repoPath, "branch", branchName, "main")
 
@@ -1967,7 +2391,10 @@ func TestWorkspaceBootstrapUsesExistingBranchWithoutRefresh(t *testing.T) {
 func TestWorkspaceReuseRenamesMissingBranch(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Rename missing branch", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
@@ -1997,7 +2424,10 @@ func TestWorkspaceReuseRenamesMissingBranch(t *testing.T) {
 func TestWorkspaceReuseRecordsBranchSwitchBlockedRecovery(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Blocked branch recovery", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
 	if err != nil {
@@ -2056,7 +2486,10 @@ func TestWorkspaceReuseRecordsBranchSwitchBlockedRecovery(t *testing.T) {
 func TestWorkspaceReuseFailsWhenCurrentBranchCannotBeRead(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Unreadable current branch", "", 0, nil)
-	workflow := defaultPromptWorkflowForTest()
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
 
 	if _, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue); err != nil {
 		t.Fatalf("getOrCreateWorkspace initial: %v", err)
