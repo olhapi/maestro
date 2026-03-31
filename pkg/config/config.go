@@ -408,7 +408,11 @@ func parseWorkflowPayload(path, content string) (*workflowPayload, error) {
 		return nil, fmt.Errorf("template_parse_error: %w", err)
 	}
 
-	cfg.Workspace.Root = resolvePathValue(filepath.Dir(path), cfg.Workspace.Root, DefaultConfig().Workspace.Root)
+	root, err := resolveWorkspaceRootPath(filepath.Dir(path), cfg.Workspace.Root)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Workspace.Root = root
 	return &workflowPayload{Config: cfg, Prompt: prompt, Raw: normalized}, nil
 }
 
@@ -1015,6 +1019,28 @@ func resolvePathValue(baseDir, raw, fallback string) string {
 		baseDir, _ = os.Getwd()
 	}
 	return filepath.Clean(filepath.Join(baseDir, value))
+}
+
+func resolveWorkspaceRootPath(baseDir, raw string) (string, error) {
+	value := resolvePathValue(baseDir, raw, DefaultConfig().Workspace.Root)
+	// Reject unresolved env segments so workspace bootstrap never creates literal "$VAR" directories.
+	if hasUnresolvedPathSegment(value) {
+		return "", fmt.Errorf("workspace.root contains unresolved environment variable in %q", value)
+	}
+	return value, nil
+}
+
+func hasUnresolvedPathSegment(path string) bool {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "" || cleaned == "." {
+		return false
+	}
+	for _, segment := range strings.Split(cleaned, string(filepath.Separator)) {
+		if strings.HasPrefix(segment, "$") {
+			return true
+		}
+	}
+	return false
 }
 
 func expandPathValue(value string) string {

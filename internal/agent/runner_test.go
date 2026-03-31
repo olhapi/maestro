@@ -1933,7 +1933,7 @@ func TestResolveRepoDefaultBranchFallsBackToCurrentCustomBranch(t *testing.T) {
 	}
 }
 
-func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
+func TestWorkspaceReinitializesManagedDirectoryWithoutLegacyBackup(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Legacy workspace", "", 0, nil)
 	legacyPath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
@@ -1963,11 +1963,8 @@ func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Glob preserved workspace: %v", err)
 	}
-	if len(preserved) != 1 {
-		t.Fatalf("expected one preserved workspace, got %v", preserved)
-	}
-	if data, err := os.ReadFile(filepath.Join(preserved[0], "legacy.txt")); err != nil || string(data) != "stale" {
-		t.Fatalf("expected preserved legacy content, got data=%q err=%v", string(data), err)
+	if len(preserved) != 0 {
+		t.Fatalf("expected no preserved workspace backup, got %v", preserved)
 	}
 }
 
