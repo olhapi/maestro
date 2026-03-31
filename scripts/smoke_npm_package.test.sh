@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/smoke_npm_registry_install.sh"
+SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/smoke_npm_package.sh"
 
 fail() {
   printf 'test: %s\n' "$*" >&2
@@ -32,20 +32,29 @@ write_mock_commands() {
   cat >"$bin_dir/node" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'node %s\n' "$*" >>"$LOG_FILE"
 exit 0
 EOF
 
   cat >"$bin_dir/npm" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'npm %s\n' "$*" >>"$LOG_FILE"
+if [[ "$1" == "init" || "$1" == "install" ]]; then
+  exit 0
+fi
 exit 0
 EOF
 
   cat >"$bin_dir/npx" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'npx %s\n' "$*" >>"$LOG_FILE"
 if [[ "$*" == *"maestro version"* ]]; then
   printf 'maestro 0.0.0-ci\n'
+  exit 0
+fi
+if [[ "$*" == *"maestro --help"* ]]; then
   exit 0
 fi
 if [[ "$*" == *"maestro does-not-exist"* ]]; then
@@ -57,7 +66,7 @@ EOF
   chmod +x "$bin_dir/node" "$bin_dir/npm" "$bin_dir/npx"
 }
 
-test_registry_smoke_requires_only_root_tarball() {
+test_smoke_package_runs_with_a_root_tarball() {
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   local pack_dir="$tmp_dir/dist/npm"
@@ -69,32 +78,17 @@ test_registry_smoke_requires_only_root_tarball() {
   write_mock_commands "$bin_dir"
   : >"$log_file"
 
-  if ! PATH="$bin_dir:$PATH" MAESTRO_NODE_BIN="$bin_dir/node" PACK_DIR="$pack_dir" MAESTRO_SMOKE_IMAGE="maestro-smoke:test" LOG_FILE="$log_file" "$SCRIPT_UNDER_TEST" 0.0.0-ci >"$output" 2>&1; then
+  if ! PATH="$bin_dir:$PATH" \
+    MAESTRO_NODE_BIN="$bin_dir/node" \
+    PACK_DIR="$pack_dir" \
+    MAESTRO_SMOKE_IMAGE="maestro-smoke:test" \
+    LOG_FILE="$log_file" \
+    "$SCRIPT_UNDER_TEST" 0.0.0-ci >"$output" 2>&1; then
     cat "$output" >&2
     fail "expected smoke script to succeed with the launcher tarball"
   fi
 
-  assert_contains "$output" "Registry smoke test passed"
+  assert_contains "$output" "Smoke test passed"
 }
 
-test_registry_smoke_requires_root_tarball() {
-  local tmp_dir
-  tmp_dir="$(mktemp -d)"
-  local pack_dir="$tmp_dir/dist/npm"
-  local output="$tmp_dir/output.log"
-
-  if PATH="$PATH" PACK_DIR="$pack_dir" "$SCRIPT_UNDER_TEST" 0.0.0-ci >"$output" 2>&1; then
-    cat "$output" >&2
-    fail "expected smoke script to fail when the launcher tarball is missing"
-  fi
-
-  assert_contains "$output" "missing root tarball:"
-  assert_contains "$output" "olhapi-maestro-0.0.0-ci.tgz"
-}
-
-main() {
-  test_registry_smoke_requires_only_root_tarball
-  test_registry_smoke_requires_root_tarball
-}
-
-main "$@"
+test_smoke_package_runs_with_a_root_tarball

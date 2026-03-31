@@ -21,6 +21,9 @@ The installed command name is still `maestro`.
 
 This package installs a thin host launcher, not a native platform binary. Docker is required for normal CLI use.
 
+The npm launcher requires Node 24 or newer because it uses the built-in
+`node:sqlite` module to inspect Maestro workflows before Docker starts.
+
 The launcher resolves its runtime image in this order:
 
 - `MAESTRO_IMAGE`

@@ -20,7 +20,7 @@
     "verify:website": "pnpm website:check && pnpm website:test",
     "verify:web": "pnpm lint && pnpm test && pnpm check && pnpm smoke",
     "verify:go": "make build && make test && make test-cover && make test-race",
-    "verify:package": "node --test packaging/npm/root/lib/*.test.js scripts/smoke_installed_dashboard.test.mjs && bash ./scripts/ensure_dashboard_dist.test.sh && bash ./scripts/install_maestro.test.sh && bash ./scripts/release_dockerfile.test.sh && bash ./scripts/package_npm_release.test.sh && bash ./scripts/publish_npm_release.test.sh && bash ./scripts/smoke_npm_registry_install.test.sh && bash ./scripts/git-hooks/pre-commit.test.sh && bash ./scripts/git-hooks/pre-push.test.sh",
+    "verify:package": "node --test packaging/npm/root/lib/*.test.js scripts/smoke_installed_dashboard.test.mjs && bash ./scripts/ensure_dashboard_dist.test.sh && bash ./scripts/install_maestro.test.sh && bash ./scripts/release_dockerfile.test.sh && bash ./scripts/package_npm_release.test.sh && bash ./scripts/publish_npm_release.test.sh && bash ./scripts/smoke_npm_package.test.sh && bash ./scripts/smoke_npm_registry_install.test.sh && bash ./scripts/git-hooks/pre-commit.test.sh && bash ./scripts/git-hooks/pre-push.test.sh",
     "release:npm": "./scripts/publish_npm_release.sh",
     "hooks:pre-commit": "./scripts/git-hooks/pre-commit.sh",
     "hooks:pre-push": "./scripts/git-hooks/pre-push.sh",

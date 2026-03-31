@@ -16,6 +16,10 @@ The standard Go build/test path uses a pure-Go SQLite driver now. Only the
 standalone shell scripts under `scripts/` still shell out to the `sqlite3`
 CLI when you run them directly.
 
+The npm launcher uses Node 24's built-in `node:sqlite` to inspect the Maestro
+database before Docker starts, so the launcher itself no longer depends on the
+`sqlite3` CLI.
+
 `WORKFLOW.md` still governs orchestration behavior. Its `tracker.kind` remains `kanban`, which is the local tracker used for every project.
 
 ## HTTP surfaces
@@ -121,6 +125,11 @@ Operational behavior:
 ## MCP attach model
 
 `maestro run` is the only daemon for a given database. It starts a private MCP endpoint bound to loopback and records the daemon metadata for that database.
+
+At launch time the npm wrapper does a one-time preflight pass over the database
+and workflow files to mount repo and worktree paths before Docker starts. That
+keeps custom `workspace.root` values working without asking users to install a
+separate SQLite CLI.
 
 `maestro mcp` does not start a separate server. It discovers the live daemon for the same `--db`, authenticates to the private MCP endpoint, and bridges that session over stdio for MCP clients.
 

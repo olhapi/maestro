@@ -2,10 +2,14 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 const { pathToFileURL } = require("node:url");
 
 const DEFAULT_HTTP_PORT = "8787";
+const DEFAULT_DATABASE_PATH = "~/.maestro/maestro.db";
+const DEFAULT_WORKSPACE_ROOT = "~/.maestro/worktrees";
 const HOST_GATEWAY_NAME = "host.docker.internal";
+const UNRESOLVED_ENV_TOKEN_PATTERN = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/;
 const POSIX_PATH_FLAGS = new Map([
   ["--db", { usage: "file-parent" }],
   ["--workflow", { usage: "file-parent" }],
@@ -18,44 +22,74 @@ const POSIX_PATH_FLAGS = new Map([
 const ROOT_FLAGS_WITH_VALUE = new Set(["--db", "--api-url", "--log-level"]);
 const ROOT_BOOL_FLAGS = new Set(["--json", "--wide", "--quiet"]);
 
-function normalizeHostPath(rawPath, options = {}) {
-  const cwd = options.cwd || process.cwd();
+function pathModuleForPlatform(platform = process.platform) {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function expandPathValue(value, options = {}) {
   const env = options.env || process.env;
   const homeDir = options.homeDir || os.homedir();
   const platform = options.platform || process.platform;
-  let value = String(rawPath || "").trim();
-  if (!value) {
-    return value;
+  const pathModule = pathModuleForPlatform(platform);
+  let result = String(value || "").trim();
+  if (!result) {
+    return result;
   }
 
-  if (value.startsWith("$")) {
-    const match = value.match(/^\$([A-Za-z_][A-Za-z0-9_]*)(.*)$/);
-    if (match && env[match[1]]) {
-      value = `${env[match[1]]}${match[2]}`;
+  result = result.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (match, braced, bare) => {
+    const name = braced || bare;
+    const resolved = env[name];
+    if (typeof resolved === "string" && resolved.trim() !== "") {
+      return resolved;
     }
+    return match;
+  });
+
+  if (result === "~") {
+    return homeDir;
+  }
+  if (result.startsWith("~/") || result.startsWith("~\\")) {
+    return pathModule.join(homeDir, result.slice(2));
   }
 
-  if (value === "~") {
-    value = homeDir;
-  } else if (value.startsWith("~/") || value.startsWith("~\\")) {
-    value = path.join(homeDir, value.slice(2));
-  }
-
-  if (platform === "win32") {
-    if (path.win32.isAbsolute(value)) {
-      return path.win32.normalize(value);
-    }
-    return path.win32.resolve(cwd, value);
-  }
-
-  if (path.posix.isAbsolute(value)) {
-    return path.posix.normalize(value);
-  }
-  return path.posix.resolve(cwd, value);
+  return result;
 }
 
-function isWithinPath(parentPath, candidatePath, platform = process.platform) {
-  const pathModule = platform === "win32" ? path.win32 : path.posix;
+function resolvePathValue(baseDir, raw, fallback, options = {}) {
+  const platform = options.platform || process.platform;
+  const pathModule = pathModuleForPlatform(platform);
+  let value = String(raw || "").trim();
+  if (value === "") {
+    value = String(fallback || "").trim();
+  }
+  if (value === "") {
+    return value;
+  }
+  value = expandPathValue(value, options);
+  if (value === "") {
+    return value;
+  }
+  if (value.startsWith("$")) {
+    return pathModule.normalize(value);
+  }
+  if (pathModule.isAbsolute(value)) {
+    return pathModule.normalize(value);
+  }
+  if (!baseDir) {
+    baseDir = options.cwd || process.cwd();
+  }
+  return pathModule.normalize(pathModule.join(baseDir, value));
+}
+
+function hasUnresolvedExpandedEnvPath(_rawPath, resolvedPath, _options = {}) {
+  return UNRESOLVED_ENV_TOKEN_PATTERN.test(String(resolvedPath || "").trim());
+}
+
+function normalizeHostPath(rawPath, options = {}) {
+  return resolvePathValue(options.cwd || process.cwd(), rawPath, "", options);
+}
+
+function isWithinPath(parentPath, candidatePath, pathModule = path.posix) {
   const relative = pathModule.relative(parentPath, candidatePath);
   return relative === "" || (!relative.startsWith("..") && !pathModule.isAbsolute(relative));
 }
@@ -72,22 +106,23 @@ function containerHomeDir(options = {}) {
 function toContainerPath(hostPath, options = {}) {
   const platform = options.platform || process.platform;
   const homeDir = options.homeDir || os.homedir();
+  const hostPathModule = pathModuleForPlatform(platform);
 
   if (platform !== "win32") {
     return hostPath;
   }
 
-  const normalized = path.win32.resolve(hostPath);
-  const normalizedHome = path.win32.resolve(homeDir);
-  if (isWithinPath(normalizedHome, normalized, platform)) {
-    const relative = path.win32.relative(normalizedHome, normalized);
-    const segments = relative === "" ? [] : relative.split(path.win32.sep);
+  const normalized = hostPathModule.resolve(hostPath);
+  const normalizedHome = hostPathModule.resolve(homeDir);
+  if (isWithinPath(normalizedHome, normalized, hostPathModule)) {
+    const relative = hostPathModule.relative(normalizedHome, normalized);
+    const segments = relative === "" ? [] : relative.split(hostPathModule.sep);
     return path.posix.join("/maestro-host/home", ...segments);
   }
 
   const drive = normalized.slice(0, 1).toLowerCase();
   const remainder = normalized.slice(2).replace(/^\\+/, "");
-  const segments = remainder === "" ? [] : remainder.split(path.win32.sep);
+  const segments = remainder === "" ? [] : remainder.split(hostPathModule.sep);
   return path.posix.join("/maestro-host", drive, ...segments);
 }
 
@@ -95,13 +130,14 @@ function createMountCollector(options = {}) {
   const platform = options.platform || process.platform;
   const homeDir = options.homeDir || os.homedir();
   const fsModule = options.fs || fs;
+  const hostPathModule = pathModuleForPlatform(platform);
   const mounts = new Map();
 
   function add(sourcePath, mountOptions = {}) {
     let resolvedSource = sourcePath;
     let resolvedTarget = toContainerPath(sourcePath, { platform, homeDir });
     if (mountOptions.usage === "file-parent") {
-      resolvedSource = path.dirname(sourcePath);
+      resolvedSource = hostPathModule.dirname(resolvedSource);
       resolvedTarget = path.posix.dirname(resolvedTarget);
       fsModule.mkdirSync(resolvedSource, { recursive: true });
     } else if (mountOptions.usage === "dir") {
@@ -109,6 +145,17 @@ function createMountCollector(options = {}) {
     } else if (mountOptions.usage === "exact-file") {
       if (!fsModule.existsSync(resolvedSource)) {
         return;
+      }
+    }
+
+    for (const existing of mounts.values()) {
+      if (isWithinPath(existing.source, resolvedSource, hostPathModule) && isWithinPath(existing.target, resolvedTarget, path.posix)) {
+        return;
+      }
+    }
+    for (const [key, existing] of mounts) {
+      if (isWithinPath(resolvedSource, existing.source, hostPathModule) && isWithinPath(resolvedTarget, existing.target, path.posix)) {
+        mounts.delete(key);
       }
     }
 
@@ -312,6 +359,316 @@ function collectCommandPositionals(argv, commandPath) {
   return positionals;
 }
 
+function findFlagValue(argv, flag) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (token === flag) {
+      return typeof argv[i + 1] === "string" ? argv[i + 1] : "";
+    }
+    if (token.startsWith(`${flag}=`)) {
+      return token.slice(flag.length + 1);
+    }
+  }
+  return "";
+}
+
+function parseWorkflowFrontMatter(content) {
+  const normalized = String(content || "").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) {
+    return "";
+  }
+
+  const end = normalized.indexOf("\n---\n", 4);
+  return end === -1 ? normalized.slice(4) : normalized.slice(4, end);
+}
+
+function parseWorkflowScalar(rawValue, workflowPath, keyName) {
+  let value = String(rawValue || "").trim();
+  if (!value) {
+    return null;
+  }
+  if (value.startsWith("[") || value.startsWith("{") || value === "|" || value === ">") {
+    throw new Error(`${keyName} must be a string at ${workflowPath}`);
+  }
+
+  if (value.startsWith('"')) {
+    if (!value.endsWith('"')) {
+      throw new Error(`${keyName} must be a string at ${workflowPath}`);
+    }
+    value = value.slice(1, -1).replace(/\\(["\\/bfnrt])/g, (match, escape) => {
+      switch (escape) {
+        case "b":
+          return "\b";
+        case "f":
+          return "\f";
+        case "n":
+          return "\n";
+        case "r":
+          return "\r";
+        case "t":
+          return "\t";
+        default:
+          return escape;
+      }
+    });
+    return value;
+  }
+
+  if (value.startsWith("'")) {
+    if (!value.endsWith("'")) {
+      throw new Error(`${keyName} must be a string at ${workflowPath}`);
+    }
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+
+  return value;
+}
+
+function nextSignificantLine(lines, startIndex) {
+  for (let i = startIndex; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    return {
+      indent: lines[i].match(/^[ \t]*/)?.[0].length || 0,
+      index: i,
+      trimmed,
+    };
+  }
+  return null;
+}
+
+function parseWorkflowWorkspaceRoot(workflowPath, content, options = {}) {
+  const pathModule = pathModuleForPlatform(options.platform || process.platform);
+  const workflowDir = pathModule.dirname(workflowPath);
+  const frontMatter = parseWorkflowFrontMatter(content);
+  if (!frontMatter) {
+    return resolvePathValue(workflowDir, "", DEFAULT_WORKSPACE_ROOT, options);
+  }
+
+  const lines = frontMatter.split("\n");
+  let workspaceRoot = null;
+  let inWorkspaceBlock = false;
+  let workspaceIndent = 0;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const indent = line.match(/^[ \t]*/)?.[0].length || 0;
+    if (indent === 0) {
+      inWorkspaceBlock = false;
+
+      const workspaceRootMatch = trimmed.match(/^workspace_root\s*:\s*(.*)$/);
+      if (workspaceRootMatch) {
+        workspaceRoot = parseWorkflowScalar(workspaceRootMatch[1], workflowPath, "workspace.root");
+        continue;
+      }
+
+      const workspaceMatch = trimmed.match(/^workspace\s*:\s*(.*)$/);
+      if (!workspaceMatch) {
+        continue;
+      }
+
+      const inline = workspaceMatch[1].trim();
+      if (!inline) {
+        inWorkspaceBlock = true;
+        workspaceIndent = indent;
+        continue;
+      }
+
+      const inlineRootMatch = inline.match(/^\{\s*root\s*:\s*(.*?)\s*\}$/) || inline.match(/^root\s*:\s*(.*)$/);
+      if (inlineRootMatch) {
+        workspaceRoot = parseWorkflowScalar(inlineRootMatch[1], workflowPath, "workspace.root");
+      }
+      continue;
+    }
+
+    if (!inWorkspaceBlock || indent <= workspaceIndent) {
+      continue;
+    }
+
+    const rootMatch = trimmed.match(/^root\s*:\s*(.*)$/);
+    if (!rootMatch) {
+      continue;
+    }
+
+    const rawRootValue = rootMatch[1];
+    if (!rawRootValue.trim()) {
+      const next = nextSignificantLine(lines, i + 1);
+      if (next && next.indent > indent) {
+        throw new Error(`workspace.root must be a string at ${workflowPath}`);
+      }
+      workspaceRoot = null;
+      continue;
+    }
+
+    workspaceRoot = parseWorkflowScalar(rawRootValue, workflowPath, "workspace.root");
+  }
+
+  const resolved = resolvePathValue(workflowDir, workspaceRoot, DEFAULT_WORKSPACE_ROOT, options);
+  if (workspaceRoot != null && hasUnresolvedExpandedEnvPath(workspaceRoot, resolved, options)) {
+    throw new Error(`failed to resolve workspace root: unresolved environment variable in ${JSON.stringify(resolved)}`);
+  }
+
+  return resolved;
+}
+
+function resolveWorkflowWorkspaceRoot(workflowPath, options = {}) {
+  const fsModule = options.fs || fs;
+  const pathModule = pathModuleForPlatform(options.platform || process.platform);
+  const workflowDir = pathModule.dirname(workflowPath);
+  const defaultRoot = resolvePathValue(workflowDir, "", DEFAULT_WORKSPACE_ROOT, options);
+
+  let stat;
+  try {
+    stat = fsModule.statSync(workflowPath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return defaultRoot;
+    }
+    throw new Error(`failed to inspect workflow file ${workflowPath}: ${error.message}`);
+  }
+
+  if (!stat.isFile()) {
+    throw new Error(`workflow path is not a file: ${workflowPath}`);
+  }
+
+  let content;
+  try {
+    content = fsModule.readFileSync(workflowPath, "utf8");
+  } catch (error) {
+    throw new Error(`failed to read workflow file ${workflowPath}: ${error.message}`);
+  }
+
+  return parseWorkflowWorkspaceRoot(workflowPath, content, options);
+}
+
+function resolveDatabasePath(argv, options = {}) {
+  const rawDbPath = findFlagValue(argv, "--db");
+  const cwd = options.cwd || process.cwd();
+  const resolved = resolvePathValue(cwd, rawDbPath, DEFAULT_DATABASE_PATH, options);
+  if (hasUnresolvedExpandedEnvPath(rawDbPath, resolved, options)) {
+    throw new Error(`failed to resolve database path: unresolved environment variable in ${JSON.stringify(resolved)}`);
+  }
+  return resolved;
+}
+
+function shouldSkipRunDatabaseDiscovery(error) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  if (error.code !== "ERR_SQLITE_ERROR") {
+    return false;
+  }
+  return /no such table: projects/.test(String(error.message || ""));
+}
+
+function discoverProjectWorkflowsFromDatabase(dbPath, options = {}) {
+  let db;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const pathModule = pathModuleForPlatform(options.platform || process.platform);
+    const tableInfo = db.prepare("PRAGMA table_info(projects)").all();
+    const columns = new Set(tableInfo.map((row) => String(row.name || "").trim()).filter(Boolean));
+    if (!columns.has("repo_path")) {
+      return [];
+    }
+
+    const projectWorkflows = [];
+    const rows = columns.has("workflow_path")
+      ? db.prepare("SELECT repo_path, workflow_path FROM projects").all()
+      : db.prepare("SELECT repo_path FROM projects").all();
+    for (const row of rows) {
+      const repoPath = String(row.repo_path || "").trim();
+      if (!repoPath) {
+        continue;
+      }
+      const workflowPath = columns.has("workflow_path")
+        ? String(row.workflow_path || "").trim() || pathModule.join(repoPath, "WORKFLOW.md")
+        : pathModule.join(repoPath, "WORKFLOW.md");
+      projectWorkflows.push({ repoPath, workflowPath });
+    }
+    return projectWorkflows;
+  } catch (error) {
+    if (shouldSkipRunDatabaseDiscovery(error)) {
+      return [];
+    }
+    throw new Error(`failed to inspect Maestro database at ${dbPath}: ${error.message}`);
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+}
+
+function addWorkflowMounts(workflowPath, mountCollector, options = {}) {
+  const fsModule = options.fs || fs;
+  const pathModule = pathModuleForPlatform(options.platform || process.platform);
+  const workflowDir = pathModule.dirname(workflowPath);
+  mountCollector.add(workflowDir, { usage: "dir" });
+  const root = resolveWorkflowWorkspaceRoot(workflowPath, {
+    cwd: options.cwd,
+    env: options.env,
+    fs: fsModule,
+    homeDir: options.homeDir,
+    platform: options.platform,
+  });
+  mountCollector.add(root, { usage: "dir" });
+}
+
+function preflightRunMounts(argv, commandPath, mountCollector, options = {}) {
+  if (commandPath[0] !== "run") {
+    return;
+  }
+
+  const fsModule = options.fs || fs;
+  const cwd = options.cwd || process.cwd();
+  const env = options.env || process.env;
+  const homeDir = options.homeDir || os.homedir();
+  const platform = options.platform || process.platform;
+  const positionals = collectCommandPositionals(argv, commandPath);
+  const scopedRepoPath = positionals[0] ? normalizeHostPath(positionals[0].token, { cwd, env, homeDir, platform }) : "";
+  const rawWorkflowPath = findFlagValue(argv, "--workflow").trim();
+  const explicitWorkflowPath = rawWorkflowPath ? normalizeHostPath(rawWorkflowPath, { cwd, env, homeDir, platform }) : "";
+  const pathModule = pathModuleForPlatform(platform);
+
+  if (scopedRepoPath) {
+    const workflowPath = explicitWorkflowPath || pathModule.join(scopedRepoPath, "WORKFLOW.md");
+    mountCollector.add(scopedRepoPath, { usage: "dir" });
+    addWorkflowMounts(workflowPath, mountCollector, { cwd, env, fs: fsModule, homeDir, platform });
+    return;
+  }
+
+  if (explicitWorkflowPath) {
+    addWorkflowMounts(explicitWorkflowPath, mountCollector, { cwd, env, fs: fsModule, homeDir, platform });
+  }
+
+  const dbPath = resolveDatabasePath(argv, { cwd, env, homeDir, platform });
+  if (!fsModule.existsSync(dbPath)) {
+    return;
+  }
+
+  for (const project of discoverProjectWorkflowsFromDatabase(dbPath, { platform })) {
+    const repoPath = normalizeHostPath(project.repoPath, { cwd, env, homeDir, platform });
+    if (!repoPath) {
+      continue;
+    }
+    mountCollector.add(repoPath, { usage: "dir" });
+    addWorkflowMounts(normalizeHostPath(project.workflowPath, { cwd, env, homeDir, platform }), mountCollector, {
+      cwd,
+      env,
+      fs: fsModule,
+      homeDir,
+      platform,
+    });
+  }
+}
+
 async function reservePort() {
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -421,6 +778,13 @@ async function planDockerInvocation(argv, options = {}) {
   }
 
   mountCollector.add(cwd, { usage: "dir" });
+  preflightRunMounts(argv, commandPath, mountCollector, {
+    cwd,
+    env,
+    fs: fsModule,
+    homeDir,
+    platform,
+  });
   const containerCwd = toContainerPath(cwd, { platform, homeDir });
   dockerArgs.push("--workdir", containerCwd);
 

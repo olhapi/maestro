@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=./lib/node_bin.sh
+. "$ROOT_DIR/scripts/lib/node_bin.sh"
 # shellcheck source=./lib/npm_safe_env.sh
 . "$ROOT_DIR/scripts/lib/npm_safe_env.sh"
 PACK_DIR="${PACK_DIR:-$ROOT_DIR/dist/npm}"
@@ -42,6 +44,8 @@ if [[ ! -f "$ROOT_TARBALL" ]]; then
   echo "missing root tarball: $ROOT_TARBALL" >&2
   exit 1
 fi
+
+ensure_maestro_node_bin
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {

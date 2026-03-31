@@ -8,6 +8,10 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(repo_root)
 cd "$ROOT"
 
+# shellcheck source=/dev/null
+. "$ROOT/scripts/lib/node_bin.sh"
+ensure_maestro_node_bin
+
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/maestro-pre-push-package.XXXXXX")
 cleanup() {
   rm -rf "$TMP_ROOT"

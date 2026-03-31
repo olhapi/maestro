@@ -278,6 +278,58 @@ func TestAwaitTurnCompletionWaitsBrieflyForCleanExitAfterEOF(t *testing.T) {
 	}
 }
 
+func TestAwaitTurnCompletionWaitsForSlowerCleanExitAfterEOF(t *testing.T) {
+	client := &Client{
+		cfg: ClientConfig{
+			ReadTimeout: 50 * time.Millisecond,
+			TurnTimeout: 500 * time.Millisecond,
+		},
+		lines:   make(chan string),
+		lineErr: make(chan error, 1),
+		waitCh:  make(chan error, 1),
+		session: &Session{ThreadID: "thread-eof-slow", TurnID: "turn-eof-slow", MaxHistory: 4},
+		logger:  discardLogger(),
+	}
+	close(client.lines)
+	client.lineErr <- io.EOF
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		client.waitCh <- nil
+	}()
+
+	if err := client.awaitTurnCompletion(context.Background()); err != nil {
+		t.Fatalf("expected slower clean EOF to be treated as completion, got %v", err)
+	}
+}
+
+func TestAwaitTurnCompletionLimitsCleanExitWaitToRemainingTimeout(t *testing.T) {
+	client := &Client{
+		cfg: ClientConfig{
+			ReadTimeout: 50 * time.Millisecond,
+			TurnTimeout: 100 * time.Millisecond,
+		},
+		lines:   make(chan string),
+		lineErr: make(chan error, 1),
+		waitCh:  make(chan error, 1),
+		session: &Session{ThreadID: "thread-eof-timeout", TurnID: "turn-eof-timeout", MaxHistory: 4},
+		logger:  discardLogger(),
+	}
+	close(client.lines)
+	client.lineErr <- io.EOF
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		client.waitCh <- nil
+	}()
+
+	start := time.Now()
+	if err := client.awaitTurnCompletion(context.Background()); err == nil {
+		t.Fatal("expected late clean exit to respect the turn timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("expected EOF fallback to stop near the turn timeout, got %s", elapsed)
+	}
+}
+
 func TestHandleRequestAutoApprovalAndToolExecution(t *testing.T) {
 	makeClient := func() (*Client, *bufferWriteCloser) {
 		stdin := &bufferWriteCloser{}

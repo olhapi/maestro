@@ -41,6 +41,10 @@ Maestro keeps all work local. Projects, epics, issues, comments, and attachments
 - the private loopback-only MCP transport endpoint
 - the public HTTP server and embedded dashboard, which default to port `8787` unless you override `--port`
 
+Before Docker starts, the npm launcher does a single preflight pass over the
+database and workflow files so it can mount repo and worktree roots, including
+custom `workspace.root` values, without relying on a separate SQLite CLI.
+
 `maestro mcp` does not start a separate daemon. It attaches to the live `maestro run` process for the same store and bridges that daemon over stdio for MCP clients.
 
 Operationally, that means:
