@@ -163,19 +163,20 @@ func (s *Server) registerTools() {
 			"offset":     numberProperty("Number of issues to skip"),
 		}),
 		objectTool("update_issue", "Update an issue", map[string]interface{}{
-			"identifier":  stringProperty("Issue ID or identifier"),
-			"project_id":  stringProperty("Project ID"),
-			"epic_id":     stringProperty("Epic ID"),
-			"title":       stringProperty("New title"),
-			"description": stringProperty("New description"),
-			"issue_type":  stringProperty("Issue type: standard or recurring"),
-			"cron":        stringProperty("Cron schedule for recurring issues"),
-			"enabled":     booleanProperty("Enable recurring scheduling"),
-			"priority":    numberProperty("New priority"),
-			"labels":      stringArrayProperty("New labels"),
-			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
-			"branch_name": stringProperty("Branch name"),
-			"pr_url":      stringProperty("Pull request URL"),
+			"identifier":         stringProperty("Issue ID or identifier"),
+			"project_id":         stringProperty("Project ID"),
+			"epic_id":            stringProperty("Epic ID"),
+			"title":              stringProperty("New title"),
+			"description":        stringProperty("New description"),
+			"permission_profile": stringProperty("Issue permission profile: default, full-access, plan-then-full-access"),
+			"issue_type":         stringProperty("Issue type: standard or recurring"),
+			"cron":               stringProperty("Cron schedule for recurring issues"),
+			"enabled":            booleanProperty("Enable recurring scheduling"),
+			"priority":           numberProperty("New priority"),
+			"labels":             stringArrayProperty("New labels"),
+			"blocked_by":         stringArrayProperty("Issue identifiers that block this issue"),
+			"branch_name":        stringProperty("Branch name"),
+			"pr_url":             stringProperty("Pull request URL"),
 		}),
 		objectTool("attach_issue_asset", "Attach a local asset to an issue from a file path", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
@@ -1133,6 +1134,9 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	}
 	if value, ok := args["description"]; ok {
 		updates["description"] = asString(value)
+	}
+	if value, ok := args["permission_profile"]; ok {
+		updates["permission_profile"] = asString(value)
 	}
 	if value, ok := args["issue_type"]; ok {
 		updates["issue_type"] = asString(value)

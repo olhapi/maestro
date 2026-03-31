@@ -2844,6 +2844,50 @@ func TestUpdateIssueRecurringFields(t *testing.T) {
 	}
 }
 
+func TestUpdateIssuePermissionProfileViaGenericUpdateClearsPendingPlanApproval(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Permission profile", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
+	revisionRequestedAt := time.Date(2026, 3, 18, 11, 30, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override":        CollaborationModeOverridePlan,
+		"plan_approval_pending":              true,
+		"pending_plan_markdown":              "Draft plan",
+		"pending_plan_requested_at":          &requestedAt,
+		"pending_plan_revision_markdown":     "Revised plan",
+		"pending_plan_revision_requested_at": &revisionRequestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
+	}
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"permission_profile": "full-access"}); err != nil {
+		t.Fatalf("UpdateIssue permission profile: %v", err)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PermissionProfile != PermissionProfileFullAccess {
+		t.Fatalf("expected full-access permission profile, got %q", updated.PermissionProfile)
+	}
+	if updated.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected collaboration override cleared, got %q", updated.CollaborationModeOverride)
+	}
+	if updated.PlanApprovalPending || updated.PendingPlanMarkdown != "" || updated.PendingPlanRequestedAt != nil || updated.PendingPlanRevisionMarkdown != "" || updated.PendingPlanRevisionRequestedAt != nil {
+		t.Fatalf("expected pending plan state cleared, got %+v", updated)
+	}
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"permission_profile": "admin-mode"}); err == nil || !IsValidation(err) {
+		t.Fatalf("expected invalid permission profile to fail validation, got %v", err)
+	}
+}
+
 func TestUpdateIssueRecurringConversionDefaultsEnabled(t *testing.T) {
 	store := setupTestStore(t)
 

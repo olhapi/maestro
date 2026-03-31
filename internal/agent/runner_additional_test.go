@@ -1664,9 +1664,9 @@ func TestWorkspacePathUpdateAndCleanupBranches(t *testing.T) {
 	}
 }
 
-func TestGetOrCreateWorkspaceRejectsExistingPathOutsideCurrentRoot(t *testing.T) {
+func TestGetOrCreateWorkspaceRehomesExistingPathOutsideCurrentRoot(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Workspace root change", "", 0, nil)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Workspace root change", "", 0, nil)
 
 	workflow, err := runner.workflowProvider.Current()
 	if err != nil {
@@ -1680,11 +1680,74 @@ func TestGetOrCreateWorkspaceRejectsExistingPathOutsideCurrentRoot(t *testing.T)
 	if _, err := os.Stat(filepath.Join(workspace.Path, ".git")); err != nil {
 		t.Fatalf("expected initial git worktree metadata: %v", err)
 	}
+	oldPath := workspace.Path
 
 	workflow.Config.Workspace.Root = filepath.Join(t.TempDir(), "new-workspace-root")
+	expectedPath := workspacePathForIssue(workflow.Config.Workspace.Root, project, issue)
 
-	if _, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue); err == nil || !strings.Contains(err.Error(), "workspace path escape") {
-		t.Fatalf("expected stored workspace path outside the new root to be rejected, got %v", err)
+	recovered, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("expected workspace root change to recover, got %v", err)
+	}
+	if recovered.Path != expectedPath {
+		t.Fatalf("expected recovered workspace path %s, got %s", expectedPath, recovered.Path)
+	}
+	if _, err := os.Stat(filepath.Join(recovered.Path, ".git")); err != nil {
+		t.Fatalf("expected recovered git worktree metadata: %v", err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expected prior workspace path to be moved away, got %v", err)
+	}
+	stored, err := store.GetWorkspace(issue.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if stored.Path != expectedPath {
+		t.Fatalf("expected stored workspace path %s, got %s", expectedPath, stored.Path)
+	}
+}
+
+func TestGetOrCreateWorkspaceRecoversForeignPathOutsideCurrentRoot(t *testing.T) {
+	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Foreign workspace root change", "", 0, nil)
+
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	foreignPath := filepath.Join(t.TempDir(), "foreign-workspaces", sanitizeWorkspaceKey(issue.Identifier))
+	if err := os.MkdirAll(foreignPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll foreign workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(foreignPath, "note.txt"), []byte("foreign"), 0o644); err != nil {
+		t.Fatalf("WriteFile foreign note: %v", err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, foreignPath); err != nil {
+		t.Fatalf("CreateWorkspace foreign path: %v", err)
+	}
+
+	workflow.Config.Workspace.Root = filepath.Join(t.TempDir(), "new-workspace-root")
+	expectedPath := workspacePathForIssue(workflow.Config.Workspace.Root, project, issue)
+
+	recovered, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("expected foreign workspace path to recover, got %v", err)
+	}
+	if recovered.Path != expectedPath {
+		t.Fatalf("expected recovered workspace path %s, got %s", expectedPath, recovered.Path)
+	}
+	if _, err := os.Stat(filepath.Join(recovered.Path, ".git")); err != nil {
+		t.Fatalf("expected recovered git worktree metadata: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(foreignPath, "note.txt")); err != nil || string(data) != "foreign" {
+		t.Fatalf("expected foreign workspace path to remain untouched, got data=%q err=%v", string(data), err)
+	}
+	stored, err := store.GetWorkspace(issue.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if stored.Path != expectedPath {
+		t.Fatalf("expected stored workspace path %s, got %s", expectedPath, stored.Path)
 	}
 }
 
