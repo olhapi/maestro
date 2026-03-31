@@ -551,8 +551,9 @@ func TestServiceProviderBackedLifecycleBranches(t *testing.T) {
 	}
 
 	localUpdate, err := svc.UpdateIssue(context.Background(), created.Identifier, map[string]interface{}{
-		"agent_name":  "updated-agent",
-		"branch_name": "updated/branch",
+		"agent_name":         "updated-agent",
+		"branch_name":        "updated/branch",
+		"permission_profile": "full-access",
 	})
 	if err != nil {
 		t.Fatalf("UpdateIssue local-only: %v", err)
@@ -560,7 +561,7 @@ func TestServiceProviderBackedLifecycleBranches(t *testing.T) {
 	if updateCalls != 0 {
 		t.Fatalf("expected provider update to be skipped for local-only changes, got %d", updateCalls)
 	}
-	if localUpdate.AgentName != "updated-agent" || localUpdate.BranchName != "updated/branch" {
+	if localUpdate.AgentName != "updated-agent" || localUpdate.BranchName != "updated/branch" || localUpdate.PermissionProfile != kanban.PermissionProfileFullAccess {
 		t.Fatalf("expected local metadata update, got %#v", localUpdate)
 	}
 

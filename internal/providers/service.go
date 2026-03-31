@@ -1121,6 +1121,11 @@ func providerIssueLocalUpdatePayload(issue *kanban.Issue, updates map[string]int
 	addString("agent_prompt", issue.AgentPrompt)
 	addString("branch_name", issue.BranchName)
 	addString("pr_url", issue.PRURL)
+	if raw, ok := updates["permission_profile"]; ok {
+		if value, ok := stringUpdateValue(raw); ok {
+			localUpdates["permission_profile"] = value
+		}
+	}
 	return localUpdates
 }
 

@@ -3846,44 +3846,63 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 		query += ", pr_url = ?"
 		args = append(args, prURL)
 	}
-	if permissionProfile, ok := updates["permission_profile"].(PermissionProfile); ok {
-		query += ", permission_profile = ?"
-		args = append(args, NormalizePermissionProfile(string(permissionProfile)))
-	}
-	if collaborationModeOverride, ok := updates["collaboration_mode_override"].(CollaborationModeOverride); ok {
-		query += ", collaboration_mode_override = ?"
-		args = append(args, NormalizeCollaborationModeOverride(string(collaborationModeOverride)))
-	}
-	if planApprovalPending, ok := updates["plan_approval_pending"].(bool); ok {
-		query += ", plan_approval_pending = ?"
-		if planApprovalPending {
-			args = append(args, 1)
-		} else {
-			args = append(args, 0)
+	var permissionProfile PermissionProfile
+	var permissionProfileSpecified bool
+	if raw, ok := updates["permission_profile"]; ok {
+		parsed, err := ParsePermissionProfile(fmt.Sprint(raw))
+		if err != nil {
+			return err
 		}
+		permissionProfile = parsed
+		permissionProfileSpecified = true
+		updates["permission_profile"] = permissionProfile
+		delete(updates, "collaboration_mode_override")
+		delete(updates, "plan_approval_pending")
+		delete(updates, "pending_plan_markdown")
+		delete(updates, "pending_plan_requested_at")
+		delete(updates, "pending_plan_revision_markdown")
+		delete(updates, "pending_plan_revision_requested_at")
 	}
-	if pendingPlanMarkdown, ok := updates["pending_plan_markdown"].(string); ok {
-		query += ", pending_plan_markdown = ?"
-		args = append(args, pendingPlanMarkdown)
+	if permissionProfileSpecified {
+		query += ", permission_profile = ?, collaboration_mode_override = '', plan_approval_pending = 0, pending_plan_markdown = '', pending_plan_requested_at = NULL, pending_plan_revision_markdown = '', pending_plan_revision_requested_at = NULL"
+		args = append(args, permissionProfile)
 	}
-	if pendingPlanRequestedAt, ok := updates["pending_plan_requested_at"].(*time.Time); ok {
-		query += ", pending_plan_requested_at = ?"
-		if pendingPlanRequestedAt == nil {
-			args = append(args, nil)
-		} else {
-			args = append(args, pendingPlanRequestedAt.UTC())
+	if !permissionProfileSpecified {
+		if collaborationModeOverride, ok := updates["collaboration_mode_override"].(CollaborationModeOverride); ok {
+			query += ", collaboration_mode_override = ?"
+			args = append(args, NormalizeCollaborationModeOverride(string(collaborationModeOverride)))
 		}
-	}
-	if pendingPlanRevisionMarkdown, ok := updates["pending_plan_revision_markdown"].(string); ok {
-		query += ", pending_plan_revision_markdown = ?"
-		args = append(args, pendingPlanRevisionMarkdown)
-	}
-	if pendingPlanRevisionRequestedAt, ok := updates["pending_plan_revision_requested_at"].(*time.Time); ok {
-		query += ", pending_plan_revision_requested_at = ?"
-		if pendingPlanRevisionRequestedAt == nil {
-			args = append(args, nil)
-		} else {
-			args = append(args, pendingPlanRevisionRequestedAt.UTC())
+		if planApprovalPending, ok := updates["plan_approval_pending"].(bool); ok {
+			query += ", plan_approval_pending = ?"
+			if planApprovalPending {
+				args = append(args, 1)
+			} else {
+				args = append(args, 0)
+			}
+		}
+		if pendingPlanMarkdown, ok := updates["pending_plan_markdown"].(string); ok {
+			query += ", pending_plan_markdown = ?"
+			args = append(args, pendingPlanMarkdown)
+		}
+		if pendingPlanRequestedAt, ok := updates["pending_plan_requested_at"].(*time.Time); ok {
+			query += ", pending_plan_requested_at = ?"
+			if pendingPlanRequestedAt == nil {
+				args = append(args, nil)
+			} else {
+				args = append(args, pendingPlanRequestedAt.UTC())
+			}
+		}
+		if pendingPlanRevisionMarkdown, ok := updates["pending_plan_revision_markdown"].(string); ok {
+			query += ", pending_plan_revision_markdown = ?"
+			args = append(args, pendingPlanRevisionMarkdown)
+		}
+		if pendingPlanRevisionRequestedAt, ok := updates["pending_plan_revision_requested_at"].(*time.Time); ok {
+			query += ", pending_plan_revision_requested_at = ?"
+			if pendingPlanRevisionRequestedAt == nil {
+				args = append(args, nil)
+			} else {
+				args = append(args, pendingPlanRevisionRequestedAt.UTC())
+			}
 		}
 	}
 	if issueTypeSpecified {
