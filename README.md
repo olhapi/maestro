@@ -118,7 +118,7 @@ development package for the standard `make build` / `make test` flow.
 Local contributor Docker build:
 
 ```bash
-docker build -t maestro-local --build-arg CODEX_VERSION="$(./scripts/codex_supported_version.sh)" .
+docker build -t maestro-local .
 ```
 
 ## Quick Start

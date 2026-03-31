@@ -3,7 +3,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_VERSION="$("$ROOT/scripts/codex_supported_version.sh")"
+METADATA_FILE="$ROOT/internal/codexschema/metadata.go"
+DEFAULT_VERSION="$(sed -n 's/^[[:space:]]*SupportedVersion = "\(.*\)"/\1/p' "$METADATA_FILE")"
+if [[ -z "$DEFAULT_VERSION" ]]; then
+  echo "failed to determine supported Codex schema version from $METADATA_FILE" >&2
+  exit 1
+fi
 VERSION="${CODEX_SCHEMA_VERSION:-$DEFAULT_VERSION}"
 QUICKTYPE_VERSION="${QUICKTYPE_VERSION:-23.2.6}"
 SCHEMA_DIR="$ROOT/schemas/codex/$VERSION/json"
