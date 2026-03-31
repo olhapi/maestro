@@ -4,7 +4,6 @@ const os = require("node:os");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 const { pathToFileURL } = require("node:url");
-const YAML = require("yaml");
 
 const DEFAULT_HTTP_PORT = "8787";
 const DEFAULT_DATABASE_PATH = "~/.maestro/maestro.db";
@@ -376,39 +375,139 @@ function findFlagValue(argv, flag) {
 function parseWorkflowFrontMatter(content) {
   const normalized = String(content || "").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
-    return { frontMatter: "", hasFrontMatter: false, promptStart: 0 };
+    return "";
   }
 
   const end = normalized.indexOf("\n---\n", 4);
-  const frontMatter = end === -1 ? normalized.slice(4) : normalized.slice(4, end);
-  return {
-    frontMatter,
-    hasFrontMatter: true,
-    promptStart: end === -1 ? normalized.length : end + 5,
-  };
+  return end === -1 ? normalized.slice(4) : normalized.slice(4, end);
+}
+
+function parseWorkflowScalar(rawValue, workflowPath, keyName) {
+  let value = String(rawValue || "").trim();
+  if (!value) {
+    return null;
+  }
+  if (value.startsWith("[") || value.startsWith("{") || value === "|" || value === ">") {
+    throw new Error(`${keyName} must be a string at ${workflowPath}`);
+  }
+
+  if (value.startsWith('"')) {
+    if (!value.endsWith('"')) {
+      throw new Error(`${keyName} must be a string at ${workflowPath}`);
+    }
+    value = value.slice(1, -1).replace(/\\(["\\/bfnrt])/g, (match, escape) => {
+      switch (escape) {
+        case "b":
+          return "\b";
+        case "f":
+          return "\f";
+        case "n":
+          return "\n";
+        case "r":
+          return "\r";
+        case "t":
+          return "\t";
+        default:
+          return escape;
+      }
+    });
+    return value;
+  }
+
+  if (value.startsWith("'")) {
+    if (!value.endsWith("'")) {
+      throw new Error(`${keyName} must be a string at ${workflowPath}`);
+    }
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+
+  return value;
+}
+
+function nextSignificantLine(lines, startIndex) {
+  for (let i = startIndex; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    return {
+      indent: lines[i].match(/^[ \t]*/)?.[0].length || 0,
+      index: i,
+      trimmed,
+    };
+  }
+  return null;
 }
 
 function parseWorkflowWorkspaceRoot(workflowPath, content, options = {}) {
   const pathModule = pathModuleForPlatform(options.platform || process.platform);
   const workflowDir = pathModule.dirname(workflowPath);
-  const parsed = YAML.parse(parseWorkflowFrontMatter(content).frontMatter);
-  if (parsed == null) {
+  const frontMatter = parseWorkflowFrontMatter(content);
+  if (!frontMatter) {
     return resolvePathValue(workflowDir, "", DEFAULT_WORKSPACE_ROOT, options);
   }
-  if (Array.isArray(parsed) || typeof parsed !== "object") {
-    throw new Error(`workflow front matter must be a map at ${workflowPath}`);
-  }
 
-  let workspaceRoot;
-  const workspace = parsed.workspace;
-  if (workspace && typeof workspace === "object" && !Array.isArray(workspace)) {
-    workspaceRoot = workspace.root;
-  }
-  if (workspaceRoot == null && Object.prototype.hasOwnProperty.call(parsed, "workspace_root")) {
-    workspaceRoot = parsed.workspace_root;
-  }
-  if (workspaceRoot != null && typeof workspaceRoot !== "string") {
-    throw new Error(`workspace.root must be a string at ${workflowPath}`);
+  const lines = frontMatter.split("\n");
+  let workspaceRoot = null;
+  let inWorkspaceBlock = false;
+  let workspaceIndent = 0;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const indent = line.match(/^[ \t]*/)?.[0].length || 0;
+    if (indent === 0) {
+      inWorkspaceBlock = false;
+
+      const workspaceRootMatch = trimmed.match(/^workspace_root\s*:\s*(.*)$/);
+      if (workspaceRootMatch) {
+        workspaceRoot = parseWorkflowScalar(workspaceRootMatch[1], workflowPath, "workspace.root");
+        continue;
+      }
+
+      const workspaceMatch = trimmed.match(/^workspace\s*:\s*(.*)$/);
+      if (!workspaceMatch) {
+        continue;
+      }
+
+      const inline = workspaceMatch[1].trim();
+      if (!inline) {
+        inWorkspaceBlock = true;
+        workspaceIndent = indent;
+        continue;
+      }
+
+      const inlineRootMatch = inline.match(/^\{\s*root\s*:\s*(.*?)\s*\}$/) || inline.match(/^root\s*:\s*(.*)$/);
+      if (inlineRootMatch) {
+        workspaceRoot = parseWorkflowScalar(inlineRootMatch[1], workflowPath, "workspace.root");
+      }
+      continue;
+    }
+
+    if (!inWorkspaceBlock || indent <= workspaceIndent) {
+      continue;
+    }
+
+    const rootMatch = trimmed.match(/^root\s*:\s*(.*)$/);
+    if (!rootMatch) {
+      continue;
+    }
+
+    const rawRootValue = rootMatch[1];
+    if (!rawRootValue.trim()) {
+      const next = nextSignificantLine(lines, i + 1);
+      if (next && next.indent > indent) {
+        throw new Error(`workspace.root must be a string at ${workflowPath}`);
+      }
+      workspaceRoot = null;
+      continue;
+    }
+
+    workspaceRoot = parseWorkflowScalar(rawRootValue, workflowPath, "workspace.root");
   }
 
   const resolved = resolvePathValue(workflowDir, workspaceRoot, DEFAULT_WORKSPACE_ROOT, options);

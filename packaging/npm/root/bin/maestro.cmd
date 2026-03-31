@@ -1,4 +1,8 @@
 @ECHO OFF
 SETLOCAL
 SET SCRIPT_DIR=%~dp0
-node "%SCRIPT_DIR%maestro.js" %*
+IF DEFINED MAESTRO_NODE_BIN (
+  "%MAESTRO_NODE_BIN%" "%SCRIPT_DIR%maestro.js" %*
+) ELSE (
+  node "%SCRIPT_DIR%maestro.js" %*
+)
