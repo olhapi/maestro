@@ -844,6 +844,7 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 	defer unlock()
 
 	normalizedPath := workspacePath
+	// Only preserve content when we are explicitly recovering an old legacy path.
 	if legacyPath {
 		normalizedPath, err = filepath.Abs(workspacePath)
 		if err != nil {
@@ -925,15 +926,17 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 		return false, "", err
 	}
 
-	preservedPath, preserved, err := preserveWorkspaceContents(ctx, preparedPath)
-	if err != nil {
-		return false, "", fmt.Errorf("preserve workspace contents %s: %w", preparedPath, err)
-	}
-	if preserved {
-		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_preserved", map[string]interface{}{
-			"path":           preparedPath,
-			"preserved_path": preservedPath,
-		})
+	if legacyPath {
+		preservedPath, preserved, err := preserveWorkspaceContents(ctx, preparedPath)
+		if err != nil {
+			return false, "", fmt.Errorf("preserve workspace contents %s: %w", preparedPath, err)
+		}
+		if preserved {
+			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_preserved", map[string]interface{}{
+				"path":           preparedPath,
+				"preserved_path": preservedPath,
+			})
+		}
 	}
 	if err := removeManagedWorkspace(ctx, preparedPath); err != nil {
 		return false, "", fmt.Errorf("remove stale workspace %s: %w", preparedPath, err)

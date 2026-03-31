@@ -624,6 +624,29 @@ Issue {{ issue.identifier }}
 	}
 }
 
+func TestLoadWorkflowRejectsUnresolvedWorkspaceRootEnvPaths(t *testing.T) {
+	t.Setenv("WORKSPACE_BASE", "")
+
+	tmpDir := t.TempDir()
+	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: kanban
+workspace:
+  root: $WORKSPACE_BASE/workspaces
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadWorkflow(workflowPath)
+	if err == nil || !strings.Contains(err.Error(), "workspace.root contains unresolved environment variable") {
+		t.Fatalf("expected unresolved workspace root error, got %v", err)
+	}
+}
+
 func TestLoadWorkflowRejectsUnsupportedTrackerKind(t *testing.T) {
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
