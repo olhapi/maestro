@@ -1968,6 +1968,50 @@ func TestWorkspaceReinitializesManagedDirectoryWithoutLegacyBackup(t *testing.T)
 	}
 }
 
+func TestWorkspaceReinitializesExplicitLegacyPathWithBackup(t *testing.T) {
+	runner, store, _, workspaceRoot, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Legacy workspace", "", 0, nil)
+	legacyPath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+
+	if err := os.MkdirAll(legacyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyPath, "legacy.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, legacyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	created, preparedPath, err := runner.ensureIssueWorkspace(context.Background(), workflow, issue, legacyPath, workspaceRoot, true)
+	if err != nil {
+		t.Fatalf("expected explicit legacy workspace recovery, got err: %v", err)
+	}
+	if !created {
+		t.Fatal("expected legacy workspace recovery to create a fresh git worktree")
+	}
+	if _, err := os.Stat(filepath.Join(preparedPath, ".git")); err != nil {
+		t.Fatalf("expected recovered git worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(preparedPath, "legacy.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected stale legacy content to be removed, got err=%v", err)
+	}
+	preserved, err := filepath.Glob(legacyPath + ".legacy-*")
+	if err != nil {
+		t.Fatalf("Glob preserved workspace: %v", err)
+	}
+	if len(preserved) != 1 {
+		t.Fatalf("expected one preserved workspace backup, got %v", preserved)
+	}
+	if data, err := os.ReadFile(filepath.Join(preserved[0], "legacy.txt")); err != nil || string(data) != "stale" {
+		t.Fatalf("expected preserved legacy content, got data=%q err=%v", string(data), err)
+	}
+}
+
 func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Rebase recovery", "", 0, nil)
