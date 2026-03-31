@@ -74,7 +74,7 @@ For local development or unsupported platforms, build the binary directly from t
 
 Contributor Docker build:
 
-<DocsCommandField command={`docker build -t maestro-local .`} />
+<DocsCommandField command={`docker build -t maestro-local --build-arg CODEX_VERSION="$(./scripts/codex_supported_version.sh)" .`} />
 
 ## What to install first
 

@@ -60,7 +60,7 @@ jobs:
 
       - name: Derive Codex CLI version
         id: codex-version
-        run: echo "value=$(awk -F'\"' '/SupportedVersion/ { print $2; exit }' internal/codexschema/metadata.go)" >> "$GITHUB_OUTPUT"
+        run: echo "value=$(./scripts/codex_supported_version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
@@ -143,6 +143,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
+
       - name: Set up Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
@@ -154,6 +157,12 @@ jobs:
           path: dist/npm
           pattern: npm-root-package
           merge-multiple: true
+
+      - name: Smoke runtime image (amd64)
+        run: DOCKER_PLATFORM=linux/amd64 ./scripts/smoke_runtime_image.sh "ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}"
+
+      - name: Smoke runtime image (arm64)
+        run: DOCKER_PLATFORM=linux/arm64 ./scripts/smoke_runtime_image.sh "ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}"
 
       - name: Smoke test npm install
         run: MAESTRO_SMOKE_IMAGE="ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}" ./scripts/smoke_npm_package.sh "${GITHUB_REF_NAME}"
