@@ -822,6 +822,107 @@ func (r *Runner) recordWorkspaceBootstrapRecovery(issue *kanban.Issue, preparedP
 	r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_recovery", fields)
 }
 
+func workspaceProjectForIssue(store *kanban.Store, issue *kanban.Issue) (*kanban.Project, error) {
+	if issue == nil || strings.TrimSpace(issue.ProjectID) == "" || store == nil {
+		return nil, nil
+	}
+	project, err := store.GetProject(strings.TrimSpace(issue.ProjectID))
+	if err != nil {
+		if kanban.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load project for workspace bootstrap: %w", err)
+	}
+	return project, nil
+}
+
+func workspaceCanMoveToRoot(ctx context.Context, workspacePath, repoPath string) (bool, error) {
+	info, err := os.Stat(workspacePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, nil
+	}
+	linkedWorktree, err := isLinkedWorktree(ctx, workspacePath)
+	if err != nil {
+		return false, err
+	}
+	if !linkedWorktree {
+		return false, nil
+	}
+	return workspaceMatchesRepo(ctx, workspacePath, repoPath)
+}
+
+func moveWorkspaceToRoot(ctx context.Context, repoPath, workspacePath, targetPath, rootAbs string) error {
+	targetPath, err := validateWorkspacePath(targetPath, rootAbs)
+	if err != nil {
+		return err
+	}
+	workspacePath, err = filepath.Abs(workspacePath)
+	if err != nil {
+		return fmt.Errorf("resolve workspace path: %w", err)
+	}
+	if filepath.Clean(workspacePath) == filepath.Clean(targetPath) {
+		return nil
+	}
+	unlock, err := repoBootstrapLock(ctx, repoPath)
+	if err != nil {
+		return fmt.Errorf("lock workspace bootstrap: %w", err)
+	}
+	defer unlock()
+
+	if _, err := runGitCommand(ctx, repoPath, "rev-parse", "--show-toplevel"); err != nil {
+		return fmt.Errorf("repo validation failed: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create target workspace parent: %w", err)
+	}
+	if _, err := os.Lstat(targetPath); err == nil {
+		if err := removeManagedWorkspace(ctx, targetPath); err != nil {
+			return fmt.Errorf("remove target workspace %s: %w", targetPath, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := runGitCommand(ctx, repoPath, "worktree", "move", workspacePath, targetPath); err != nil {
+		return fmt.Errorf("move git worktree %s to %s: %w", workspacePath, targetPath, err)
+	}
+	return nil
+}
+
+func (r *Runner) recoverWorkspaceToCurrentRoot(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, existingPath, targetPath, rootAbs string) error {
+	repoPath, err := r.resolveRepoPathForIssue(workflow, issue)
+	if err != nil {
+		return err
+	}
+	existingPath, err = filepath.Abs(existingPath)
+	if err != nil {
+		return fmt.Errorf("resolve workspace path: %w", err)
+	}
+	targetPath, err = validateWorkspacePath(targetPath, rootAbs)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(existingPath) == filepath.Clean(targetPath) {
+		return nil
+	}
+	canMove, err := workspaceCanMoveToRoot(ctx, existingPath, repoPath)
+	if err != nil {
+		return err
+	}
+	if !canMove {
+		return nil
+	}
+	if err := moveWorkspaceToRoot(ctx, repoPath, existingPath, targetPath, rootAbs); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, workspacePath, rootAbs string, legacyPath bool) (bool, string, error) {
 	repoPath, err := r.resolveRepoPathForIssue(workflow, issue)
 	if err != nil {
@@ -972,7 +1073,33 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 		return nil, fmt.Errorf("create workspace root: %w", err)
 	}
 
+	project, err := workspaceProjectForIssue(r.store, issue)
+	if err != nil {
+		return nil, err
+	}
+	targetPath := workspacePathForIssue(rootAbs, project, issue)
+
 	if existing, err := r.store.GetWorkspace(issue.ID); err == nil {
+		existingPath, pathErr := filepath.Abs(existing.Path)
+		if pathErr != nil {
+			return nil, fmt.Errorf("resolve workspace path: %w", pathErr)
+		}
+		if !pathWithinRoot(existingPath, rootAbs) {
+			if err := r.recoverWorkspaceToCurrentRoot(ctx, workflow, issue, existingPath, targetPath, rootAbs); err != nil {
+				r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
+					"path":        existing.Path,
+					"target_path": targetPath,
+					"error":       err.Error(),
+					"status":      "required",
+					"message":     "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
+				})
+				return nil, fmt.Errorf("workspace_bootstrap: %w", err)
+			}
+			existing, err = r.store.UpdateWorkspacePath(issue.ID, targetPath)
+			if err != nil {
+				return nil, err
+			}
+		}
 		createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, existing.Path, rootAbs, false)
 		if err != nil {
 			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
@@ -997,22 +1124,10 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 		return existing, nil
 	}
 
-	projectID := ""
-	if issue != nil {
-		projectID = strings.TrimSpace(issue.ProjectID)
-	}
-	var project *kanban.Project
-	if projectID != "" && r.store != nil {
-		project, err = r.store.GetProject(projectID)
-		if err != nil && !kanban.IsNotFound(err) {
-			return nil, fmt.Errorf("load project for workspace bootstrap: %w", err)
-		}
-	}
-	workspacePath := workspacePathForIssue(rootAbs, project, issue)
-	createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, workspacePath, rootAbs, false)
+	createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, targetPath, rootAbs, false)
 	if err != nil {
 		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
-			"path":    workspacePath,
+			"path":    targetPath,
 			"error":   err.Error(),
 			"status":  "required",
 			"message": "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
