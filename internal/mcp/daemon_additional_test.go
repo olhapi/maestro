@@ -230,31 +230,6 @@ func TestMCPInMemoryDaemonHandler(t *testing.T) {
 	}
 }
 
-func TestManagedDaemonHonorsListenAndAdvertisedURLOverrides(t *testing.T) {
-	t.Setenv(daemonRegistryEnv, t.TempDir())
-	t.Setenv(daemonListenAddrEnv, "127.0.0.1:0")
-	t.Setenv(daemonAdvertisedURLEnv, "http://host.docker.internal:39001/mcp")
-	useInMemoryDaemonTransport.Store(false)
-	t.Cleanup(func() {
-		useInMemoryDaemonTransport.Store(false)
-	})
-
-	dbPath := filepath.Join(t.TempDir(), "maestro.db")
-	store := testStore(t, dbPath)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	handle, err := StartManagedDaemon(ctx, store, testRuntimeProvider{store: store}, nil, "test-version")
-	if err != nil {
-		t.Fatalf("StartManagedDaemon failed: %v", err)
-	}
-	defer func() { _ = handle.Close() }()
-
-	if handle.Entry.BaseURL != "http://host.docker.internal:39001/mcp" {
-		t.Fatalf("unexpected advertised base url %q", handle.Entry.BaseURL)
-	}
-}
-
 type fakeDaemonListener struct {
 	closed chan struct{}
 	once   sync.Once

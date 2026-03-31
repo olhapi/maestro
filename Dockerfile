@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.25.0
 ARG DEBIAN_SUITE=bookworm
-ARG CODEX_VERSION=0.117.0
 
 FROM golang:${GO_VERSION}-${DEBIAN_SUITE} AS builder
 
@@ -29,7 +28,6 @@ FROM debian:${DEBIAN_SUITE}-slim
 
 ARG MAESTRO_VERSION=dev
 ARG VCS_REF=unknown
-ARG CODEX_VERSION
 
 LABEL org.opencontainers.image.title="Maestro" \
       org.opencontainers.image.description="Local-first orchestration runtime for agent-driven software work" \
@@ -39,9 +37,7 @@ LABEL org.opencontainers.image.title="Maestro" \
       org.opencontainers.image.revision="${VCS_REF}"
 
 RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git nodejs npm \
-    && npm install -g "@openai/codex@${CODEX_VERSION}" \
-    && npm cache clean --force \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data
 

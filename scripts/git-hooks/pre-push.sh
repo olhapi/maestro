@@ -25,9 +25,9 @@ rosetta_x64_smoke_ready() {
   '
 }
 
-# Keep the local pre-push gate distribution-complete.
-# On Apple Silicon macOS, add an x64 Rosetta pass so the x64 launcher smoke
-# still runs locally when the toolchain can support it.
+# Keep the local pre-push gate host-complete.
+# On Apple Silicon macOS, add an x64 Rosetta pass so the disabled CI macOS
+# smoke still runs locally when the toolchain can support it.
 run_step pnpm verify:pre-push
 
 case "$(uname -s)-$(uname -m)" in

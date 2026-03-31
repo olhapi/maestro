@@ -18,7 +18,6 @@ import (
 var (
 	dashboardBrowserLauncher  = launchBrowserURL
 	dashboardInteractiveCheck = terminalsInteractive
-	browserCommandStarter     = startBrowserCommand
 	dashboardHTTPClient       = &http.Client{
 		Timeout: 250 * time.Millisecond,
 	}
@@ -28,7 +27,7 @@ var (
 
 func maybeOpenDashboard(ctx context.Context, baseURL string) {
 	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" || browserOpenDisabled() || !dashboardInteractiveCheck() {
+	if baseURL == "" || !dashboardInteractiveCheck() {
 		return
 	}
 
@@ -37,10 +36,6 @@ func maybeOpenDashboard(ctx context.Context, baseURL string) {
 			slog.Warn("Failed to open dashboard automatically", "url", baseURL, "error", err)
 		}
 	}()
-}
-
-func browserOpenDisabled() bool {
-	return strings.TrimSpace(os.Getenv("MAESTRO_DISABLE_BROWSER_OPEN")) != ""
 }
 
 func openDashboardWhenReady(ctx context.Context, baseURL string) error {
@@ -95,10 +90,6 @@ func launchBrowserURL(ctx context.Context, rawURL string) error {
 		return err
 	}
 
-	return browserCommandStarter(ctx, command, args)
-}
-
-func startBrowserCommand(ctx context.Context, command string, args []string) error {
 	cmd := exec.CommandContext(ctx, command, args...)
 	if err := cmd.Start(); err != nil {
 		return err

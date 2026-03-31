@@ -11,7 +11,20 @@ REGISTRY_TIMEOUT_SEC="${RELEASE_REGISTRY_TIMEOUT_SEC:-120}"
 SKIP_MANUAL_FALLBACK="${RELEASE_SKIP_MANUAL_FALLBACK:-0}"
 
 ROOT_PACKAGE="@olhapi/maestro"
-ROOT_ARTIFACT_DIR="npm-root-package"
+LEAF_PACKAGES=(
+  "@olhapi/maestro-darwin-arm64"
+  "@olhapi/maestro-darwin-x64"
+  "@olhapi/maestro-linux-x64-gnu"
+  "@olhapi/maestro-linux-arm64-gnu"
+  "@olhapi/maestro-win32-x64"
+)
+LEAF_ARTIFACT_DIRS=(
+  "npm-leaf-darwin-arm64"
+  "npm-leaf-darwin-x64"
+  "npm-leaf-linux-x64-gnu"
+  "npm-leaf-linux-arm64-gnu"
+  "npm-leaf-win32-x64"
+)
 
 usage() {
   cat <<'EOF'
@@ -26,7 +39,7 @@ Runs the Maestro npm release flow end-to-end:
   - waits for the GitHub Actions release workflow
   - verifies npm dist-tags when GitHub publish succeeds
   - if artifact jobs succeed but publish is skipped or fails, downloads the
-    workflow artifact and publishes the launcher package locally
+    workflow artifacts and publishes them locally in leaf-first order
 
 Environment:
   RELEASE_POLL_SEC                  Poll interval while waiting for Actions
@@ -100,13 +113,20 @@ manual_fallback_ready_from_file() {
   node_query '
     const fs = require("fs");
     const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const expectedLeafCount = Number(process.argv[2]);
+    const expectedSmokeCount = Number(process.argv[3]);
     const jobs = data.jobs || [];
-    const dockerOk = jobs.some((job) => job.name === "publish-ghcr" && job.conclusion === "success");
     const rootOk = jobs.some((job) => job.name === "build-root-package" && job.conclusion === "success");
-    const smokeOk = jobs.some((job) => job.name === "registry-install-smoke" && job.conclusion === "success");
-    const ok = dockerOk && rootOk && smokeOk;
+    const leafJobs = jobs.filter((job) => job.name.startsWith("build-leaf-packages"));
+    const smokeJobs = jobs.filter((job) => job.name.startsWith("registry-install-smoke"));
+    const ok =
+      rootOk &&
+      leafJobs.length === expectedLeafCount &&
+      smokeJobs.length === expectedSmokeCount &&
+      leafJobs.every((job) => job.conclusion === "success") &&
+      smokeJobs.every((job) => job.conclusion === "success");
     process.stdout.write(ok ? "1" : "0");
-  ' "$file"
+  ' "$file" "${#LEAF_PACKAGES[@]}" "${#LEAF_PACKAGES[@]}"
 }
 
 validate_version() {
@@ -317,8 +337,20 @@ manual_publish_from_artifacts() {
   log "publishing workflow artifacts locally with npm dist-tag $dist_tag"
   log "npm may prompt for browser-based authentication if your session needs write confirmation"
 
+  local index
+  for index in "${!LEAF_PACKAGES[@]}"; do
+    local pkg="${LEAF_PACKAGES[$index]}"
+    local dir="${LEAF_ARTIFACT_DIRS[$index]}"
+    local tarball
+    tarball="$(artifact_path "$dir" "$(printf '%s-%s.tgz' "${pkg#@}" "$VERSION" | tr '/' '-')")"
+    if [[ ! -f "$tarball" ]]; then
+      fail "missing leaf tarball: $tarball"
+    fi
+    publish_tarball_if_needed "$pkg" "$dist_tag" "$tarball"
+  done
+
   local root_tarball
-  root_tarball="$(artifact_path "$ROOT_ARTIFACT_DIR" "$(printf '%s-%s.tgz' "${ROOT_PACKAGE#@}" "$VERSION" | tr '/' '-')")"
+  root_tarball="$(artifact_path "npm-root-package" "$(printf '%s-%s.tgz' "${ROOT_PACKAGE#@}" "$VERSION" | tr '/' '-')")"
   if [[ ! -f "$root_tarball" ]]; then
     fail "missing root tarball: $root_tarball"
   fi
@@ -346,9 +378,22 @@ package_dist_tag_version() {
 verify_registry() {
   local dist_tag="$1"
   local deadline=$((SECONDS + REGISTRY_TIMEOUT_SEC))
+  local packages=("${LEAF_PACKAGES[@]}" "$ROOT_PACKAGE")
   while (( SECONDS < deadline )); do
-    local actual_version
-    if actual_version="$(package_dist_tag_version "$ROOT_PACKAGE" "$dist_tag")" && [[ "$actual_version" == "$VERSION" ]]; then
+    local all_ok="1"
+    local pkg
+    for pkg in "${packages[@]}"; do
+      local actual_version
+      if ! actual_version="$(package_dist_tag_version "$pkg" "$dist_tag")"; then
+        all_ok="0"
+        break
+      fi
+      if [[ "$actual_version" != "$VERSION" ]]; then
+        all_ok="0"
+        break
+      fi
+    done
+    if [[ "$all_ok" == "1" ]]; then
       return 0
     fi
     sleep "$POLL_SEC"

@@ -10,36 +10,56 @@ ROOT_PACKAGE_NAME="@olhapi/maestro"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/smoke_npm_package.sh <version>
+Usage: scripts/smoke_npm_package.sh <version> <target>
 
-Installs the packed Maestro launcher package into a temporary project, then
-verifies the npm-installed CLI launches, serves the dashboard through Docker,
+Installs the packed root package and the selected leaf package into a temporary
+project, then verifies the npm-installed CLI launches, serves the dashboard,
 and preserves exit codes.
 
 Examples:
-  scripts/smoke_npm_package.sh v1.2.3
-  MAESTRO_SMOKE_IMAGE=maestro-smoke:local scripts/smoke_npm_package.sh 1.2.3
+  scripts/smoke_npm_package.sh v1.2.3 darwin-arm64
+  scripts/smoke_npm_package.sh 1.2.3 linux-x64-gnu
 EOF
 }
 
-if [[ $# -ne 1 ]]; then
+if [[ $# -ne 2 ]]; then
   usage >&2
   exit 1
 fi
 
 RAW_VERSION="$1"
 VERSION="${RAW_VERSION#v}"
-SMOKE_IMAGE="${MAESTRO_SMOKE_IMAGE:-ghcr.io/olhapi/maestro:${VERSION}}"
+TARGET="$2"
 
 tarball_filename() {
   local package_name="$1"
   printf '%s-%s.tgz\n' "${package_name#@}" "$VERSION" | tr '/' '-'
 }
 
+leaf_package_name() {
+  case "$1" in
+    darwin-arm64) echo "@olhapi/maestro-darwin-arm64" ;;
+    darwin-x64) echo "@olhapi/maestro-darwin-x64" ;;
+    linux-x64-gnu) echo "@olhapi/maestro-linux-x64-gnu" ;;
+    linux-arm64-gnu) echo "@olhapi/maestro-linux-arm64-gnu" ;;
+    win32-x64) echo "@olhapi/maestro-win32-x64" ;;
+    *)
+      echo "unsupported target: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
 ROOT_TARBALL="$PACK_DIR/$(tarball_filename "$ROOT_PACKAGE_NAME")"
+LEAF_PACKAGE_NAME="$(leaf_package_name "$TARGET")"
+LEAF_TARBALL="$PACK_DIR/$(tarball_filename "$LEAF_PACKAGE_NAME")"
 
 if [[ ! -f "$ROOT_TARBALL" ]]; then
   echo "missing root tarball: $ROOT_TARBALL" >&2
+  exit 1
+fi
+if [[ ! -f "$LEAF_TARBALL" ]]; then
+  echo "missing leaf tarball: $LEAF_TARBALL" >&2
   exit 1
 fi
 
@@ -49,22 +69,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Smoke testing $ROOT_PACKAGE_NAME with $SMOKE_IMAGE"
+echo "Smoke testing $ROOT_PACKAGE_NAME with $LEAF_PACKAGE_NAME"
 (
   cd "$TMP_DIR"
   run_clean_npm init -y >/dev/null 2>&1
-  run_clean_npm install --no-package-lock "$ROOT_TARBALL" >/dev/null
+  run_clean_npm install --no-package-lock "$LEAF_TARBALL" "$ROOT_TARBALL" >/dev/null
 
-  VERSION_OUTPUT="$(MAESTRO_IMAGE="$SMOKE_IMAGE" run_clean_npx --no-install maestro version)"
+  VERSION_OUTPUT="$(run_clean_npx --no-install maestro version)"
   if [[ "$VERSION_OUTPUT" != "maestro $VERSION" ]]; then
     echo "unexpected version output: $VERSION_OUTPUT" >&2
     exit 1
   fi
 
-  MAESTRO_IMAGE="$SMOKE_IMAGE" run_clean_npx --no-install maestro --help >/dev/null
+  run_clean_npx --no-install maestro --help >/dev/null
 
   set +e
-  MAESTRO_IMAGE="$SMOKE_IMAGE" run_clean_npx --no-install maestro does-not-exist >/dev/null 2>&1
+  run_clean_npx --no-install maestro does-not-exist >/dev/null 2>&1
   STATUS=$?
   set -e
   if [[ "$STATUS" -eq 0 ]]; then
@@ -72,7 +92,7 @@ echo "Smoke testing $ROOT_PACKAGE_NAME with $SMOKE_IMAGE"
     exit 1
   fi
 
-  MAESTRO_IMAGE="$SMOKE_IMAGE" node "$ROOT_DIR/scripts/smoke_installed_dashboard.mjs" "$TMP_DIR"
+  node "$ROOT_DIR/scripts/smoke_installed_dashboard.mjs" "$TMP_DIR"
 )
 
-echo "Smoke test passed"
+echo "Smoke test passed for $TARGET"

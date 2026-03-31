@@ -32,77 +32,62 @@ jobs:
       - name: Run Go tests
         run: make test
 
-  publish-ghcr:
+  build-leaf-packages:
     needs: go-test
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            tarball_glob: olhapi-maestro-darwin-arm64-*.tgz
+          - target: darwin-x64
+            runner: macos-15-intel
+            tarball_glob: olhapi-maestro-darwin-x64-*.tgz
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+            tarball_glob: olhapi-maestro-linux-x64-gnu-*.tgz
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            tarball_glob: olhapi-maestro-linux-arm64-gnu-*.tgz
+          - target: win32-x64
+            runner: windows-2022
+            tarball_glob: olhapi-maestro-win32-x64-*.tgz
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.mod
 
       - name: Set up Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version: 24
 
-      - name: Build embedded dashboard assets
-        run: ./scripts/ensure_dashboard_dist.sh
+      - name: Build leaf package
+        run: ./scripts/package_npm_release.sh pack-leaf "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
-      - name: Derive release version
-        id: version
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build root package for smoke test
+        run: ./scripts/package_npm_release.sh pack-root "${GITHUB_REF_NAME}"
 
-      - name: Derive Go version
-        id: go-version
-        run: echo "value=$(awk '/^go / { print $2; exit }' go.mod)" >> "$GITHUB_OUTPUT"
+      - name: Smoke test npm install
+        run: ./scripts/smoke_npm_package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
-      - name: Derive Codex CLI version
-        id: codex-version
-        run: echo "value=$(awk -F'\"' '/SupportedVersion/ { print $2; exit }' internal/codexschema/metadata.go)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - name: Compute image metadata
-        id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+      - name: Upload leaf tarball
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-          labels: |
-            org.opencontainers.image.title=Maestro
-            org.opencontainers.image.description=Local-first orchestration runtime for agent-driven software work
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            GO_VERSION=${{ steps.go-version.outputs.value }}
-            MAESTRO_VERSION=${{ steps.version.outputs.value }}
-            VCS_REF=${{ github.sha }}
-            CODEX_VERSION=${{ steps.codex-version.outputs.value }}
+          name: npm-leaf-${{ matrix.target }}
+          path: dist/npm/${{ matrix.tarball_glob }}
+          if-no-files-found: error
 
   build-root-package:
     needs: go-test
@@ -133,9 +118,23 @@ jobs:
 
   registry-install-smoke:
     needs:
-      - publish-ghcr
+      - build-leaf-packages
       - build-root-package
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+          - target: win32-x64
+            runner: windows-2022
     defaults:
       run:
         shell: bash
@@ -148,23 +147,20 @@ jobs:
         with:
           node-version: 24
 
-      - name: Download npm artifact
+      - name: Download npm artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist/npm
-          pattern: npm-root-package
+          pattern: npm-*
           merge-multiple: true
 
-      - name: Smoke test npm install
-        run: MAESTRO_SMOKE_IMAGE="ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}" ./scripts/smoke_npm_package.sh "${GITHUB_REF_NAME}"
-
       - name: Smoke test root-only npm install through local registry
-        run: MAESTRO_SMOKE_IMAGE="ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}" ./scripts/smoke_npm_registry_install.sh "${GITHUB_REF_NAME}"
+        run: ./scripts/smoke_npm_registry_install.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
   publish-npm:
     if: vars.NPM_PUBLISH_ENABLED == 'true'
     needs:
-      - publish-ghcr
+      - build-leaf-packages
       - build-root-package
       - registry-install-smoke
     runs-on: ubuntu-24.04
@@ -181,11 +177,11 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Download npm artifact
+      - name: Download npm artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist/npm
-          pattern: npm-root-package
+          pattern: npm-*
           merge-multiple: true
 
       - name: Select npm dist-tag
@@ -197,7 +193,15 @@ jobs:
             echo "NPM_DIST_TAG=latest" >>"$GITHUB_ENV"
           fi
 
-      - name: Publish npm package
+      - name: Publish npm packages
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          npm publish --access public --provenance --tag "$NPM_DIST_TAG" "dist/npm/olhapi-maestro-${VERSION}.tgz"
+          for tarball in \
+            "dist/npm/olhapi-maestro-darwin-arm64-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-darwin-x64-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-linux-x64-gnu-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-linux-arm64-gnu-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-win32-x64-${VERSION}.tgz" \
+            "dist/npm/olhapi-maestro-${VERSION}.tgz"; do
+            npm publish --access public --provenance --tag "$NPM_DIST_TAG" "$tarball"
+          done

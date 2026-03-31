@@ -26,6 +26,44 @@ assert_not_contains() {
   fi
 }
 
+assert_in_order() {
+  local file="$1"
+  shift
+  local previous_line=0
+  local pattern
+  for pattern in "$@"; do
+    local line
+    line="$(grep -nF -- "$pattern" "$file" | head -n 1 | cut -d: -f1)"
+    if [[ -z "$line" ]]; then
+      fail "missing ordered pattern '$pattern' in $file"
+    fi
+    if (( line <= previous_line )); then
+      fail "pattern '$pattern' appeared out of order in $file"
+    fi
+    previous_line="$line"
+  done
+}
+
+assert_publish_sequence() {
+  local file="$1"
+  shift
+  local expected=("$@")
+  local actual=()
+  local line
+  while IFS= read -r line; do
+    actual+=("$line")
+  done < <(grep '^npm publish ' -- "$file" || true)
+  if [[ "${#actual[@]}" -ne "${#expected[@]}" ]]; then
+    fail "expected ${#expected[@]} publish commands, found ${#actual[@]}"
+  fi
+  local index
+  for index in "${!expected[@]}"; do
+    if [[ "${actual[$index]}" != *"${expected[$index]}"* ]]; then
+      fail "unexpected publish order at index $index: ${actual[$index]}"
+    fi
+  done
+}
+
 write_mock_commands() {
   local bin_dir="$1"
   mkdir -p "$bin_dir"
@@ -36,8 +74,10 @@ set -euo pipefail
 printf 'git %s\n' "$*" >>"$MOCK_LOG"
 case "$1" in
   status)
-    [[ "${MOCK_GIT_STATUS_OUTPUT:-}" == "" ]] || printf '%s' "$MOCK_GIT_STATUS_OUTPUT"
-    exit 0
+    if [[ "$2" == "--porcelain" ]]; then
+      printf '%s' "${MOCK_GIT_STATUS_OUTPUT:-}"
+      exit 0
+    fi
     ;;
   rev-parse)
     if [[ "$2" == "--abbrev-ref" ]]; then
@@ -64,9 +104,19 @@ case "$1" in
     ;;
   ls-remote)
     if [[ -n "${MOCK_REMOTE_TAG_SHA:-}" ]]; then
-      printf '%s\trefs/tags/%s^{}\n' "$MOCK_REMOTE_TAG_SHA" "${MOCK_VERSION_TAG}"
-      printf '%s\trefs/tags/%s\n' "${MOCK_REMOTE_TAG_OBJECT_SHA:-$MOCK_REMOTE_TAG_SHA}" "${MOCK_VERSION_TAG}"
-      exit 0
+      matched=0
+      for arg in "$@"; do
+        if [[ "$arg" == refs/tags/*^{} ]]; then
+          printf '%s\t%s\n' "$MOCK_REMOTE_TAG_SHA" "$arg"
+          matched=1
+        elif [[ "$arg" == refs/tags/* ]]; then
+          printf '%s\t%s\n' "${MOCK_REMOTE_TAG_OBJECT_SHA:-$MOCK_REMOTE_TAG_SHA}" "$arg"
+          matched=1
+        fi
+      done
+      if (( matched == 1 )); then
+        exit 0
+      fi
     fi
     exit 2
     ;;
@@ -118,15 +168,29 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'npm %s\n' "$*" >>"$MOCK_LOG"
+resolve_package_from_tarball() {
+  case "$(basename "$1")" in
+    "olhapi-maestro-darwin-arm64-$MOCK_VERSION.tgz") printf '@olhapi/maestro-darwin-arm64\n' ;;
+    "olhapi-maestro-darwin-x64-$MOCK_VERSION.tgz") printf '@olhapi/maestro-darwin-x64\n' ;;
+    "olhapi-maestro-linux-x64-gnu-$MOCK_VERSION.tgz") printf '@olhapi/maestro-linux-x64-gnu\n' ;;
+    "olhapi-maestro-linux-arm64-gnu-$MOCK_VERSION.tgz") printf '@olhapi/maestro-linux-arm64-gnu\n' ;;
+    "olhapi-maestro-win32-x64-$MOCK_VERSION.tgz") printf '@olhapi/maestro-win32-x64\n' ;;
+    "olhapi-maestro-$MOCK_VERSION.tgz") printf '@olhapi/maestro\n' ;;
+    *)
+      printf 'unexpected tarball: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+}
 if [[ "$1" == "view" && "$3" == "dist-tags" && "$4" == "--json" ]]; then
   node -e '
     const fs = require("fs");
     const file = process.argv[1];
-    const pkg = process.argv[2];
-    const tag = process.argv[3];
-    const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-    const version = state[pkg];
-    process.stdout.write(JSON.stringify(version ? { [tag]: version } : {}));
+    const packageName = process.argv[2];
+    const distTag = process.argv[3];
+    const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+    const version = data[packageName];
+    process.stdout.write(JSON.stringify(version ? { [distTag]: version } : {}));
   ' "$MOCK_PUBLISHED_STATE_FILE" "$2" "$MOCK_DIST_TAG"
   exit 0
 fi
@@ -138,15 +202,21 @@ if [[ "$1" == "whoami" ]]; then
   exit 0
 fi
 if [[ "$1" == "publish" ]]; then
+  package_name="$(resolve_package_from_tarball "${@: -1}")"
   node -e '
     const fs = require("fs");
     const file = process.argv[1];
-    const pkg = process.argv[2];
+    const packageName = process.argv[2];
     const version = process.argv[3];
-    const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-    state[pkg] = version;
-    fs.writeFileSync(file, JSON.stringify(state));
-  ' "$MOCK_PUBLISHED_STATE_FILE" "@olhapi/maestro" "$MOCK_VERSION"
+    const failOnRepublish = process.argv[4] === "1";
+    const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+    if (failOnRepublish && data[packageName] === version) {
+      process.stderr.write(`cannot republish ${packageName}@${version}\n`);
+      process.exit(1);
+    }
+    data[packageName] = version;
+    fs.writeFileSync(file, JSON.stringify(data));
+  ' "$MOCK_PUBLISHED_STATE_FILE" "$package_name" "$MOCK_VERSION" "${MOCK_FAIL_ON_REPUBLISH:-0}"
   exit 0
 fi
 printf 'unexpected npm invocation: %s\n' "$*" >&2
@@ -167,24 +237,21 @@ EOF
   chmod +x "$bin_dir/git" "$bin_dir/gh" "$bin_dir/npm" "$bin_dir/pnpm"
 }
 
-write_run_list_json() {
-  local file="$1"
-  local run_id="$2"
-  local conclusion="$3"
-  local head_branch="$4"
-  local head_sha="$5"
-  cat >"$file" <<EOF
-[{"conclusion":"$conclusion","databaseId":$run_id,"headBranch":"$head_branch","headSha":"$head_sha","status":"completed","url":"https://example.com/$run_id"}]
-EOF
-}
-
 write_success_run_json() {
   local file="$1"
   cat >"$file" <<'EOF'
 {"conclusion":"success","databaseId":101,"jobs":[
-  {"name":"publish-ghcr","conclusion":"success"},
   {"name":"build-root-package","conclusion":"success"},
-  {"name":"registry-install-smoke","conclusion":"success"},
+  {"name":"build-leaf-packages (darwin-arm64)","conclusion":"success"},
+  {"name":"build-leaf-packages (darwin-x64)","conclusion":"success"},
+  {"name":"build-leaf-packages (linux-x64-gnu)","conclusion":"success"},
+  {"name":"build-leaf-packages (linux-arm64-gnu)","conclusion":"success"},
+  {"name":"build-leaf-packages (win32-x64)","conclusion":"success"},
+  {"name":"registry-install-smoke (darwin-arm64)","conclusion":"success"},
+  {"name":"registry-install-smoke (darwin-x64)","conclusion":"success"},
+  {"name":"registry-install-smoke (linux-x64-gnu)","conclusion":"success"},
+  {"name":"registry-install-smoke (linux-arm64-gnu)","conclusion":"success"},
+  {"name":"registry-install-smoke (win32-x64)","conclusion":"success"},
   {"name":"publish-npm","conclusion":"success"}
 ],"status":"completed","url":"https://example.com/success"}
 EOF
@@ -194,11 +261,30 @@ write_manual_fallback_run_json() {
   local file="$1"
   cat >"$file" <<'EOF'
 {"conclusion":"failure","databaseId":202,"jobs":[
-  {"name":"publish-ghcr","conclusion":"success"},
   {"name":"build-root-package","conclusion":"success"},
-  {"name":"registry-install-smoke","conclusion":"success"},
+  {"name":"build-leaf-packages (darwin-arm64)","conclusion":"success"},
+  {"name":"build-leaf-packages (darwin-x64)","conclusion":"success"},
+  {"name":"build-leaf-packages (linux-x64-gnu)","conclusion":"success"},
+  {"name":"build-leaf-packages (linux-arm64-gnu)","conclusion":"success"},
+  {"name":"build-leaf-packages (win32-x64)","conclusion":"success"},
+  {"name":"registry-install-smoke (darwin-arm64)","conclusion":"success"},
+  {"name":"registry-install-smoke (darwin-x64)","conclusion":"success"},
+  {"name":"registry-install-smoke (linux-x64-gnu)","conclusion":"success"},
+  {"name":"registry-install-smoke (linux-arm64-gnu)","conclusion":"success"},
+  {"name":"registry-install-smoke (win32-x64)","conclusion":"success"},
   {"name":"publish-npm","conclusion":"failure"}
 ],"status":"completed","url":"https://example.com/fallback"}
+EOF
+}
+
+write_run_list_json() {
+  local file="$1"
+  local run_id="$2"
+  local conclusion="$3"
+  local head_branch="${4:-ignored}"
+  local head_sha="${5:-ignored}"
+  cat >"$file" <<EOF
+[{"conclusion":"$conclusion","databaseId":$run_id,"headBranch":"$head_branch","headSha":"$head_sha","status":"completed","url":"https://example.com/$run_id"}]
 EOF
 }
 
@@ -220,8 +306,20 @@ write_published_state() {
 create_artifacts() {
   local dir="$1"
   local version="$2"
-  mkdir -p "$dir/npm-root-package"
-  touch "$dir/npm-root-package/olhapi-maestro-$version.tgz"
+  mkdir -p \
+    "$dir/npm-leaf-darwin-arm64" \
+    "$dir/npm-leaf-darwin-x64" \
+    "$dir/npm-leaf-linux-x64-gnu" \
+    "$dir/npm-leaf-linux-arm64-gnu" \
+    "$dir/npm-leaf-win32-x64" \
+    "$dir/npm-root-package"
+  touch \
+    "$dir/npm-leaf-darwin-arm64/olhapi-maestro-darwin-arm64-$version.tgz" \
+    "$dir/npm-leaf-darwin-x64/olhapi-maestro-darwin-x64-$version.tgz" \
+    "$dir/npm-leaf-linux-x64-gnu/olhapi-maestro-linux-x64-gnu-$version.tgz" \
+    "$dir/npm-leaf-linux-arm64-gnu/olhapi-maestro-linux-arm64-gnu-$version.tgz" \
+    "$dir/npm-leaf-win32-x64/olhapi-maestro-win32-x64-$version.tgz" \
+    "$dir/npm-root-package/olhapi-maestro-$version.tgz"
 }
 
 run_success_path_test() {
@@ -232,7 +330,14 @@ run_success_path_test() {
   write_mock_commands "$tmp_dir/bin"
   write_run_list_json "$tmp_dir/run-list.json" 101 success "v1.2.3-rc.1" "abc123"
   write_success_run_json "$tmp_dir/run-view.json"
-  write_published_state "$tmp_dir/published.json" "@olhapi/maestro=1.2.3-rc.1"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3-rc.1" \
+    "@olhapi/maestro-darwin-x64=1.2.3-rc.1" \
+    "@olhapi/maestro-linux-x64-gnu=1.2.3-rc.1" \
+    "@olhapi/maestro-linux-arm64-gnu=1.2.3-rc.1" \
+    "@olhapi/maestro-win32-x64=1.2.3-rc.1" \
+    "@olhapi/maestro=1.2.3-rc.1"
 
   PATH="$tmp_dir/bin:$PATH" \
   MOCK_LOG="$tmp_dir/log.txt" \
@@ -242,17 +347,89 @@ run_success_path_test() {
   MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
   MOCK_DIST_TAG="next" \
   MOCK_VERSION="1.2.3-rc.1" \
-  MOCK_VERSION_TAG="v1.2.3-rc.1" \
   RELEASE_POLL_SEC=0 \
   RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
   RELEASE_REGISTRY_TIMEOUT_SEC=1 \
   "$SCRIPT_UNDER_TEST" "1.2.3-rc.1"
 
   assert_contains "$tmp_dir/log.txt" "pnpm verify:pre-push"
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.1 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch"
+  assert_not_contains "$tmp_dir/log.txt" "--commit"
   assert_contains "$tmp_dir/log.txt" "git tag -a v1.2.3-rc.1 -m Release v1.2.3-rc.1"
   assert_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.1"
   assert_not_contains "$tmp_dir/log.txt" "gh run download"
   assert_not_contains "$tmp_dir/log.txt" "npm publish --access public --tag next"
+}
+
+run_double_dash_passthrough_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-double-dash.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  write_run_list_json "$tmp_dir/run-list.json" 111 success "v1.2.3-rc.2" "double111"
+  write_success_run_json "$tmp_dir/run-view.json"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3-rc.2" \
+    "@olhapi/maestro-darwin-x64=1.2.3-rc.2" \
+    "@olhapi/maestro-linux-x64-gnu=1.2.3-rc.2" \
+    "@olhapi/maestro-linux-arm64-gnu=1.2.3-rc.2" \
+    "@olhapi/maestro-win32-x64=1.2.3-rc.2" \
+    "@olhapi/maestro=1.2.3-rc.2"
+
+  PATH="$tmp_dir/bin:$PATH" \
+  MOCK_LOG="$tmp_dir/log.txt" \
+  MOCK_HEAD_SHA="double111" \
+  MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+  MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+  MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+  MOCK_DIST_TAG="next" \
+  MOCK_VERSION="1.2.3-rc.2" \
+  RELEASE_POLL_SEC=0 \
+  RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+  RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+  "$SCRIPT_UNDER_TEST" "--" "v1.2.3-rc.2"
+
+  assert_contains "$tmp_dir/log.txt" "git tag -a v1.2.3-rc.2 -m Release v1.2.3-rc.2"
+  assert_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.2"
+  assert_not_contains "$tmp_dir/log.txt" "gh run download"
+}
+
+run_tag_specific_run_selection_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-tag-selection.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  cat >"$tmp_dir/run-list.json" <<'EOF'
+[{"conclusion":"success","databaseId":999,"headBranch":"v1.2.3-rc.3","headSha":"stale999","status":"completed","url":"https://example.com/999"},{"conclusion":"success","databaseId":444,"headBranch":"v1.2.3-rc.3","headSha":"tag444","status":"completed","url":"https://example.com/444"}]
+EOF
+  write_success_run_json "$tmp_dir/run-view.json"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3-rc.3" \
+    "@olhapi/maestro-darwin-x64=1.2.3-rc.3" \
+    "@olhapi/maestro-linux-x64-gnu=1.2.3-rc.3" \
+    "@olhapi/maestro-linux-arm64-gnu=1.2.3-rc.3" \
+    "@olhapi/maestro-win32-x64=1.2.3-rc.3" \
+    "@olhapi/maestro=1.2.3-rc.3"
+
+  PATH="$tmp_dir/bin:$PATH" \
+  MOCK_LOG="$tmp_dir/log.txt" \
+  MOCK_HEAD_SHA="tag444" \
+  MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+  MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+  MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+  MOCK_DIST_TAG="next" \
+  MOCK_VERSION="1.2.3-rc.3" \
+  RELEASE_POLL_SEC=0 \
+  RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+  RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+  "$SCRIPT_UNDER_TEST" "1.2.3-rc.3"
+
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.3 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch,headSha"
+  assert_contains "$tmp_dir/log.txt" "gh run view 444 --repo olhapi/maestro --json databaseId,status,conclusion,url,jobs"
 }
 
 run_manual_fallback_test() {
@@ -264,7 +441,9 @@ run_manual_fallback_test() {
   write_run_list_json "$tmp_dir/run-list.json" 202 failure "v1.2.3" "def456"
   write_manual_fallback_run_json "$tmp_dir/run-view.json"
   create_artifacts "$tmp_dir/artifacts" "1.2.3"
-  write_published_state "$tmp_dir/published.json"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3"
 
   PATH="$tmp_dir/bin:$PATH" \
   MOCK_LOG="$tmp_dir/log.txt" \
@@ -272,18 +451,60 @@ run_manual_fallback_test() {
   MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
   MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
   MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+  MOCK_FAIL_ON_REPUBLISH=1 \
   MOCK_ARTIFACT_SOURCE="$tmp_dir/artifacts" \
   MOCK_DIST_TAG="latest" \
   MOCK_VERSION="1.2.3" \
-  MOCK_VERSION_TAG="v1.2.3" \
   RELEASE_POLL_SEC=0 \
   RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
   RELEASE_REGISTRY_TIMEOUT_SEC=1 \
   "$SCRIPT_UNDER_TEST" "1.2.3"
 
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch,headSha"
   assert_contains "$tmp_dir/log.txt" "gh run download 202 --repo olhapi/maestro --dir"
+  assert_publish_sequence \
+    "$tmp_dir/log.txt" \
+    "olhapi-maestro-darwin-x64-1.2.3.tgz" \
+    "olhapi-maestro-linux-x64-gnu-1.2.3.tgz" \
+    "olhapi-maestro-linux-arm64-gnu-1.2.3.tgz" \
+    "olhapi-maestro-win32-x64-1.2.3.tgz" \
+    "olhapi-maestro-1.2.3.tgz"
+  assert_in_order \
+    "$tmp_dir/log.txt" \
+    "npm whoami" \
+    "gh run download 202 --repo olhapi/maestro --dir" \
+    "npm publish --access public --tag latest"
+}
+
+run_manual_fallback_requires_npm_auth_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-auth-guard.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  write_run_list_json "$tmp_dir/run-list.json" 707 failure "v1.2.4-rc.1" "guard707"
+  write_manual_fallback_run_json "$tmp_dir/run-view.json"
+
+  if PATH="$tmp_dir/bin:$PATH" \
+    MOCK_LOG="$tmp_dir/log.txt" \
+    MOCK_HEAD_SHA="guard707" \
+    MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+    MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+    MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+    MOCK_NPM_WHOAMI_EXIT_CODE=1 \
+    MOCK_DIST_TAG="next" \
+    MOCK_VERSION="1.2.4-rc.1" \
+    RELEASE_POLL_SEC=0 \
+    RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+    RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+    "$SCRIPT_UNDER_TEST" "1.2.4-rc.1" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"; then
+    fail "manual fallback auth guard test should have failed"
+  fi
+
   assert_contains "$tmp_dir/log.txt" "npm whoami"
-  assert_contains "$tmp_dir/log.txt" "npm publish --access public --tag latest"
+  assert_not_contains "$tmp_dir/log.txt" "gh run download"
+  assert_not_contains "$tmp_dir/log.txt" "npm publish --access public --tag next"
+  assert_contains "$tmp_dir/stderr.txt" "npm authentication is required before local artifact publish fallback"
 }
 
 run_existing_remote_tag_resume_test() {
@@ -295,7 +516,9 @@ run_existing_remote_tag_resume_test() {
   write_run_list_json "$tmp_dir/run-list.json" 404 failure "v1.2.3-rc.4" "tag404"
   write_manual_fallback_run_json "$tmp_dir/run-view.json"
   create_artifacts "$tmp_dir/artifacts" "1.2.3-rc.4"
-  write_published_state "$tmp_dir/published.json"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3-rc.1"
 
   PATH="$tmp_dir/bin:$PATH" \
   MOCK_LOG="$tmp_dir/log.txt" \
@@ -306,18 +529,56 @@ run_existing_remote_tag_resume_test() {
   MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
   MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
   MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+  MOCK_FAIL_ON_REPUBLISH=1 \
   MOCK_ARTIFACT_SOURCE="$tmp_dir/artifacts" \
   MOCK_DIST_TAG="next" \
   MOCK_VERSION="1.2.3-rc.4" \
-  MOCK_VERSION_TAG="v1.2.3-rc.4" \
   RELEASE_POLL_SEC=0 \
   RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
   RELEASE_REGISTRY_TIMEOUT_SEC=1 \
   "$SCRIPT_UNDER_TEST" "1.2.3-rc.4"
 
   assert_not_contains "$tmp_dir/log.txt" "pnpm verify:pre-push"
+  assert_not_contains "$tmp_dir/log.txt" "git tag -a v1.2.3-rc.4 -m Release v1.2.3-rc.4"
   assert_not_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.4"
+  assert_contains "$tmp_dir/log.txt" "gh run list --repo olhapi/maestro --workflow release-npm.yml --branch v1.2.3-rc.4 --event push --limit 5 --json databaseId,status,conclusion,url,headBranch,headSha"
   assert_contains "$tmp_dir/log.txt" "gh run download 404 --repo olhapi/maestro --dir"
+}
+
+run_existing_local_tag_push_test() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/publish-release-test-local-tag.XXXXXX")"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  write_mock_commands "$tmp_dir/bin"
+  write_run_list_json "$tmp_dir/run-list.json" 505 success "v1.2.3-rc.5" "head505"
+  write_success_run_json "$tmp_dir/run-view.json"
+  write_published_state \
+    "$tmp_dir/published.json" \
+    "@olhapi/maestro-darwin-arm64=1.2.3-rc.5" \
+    "@olhapi/maestro-darwin-x64=1.2.3-rc.5" \
+    "@olhapi/maestro-linux-x64-gnu=1.2.3-rc.5" \
+    "@olhapi/maestro-linux-arm64-gnu=1.2.3-rc.5" \
+    "@olhapi/maestro-win32-x64=1.2.3-rc.5" \
+    "@olhapi/maestro=1.2.3-rc.5"
+
+  PATH="$tmp_dir/bin:$PATH" \
+  MOCK_LOG="$tmp_dir/log.txt" \
+  MOCK_HEAD_SHA="head505" \
+  MOCK_LOCAL_TAG_SHA="head505" \
+  MOCK_RUN_LIST_JSON="$tmp_dir/run-list.json" \
+  MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
+  MOCK_PUBLISHED_STATE_FILE="$tmp_dir/published.json" \
+  MOCK_DIST_TAG="next" \
+  MOCK_VERSION="1.2.3-rc.5" \
+  RELEASE_POLL_SEC=0 \
+  RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
+  RELEASE_REGISTRY_TIMEOUT_SEC=1 \
+  "$SCRIPT_UNDER_TEST" "1.2.3-rc.5"
+
+  assert_contains "$tmp_dir/log.txt" "pnpm verify:pre-push"
+  assert_not_contains "$tmp_dir/log.txt" "git tag -a v1.2.3-rc.5 -m Release v1.2.3-rc.5"
+  assert_contains "$tmp_dir/log.txt" "git push origin refs/tags/v1.2.3-rc.5"
 }
 
 run_stale_local_tag_guard_test() {
@@ -337,7 +598,6 @@ run_stale_local_tag_guard_test() {
     MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
     MOCK_DIST_TAG="next" \
     MOCK_VERSION="1.2.3-rc.6" \
-    MOCK_VERSION_TAG="v1.2.3-rc.6" \
     RELEASE_POLL_SEC=0 \
     RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
     RELEASE_REGISTRY_TIMEOUT_SEC=1 \
@@ -366,7 +626,6 @@ run_dirty_worktree_guard_test() {
     MOCK_RUN_VIEW_JSON="$tmp_dir/run-view.json" \
     MOCK_DIST_TAG="next" \
     MOCK_VERSION="9.9.9-rc.1" \
-    MOCK_VERSION_TAG="v9.9.9-rc.1" \
     RELEASE_POLL_SEC=0 \
     RELEASE_RUN_LOOKUP_TIMEOUT_SEC=1 \
     RELEASE_REGISTRY_TIMEOUT_SEC=1 \
@@ -378,7 +637,11 @@ run_dirty_worktree_guard_test() {
 }
 
 run_success_path_test
+run_double_dash_passthrough_test
+run_tag_specific_run_selection_test
 run_manual_fallback_test
+run_manual_fallback_requires_npm_auth_test
 run_existing_remote_tag_resume_test
+run_existing_local_tag_push_test
 run_stale_local_tag_guard_test
 run_dirty_worktree_guard_test

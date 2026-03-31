@@ -1812,6 +1812,7 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 		},
 	}
 
+	start := time.Now()
 	issue, err := svc.GetIssueByIdentifier(context.Background(), "STUB-FAST-1")
 	if err != nil {
 		t.Fatalf("GetIssueByIdentifier: %v", err)
@@ -1819,8 +1820,8 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 	if issue.Identifier != "STUB-FAST-1" {
 		t.Fatalf("unexpected issue returned: %#v", issue)
 	}
-	if got := started.Load(); got != int32(len(projectRefs)) {
-		t.Fatalf("expected all provider probes to start, got %d want %d", got, len(projectRefs))
+	if elapsed := time.Since(start); elapsed >= 40*time.Millisecond {
+		t.Fatalf("expected parallel provider probes, lookup took %v", elapsed)
 	}
 }
 

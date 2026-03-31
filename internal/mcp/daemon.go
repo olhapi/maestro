@@ -27,8 +27,6 @@ import (
 )
 
 const daemonRegistryEnv = "MAESTRO_DAEMON_REGISTRY_DIR"
-const daemonListenAddrEnv = "MAESTRO_MCP_LISTEN_ADDR"
-const daemonAdvertisedURLEnv = "MAESTRO_MCP_ADVERTISED_URL"
 
 var listenFunc = net.Listen
 
@@ -87,11 +85,7 @@ func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider Runti
 		return handle, nil
 	}
 
-	listenAddr := "127.0.0.1:0"
-	if override := strings.TrimSpace(os.Getenv(daemonListenAddrEnv)); override != "" {
-		listenAddr = override
-	}
-	ln, err := listenFunc("tcp", listenAddr)
+	ln, err := listenFunc("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen for private MCP endpoint: %w", err)
 	}
@@ -101,16 +95,12 @@ func StartManagedDaemon(ctx context.Context, store *kanban.Store, provider Runti
 		Handler: handler,
 	}
 
-	baseURL := "http://" + ln.Addr().String() + "/mcp"
-	if override := strings.TrimSpace(os.Getenv(daemonAdvertisedURLEnv)); override != "" {
-		baseURL = override
-	}
 	entry := DaemonEntry{
 		StoreID:     identity.StoreID,
 		DBPath:      identity.DBPath,
 		PID:         os.Getpid(),
 		StartedAt:   time.Now().UTC(),
-		BaseURL:     baseURL,
+		BaseURL:     "http://" + ln.Addr().String() + "/mcp",
 		BearerToken: token,
 		Version:     version,
 		Transport:   daemonTransportHTTP,

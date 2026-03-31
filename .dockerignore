@@ -6,8 +6,6 @@ dist/
 apps/frontend/
 apps/website/
 workspaces/
-.maestro/
-internal/agent/~/
 node_modules/
 **/node_modules/
 coverage/
