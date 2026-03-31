@@ -1355,6 +1355,8 @@ func finalAnswerFromSession(session *agentruntime.Session) string {
 	return ""
 }
 
+// Maestro treats a single explicit <proposed_plan> block as the authoritative plan payload.
+// Stream-json is useful for debugging, but this parser only relies on the final message body.
 func extractProposedPlanMarkdown(message string) string {
 	matches := proposedPlanBlockPattern.FindStringSubmatch(message)
 	if len(matches) != 2 {

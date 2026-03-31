@@ -54,8 +54,9 @@ type RuntimeSpec struct {
 	Permissions     PermissionConfig
 	DynamicTools    []map[string]interface{}
 	ToolExecutor    ToolExecutor
-	ResumeToken     string
-	Metadata        map[string]interface{}
+	// ResumeToken is the provider-specific durable continuation token used to resume a run across processes.
+	ResumeToken string
+	Metadata    map[string]interface{}
 }
 
 type InputItemKind string

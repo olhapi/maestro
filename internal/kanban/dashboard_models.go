@@ -199,6 +199,10 @@ const (
 	IssuePlanningStatusAbandoned         IssuePlanningStatus = "abandoned"
 )
 
+// IssuePlanVersion records one persisted plan checkpoint in the planning lineage.
+// SessionID is the durable provider session key, VersionNumber increments per revision,
+// Markdown stores the canonical <proposed_plan> body, RevisionNote captures the latest
+// requested revision text, and ThreadID/TurnID preserve lineage when the provider exposes it.
 type IssuePlanVersion struct {
 	ID            string    `json:"id"`
 	SessionID     string    `json:"session_id"`
@@ -211,6 +215,8 @@ type IssuePlanVersion struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// IssuePlanning groups all plan versions for one planning session.
+// SessionID is the durable provider session key that ties the lineage together.
 type IssuePlanning struct {
 	SessionID            string              `json:"session_id"`
 	Status               IssuePlanningStatus `json:"status"`
