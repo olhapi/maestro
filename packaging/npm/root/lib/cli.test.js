@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { ensureSupportedNodeVersion, parseSelfUpdateArgs, runContainerized } = require("./cli");
+const { parseSelfUpdateArgs, runContainerized } = require("./cli");
 
 test("parseSelfUpdateArgs accepts an explicit version", () => {
   assert.deepEqual(parseSelfUpdateArgs(["--version", "1.2.3"]), {
@@ -19,11 +19,6 @@ test("parseSelfUpdateArgs reports help", () => {
     help: true,
     version: "",
   });
-});
-
-test("ensureSupportedNodeVersion rejects launcher runtimes below Node 24", () => {
-  assert.throws(() => ensureSupportedNodeVersion("22.18.0"), /Node 24 or newer/);
-  assert.doesNotThrow(() => ensureSupportedNodeVersion("24.0.0"));
 });
 
 test("runContainerized skips browser open when MAESTRO_DISABLE_BROWSER_OPEN is set", async () => {

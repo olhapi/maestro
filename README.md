@@ -47,9 +47,6 @@ This package no longer ships native platform binaries. It installs a thin host
 launcher that runs Maestro from the published Docker image, so Docker is now a
 first-party runtime requirement for normal CLI use.
 
-The npm launcher requires Node 24 or newer because it uses the built-in
-`node:sqlite` module to inspect the Maestro database before Docker starts.
-
 The launcher resolves its runtime image in this order:
 
 - `MAESTRO_IMAGE`
@@ -160,12 +157,6 @@ maestro run
 When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. When `--port` is omitted, Maestro serves HTTP on `http://127.0.0.1:8787`.
 
 Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
-
-Before Docker starts, `maestro run` performs a one-time preflight pass. When a
-database file exists, the launcher reads the discovered workflow files, resolves
-their `workspace.root` values, and mounts the repo and workspace directories up
-front. If the database file does not exist yet, it skips discovery so fresh
-bootstrap flows still work.
 
 Issue images are stored next to the active database under `assets/images`. With the default database path, that means `~/.maestro/assets/images`. If you run with `--db /custom/path/maestro.db`, image assets move to `/custom/path/assets/images`.
 

@@ -14,22 +14,12 @@ const {
   writeRuntimeState,
 } = require("./runtime-state");
 
-const MINIMUM_LAUNCHER_NODE_MAJOR = 24;
-
 function packageVersion() {
   const packageJSON = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
   return packageJSON.version;
 }
 
-function ensureSupportedNodeVersion(nodeVersion = process.versions.node) {
-  const major = Number.parseInt(String(nodeVersion || "").split(".")[0], 10);
-  if (!Number.isInteger(major) || major < MINIMUM_LAUNCHER_NODE_MAJOR) {
-    throw new Error(`Maestro's npm launcher requires Node ${MINIMUM_LAUNCHER_NODE_MAJOR} or newer; found ${nodeVersion}`);
-  }
-}
-
 async function main(argv = process.argv.slice(2), options = {}) {
-  ensureSupportedNodeVersion();
   const deps = createDeps(options);
   if (argv[0] === "self-update") {
     return handleSelfUpdate(argv.slice(1), deps);
@@ -295,7 +285,6 @@ module.exports = {
   dockerBinary,
   ensureDockerAvailable,
   ensureImageAvailable,
-  ensureSupportedNodeVersion,
   handleDoctorInstall,
   handleInstallSkills,
   handleSelfUpdate,

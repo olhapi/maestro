@@ -12,5 +12,4 @@ while [ -L "$SCRIPT_PATH" ]; do
 done
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$SCRIPT_PATH")" && pwd)
-NODE_BIN="${MAESTRO_NODE_BIN:-node}"
-exec "$NODE_BIN" "$SCRIPT_DIR/maestro.js" "$@"
+exec node "$SCRIPT_DIR/maestro.js" "$@"

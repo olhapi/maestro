@@ -63,13 +63,11 @@ test_registry_smoke_requires_only_root_tarball() {
   local pack_dir="$tmp_dir/dist/npm"
   local bin_dir="$tmp_dir/bin"
   local output="$tmp_dir/output.log"
-  local log_file="$tmp_dir/log.txt"
 
   make_tarball "$pack_dir" "olhapi-maestro-0.0.0-ci.tgz"
   write_mock_commands "$bin_dir"
-  : >"$log_file"
 
-  if ! PATH="$bin_dir:$PATH" MAESTRO_NODE_BIN="$bin_dir/node" PACK_DIR="$pack_dir" MAESTRO_SMOKE_IMAGE="maestro-smoke:test" LOG_FILE="$log_file" "$SCRIPT_UNDER_TEST" 0.0.0-ci >"$output" 2>&1; then
+  if ! PATH="$bin_dir:$PATH" PACK_DIR="$pack_dir" MAESTRO_SMOKE_IMAGE="maestro-smoke:test" "$SCRIPT_UNDER_TEST" 0.0.0-ci >"$output" 2>&1; then
     cat "$output" >&2
     fail "expected smoke script to succeed with the launcher tarball"
   fi

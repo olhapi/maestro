@@ -25,13 +25,8 @@ describe("CopyCodeField", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
 
-    await waitFor(
-      () => {
-        expect(writeText).toHaveBeenCalledWith("maestro workflow init .");
-        expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
-      },
-      { timeout: 2000 },
-    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("maestro workflow init ."));
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
   it("disables copying when clipboard access is unavailable", async () => {
