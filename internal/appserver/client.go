@@ -729,7 +729,17 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 				}
 				continue
 			}
-			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(turnCompletionCleanExitWait) {
+			cleanExitWait := turnCompletionCleanExitWait
+			if !deadline.IsZero() {
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					return &RunError{Kind: "turn_timeout"}
+				}
+				if remaining < cleanExitWait {
+					cleanExitWait = remaining
+				}
+			}
+			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(cleanExitWait) {
 				c.logger.Info("Codex turn completed after clean app-server exit",
 					"session_id", c.session.SessionID,
 					"thread_id", c.session.ThreadID,
