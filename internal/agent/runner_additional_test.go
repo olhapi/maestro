@@ -502,7 +502,6 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 
 	// runHook branches.
 	hookWorkflow := *workflow
-	hookWorkflow.Config.Hooks.TimeoutMs = 50
 	runner.workflowProvider = staticWorkflowProvider{workflow: &hookWorkflow}
 
 	if err := runner.runHook(context.Background(), repoPath, "", "empty"); err != nil {
@@ -514,6 +513,7 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 	if err := runner.runHook(context.Background(), repoPath, "exit 2", "error"); err == nil || !strings.Contains(err.Error(), "workspace hook failed") {
 		t.Fatalf("expected failing hook error, got %v", err)
 	}
+	hookWorkflow.Config.Hooks.TimeoutMs = 50
 	if err := runner.runHook(context.Background(), repoPath, "sleep 1", "timeout"); err == nil || !strings.Contains(err.Error(), "workspace hook timeout") {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
