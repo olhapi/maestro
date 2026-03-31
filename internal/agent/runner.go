@@ -370,6 +370,17 @@ func projectWorkspaceSlug(project *kanban.Project) string {
 	return candidate
 }
 
+func workspaceRootAllowsRehome(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	if strings.HasPrefix(root, "~") || strings.Contains(root, "$") {
+		return false
+	}
+	return filepath.IsAbs(root)
+}
+
 func workspacePathForIssue(rootAbs string, project *kanban.Project, issue *kanban.Issue) string {
 	issueKey := "issue"
 	if issue != nil {
@@ -1084,23 +1095,28 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 		if pathErr != nil {
 			return nil, fmt.Errorf("resolve workspace path: %w", pathErr)
 		}
+		legacyPath := false
 		if !pathWithinRoot(existingPath, rootAbs) {
-			if err := r.recoverWorkspaceToCurrentRoot(ctx, workflow, issue, existingPath, targetPath, rootAbs); err != nil {
-				r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
-					"path":        existing.Path,
-					"target_path": targetPath,
-					"error":       err.Error(),
-					"status":      "required",
-					"message":     "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
-				})
-				return nil, fmt.Errorf("workspace_bootstrap: %w", err)
-			}
-			existing, err = r.store.UpdateWorkspacePath(issue.ID, targetPath)
-			if err != nil {
-				return nil, err
+			if workspaceRootAllowsRehome(workflow.Config.Workspace.Root) {
+				if err := r.recoverWorkspaceToCurrentRoot(ctx, workflow, issue, existingPath, targetPath, rootAbs); err != nil {
+					r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
+						"path":        existing.Path,
+						"target_path": targetPath,
+						"error":       err.Error(),
+						"status":      "required",
+						"message":     "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
+					})
+					return nil, fmt.Errorf("workspace_bootstrap: %w", err)
+				}
+				existing, err = r.store.UpdateWorkspacePath(issue.ID, targetPath)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				legacyPath = true
 			}
 		}
-		createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, existing.Path, rootAbs, false)
+		createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, existing.Path, rootAbs, legacyPath)
 		if err != nil {
 			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
 				"path":    existing.Path,
