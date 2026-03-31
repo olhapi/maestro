@@ -3,12 +3,8 @@
 package appserver
 
 import (
-	"bytes"
-	"bufio"
 	"errors"
 	"os/exec"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -70,14 +66,7 @@ func managedProcessExists(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	if err != nil && !errors.Is(err, syscall.EPERM) {
-		return false
-	}
-	state, ok := processState(pid)
-	if !ok {
-		return true
-	}
-	return !strings.HasPrefix(strings.TrimSpace(state), "Z")
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func managedProcessGroupExists(pid int) bool {
@@ -85,52 +74,5 @@ func managedProcessGroupExists(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(-pid, 0)
-	if err != nil && !errors.Is(err, syscall.EPERM) {
-		return false
-	}
-	alive, ok := processGroupHasLivingMember(pid)
-	if !ok {
-		return true
-	}
-	return alive
-}
-
-func processState(pid int) (string, bool) {
-	if pid <= 0 {
-		return "", false
-	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").Output()
-	if err != nil {
-		return "", false
-	}
-	state := strings.TrimSpace(string(out))
-	return state, state != ""
-}
-
-func processGroupHasLivingMember(pgid int) (bool, bool) {
-	if pgid <= 0 {
-		return false, false
-	}
-	out, err := exec.Command("ps", "-ax", "-o", "pid=,pgid=,stat=").Output()
-	if err != nil {
-		return false, false
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 3 {
-			continue
-		}
-		linePGID, err := strconv.Atoi(fields[1])
-		if err != nil || linePGID != pgid {
-			continue
-		}
-		if !strings.HasPrefix(strings.TrimSpace(fields[2]), "Z") {
-			return true, true
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return false, false
-	}
-	return false, true
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

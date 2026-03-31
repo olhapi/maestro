@@ -1,28 +1,24 @@
 {
   "name": "@olhapi/maestro",
   "version": "__VERSION__",
-  "description": "Maestro Docker-backed launcher for global npm installation",
+  "description": "Maestro CLI packaged for global npm installation",
   "license": "MIT",
-  "engines": {
-    "node": ">=24"
-  },
   "bin": {
-    "maestro": "bin/maestro"
+    "maestro": "bin/maestro.js"
   },
   "files": [
-    "bin/maestro",
-    "bin/maestro.cmd",
-    "bin/maestro.ps1",
     "bin/maestro.js",
-    "lib/browser.js",
-    "lib/cli.js",
-    "lib/docker-plan.js",
-    "lib/install-skills.js",
-    "lib/runtime-state.js",
-    "share/skills/maestro",
+    "lib/get-exe-path.js",
     "LICENSE",
     "README.md"
   ],
+  "optionalDependencies": {
+    "@olhapi/maestro-darwin-arm64": "__VERSION__",
+    "@olhapi/maestro-darwin-x64": "__VERSION__",
+    "@olhapi/maestro-linux-x64-gnu": "__VERSION__",
+    "@olhapi/maestro-linux-arm64-gnu": "__VERSION__",
+    "@olhapi/maestro-win32-x64": "__VERSION__"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/olhapi/maestro.git"

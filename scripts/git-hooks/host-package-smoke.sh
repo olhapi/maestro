@@ -8,11 +8,6 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(repo_root)
 cd "$ROOT"
 
-# shellcheck source=/dev/null
-. "$ROOT/scripts/lib/node_bin.sh"
-ensure_maestro_node_bin
-
-MAESTRO_CODEX_VERSION="$("$ROOT/scripts/codex_supported_version.sh")"
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/maestro-pre-push-package.XXXXXX")
 cleanup() {
   rm -rf "$TMP_ROOT"
@@ -22,11 +17,8 @@ trap cleanup EXIT INT TERM
 export OUT_ROOT="$TMP_ROOT"
 export STAGE_DIR="$OUT_ROOT/npm-package"
 export PACK_DIR="$OUT_ROOT/npm"
-export MAESTRO_SMOKE_IMAGE="maestro-smoke:pre-push"
 
-run_step docker build -t "$MAESTRO_SMOKE_IMAGE" --build-arg MAESTRO_VERSION=0.0.0-pre-push --build-arg CODEX_VERSION="$MAESTRO_CODEX_VERSION" .
-run_step ./scripts/smoke_runtime_image.sh "$MAESTRO_SMOKE_IMAGE"
+HOST_TARGET="$(./scripts/package_npm_release.sh print-current-target)"
+
 run_step ./scripts/package_npm_release.sh 0.0.0-pre-push
-run_step ./scripts/smoke_npm_package.sh 0.0.0-pre-push
-run_step ./scripts/smoke_npm_registry_install.sh 0.0.0-pre-push
-run_step ./scripts/smoke_install_script.sh 0.0.0-pre-push
+run_step ./scripts/smoke_npm_package.sh 0.0.0-pre-push "$HOST_TARGET"

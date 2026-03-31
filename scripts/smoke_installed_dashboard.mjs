@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
@@ -20,14 +21,9 @@ async function main(installDir) {
   }
 
   const resolvedInstallDir = path.resolve(installDir);
-  const exePath = process.env.MAESTRO_SMOKE_EXE
-    ? path.resolve(process.env.MAESTRO_SMOKE_EXE)
-    : path.join(
-        resolvedInstallDir,
-        "node_modules",
-        ".bin",
-        process.platform === "win32" ? "maestro.cmd" : "maestro",
-      );
+  const requireFromInstall = createRequire(path.join(resolvedInstallDir, "package.json"));
+  const { getExePath } = requireFromInstall("@olhapi/maestro/lib/get-exe-path");
+  const exePath = getExePath();
   const logPath = path.join(resolvedInstallDir, "maestro-run-smoke.log");
   const dbPath = path.join(resolvedInstallDir, "maestro-run-smoke.db");
   const daemonRegistryDir = path.join(resolvedInstallDir, ".maestro-daemons");
@@ -52,7 +48,6 @@ async function main(installDir) {
       env: {
         ...process.env,
         MAESTRO_DAEMON_REGISTRY_DIR: daemonRegistryDir,
-        MAESTRO_IMAGE: process.env.MAESTRO_IMAGE || "",
       },
       stdio: ["ignore", logFD, logFD],
     },

@@ -29,7 +29,7 @@ The docs site is organized around the same operator flow the product uses:
 
 ### npm
 
-Install the launcher package:
+Current public npm install on supported platforms:
 
 ```bash
 npm install -g @olhapi/maestro
@@ -43,47 +43,19 @@ npm install -g @olhapi/maestro@next
 
 The installed command name is still `maestro`.
 
-This package no longer ships native platform binaries. It installs a thin host
-launcher that runs Maestro from the published Docker image, so Docker is now a
-first-party runtime requirement for normal CLI use.
+Official npm builds currently cover:
 
-The npm launcher requires Node 24 or newer because it uses the built-in
-`node:sqlite` module to inspect the Maestro database before Docker starts.
+| Platform | Arch | Notes |
+| --- | --- | --- |
+| macOS | arm64 | native package |
+| macOS | x64 | native package |
+| Linux | x64 | glibc only |
+| Linux | arm64 | glibc only |
+| Windows | x64 | native package |
 
-The launcher resolves its runtime image in this order:
+Linux npm packages currently target glibc only. Alpine and other musl-based distros should build from source or use Docker.
 
-- `MAESTRO_IMAGE`
-- the locally pinned image from `~/.maestro/launcher/runtime.json`
-- the npm package version you installed
-
-Pull and pin the latest runtime image explicitly:
-
-```bash
-maestro self-update
-```
-
-Pin a specific image version:
-
-```bash
-maestro self-update --version 0.117.0
-```
-
-Validate the local launcher install, Docker access, and runtime pin:
-
-```bash
-maestro doctor install
-```
-
-### Curl Installer
-
-If you want the same launcher without npm, install it with the repository
-script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/olhapi/maestro/main/scripts/install_maestro.sh | sh
-```
-
-### Docker Runtime
+### Docker
 
 Published image:
 
@@ -105,8 +77,7 @@ docker run --rm -v ./repo:/repo -v ./data:/data ghcr.io/olhapi/maestro:latest ru
 
 ### Build From Source
 
-For local development, contributor workflows, or environments where Docker is
-not the right runtime:
+For local development or unsupported platforms:
 
 ```bash
 go build -o maestro ./cmd/maestro
@@ -118,7 +89,7 @@ development package for the standard `make build` / `make test` flow.
 Local contributor Docker build:
 
 ```bash
-docker build -t maestro-local --build-arg CODEX_VERSION="$(./scripts/codex_supported_version.sh)" .
+docker build -t maestro-local .
 ```
 
 ## Quick Start
@@ -160,12 +131,6 @@ maestro run
 When `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. When `--port` is omitted, Maestro serves HTTP on `http://127.0.0.1:8787`.
 
 Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
-
-Before Docker starts, `maestro run` performs a one-time preflight pass. When a
-database file exists, the launcher reads the discovered workflow files, resolves
-their `workspace.root` values, and mounts the repo and workspace directories up
-front. If the database file does not exist yet, it skips discovery so fresh
-bootstrap flows still work.
 
 Issue images are stored next to the active database under `assets/images`. With the default database path, that means `~/.maestro/assets/images`. If you run with `--db /custom/path/maestro.db`, image assets move to `/custom/path/assets/images`.
 
@@ -417,10 +382,9 @@ Repo-managed Git hooks stay targeted:
 - staged website changes run Astro checks and website tests
 - staged workspace and hook changes run the full `pnpm verify` suite
 - `pnpm verify` runs the JS lint/test/check/smoke flow, npm packaging unit test, and Go build/test/coverage/race gates
-- `pnpm run verify:pre-push` adds real Docker image build smoke, tarball install smoke, local-registry install smoke, curl-installer smoke, the shared retry stress test, and the full retry-safety harness on top of `pnpm verify`
-- `pnpm run verify:ci` is the lean GitHub Actions gate: web verification, launcher packaging tests, and `go test ./...`
+- `pnpm run verify:pre-push` adds current-host npm packaging smoke, the shared retry stress test, and the full retry-safety harness on top of `pnpm verify`
 - package-scoped root commands such as `pnpm run frontend:test` and `pnpm run website:build` now go through `turbo --filter=...` so they benefit from task caching too
-- `pre-push` now runs `pnpm run verify:pre-push`, while GitHub Actions stays on the smaller `pnpm run verify:ci` gate
+- `pre-push` now runs `pnpm run verify:pre-push`, leaving GitHub Actions with the cross-platform packaging matrix and registry smoke coverage
 
 ## License
 

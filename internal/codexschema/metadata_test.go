@@ -31,29 +31,19 @@ func TestVendoredSchemasExistForConsumedSubset(t *testing.T) {
 	}
 }
 
-func TestVersionScriptsUseSharedSupportedVersion(t *testing.T) {
+func TestUpdateScriptUsesSharedSupportedVersion(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	updateScriptPath := filepath.Join(repoRoot, "scripts", "update_codex_schemas.sh")
-	content, err := os.ReadFile(updateScriptPath)
+	scriptPath := filepath.Join(repoRoot, "scripts", "update_codex_schemas.sh")
+	content, err := os.ReadFile(scriptPath)
 	if err != nil {
 		t.Fatalf("read update script: %v", err)
 	}
-	updateText := string(content)
-	if !strings.Contains(updateText, "scripts/codex_supported_version.sh") {
-		t.Fatalf("expected %s to use the shared supported-version helper", updateScriptPath)
+	text := string(content)
+	if !strings.Contains(text, "internal/codexschema/metadata.go") {
+		t.Fatalf("expected %s to reference the shared metadata file", scriptPath)
 	}
-	if regexp.MustCompile(`VERSION="\$\{CODEX_SCHEMA_VERSION:-0\.[0-9]+\.[0-9]+\}"`).MatchString(updateText) {
-		t.Fatalf("expected %s to avoid hardcoding a fallback schema version", updateScriptPath)
-	}
-
-	helperScriptPath := filepath.Join(repoRoot, "scripts", "codex_supported_version.sh")
-	content, err = os.ReadFile(helperScriptPath)
-	if err != nil {
-		t.Fatalf("read supported-version helper: %v", err)
-	}
-	helperText := string(content)
-	if !strings.Contains(helperText, "internal/codexschema/metadata.go") {
-		t.Fatalf("expected %s to reference the shared metadata file", helperScriptPath)
+	if regexp.MustCompile(`VERSION="\$\{CODEX_SCHEMA_VERSION:-0\.[0-9]+\.[0-9]+\}"`).MatchString(text) {
+		t.Fatalf("expected %s to avoid hardcoding a fallback schema version", scriptPath)
 	}
 }

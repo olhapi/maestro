@@ -87,10 +87,6 @@ maestro --log-level <debug|info|warn|error> workflow init [repo_path]`}
 
 `maestro run` serves HTTP on port `8787` by default. Pass `--port` only when you want a different port.
 
-Before Docker starts, the launcher does a one-time preflight pass over the
-database and workflow files so custom repo and workspace roots are mounted
-up front.
-
 Live runtime helpers require `--api-url` because they talk to a running daemon over HTTP.
 
 ## Skills

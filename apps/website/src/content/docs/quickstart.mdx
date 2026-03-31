@@ -37,11 +37,6 @@ If `--db` is omitted, Maestro uses `~/.maestro/maestro.db` by default. If `--por
 
 Running `maestro run` without `repo_path` starts the shared daemon for the current database. It does not infer the repo from your shell working directory.
 
-Before Docker starts, the launcher does a single preflight pass over the
-database and workflow files. It resolves `workspace.root` for every discovered
-workflow and mounts the repo and worktree directories up front, so custom
-workspace roots keep working during startup.
-
 This is the handoff point. Once the daemon is running, Maestro keeps doing the repetitive part while you move on to review, coding, or planning:
 
 1. Maestro loads `WORKFLOW.md`.

@@ -21,7 +21,6 @@ import (
 )
 
 const defaultInitialCollaborationMode = "default"
-const turnCompletionCleanExitWait = 500 * time.Millisecond
 
 type ToolExecutor func(ctx context.Context, name string, arguments interface{}) map[string]interface{}
 
@@ -729,17 +728,7 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 				}
 				continue
 			}
-			cleanExitWait := turnCompletionCleanExitWait
-			if !deadline.IsZero() {
-				remaining := time.Until(deadline)
-				if remaining <= 0 {
-					return &RunError{Kind: "turn_timeout"}
-				}
-				if remaining < cleanExitWait {
-					cleanExitWait = remaining
-				}
-			}
-			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(cleanExitWait) {
+			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(100*time.Millisecond) {
 				c.logger.Info("Codex turn completed after clean app-server exit",
 					"session_id", c.session.SessionID,
 					"thread_id", c.session.ThreadID,
