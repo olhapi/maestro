@@ -31,6 +31,8 @@ const executionHealthSeries: ChartSeries[] = [
 ]
 
 const tokenBurnSeries: ChartSeries[] = [{ key: 'tokens', label: 'Token burn', color: '#53d9ff' }]
+const overviewListPanelClassName = 'flex max-h-[520px] flex-col overflow-hidden'
+const overviewListPanelBodyClassName = 'min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1'
 
 function Metric({
   label,
@@ -366,13 +368,13 @@ export function OverviewPage() {
       </section>
 
       <section className="grid gap-[var(--section-gap)] lg:grid-cols-2">
-        <Card>
+        <Card className={overviewListPanelClassName}>
           <CardHeader>
             <div>
               <CardTitle>Active runs</CardTitle>
             </div>
           </CardHeader>
-          <CardContent className="space-y-2.5">
+          <CardContent className={overviewListPanelBodyClassName}>
             {snapshot.running.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">No agents are currently running.</p>
             ) : (
@@ -396,13 +398,13 @@ export function OverviewPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className={overviewListPanelClassName}>
           <CardHeader>
             <div>
               <CardTitle>Pending retries</CardTitle>
             </div>
           </CardHeader>
-          <CardContent className="space-y-2.5">
+          <CardContent className={overviewListPanelBodyClassName}>
             {snapshot.retrying.length === 0 ? (
               <p className="text-sm text-[var(--muted-foreground)]">Retry queue is empty.</p>
             ) : (
