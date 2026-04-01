@@ -25,6 +25,7 @@ type WorkflowStartRequest struct {
 	DynamicTools    []map[string]interface{}
 	ToolExecutor    agentruntime.ToolExecutor
 	ResumeToken     string
+	DBPath          string
 	Metadata        map[string]interface{}
 }
 
@@ -80,6 +81,7 @@ func RuntimeSpecFromWorkflow(request WorkflowStartRequest) (agentruntime.Runtime
 		DynamicTools:    cloneToolSpecs(request.DynamicTools),
 		ToolExecutor:    request.ToolExecutor,
 		ResumeToken:     strings.TrimSpace(request.ResumeToken),
+		DBPath:          strings.TrimSpace(request.DBPath),
 		Metadata:        cloneJSONMap(request.Metadata),
 	}, nil
 }

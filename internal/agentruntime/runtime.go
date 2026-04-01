@@ -57,7 +57,9 @@ type RuntimeSpec struct {
 	ToolExecutor    ToolExecutor
 	// ResumeToken is the provider-specific durable continuation token used to resume a run across processes.
 	ResumeToken string
-	Metadata    map[string]interface{}
+	// DBPath is the live Maestro database backing the runtime attach config.
+	DBPath   string
+	Metadata map[string]interface{}
 }
 
 type InputItemKind string

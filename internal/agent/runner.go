@@ -1410,6 +1410,12 @@ func (r *Runner) startRuntimeClient(ctx context.Context, workflow *config.Workfl
 		DynamicTools:    r.extensions.Specs(),
 		ToolExecutor:    r.extensionToolExecutor(),
 		ResumeToken:     strings.TrimSpace(issue.ResumeThreadID),
+		DBPath: func() string {
+			if r.store == nil {
+				return ""
+			}
+			return r.store.DBPath()
+		}(),
 	}, agentruntime.Observers{
 		OnSessionUpdate: func(session *agentruntime.Session) {
 			if r.sessionObserver == nil || issue == nil || session == nil {

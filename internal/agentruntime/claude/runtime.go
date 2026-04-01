@@ -15,7 +15,7 @@ func Start(ctx context.Context, spec agentruntime.RuntimeSpec, observers agentru
 	}
 	switch spec.Transport {
 	case agentruntime.TransportStdio:
-		return startStdio(spec, observers), nil
+		return startStdio(spec, observers)
 	default:
 		return nil, fmt.Errorf("%w: transport %q", agentruntime.ErrUnsupportedCapability, spec.Transport)
 	}

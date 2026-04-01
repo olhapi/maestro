@@ -3,9 +3,11 @@ package claude
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -16,16 +18,26 @@ type stdioClient struct {
 	spec      agentruntime.RuntimeSpec
 	observers agentruntime.Observers
 
+	command string
+
 	mu      sync.Mutex
 	session agentruntime.Session
 	output  string
 	counter int
+
+	cleanupOnce sync.Once
+	cleanup     func()
 }
 
-func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers) agentruntime.Client {
+func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers) (agentruntime.Client, error) {
+	command, cleanup, err := buildClaudeCommand(spec)
+	if err != nil {
+		return nil, err
+	}
 	return &stdioClient{
 		spec:      spec,
 		observers: observers,
+		command:   command,
 		session: agentruntime.Session{
 			IssueID:         spec.IssueID,
 			IssueIdentifier: spec.IssueIdentifier,
@@ -35,7 +47,8 @@ func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers)
 			},
 			MaxHistory: agentruntime.DefaultSessionHistoryLimit,
 		},
-	}
+		cleanup: cleanup,
+	}, nil
 }
 
 func (c *stdioClient) Capabilities() agentruntime.Capabilities {
@@ -55,7 +68,7 @@ func (c *stdioClient) RunTurn(ctx context.Context, request agentruntime.TurnRequ
 		return err
 	}
 
-	cmd := exec.CommandContext(turnCtx, "sh", "-lc", c.spec.Command)
+	cmd := exec.CommandContext(turnCtx, "sh", "-lc", c.command)
 	cmd.Dir = c.spec.Workspace
 	cmd.Env = c.spec.Env
 	if len(cmd.Env) == 0 {
@@ -67,7 +80,6 @@ func (c *stdioClient) RunTurn(ctx context.Context, request agentruntime.TurnRequ
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -119,6 +131,14 @@ func (c *stdioClient) Output() string {
 }
 
 func (c *stdioClient) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.cleanupOnce.Do(func() {
+		if c.cleanup != nil {
+			c.cleanup()
+		}
+	})
 	return nil
 }
 
@@ -205,6 +225,62 @@ func (c *stdioClient) emitActivity(event agentruntime.ActivityEvent) {
 		return
 	}
 	go c.observers.OnActivityEvent(event.Clone())
+}
+
+func buildClaudeCommand(spec agentruntime.RuntimeSpec) (string, func(), error) {
+	command := strings.TrimSpace(spec.Command)
+	if command == "" {
+		command = "claude"
+	}
+	if strings.TrimSpace(spec.DBPath) == "" {
+		return "", nil, fmt.Errorf("claude runtime requires a db path for the live Maestro MCP bridge")
+	}
+	configPath, cleanup, err := writeClaudeMCPConfig(spec.DBPath)
+	if err != nil {
+		return "", nil, err
+	}
+	command = command + " --mcp-config " + shellQuoteArg(configPath) + " --strict-mcp-config"
+	return command, cleanup, nil
+}
+
+func writeClaudeMCPConfig(dbPath string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "maestro-claude-mcp-*")
+	if err != nil {
+		return "", nil, err
+	}
+	configPath := filepath.Join(dir, "mcp.json")
+	config := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"maestro": map[string]interface{}{
+				"type":    "stdio",
+				"command": "maestro",
+				"args": []string{
+					"mcp",
+					"--db",
+					dbPath,
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
+	}
+	if err := os.WriteFile(configPath, append(data, '\n'), 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
+	}
+	return configPath, func() {
+		_ = os.RemoveAll(dir)
+	}, nil
+}
+
+func shellQuoteArg(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func textInput(items []agentruntime.InputItem) (string, error) {
