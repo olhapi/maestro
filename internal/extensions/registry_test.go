@@ -35,6 +35,10 @@ func TestLoadFileAndSpecs(t *testing.T) {
 	if _, ok := properties["args"]; !ok {
 		t.Fatalf("expected fallback args schema, got %#v", properties)
 	}
+	annotations := specs[0]["annotations"].(map[string]interface{})
+	if annotations["readOnlyHint"] != false || annotations["destructiveHint"] != true || annotations["idempotentHint"] != false || annotations["openWorldHint"] != true {
+		t.Fatalf("expected conservative default annotations, got %#v", annotations)
+	}
 }
 
 func TestLoadFilePreservesExplicitInputSchema(t *testing.T) {
@@ -73,6 +77,37 @@ func TestLoadFilePreservesExplicitInputSchema(t *testing.T) {
 	}
 }
 
+func TestLoadFilePreservesExplicitAnnotations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ext.json")
+	data := `[
+  {
+    "name":"annotated_tool",
+    "description":"annotated",
+    "command":"echo ok",
+    "annotations":{
+      "title":"Annotated Tool",
+      "read_only_hint":true,
+      "destructive_hint":false,
+      "idempotent_hint":true,
+      "open_world_hint":false
+    }
+  }
+]`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	specs := reg.Specs()
+	annotations := specs[0]["annotations"].(map[string]interface{})
+	if annotations["title"] != "Annotated Tool" || annotations["readOnlyHint"] != true || annotations["destructiveHint"] != false || annotations["idempotentHint"] != true || annotations["openWorldHint"] != false {
+		t.Fatalf("unexpected explicit annotations: %#v", annotations)
+	}
+}
+
 func TestLoadFileRejectsInvalidInputSchema(t *testing.T) {
 	for _, tc := range []string{
 		`[{"name":"bad","description":"bad","command":"echo ok","input_schema":{"properties":{}}}]`,
@@ -85,6 +120,21 @@ func TestLoadFileRejectsInvalidInputSchema(t *testing.T) {
 		}
 		if _, err := LoadFile(path); err == nil {
 			t.Fatalf("expected invalid input_schema to fail for %s", tc)
+		}
+	}
+}
+
+func TestLoadFileRejectsInvalidAnnotations(t *testing.T) {
+	for _, tc := range []string{
+		`[{"name":"bad","description":"bad","command":"echo ok","annotations":{"read_only_hint":"yes"}}]`,
+		`[{"name":"bad","description":"bad","command":"echo ok","annotations":{"extra":true}}]`,
+	} {
+		path := filepath.Join(t.TempDir(), "bad.json")
+		if err := os.WriteFile(path, []byte(tc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), "invalid annotations") {
+			t.Fatalf("expected invalid annotations to fail for %s, got %v", tc, err)
 		}
 	}
 }

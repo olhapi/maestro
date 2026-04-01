@@ -407,6 +407,13 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
     "name":"ext_schema",
     "description":"schema-aware extension",
     "command":"echo ok",
+    "annotations":{
+      "title":"Schema Tool",
+      "read_only_hint":true,
+      "destructive_hint":false,
+      "idempotent_hint":true,
+      "open_world_hint":false
+    },
     "input_schema":{
       "type":"object",
       "properties":{
@@ -505,6 +512,17 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "run_issue_now"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_schema"), "mode", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_fallback"), "args")
+	assertToolAnnotations(t, findTool(t, tools.Tools, "get_issue_execution"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "update_issue"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "attach_issue_asset"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "create_issue_comment"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "update_issue_comment"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "set_issue_state"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "set_blockers"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "run_project"), "", false, true, false, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "ext_schema"), "Schema Tool", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "ext_fallback"), "", false, true, false, true)
 }
 
 func TestStdioBuiltInToolCoverage(t *testing.T) {
@@ -1928,6 +1946,25 @@ func assertToolProperties(t *testing.T, tool mcpapi.Tool, want ...string) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s properties mismatch:\n got %v\nwant %v", tool.Name, got, want)
+	}
+}
+
+func assertToolAnnotations(t *testing.T, tool mcpapi.Tool, wantTitle string, readOnly, destructive, idempotent, openWorld bool) {
+	t.Helper()
+	if got := tool.Annotations.Title; got != wantTitle {
+		t.Fatalf("%s title annotation mismatch: got %q want %q", tool.Name, got, wantTitle)
+	}
+	if tool.Annotations.ReadOnlyHint == nil || *tool.Annotations.ReadOnlyHint != readOnly {
+		t.Fatalf("%s readOnlyHint mismatch: got %#v want %v", tool.Name, tool.Annotations.ReadOnlyHint, readOnly)
+	}
+	if tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint != destructive {
+		t.Fatalf("%s destructiveHint mismatch: got %#v want %v", tool.Name, tool.Annotations.DestructiveHint, destructive)
+	}
+	if tool.Annotations.IdempotentHint == nil || *tool.Annotations.IdempotentHint != idempotent {
+		t.Fatalf("%s idempotentHint mismatch: got %#v want %v", tool.Name, tool.Annotations.IdempotentHint, idempotent)
+	}
+	if tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint != openWorld {
+		t.Fatalf("%s openWorldHint mismatch: got %#v want %v", tool.Name, tool.Annotations.OpenWorldHint, openWorld)
 	}
 }
 
