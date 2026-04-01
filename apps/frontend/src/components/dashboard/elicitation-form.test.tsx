@@ -242,6 +242,75 @@ function makeOptionalUnionSchema() {
   }
 }
 
+function makeLargeChoiceSchema() {
+  return {
+    type: 'object',
+    properties: {
+      role: {
+        type: 'string',
+        title: 'Role',
+        enum: ['engineer', 'manager', 'designer', 'director', 'support'],
+        enumNames: ['Engineer', 'Manager', 'Designer', 'Director', 'Support'],
+      },
+      delivery: {
+        oneOf: [
+          {
+            title: 'Email',
+            type: 'object',
+            properties: {
+              address: {
+                type: 'string',
+                title: 'Address',
+              },
+            },
+          },
+          {
+            title: 'Webhook',
+            type: 'object',
+            properties: {
+              endpoint: {
+                type: 'string',
+                title: 'Endpoint',
+              },
+            },
+          },
+          {
+            title: 'SMS',
+            type: 'object',
+            properties: {
+              phone: {
+                type: 'string',
+                title: 'Phone',
+              },
+            },
+          },
+          {
+            title: 'Pager',
+            type: 'object',
+            properties: {
+              number: {
+                type: 'string',
+                title: 'Number',
+              },
+            },
+          },
+          {
+            title: 'Slack',
+            type: 'object',
+            properties: {
+              channel: {
+                type: 'string',
+                title: 'Channel',
+              },
+            },
+          },
+        ],
+      },
+    },
+    required: ['role', 'delivery'],
+  }
+}
+
 describe('ElicitationForm', () => {
   it('renders nested controls and submits a recursive payload', async () => {
     const onAccept = vi.fn()
@@ -258,7 +327,10 @@ describe('ElicitationForm', () => {
     expect(screen.getByText(/Select at least 1/i)).toBeInTheDocument()
     expect(screen.getByText(/Up to 2 selections/i)).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: /active/i })).toHaveAttribute('data-state', 'checked')
-    expect(screen.getByRole('combobox', { name: /role/i })).toHaveTextContent('Engineer')
+    expect(screen.getByRole('button', { name: /engineer/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /manager/i })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: /^email$/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /webhook/i })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('button', { name: /alpha/i })).toHaveAttribute('data-state', 'on')
     expect(screen.getByRole('button', { name: /beta/i })).toHaveAttribute('data-state', 'off')
 
@@ -277,8 +349,8 @@ describe('ElicitationForm', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: /beta/i }))
 
-    await selectOption(/role/i, /manager/i)
-    await selectOption(/branch/i, /webhook/i)
+    fireEvent.click(screen.getByRole('button', { name: /manager/i }))
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }))
 
     fireEvent.change(screen.getByLabelText(/endpoint/i), {
       target: {
@@ -317,6 +389,22 @@ describe('ElicitationForm', () => {
     )
 
     expect((onAccept.mock.calls[0]?.[0] as { profile?: { tags?: string[] } }).profile?.tags).toHaveLength(2)
+  })
+
+  it('falls back to dropdowns for larger single-choice and union option sets', async () => {
+    renderElicitationForm({
+      requestedSchema: makeLargeChoiceSchema(),
+    })
+
+    expect(screen.getByRole('combobox', { name: /role/i })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /branch/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /engineer/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /slack/i })).not.toBeInTheDocument()
+
+    await selectOption(/role/i, /director/i)
+    await selectOption(/branch/i, /slack/i)
+
+    expect(screen.getByLabelText(/channel/i)).toBeInTheDocument()
   })
 
   it('accepts manual JSON when the schema falls back to unsupported rendering', () => {
@@ -479,7 +567,7 @@ describe('ElicitationForm', () => {
       },
     })
 
-    await selectOption(/branch/i, /webhook/i)
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }))
 
     const endpointInput = screen.getByLabelText(/endpoint/i)
     fireEvent.change(endpointInput, {
@@ -488,10 +576,10 @@ describe('ElicitationForm', () => {
       },
     })
 
-    await selectOption(/branch/i, /email/i)
+    fireEvent.click(screen.getByRole('button', { name: /^email$/i }))
     expect(screen.getByLabelText(/address/i)).toHaveValue('ops@example.com')
 
-    await selectOption(/branch/i, /webhook/i)
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }))
     expect(screen.getByLabelText(/endpoint/i)).toHaveValue('https://example.com/hooks')
 
     fireEvent.click(screen.getByRole('button', { name: /accept and continue/i }))

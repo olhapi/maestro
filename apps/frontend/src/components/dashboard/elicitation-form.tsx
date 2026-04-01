@@ -17,6 +17,8 @@ import {
 } from '@/lib/elicitation'
 import { cn } from '@/lib/utils'
 
+const COMPACT_CHOICE_LIMIT = 4
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
@@ -36,6 +38,19 @@ function isUnionDraft(value: unknown): value is {
 
 function nodeId(path: string) {
   return `elicitation-${path.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+function shouldRenderCompactChoiceButtons(optionCount: number) {
+  return optionCount > 0 && optionCount <= COMPACT_CHOICE_LIMIT
+}
+
+function choiceButtonClass(selected: boolean) {
+  return cn(
+    'rounded-xl border px-3 py-2 text-left text-sm transition',
+    selected
+      ? 'border-[var(--accent)]/50 bg-[var(--accent)]/10 text-white'
+      : 'border-white/10 bg-black/20 text-[var(--muted-foreground)] hover:border-white/20 hover:text-white',
+  )
 }
 
 function nodeConstraintSummary(node: ElicitationSchemaNode) {
@@ -240,6 +255,7 @@ function PrimitiveControl({
 
   if (node.fieldType === 'single_select') {
     const selectedValue = typeof value === 'string' ? value : ''
+    const renderChoiceButtons = shouldRenderCompactChoiceButtons(node.options?.length ?? 0)
 
     return (
       <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 p-4">
@@ -254,24 +270,52 @@ function PrimitiveControl({
           {description}
           {constraintText ? <p className="text-xs leading-5 text-[var(--muted-foreground)]">{constraintText}</p> : null}
         </div>
-        <Select
-          disabled={disabled}
-          value={selectedValue}
-          onValueChange={(nextValue) => {
-            onChange(nextValue)
-          }}
-        >
-          <SelectTrigger aria-describedby={node.description || constraintText ? descriptionId : undefined} aria-labelledby={labelId} id={fieldId}>
-            <SelectValue placeholder={node.required ? 'Choose an option' : 'Optional'} />
-          </SelectTrigger>
-          <SelectContent>
-            {node.options?.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {renderChoiceButtons ? (
+          <div
+            aria-describedby={node.description || constraintText ? descriptionId : undefined}
+            aria-labelledby={labelId}
+            className="grid gap-2 sm:grid-cols-2"
+            id={fieldId}
+            role="group"
+          >
+            {node.options?.map((option) => {
+              const selected = selectedValue === option.value
+              return (
+                <button
+                  key={option.value}
+                  aria-pressed={selected}
+                  className={choiceButtonClass(selected)}
+                  disabled={disabled}
+                  type="button"
+                  onClick={() => {
+                    onChange(option.value)
+                  }}
+                >
+                  <span className="font-medium">{option.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        ) : (
+          <Select
+            disabled={disabled}
+            value={selectedValue}
+            onValueChange={(nextValue) => {
+              onChange(nextValue)
+            }}
+          >
+            <SelectTrigger aria-describedby={node.description || constraintText ? descriptionId : undefined} aria-labelledby={labelId} id={fieldId}>
+              <SelectValue placeholder={node.required ? 'Choose an option' : 'Optional'} />
+            </SelectTrigger>
+            <SelectContent>
+              {node.options?.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </div>
     )
   }
@@ -390,6 +434,7 @@ function SchemaNodeEditor({
     const descriptionId = `${unionId}-description`
     const helpText = nodeHelpText(node)
     const constraintText = nodeConstraintSummary(node)
+    const renderChoiceButtons = shouldRenderCompactChoiceButtons(node.options.length)
 
     return (
       <div className="grid gap-4 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.03] p-4">
@@ -410,31 +455,65 @@ function SchemaNodeEditor({
           <Label className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]" id={labelId}>
             Branch
           </Label>
-          <Select
-            disabled={disabled}
-            value={String(selectedIndex)}
-            onValueChange={(nextValue) => {
-              const nextIndex = Number(nextValue)
-              if (Number.isNaN(nextIndex)) {
-                return
-              }
-              onChange({
-                ...currentDraft,
-                selectedIndex: nextIndex,
-              })
-            }}
-          >
-            <SelectTrigger aria-describedby={node.description || constraintText ? descriptionId : undefined} aria-labelledby={labelId} id={`${unionId}-selector`}>
-              <SelectValue placeholder="Choose a branch" />
-            </SelectTrigger>
-            <SelectContent>
-              {node.options.map((option, index) => (
-                <SelectItem key={`${path}-${index}`} value={String(index)}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {renderChoiceButtons ? (
+            <div
+              aria-describedby={node.description || constraintText ? descriptionId : undefined}
+              aria-labelledby={labelId}
+              className="grid gap-2 sm:grid-cols-2"
+              id={`${unionId}-selector`}
+              role="group"
+            >
+              {node.options.map((option, index) => {
+                const selected = index === selectedIndex
+                return (
+                  <button
+                    key={`${path}-${index}`}
+                    aria-pressed={selected}
+                    className={choiceButtonClass(selected)}
+                    disabled={disabled}
+                    type="button"
+                    onClick={() => {
+                      onChange({
+                        ...currentDraft,
+                        selectedIndex: index,
+                      })
+                    }}
+                  >
+                    <span className="font-medium">{option.label}</span>
+                    {option.description ? (
+                      <span className="mt-1 block text-[var(--muted-foreground)]">{option.description}</span>
+                    ) : null}
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <Select
+              disabled={disabled}
+              value={String(selectedIndex)}
+              onValueChange={(nextValue) => {
+                const nextIndex = Number(nextValue)
+                if (Number.isNaN(nextIndex)) {
+                  return
+                }
+                onChange({
+                  ...currentDraft,
+                  selectedIndex: nextIndex,
+                })
+              }}
+            >
+              <SelectTrigger aria-describedby={node.description || constraintText ? descriptionId : undefined} aria-labelledby={labelId} id={`${unionId}-selector`}>
+                <SelectValue placeholder="Choose a branch" />
+              </SelectTrigger>
+              <SelectContent>
+                {node.options.map((option, index) => (
+                  <SelectItem key={`${path}-${index}`} value={String(index)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
         {selectedOption ? (
           <SchemaNodeEditor
