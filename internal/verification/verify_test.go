@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/olhapi/maestro/internal/codexschema"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 func workflowFixture(version string) string {
@@ -72,6 +74,28 @@ func writeFakeCodex(t *testing.T, root, version string) string {
 func writeFakeClaude(t *testing.T, root, version string) string {
 	t.Helper()
 	return writeFakeCLI(t, filepath.Join(root, "bin"), "claude", version)
+}
+
+func writeRuntimeScript(t *testing.T, root, binary, script string) string {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, binary)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", root+string(os.PathListSeparator)+oldPath)
+	return path
+}
+
+func resetRuntimeVersionCache(t *testing.T) {
+	t.Helper()
+	runtimeVersionCache = sync.Map{}
+	t.Cleanup(func() {
+		runtimeVersionCache = sync.Map{}
+	})
 }
 
 func TestRunVerification(t *testing.T) {
@@ -251,5 +275,166 @@ func TestRunVerificationReportsDbDirFailure(t *testing.T) {
 	}
 	if res.Checks["db_open"] != "skipped" && res.Checks["db_open"] != "fail" {
 		t.Fatalf("expected db_open to be skipped or fail after db_dir error, got %+v", res.Checks)
+	}
+}
+
+func TestValidateRuntimeReadinessReportsMissingDefaultRuntime(t *testing.T) {
+	resetRuntimeVersionCache(t)
+	root := t.TempDir()
+	writeRuntimeScript(t, root, "codex", `printf 'codex-cli `+codexschema.SupportedVersion+`\n'`)
+	res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+	workflow := &config.Workflow{
+		Config: config.Config{
+			Runtime: config.RuntimeCatalog{
+				Default: "claude",
+				Entries: map[string]config.RuntimeConfig{
+					"codex-appserver": {
+						Provider:        "codex",
+						Transport:       "app_server",
+						Command:         "codex app-server",
+						ExpectedVersion: codexschema.SupportedVersion,
+					},
+				},
+			},
+		},
+	}
+
+	validateRuntimeReadiness(res, workflow)
+
+	if res.Checks["runtime_catalog"] != "ok" {
+		t.Fatalf("expected runtime catalog to be ok, got %+v", res.Checks)
+	}
+	if res.Checks["runtime_default"] != "warn" {
+		t.Fatalf("expected missing default runtime warning, got %+v", res.Checks)
+	}
+	if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, "\n"), `runtime_default: missing runtime entry "claude"`) {
+		t.Fatalf("unexpected warnings: %+v", res.Warnings)
+	}
+	if got := res.Remediation["runtime_default"]; got != "Regenerate WORKFLOW.md with `maestro workflow init`." {
+		t.Fatalf("unexpected default remediation: %q", got)
+	}
+}
+
+func TestCheckRuntimeReadinessCoversCommandBranches(t *testing.T) {
+	resetRuntimeVersionCache(t)
+	root := t.TempDir()
+	writeRuntimeScript(t, root, "badver", `case "$1" in
+--version) exit 1 ;;
+*) printf 'badver-cli 1.2.3\n' ;;
+esac`)
+	writeRuntimeScript(t, root, "noversion", `case "$1" in
+--version) printf 'noversion\n' ;;
+*) printf 'noversion\n' ;;
+esac`)
+	writeRuntimeScript(t, root, "goodver", `printf 'goodver-cli 1.2.3\n'`)
+
+	t.Run("empty default command", func(t *testing.T) {
+		res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "codex", Transport: "app_server", Command: "", ExpectedVersion: codexschema.SupportedVersion}, "empty-default", true)
+
+		if res.Checks["runtime_empty_default"] != "warn" || res.Checks["runtime_empty_default_binary"] != "warn" || res.Checks["runtime_empty_default_version"] != "skipped" {
+			t.Fatalf("unexpected empty default readiness: %+v", res.Checks)
+		}
+		if res.Checks["runtime_default"] != "warn" {
+			t.Fatalf("expected default warning, got %+v", res.Checks)
+		}
+	})
+
+	t.Run("empty optional command", func(t *testing.T) {
+		res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "claude", Transport: "stdio", Command: ""}, "empty-optional", false)
+
+		if res.Checks["runtime_empty_optional"] != "skipped" || res.Checks["runtime_empty_optional_binary"] != "skipped" || res.Checks["runtime_empty_optional_version"] != "skipped" {
+			t.Fatalf("unexpected empty optional readiness: %+v", res.Checks)
+		}
+	})
+
+	t.Run("missing binary with expected version", func(t *testing.T) {
+		res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "codex", Transport: "stdio", Command: "missing-binary", ExpectedVersion: codexschema.SupportedVersion}, "missing-binary", false)
+
+		if res.Checks["runtime_missing_binary"] != "warn" || res.Checks["runtime_missing_binary_binary"] != "warn" || res.Checks["runtime_missing_binary_version"] != "skipped" {
+			t.Fatalf("unexpected missing binary readiness: %+v", res.Checks)
+		}
+		if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, "\n"), `runtime_missing_binary_binary: unable to locate executable for "missing-binary"`) {
+			t.Fatalf("unexpected missing binary warnings: %+v", res.Warnings)
+		}
+	})
+
+	t.Run("missing binary without expected version", func(t *testing.T) {
+		res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "claude", Transport: "stdio", Command: "missing-optional"}, "missing-optional", false)
+
+		if res.Checks["runtime_missing_optional"] != "skipped" || res.Checks["runtime_missing_optional_binary"] != "skipped" || res.Checks["runtime_missing_optional_version"] != "skipped" {
+			t.Fatalf("unexpected missing optional readiness: %+v", res.Checks)
+		}
+	})
+
+	t.Run("version command failure without expected version", func(t *testing.T) {
+		res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "codex", Transport: "stdio", Command: "badver", ExpectedVersion: ""}, "badver", false)
+
+		if res.Checks["runtime_badver"] != "ok" || res.Checks["runtime_badver_binary"] != "ok" || res.Checks["runtime_badver_version"] != "skipped" {
+			t.Fatalf("unexpected badver readiness: %+v", res.Checks)
+		}
+	})
+
+	t.Run("version parse failure with expected version", func(t *testing.T) {
+		res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "codex", Transport: "stdio", Command: "noversion", ExpectedVersion: codexschema.SupportedVersion}, "noversion", false)
+
+		if res.Checks["runtime_noversion"] != "warn" || res.Checks["runtime_noversion_binary"] != "ok" || res.Checks["runtime_noversion_version"] != "warn" {
+			t.Fatalf("unexpected noversion readiness: %+v", res.Checks)
+		}
+		if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, "\n"), "runtime_noversion_version: unable to parse runtime version") {
+			t.Fatalf("unexpected noversion warnings: %+v", res.Warnings)
+		}
+	})
+
+	t.Run("version match and cache hit", func(t *testing.T) {
+		res := &Result{Checks: map[string]string{}, Remediation: map[string]string{}}
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "codex", Transport: "stdio", Command: "goodver", ExpectedVersion: "1.2.3"}, "goodver", false)
+		checkRuntimeReadiness(res, config.RuntimeConfig{Provider: "codex", Transport: "stdio", Command: "goodver", ExpectedVersion: "9.9.9"}, "goodver-mismatch", false)
+
+		if res.Checks["runtime_goodver"] != "ok" || res.Checks["runtime_goodver_version"] != "ok" {
+			t.Fatalf("unexpected goodver readiness: %+v", res.Checks)
+		}
+		if res.Checks["runtime_goodver_mismatch"] != "warn" || res.Checks["runtime_goodver_mismatch_version"] != "warn" {
+			t.Fatalf("unexpected cached mismatch readiness: %+v", res.Checks)
+		}
+	})
+}
+
+func TestRuntimeHelperParsing(t *testing.T) {
+	resetRuntimeVersionCache(t)
+	root := t.TempDir()
+	writeRuntimeScript(t, root, "cached", `printf 'cached-cli 1.2.3\n'`)
+
+	if got := runtimeExecutableFromCommand("  cached app-server --flag  "); got != "cached" {
+		t.Fatalf("unexpected runtime executable: %q", got)
+	}
+	if got := runtimeExecutableFromCommand("   "); got != "" {
+		t.Fatalf("expected empty executable for whitespace, got %q", got)
+	}
+	if got := parseRuntimeVersion([]byte("cached-cli 1.2.3")); got != "1.2.3" {
+		t.Fatalf("unexpected parsed version: %q", got)
+	}
+	if got := parseRuntimeVersion([]byte("cached-cli latest")); got != "" {
+		t.Fatalf("expected unparsable output to return empty version, got %q", got)
+	}
+
+	first, err := detectRuntimeVersion("cached app-server")
+	if err != nil {
+		t.Fatalf("first detectRuntimeVersion: %v", err)
+	}
+	second, err := detectRuntimeVersion("cached app-server")
+	if err != nil {
+		t.Fatalf("second detectRuntimeVersion: %v", err)
+	}
+	if first.ExecutablePath == "" || first.Actual != "1.2.3" {
+		t.Fatalf("unexpected first detection: %+v", first)
+	}
+	if second.Actual != first.Actual || second.ExecutablePath != first.ExecutablePath {
+		t.Fatalf("unexpected cached detection: first=%+v second=%+v", first, second)
 	}
 }
