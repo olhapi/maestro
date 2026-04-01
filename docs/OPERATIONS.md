@@ -8,7 +8,7 @@ This document collects the durable operational details for Maestro: runtime surf
 
 - the SQLite-backed local store and runtime persistence
 - the local project and issue service that keeps Maestro data in the SQLite store
-- the orchestrator and agent runner that turn queued issues into per-issue workspaces and Codex runs
+- the orchestrator and agent runner that turn queued issues into per-issue workspaces and runtime sessions
 - a private loopback-only MCP daemon used by `maestro mcp`
 - an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
 
@@ -37,7 +37,7 @@ These endpoints power CLI helpers such as `status --dashboard`, `sessions`, and 
 - `GET /health`: process health and timestamp
 - `GET /api/v1/state`: live orchestrator status payload
 - `GET /api/v1/<issue_identifier>`: single issue status payload from the live runtime view
-- `GET /api/v1/sessions`: all live app-server sessions
+- `GET /api/v1/sessions`: all live sessions
 - `GET /api/v1/sessions?issue=ISS-1`: single session lookup by issue identifier
 - `GET /api/v1/events?since=0&limit=100`: live in-memory event feed
 - `POST /api/v1/refresh`: request a refresh event
@@ -206,7 +206,7 @@ Behavior:
 - the main log file is `maestro.log`
 - rotation is size-based
 - `--log-level` is global and applies to every CLI command
-- `debug` includes raw app-server stream output
+- `debug` includes raw runtime stream output
 - `info` keeps logs focused on lifecycle and status transitions
 - `--log-max-bytes` controls the rotation threshold
 - `--log-max-files` controls how many rotated files are retained

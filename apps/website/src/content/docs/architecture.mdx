@@ -14,7 +14,7 @@ The current codebase is organized around five connected runtime layers:
 
 - a SQLite-backed local store that persists projects, issues, workspaces, sessions, commands, and runtime events
 - a local project service that keeps every project and issue in the SQLite store
-- an orchestrator plus agent runner that turn queued issues into workspaces and Codex sessions
+- an orchestrator plus agent runner that turn queued issues into workspaces and runtime sessions
 - a private MCP daemon that `maestro mcp` bridges over stdio
 - a public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs on the default port unless you override `--port`
 
@@ -58,7 +58,7 @@ Operationally, that means:
 - hook commands and timeout
 - agent concurrency, mode, and dispatch behavior
 - optional review and done phase prompts
-- Codex command and sandbox settings
+- runtime command and sandbox settings
 - the prompt template rendered for each issue
 
 The orchestrator does not guess its way around missing repo context. It reads the workflow file, then turns local queue state into per-issue workspaces and agent runs.

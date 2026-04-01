@@ -45,7 +45,7 @@ phases:
     # Prompt rendered when the issue enters review. Uses the same template variables
     # as the main prompt, such as issue.*, project.*, phase, and attempt.
     prompt: |
-      Review the implementation for issue {{ issue.identifier }} in the current workspace.
+      Review the implementation for issue {{ issue.identifier }} in the current issue workspace.
       {% if project.description %}
       Project context:
       {{ project.description }}
@@ -57,7 +57,7 @@ phases:
     enabled: true
     # Prompt rendered when the issue enters done for project-specific wrap-up steps.
     prompt: |
-      Finalize issue {{ issue.identifier }} from the current workspace.
+      Finalize issue {{ issue.identifier }} from the current issue workspace.
       {% if project.description %}
       Project context:
       {{ project.description }}
@@ -152,7 +152,7 @@ No description provided.
 - Reproduce or inspect current behavior first so the target is explicit.
 - Keep metadata current: state, checklist, acceptance criteria, and links.
 - Treat the persistent workpad comment as the source of truth.
-- If you find meaningful out-of-scope work, file a separate maestro CLI issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
+- If you find meaningful out-of-scope work, file a separate Maestro issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
 - Move status only when the quality bar for that status is met.
 - Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
 - In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
