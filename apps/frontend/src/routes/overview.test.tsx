@@ -103,6 +103,23 @@ function snapshotRefreshDetail() {
   })
 }
 
+function getOverviewListPanel(title: string) {
+  const heading = screen.getByRole('heading', { name: title })
+  const card = heading.closest('[class*="max-h-[520px]"]')
+
+  if (!(card instanceof HTMLElement)) {
+    throw new Error(`Unable to find overview card for ${title}`)
+  }
+
+  const content = card.children[1]
+
+  if (!(content instanceof HTMLElement)) {
+    throw new Error(`Unable to find overview card body for ${title}`)
+  }
+
+  return { card, content }
+}
+
 describe('OverviewPage', () => {
   it('renders overview metrics from bootstrap data and keeps the snapshot age ticking', async () => {
     vi.useFakeTimers()
@@ -166,6 +183,27 @@ describe('OverviewPage', () => {
     expect(row).toHaveClass('flex', 'min-w-0', 'flex-col', 'gap-2')
     expect(row).toHaveClass('sm:flex-row', 'sm:items-start', 'sm:justify-between')
     expect(within(row!).getByText('ISS-1')).toHaveClass('break-words', '[overflow-wrap:anywhere]')
+  })
+
+  it('caps active runs and pending retries with the same scrollable panel height', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+
+    renderWithQueryClient(<OverviewPage />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Active runs' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Pending retries' })).toBeInTheDocument()
+    })
+
+    const activeRunsPanel = getOverviewListPanel('Active runs')
+    const pendingRetriesPanel = getOverviewListPanel('Pending retries')
+
+    expect(activeRunsPanel.card).toHaveClass('flex', 'max-h-[520px]', 'flex-col', 'overflow-hidden')
+    expect(pendingRetriesPanel.card).toHaveClass('flex', 'max-h-[520px]', 'flex-col', 'overflow-hidden')
+
+    expect(activeRunsPanel.content).toHaveClass('min-h-0', 'flex-1', 'space-y-2.5', 'overflow-y-auto', 'pr-1')
+    expect(pendingRetriesPanel.content).toHaveClass('min-h-0', 'flex-1', 'space-y-2.5', 'overflow-y-auto', 'pr-1')
   })
 
   it('highlights the matching execution line while its legend chip is hovered', async () => {
