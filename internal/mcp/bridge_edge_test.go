@@ -120,6 +120,14 @@ func TestMCPBridgeReconnectAndReplayErrorBranches(t *testing.T) {
 	timeoutBridge := &stdioBridge{
 		dbPath:          "db",
 		reconnectWindow: 0,
+		discover: func(context.Context, string) (*DaemonEntry, error) {
+			t.Fatal("discover should not be called when the reconnect window is already expired")
+			return nil, nil
+		},
+		newRemote: func(DaemonEntry) (transport.BidirectionalInterface, error) {
+			t.Fatal("newRemote should not be called when the reconnect window is already expired")
+			return nil, nil
+		},
 	}
 	if err := timeoutBridge.reconnect(context.Background(), nil, replayHandshakeFull); err == nil || !strings.Contains(err.Error(), "timed out waiting for a live Maestro daemon") {
 		t.Fatalf("expected zero-window reconnect timeout, got %v", err)
