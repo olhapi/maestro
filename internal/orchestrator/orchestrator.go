@@ -3687,15 +3687,18 @@ func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban
 		StopReason:     stopReason,
 		UpdatedAt:      now,
 	}
+	var existing *kanban.ExecutionSessionSnapshot
 	if session != nil {
 		snapshot.AppSession = summarizeSessionWithIssue(session, issue.ID, issue.Identifier)
 	} else {
-		if existing, err := o.store.GetIssueExecutionSession(issue.ID); err == nil && existing != nil {
-			snapshot.AppSession = existing.AppSession
+		if loaded, err := o.store.GetIssueExecutionSession(issue.ID); err == nil && loaded != nil {
+			existing = loaded
+			snapshot.AppSession = loaded.AppSession
 		}
 		snapshot.AppSession.IssueID = issue.ID
 		snapshot.AppSession.IssueIdentifier = issue.Identifier
 	}
+	snapshot.RuntimeName, snapshot.RuntimeProvider, snapshot.RuntimeTransport, snapshot.RuntimeAuthSource = o.executionSessionRuntimeIdentity(issue, session, existing)
 	if o.appServerRetired(issue.ID) {
 		snapshot.AppSession.ProcessID = 0
 		snapshot.ResumeEligible = false
@@ -3714,6 +3717,42 @@ func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban
 		Terminal:        snapshot.AppSession.Terminal,
 	}
 	o.sessionWriteMu.Unlock()
+}
+
+func (o *Orchestrator) executionSessionRuntimeIdentity(issue *kanban.Issue, session *agentruntime.Session, existing *kanban.ExecutionSessionSnapshot) (string, string, string, string) {
+	name := ""
+	provider := ""
+	transport := ""
+	authSource := ""
+	if existing != nil {
+		name = strings.TrimSpace(existing.RuntimeName)
+		provider = strings.TrimSpace(existing.RuntimeProvider)
+		transport = strings.TrimSpace(existing.RuntimeTransport)
+		authSource = strings.TrimSpace(existing.RuntimeAuthSource)
+	}
+	if issue != nil {
+		if runtimeName := strings.TrimSpace(issue.RuntimeName); runtimeName != "" {
+			name = runtimeName
+		} else if name == "" && strings.TrimSpace(issue.ProjectID) != "" && o.store != nil {
+			if project, err := o.store.GetProject(issue.ProjectID); err == nil && project != nil {
+				if runtimeName := strings.TrimSpace(project.RuntimeName); runtimeName != "" {
+					name = runtimeName
+				}
+			}
+		}
+	}
+	if session != nil && session.Metadata != nil {
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["provider"])); value != "" {
+			provider = value
+		}
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["transport"])); value != "" {
+			transport = value
+		}
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["auth_source"])); value != "" {
+			authSource = value
+		}
+	}
+	return name, provider, transport, authSource
 }
 
 func (o *Orchestrator) persistExecutionSessionSnapshot(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, result *agent.RunResult) {

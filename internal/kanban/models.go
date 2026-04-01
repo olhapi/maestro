@@ -183,6 +183,7 @@ type Project struct {
 	Description        string                 `json:"description,omitempty"`
 	State              ProjectState           `json:"state"`
 	PermissionProfile  PermissionProfile      `json:"permission_profile,omitempty"`
+	RuntimeName        string                 `json:"runtime_name,omitempty"`
 	RepoPath           string                 `json:"repo_path,omitempty"`
 	WorkflowPath       string                 `json:"workflow_path,omitempty"`
 	ProviderKind       string                 `json:"provider_kind,omitempty"`
@@ -222,6 +223,7 @@ type Issue struct {
 	WorkflowPhase                  WorkflowPhase             `json:"workflow_phase"`
 	PermissionProfile              PermissionProfile         `json:"permission_profile,omitempty"`
 	Priority                       int                       `json:"priority,omitempty"` // Lower = higher priority
+	RuntimeName                    string                    `json:"runtime_name,omitempty"`
 	Labels                         []string                  `json:"labels,omitempty"`
 	AgentName                      string                    `json:"agent_name,omitempty"`
 	AgentPrompt                    string                    `json:"agent_prompt,omitempty"`

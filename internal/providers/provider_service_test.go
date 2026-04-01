@@ -170,6 +170,7 @@ func TestProviderHelpersAndResolutionBranches(t *testing.T) {
 
 	input := IssueCreateInput{
 		EpicID:      "epic-1",
+		RuntimeName: "runtime",
 		AgentName:   "agent",
 		AgentPrompt: "prompt",
 		BranchName:  "branch",
@@ -177,6 +178,7 @@ func TestProviderHelpersAndResolutionBranches(t *testing.T) {
 	}
 	for key, want := range map[string]string{
 		"epic_id":      "epic-1",
+		"runtime_name": "runtime",
 		"agent_name":   "agent",
 		"agent_prompt": "prompt",
 		"branch_name":  "branch",
@@ -777,8 +779,11 @@ func TestServiceCreateAndUpdateProjectSuccess(t *testing.T) {
 	if project.ProviderConfig["team"] != "alpha" {
 		t.Fatalf("expected provider config to persist, got %#v", project.ProviderConfig)
 	}
+	if project.RuntimeName != "codex" {
+		t.Fatalf("expected project runtime name to default to codex, got %#v", project.RuntimeName)
+	}
 
-	if err := svc.UpdateProject(context.Background(), project.ID, "Project 2", "Description 2", filepath.Join(t.TempDir(), "repo-2"), filepath.Join(t.TempDir(), "repo-2", "WORKFLOW.md"), "stub", "ref-2", map[string]interface{}{"team": "beta"}); err != nil {
+	if err := svc.UpdateProject(context.Background(), project.ID, "Project 2", "Description 2", filepath.Join(t.TempDir(), "repo-2"), filepath.Join(t.TempDir(), "repo-2", "WORKFLOW.md"), "stub", "ref-2", map[string]interface{}{"team": "beta"}, "runtime-2"); err != nil {
 		t.Fatalf("UpdateProject: %v", err)
 	}
 	if validateCalls != 2 {
@@ -790,6 +795,9 @@ func TestServiceCreateAndUpdateProjectSuccess(t *testing.T) {
 	}
 	if updated.Name != "Project 2" || updated.ProviderProjectRef != "ref-2" || updated.ProviderConfig["team"] != "beta" {
 		t.Fatalf("unexpected updated project: %#v", updated)
+	}
+	if updated.RuntimeName != "runtime-2" {
+		t.Fatalf("expected updated runtime name, got %#v", updated.RuntimeName)
 	}
 }
 
