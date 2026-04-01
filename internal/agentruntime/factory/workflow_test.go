@@ -1,7 +1,11 @@
 package factory
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +46,7 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 			},
 		}},
 		ResumeToken: " thread-123 ",
+		DBPath:      "/tmp/maestro.db",
 		Metadata: map[string]interface{}{
 			"provider_hint": "codex",
 		},
@@ -72,6 +77,9 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	}
 	if spec.ResumeToken != "thread-123" {
 		t.Fatalf("expected resume token to be trimmed, got %q", spec.ResumeToken)
+	}
+	if spec.DBPath != "/tmp/maestro.db" {
+		t.Fatalf("expected db path to be preserved, got %q", spec.DBPath)
 	}
 	if len(spec.Env) != 1 || spec.Env[0] != "FOO=bar" {
 		t.Fatalf("expected env to be copied, got %#v", spec.Env)
@@ -186,11 +194,11 @@ func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.
 
 func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
-	workflow.Config.Codex.Provider = "claude"
-	workflow.Config.Codex.Command = "claude"
+	workflow.Config.Codex.Provider = "mistral"
+	workflow.Config.Codex.Command = "mistral"
 	workflow.Config.Codex.Transport = config.AgentModeStdio
 
-	_, err := StartWorkflow(t.Context(), WorkflowStartRequest{
+	_, err := StartWorkflow(context.Background(), WorkflowStartRequest{
 		Workflow:        workflow,
 		IssueID:         "iss_1",
 		IssueIdentifier: "MAES-1",
@@ -201,4 +209,62 @@ func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
 	if !errors.Is(err, agentruntime.ErrUnsupportedCapability) {
 		t.Fatalf("expected unsupported capability error, got %v", err)
 	}
+}
+
+func TestStartWorkflowSelectsClaudeRuntime(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+	workflow.Config.Runtime.Default = "claude"
+	runtimeConfig := workflow.Config.Runtime.Entries["claude"]
+	runtimeConfig.Provider = "claude"
+	runtimeConfig.Transport = config.AgentModeStdio
+	runtimeConfig.Command = writePassThroughClaudeCLI(t)
+	runtimeConfig.ApprovalPolicy = "never"
+	runtimeConfig.InitialCollaborationMode = config.InitialCollaborationModeDefault
+	workflow.Config.Runtime.Entries["claude"] = runtimeConfig
+	workflow.Config.Codex = runtimeConfig
+
+	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "claude",
+		RuntimeConfig:   runtimeConfig,
+		WorkspacePath:   t.TempDir(),
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+		DBPath:          filepath.Join(t.TempDir(), "maestro.db"),
+	}, agentruntime.Observers{})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	if err := client.RunTurn(context.Background(), agentruntime.TurnRequest{
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: "hello claude"}},
+	}, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	session := client.Session()
+	if session == nil {
+		t.Fatal("expected session snapshot")
+	}
+	if session.Metadata["provider"] != string(agentruntime.ProviderClaude) || session.Metadata["transport"] != string(agentruntime.TransportStdio) {
+		t.Fatalf("expected claude stdio runtime metadata, got %+v", session.Metadata)
+	}
+	if !strings.Contains(client.Output(), "hello claude") {
+		t.Fatalf("expected claude runtime output, got %q", client.Output())
+	}
+}
+
+func writePassThroughClaudeCLI(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\ncat\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write pass-through claude cli: %v", err)
+	}
+	return path
 }
