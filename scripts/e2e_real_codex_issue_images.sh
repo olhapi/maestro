@@ -236,20 +236,22 @@ hooks:
     git config user.email "e2e@example.com"
     printf '%s\n' '# Maestro E2E Workspace' > README.md
   timeout_ms: 10000
-agent:
+orchestrator:
   max_concurrent_agents: 1
   max_turns: 1
   max_retry_backoff_ms: 5000
-  mode: app_server
-codex:
-  command: codex app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 5000
-  turn_timeout_ms: 300000
-  stall_timeout_ms: 300000
+  dispatch_mode: parallel
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    approval_policy: never
+    initial_collaboration_mode: default
+    read_timeout_ms: 5000
+    turn_timeout_ms: 300000
+    stall_timeout_ms: 300000
 ---
 You are running the Maestro real-Codex app-server image harness.
 

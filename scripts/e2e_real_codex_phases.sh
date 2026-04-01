@@ -229,19 +229,20 @@ phases:
       3. Verify both files from the shell.
       4. Do not change the issue state away from done.
       5. Stop after verification succeeds.
-agent:
+orchestrator:
   max_concurrent_agents: 1
   max_turns: 1
   max_retry_backoff_ms: 5000
-  mode: stdio
-codex:
-  command: '$CODEX_COMMAND_YAML'
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 5000
-  turn_timeout_ms: 300000
+  dispatch_mode: parallel
+runtime:
+  default: codex-stdio
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: '$CODEX_COMMAND_YAML'
+    approval_policy: never
+    read_timeout_ms: 5000
+    turn_timeout_ms: 300000
 ---
 You are running the Maestro phase end-to-end harness.
 

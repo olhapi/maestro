@@ -123,19 +123,20 @@ hooks:
     git config user.email "e2e@example.com"
     printf '%s\n' '# Maestro E2E Workspace' > README.md
   timeout_ms: 10000
-agent:
+orchestrator:
   max_concurrent_agents: 2
   max_turns: 1
   max_retry_backoff_ms: 5000
-  mode: stdio
-codex:
-  command: '$CODEX_COMMAND_YAML'
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 5000
-  turn_timeout_ms: 300000
+  dispatch_mode: parallel
+runtime:
+  default: codex-stdio
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: '$CODEX_COMMAND_YAML'
+    approval_policy: never
+    read_timeout_ms: 5000
+    turn_timeout_ms: 300000
 ---
 You are running the Maestro real-Codex end-to-end harness.
 

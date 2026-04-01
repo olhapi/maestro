@@ -182,21 +182,23 @@ phases:
     enabled: $review_enabled
   done:
     enabled: false
-agent:
+orchestrator:
   max_concurrent_agents: 1
   max_turns: 1
   max_retry_backoff_ms: 50
   max_automatic_retries: $max_automatic_retries
-  mode: app_server
-codex:
-  command: '$(yaml_quote "$command")'
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 1000
-  turn_timeout_ms: $turn_timeout_ms
-  stall_timeout_ms: $stall_timeout_ms
+  dispatch_mode: parallel
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: '$(yaml_quote "$command")'
+    approval_policy: never
+    initial_collaboration_mode: default
+    read_timeout_ms: 1000
+    turn_timeout_ms: $turn_timeout_ms
+    stall_timeout_ms: $stall_timeout_ms
 ---
 Retry safety harness for {{ issue.identifier }}.
 EOF
