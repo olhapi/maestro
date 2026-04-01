@@ -42,6 +42,40 @@ func writeFakeRuntimeCLI(t *testing.T, binary, version string) string {
 	}
 	path := filepath.Join(dir, binary)
 	script := "#!/bin/sh\nprintf '" + binary + "-cli " + version + "\\n'\n"
+	if binary == "claude" {
+		script = strings.NewReplacer("{{VERSION}}", version).Replace(`#!/bin/sh
+set -eu
+if [ -n "${FAKE_CLAUDE_AUTH_STATUS_JSON:-}" ]; then
+  printf '%s\n' "$FAKE_CLAUDE_AUTH_STATUS_JSON"
+  exit 0
+fi
+case "$1" in
+  --version)
+    printf 'claude-cli {{VERSION}}\n'
+    exit 0
+    ;;
+  auth)
+    if [ "${2:-}" = "status" ] && [ "${3:-}" = "--json" ]; then
+      if [ -n "${CLAUDE_CODE_USE_BEDROCK:-}" ] && [ "${CLAUDE_CODE_USE_BEDROCK}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_VERTEX:-}" ] && [ "${CLAUDE_CODE_USE_VERTEX}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"vertex"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_FOUNDRY:-}" ] && [ "${CLAUDE_CODE_USE_FOUNDRY}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"foundry"}\n'
+      elif [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}\n'
+      elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}\n'
+      else
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"o@olhapi.com"}\n'
+      fi
+      exit 0
+    fi
+    ;;
+esac
+printf 'claude-cli {{VERSION}}\n'
+`)
+	}
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake %s: %v", binary, err)
 	}
@@ -832,6 +866,8 @@ func TestVerifyAndDoctorOutputs(t *testing.T) {
 	for _, want := range []string{
 		"\"checks\"",
 		"\"remediation\"",
+		"\"claude_auth_source\":\"OAuth\"",
+		"\"claude_auth_source_status\":\"ok\"",
 		"\"runtime_default\":\"ok\"",
 		"\"runtime_codex_appserver\":\"ok\"",
 		"\"runtime_claude\":\"ok\"",
@@ -847,6 +883,8 @@ func TestVerifyAndDoctorOutputs(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Doctor",
+		"claude_auth_source: OAuth",
+		"claude_auth_source_status: ok",
 		"runtime_default: ok",
 		"runtime_codex_appserver: ok",
 		"runtime_claude: ok",

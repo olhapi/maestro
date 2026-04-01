@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/pkg/config"
@@ -117,6 +118,15 @@ func validateRuntimeReadiness(res *Result, workflow *config.Workflow) {
 		checkRuntimeReadiness(res, workflow.Config.Runtime.Entries[name], name, name == defaultName)
 	}
 
+	if claudeRuntime, ok := workflow.Config.Runtime.Entries["claude"]; ok {
+		validateClaudeReadiness(res, workflow, claudeRuntime)
+	} else {
+		res.OK = false
+		res.Checks["claude"] = "fail"
+		res.Errors = append(res.Errors, "claude: missing runtime entry")
+		res.Remediation["claude"] = "Add a `claude` runtime entry to WORKFLOW.md and re-run `maestro verify`."
+	}
+
 	if defaultName != "" {
 		if status, ok := res.Checks[runtimeCheckKey(defaultName)]; ok {
 			res.Checks["runtime_default"] = status
@@ -209,6 +219,153 @@ func checkRuntimeReadiness(res *Result, runtime config.RuntimeConfig, name strin
 	}
 }
 
+func validateClaudeReadiness(res *Result, workflow *config.Workflow, runtime config.RuntimeConfig) {
+	if res == nil || workflow == nil {
+		return
+	}
+
+	effectiveCommand := strings.TrimSpace(runtime.Command)
+	if effectiveCommand == "" {
+		effectiveCommand = "claude"
+	}
+
+	summary := "ok"
+	binaryKey := "runtime_claude_binary"
+	versionKey := "runtime_claude_version"
+
+	repoPath := filepath.Dir(workflow.Path)
+	opts := parseClaudeCommandOptions(effectiveCommand)
+	state := loadClaudeSettingsState(repoPath, opts)
+	combinedEnv := mergeClaudeEnvironment(opts.CommandEnv, state.Env)
+	authSource, authDetail, authReadiness := claudeAuthSourceFromEnvironment(combinedEnv, state)
+	sessionStatus, bareReason, directories := detectClaudeSessionIssues(repoPath, opts, state)
+
+	versionStatus, versionErr := detectRuntimeVersion(effectiveCommand)
+	binaryFound := strings.TrimSpace(versionStatus.ExecutablePath) != ""
+	versionReadiness := "ok"
+	if !binaryFound {
+		summary = "fail"
+		res.OK = false
+		res.Checks[binaryKey] = "fail"
+		res.Checks[versionKey] = "skipped"
+		res.Checks["claude_version"] = "unavailable"
+		res.Checks["claude_version_status"] = "fail"
+		res.Checks["claude_version_expected"] = expectedVersionLabel(runtime.ExpectedVersion)
+		res.Errors = append(res.Errors, "claude: unable to locate executable")
+		res.Remediation["claude"] = "Install Claude Code or update `runtime.claude.command` in WORKFLOW.md, then re-run `maestro verify`."
+		res.Remediation[binaryKey] = "Install Claude Code or update `runtime.claude.command` in WORKFLOW.md."
+	} else {
+		res.Checks[binaryKey] = "ok"
+		actualVersion := strings.TrimSpace(versionStatus.Actual)
+		if actualVersion == "" {
+			actualVersion = "unavailable"
+		}
+		res.Checks["claude_version"] = actualVersion
+		res.Checks["claude_version_expected"] = expectedVersionLabel(runtime.ExpectedVersion)
+		if expected := strings.TrimSpace(runtime.ExpectedVersion); expected != "" {
+			if versionStatus.Actual == "" {
+				versionReadiness = "warn"
+				if versionErr != nil {
+					res.Warnings = append(res.Warnings, fmt.Sprintf("claude_version: %v", versionErr))
+					res.Remediation["claude_version"] = "Run `claude --version` locally or update `runtime.claude.expected_version` in WORKFLOW.md."
+				}
+			} else if versionStatus.Actual != expected {
+				versionReadiness = "warn"
+				res.Warnings = append(res.Warnings, fmt.Sprintf("claude_version: expected %s, found %s (%s)", expected, versionStatus.Actual, versionStatus.ExecutablePath))
+				res.Remediation["claude_version"] = "Update `runtime.claude.expected_version` or install the matching Claude Code version."
+			}
+		} else if versionStatus.Actual == "" {
+			versionReadiness = "warn"
+			if versionErr != nil {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("claude_version: %v", versionErr))
+				res.Remediation["claude_version"] = "Run `claude --version` locally or set `runtime.claude.expected_version` in WORKFLOW.md."
+			}
+		}
+		res.Checks["claude_version_status"] = versionReadiness
+		if versionReadiness == "ok" {
+			res.Checks[versionKey] = "ok"
+		} else {
+			res.Checks[versionKey] = "warn"
+		}
+
+		if authReadiness == "ok" && (authSource == "OAuth" || authSource == "cloud provider") {
+			authStatus, authErr := detectClaudeAuthStatus(opts.Executable, combinedEnv)
+			if authErr != nil {
+				authReadiness = "fail"
+				res.Errors = append(res.Errors, fmt.Sprintf("claude_auth_source: %v", authErr))
+				res.Remediation["claude_auth_source"] = "Log in with Claude Code or configure a supported auth source, then re-run `maestro verify`."
+			} else if !authStatus.LoggedIn {
+				authReadiness = "fail"
+				res.Errors = append(res.Errors, fmt.Sprintf("claude_auth_source: %s", authSource))
+				res.Remediation["claude_auth_source"] = "Log in with Claude Code or configure a supported auth source, then re-run `maestro verify`."
+			} else if authSource == "cloud provider" && authDetail == "" {
+				authDetail = strings.TrimSpace(authStatus.ApiProvider)
+			}
+		}
+	}
+
+	res.Checks["claude_auth_source"] = authSource
+	if authDetail != "" {
+		res.Checks["claude_auth_source_detail"] = authDetail
+	}
+	res.Checks["claude_auth_source_status"] = authReadiness
+	if authReadiness == "warn" {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("claude_auth_source: %s", authSource))
+	}
+	if authReadiness == "fail" {
+		res.OK = false
+		res.Errors = append(res.Errors, fmt.Sprintf("claude_auth_source: %s", authSource))
+		if _, ok := res.Remediation["claude_auth_source"]; !ok {
+			res.Remediation["claude_auth_source"] = "Log in with Claude Code or configure a supported auth source, then re-run `maestro verify`."
+		}
+	}
+
+	res.Checks["claude_session_status"] = sessionStatus
+	if bareReason != "" {
+		res.Checks["claude_session_bare_mode"] = "fail"
+		res.Errors = append(res.Errors, "claude_session_bare_mode: "+bareReason)
+		res.Remediation["claude_session_bare_mode"] = "Remove `--bare`, `--permission-mode bypassPermissions`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration."
+		res.OK = false
+	} else {
+		res.Checks["claude_session_bare_mode"] = "ok"
+	}
+	if len(directories) > 0 {
+		res.Checks["claude_session_additional_directories"] = "fail"
+		res.Checks["claude_additional_directories"] = strings.Join(directories, ", ")
+		res.Errors = append(res.Errors, fmt.Sprintf("claude_session_additional_directories: %s", strings.Join(directories, ", ")))
+		res.Remediation["claude_session_additional_directories"] = "Remove `additionalDirectories` or `--add-dir` from Claude configuration so the session stays scoped to the Maestro workspace."
+		res.OK = false
+	} else {
+		res.Checks["claude_session_additional_directories"] = "ok"
+	}
+
+	if runtime.Provider != "" && runtime.Provider != "claude" {
+		summary = "fail"
+		res.OK = false
+		res.Errors = append(res.Errors, fmt.Sprintf("claude: unsupported provider %q", runtime.Provider))
+		res.Remediation["claude"] = "Set `runtime.claude.provider` to `claude` in WORKFLOW.md."
+	}
+	if strings.TrimSpace(runtime.Transport) != "" && strings.TrimSpace(runtime.Transport) != "stdio" {
+		summary = "fail"
+		res.OK = false
+		res.Errors = append(res.Errors, fmt.Sprintf("claude: unsupported transport %q", runtime.Transport))
+		res.Remediation["claude"] = "Set `runtime.claude.transport` to `stdio` in WORKFLOW.md."
+	}
+
+	if versionReadiness == "warn" && summary == "ok" {
+		summary = "warn"
+	}
+	if authReadiness == "warn" && summary == "ok" {
+		summary = "warn"
+	}
+	if authReadiness == "fail" || sessionStatus == "fail" || !binaryFound {
+		summary = "fail"
+	}
+
+	res.Checks["runtime_claude"] = summary
+	res.Checks["claude"] = summary
+}
+
 type runtimeVersionStatus struct {
 	Command        string
 	ExecutablePath string
@@ -246,15 +403,8 @@ func detectRuntimeVersion(command string) (runtimeVersionStatus, error) {
 }
 
 func runtimeExecutableFromCommand(command string) string {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return ""
-	}
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
-		return ""
-	}
-	return parts[0]
+	parts := splitClaudeCommand(command)
+	return strings.TrimSpace(parts.Executable)
 }
 
 func parseRuntimeVersion(output []byte) string {
@@ -268,4 +418,58 @@ func parseRuntimeVersion(output []byte) string {
 func runtimeCheckKey(name string) string {
 	sanitized := strings.NewReplacer("-", "_", " ", "_", ".", "_", "/", "_").Replace(strings.TrimSpace(name))
 	return "runtime_" + strings.ToLower(strings.Trim(sanitized, "_"))
+}
+
+func expectedVersionLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "none"
+	}
+	return value
+}
+
+func shellSplit(command string) []string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+	tokens := make([]string, 0, 8)
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, current.String())
+		current.Reset()
+	}
+	for _, r := range command {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case r == '\\' && !inSingle:
+			escaped = true
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+		case unicode.IsSpace(r) && !inSingle && !inDouble:
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	flush()
+	return tokens
+}
+
+func isShellAssignment(token string) bool {
+	if token == "" || strings.HasPrefix(token, "--") {
+		return false
+	}
+	idx := strings.IndexByte(token, '=')
+	return idx > 0
 }

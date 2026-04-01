@@ -52,13 +52,67 @@ Issue {{ issue.identifier }}
 `
 }
 
+func workflowFixtureWithClaude(command string) string {
+	return strings.Replace(workflowFixture(codexschema.SupportedVersion), "    command: claude\n", "    command: "+command+"\n", 1)
+}
+
+func writeClaudeSettings(t *testing.T, root, body string) {
+	t.Helper()
+	dir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fakeClaudeScript(version string) string {
+	return strings.NewReplacer("{{VERSION}}", version).Replace(`#!/bin/sh
+set -eu
+if [ -n "${FAKE_CLAUDE_AUTH_STATUS_JSON:-}" ]; then
+  printf '%s\n' "$FAKE_CLAUDE_AUTH_STATUS_JSON"
+  exit 0
+fi
+case "$1" in
+  --version)
+    printf 'claude-cli {{VERSION}}\n'
+    exit 0
+    ;;
+  auth)
+    if [ "${2:-}" = "status" ] && [ "${3:-}" = "--json" ]; then
+      if [ -n "${CLAUDE_CODE_USE_BEDROCK:-}" ] && [ "${CLAUDE_CODE_USE_BEDROCK}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_VERTEX:-}" ] && [ "${CLAUDE_CODE_USE_VERTEX}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"vertex"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_FOUNDRY:-}" ] && [ "${CLAUDE_CODE_USE_FOUNDRY}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"foundry"}\n'
+      elif [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}\n'
+      elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}\n'
+      else
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"o@olhapi.com"}\n'
+      fi
+      exit 0
+    fi
+    ;;
+esac
+printf 'claude-cli {{VERSION}}\n'
+`)
+}
+
 func writeFakeCLI(t *testing.T, root, binary, version string) string {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, binary)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '"+binary+"-cli "+version+"\\n'\n"), 0o755); err != nil {
+	script := "#!/bin/sh\nprintf '" + binary + "-cli " + version + "\\n'\n"
+	if binary == "claude" {
+		script = fakeClaudeScript(version)
+	}
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	oldPath := os.Getenv("PATH")
@@ -151,6 +205,9 @@ func TestRunVerificationSucceedsForValidWorkflow(t *testing.T) {
 	if res.Checks["runtime_default"] != "ok" || res.Checks["runtime_claude"] != "ok" {
 		t.Fatalf("expected runtime readiness to report ok, got %+v", res.Checks)
 	}
+	if res.Checks["claude_auth_source"] != "OAuth" || res.Checks["claude_auth_source_status"] != "ok" {
+		t.Fatalf("expected oauth source to be visible and ready, got %+v", res.Checks)
+	}
 }
 
 func TestRunVerificationReportsWorkflowDirectory(t *testing.T) {
@@ -241,6 +298,153 @@ func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
 	}
 	if res.Checks["runtime_claude"] != "ok" {
 		t.Fatalf("expected claude runtime to stay ready, got %+v", res.Checks)
+	}
+}
+
+func TestRunVerificationReportsClaudeAuthPrecedence(t *testing.T) {
+	cases := []struct {
+		name         string
+		command      string
+		settingsJSON string
+		wantSource   string
+		wantStatus   string
+		wantDetail   string
+	}{
+		{
+			name:       "oauth defaults",
+			command:    "claude",
+			wantSource: "OAuth",
+			wantStatus: "ok",
+			wantDetail: "claude.ai",
+		},
+		{
+			name:         "cloud provider beats token from settings",
+			command:      "CLAUDE_CODE_USE_BEDROCK=1 claude",
+			settingsJSON: `{"env":{"ANTHROPIC_AUTH_TOKEN":"settings-token"}}`,
+			wantSource:   "cloud provider",
+			wantStatus:   "ok",
+			wantDetail:   "bedrock",
+		},
+		{
+			name:         "token beats api key",
+			command:      "ANTHROPIC_AUTH_TOKEN=command-token claude",
+			settingsJSON: `{"env":{"ANTHROPIC_API_KEY":"settings-key"}}`,
+			wantSource:   "ANTHROPIC_AUTH_TOKEN",
+			wantStatus:   "warn",
+			wantDetail:   "",
+		},
+		{
+			name:         "api key beats helper",
+			command:      "ANTHROPIC_API_KEY=command-key claude",
+			settingsJSON: `{"apiKeyHelper":"./scripts/key-helper.sh"}`,
+			wantSource:   "ANTHROPIC_API_KEY",
+			wantStatus:   "warn",
+			wantDetail:   "",
+		},
+		{
+			name:         "helper beats oauth",
+			command:      "claude",
+			settingsJSON: `{"apiKeyHelper":"./scripts/key-helper.sh"}`,
+			wantSource:   "apiKeyHelper",
+			wantStatus:   "warn",
+			wantDetail:   "./scripts/key-helper.sh",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+			writeFakeClaude(t, tmp, "1.2.3")
+			if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixtureWithClaude(tc.command)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.settingsJSON != "" {
+				writeClaudeSettings(t, tmp, tc.settingsJSON)
+			}
+
+			res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+			if !res.OK {
+				t.Fatalf("expected auth precedence case to stay ready, got %+v", res)
+			}
+			if got := res.Checks["claude_auth_source"]; got != tc.wantSource {
+				t.Fatalf("expected auth source %q, got %q checks=%+v", tc.wantSource, got, res.Checks)
+			}
+			if got := res.Checks["claude_auth_source_status"]; got != tc.wantStatus {
+				t.Fatalf("expected auth source status %q, got %q checks=%+v", tc.wantStatus, got, res.Checks)
+			}
+			if got := res.Checks["claude_auth_source_detail"]; tc.wantDetail != "" && got != tc.wantDetail {
+				t.Fatalf("expected auth source detail %q, got %q checks=%+v", tc.wantDetail, got, res.Checks)
+			}
+		})
+	}
+}
+
+func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
+	cases := []struct {
+		name         string
+		command      string
+		settingsJSON string
+		wantCheck    string
+		wantReason   string
+	}{
+		{
+			name:       "bare flag",
+			command:    "claude --bare",
+			wantCheck:  "claude_session_bare_mode",
+			wantReason: "runtime command includes `--bare`",
+		},
+		{
+			name:       "permission bypass",
+			command:    "claude --permission-mode bypassPermissions",
+			wantCheck:  "claude_session_bare_mode",
+			wantReason: "runtime command sets `--permission-mode bypassPermissions`",
+		},
+		{
+			name:         "settings default mode",
+			command:      "claude",
+			settingsJSON: `{"permissions":{"defaultMode":"bypassPermissions"}}`,
+			wantCheck:    "claude_session_bare_mode",
+			wantReason:   "Claude settings set `permissions.defaultMode: bypassPermissions`",
+		},
+		{
+			name:         "additional directories",
+			command:      "claude",
+			settingsJSON: `{"permissions":{"additionalDirectories":["../docs"]}}`,
+			wantCheck:    "claude_session_additional_directories",
+			wantReason:   "../docs",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+			writeFakeClaude(t, tmp, "1.2.3")
+			if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixtureWithClaude(tc.command)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.settingsJSON != "" {
+				writeClaudeSettings(t, tmp, tc.settingsJSON)
+			}
+
+			res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+			if res.OK {
+				t.Fatalf("expected workspace-expanding config to fail readiness, got %+v", res.Checks)
+			}
+			if got := res.Checks[tc.wantCheck]; got != "fail" {
+				t.Fatalf("expected %s to fail, got %q checks=%+v", tc.wantCheck, got, res.Checks)
+			}
+			if tc.wantReason != "" {
+				if tc.wantCheck == "claude_session_additional_directories" {
+					if !strings.Contains(res.Checks["claude_additional_directories"], tc.wantReason) {
+						t.Fatalf("expected additional directories to mention %q, got %+v", tc.wantReason, res.Checks)
+					}
+				} else if !strings.Contains(strings.Join(res.Errors, "\n"), tc.wantReason) {
+					t.Fatalf("expected errors to mention %q, got %+v", tc.wantReason, res.Errors)
+				}
+			}
+		})
 	}
 }
 
