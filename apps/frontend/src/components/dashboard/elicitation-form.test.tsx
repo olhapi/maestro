@@ -448,7 +448,7 @@ describe('ElicitationForm', () => {
       screen.getByText('This request only needs confirmation. Accept to continue or decline to stop.'),
     ).toBeInTheDocument()
     expect(screen.getByText('No structured fields were supplied with this request.')).toBeInTheDocument()
-    expect(screen.getByText('Accepting will continue with an empty structured response.')).toBeInTheDocument()
+    expect(screen.queryByText('Accepting will continue with an empty structured response.')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /accept and continue/i }))
 

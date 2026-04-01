@@ -761,13 +761,7 @@ export function ElicitationForm({
               }))
             }}
           />
-        ) : analysis.state === 'empty' ? (
-          <div className="rounded-[calc(var(--panel-radius)-0.25rem)] border border-white/10 bg-black/20 px-4 py-4">
-            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-              Accepting will continue with an empty structured response.
-            </p>
-          </div>
-        ) : (
+        ) : analysis.state === 'empty' ? null : (
           <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 p-4">
             <div className="space-y-1">
               <p className="text-sm font-medium text-white">Manual JSON payload</p>
@@ -799,7 +793,7 @@ export function ElicitationForm({
 
       <div className="flex flex-wrap items-center gap-3">
         <Button
-          className="h-11 rounded-2xl border px-4 text-sm font-medium transition border-[var(--accent)]/45 bg-[linear-gradient(135deg,rgba(196,255,87,.24),rgba(255,255,255,.06))] text-white hover:border-[var(--accent)]/60"
+          className="h-11 rounded-2xl px-5"
           disabled={!canAccept}
           type="button"
           onClick={() => {
@@ -812,7 +806,7 @@ export function ElicitationForm({
           {isSubmitting ? 'Submitting...' : 'Accept and continue'}
         </Button>
         <Button
-          className="h-11 rounded-2xl border-white/10 bg-white/5 px-4 text-sm font-medium text-white hover:border-white/20 hover:bg-white/8"
+          className="h-11 rounded-2xl px-5"
           disabled={disabled}
           type="button"
           variant="secondary"
@@ -821,10 +815,10 @@ export function ElicitationForm({
           Decline
         </Button>
         <Button
-          className="h-11 rounded-2xl border-white/10 bg-white/5 px-4 text-sm font-medium text-white hover:border-white/20 hover:bg-white/8"
+          className="h-11 rounded-2xl px-3"
           disabled={disabled}
           type="button"
-          variant="secondary"
+          variant="ghost"
           onClick={onCancel}
         >
           Cancel
