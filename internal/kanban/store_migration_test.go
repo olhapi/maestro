@@ -154,6 +154,52 @@ func TestStoreMigrationHelpersCoverage(t *testing.T) {
 		}
 	})
 
+	t.Run("issue branch name backfill", func(t *testing.T) {
+		store := setupTestStore(t)
+		blankIssue, err := store.CreateIssue("", "", "Blank branch issue", "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue blank: %v", err)
+		}
+		customIssue, err := store.CreateIssue("", "", "Custom branch issue", "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue custom: %v", err)
+		}
+
+		customBranch := "feature/custom-branch"
+		if err := store.UpdateIssue(customIssue.ID, map[string]interface{}{"branch_name": customBranch}); err != nil {
+			t.Fatalf("UpdateIssue custom branch: %v", err)
+		}
+		if _, err := store.db.Exec(`UPDATE issues SET branch_name = '' WHERE id = ?`, blankIssue.ID); err != nil {
+			t.Fatalf("UPDATE blank branch issue: %v", err)
+		}
+		if _, err := store.db.Exec(`DELETE FROM store_metadata WHERE key = ?`, "issue_branch_name_backfill_v1"); err != nil {
+			t.Fatalf("DELETE backfill marker: %v", err)
+		}
+
+		if err := store.backfillIssueBranchNames(); err != nil {
+			t.Fatalf("backfillIssueBranchNames: %v", err)
+		}
+		if err := store.backfillIssueBranchNames(); err != nil {
+			t.Fatalf("backfillIssueBranchNames idempotent call: %v", err)
+		}
+
+		blankLoaded, err := store.GetIssue(blankIssue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue blank: %v", err)
+		}
+		if blankLoaded.BranchName != defaultIssueBranchPrefix+blankIssue.Identifier {
+			t.Fatalf("expected blank branch issue to be backfilled, got %#v", blankLoaded.BranchName)
+		}
+
+		customLoaded, err := store.GetIssue(customIssue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue custom: %v", err)
+		}
+		if customLoaded.BranchName != customBranch {
+			t.Fatalf("expected custom branch to remain unchanged, got %#v", customLoaded.BranchName)
+		}
+	})
+
 	t.Run("plan session row helpers", func(t *testing.T) {
 		store := setupTestStore(t)
 		issue, err := store.CreateIssue("", "", "Plan helper issue", "", 0, nil)
@@ -629,6 +675,9 @@ func TestStoreMigrationLegacySchemaBranches(t *testing.T) {
 		if direct.IssueType != IssueTypeStandard || direct.WorkflowPhase != WorkflowPhaseComplete {
 			t.Fatalf("expected direct issue backfills to run, got %#v", direct)
 		}
+		if direct.BranchName != defaultIssueBranchPrefix+direct.Identifier {
+			t.Fatalf("expected direct issue branch to be backfilled, got %#v", direct.BranchName)
+		}
 
 		throughEpic, err := store.GetIssue("issue-through-epic")
 		if err != nil {
@@ -639,6 +688,9 @@ func TestStoreMigrationLegacySchemaBranches(t *testing.T) {
 		}
 		if throughEpic.IssueType != IssueTypeStandard || throughEpic.WorkflowPhase != WorkflowPhaseImplementation {
 			t.Fatalf("expected backlog issue backfills to run, got %#v", throughEpic)
+		}
+		if throughEpic.BranchName != defaultIssueBranchPrefix+throughEpic.Identifier {
+			t.Fatalf("expected epic issue branch to be backfilled, got %#v", throughEpic.BranchName)
 		}
 	})
 
@@ -866,6 +918,7 @@ func TestStoreMigrationInjectedFailureBranches(t *testing.T) {
 		{name: "planning tables", failPattern: "create table if not exists issue_plan_sessions"},
 		{name: "issue type backfill", failPattern: "update issues\n\t\tset issue_type = 'standard'"},
 		{name: "workflow phase backfill", failPattern: "update issues\n\t\tset workflow_phase = case"},
+		{name: "branch name backfill", failPattern: "set branch_name ="},
 		{name: "foreign key normalization", failPattern: "pragma foreign_key_check"},
 		{name: "store id", failPattern: "insert into store_metadata (key, value) values ('store_id'"},
 	}
