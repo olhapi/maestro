@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity, FolderKanban, RotateCcw, Rocket } from 'lucide-react'
@@ -7,10 +7,11 @@ import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, T
 import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { CompactRelativeTime } from '@/components/ui/compact-relative-time'
 import { api } from '@/lib/api'
 import { appRoutes } from '@/lib/routes'
 import type { BootstrapResponse } from '@/lib/types'
-import { cn, formatCompactNumber, formatNumber, formatRelativeTime, formatRelativeTimeCompact } from '@/lib/utils'
+import { cn, formatCompactNumber, formatNumber, formatRelativeTime } from '@/lib/utils'
 
 type SeriesPoint = BootstrapResponse['overview']['series'][number]
 
@@ -19,6 +20,8 @@ type ChartSeries = {
   label: string
   color: string
 }
+
+type ChartSeriesKey = ChartSeries['key']
 
 const executionHealthSeries: ChartSeries[] = [
   { key: 'runs_started', label: 'Runs started', color: '#53d9ff' },
@@ -37,7 +40,7 @@ function Metric({
 }: {
   label: string
   value: string
-  detail: string
+  detail: ReactNode
   icon: React.ComponentType<{ className?: string }>
 }) {
   return (
@@ -58,18 +61,63 @@ function Metric({
   )
 }
 
-function SeriesLegend({ series }: { series: readonly ChartSeries[] }) {
+function SeriesLegend({
+  series,
+  activeKey,
+  onActiveKeyChange,
+}: {
+  series: readonly ChartSeries[]
+  activeKey?: ChartSeriesKey | null
+  onActiveKeyChange?: (key: ChartSeriesKey | null) => void
+}) {
+  const interactive = typeof onActiveKeyChange === 'function'
+
   return (
     <div className="flex flex-wrap gap-2.5">
-      {series.map((entry) => (
-        <div
-          key={entry.key}
-          className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-1 text-xs text-[var(--muted-foreground)]"
-        >
-          <span className="size-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
-          <span>{entry.label}</span>
-        </div>
-      ))}
+      {series.map((entry) => {
+        const isActive = activeKey === entry.key
+        const isDimmed = activeKey != null && !isActive
+        const className = cn(
+          'inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-1 text-xs',
+          interactive &&
+            'cursor-pointer text-left transition hover:border-white/16 hover:bg-white/8 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60',
+          isActive ? 'border-white/16 bg-white/10 text-white' : 'text-[var(--muted-foreground)]',
+          isDimmed && 'opacity-55',
+        )
+
+        const content = (
+          <>
+            <span
+              className={cn('size-2.5 rounded-full transition-transform', isActive && 'scale-110')}
+              style={{ backgroundColor: entry.color }}
+            />
+            <span>{entry.label}</span>
+          </>
+        )
+
+        if (!interactive) {
+          return (
+            <div key={entry.key} className={className}>
+              {content}
+            </div>
+          )
+        }
+
+        return (
+          <button
+            key={entry.key}
+            type="button"
+            className={className}
+            data-active={isActive}
+            onMouseEnter={() => onActiveKeyChange(entry.key)}
+            onMouseLeave={() => onActiveKeyChange(null)}
+            onFocus={() => onActiveKeyChange(entry.key)}
+            onBlur={() => onActiveKeyChange(null)}
+          >
+            {content}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -122,7 +170,15 @@ function ChartTooltip({
   )
 }
 
-function ExecutionHealthChart({ series }: { series: SeriesPoint[] }) {
+function ExecutionHealthChart({
+  series,
+  activeKey,
+}: {
+  series: SeriesPoint[]
+  activeKey?: ChartSeriesKey | null
+}) {
+  const hasActiveSeries = activeKey != null
+
   return (
     <ResponsiveContainer width="100%" height={320}>
       <LineChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
@@ -139,19 +195,24 @@ function ExecutionHealthChart({ series }: { series: SeriesPoint[] }) {
           content={<ChartTooltip series={executionHealthSeries} valueFormatter={(value) => formatNumber(value)} />}
           cursor={{ stroke: 'rgba(255,255,255,.12)' }}
         />
-        {executionHealthSeries.map((entry) => (
-          <Line
-            key={entry.key}
-            dataKey={entry.key}
-            name={entry.label}
-            dot={false}
-            activeDot={{ r: 4 }}
-            stroke={entry.color}
-            strokeLinecap="round"
-            strokeWidth={2.5}
-            type="monotone"
-          />
-        ))}
+        {executionHealthSeries.map((entry) => {
+          const isActive = activeKey === entry.key
+
+          return (
+            <Line
+              key={entry.key}
+              dataKey={entry.key}
+              name={entry.label}
+              dot={false}
+              activeDot={{ r: isActive ? 5 : 4 }}
+              stroke={entry.color}
+              strokeLinecap="round"
+              strokeOpacity={hasActiveSeries && !isActive ? 0.28 : 1}
+              strokeWidth={isActive ? 3.5 : 2.5}
+              type="monotone"
+            />
+          )
+        })}
       </LineChart>
     </ResponsiveContainer>
   )
@@ -214,7 +275,7 @@ function OverviewTrendCard({
   badge: string
   title: string
   description: string
-  legend?: readonly ChartSeries[]
+  legend?: ReactNode
   action?: ReactNode
   boundaryLabel: string
   minHeight: string
@@ -229,7 +290,7 @@ function OverviewTrendCard({
           <Badge>{badge}</Badge>
           <CardTitle className="mt-4">{title}</CardTitle>
           <CardDescription className="mt-2">{description}</CardDescription>
-          {legend ? <div className="mt-4"><SeriesLegend series={legend} /></div> : null}
+          {legend ? <div className="mt-4">{legend}</div> : null}
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
       </CardHeader>
@@ -244,6 +305,7 @@ function OverviewTrendCard({
 
 export function OverviewPage() {
   const { data, isLoading } = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const [activeExecutionSeriesKey, setActiveExecutionSeriesKey] = useState<ChartSeriesKey | null>(null)
 
   if (isLoading || !data) {
     return <div className="grid gap-4 lg:grid-cols-4">{Array.from({ length: 4 }).map((_, index) => <Card key={index} className="h-36 animate-pulse bg-white/5" />)}</div>
@@ -264,7 +326,7 @@ export function OverviewPage() {
         <Metric
           label="Live token load"
           value={formatCompactNumber(snapshot.codex_totals.total_tokens)}
-          detail={`Current running sessions only. Snapshot refreshed ${formatRelativeTimeCompact(data.generated_at)}.`}
+          detail={<>Current running sessions only. Snapshot refreshed <CompactRelativeTime value={data.generated_at} />.</>}
           icon={Activity}
         />
       </section>
@@ -274,13 +336,19 @@ export function OverviewPage() {
           badge="24h execution"
           title="Execution health"
           description="Runs started, completions, failures, and retries across the last 24 hours."
-          legend={executionHealthSeries}
+          legend={(
+            <SeriesLegend
+              series={executionHealthSeries}
+              activeKey={activeExecutionSeriesKey}
+              onActiveKeyChange={setActiveExecutionSeriesKey}
+            />
+          )}
           boundaryLabel="overview execution health chart"
           minHeight="min-h-[340px]"
           chartClassName="h-[320px]"
           resetKey={data.generated_at}
         >
-          <ExecutionHealthChart series={data.overview.series} />
+          <ExecutionHealthChart series={data.overview.series} activeKey={activeExecutionSeriesKey} />
         </OverviewTrendCard>
 
         <OverviewTrendCard

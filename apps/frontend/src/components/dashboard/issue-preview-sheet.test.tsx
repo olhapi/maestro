@@ -158,7 +158,7 @@ describe('IssuePreviewSheet', () => {
     })
   })
 
-  it('renders edit, retry, and delete in a single icon action row', async () => {
+  it('renders full page, edit, retry, and delete in a single icon action row', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary()
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
@@ -179,6 +179,9 @@ describe('IssuePreviewSheet', () => {
     })
 
     const actionRow = screen.getByTestId('issue-preview-actions-row')
+    const fullPageButton = within(actionRow).getByRole('button', {
+      name: /full page/i,
+    })
     const editButton = within(actionRow).getByRole('button', {
       name: /edit issue/i,
     })
@@ -189,19 +192,28 @@ describe('IssuePreviewSheet', () => {
       name: /delete/i,
     })
 
-    expect(within(actionRow).getAllByRole('button')).toHaveLength(3)
+    expect(within(actionRow).getAllByRole('button')).toHaveLength(4)
+    expect(within(actionRow).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Full page',
+      'Edit issue',
+      'Retry now',
+      'Delete',
+    ])
+    expect(fullPageButton.querySelector('svg')).not.toBeNull()
     expect(editButton.querySelector('svg')).not.toBeNull()
     expect(retryButton.querySelector('svg')).not.toBeNull()
     expect(deleteButton.querySelector('svg')).not.toBeNull()
   })
 
-  it('shows assigned agent metadata when issue details load', async () => {
+  it('shows branch and pull request metadata without the assigned agent block', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary()
     vi.mocked(api.getIssue).mockResolvedValue(
       makeIssueDetail({
         agent_name: 'marketing',
         agent_prompt: 'Review the hero messaging before implementation.',
+        branch_name: 'codex/ISS-1',
+        pr_url: 'https://example.com/pr/99',
       }),
     )
 
@@ -216,11 +228,12 @@ describe('IssuePreviewSheet', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('Assigned agent')).toBeInTheDocument()
+      expect(screen.getByText('Branch / PR')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('marketing')).toBeInTheDocument()
-    expect(screen.getByText('Review the hero messaging before implementation.')).toBeInTheDocument()
+    expect(screen.queryByText('Assigned agent')).not.toBeInTheDocument()
+    expect(screen.getByText('codex/ISS-1')).toBeInTheDocument()
+    expect(screen.getByText('https://example.com/pr/99')).toBeInTheDocument()
   })
 
   it('keeps the workspace path on a single scrollable line', async () => {
