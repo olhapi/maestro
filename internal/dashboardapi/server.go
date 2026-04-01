@@ -308,6 +308,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			Description  string `json:"description"`
 			RepoPath     string `json:"repo_path"`
 			WorkflowPath string `json:"workflow_path"`
+			RuntimeName  string `json:"runtime_name"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -320,6 +321,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		createArgs := []string{}
+		if runtimeName := strings.TrimSpace(body.RuntimeName); runtimeName != "" {
+			createArgs = append(createArgs, runtimeName)
+		}
 		project, err := s.service.CreateProject(
 			r.Context(),
 			strings.TrimSpace(body.Name),
@@ -329,6 +334,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			kanban.ProviderKindKanban,
 			"",
 			nil,
+			createArgs...,
 		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -455,6 +461,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			Description  string `json:"description"`
 			RepoPath     string `json:"repo_path"`
 			WorkflowPath string `json:"workflow_path"`
+			RuntimeName  string `json:"runtime_name"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -467,6 +474,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		updateArgs := []string{}
+		if runtimeName := strings.TrimSpace(body.RuntimeName); runtimeName != "" {
+			updateArgs = append(updateArgs, runtimeName)
+		}
 		if err := s.service.UpdateProject(
 			r.Context(),
 			id,
@@ -477,6 +488,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			kanban.ProviderKindKanban,
 			"",
 			nil,
+			updateArgs...,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -652,6 +664,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Enabled     *bool    `json:"enabled"`
 			Priority    int      `json:"priority"`
 			Labels      []string `json:"labels"`
+			RuntimeName string   `json:"runtime_name"`
 			AgentName   string   `json:"agent_name"`
 			AgentPrompt string   `json:"agent_prompt"`
 			State       string   `json:"state"`
@@ -672,6 +685,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Enabled:     body.Enabled,
 			Priority:    body.Priority,
 			Labels:      body.Labels,
+			RuntimeName: strings.TrimSpace(body.RuntimeName),
 			AgentName:   strings.TrimSpace(body.AgentName),
 			AgentPrompt: strings.TrimSpace(body.AgentPrompt),
 			State:       body.State,
@@ -735,6 +749,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				Enabled     *bool    `json:"enabled"`
 				Priority    int      `json:"priority"`
 				Labels      []string `json:"labels"`
+				RuntimeName *string  `json:"runtime_name"`
 				AgentName   *string  `json:"agent_name"`
 				AgentPrompt *string  `json:"agent_prompt"`
 				BlockedBy   []string `json:"blocked_by"`
@@ -769,6 +784,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			}
 			if body.Enabled != nil {
 				updates["enabled"] = *body.Enabled
+			}
+			if body.RuntimeName != nil {
+				updates["runtime_name"] = strings.TrimSpace(*body.RuntimeName)
 			}
 			detail, err := s.service.UpdateIssue(r.Context(), identifier, updates)
 			if err != nil {

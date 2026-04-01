@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
@@ -174,17 +175,27 @@ func cloneProjectProviderConfig(providerConfig map[string]interface{}) map[strin
 	return out
 }
 
-func buildProjectValidationCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
+func buildProjectValidationCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}, runtimeName string) (*kanban.Project, error) {
 	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
+	runtimeName = strings.TrimSpace(runtimeName)
+	if runtimeName == "" {
+		if existing != nil {
+			runtimeName = strings.TrimSpace(existing.RuntimeName)
+		}
+		if runtimeName == "" {
+			runtimeName = string(agentruntime.ProviderCodex)
+		}
+	}
 	project := &kanban.Project{
 		Name:               name,
 		Description:        description,
 		State:              kanban.ProjectStateStopped,
 		PermissionProfile:  kanban.PermissionProfileDefault,
+		RuntimeName:        runtimeName,
 		RepoPath:           repoPath,
 		WorkflowPath:       workflowPath,
 		ProviderKind:       normalizeKind(providerKind),
@@ -197,14 +208,21 @@ func buildProjectValidationCandidate(existing *kanban.Project, name, description
 		project.ID = existing.ID
 		project.State = existing.State
 		project.PermissionProfile = existing.PermissionProfile
+		project.RuntimeName = runtimeName
 		project.CreatedAt = existing.CreatedAt
 		project.UpdatedAt = existing.UpdatedAt
 	}
 	return project, nil
 }
 
-func (s *Service) CreateProject(ctx context.Context, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
-	candidate, err := buildProjectValidationCandidate(nil, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
+func (s *Service) CreateProject(ctx context.Context, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}, runtimeName ...string) (*kanban.Project, error) {
+	selectedRuntimeName := string(agentruntime.ProviderCodex)
+	if len(runtimeName) > 0 {
+		if trimmed := strings.TrimSpace(runtimeName[0]); trimmed != "" {
+			selectedRuntimeName = trimmed
+		}
+	}
+	candidate, err := buildProjectValidationCandidate(nil, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName)
 	if err != nil {
 		return nil, err
 	}
@@ -215,19 +233,30 @@ func (s *Service) CreateProject(ctx context.Context, name, description, repoPath
 	if err := provider.ValidateProject(ctx, candidate); err != nil {
 		return nil, err
 	}
-	project, err := s.store.CreateProjectWithProvider(name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
+	project, err := s.store.CreateProjectWithProvider(name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName)
 	if err != nil {
 		return nil, err
 	}
 	return s.store.GetProject(project.ID)
 }
 
-func (s *Service) UpdateProject(ctx context.Context, id, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}) error {
+func (s *Service) UpdateProject(ctx context.Context, id, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}, runtimeName ...string) error {
 	current, err := s.store.GetProject(id)
 	if err != nil {
 		return err
 	}
-	candidate, err := buildProjectValidationCandidate(current, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
+	selectedRuntimeName := strings.TrimSpace(current.RuntimeName)
+	if len(runtimeName) > 0 {
+		if trimmed := strings.TrimSpace(runtimeName[0]); trimmed != "" {
+			selectedRuntimeName = trimmed
+		} else {
+			selectedRuntimeName = string(agentruntime.ProviderCodex)
+		}
+	}
+	if selectedRuntimeName == "" {
+		selectedRuntimeName = string(agentruntime.ProviderCodex)
+	}
+	candidate, err := buildProjectValidationCandidate(current, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName)
 	if err != nil {
 		return err
 	}
@@ -238,7 +267,7 @@ func (s *Service) UpdateProject(ctx context.Context, id, name, description, repo
 	if err := provider.ValidateProject(ctx, candidate); err != nil {
 		return err
 	}
-	if err := s.store.UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig); err != nil {
+	if err := s.store.UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName); err != nil {
 		return err
 	}
 	return nil
@@ -1087,6 +1116,7 @@ func providerIssueCreateLocalUpdates(providerIssue *kanban.Issue, input IssueCre
 		"epic_id":      providerIssue.EpicID,
 		"agent_name":   providerIssue.AgentName,
 		"agent_prompt": providerIssue.AgentPrompt,
+		"runtime_name": providerIssue.RuntimeName,
 		"branch_name":  providerIssue.BranchName,
 		"pr_url":       providerIssue.PRURL,
 	} {
@@ -1119,6 +1149,7 @@ func providerIssueLocalUpdatePayload(issue *kanban.Issue, updates map[string]int
 	addString("epic_id", issue.EpicID)
 	addString("agent_name", issue.AgentName)
 	addString("agent_prompt", issue.AgentPrompt)
+	addString("runtime_name", issue.RuntimeName)
 	addString("branch_name", issue.BranchName)
 	addString("pr_url", issue.PRURL)
 	if raw, ok := updates["permission_profile"]; ok {
@@ -1137,6 +1168,8 @@ func inputValueForKey(input IssueCreateInput, key string) string {
 		return input.AgentName
 	case "agent_prompt":
 		return input.AgentPrompt
+	case "runtime_name":
+		return input.RuntimeName
 	case "branch_name":
 		return input.BranchName
 	case "pr_url":

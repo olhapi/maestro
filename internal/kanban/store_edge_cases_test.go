@@ -6853,6 +6853,12 @@ func TestKanbanCoverageRemainingFailureBranches(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateIssue epic issue: %v", err)
 			}
+			if err := store.UpdateIssue(projectIssue.ID, map[string]interface{}{"runtime_name": "runtime-project"}); err != nil {
+				t.Fatalf("UpdateIssue project runtime: %v", err)
+			}
+			if err := store.UpdateIssue(epicIssue.ID, map[string]interface{}{"runtime_name": "runtime-epic"}); err != nil {
+				t.Fatalf("UpdateIssue epic runtime: %v", err)
+			}
 
 			if _, err := store.db.Exec(`ALTER TABLE issues ADD COLUMN pr_number TEXT NOT NULL DEFAULT ''`); err != nil {
 				t.Fatalf("ALTER TABLE issues ADD COLUMN pr_number: %v", err)
@@ -6899,12 +6905,18 @@ func TestKanbanCoverageRemainingFailureBranches(t *testing.T) {
 			if reloadedProjectIssue.ProjectID != projectA.ID || reloadedProjectIssue.EpicID != "" {
 				t.Fatalf("unexpected migrated project issue: %#v", reloadedProjectIssue)
 			}
+			if reloadedProjectIssue.RuntimeName != "runtime-project" {
+				t.Fatalf("expected migrated project issue runtime name to survive rebuild, got %q", reloadedProjectIssue.RuntimeName)
+			}
 			reloadedEpicIssue, err := reloadedStore.GetIssue(epicIssue.ID)
 			if err != nil {
 				t.Fatalf("GetIssue epic issue: %v", err)
 			}
 			if reloadedEpicIssue.ProjectID != projectB.ID || reloadedEpicIssue.EpicID != epicB.ID {
 				t.Fatalf("unexpected migrated epic issue: %#v", reloadedEpicIssue)
+			}
+			if reloadedEpicIssue.RuntimeName != "runtime-epic" {
+				t.Fatalf("expected migrated epic issue runtime name to survive rebuild, got %q", reloadedEpicIssue.RuntimeName)
 			}
 		})
 	})

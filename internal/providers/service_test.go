@@ -1452,6 +1452,7 @@ func TestServiceUpdateIssueStoresLocalMetadataForProviderBackedIssue(t *testing.
 	store, project, epic, issue := newProviderBackedIssueFixture(t)
 	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
 		"epic_id":      epic.ID,
+		"runtime_name": "runtime-local",
 		"agent_name":   "codex",
 		"agent_prompt": "preserve me",
 		"branch_name":  "codex/STUB-1",
@@ -1485,6 +1486,9 @@ func TestServiceUpdateIssueStoresLocalMetadataForProviderBackedIssue(t *testing.
 			if _, ok := updates["agent_prompt"]; ok {
 				t.Fatalf("expected agent_prompt to be excluded from provider update: %#v", updates)
 			}
+			if _, ok := updates["runtime_name"]; ok {
+				t.Fatalf("expected runtime_name to be excluded from provider update: %#v", updates)
+			}
 			if _, ok := updates["branch_name"]; ok {
 				t.Fatalf("expected branch_name to be excluded from provider update: %#v", updates)
 			}
@@ -1515,6 +1519,9 @@ func TestServiceUpdateIssueStoresLocalMetadataForProviderBackedIssue(t *testing.
 	if detail.AgentName != "marketing" || detail.AgentPrompt != "Review homepage positioning." {
 		t.Fatalf("expected updated agent metadata, got %#v", detail)
 	}
+	if detail.RuntimeName != "runtime-local" {
+		t.Fatalf("expected runtime metadata to persist locally, got %#v", detail)
+	}
 	if detail.EpicID != epic.ID {
 		t.Fatalf("expected epic metadata to persist, got %#v", detail)
 	}
@@ -1530,6 +1537,7 @@ func TestServiceUpdateIssueClearsProviderBackedLocalMetadata(t *testing.T) {
 	store, _, epic, issue := newProviderBackedIssueFixture(t)
 	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
 		"epic_id":      epic.ID,
+		"runtime_name": "",
 		"agent_name":   "codex",
 		"agent_prompt": "preserve me",
 		"branch_name":  "codex/STUB-1",
@@ -1564,6 +1572,9 @@ func TestServiceUpdateIssueClearsProviderBackedLocalMetadata(t *testing.T) {
 	}
 	if detail.EpicID != "" || detail.AgentName != "" || detail.AgentPrompt != "" || detail.BranchName != "" || detail.PRURL != "" {
 		t.Fatalf("expected local metadata to clear, got %#v", detail)
+	}
+	if detail.RuntimeName != "" {
+		t.Fatalf("expected runtime override to clear, got %#v", detail)
 	}
 }
 

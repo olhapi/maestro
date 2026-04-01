@@ -249,16 +249,20 @@ type WorkspaceRecovery struct {
 }
 
 type ExecutionSessionSnapshot struct {
-	IssueID        string               `json:"issue_id"`
-	Identifier     string               `json:"identifier"`
-	Phase          string               `json:"phase,omitempty"`
-	Attempt        int                  `json:"attempt"`
-	RunKind        string               `json:"run_kind,omitempty"`
-	Error          string               `json:"error,omitempty"`
-	ResumeEligible bool                 `json:"resume_eligible,omitempty"`
-	StopReason     string               `json:"-"`
-	UpdatedAt      time.Time            `json:"updated_at"`
-	AppSession     agentruntime.Session `json:"session"`
+	IssueID           string               `json:"issue_id"`
+	Identifier        string               `json:"identifier"`
+	Phase             string               `json:"phase,omitempty"`
+	Attempt           int                  `json:"attempt"`
+	RunKind           string               `json:"run_kind,omitempty"`
+	RuntimeName       string               `json:"runtime_name,omitempty"`
+	RuntimeProvider   string               `json:"runtime_provider,omitempty"`
+	RuntimeTransport  string               `json:"runtime_transport,omitempty"`
+	RuntimeAuthSource string               `json:"runtime_auth_source,omitempty"`
+	Error             string               `json:"error,omitempty"`
+	ResumeEligible    bool                 `json:"resume_eligible,omitempty"`
+	StopReason        string               `json:"-"`
+	UpdatedAt         time.Time            `json:"updated_at"`
+	AppSession        agentruntime.Session `json:"session"`
 }
 
 type IssueAgentCommandStatus string

@@ -400,6 +400,11 @@ func (s *Server) handleCreateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("create_project", err.Error()), nil
 	}
+	runtimeName := strings.TrimSpace(asString(args["runtime_name"]))
+	createArgs := []string{}
+	if runtimeName != "" {
+		createArgs = append(createArgs, runtimeName)
+	}
 	project, err := s.service.CreateProject(
 		ctx,
 		asString(args["name"]),
@@ -409,6 +414,7 @@ func (s *Server) handleCreateProject(ctx context.Context, args map[string]interf
 		kanban.ProviderKindKanban,
 		"",
 		nil,
+		createArgs...,
 	)
 	if err != nil {
 		return s.toolError("create_project", fmt.Sprintf("Failed to create project: %v", err)), nil
@@ -426,7 +432,12 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("update_project", err.Error()), nil
 	}
-	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), kanban.ProviderKindKanban, "", nil); err != nil {
+	runtimeName := strings.TrimSpace(asString(args["runtime_name"]))
+	updateArgs := []string{}
+	if runtimeName != "" {
+		updateArgs = append(updateArgs, runtimeName)
+	}
+	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), kanban.ProviderKindKanban, "", nil, updateArgs...); err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
 	}
 	project, err := s.store.GetProject(id)
@@ -523,6 +534,7 @@ func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interfac
 		Enabled:     enabled,
 		Priority:    intArg(args, "priority", 0),
 		Labels:      stringListArg(args, "labels"),
+		RuntimeName: strings.TrimSpace(asString(args["runtime_name"])),
 		State:       asString(args["state"]),
 		BlockedBy:   stringListArg(args, "blocked_by"),
 		BranchName:  asString(args["branch_name"]),
@@ -1161,6 +1173,9 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	}
 	if value, ok := args["pr_url"]; ok {
 		updates["pr_url"] = asString(value)
+	}
+	if value, ok := args["runtime_name"]; ok {
+		updates["runtime_name"] = asString(value)
 	}
 	return updates
 }
