@@ -1,8 +1,11 @@
 import type { AnchorHTMLAttributes, ReactNode } from 'react'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { AppShell } from '@/components/app-shell'
+import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { makeBootstrapResponse, makeWorkBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
 
@@ -176,6 +179,39 @@ function makeSecondApprovalInterrupt(id = 'interrupt-2') {
   }
 }
 
+function renderAppShellWithSeededData(entries: Array<readonly [readonly unknown[], unknown]>) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        staleTime: Number.POSITIVE_INFINITY,
+      },
+    },
+  })
+  for (const [queryKey, value] of entries) {
+    queryClient.setQueryData(queryKey, value)
+  }
+
+  const rendered = renderWithProviders(queryClient)
+
+  return {
+    queryClient,
+    ...rendered,
+  }
+}
+
+function renderWithProviders(queryClient: QueryClient) {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <GlobalDashboardProvider>
+          <AppShell />
+        </GlobalDashboardProvider>
+      </TooltipProvider>
+    </QueryClientProvider>,
+  )
+}
+
 describe('AppShell', () => {
   const mockDashboardData = (bootstrap = makeBootstrapResponse()) => {
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
@@ -216,21 +252,47 @@ describe('AppShell', () => {
     vi.useRealTimers()
   })
 
-  it('renders navigation and reacts to live updates', async () => {
-    mockDashboardData()
+  it('renders navigation, keeps refresh ages moving, and reacts to live updates', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-11T10:00:00Z'))
+    const bootstrap = makeBootstrapResponse()
+    const workBootstrap = makeWorkBootstrapResponse({
+      generated_at: bootstrap.generated_at,
+      overview: {
+        board: bootstrap.overview.board,
+        snapshot: {
+          running: bootstrap.overview.snapshot.running,
+          retrying: bootstrap.overview.snapshot.retrying,
+          paused: bootstrap.overview.snapshot.paused,
+        },
+      },
+      projects: bootstrap.projects,
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+      sessions: bootstrap.sessions,
+    })
+
+    mockDashboardData(bootstrap)
     vi.mocked(api.listInterrupts).mockResolvedValue({ items: [] })
 
-    const { queryClient } = renderWithQueryClient(<AppShell />)
+    const { queryClient } = renderAppShellWithSeededData([
+      [['work-bootstrap'], workBootstrap] as const,
+      [['interrupts'], { items: [] }] as const,
+    ])
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
-
-    await waitFor(() => {
-      expect(screen.getAllByText('Maestro').length).toBeGreaterThan(0)
-    })
 
     expect(screen.getAllByRole('link', { name: 'Maestro' })[0]).toHaveAttribute('href', '/')
     expect(screen.getAllByRole('link', { name: 'Sessions' }).length).toBeGreaterThan(0)
-    expect(screen.getByText(/^\d+s ago$/)).toBeInTheDocument()
+    expect(screen.getByText('Updated 0s ago')).toBeInTheDocument()
+    expect(screen.getByText('Last signal').nextElementSibling).toHaveTextContent('0s ago')
     expect(document.title).toContain('Work')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(screen.getByText('Updated 2s ago')).toBeInTheDocument()
+    expect(screen.getByText('Last signal').nextElementSibling).toHaveTextContent('2s ago')
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Search issues, projects, sessions, and actions' })[0])
     expect(screen.getByTestId('command-palette')).toHaveTextContent('open')
@@ -238,10 +300,8 @@ describe('AppShell', () => {
     await act(async () => {
       await invalidateSocket()
     })
-    await waitFor(() => {
-      expect(invalidateQueries).toHaveBeenCalledTimes(3)
-    }, { timeout: 2000 })
 
+    expect(invalidateQueries).toHaveBeenCalledTimes(3)
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['interrupts'],
       refetchType: 'active',
@@ -254,6 +314,8 @@ describe('AppShell', () => {
       queryKey: ['issues'],
       refetchType: 'active',
     })
+    expect(screen.getByText('Updated 0s ago')).toBeInTheDocument()
+    expect(screen.getByText('Last signal').nextElementSibling).toHaveTextContent('0s ago')
   })
 
   it('keeps the sessions nav state and title on nested session routes', async () => {

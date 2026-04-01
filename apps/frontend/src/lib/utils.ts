@@ -24,12 +24,12 @@ export function formatRelativeTime(value?: string | null) {
   return 'just now'
 }
 
-export function formatRelativeTimeCompact(value?: string | null) {
+export function formatRelativeTimeCompact(value?: string | null, referenceTimeMs = Date.now()) {
   if (!value) return 'n/a'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return 'n/a'
 
-  const seconds = Math.round((Date.now() - date.getTime()) / 1000)
+  const seconds = Math.round((referenceTimeMs - date.getTime()) / 1000)
   const absolute = Math.abs(seconds)
   const units: Array<[suffix: string, size: number]> = [
     ['d', 86_400],

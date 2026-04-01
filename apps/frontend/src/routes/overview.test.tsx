@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react'
-import { screen, waitFor, within } from '@testing-library/react'
-import { vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, vi } from 'vitest'
 
+import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { OverviewPage } from '@/routes/overview'
 import { makeBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
@@ -30,7 +33,27 @@ vi.mock('recharts', () => ({
   ResponsiveContainer,
   LineChart: ({ children }: { children: ReactNode }) => <>{children}</>,
   AreaChart: ({ children }: { children: ReactNode }) => <>{children}</>,
-  Line: () => <path />,
+  Line: ({
+    dataKey,
+    name,
+    stroke,
+    strokeOpacity,
+    strokeWidth,
+  }: {
+    dataKey?: string
+    name?: string
+    stroke?: string
+    strokeOpacity?: number
+    strokeWidth?: number
+  }) => (
+    <path
+      data-testid={dataKey ? `overview-line-${dataKey}` : 'overview-line'}
+      data-name={name}
+      data-stroke={stroke}
+      data-stroke-opacity={String(strokeOpacity ?? 1)}
+      data-stroke-width={String(strokeWidth ?? '')}
+    />
+  ),
   Area: () => <path />,
   CartesianGrid: () => <g />,
   Tooltip: () => null,
@@ -46,20 +69,53 @@ vi.mock('@/lib/api', () => ({
 
 const { api } = await import('@/lib/api')
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+function renderOverviewWithBootstrapData(bootstrap = makeBootstrapResponse()) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        staleTime: Number.POSITIVE_INFINITY,
+      },
+    },
+  })
+  queryClient.setQueryData(['bootstrap'], bootstrap)
+
+  const rendered = render(
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <GlobalDashboardProvider>
+          <OverviewPage />
+        </GlobalDashboardProvider>
+      </TooltipProvider>
+    </QueryClientProvider>,
+  )
+
+  return { queryClient, ...rendered }
+}
+
+function snapshotRefreshDetail() {
+  return screen.getByText((_, element) => {
+    return element?.tagName === 'P' && element.textContent?.startsWith('Current running sessions only. Snapshot refreshed ') === true
+  })
+}
+
 describe('OverviewPage', () => {
-  it('renders overview metrics from bootstrap data', async () => {
-    const refreshedAt = new Date(Date.now() - 1000).toISOString()
+  it('renders overview metrics from bootstrap data and keeps the snapshot age ticking', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-11T10:00:00Z'))
+
+    const refreshedAt = '2026-03-11T09:59:59Z'
     const bootstrap = makeBootstrapResponse()
     bootstrap.generated_at = refreshedAt
     bootstrap.overview.snapshot.generated_at = refreshedAt
 
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
 
-    renderWithQueryClient(<OverviewPage />)
-
-    await waitFor(() => {
-      expect(screen.getByText('Running agents')).toBeInTheDocument()
-    })
+    const { queryClient } = renderOverviewWithBootstrapData(bootstrap)
 
     expect(screen.getByText('Execution health')).toBeInTheDocument()
     expect(screen.getByText('Retry pressure')).toBeInTheDocument()
@@ -74,7 +130,24 @@ describe('OverviewPage', () => {
     expect(screen.getAllByRole('link', { name: /ISS-1/i })).toHaveLength(2)
     expect(screen.getAllByTestId('overview-chart')).toHaveLength(2)
     expect(ResponsiveContainer.mock.calls.some(([props]) => props.height === '100%')).toBe(true)
-    expect(screen.getByText(/Current running sessions only\. Snapshot refreshed \d+s ago\./)).toBeInTheDocument()
+    expect(snapshotRefreshDetail()).toHaveTextContent('Current running sessions only. Snapshot refreshed 1s ago.')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(snapshotRefreshDetail()).toHaveTextContent('Current running sessions only. Snapshot refreshed 3s ago.')
+
+    const refreshedBootstrap = makeBootstrapResponse()
+    refreshedBootstrap.generated_at = new Date(Date.now()).toISOString()
+    refreshedBootstrap.overview.snapshot.generated_at = refreshedBootstrap.generated_at
+
+    await act(async () => {
+      queryClient.setQueryData(['bootstrap'], refreshedBootstrap)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(snapshotRefreshDetail()).toHaveTextContent('Current running sessions only. Snapshot refreshed 0s ago.')
   })
 
   it('stacks active run rows on mobile to keep badges in view', async () => {
@@ -93,5 +166,37 @@ describe('OverviewPage', () => {
     expect(row).toHaveClass('flex', 'min-w-0', 'flex-col', 'gap-2')
     expect(row).toHaveClass('sm:flex-row', 'sm:items-start', 'sm:justify-between')
     expect(within(row!).getByText('ISS-1')).toHaveClass('break-words', '[overflow-wrap:anywhere]')
+  })
+
+  it('highlights the matching execution line while its legend chip is hovered', async () => {
+    const bootstrap = makeBootstrapResponse()
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
+
+    renderWithQueryClient(<OverviewPage />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Runs started' })).toBeInTheDocument()
+    })
+
+    const runsStartedLegend = screen.getByRole('button', { name: 'Runs started' })
+    const runsStartedLine = screen.getByTestId('overview-line-runs_started')
+    const runsCompletedLine = screen.getByTestId('overview-line-runs_completed')
+
+    expect(runsStartedLegend).toHaveAttribute('data-active', 'false')
+    expect(runsStartedLine).toHaveAttribute('data-stroke-width', '2.5')
+    expect(runsCompletedLine).toHaveAttribute('data-stroke-opacity', '1')
+
+    fireEvent.mouseEnter(runsStartedLegend)
+
+    expect(runsStartedLegend).toHaveAttribute('data-active', 'true')
+    expect(runsStartedLine).toHaveAttribute('data-stroke-width', '3.5')
+    expect(runsStartedLine).toHaveAttribute('data-stroke-opacity', '1')
+    expect(runsCompletedLine).toHaveAttribute('data-stroke-opacity', '0.28')
+
+    fireEvent.mouseLeave(runsStartedLegend)
+
+    expect(runsStartedLegend).toHaveAttribute('data-active', 'false')
+    expect(runsStartedLine).toHaveAttribute('data-stroke-width', '2.5')
+    expect(runsCompletedLine).toHaveAttribute('data-stroke-opacity', '1')
   })
 })
