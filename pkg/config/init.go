@@ -478,7 +478,7 @@ agent:
 codex:
   # Exact command Maestro launches for the agent.
   command: %s
-  # Expected codex --version. Mismatches warn but do not hard-fail.
+  # Expected Codex CLI version. Mismatches warn but do not hard-fail.
   expected_version: %s
   # Approval mode for Codex. %s
   # "never" keeps unattended runs non-interactive, so permission recovery must come

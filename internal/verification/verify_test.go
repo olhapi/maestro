@@ -155,6 +155,51 @@ Issue {{ issue.identifier }}
 	}
 }
 
+func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	npxPath := filepath.Join(tmp, "npx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"-y\" ]; then\n" +
+		"  echo \"unexpected npx args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"@openai/codex@0.118.0\" ]; then\n" +
+		"  echo \"unexpected package: $1\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"--version\" ]; then\n" +
+		"  echo \"unexpected version probe args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"printf 'codex-cli 9.9.9\\n'\n"
+	if err := os.WriteFile(npxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: npx -y @openai/codex@0.118.0 app-server
+  expected_version: ` + codexschema.SupportedVersion + `
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if res.Checks["codex_version"] != "warn" {
+		t.Fatalf("expected codex warning, got %+v", res)
+	}
+	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "expected "+codexschema.SupportedVersion+", found 9.9.9") {
+		t.Fatalf("unexpected warnings: %+v", res.Warnings)
+	}
+}
+
 func TestRunVerificationReportsWorkflowLoadFailure(t *testing.T) {
 	tmp := t.TempDir()
 	workflow := `---
