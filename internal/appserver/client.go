@@ -118,6 +118,18 @@ type interactionWaiter struct {
 	responded       bool
 }
 
+type mcpServerElicitationRequestParamsRaw struct {
+	ServerName      string          `json:"serverName"`
+	ThreadID        string          `json:"threadId"`
+	TurnID          *string         `json:"turnId"`
+	Meta            interface{}     `json:"_meta"`
+	Message         string          `json:"message"`
+	Mode            gen.Mode        `json:"mode"`
+	RequestedSchema json.RawMessage `json:"requestedSchema,omitempty"`
+	ElicitationID   *string         `json:"elicitationId,omitempty"`
+	URL             *string         `json:"url,omitempty"`
+}
+
 func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if err := validateWorkspaceCWD(cfg.Workspace, cfg.WorkspaceRoot); err != nil {
 		return nil, err
@@ -1117,11 +1129,13 @@ func (c *Client) newPendingInteraction(payload protocol.Message) (*PendingIntera
 		}
 		interaction.UserInput = &PendingUserInput{Questions: questions}
 	case protocol.MethodMCPServerElicitationRequest:
-		var params gen.MCPServerElicitationRequestParams
+		var params mcpServerElicitationRequestParamsRaw
 		if err := payload.UnmarshalParams(&params); err != nil {
 			return nil, err
 		}
-		requestedSchema, err := jsonMapFromValue(params.RequestedSchema)
+		// Preserve requestedSchema from the raw payload because Codex can emit
+		// richer elicitation schemas than the generated quicktype model retains.
+		requestedSchema, err := jsonMapFromRawMessage(params.RequestedSchema)
 		if err != nil {
 			return nil, fmt.Errorf("decode elicitation schema: %w", err)
 		}
@@ -1673,6 +1687,17 @@ func jsonMapFromValue(value interface{}) (map[string]interface{}, error) {
 	}
 	var out map[string]interface{}
 	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func jsonMapFromRawMessage(raw json.RawMessage) (map[string]interface{}, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

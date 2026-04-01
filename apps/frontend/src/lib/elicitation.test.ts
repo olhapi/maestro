@@ -209,6 +209,80 @@ describe('elicitation helpers', () => {
     })
   })
 
+  it('normalizes preserved raw requestedSchema payloads with nested objects and oneOf branches', () => {
+    const node = expectReadyAnalysis({
+      type: 'object',
+      properties: {
+        profile: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              default: 'Ada',
+            },
+            contact: {
+              oneOf: [
+                {
+                  title: 'Email',
+                  type: 'object',
+                  properties: {
+                    address: {
+                      type: 'string',
+                      format: 'email',
+                    },
+                  },
+                  required: ['address'],
+                },
+                {
+                  title: 'Webhook',
+                  type: 'object',
+                  properties: {
+                    endpoint: {
+                      type: 'string',
+                      format: 'uri',
+                    },
+                  },
+                  required: ['endpoint'],
+                },
+              ],
+            },
+          },
+          required: ['name'],
+        },
+        tags: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: ['alpha', 'beta'],
+            enumNames: ['Alpha', 'Beta'],
+          },
+          default: ['alpha'],
+        },
+      },
+      required: ['profile'],
+    })
+
+    expect(node.kind).toBe('object')
+    if (node.kind !== 'object') {
+      throw new Error('expected object root')
+    }
+
+    const profileNode = node.properties.find((property) => property.name === 'profile')?.node
+    if (profileNode?.kind !== 'object') {
+      throw new Error('expected nested profile object')
+    }
+    expect(profileNode.properties.find((property) => property.name === 'contact')?.node).toMatchObject({
+      kind: 'union',
+      mode: 'oneOf',
+    })
+
+    const tagsNode = node.properties.find((property) => property.name === 'tags')?.node
+    expect(tagsNode).toMatchObject({
+      kind: 'primitive',
+      fieldType: 'multi_select',
+    })
+  })
+
   it('keeps open-ended object schemas in manual JSON mode', () => {
     const analysis = normalizeElicitationRequestedSchema({
       type: 'object',

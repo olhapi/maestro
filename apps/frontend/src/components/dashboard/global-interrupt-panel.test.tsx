@@ -84,6 +84,73 @@ function makeElicitationInterrupt(overrides: {
   }
 }
 
+function makeNestedElicitationSchema() {
+  return {
+    type: 'object',
+    properties: {
+      profile: {
+        type: 'object',
+        title: 'Profile',
+        properties: {
+          name: {
+            type: 'string',
+            title: 'Name',
+          },
+          contact: {
+            type: 'object',
+            title: 'Contact',
+            properties: {
+              email: {
+                type: 'string',
+                title: 'Email',
+                format: 'email',
+              },
+            },
+            required: ['email'],
+          },
+          role: {
+            type: 'string',
+            title: 'Role',
+            enum: ['engineer', 'manager'],
+            enumNames: ['Engineer', 'Manager'],
+            default: 'engineer',
+          },
+        },
+        required: ['name', 'contact'],
+      },
+      delivery: {
+        oneOf: [
+          {
+            title: 'Email',
+            type: 'object',
+            properties: {
+              address: {
+                type: 'string',
+                title: 'Address',
+                format: 'email',
+              },
+            },
+            required: ['address'],
+          },
+          {
+            title: 'Webhook',
+            type: 'object',
+            properties: {
+              endpoint: {
+                type: 'string',
+                title: 'Endpoint',
+                format: 'uri',
+              },
+            },
+            required: ['endpoint'],
+          },
+        ],
+      },
+    },
+    required: ['profile', 'delivery'],
+  }
+}
+
 type GlobalInterruptPanelProps = ComponentProps<typeof GlobalInterruptPanel>
 
 function renderInterruptPanel(
@@ -471,6 +538,20 @@ describe('GlobalInterruptPanel', () => {
       action: 'accept',
       content: {},
     })
+  })
+
+  it('renders nested elicitation schemas without falling back to manual JSON', () => {
+    renderInterruptPanel([
+      makeElicitationInterrupt({
+        requestedSchema: makeNestedElicitationSchema(),
+      }),
+    ])
+
+    expect(screen.getByText('Profile')).toBeInTheDocument()
+    expect(screen.getByText('Contact')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /engineer/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /webhook/i })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText(/manual json payload/i)).not.toBeInTheDocument()
   })
 
   it('preserves elicitation drafts when switching between queued interrupts', () => {

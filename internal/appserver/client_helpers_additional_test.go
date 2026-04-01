@@ -227,6 +227,27 @@ func TestClientSummaryAndDecisionHelpers(t *testing.T) {
 	if mapped["name"] != "alpha" {
 		t.Fatalf("unexpected mapped value %#v", mapped)
 	}
+	rawMapped, err := jsonMapFromRawMessage(json.RawMessage(`{"type":"object","properties":{"profile":{"type":"object","properties":{"name":{"type":"string"}}}}}`))
+	if err != nil {
+		t.Fatalf("jsonMapFromRawMessage object: %v", err)
+	}
+	rawProperties, ok := rawMapped["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected raw properties to decode, got %#v", rawMapped["properties"])
+	}
+	rawProfile, ok := rawProperties["profile"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested raw property to decode, got %#v", rawProperties["profile"])
+	}
+	if _, ok := rawProfile["properties"].(map[string]interface{}); !ok {
+		t.Fatalf("expected nested raw schema to retain properties, got %#v", rawProfile["properties"])
+	}
+	if got, err := jsonMapFromRawMessage(nil); err != nil || got != nil {
+		t.Fatalf("expected nil raw schema to stay nil, got %#v err=%v", got, err)
+	}
+	if _, err := jsonMapFromRawMessage(json.RawMessage(`"oops"`)); err == nil {
+		t.Fatal("expected non-object raw schema to fail")
+	}
 
 	if err := CleanupLingeringAppServerProcess(0); err != nil {
 		t.Fatalf("expected zero pid cleanup to be a no-op, got %v", err)
