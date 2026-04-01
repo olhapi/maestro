@@ -1144,13 +1144,6 @@ export function IssueDetailPage() {
                   {issue.data.pr_url || "No pull request linked"}
                 </p>
               </div>
-              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Assigned agent</p>
-                <p className="mt-3 text-white">{issue.data.agent_name || "No agent assigned"}</p>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                  {issue.data.agent_prompt || "No agent-specific prompt"}
-                </p>
-              </div>
               {issue.data.issue_type === "recurring" ? (
                 <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-cyan-400/10 bg-cyan-400/[0.04] px-3.5 py-3">
                   <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Schedule</p>

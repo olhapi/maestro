@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ExternalLink,
   GitBranch,
+  Maximize2,
   Pencil,
   RotateCcw,
   Save,
@@ -470,13 +471,7 @@ export function IssuePreviewSheet({
             </div>
 
             <div className="grid gap-3 rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4 text-sm">
-              <div>
-                <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Assigned agent</div>
-                <div className="mt-2 text-white">{activeIssue.agent_name || "No agent assigned"}</div>
-                <div className="mt-1 text-[var(--muted-foreground)]">
-                  {activeIssue.agent_prompt || "No agent-specific prompt"}
-                </div>
-              </div>
+              <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Branch / PR</div>
               <div className="flex items-center gap-2 text-white">
                 <GitBranch className="size-4 text-[var(--accent)]" />
                 {activeIssue.branch_name || "No branch linked"}
@@ -500,12 +495,26 @@ export function IssuePreviewSheet({
 
           <SheetFooter className="grid gap-3">
             <div
-              className={onDelete ? "grid grid-cols-3 gap-3" : "grid grid-cols-2 gap-3"}
+              className={onDelete ? "grid grid-cols-4 gap-3" : "grid grid-cols-3 gap-3"}
               data-testid="issue-preview-actions-row"
             >
               <Button
                 variant="secondary"
-                className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                onClick={() => {
+                  onOpenChange(false);
+                  void navigate({
+                    to: appRoutes.issueDetail,
+                    params: { identifier: activeIssue.identifier },
+                  });
+                }}
+              >
+                <Maximize2 className="size-4" />
+                Full page
+              </Button>
+              <Button
+                variant="secondary"
+                className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
                 onClick={() => setEditOpen(true)}
               >
                 <Pencil className="size-4" />
@@ -513,7 +522,7 @@ export function IssuePreviewSheet({
               </Button>
               <Button
                 variant="secondary"
-                className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
                 disabled={retryMutation.isPending}
                 onClick={() => {
                   retryMutation.mutate(activeIssue.identifier);
@@ -525,7 +534,7 @@ export function IssuePreviewSheet({
               {onDelete ? (
                 <Button
                   variant="destructive"
-                  className="h-auto min-h-10 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                  className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
                   onClick={() => setDeleteDialogOpen(true)}
                 >
                   <Trash2 className="size-4" />
@@ -533,8 +542,8 @@ export function IssuePreviewSheet({
                 </Button>
               ) : null}
             </div>
-            <div className="flex flex-wrap justify-end gap-3">
-              {activeIssue.issue_type === "recurring" ? (
+            {activeIssue.issue_type === "recurring" ? (
+              <div className="flex flex-wrap justify-end gap-3">
                 <Button
                   variant="secondary"
                   disabled={runNowMutation.isPending}
@@ -545,20 +554,8 @@ export function IssuePreviewSheet({
                   <RotateCcw className="size-4" />
                   {runNowMutation.isPending ? "Queueing..." : "Run now"}
                 </Button>
-              ) : null}
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  onOpenChange(false);
-                  void navigate({
-                    to: appRoutes.issueDetail,
-                    params: { identifier: activeIssue.identifier },
-                  });
-                }}
-              >
-                Full page
-              </Button>
-            </div>
+              </div>
+            ) : null}
           </SheetFooter>
         </SheetContent>
       </Sheet>

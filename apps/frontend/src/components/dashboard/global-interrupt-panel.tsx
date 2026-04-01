@@ -10,6 +10,7 @@ import {
 import { ElicitationForm } from '@/components/dashboard/elicitation-form'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { CompactRelativeTime } from '@/components/ui/compact-relative-time'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import type {
   PendingAlert,
@@ -17,7 +18,7 @@ import type {
   PendingInterrupt,
   PendingUserInputQuestion,
 } from '@/lib/types'
-import { cn, formatRelativeTimeCompact, toTitleCase } from '@/lib/utils'
+import { cn, toTitleCase } from '@/lib/utils'
 
 const EMPTY_QUESTIONS: PendingUserInputQuestion[] = []
 const EMPTY_DRAFT_ANSWERS: Record<string, string> = {}
@@ -637,7 +638,7 @@ export function GlobalInterruptPanel({
                 </DialogDescription>
                 <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--muted-foreground)]">
                   <span>{interruptSubject(selectedInterrupt)}</span>
-                  <span>Updated {formatRelativeTimeCompact(selectedInterrupt.last_activity_at || selectedInterrupt.requested_at)}</span>
+                  <span>Updated <CompactRelativeTime value={selectedInterrupt.last_activity_at || selectedInterrupt.requested_at} /></span>
                   {selectedInterrupt.phase ? <span>{toTitleCase(selectedInterrupt.phase)}</span> : null}
                   {selectedInterrupt.attempt ? <span>Attempt {selectedInterrupt.attempt}</span> : null}
                   {queueAvailable ? <span>{items.length} waiting</span> : null}
@@ -711,7 +712,7 @@ export function GlobalInterruptPanel({
                             {interruptSummary(interrupt)}
                           </p>
                           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--muted-foreground)]">
-                            <span>Updated {formatRelativeTimeCompact(interrupt.last_activity_at || interrupt.requested_at)}</span>
+                            <span>Updated <CompactRelativeTime value={interrupt.last_activity_at || interrupt.requested_at} /></span>
                             {locked ? <span>Waiting for earlier response</span> : null}
                           </div>
                         </button>

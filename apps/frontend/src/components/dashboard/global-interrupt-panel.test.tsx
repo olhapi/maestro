@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
 
 import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
 import type { PendingInterrupt } from '@/lib/types'
@@ -116,6 +116,10 @@ function renderInterruptPanel(
   return { onOpenChange }
 }
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 describe('GlobalInterruptPanel', () => {
   it('renders a fullscreen dialog with in-body plan review actions', () => {
     renderInterruptPanel([makePlanApprovalInterrupt()])
@@ -137,6 +141,38 @@ describe('GlobalInterruptPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /hide waiting input dialog/i }))
 
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('keeps selected and queued interrupt ages ticking from activity or request time', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-16T10:00:00Z'))
+
+    renderInterruptPanel([
+      {
+        ...makeApprovalInterrupt(),
+        last_activity_at: '2026-03-16T10:00:00Z',
+      },
+      {
+        ...makeApprovalInterrupt({ command: 'deploy production' }),
+        id: 'interrupt-approval-2',
+        issue_identifier: 'ISS-2',
+        issue_title: 'Approve deployment',
+        requested_at: '2026-03-16T09:59:58Z',
+        last_activity_at: undefined,
+      },
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: /queue \(2\)/i }))
+
+    expect(screen.getAllByText('Updated 0s ago')).toHaveLength(2)
+    expect(screen.getByText('Updated 2s ago')).toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(screen.getAllByText('Updated 2s ago')).toHaveLength(2)
+    expect(screen.getByText('Updated 4s ago')).toBeInTheDocument()
   })
 
   it('renders the richer approval structure and auto-submits plain approval decisions', () => {
