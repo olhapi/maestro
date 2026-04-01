@@ -460,7 +460,7 @@ func TestWorkflowInitAcceptsExtendedSetupFlagsAndAliases(t *testing.T) {
 	for _, want := range []string{
 		"root: ./tmp/workspaces",
 		"command: " + codexPath + " app-server",
-		"mode: app_server",
+		"transport: app_server",
 		"dispatch_mode: per_project_serial",
 		"max_concurrent_agents: 4",
 		"max_turns: 5",
