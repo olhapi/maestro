@@ -3692,6 +3692,20 @@ func TestKanbanCoverageRollbackMatrix(t *testing.T) {
 				t.Fatalf("expected issue permission state to survive rollback, got %#v", reloadedIssue)
 			}
 		})
+
+		t.Run("UpdateIssuePermissionProfile rollback", func(t *testing.T) {
+			store := newFaultyStore(t, dbPath, "insert into change_events")
+			if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err == nil {
+				t.Fatal("expected UpdateIssuePermissionProfile to fail")
+			}
+			reloadedIssue, err := store.GetIssue(issue.ID)
+			if err != nil {
+				t.Fatalf("GetIssue after rollback: %v", err)
+			}
+			if reloadedIssue.PermissionProfile != PermissionProfileFullAccess || reloadedIssue.PlanApprovalPending || reloadedIssue.PendingPlanMarkdown != "" || reloadedIssue.PendingPlanRevisionMarkdown != "" || reloadedIssue.CollaborationModeOverride != CollaborationModeOverrideNone {
+				t.Fatalf("expected permission/profile state to persist despite change-event failure, got %#v", reloadedIssue)
+			}
+		})
 	})
 
 	t.Run("asset rollback", func(t *testing.T) {
@@ -5137,6 +5151,276 @@ func TestKanbanCoverageFaultInjectedChangeEventBranches(t *testing.T) {
 		}
 		if len(entries) != 0 {
 			t.Fatalf("expected activity rollback to leave no entries, got %#v", entries)
+		}
+	})
+}
+
+func TestKanbanCoveragePermissionProfileAndPlanningFaultBranches(t *testing.T) {
+	seed := func(t *testing.T, withPlan bool) (string, *Project, *Issue) {
+		t.Helper()
+
+		dbPath := filepath.Join(t.TempDir(), "coverage.db")
+		store := openSQLiteStoreAt(t, dbPath)
+		project, err := store.CreateProject("Coverage project", "", "", "")
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+		issue, err := store.CreateIssue(project.ID, "", "Coverage issue", "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if withPlan {
+			requestedAt := time.Date(2026, 3, 20, 13, 0, 0, 0, time.UTC)
+			if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Draft coverage plan", requestedAt, 1, "thread-coverage", "turn-coverage"); err != nil {
+				t.Fatalf("SetIssuePendingPlanApprovalWithContext: %v", err)
+			}
+		}
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close seed store: %v", err)
+		}
+		return dbPath, project, issue
+	}
+
+	newFaultyStore := func(t *testing.T, dbPath, failPattern string) *Store {
+		t.Helper()
+		store := openFaultySQLiteStoreAt(t, dbPath, failPattern)
+		if err := store.configureConnection(); err != nil {
+			t.Fatalf("configureConnection: %v", err)
+		}
+		return store
+	}
+
+	t.Run("project permission profile update failure", func(t *testing.T) {
+		dbPath, project, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "update projects set permission_profile")
+		if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateProjectPermissionProfile to fail on project update")
+		}
+		loadedProject, err := store.GetProject(project.ID)
+		if err != nil {
+			t.Fatalf("GetProject after update failure: %v", err)
+		}
+		if loadedProject.PermissionProfile != PermissionProfileDefault {
+			t.Fatalf("expected project permission profile to remain default, got %q", loadedProject.PermissionProfile)
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after update failure: %v", err)
+		}
+		if loadedIssue.PermissionProfile != PermissionProfileDefault {
+			t.Fatalf("expected issue permission profile to remain default, got %q", loadedIssue.PermissionProfile)
+		}
+	})
+
+	t.Run("project issue query failure", func(t *testing.T) {
+		dbPath, project, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "from issues")
+		if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateProjectPermissionProfile to fail on issue query")
+		}
+		loadedProject, err := store.GetProject(project.ID)
+		if err != nil {
+			t.Fatalf("GetProject after query failure: %v", err)
+		}
+		if loadedProject.PermissionProfile != PermissionProfileDefault {
+			t.Fatalf("expected project permission profile to roll back, got %q", loadedProject.PermissionProfile)
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after query failure: %v", err)
+		}
+		if loadedIssue.PermissionProfile != PermissionProfileDefault {
+			t.Fatalf("expected issue permission profile to remain default, got %q", loadedIssue.PermissionProfile)
+		}
+	})
+
+	t.Run("project plan-session close failure", func(t *testing.T) {
+		dbPath, project, issue := seed(t, true)
+		store := newFaultyStore(t, dbPath, "from issue_plan_sessions")
+		if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateProjectPermissionProfile to fail on plan-session lookup")
+		}
+		loadedProject, err := store.GetProject(project.ID)
+		if err != nil {
+			t.Fatalf("GetProject after close failure: %v", err)
+		}
+		if loadedProject.PermissionProfile != PermissionProfileDefault {
+			t.Fatalf("expected project permission profile to roll back, got %q", loadedProject.PermissionProfile)
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after close failure: %v", err)
+		}
+		if !loadedIssue.PlanApprovalPending || loadedIssue.PendingPlanMarkdown == "" {
+			t.Fatalf("expected pending approval state to remain intact, got %#v", loadedIssue)
+		}
+	})
+
+	t.Run("issue permission profile update failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "update issues")
+		if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateIssuePermissionProfile to fail on issue update")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after update failure: %v", err)
+		}
+		if loadedIssue.PermissionProfile != PermissionProfileDefault {
+			t.Fatalf("expected issue permission profile to remain default, got %q", loadedIssue.PermissionProfile)
+		}
+	})
+
+	t.Run("issue lookup failure after update", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "from issues")
+		if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateIssuePermissionProfile to fail on issue lookup")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after lookup failure: %v", err)
+		}
+		if loadedIssue.PermissionProfile != PermissionProfileFullAccess {
+			t.Fatalf("expected issue permission profile update to persist, got %q", loadedIssue.PermissionProfile)
+		}
+	})
+
+	t.Run("issue plan-session close failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, true)
+		store := newFaultyStore(t, dbPath, "from issue_plan_sessions")
+		if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateIssuePermissionProfile to fail on plan-session lookup")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after close failure: %v", err)
+		}
+		if loadedIssue.PermissionProfile != PermissionProfileFullAccess {
+			t.Fatalf("expected issue permission profile update to persist, got %q", loadedIssue.PermissionProfile)
+		}
+		if !loadedIssue.PlanApprovalPending || loadedIssue.PendingPlanMarkdown == "" {
+			t.Fatalf("expected pending approval state to remain intact, got %#v", loadedIssue)
+		}
+	})
+
+	t.Run("project begin failure", func(t *testing.T) {
+		dbPath, project, _ := seed(t, false)
+		store := newFaultyStore(t, dbPath, "__begin__")
+		if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateProjectPermissionProfile to fail when Begin is injected")
+		}
+		loadedProject, err := store.GetProject(project.ID)
+		if err != nil {
+			t.Fatalf("GetProject after begin failure: %v", err)
+		}
+		if loadedProject.PermissionProfile != PermissionProfileDefault {
+			t.Fatalf("expected project permission profile to remain default, got %q", loadedProject.PermissionProfile)
+		}
+	})
+
+	t.Run("issue begin failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "__begin__")
+		if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err == nil {
+			t.Fatal("expected UpdateIssuePermissionProfile to fail when Begin is injected")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after begin failure: %v", err)
+		}
+		if loadedIssue.PermissionProfile != PermissionProfileFullAccess {
+			t.Fatalf("expected issue permission profile update to persist, got %q", loadedIssue.PermissionProfile)
+		}
+	})
+
+	t.Run("pending plan approval load failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "from issues")
+		if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft coverage plan", time.Date(2026, 3, 20, 14, 0, 0, 0, time.UTC)); err == nil {
+			t.Fatal("expected SetIssuePendingPlanApproval to fail on issue load")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after load failure: %v", err)
+		}
+		if loadedIssue.PlanApprovalPending {
+			t.Fatalf("expected no pending approval after failed load, got %#v", loadedIssue)
+		}
+	})
+
+	t.Run("pending plan approval begin failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "__begin__")
+		if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft coverage plan", time.Date(2026, 3, 20, 14, 5, 0, 0, time.UTC)); err == nil {
+			t.Fatal("expected SetIssuePendingPlanApproval to fail when Begin is injected")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after begin failure: %v", err)
+		}
+		if loadedIssue.PlanApprovalPending {
+			t.Fatalf("expected no pending approval after begin failure, got %#v", loadedIssue)
+		}
+	})
+
+	t.Run("pending plan approval with context begin failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "__begin__")
+		if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Draft coverage plan", time.Date(2026, 3, 20, 14, 10, 0, 0, time.UTC), 1, "thread-coverage-begin", "turn-coverage-begin"); err == nil {
+			t.Fatal("expected SetIssuePendingPlanApprovalWithContext to fail when Begin is injected")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after begin failure: %v", err)
+		}
+		if loadedIssue.PlanApprovalPending {
+			t.Fatalf("expected no pending approval after begin failure, got %#v", loadedIssue)
+		}
+	})
+
+	t.Run("pending plan approval session insert failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "insert into issue_plan_sessions")
+		if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Draft coverage plan", time.Date(2026, 3, 20, 14, 15, 0, 0, time.UTC), 1, "thread-coverage", "turn-coverage"); err == nil {
+			t.Fatal("expected SetIssuePendingPlanApprovalWithContext to fail on session insert")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after session insert failure: %v", err)
+		}
+		if loadedIssue.PlanApprovalPending {
+			t.Fatalf("expected no pending approval after failed session insert, got %#v", loadedIssue)
+		}
+	})
+
+	t.Run("pending plan approval version insert failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "insert into issue_plan_versions")
+		if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Draft coverage plan", time.Date(2026, 3, 20, 14, 30, 0, 0, time.UTC), 2, "thread-coverage-2", "turn-coverage-2"); err == nil {
+			t.Fatal("expected SetIssuePendingPlanApprovalWithContext to fail on version insert")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after version insert failure: %v", err)
+		}
+		if loadedIssue.PlanApprovalPending {
+			t.Fatalf("expected no pending approval after failed version insert, got %#v", loadedIssue)
+		}
+	})
+
+	t.Run("pending plan approval change-event failure", func(t *testing.T) {
+		dbPath, _, issue := seed(t, false)
+		store := newFaultyStore(t, dbPath, "insert into change_events")
+		if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Draft coverage plan", time.Date(2026, 3, 20, 14, 45, 0, 0, time.UTC), 3, "thread-coverage-3", "turn-coverage-3"); err == nil {
+			t.Fatal("expected SetIssuePendingPlanApprovalWithContext to fail on change-event append")
+		}
+		loadedIssue, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue after change-event failure: %v", err)
+		}
+		if loadedIssue.PlanApprovalPending {
+			t.Fatalf("expected no pending approval after failed change-event append, got %#v", loadedIssue)
 		}
 	})
 }
