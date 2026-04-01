@@ -277,11 +277,8 @@ func decodeLiveSessions(raw map[string]interface{}) map[string]agentruntime.Sess
 	return agentruntime.SessionsFromMap(raw)
 }
 
-func issueHasPendingPlanRevision(issue *kanban.Issue) bool {
-	if issue == nil {
-		return false
-	}
-	return strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil
+func planningHasPendingRevision(planning *kanban.IssuePlanning) bool {
+	return planning != nil && strings.TrimSpace(planning.PendingRevisionNote) != ""
 }
 
 func buildLiveSessionFeedEntry(
@@ -327,11 +324,13 @@ func buildLiveSessionFeedEntry(
 			lastMessage = pending.LastActivity
 		}
 	}
-	if issueHasPendingPlanRevision(issue) && (pending == nil || pending.Kind != agentruntime.PendingInteractionKindAlert) {
+	if planningHasPendingRevision(planning) && (pending == nil || pending.Kind != agentruntime.PendingInteractionKindAlert) {
 		status = "revision_queued"
 		lastMessage = queuedPlanRevisionText
-		if issue.PendingPlanRevisionRequestedAt != nil && !issue.PendingPlanRevisionRequestedAt.IsZero() {
-			updatedAt = issue.PendingPlanRevisionRequestedAt.UTC()
+		if planning.PendingRevisionRequestedAt != nil && !planning.PendingRevisionRequestedAt.IsZero() {
+			updatedAt = planning.PendingRevisionRequestedAt.UTC()
+		} else if !planning.UpdatedAt.IsZero() {
+			updatedAt = planning.UpdatedAt.UTC()
 		}
 	}
 	planSummary := planningSummary(planning)
@@ -386,7 +385,7 @@ func buildPersistedSessionFeedEntry(
 	}
 	errorText := firstNonEmpty(paused.Error, retry.Error, snapshot.Error)
 	planApprovalWaiting := isPlanApprovalPendingError(errorText) || isPlanApprovalPendingError(snapshot.RunKind) || isPlanApprovalPendingError(snapshot.StopReason)
-	planRevisionQueued := issueHasPendingPlanRevision(issue)
+	planRevisionQueued := planningHasPendingRevision(planning)
 	failureClass := normalizeFailureClass(errorText)
 	if failureClass == "" {
 		failureClass = normalizeFailureClass(snapshot.RunKind)
@@ -435,8 +434,10 @@ func buildPersistedSessionFeedEntry(
 	lastMessage := session.LastMessage
 	if planRevisionQueued {
 		lastMessage = queuedPlanRevisionText
-		if issue != nil && issue.PendingPlanRevisionRequestedAt != nil && !issue.PendingPlanRevisionRequestedAt.IsZero() {
-			updatedAt = issue.PendingPlanRevisionRequestedAt.UTC()
+		if planning != nil && planning.PendingRevisionRequestedAt != nil && !planning.PendingRevisionRequestedAt.IsZero() {
+			updatedAt = planning.PendingRevisionRequestedAt.UTC()
+		} else if planning != nil && !planning.UpdatedAt.IsZero() {
+			updatedAt = planning.UpdatedAt.UTC()
 		}
 	}
 	planSummary := planningSummary(planning)
@@ -482,14 +483,15 @@ func planningSummary(planning *kanban.IssuePlanning) *kanban.IssuePlanningSummar
 		return nil
 	}
 	summary := &kanban.IssuePlanningSummary{
-		SessionID:            planning.SessionID,
-		Status:               planning.Status,
-		CurrentVersionNumber: planning.CurrentVersionNumber,
-		CurrentVersion:       planning.CurrentVersion,
-		PendingRevisionNote:  planning.PendingRevisionNote,
-		OpenedAt:             planning.OpenedAt,
-		UpdatedAt:            planning.UpdatedAt,
-		ClosedAt:             planning.ClosedAt,
+		SessionID:                  planning.SessionID,
+		Status:                     planning.Status,
+		CurrentVersionNumber:       planning.CurrentVersionNumber,
+		CurrentVersion:             planning.CurrentVersion,
+		PendingRevisionNote:        planning.PendingRevisionNote,
+		PendingRevisionRequestedAt: planning.PendingRevisionRequestedAt,
+		OpenedAt:                   planning.OpenedAt,
+		UpdatedAt:                  planning.UpdatedAt,
+		ClosedAt:                   planning.ClosedAt,
 	}
 	return summary
 }

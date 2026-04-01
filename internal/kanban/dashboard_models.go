@@ -218,27 +218,29 @@ type IssuePlanVersion struct {
 // IssuePlanning groups all plan versions for one planning session.
 // SessionID is the durable provider session key that ties the lineage together.
 type IssuePlanning struct {
-	SessionID            string              `json:"session_id"`
-	Status               IssuePlanningStatus `json:"status"`
-	CurrentVersionNumber int                 `json:"current_version_number"`
-	CurrentVersion       *IssuePlanVersion   `json:"current_version,omitempty"`
-	Versions             []IssuePlanVersion  `json:"versions,omitempty"`
-	PendingRevisionNote  string              `json:"pending_revision_note,omitempty"`
-	OpenedAt             time.Time           `json:"opened_at"`
-	UpdatedAt            time.Time           `json:"updated_at"`
-	ClosedAt             *time.Time          `json:"closed_at,omitempty"`
-	ClosedReason         string              `json:"closed_reason,omitempty"`
+	SessionID                  string              `json:"session_id"`
+	Status                     IssuePlanningStatus `json:"status"`
+	CurrentVersionNumber       int                 `json:"current_version_number"`
+	CurrentVersion             *IssuePlanVersion   `json:"current_version,omitempty"`
+	Versions                   []IssuePlanVersion  `json:"versions,omitempty"`
+	PendingRevisionNote        string              `json:"pending_revision_note,omitempty"`
+	PendingRevisionRequestedAt *time.Time          `json:"pending_revision_requested_at,omitempty"`
+	OpenedAt                   time.Time           `json:"opened_at"`
+	UpdatedAt                  time.Time           `json:"updated_at"`
+	ClosedAt                   *time.Time          `json:"closed_at,omitempty"`
+	ClosedReason               string              `json:"closed_reason,omitempty"`
 }
 
 type IssuePlanningSummary struct {
-	SessionID            string              `json:"session_id"`
-	Status               IssuePlanningStatus `json:"status"`
-	CurrentVersionNumber int                 `json:"current_version_number"`
-	CurrentVersion       *IssuePlanVersion   `json:"current_version,omitempty"`
-	PendingRevisionNote  string              `json:"pending_revision_note,omitempty"`
-	OpenedAt             time.Time           `json:"opened_at"`
-	UpdatedAt            time.Time           `json:"updated_at"`
-	ClosedAt             *time.Time          `json:"closed_at,omitempty"`
+	SessionID                  string              `json:"session_id"`
+	Status                     IssuePlanningStatus `json:"status"`
+	CurrentVersionNumber       int                 `json:"current_version_number"`
+	CurrentVersion             *IssuePlanVersion   `json:"current_version,omitempty"`
+	PendingRevisionNote        string              `json:"pending_revision_note,omitempty"`
+	PendingRevisionRequestedAt *time.Time          `json:"pending_revision_requested_at,omitempty"`
+	OpenedAt                   time.Time           `json:"opened_at"`
+	UpdatedAt                  time.Time           `json:"updated_at"`
+	ClosedAt                   *time.Time          `json:"closed_at,omitempty"`
 }
 
 type WorkspaceRecovery struct {

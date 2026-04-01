@@ -3135,47 +3135,25 @@ func TestKanbanCoverageEdgeBranches(t *testing.T) {
 			t.Fatalf("expected missing plan session to return nil, got planning=%#v err=%v", planning, err)
 		}
 		requestedAt := time.Date(2026, 3, 18, 14, 0, 0, 0, time.UTC)
-		if _, err := store.db.Exec(`
-			UPDATE issues
-			SET pending_plan_markdown = ?, pending_plan_revision_markdown = ?, pending_plan_revision_requested_at = ?
-			WHERE id = ?`,
-			"Draft plan", "Need a revision note", requestedAt, planIssue.ID,
-		); err != nil {
-			t.Fatalf("UPDATE planning issue: %v", err)
+		if err := store.SetIssuePendingPlanApproval(planIssue.ID, "Draft plan", requestedAt); err != nil {
+			t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+		}
+		if err := store.SetIssuePendingPlanRevision(planIssue.ID, "Need a revision note", requestedAt.Add(10*time.Minute)); err != nil {
+			t.Fatalf("SetIssuePendingPlanRevision: %v", err)
 		}
 		planIssue, err = store.GetIssue(planIssue.ID)
 		if err != nil {
 			t.Fatalf("GetIssue planning reload: %v", err)
 		}
-		session := issuePlanSessionRecord{
-			ID:                   generateID("pls"),
-			IssueID:              planIssue.ID,
-			Status:               IssuePlanningStatusAwaitingApproval,
-			OriginAttempt:        1,
-			OriginThreadID:       "thread-plan",
-			CurrentVersionNumber: 0,
-			OpenedAt:             requestedAt,
-			UpdatedAt:            requestedAt,
-		}
-		tx, err := store.db.Begin()
-		if err != nil {
-			t.Fatalf("Begin planning tx: %v", err)
-		}
-		if err := store.insertIssuePlanSessionTx(tx, session); err != nil {
-			t.Fatalf("insertIssuePlanSessionTx fallback: %v", err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatalf("Commit planning tx: %v", err)
-		}
 		planning, err := store.GetIssuePlanning(planIssue)
 		if err != nil {
-			t.Fatalf("GetIssuePlanning fallback: %v", err)
+			t.Fatalf("GetIssuePlanning canonical: %v", err)
 		}
 		if planning == nil || planning.CurrentVersion == nil || planning.CurrentVersion.Markdown != "Draft plan" {
-			t.Fatalf("expected issue pending plan markdown fallback, got %#v", planning)
+			t.Fatalf("expected canonical plan markdown, got %#v", planning)
 		}
 		if planning.PendingRevisionNote != "Need a revision note" {
-			t.Fatalf("expected issue pending revision note fallback, got %#v", planning)
+			t.Fatalf("expected canonical revision note, got %#v", planning)
 		}
 	})
 
@@ -5901,6 +5879,14 @@ func TestKanbanCoverageFaultInjectedMutationBranches(t *testing.T) {
 				if err != nil {
 					t.Fatalf("CreateIssue target: %v", err)
 				}
+				requestedAt := time.Date(2026, 3, 18, 9, 0, 0, 0, time.UTC)
+				revisionRequestedAt := requestedAt.Add(15 * time.Minute)
+				if err := base.SetIssuePendingPlanApproval(issue.ID, "Draft the rollout", requestedAt); err != nil {
+					t.Fatalf("SetIssuePendingPlanApproval setup: %v", err)
+				}
+				if err := base.SetIssuePendingPlanRevision(issue.ID, "Revise the rollout", revisionRequestedAt); err != nil {
+					t.Fatalf("SetIssuePendingPlanRevision setup: %v", err)
+				}
 				if err := base.Close(); err != nil {
 					t.Fatalf("Close base store: %v", err)
 				}
@@ -5909,25 +5895,18 @@ func TestKanbanCoverageFaultInjectedMutationBranches(t *testing.T) {
 				if err := store.configureConnection(); err != nil {
 					t.Fatalf("configureConnection faulty store: %v", err)
 				}
-				requestedAt := time.Date(2026, 3, 18, 9, 0, 0, 0, time.UTC)
-				revisionRequestedAt := requestedAt.Add(15 * time.Minute)
 				if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-					"title":                              "Updated title",
-					"description":                        "Updated description",
-					"priority":                           3,
-					"agent_name":                         "planner",
-					"agent_prompt":                       "  refine the rollout  ",
-					"permission_profile":                 PermissionProfilePlanThenFullAccess,
-					"collaboration_mode_override":        CollaborationModeOverridePlan,
-					"plan_approval_pending":              true,
-					"pending_plan_markdown":              "Draft the rollout",
-					"pending_plan_requested_at":          &requestedAt,
-					"pending_plan_revision_markdown":     "Revise the rollout",
-					"pending_plan_revision_requested_at": &revisionRequestedAt,
-					"issue_type":                         IssueTypeRecurring,
-					"cron":                               "*/15 * * * *",
-					"labels":                             []string{"beta", "release"},
-					"blocked_by":                         []string{blocker.Identifier},
+					"title":                       "Updated title",
+					"description":                 "Updated description",
+					"priority":                    3,
+					"agent_name":                  "planner",
+					"agent_prompt":                "  refine the rollout  ",
+					"permission_profile":          PermissionProfilePlanThenFullAccess,
+					"collaboration_mode_override": CollaborationModeOverridePlan,
+					"issue_type":                  IssueTypeRecurring,
+					"cron":                        "*/15 * * * *",
+					"labels":                      []string{"beta", "release"},
+					"blocked_by":                  []string{blocker.Identifier},
 				}); err == nil {
 					t.Fatal("expected UpdateIssue to fail when change-events write is injected")
 				}

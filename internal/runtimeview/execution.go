@@ -159,17 +159,21 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if pendingInterrupt != nil {
 		payload["pending_interrupt"] = pendingInterrupt
 	}
-	if issue.PlanApprovalPending && strings.TrimSpace(issue.PendingPlanMarkdown) != "" && issue.PendingPlanRequestedAt != nil {
+	if planning != nil && planning.ClosedAt == nil && planning.CurrentVersion != nil {
 		payload["plan_approval"] = kanban.IssuePlanApproval{
-			Markdown:    issue.PendingPlanMarkdown,
-			RequestedAt: issue.PendingPlanRequestedAt.UTC(),
-			Attempt:     attempt,
+			Markdown:    planning.CurrentVersion.Markdown,
+			RequestedAt: planning.CurrentVersion.CreatedAt.UTC(),
+			Attempt:     planning.CurrentVersion.Attempt,
 		}
 	}
-	if strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil {
+	if planning != nil && strings.TrimSpace(planning.PendingRevisionNote) != "" {
+		requestedAt := planning.UpdatedAt.UTC()
+		if planning.PendingRevisionRequestedAt != nil && !planning.PendingRevisionRequestedAt.IsZero() {
+			requestedAt = planning.PendingRevisionRequestedAt.UTC()
+		}
 		payload["plan_revision"] = kanban.IssuePlanRevision{
-			Markdown:    issue.PendingPlanRevisionMarkdown,
-			RequestedAt: issue.PendingPlanRevisionRequestedAt.UTC(),
+			Markdown:    planning.PendingRevisionNote,
+			RequestedAt: requestedAt,
 			Attempt:     attempt,
 		}
 	}

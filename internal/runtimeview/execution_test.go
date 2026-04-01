@@ -162,12 +162,8 @@ func TestIssueExecutionPayloadIncludesPlanApprovalMetadata(t *testing.T) {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"plan_approval_pending":     true,
-		"pending_plan_markdown":     "Check the repo, then continue.",
-		"pending_plan_requested_at": &requestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue: %v", err)
+	if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Check the repo, then continue.", requestedAt, 5, "thread-plan", "turn-plan"); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext: %v", err)
 	}
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
 		IssueID:    issue.ID,
@@ -218,14 +214,11 @@ func TestIssueExecutionPayloadIncludesPlanRevisionMetadata(t *testing.T) {
 	}
 	requestedAt := time.Date(2026, 3, 18, 12, 5, 0, 0, time.UTC)
 	revisionRequestedAt := requestedAt.Add(5 * time.Minute)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"plan_approval_pending":              true,
-		"pending_plan_markdown":              "Check the repo, then continue.",
-		"pending_plan_requested_at":          &requestedAt,
-		"pending_plan_revision_markdown":     "Tighten the rollout and add a rollback check.",
-		"pending_plan_revision_requested_at": &revisionRequestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue: %v", err)
+	if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Check the repo, then continue.", requestedAt, 5, "thread-plan", "turn-plan"); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", revisionRequestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
 	}
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
 		IssueID:    issue.ID,

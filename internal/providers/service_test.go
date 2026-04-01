@@ -1570,15 +1570,8 @@ func TestServiceUpdateIssueClearsProviderBackedLocalMetadata(t *testing.T) {
 func TestServiceUpdateIssueReappliesPermissionProfileForProviderBackedIssue(t *testing.T) {
 	store, _, _, issue := newProviderBackedIssueFixture(t)
 	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"permission_profile":             kanban.PermissionProfileFullAccess,
-		"collaboration_mode_override":    kanban.CollaborationModeOverridePlan,
-		"plan_approval_pending":          true,
-		"pending_plan_markdown":          "Draft plan",
-		"pending_plan_requested_at":      &requestedAt,
-		"pending_plan_revision_markdown": "Revise plan",
-	}); err != nil {
-		t.Fatalf("UpdateIssue setup: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft plan", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval setup: %v", err)
 	}
 
 	updateCalled := false

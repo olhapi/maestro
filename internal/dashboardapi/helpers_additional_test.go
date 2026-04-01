@@ -40,7 +40,7 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 	server := NewServer(store, testProvider{})
-	issue = markLegacyPendingPlan(t, store, issue.ID, "Build the first pass")
+	issue = markPendingPlan(t, store, issue.ID, "Build the first pass")
 	if _, err := server.requestIssuePlanRevision(context.Background(), issue, "Tighten the plan"); err != nil {
 		t.Fatalf("requestIssuePlanRevision: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 		if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
 			IssueID:    skippedIssue.ID,
 			Identifier: "",
-			UpdatedAt:   now,
+			UpdatedAt:  now,
 			AppSession: agentruntime.Session{
 				IssueID:       skippedIssue.ID,
 				LastTimestamp: now,
@@ -401,7 +401,7 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 				},
 			},
 		}, map[string]interface{}{
-			firstIssue.Identifier: map[string]interface{}{"issue_identifier": firstIssue.Identifier},
+			firstIssue.Identifier:  map[string]interface{}{"issue_identifier": firstIssue.Identifier},
 			secondIssue.Identifier: map[string]interface{}{"issue_identifier": secondIssue.Identifier},
 		})
 		if err != nil {

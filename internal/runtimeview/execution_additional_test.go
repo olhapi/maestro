@@ -51,11 +51,12 @@ func TestIssueExecutionPayloadIncludesPersistedSessionAndPlanFields(t *testing.T
 	}
 
 	now := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
-	issue.PlanApprovalPending = true
-	issue.PendingPlanMarkdown = "Plan the rollout"
-	issue.PendingPlanRequestedAt = &now
-	issue.PendingPlanRevisionMarkdown = "Revise the rollout"
-	issue.PendingPlanRevisionRequestedAt = &now
+	if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Plan the rollout", now, 3, "thread-1", "turn-3"); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Revise the rollout", now); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
 
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
 		IssueID:    issue.ID,

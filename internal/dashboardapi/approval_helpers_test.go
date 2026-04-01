@@ -11,15 +11,11 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
-func markLegacyPendingPlan(t *testing.T, store *kanban.Store, issueID, markdown string) *kanban.Issue {
+func markPendingPlan(t *testing.T, store *kanban.Store, issueID, markdown string) *kanban.Issue {
 	t.Helper()
 	requestedAt := time.Now().UTC().Truncate(time.Second)
-	if err := store.UpdateIssue(issueID, map[string]interface{}{
-		"plan_approval_pending":     true,
-		"pending_plan_markdown":     markdown,
-		"pending_plan_requested_at": &requestedAt,
-	}); err != nil {
-		t.Fatalf("update issue legacy plan fields: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issueID, markdown, requestedAt); err != nil {
+		t.Fatalf("set issue pending plan approval: %v", err)
 	}
 	issue, err := store.GetIssue(issueID)
 	if err != nil {
@@ -73,12 +69,12 @@ func TestPlanApprovalHelpers(t *testing.T) {
 		}
 	})
 
-	t.Run("approve legacy pending plan", func(t *testing.T) {
+	t.Run("approve pending plan", func(t *testing.T) {
 		issue, err := store.CreateIssue("", "", "Approvals", "", 0, nil)
 		if err != nil {
 			t.Fatalf("CreateIssue: %v", err)
 		}
-		issue = markLegacyPendingPlan(t, store, issue.ID, "Investigate the rollout")
+		issue = markPendingPlan(t, store, issue.ID, "Investigate the rollout")
 
 		response, err := server.approveIssuePlan(context.Background(), issue, "Please review the plan")
 		if err != nil {
@@ -125,12 +121,12 @@ func TestPlanApprovalHelpers(t *testing.T) {
 		}
 	})
 
-	t.Run("request legacy plan revision", func(t *testing.T) {
+	t.Run("request plan revision", func(t *testing.T) {
 		issue, err := store.CreateIssue("", "", "Revision", "", 0, nil)
 		if err != nil {
 			t.Fatalf("CreateIssue: %v", err)
 		}
-		issue = markLegacyPendingPlan(t, store, issue.ID, "Investigate the rollout")
+		issue = markPendingPlan(t, store, issue.ID, "Investigate the rollout")
 
 		response, err := server.requestIssuePlanRevision(context.Background(), issue, "Tighten the rollout steps")
 		if err != nil {
@@ -162,7 +158,7 @@ func TestPlanApprovalHelpers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateIssue: %v", err)
 		}
-		issue = markLegacyPendingPlan(t, errorStore, issue.ID, "Investigate the rollout")
+		issue = markPendingPlan(t, errorStore, issue.ID, "Investigate the rollout")
 		errorServer := NewServer(errorStore, retryErrorProvider{})
 		if _, err := errorServer.requestIssuePlanRevision(context.Background(), issue, "Tighten the rollout steps"); err == nil {
 			t.Fatal("expected requestIssuePlanRevision to fail when dispatch fails")

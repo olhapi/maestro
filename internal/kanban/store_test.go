@@ -612,6 +612,72 @@ func TestIssuePlanRevisionLifecyclePersistsAndClears(t *testing.T) {
 	}
 }
 
+func TestIssuePlanRevisionReopensClosedSession(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan revision reopen", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 10, 45, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft the rollout.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	initialPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning initial: %v", err)
+	}
+	if initialPlanning == nil || initialPlanning.SessionID == "" || initialPlanning.ClosedAt != nil {
+		t.Fatalf("expected open planning session, got %#v", initialPlanning)
+	}
+	sessionID := initialPlanning.SessionID
+	if initialPlanning.CurrentVersion == nil || initialPlanning.CurrentVersion.Markdown != "Draft the rollout." {
+		t.Fatalf("expected initial version to persist, got %#v", initialPlanning)
+	}
+
+	if err := store.ClearIssuePendingPlanApproval(issue.ID, "manual_retry"); err != nil {
+		t.Fatalf("ClearIssuePendingPlanApproval: %v", err)
+	}
+	closedPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning closed: %v", err)
+	}
+	if closedPlanning == nil || closedPlanning.SessionID != sessionID || closedPlanning.ClosedAt == nil || closedPlanning.Status != IssuePlanningStatusAbandoned {
+		t.Fatalf("expected closed planning session, got %#v", closedPlanning)
+	}
+
+	reopenedAt := requestedAt.Add(10 * time.Minute)
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Re-open the session with a tighter rollback step.", reopenedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+	reopenedPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning reopened: %v", err)
+	}
+	if reopenedPlanning == nil {
+		t.Fatal("expected reopened planning session")
+	}
+	if reopenedPlanning.SessionID != sessionID {
+		t.Fatalf("expected reopened session to reuse the original session id, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.ClosedAt != nil || reopenedPlanning.Status != IssuePlanningStatusRevisionRequested {
+		t.Fatalf("expected reopened revision-requested session, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.CurrentVersion == nil || reopenedPlanning.CurrentVersion.Markdown != "Draft the rollout." {
+		t.Fatalf("expected reopened session to preserve the original version, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.PendingRevisionNote != "Re-open the session with a tighter rollback step." {
+		t.Fatalf("expected reopened session to record the revision note, got %#v", reopenedPlanning)
+	}
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue reopened: %v", err)
+	}
+	if !reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "Draft the rollout." || reloaded.PendingPlanRevisionMarkdown != "Re-open the session with a tighter rollback step." {
+		t.Fatalf("expected reopened issue state to reflect canonical planning, got %#v", reloaded)
+	}
+}
+
 func TestAppendRuntimeEventOnlyPersistsStandaloneEvent(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Standalone runtime event", "", 0, nil)
@@ -673,13 +739,8 @@ func TestUpdateProjectPermissionProfileClearsInheritedPendingPlanApproval(t *tes
 		t.Fatalf("UpdateProjectPermissionProfile plan-first: %v", err)
 	}
 	requestedAt := time.Date(2026, 3, 18, 10, 0, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override": CollaborationModeOverridePlan,
-		"plan_approval_pending":       true,
-		"pending_plan_markdown":       "Approve me",
-		"pending_plan_requested_at":   &requestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue pending plan state: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Approve me", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval pending plan state: %v", err)
 	}
 
 	if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
@@ -722,13 +783,8 @@ func TestIssuePlanApprovalHelpersValidateAndClearOverrideState(t *testing.T) {
 	}
 
 	requestedAt := time.Date(2026, 3, 18, 13, 0, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override": CollaborationModeOverridePlan,
-		"plan_approval_pending":       true,
-		"pending_plan_markdown":       "Draft plan",
-		"pending_plan_requested_at":   &requestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft plan", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
 	}
 
 	if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileDefault); err != nil {
@@ -2854,15 +2910,11 @@ func TestUpdateIssuePermissionProfileViaGenericUpdateClearsPendingPlanApproval(t
 
 	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
 	revisionRequestedAt := time.Date(2026, 3, 18, 11, 30, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override":        CollaborationModeOverridePlan,
-		"plan_approval_pending":              true,
-		"pending_plan_markdown":              "Draft plan",
-		"pending_plan_requested_at":          &requestedAt,
-		"pending_plan_revision_markdown":     "Revised plan",
-		"pending_plan_revision_requested_at": &revisionRequestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue setup: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft plan", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval setup: %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Revised plan", revisionRequestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision setup: %v", err)
 	}
 
 	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"permission_profile": "full-access"}); err != nil {

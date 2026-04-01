@@ -97,12 +97,6 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]agentruntime.PendingInterac
 	items := make([]agentruntime.PendingInteraction, 0, len(issues))
 	for i := range issues {
 		issue := issues[i]
-		if strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
-			continue
-		}
-		if strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil {
-			continue
-		}
 		var project *kanban.Project
 		if projectID := strings.TrimSpace(issue.ProjectID); projectID != "" {
 			if cached, ok := projectCache[projectID]; ok {
@@ -114,6 +108,12 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]agentruntime.PendingInterac
 		}
 		snapshot, _ := o.store.GetIssueExecutionSession(issue.ID)
 		planning, _ := o.store.GetIssuePlanning(&issue)
+		if planning == nil || planning.CurrentVersion == nil || strings.TrimSpace(planning.CurrentVersion.Markdown) == "" {
+			continue
+		}
+		if strings.TrimSpace(planning.PendingRevisionNote) != "" && planning.PendingRevisionRequestedAt != nil {
+			continue
+		}
 		items = append(items, buildPlanApprovalPendingInterrupt(issue, project, snapshot, planning))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -129,7 +129,9 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]agentruntime.PendingInterac
 
 func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Project, snapshot *kanban.ExecutionSessionSnapshot, planning *kanban.IssuePlanning) agentruntime.PendingInteraction {
 	requestedAt := time.Now().UTC()
-	if issue.PendingPlanRequestedAt != nil && !issue.PendingPlanRequestedAt.IsZero() {
+	if planning != nil && planning.CurrentVersion != nil && !planning.CurrentVersion.CreatedAt.IsZero() {
+		requestedAt = planning.CurrentVersion.CreatedAt.UTC()
+	} else if issue.PendingPlanRequestedAt != nil && !issue.PendingPlanRequestedAt.IsZero() {
 		requestedAt = issue.PendingPlanRequestedAt.UTC()
 	}
 	lastActivityAt := requestedAt
@@ -156,7 +158,7 @@ func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Proje
 		projectID = strings.TrimSpace(project.ID)
 		projectName = strings.TrimSpace(project.Name)
 	}
-	planMarkdown := strings.TrimSpace(issue.PendingPlanMarkdown)
+	planMarkdown := ""
 	planStatus := ""
 	planVersionNumber := 0
 	planRevisionNote := ""

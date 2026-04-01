@@ -1163,12 +1163,8 @@ func TestIsDispatchableBlocksPendingPlanApproval(t *testing.T) {
 	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
 	_, issue := createRunningProjectIssue(t, store, "Pending plan approval", "", 0, nil)
 	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"plan_approval_pending":     true,
-		"pending_plan_markdown":     "Review the plan.",
-		"pending_plan_requested_at": &requestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Review the plan.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
 	}
 	issue, err := store.GetIssue(issue.ID)
 	if err != nil {
@@ -3645,8 +3641,15 @@ func TestProcessRetriesStartsQueuedPlanRevisionRetry(t *testing.T) {
 	if !updated.PlanApprovalPending {
 		t.Fatalf("expected pending plan approval to remain queued, got %+v", updated)
 	}
-	if updated.PendingPlanRevisionMarkdown != "" || updated.PendingPlanRevisionRequestedAt != nil {
-		t.Fatalf("expected pending plan revision to be cleared after turn start, got %+v", updated)
+	if updated.PendingPlanRevisionMarkdown != "Tighten the rollout and add a rollback check." || updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision to remain attached during drafting, got %+v", updated)
+	}
+	planning, err := store.GetIssuePlanning(updated)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning after retry: %v", err)
+	}
+	if planning == nil || planning.Status != kanban.IssuePlanningStatusDrafting {
+		t.Fatalf("expected drafting planning state after turn start, got %#v", planning)
 	}
 }
 

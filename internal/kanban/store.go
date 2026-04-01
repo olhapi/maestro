@@ -77,6 +77,16 @@ func unresolvedBlockerExistsClause(issueAlias string) string {
 	)`
 }
 
+func openIssuePlanSessionExistsClause(issueAlias string) string {
+	return `EXISTS (
+		SELECT 1
+		FROM issue_plan_sessions s
+		WHERE s.issue_id = ` + issueAlias + `.id
+		  AND s.closed_at IS NULL
+		  AND s.current_version_number > 0
+	)`
+}
+
 func DefaultDBPath() string {
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
@@ -1583,19 +1593,43 @@ func (s *Store) UpdateProjectPermissionProfile(id string, profile PermissionProf
 		return notFoundError("project", id)
 	}
 	if profile != PermissionProfilePlanThenFullAccess {
+		rows, err := tx.Query(`
+			SELECT id, identifier
+			FROM issues
+			WHERE project_id = ? AND permission_profile = ?`,
+			id, PermissionProfileDefault,
+		)
+		if err != nil {
+			return err
+		}
+		affected := make([]Issue, 0)
+		for rows.Next() {
+			var issue Issue
+			if err := rows.Scan(&issue.ID, &issue.Identifier); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			affected = append(affected, issue)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(`
 			UPDATE issues
 			SET collaboration_mode_override = '',
-			    plan_approval_pending = 0,
-			    pending_plan_markdown = '',
-			    pending_plan_requested_at = NULL,
-			    pending_plan_revision_markdown = '',
-			    pending_plan_revision_requested_at = NULL,
 			    updated_at = ?
 			WHERE project_id = ? AND permission_profile = ?`,
 			now, id, PermissionProfileDefault,
 		); err != nil {
 			return err
+		}
+		for i := range affected {
+			if _, err := s.closeIssuePlanSessionTx(tx, &affected[i], IssuePlanningStatusAbandoned, now, "project_permission_profile_updated"); err != nil {
+				return err
+			}
 		}
 	}
 	if err := s.appendChangeTx(tx, "project", id, "permission_profile_updated", map[string]interface{}{"permission_profile": profile}); err != nil {
@@ -1615,11 +1649,6 @@ func (s *Store) UpdateIssuePermissionProfile(id string, profile PermissionProfil
 		UPDATE issues
 		SET permission_profile = ?,
 		    collaboration_mode_override = '',
-		    plan_approval_pending = 0,
-		    pending_plan_markdown = '',
-		    pending_plan_requested_at = NULL,
-		    pending_plan_revision_markdown = '',
-		    pending_plan_revision_requested_at = NULL,
 		    updated_at = ?
 		WHERE id = ?`,
 		profile, now, id,
@@ -1630,6 +1659,26 @@ func (s *Store) UpdateIssuePermissionProfile(id string, profile PermissionProfil
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("issue", id)
 	}
+	issue, err := s.GetIssue(id)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := s.closeIssuePlanSessionTx(tx, issue, IssuePlanningStatusAbandoned, now, "permission_profile_updated"); err != nil {
+		return err
+	}
+	if err := s.commitTx(tx, true); err != nil {
+		return err
+	}
+	tx = nil
 	return s.appendChange("issue", id, "permission_profile_updated", map[string]interface{}{"permission_profile": profile})
 }
 
@@ -1642,6 +1691,146 @@ func (s *Store) loadIssueRecordTx(tx *sql.Tx, id string) (*Issue, error) {
 		return nil, err
 	default:
 		return record, nil
+	}
+}
+
+func (s *Store) loadIssuePlanningMapByIDs(issueIDs []string) (map[string]*IssuePlanning, error) {
+	cleanIDs := make([]string, 0, len(issueIDs))
+	seen := make(map[string]struct{}, len(issueIDs))
+	for _, issueID := range issueIDs {
+		issueID = strings.TrimSpace(issueID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		seen[issueID] = struct{}{}
+		cleanIDs = append(cleanIDs, issueID)
+	}
+	if len(cleanIDs) == 0 {
+		return map[string]*IssuePlanning{}, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(cleanIDs)), ",")
+	rows, err := s.db.Query(`
+		SELECT id, issue_id, status, origin_attempt, origin_thread_id, current_version_number,
+		       pending_revision_note, pending_revision_requested_at, opened_at, updated_at, closed_at, closed_reason
+		FROM issue_plan_sessions
+		WHERE issue_id IN (`+placeholders+`)
+		ORDER BY issue_id, CASE WHEN closed_at IS NULL THEN 0 ELSE 1 END, opened_at DESC`,
+		stringSliceToInterfaces(cleanIDs)...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessionsByIssue := make(map[string]*issuePlanSessionRecord, len(cleanIDs))
+	for rows.Next() {
+		session, err := scanIssuePlanSessionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		if session == nil {
+			continue
+		}
+		if _, ok := sessionsByIssue[session.IssueID]; ok {
+			continue
+		}
+		sessionsByIssue[session.IssueID] = session
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(sessionsByIssue) == 0 {
+		return map[string]*IssuePlanning{}, nil
+	}
+
+	sessionIDs := make([]string, 0, len(sessionsByIssue))
+	for _, session := range sessionsByIssue {
+		sessionIDs = append(sessionIDs, session.ID)
+	}
+	sessionPlaceholders := strings.TrimSuffix(strings.Repeat("?,", len(sessionIDs)), ",")
+	versionRows, err := s.db.Query(`
+		SELECT id, session_id, version_number, markdown, revision_note, attempt, thread_id, turn_id, created_at
+		FROM issue_plan_versions
+		WHERE session_id IN (`+sessionPlaceholders+`)
+		ORDER BY session_id, version_number ASC`,
+		stringSliceToInterfaces(sessionIDs)...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer versionRows.Close()
+
+	versionsBySession := make(map[string][]IssuePlanVersion, len(sessionIDs))
+	for versionRows.Next() {
+		var version IssuePlanVersion
+		if err := versionRows.Scan(
+			&version.ID,
+			&version.SessionID,
+			&version.VersionNumber,
+			&version.Markdown,
+			&version.RevisionNote,
+			&version.Attempt,
+			&version.ThreadID,
+			&version.TurnID,
+			&version.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		version.CreatedAt = version.CreatedAt.UTC()
+		versionsBySession[version.SessionID] = append(versionsBySession[version.SessionID], version)
+	}
+	if err := versionRows.Err(); err != nil {
+		return nil, err
+	}
+
+	planningByIssueID := make(map[string]*IssuePlanning, len(sessionsByIssue))
+	for issueID, session := range sessionsByIssue {
+		planning := sessionPlanningRecord(session, versionsBySession[session.ID], nil)
+		if planning != nil {
+			planningByIssueID[issueID] = planning
+		}
+	}
+	return planningByIssueID, nil
+}
+
+func stringSliceToInterfaces(values []string) []interface{} {
+	out := make([]interface{}, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
+func applyIssuePlanning(issue *Issue, planning *IssuePlanning) {
+	if issue == nil {
+		return
+	}
+
+	issue.PlanApprovalPending = false
+	issue.PendingPlanMarkdown = ""
+	issue.PendingPlanRequestedAt = nil
+	issue.PendingPlanRevisionMarkdown = ""
+	issue.PendingPlanRevisionRequestedAt = nil
+
+	if planning == nil {
+		return
+	}
+	if planning.ClosedAt == nil && planning.CurrentVersion != nil {
+		issue.PlanApprovalPending = true
+		issue.PendingPlanMarkdown = planning.CurrentVersion.Markdown
+		requestedAt := planning.CurrentVersion.CreatedAt.UTC()
+		issue.PendingPlanRequestedAt = &requestedAt
+	}
+	if strings.TrimSpace(planning.PendingRevisionNote) != "" {
+		issue.PendingPlanRevisionMarkdown = strings.TrimSpace(planning.PendingRevisionNote)
+		if planning.PendingRevisionRequestedAt != nil && !planning.PendingRevisionRequestedAt.IsZero() {
+			requestedAt := planning.PendingRevisionRequestedAt.UTC()
+			issue.PendingPlanRevisionRequestedAt = &requestedAt
+		}
 	}
 }
 
@@ -1698,9 +1887,12 @@ func (s *Store) closeIssuePlanSessionTx(tx *sql.Tx, issue *Issue, status IssuePl
 	if issue == nil {
 		return nil, nil
 	}
-	record, _, err := s.ensureLegacyIssuePlanSessionTx(tx, issue, closedAt)
+	record, err := s.getLatestIssuePlanSessionTx(tx, issue.ID, true)
 	if err != nil || record == nil {
 		return record, err
+	}
+	if record.ClosedAt != nil {
+		return nil, nil
 	}
 	closedAt = closedAt.UTC()
 	if _, err := tx.Exec(`
@@ -1791,17 +1983,14 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 		return validationErrorf("pending plan markdown is required")
 	}
 	requestedAt = requestedAt.UTC()
+	trimmedThreadID := strings.TrimSpace(threadID)
+	trimmedTurnID := strings.TrimSpace(turnID)
 	res, err := tx.Exec(`
 		UPDATE issues
 		SET collaboration_mode_override = '',
-		    plan_approval_pending = 1,
-		    pending_plan_markdown = ?,
-		    pending_plan_requested_at = ?,
-		    pending_plan_revision_markdown = '',
-		    pending_plan_revision_requested_at = NULL,
 		    updated_at = ?
 		WHERE id = ?`,
-		markdown, requestedAt, requestedAt, issue.ID,
+		requestedAt, issue.ID,
 	)
 	if err != nil {
 		return err
@@ -1818,13 +2007,20 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 	versionNumber := 1
 	revisionNote := ""
 	sessionID := generateID("pls")
-	if sessionStarted {
+	if existing != nil {
+		sessionID = existing.ID
+		revisionNote = strings.TrimSpace(existing.PendingRevisionNote)
+		if existing.CurrentVersionNumber > 0 {
+			versionNumber = existing.CurrentVersionNumber + 1
+		}
+	}
+	if existing == nil {
 		record := issuePlanSessionRecord{
 			ID:                   sessionID,
 			IssueID:              issue.ID,
 			Status:               IssuePlanningStatusAwaitingApproval,
 			OriginAttempt:        attempt,
-			OriginThreadID:       strings.TrimSpace(threadID),
+			OriginThreadID:       trimmedThreadID,
 			CurrentVersionNumber: versionNumber,
 			OpenedAt:             requestedAt,
 			UpdatedAt:            requestedAt,
@@ -1833,12 +2029,21 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 			return err
 		}
 	} else {
-		sessionID = existing.ID
-		versionNumber = existing.CurrentVersionNumber + 1
-		revisionNote = strings.TrimSpace(existing.PendingRevisionNote)
+		originAttempt := existing.OriginAttempt
+		originThreadID := strings.TrimSpace(existing.OriginThreadID)
+		if existing.CurrentVersionNumber == 0 {
+			if originAttempt == 0 {
+				originAttempt = attempt
+			}
+			if originThreadID == "" {
+				originThreadID = trimmedThreadID
+			}
+		}
 		if _, err := tx.Exec(`
 			UPDATE issue_plan_sessions
 			SET status = ?,
+			    origin_attempt = CASE WHEN current_version_number = 0 THEN ? ELSE origin_attempt END,
+			    origin_thread_id = CASE WHEN current_version_number = 0 THEN ? ELSE origin_thread_id END,
 			    current_version_number = ?,
 			    pending_revision_note = '',
 			    pending_revision_requested_at = NULL,
@@ -1847,6 +2052,8 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 			    closed_reason = ''
 			WHERE id = ?`,
 			IssuePlanningStatusAwaitingApproval,
+			originAttempt,
+			originThreadID,
 			versionNumber,
 			requestedAt,
 			existing.ID,
@@ -1862,8 +2069,8 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 		Markdown:      markdown,
 		RevisionNote:  revisionNote,
 		Attempt:       attempt,
-		ThreadID:      strings.TrimSpace(threadID),
-		TurnID:        strings.TrimSpace(turnID),
+		ThreadID:      trimmedThreadID,
+		TurnID:        trimmedTurnID,
 		CreatedAt:     requestedAt,
 	}
 	if err := s.insertIssuePlanVersionTx(tx, version); err != nil {
@@ -1883,8 +2090,8 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 	if sessionStarted {
 		if err := s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, attempt, agentruntime.ActivityEvent{
 			Type:     "plan.sessionStarted",
-			ThreadID: strings.TrimSpace(threadID),
-			TurnID:   strings.TrimSpace(turnID),
+			ThreadID: trimmedThreadID,
+			TurnID:   trimmedTurnID,
 			Raw: map[string]interface{}{
 				"session_id": sessionID,
 				"opened_at":  requestedAt.Format(time.RFC3339),
@@ -1895,8 +2102,8 @@ func (s *Store) SetIssuePendingPlanApprovalWithContextTx(tx *sql.Tx, issue *Issu
 	}
 	return s.applyIssueActivityEventTx(tx, issue.ID, issue.Identifier, attempt, agentruntime.ActivityEvent{
 		Type:     "plan.versionPublished",
-		ThreadID: strings.TrimSpace(threadID),
-		TurnID:   strings.TrimSpace(turnID),
+		ThreadID: trimmedThreadID,
+		TurnID:   trimmedTurnID,
 		Raw: map[string]interface{}{
 			"session_id":     sessionID,
 			"version_number": versionNumber,
@@ -1943,11 +2150,6 @@ func (s *Store) approveIssuePlanTx(tx *sql.Tx, issue *Issue, approvedAt time.Tim
 		UPDATE issues
 		SET permission_profile = ?,
 		    collaboration_mode_override = ?,
-		    plan_approval_pending = 0,
-		    pending_plan_markdown = '',
-		    pending_plan_requested_at = NULL,
-		    pending_plan_revision_markdown = '',
-		    pending_plan_revision_requested_at = NULL,
 		    updated_at = ?
 		WHERE id = ?`,
 		PermissionProfileFullAccess, CollaborationModeOverrideDefault, approvedAt, issue.ID,
@@ -2070,12 +2272,7 @@ func (s *Store) ClearIssuePendingPlanApproval(id string, reason string) error {
 	}
 	res, err := tx.Exec(`
 		UPDATE issues
-		SET plan_approval_pending = 0,
-		    pending_plan_markdown = '',
-		    pending_plan_requested_at = NULL,
-		    pending_plan_revision_markdown = '',
-		    pending_plan_revision_requested_at = NULL,
-		    updated_at = ?
+		SET updated_at = ?
 		WHERE id = ?`,
 		now, id,
 	)
@@ -2143,11 +2340,9 @@ func (s *Store) SetIssuePendingPlanRevision(id, markdown string, requestedAt tim
 	}
 	res, err := tx.Exec(`
 		UPDATE issues
-		SET pending_plan_revision_markdown = ?,
-		    pending_plan_revision_requested_at = ?,
-		    updated_at = ?
+		SET updated_at = ?
 		WHERE id = ?`,
-		markdown, requestedAt, requestedAt, id,
+		requestedAt, id,
 	)
 	if err != nil {
 		return err
@@ -2155,17 +2350,33 @@ func (s *Store) SetIssuePendingPlanRevision(id, markdown string, requestedAt tim
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("issue", id)
 	}
-	session, _, err := s.ensureLegacyIssuePlanSessionTx(tx, issue, requestedAt)
+	session, err := s.getLatestIssuePlanSessionTx(tx, id, true)
 	if err != nil {
 		return err
 	}
-	if session != nil {
+	if session == nil {
+		session = &issuePlanSessionRecord{
+			ID:                         generateID("pls"),
+			IssueID:                    issue.ID,
+			Status:                     IssuePlanningStatusRevisionRequested,
+			CurrentVersionNumber:       0,
+			PendingRevisionNote:        markdown,
+			PendingRevisionRequestedAt: &requestedAt,
+			OpenedAt:                   requestedAt,
+			UpdatedAt:                  requestedAt,
+		}
+		if err := s.insertIssuePlanSessionTx(tx, *session); err != nil {
+			return err
+		}
+	} else {
 		if _, err := tx.Exec(`
 			UPDATE issue_plan_sessions
 			SET status = ?,
 			    pending_revision_note = ?,
 			    pending_revision_requested_at = ?,
-			    updated_at = ?
+			    updated_at = ?,
+			    closed_at = NULL,
+			    closed_reason = ''
 			WHERE id = ?`,
 			IssuePlanningStatusRevisionRequested,
 			markdown,
@@ -2179,6 +2390,8 @@ func (s *Store) SetIssuePendingPlanRevision(id, markdown string, requestedAt tim
 		session.PendingRevisionNote = markdown
 		session.PendingRevisionRequestedAt = &requestedAt
 		session.UpdatedAt = requestedAt
+		session.ClosedAt = nil
+		session.ClosedReason = ""
 	}
 	fields := map[string]interface{}{
 		"requested_at": requestedAt.Format(time.RFC3339),
@@ -2227,15 +2440,16 @@ func (s *Store) ClearIssuePendingPlanRevision(id, reason string) error {
 	if err != nil {
 		return err
 	}
-	session, _, err := s.ensureLegacyIssuePlanSessionTx(tx, issue, now)
+	session, err := s.getLatestIssuePlanSessionTx(tx, id, true)
 	if err != nil {
 		return err
 	}
+	if session == nil || session.ClosedAt != nil {
+		return nil
+	}
 	res, err := tx.Exec(`
 		UPDATE issues
-		SET pending_plan_revision_markdown = '',
-		    pending_plan_revision_requested_at = NULL,
-		    updated_at = ?
+		SET updated_at = ?
 		WHERE id = ?`,
 		now, id,
 	)
@@ -2842,9 +3056,14 @@ func (s *Store) listDispatchIssuesForQuery(query string, args ...interface{}) ([
 	if err != nil {
 		return nil, err
 	}
+	planningMap, err := s.loadIssuePlanningMapByIDs(issueIDs)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
 		out[i].Labels = labelMap[out[i].ID]
 		out[i].BlockedBy = blockerMap[out[i].ID]
+		applyIssuePlanning(&out[i].Issue, planningMap[out[i].ID])
 		if recurrence, ok := recurrenceMap[out[i].ID]; ok {
 			applyRecurrenceToIssue(&out[i].Issue, &recurrence)
 		}
@@ -2970,6 +3189,10 @@ func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
 	if err != nil {
 		return nil, err
 	}
+	planningMap, err := s.loadIssuePlanningMapByIDs(order)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]Issue, 0, len(order))
 	for _, issueID := range order {
@@ -2979,6 +3202,7 @@ func (s *Store) loadIssuesByIDs(issueIDs []string) ([]Issue, error) {
 		}
 		issue.Labels = labelMap[issueID]
 		issue.BlockedBy = blockerMap[issueID]
+		applyIssuePlanning(issue, planningMap[issueID])
 		if recurrence, ok := recurrenceMap[issueID]; ok {
 			applyRecurrenceToIssue(issue, &recurrence)
 		}
@@ -3529,11 +3753,11 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 		}
 	}
 	if planApprovalPending, ok := filter["plan_approval_pending"].(bool); ok {
-		query += " AND plan_approval_pending = ?"
+		clause := openIssuePlanSessionExistsClause("issues")
 		if planApprovalPending {
-			args = append(args, 1)
+			query += " AND " + clause
 		} else {
-			args = append(args, 0)
+			query += " AND NOT " + clause
 		}
 	}
 
@@ -3863,46 +4087,19 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 		delete(updates, "pending_plan_revision_markdown")
 		delete(updates, "pending_plan_revision_requested_at")
 	}
+	delete(updates, "plan_approval_pending")
+	delete(updates, "pending_plan_markdown")
+	delete(updates, "pending_plan_requested_at")
+	delete(updates, "pending_plan_revision_markdown")
+	delete(updates, "pending_plan_revision_requested_at")
 	if permissionProfileSpecified {
-		query += ", permission_profile = ?, collaboration_mode_override = '', plan_approval_pending = 0, pending_plan_markdown = '', pending_plan_requested_at = NULL, pending_plan_revision_markdown = '', pending_plan_revision_requested_at = NULL"
+		query += ", permission_profile = ?, collaboration_mode_override = ''"
 		args = append(args, permissionProfile)
 	}
 	if !permissionProfileSpecified {
 		if collaborationModeOverride, ok := updates["collaboration_mode_override"].(CollaborationModeOverride); ok {
 			query += ", collaboration_mode_override = ?"
 			args = append(args, NormalizeCollaborationModeOverride(string(collaborationModeOverride)))
-		}
-		if planApprovalPending, ok := updates["plan_approval_pending"].(bool); ok {
-			query += ", plan_approval_pending = ?"
-			if planApprovalPending {
-				args = append(args, 1)
-			} else {
-				args = append(args, 0)
-			}
-		}
-		if pendingPlanMarkdown, ok := updates["pending_plan_markdown"].(string); ok {
-			query += ", pending_plan_markdown = ?"
-			args = append(args, pendingPlanMarkdown)
-		}
-		if pendingPlanRequestedAt, ok := updates["pending_plan_requested_at"].(*time.Time); ok {
-			query += ", pending_plan_requested_at = ?"
-			if pendingPlanRequestedAt == nil {
-				args = append(args, nil)
-			} else {
-				args = append(args, pendingPlanRequestedAt.UTC())
-			}
-		}
-		if pendingPlanRevisionMarkdown, ok := updates["pending_plan_revision_markdown"].(string); ok {
-			query += ", pending_plan_revision_markdown = ?"
-			args = append(args, pendingPlanRevisionMarkdown)
-		}
-		if pendingPlanRevisionRequestedAt, ok := updates["pending_plan_revision_requested_at"].(*time.Time); ok {
-			query += ", pending_plan_revision_requested_at = ?"
-			if pendingPlanRevisionRequestedAt == nil {
-				args = append(args, nil)
-			} else {
-				args = append(args, pendingPlanRevisionRequestedAt.UTC())
-			}
 		}
 	}
 	if issueTypeSpecified {
@@ -3919,6 +4116,11 @@ func (s *Store) UpdateIssue(id string, updates map[string]interface{}) error {
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return notFoundError("issue", id)
+	}
+	if permissionProfileSpecified {
+		if _, err := s.closeIssuePlanSessionTx(tx, current, IssuePlanningStatusAbandoned, now, "permission_profile_updated"); err != nil {
+			return err
+		}
 	}
 
 	// Handle labels separately
@@ -4627,10 +4829,15 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 	if err != nil {
 		return nil, 0, err
 	}
+	planningMap, err := s.loadIssuePlanningMapByIDs(issueIDs)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range out {
 		out[i].Labels = labelMap[out[i].ID]
 		out[i].BlockedBy = blockerMap[out[i].ID]
 		out[i].IsBlocked = unresolvedBlockerMap[out[i].ID]
+		applyIssuePlanning(&out[i].Issue, planningMap[out[i].ID])
 		if recurrence, ok := recurrenceMap[out[i].ID]; ok {
 			applyRecurrenceToIssue(&out[i].Issue, &recurrence)
 		}
@@ -5321,43 +5528,11 @@ func (s *Store) GetIssuePlanning(issue *Issue) (*IssuePlanning, error) {
 	if issue == nil || strings.TrimSpace(issue.ID) == "" {
 		return nil, nil
 	}
-	session, err := s.getLatestIssuePlanSessionTx(s.db, issue.ID, true)
-	if err != nil || session == nil {
-		return sessionPlanningRecord(session, nil, issue), err
-	}
-	rows, err := s.db.Query(`
-		SELECT id, session_id, version_number, markdown, revision_note, attempt, thread_id, turn_id, created_at
-		FROM issue_plan_versions
-		WHERE session_id = ?
-		ORDER BY version_number ASC`, session.ID)
+	planningMap, err := s.loadIssuePlanningMapByIDs([]string{issue.ID})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	versions := make([]IssuePlanVersion, 0)
-	for rows.Next() {
-		var version IssuePlanVersion
-		if err := rows.Scan(
-			&version.ID,
-			&version.SessionID,
-			&version.VersionNumber,
-			&version.Markdown,
-			&version.RevisionNote,
-			&version.Attempt,
-			&version.ThreadID,
-			&version.TurnID,
-			&version.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		version.CreatedAt = version.CreatedAt.UTC()
-		versions = append(versions, version)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return sessionPlanningRecord(session, versions, issue), nil
+	return planningMap[issue.ID], nil
 }
 
 func sessionPlanningRecord(session *issuePlanSessionRecord, versions []IssuePlanVersion, issue *Issue) *IssuePlanning {
@@ -5375,21 +5550,15 @@ func sessionPlanningRecord(session *issuePlanSessionRecord, versions []IssuePlan
 		ClosedAt:             session.ClosedAt,
 		ClosedReason:         strings.TrimSpace(session.ClosedReason),
 	}
-	if planning.PendingRevisionNote == "" && issue != nil && strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" {
-		planning.PendingRevisionNote = strings.TrimSpace(issue.PendingPlanRevisionMarkdown)
+	if session.PendingRevisionRequestedAt != nil && !session.PendingRevisionRequestedAt.IsZero() {
+		requestedAt := session.PendingRevisionRequestedAt.UTC()
+		planning.PendingRevisionRequestedAt = &requestedAt
 	}
 	if len(planning.Versions) > 0 {
 		current := planning.Versions[len(planning.Versions)-1]
 		planning.CurrentVersion = &current
 		if planning.CurrentVersionNumber == 0 {
 			planning.CurrentVersionNumber = current.VersionNumber
-		}
-	}
-	if planning.CurrentVersion == nil && issue != nil && strings.TrimSpace(issue.PendingPlanMarkdown) != "" {
-		planning.CurrentVersion = &IssuePlanVersion{
-			SessionID:     session.ID,
-			VersionNumber: planning.CurrentVersionNumber,
-			Markdown:      issue.PendingPlanMarkdown,
 		}
 	}
 	return planning
