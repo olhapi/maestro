@@ -36,7 +36,7 @@ agent:
   dispatch_mode: parallel
 codex:
   command: codex app-server
-  expected_version: 0.117.0
+  expected_version: 0.118.0
   approval_policy: never
   initial_collaboration_mode: default
   turn_timeout_ms: 1800000
@@ -52,10 +52,12 @@ codex:
 - `agent.max_turns`: limit how many turns Maestro gives the agent before ending an attempt.
 - `agent.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time. `per_project_serial` effectively caps per-project concurrency at `1`.
 - `codex.command`: exact command Maestro launches.
-- `codex.expected_version`: version Maestro expects from `codex --version`.
+- `codex.expected_version`: version Maestro expects from the configured Codex CLI invocation.
 - `codex.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
 - `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. Pair `plan` with `approval_policy: on-request` if you want the agent to ask clarifying questions and wait for approval. This does not affect `stdio` or resumed threads.
 - `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
+
+If you do not want to preinstall Codex, `codex.command` can be pinned to `npx -y @openai/codex@0.118.0 app-server`. Maestro verification supports that form when checking the expected version.
 
 Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves runtime sandbox access from DB-backed permission profiles:
 

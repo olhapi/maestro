@@ -193,3 +193,43 @@ func TestSubAgentSourceUnmarshalJSON(t *testing.T) {
 		}
 	})
 }
+
+func TestTitleJSONUnion(t *testing.T) {
+	t.Run("unmarshal string", func(t *testing.T) {
+		var got Title
+		if err := json.Unmarshal([]byte(`"hello"`), &got); err != nil {
+			t.Fatalf("unmarshal string title: %v", err)
+		}
+		if got.String == nil || *got.String != "hello" {
+			t.Fatalf("unexpected string title: %+v", got)
+		}
+	})
+
+	t.Run("unmarshal string array", func(t *testing.T) {
+		var got Title
+		if err := json.Unmarshal([]byte(`["a","b"]`), &got); err != nil {
+			t.Fatalf("unmarshal string array title: %v", err)
+		}
+		if len(got.StringArray) != 2 || got.StringArray[0] != "a" || got.StringArray[1] != "b" {
+			t.Fatalf("unexpected string array title: %+v", got)
+		}
+	})
+
+	t.Run("marshal bool", func(t *testing.T) {
+		value := true
+		got, err := json.Marshal(&Title{Bool: &value})
+		if err != nil {
+			t.Fatalf("marshal bool title: %v", err)
+		}
+		if string(got) != "true" {
+			t.Fatalf("unexpected bool title json: %s", got)
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		var got Title
+		if err := json.Unmarshal([]byte(`{"bad":true}`), &got); err == nil {
+			t.Fatal("expected invalid payload to fail")
+		}
+	})
+}

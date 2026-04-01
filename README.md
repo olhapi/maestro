@@ -294,12 +294,14 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 - `agent.mode: app_server`
 - `agent.dispatch_mode: parallel`
 - `codex.command: codex app-server`
-- `codex.expected_version: 0.117.0`
+- `codex.expected_version: 0.118.0`
 - `codex.approval_policy: never`
 - `codex.initial_collaboration_mode: default` for fresh `app_server` threads
 - `phases.review.enabled: true`
 - `phases.done.enabled: true`
 - runtime permission profiles now live in the DB per project/issue instead of `WORKFLOW.md`
+
+If you do not want to preinstall Codex, Maestro also supports pinning the runtime command to `npx -y @openai/codex@0.118.0 app-server`. `maestro verify` understands that form when checking `codex.expected_version`.
 
 `initial_collaboration_mode: default` keeps unattended runs execution-first for a fresh `app_server` thread. Use `plan` only when you explicitly want a plan-gated startup mode. Interactive approvals and `requestUserInput` prompts still depend on using a non-`never` approval policy, and those prompts are queued through the dashboard's global interrupt panel. Resumed threads and `stdio` runs do not use that startup-mode path.
 

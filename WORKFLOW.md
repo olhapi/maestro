@@ -90,8 +90,8 @@ agent:
 codex:
   # Exact command Maestro launches for the agent.
   command: codex app-server
-  # Expected codex --version. Mismatches warn but do not hard-fail.
-  expected_version: 0.117.0
+  # Expected Codex CLI version. Mismatches warn but do not hard-fail.
+  expected_version: 0.118.0
   # Approval mode for Codex. Available values: never, on-request, on-failure, untrusted. Fresh maestro init default: never.
   # "never" keeps unattended runs non-interactive, so permission recovery must come
   # from the project or issue permission profile rather than live approval prompts.
@@ -111,6 +111,8 @@ codex:
   # Maximum idle time without Codex activity before Maestro aborts the turn.
   stall_timeout_ms: 300000
 ---
+
+If Codex is not installed globally, `codex.command` can instead be pinned to `npx -y @openai/codex@0.118.0 app-server`.
 
 You are working on issue {{ issue.identifier }}.
 

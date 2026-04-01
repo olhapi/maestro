@@ -2042,7 +2042,7 @@ func TestHelperDefaultsAndWorkspaceValidation(t *testing.T) {
 		t.Fatalf("expected default sandbox networkAccess=true, got %#v", sandbox)
 	}
 
-	if !looksLikeCodexCommand("/usr/local/bin/codex") || !looksLikeCodexCommand("C:/tools/codex.exe") {
+	if !looksLikeCodexCommand("/usr/local/bin/codex") || !looksLikeCodexCommand("C:/tools/codex.exe") || !looksLikeCodexCommand("C:/tools/codex.cmd") {
 		t.Fatal("expected codex executable detection")
 	}
 	if looksLikeCodexCommand("/bin/sh") {

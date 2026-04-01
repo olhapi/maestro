@@ -2019,7 +2019,7 @@ func defaultTurnSandboxPolicy(workspace, workspaceRoot string) map[string]interf
 
 func looksLikeCodexCommand(executable string) bool {
 	base := strings.ToLower(filepath.Base(strings.TrimSpace(executable)))
-	return base == "codex" || base == "codex.exe"
+	return base == "codex" || base == "codex.cmd" || base == "codex.exe"
 }
 
 func asInt(v interface{}) (int, bool) {
