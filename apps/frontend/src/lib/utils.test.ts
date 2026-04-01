@@ -23,4 +23,16 @@ describe('formatRelativeTimeCompact', () => {
 
     vi.useRealTimers()
   })
+
+  it('uses an explicit reference time for deterministic past and future labels', () => {
+    const referenceTimeMs = new Date('2026-03-11T10:00:00Z').getTime()
+
+    expect(formatRelativeTimeCompact('2026-03-11T09:59:30Z', referenceTimeMs)).toBe('30s ago')
+    expect(formatRelativeTimeCompact('2026-03-11T10:00:30Z', referenceTimeMs)).toBe('in 30s')
+  })
+
+  it('returns n/a for empty or invalid timestamps', () => {
+    expect(formatRelativeTimeCompact()).toBe('n/a')
+    expect(formatRelativeTimeCompact('not-a-date')).toBe('n/a')
+  })
 })
