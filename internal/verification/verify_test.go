@@ -50,15 +50,28 @@ Issue {{ issue.identifier }}
 `
 }
 
-func writeFakeCodex(t *testing.T, root, version string) string {
+func writeFakeCLI(t *testing.T, root, binary, version string) string {
 	t.Helper()
-	codexPath := filepath.Join(root, "codex")
-	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli "+version+"\\n'\n"), 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, binary)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '"+binary+"-cli "+version+"\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", filepath.Dir(codexPath)+string(os.PathListSeparator)+oldPath)
-	return codexPath
+	t.Setenv("PATH", root+string(os.PathListSeparator)+oldPath)
+	return path
+}
+
+func writeFakeCodex(t *testing.T, root, version string) string {
+	t.Helper()
+	return writeFakeCLI(t, filepath.Join(root, "bin"), "codex", version)
+}
+
+func writeFakeClaude(t *testing.T, root, version string) string {
+	t.Helper()
+	return writeFakeCLI(t, filepath.Join(root, "bin"), "claude", version)
 }
 
 func TestRunVerification(t *testing.T) {
@@ -82,6 +95,7 @@ func TestRunVerification(t *testing.T) {
 func TestRunVerificationSucceedsForValidWorkflow(t *testing.T) {
 	tmp := t.TempDir()
 	writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+	writeFakeClaude(t, tmp, "1.2.3")
 	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +106,26 @@ func TestRunVerificationSucceedsForValidWorkflow(t *testing.T) {
 	}
 	if res.Checks["workflow"] != "ok" || res.Checks["workflow_load"] != "ok" || res.Checks["db_open"] != "ok" {
 		t.Fatalf("expected healthy checks, got %+v", res.Checks)
+	}
+	for _, key := range []string{
+		"runtime_catalog",
+		"runtime_default",
+		"runtime_codex_appserver",
+		"runtime_codex_appserver_binary",
+		"runtime_codex_appserver_version",
+		"runtime_codex_stdio",
+		"runtime_codex_stdio_binary",
+		"runtime_codex_stdio_version",
+		"runtime_claude",
+		"runtime_claude_binary",
+		"runtime_claude_version",
+	} {
+		if res.Checks[key] == "" {
+			t.Fatalf("expected %s to be populated, got %+v", key, res.Checks)
+		}
+	}
+	if res.Checks["runtime_default"] != "ok" || res.Checks["runtime_claude"] != "ok" {
+		t.Fatalf("expected runtime readiness to report ok, got %+v", res.Checks)
 	}
 }
 
@@ -167,15 +201,22 @@ func TestRunVerificationSkipsLiteralDbDirCreationForUnresolvedEnvPath(t *testing
 func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	writeFakeCodex(t, tmp, "9.9.9")
+	writeFakeClaude(t, tmp, "1.2.3")
 	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
-	if res.Checks["codex_version"] != "warn" {
+	if res.Checks["runtime_default"] != "warn" {
+		t.Fatalf("expected default runtime warning, got %+v", res)
+	}
+	if res.Checks["runtime_codex_appserver_version"] != "warn" || res.Checks["runtime_codex_stdio_version"] != "warn" {
 		t.Fatalf("expected codex warning, got %+v", res)
 	}
-	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "expected "+codexschema.SupportedVersion+", found 9.9.9") {
+	if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, "\n"), "runtime_codex_appserver_version: expected "+codexschema.SupportedVersion+", found 9.9.9") {
 		t.Fatalf("unexpected warnings: %+v", res.Warnings)
+	}
+	if res.Checks["runtime_claude"] != "ok" {
+		t.Fatalf("expected claude runtime to stay ready, got %+v", res.Checks)
 	}
 }
 

@@ -22,7 +22,7 @@ var (
 
 type InitOptions struct {
 	WorkspaceRoot            string
-	CodexCommand             string
+	RuntimeCommand           string
 	AgentMode                string
 	DispatchMode             string
 	MaxConcurrentAgents      int
@@ -51,8 +51,8 @@ var (
 	initAgentModeChoices = initChoiceSet{
 		Err: ErrInvalidInitAgentMode,
 		Choices: []initChoice{
-			{Value: AgentModeAppServer, Description: "Use the Codex app-server protocol.", Aliases: []string{"app", "server", "app-server"}},
-			{Value: AgentModeStdio, Description: "Use a codex exec style runner.", Aliases: []string{"std", "exec"}},
+			{Value: AgentModeAppServer, Description: "Use the app-server protocol.", Aliases: []string{"app", "server", "app-server"}},
+			{Value: AgentModeStdio, Description: "Use a stdio-style runner.", Aliases: []string{"std", "exec"}},
 		},
 	}
 	initDispatchModeChoices = initChoiceSet{
@@ -68,7 +68,7 @@ var (
 			{Value: "never", Description: "Keep unattended runs non-interactive."},
 			{Value: "on-request", Description: "Allow approvals and questions during the run.", Aliases: []string{"req", "request", "on_request"}},
 			{Value: "on-failure", Description: "Ask only when a step fails and needs recovery.", Aliases: []string{"fail", "failure", "on_failure"}},
-			{Value: "untrusted", Description: "Use Codex's untrusted approval mode."},
+			{Value: "untrusted", Description: "Use untrusted approval mode."},
 		},
 	}
 	initCollaborationModeChoices = initChoiceSet{
@@ -142,7 +142,7 @@ func defaultInitOptions() InitOptions {
 	cfg := DefaultInitConfig()
 	return InitOptions{
 		WorkspaceRoot:            cfg.Workspace.Root,
-		CodexCommand:             cfg.Codex.Command,
+		RuntimeCommand:           cfg.Codex.Command,
 		AgentMode:                cfg.Agent.Mode,
 		DispatchMode:             cfg.Agent.DispatchMode,
 		MaxConcurrentAgents:      cfg.Agent.MaxConcurrentAgents,
@@ -158,8 +158,8 @@ func resolveInitOptions(path string, opts InitOptions) (InitOptions, error) {
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
 		answers.WorkspaceRoot = strings.TrimSpace(opts.WorkspaceRoot)
 	}
-	if strings.TrimSpace(opts.CodexCommand) != "" {
-		answers.CodexCommand = strings.TrimSpace(opts.CodexCommand)
+	if strings.TrimSpace(opts.RuntimeCommand) != "" {
+		answers.RuntimeCommand = strings.TrimSpace(opts.RuntimeCommand)
 	}
 	if strings.TrimSpace(opts.AgentMode) != "" {
 		mode, err := validateInitAgentMode(opts.AgentMode)
@@ -215,8 +215,8 @@ func promptInitOptions(path string, opts InitOptions, defaults InitOptions) Init
 	if strings.TrimSpace(opts.WorkspaceRoot) == "" {
 		defaults.WorkspaceRoot = promptLine(reader, writer, "Workspace root", defaults.WorkspaceRoot)
 	}
-	if strings.TrimSpace(opts.CodexCommand) == "" {
-		defaults.CodexCommand = promptLine(reader, writer, "Codex command", defaults.CodexCommand)
+	if strings.TrimSpace(opts.RuntimeCommand) == "" {
+		defaults.RuntimeCommand = promptLine(reader, writer, "Runtime command", defaults.RuntimeCommand)
 	}
 	if strings.TrimSpace(opts.AgentMode) == "" {
 		defaults.AgentMode = promptAgentMode(reader, writer, defaults.AgentMode)
@@ -392,8 +392,8 @@ func buildWorkflowFile(opts InitOptions) string {
 		selectedRuntimeName = "codex-stdio"
 	}
 	if runtimeCfg, ok := cfg.Runtime.Entries[selectedRuntimeName]; ok {
-		if strings.TrimSpace(opts.CodexCommand) != "" {
-			runtimeCfg.Command = strings.TrimSpace(opts.CodexCommand)
+		if strings.TrimSpace(opts.RuntimeCommand) != "" {
+			runtimeCfg.Command = strings.TrimSpace(opts.RuntimeCommand)
 		}
 		if selectedRuntimeName == "codex-appserver" {
 			if strings.TrimSpace(opts.ApprovalPolicy) != "" {

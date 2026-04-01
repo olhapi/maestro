@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
@@ -31,6 +32,22 @@ func setupRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return repo
+}
+
+func writeFakeRuntimeCLI(t *testing.T, binary, version string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake runtime dir: %v", err)
+	}
+	path := filepath.Join(dir, binary)
+	script := "#!/bin/sh\nprintf '" + binary + "-cli " + version + "\\n'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", binary, err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	return path
 }
 
 func sampleMainPNGBytes() []byte {
@@ -805,21 +822,38 @@ func TestBlockerLifecycleCommands(t *testing.T) {
 func TestVerifyAndDoctorOutputs(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := setupRepo(t)
+	_ = writeFakeRuntimeCLI(t, "codex", codexschema.SupportedVersion)
+	_ = writeFakeRuntimeCLI(t, "claude", "1.2.3")
 
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "verify", "--repo", repoPath, "--json")
 	if code != 0 {
 		t.Fatalf("verify json failed: %d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "\"checks\"") || !strings.Contains(stdout, "\"remediation\"") {
-		t.Fatalf("unexpected verify json: %s", stdout)
+	for _, want := range []string{
+		"\"checks\"",
+		"\"remediation\"",
+		"\"runtime_default\":\"ok\"",
+		"\"runtime_codex_appserver\":\"ok\"",
+		"\"runtime_claude\":\"ok\"",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("unexpected verify json: %s", stdout)
+		}
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "doctor", "--repo", repoPath)
 	if code != 0 {
 		t.Fatalf("doctor failed: %d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "Doctor") {
-		t.Fatalf("unexpected doctor output: %s", stdout)
+	for _, want := range []string{
+		"Doctor",
+		"runtime_default: ok",
+		"runtime_codex_appserver: ok",
+		"runtime_claude: ok",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("unexpected doctor output: %s", stdout)
+		}
 	}
 }
 

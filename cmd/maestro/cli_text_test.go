@@ -45,15 +45,30 @@ func TestShellQuoteArg(t *testing.T) {
 	}
 }
 
+func writeFakeCLI(t *testing.T, binary, version string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake cli dir: %v", err)
+	}
+	path := filepath.Join(dir, binary)
+	script := "#!/bin/sh\nprintf '" + binary + "-cli " + version + "\\n'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", binary, err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	return path
+}
+
 func writeFakeCodexCLI(t *testing.T, version string) string {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "codex")
-	script := "#!/bin/sh\nprintf 'codex-cli " + version + "\\n'\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-	return path
+	return writeFakeCLI(t, "codex", version)
+}
+
+func writeFakeClaudeCLI(t *testing.T, version string) string {
+	t.Helper()
+	return writeFakeCLI(t, "claude", version)
 }
 
 func repoRootFromCaller(t *testing.T) string {
@@ -70,9 +85,10 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	repoPath := setupRepo(t)
 	opsRepoPath := setupRepo(t)
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 
 	initRepo := filepath.Join(t.TempDir(), "workflow init repo")
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", initRepo, "--defaults", "--runtime-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init failed: %d stderr=%s", code, stderr)
 	}
@@ -91,7 +107,9 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	for _, want := range []string{
 		"Initialized " + workflowPath,
 		"Verification",
-		"codex_version: ok",
+		"runtime_default: ok",
+		"runtime_codex_appserver: ok",
+		"runtime_claude: ok",
 		"Next steps",
 		"Register the repo:",
 		"Start the orchestrator:",
@@ -346,9 +364,10 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 func TestTextModeRootInitAlias(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro db", "maestro.db")
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 	initRepo := filepath.Join(t.TempDir(), "root init repo")
 
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "init", initRepo, "--defaults", "--runtime-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("root init failed: %d stderr=%s", code, stderr)
 	}
@@ -360,7 +379,9 @@ func TestTextModeRootInitAlias(t *testing.T) {
 	for _, want := range []string{
 		"Initialized " + workflowPath,
 		"Verification",
-		"codex_version: ok",
+		"runtime_default: ok",
+		"runtime_codex_appserver: ok",
+		"runtime_claude: ok",
 		"Next steps",
 		"Register the repo:",
 		"Start the orchestrator:",
@@ -385,9 +406,12 @@ func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("workflow init help failed: %d stderr=%s", code, stderr)
 	}
+	if strings.Contains(stdout, "--codex-command") {
+		t.Fatalf("expected hidden legacy flag to stay out of help, got %q", stdout)
+	}
 	for _, want := range []string{
 		"--workspace-root",
-		"--codex-command",
+		"--runtime-command",
 		"--agent-mode",
 		"--dispatch-mode",
 		"--max-concurrent-agents",
@@ -409,9 +433,12 @@ func TestRootInitHelpIncludesSetupFlags(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("root init help failed: %d stderr=%s", code, stderr)
 	}
+	if strings.Contains(stdout, "--codex-command") {
+		t.Fatalf("expected hidden legacy flag to stay out of help, got %q", stdout)
+	}
 	for _, want := range []string{
 		"--workspace-root",
-		"--codex-command",
+		"--runtime-command",
 		"--agent-mode",
 		"--dispatch-mode",
 		"--max-concurrent-agents",
@@ -439,7 +466,7 @@ func TestWorkflowInitAcceptsExtendedSetupFlagsAndAliases(t *testing.T) {
 		"workflow", "init", repoPath,
 		"--defaults",
 		"--workspace-root", "./tmp/workspaces",
-		"--codex-command", codexPath+" app-server",
+		"--runtime-command", codexPath+" app-server",
 		"--agent-mode", "server",
 		"--dispatch-mode", "pps",
 		"--max-concurrent-agents", "4",
@@ -490,14 +517,15 @@ func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
 	repoPath := t.TempDir()
 	missingCodex := filepath.Join(t.TempDir(), "codex")
 
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", missingCodex+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", missingCodex+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init should succeed with warnings: %d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	for _, want := range []string{
 		"Verification",
 		"Warnings:",
-		"codex_version:",
+		"runtime_default: warn",
+		"runtime_codex_appserver_binary: warn",
 		"Next steps",
 		"Review the warnings and remediation above",
 		"Re-run readiness checks:",
@@ -516,7 +544,7 @@ func TestWorkflowInitOmitsSandboxFields(t *testing.T) {
 	repoPath := t.TempDir()
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
 
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", codexPath+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init failed: %d stderr=%s stdout=%s", code, stderr, stdout)
 	}

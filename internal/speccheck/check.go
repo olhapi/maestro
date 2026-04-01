@@ -69,11 +69,11 @@ func Run(repoRoot string) Report {
 		checks["config_defaults"] = "ok"
 	}
 
-	if err := validateCodexSchemas(repoRoot); err != nil {
+	if err := validateRuntimeSchemas(repoRoot); err != nil {
 		ok = false
-		checks["codex_schema_json"] = "fail"
+		checks["runtime_schema_json"] = "fail"
 	} else {
-		checks["codex_schema_json"] = "ok"
+		checks["runtime_schema_json"] = "ok"
 	}
 
 	if err := validateSkillInstall(); err != nil {
@@ -178,7 +178,7 @@ func isGranularApprovalPolicy(value interface{}) bool {
 		granular["request_permissions"] == false
 }
 
-func validateCodexSchemas(repoRoot string) error {
+func validateRuntimeSchemas(repoRoot string) error {
 	schemaDir := codexschema.SchemaDir(repoRoot)
 	for _, rel := range codexschema.ConsumedSchemaFiles {
 		path := filepath.Join(schemaDir, rel)

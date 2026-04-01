@@ -209,7 +209,7 @@ func TestRunReportsSuccess(t *testing.T) {
 	if !report.OK {
 		t.Fatalf("expected success, got %+v", report.Checks)
 	}
-	for _, key := range []string{"workflow_load", "workflow_version", "workflow_prompt_render", "config_defaults", "codex_schema_json", "skill_install"} {
+	for _, key := range []string{"workflow_load", "workflow_version", "workflow_prompt_render", "config_defaults", "runtime_schema_json", "skill_install"} {
 		if report.Checks[key] != "ok" {
 			t.Fatalf("expected %s to be ok, got %+v", key, report.Checks)
 		}
@@ -478,8 +478,8 @@ func TestRunReportsCodexSchemaFailure(t *testing.T) {
 	if report.Checks["workflow_load"] != "ok" || report.Checks["workflow_version"] != "ok" || report.Checks["workflow_prompt_render"] != "ok" {
 		t.Fatalf("expected workflow checks to pass, got %+v", report.Checks)
 	}
-	if report.Checks["codex_schema_json"] != "fail" {
-		t.Fatalf("expected codex_schema_json to fail, got %+v", report.Checks)
+	if report.Checks["runtime_schema_json"] != "fail" {
+		t.Fatalf("expected runtime_schema_json to fail, got %+v", report.Checks)
 	}
 	if report.Checks["skill_install"] != "ok" {
 		t.Fatalf("expected skill_install to still pass, got %+v", report.Checks)
@@ -502,8 +502,8 @@ func TestRunReportsSkillInstallFailure(t *testing.T) {
 	if report.OK {
 		t.Fatalf("expected skill install failure to fail, got %+v", report.Checks)
 	}
-	if report.Checks["codex_schema_json"] != "ok" {
-		t.Fatalf("expected codex_schema_json to pass, got %+v", report.Checks)
+	if report.Checks["runtime_schema_json"] != "ok" {
+		t.Fatalf("expected runtime_schema_json to pass, got %+v", report.Checks)
 	}
 	if report.Checks["skill_install"] != "fail" {
 		t.Fatalf("expected skill_install to fail, got %+v", report.Checks)

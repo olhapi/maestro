@@ -233,7 +233,7 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 
 func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 	var workspaceRoot string
-	var codexCommand string
+	var runtimeCommand string
 	var agentMode string
 	var dispatchMode string
 	var maxConcurrentAgents int
@@ -266,7 +266,7 @@ func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 			interactive := !defaults && isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 			if err := config.InitWorkflow(repoPath, config.InitOptions{
 				WorkspaceRoot:            workspaceRoot,
-				CodexCommand:             codexCommand,
+				RuntimeCommand:           runtimeCommand,
 				AgentMode:                agentMode,
 				DispatchMode:             dispatchMode,
 				MaxConcurrentAgents:      maxConcurrentAgents,
@@ -301,7 +301,9 @@ func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "Workspace root to write into WORKFLOW.md")
-	cmd.Flags().StringVar(&codexCommand, "codex-command", "", "Codex command to write into WORKFLOW.md")
+	cmd.Flags().StringVar(&runtimeCommand, "runtime-command", "", "Runtime command to write into WORKFLOW.md")
+	cmd.Flags().StringVar(&runtimeCommand, "codex-command", "", "Deprecated alias for --runtime-command")
+	_ = cmd.Flags().MarkHidden("codex-command")
 	cmd.Flags().StringVar(&agentMode, "agent-mode", "", "Agent mode to write into WORKFLOW.md (app_server or stdio)")
 	cmd.Flags().StringVar(&dispatchMode, "dispatch-mode", "", "Dispatch mode to write into WORKFLOW.md (parallel or per_project_serial)")
 	cmd.Flags().IntVar(&maxConcurrentAgents, "max-concurrent-agents", 0, "Max concurrent agents to write into WORKFLOW.md")

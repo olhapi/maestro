@@ -168,7 +168,7 @@ func TestInitWorkflowWritesNeutralSchema(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := InitWorkflow(tmpDir, InitOptions{
 		WorkspaceRoot:            "./ws",
-		CodexCommand:             "codex app-server --model test",
+		RuntimeCommand:           "codex app-server --model test",
 		AgentMode:                AgentModeAppServer,
 		DispatchMode:             DispatchModePerProjectSerial,
 		MaxConcurrentAgents:      4,
@@ -226,7 +226,7 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 	)
 	assertContainsAll(t, stdout.String(),
 		"Workspace root",
-		"Codex command",
+		"Runtime command",
 		"Agent mode",
 		"Dispatch mode",
 	)
@@ -236,7 +236,7 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	tmpDir := t.TempDir()
 	content := buildWorkflowFile(InitOptions{
 		WorkspaceRoot:            "./ws",
-		CodexCommand:             "codex app-server --model test",
+		RuntimeCommand:           "codex app-server --model test",
 		AgentMode:                AgentModeAppServer,
 		DispatchMode:             DispatchModePerProjectSerial,
 		MaxConcurrentAgents:      5,
