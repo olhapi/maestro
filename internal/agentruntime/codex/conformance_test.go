@@ -399,15 +399,11 @@ func mustStartAppServerRuntime(t *testing.T, scenario fakeappserver.Scenario, mu
 		TurnTimeout:     3 * time.Second,
 		StallTimeout:    3 * time.Second,
 		Permissions: agentruntime.PermissionConfig{
-			Providers: map[agentruntime.Provider]agentruntime.ProviderPermissionConfig{
-				agentruntime.ProviderCodex: {
-					ThreadSandbox: "workspace-write",
-					TurnSandboxPolicy: map[string]interface{}{
-						"type": "workspaceWrite",
-					},
-					CollaborationMode: "default",
-				},
+			ThreadSandbox: "workspace-write",
+			TurnSandboxPolicy: map[string]interface{}{
+				"type": "workspaceWrite",
 			},
+			CollaborationMode: "default",
 		},
 	}
 	if mutate != nil {

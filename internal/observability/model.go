@@ -10,20 +10,20 @@ type TokenTotals struct {
 }
 
 type RunningEntry struct {
-	IssueID       string      `json:"issue_id"`
-	Identifier    string      `json:"identifier"`
-	WorkspacePath string      `json:"workspace_path,omitempty"`
-	State         string      `json:"state"`
-	Phase         string      `json:"phase,omitempty"`
-	Attempt       int         `json:"attempt,omitempty"`
-	SessionID     string      `json:"session_id,omitempty"`
-	ProcessID     int         `json:"process_id,omitempty"`
-	TurnCount     int         `json:"turn_count"`
-	LastEvent     string      `json:"last_event,omitempty"`
-	LastMessage   string      `json:"last_message,omitempty"`
-	StartedAt     time.Time   `json:"started_at"`
-	LastEventAt   *time.Time  `json:"last_event_at,omitempty"`
-	Tokens        TokenTotals `json:"tokens"`
+	IssueID           string      `json:"issue_id"`
+	Identifier        string      `json:"identifier"`
+	WorkspacePath     string      `json:"workspace_path,omitempty"`
+	State             string      `json:"state"`
+	Phase             string      `json:"phase,omitempty"`
+	Attempt           int         `json:"attempt,omitempty"`
+	SessionID         string      `json:"session_id,omitempty"`
+	CodexAppServerPID int         `json:"codex_app_server_pid,omitempty"`
+	TurnCount         int         `json:"turn_count"`
+	LastEvent         string      `json:"last_event,omitempty"`
+	LastMessage       string      `json:"last_message,omitempty"`
+	StartedAt         time.Time   `json:"started_at"`
+	LastEventAt       *time.Time  `json:"last_event_at,omitempty"`
+	Tokens            TokenTotals `json:"tokens"`
 }
 
 type RetryEntry struct {

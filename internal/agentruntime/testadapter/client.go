@@ -116,8 +116,8 @@ func (c *Client) RunTurn(ctx context.Context, request agentruntime.TurnRequest, 
 func (c *Client) UpdatePermissions(config agentruntime.PermissionConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.spec.Permissions = config.Clone()
-	c.permissionUpdates = append(c.permissionUpdates, config.Clone())
+	c.spec.Permissions = clonePermissionConfig(config)
+	c.permissionUpdates = append(c.permissionUpdates, clonePermissionConfig(config))
 }
 
 func (c *Client) RespondToInteraction(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {
@@ -146,7 +146,7 @@ func (c *Client) PermissionUpdates() []agentruntime.PermissionConfig {
 	defer c.mu.Unlock()
 	out := make([]agentruntime.PermissionConfig, 0, len(c.permissionUpdates))
 	for _, config := range c.permissionUpdates {
-		out = append(out, config.Clone())
+		out = append(out, clonePermissionConfig(config))
 	}
 	return out
 }
@@ -218,6 +218,16 @@ func runtimeMetadata() map[string]interface{} {
 	return map[string]interface{}{
 		"provider":  ProviderName,
 		"transport": TransportName,
+	}
+}
+
+func clonePermissionConfig(config agentruntime.PermissionConfig) agentruntime.PermissionConfig {
+	return agentruntime.PermissionConfig{
+		ApprovalPolicy:    cloneJSONValue(config.ApprovalPolicy),
+		ThreadSandbox:     config.ThreadSandbox,
+		TurnSandboxPolicy: cloneJSONMap(config.TurnSandboxPolicy),
+		CollaborationMode: config.CollaborationMode,
+		Metadata:          cloneJSONMap(config.Metadata),
 	}
 }
 

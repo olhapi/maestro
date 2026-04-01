@@ -34,12 +34,12 @@ func (c *permissionConfigClient) Close() error { return nil }
 
 func TestApplyPermissionConfigHonorsClientCapabilities(t *testing.T) {
 	t.Run("nil client", func(t *testing.T) {
-		ApplyPermissionConfig(nil, PermissionConfig{}.WithProvider(ProviderCodex, ProviderPermissionConfig{ThreadSandbox: "workspace-write"}))
+		ApplyPermissionConfig(nil, PermissionConfig{ThreadSandbox: "workspace-write"})
 	})
 
 	t.Run("unsupported updates", func(t *testing.T) {
 		client := &permissionConfigClient{caps: Capabilities{}}
-		ApplyPermissionConfig(client, PermissionConfig{}.WithProvider(ProviderCodex, ProviderPermissionConfig{ThreadSandbox: "workspace-write"}))
+		ApplyPermissionConfig(client, PermissionConfig{ThreadSandbox: "workspace-write"})
 		if len(client.updates) != 0 {
 			t.Fatalf("expected no permission updates, got %+v", client.updates)
 		}
@@ -47,73 +47,17 @@ func TestApplyPermissionConfigHonorsClientCapabilities(t *testing.T) {
 
 	t.Run("supported updates", func(t *testing.T) {
 		client := &permissionConfigClient{caps: Capabilities{RuntimePermissionUpdates: true}}
-		want := PermissionConfig{}.WithProvider(ProviderCodex, ProviderPermissionConfig{
+		want := PermissionConfig{
 			ThreadSandbox: "danger-full-access",
-			TurnSandboxPolicy: map[string]interface{}{
-				"type": "dangerFullAccess",
+			Metadata: map[string]interface{}{
+				"source": "test",
 			},
-		})
-		want.Metadata = map[string]interface{}{
-			"source": "test",
 		}
 		ApplyPermissionConfig(client, want)
-		if len(client.updates) != 1 || client.updates[0].ForProvider(ProviderCodex).ThreadSandbox != want.ForProvider(ProviderCodex).ThreadSandbox {
+		if len(client.updates) != 1 || client.updates[0].ThreadSandbox != want.ThreadSandbox {
 			t.Fatalf("expected permission update to be forwarded, got %+v", client.updates)
 		}
 	})
-}
-
-func TestPermissionConfigCloneAndProviderLookup(t *testing.T) {
-	config := PermissionConfig{
-		Providers: map[Provider]ProviderPermissionConfig{
-			ProviderCodex: {
-				ApprovalPolicy: map[string]interface{}{
-					"mode": "never",
-				},
-				ThreadSandbox: "workspace-write",
-				TurnSandboxPolicy: map[string]interface{}{
-					"type": "workspaceWrite",
-				},
-			},
-			ProviderClaude: {
-				ThreadSandbox: "danger-full-access",
-			},
-		},
-		Metadata: map[string]interface{}{
-			"source": "test",
-		},
-	}
-
-	clone := config.Clone()
-	clonedProvider := clone.Providers[ProviderCodex]
-	clonedProvider.TurnSandboxPolicy["type"] = "dangerFullAccess"
-	clone.Providers[ProviderCodex] = clonedProvider
-	clone.Metadata["source"] = "mutated"
-
-	if got := config.ForProvider(ProviderCodex); got.ThreadSandbox != "workspace-write" || got.TurnSandboxPolicy["type"] != "workspaceWrite" {
-		t.Fatalf("expected codex provider config to remain isolated, got %+v", got)
-	}
-	if got := config.ForProvider(ProviderClaude); got.ThreadSandbox != "danger-full-access" {
-		t.Fatalf("expected claude provider config to round-trip, got %+v", got)
-	}
-	if config.Metadata["source"] != "test" {
-		t.Fatalf("expected metadata clone to remain isolated, got %+v", config.Metadata)
-	}
-
-	payload, err := json.Marshal(config)
-	if err != nil {
-		t.Fatalf("marshal permission config: %v", err)
-	}
-	var decoded map[string]interface{}
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		t.Fatalf("unmarshal permission config: %v", err)
-	}
-	if _, ok := decoded["providers"].(map[string]interface{}); !ok {
-		t.Fatalf("expected provider-specific permissions to be nested, got %#v", decoded)
-	}
-	if _, ok := decoded["thread_sandbox"]; ok {
-		t.Fatalf("expected thread sandbox to be nested, got %#v", decoded)
-	}
 }
 
 func TestCapabilityHelpers(t *testing.T) {
@@ -209,9 +153,9 @@ func TestSessionCloneSummaryAndResetHelpers(t *testing.T) {
 func TestSessionFromAnyAndSessionsFromMap(t *testing.T) {
 	timestamp := time.Date(2026, 3, 29, 12, 5, 0, 0, time.UTC)
 	session, ok := SessionFromAny(&Session{
-		IssueID:         "iss-2",
+		IssueID:       "iss-2",
 		IssueIdentifier: "ISS-2",
-		Metadata:        map[string]interface{}{"provider": "codex"},
+		Metadata:      map[string]interface{}{"provider": "codex"},
 	})
 	if !ok || session.IssueID != "iss-2" {
 		t.Fatalf("expected SessionFromAny pointer path, got %+v ok=%v", session, ok)
@@ -220,10 +164,10 @@ func TestSessionFromAnyAndSessionsFromMap(t *testing.T) {
 	sessionMap := map[string]interface{}{
 		"issue_id":         "iss-3",
 		"issue_identifier": "ISS-3",
-		"session_id":       "thread-3-turn-3",
-		"thread_id":        "thread-3",
-		"turn_id":          "turn-3",
-		"process_id":       321,
+		"session_id":      "thread-3-turn-3",
+		"thread_id":       "thread-3",
+		"turn_id":         "turn-3",
+		"codex_app_server_pid": 321,
 		"last_event":       "turn.completed",
 		"last_timestamp":   timestamp.Format(time.RFC3339),
 		"last_message":     "done",
@@ -288,21 +232,21 @@ func TestSessionParsingHelpers(t *testing.T) {
 	}
 
 	event, ok := eventFromAny(map[string]interface{}{
-		"type":          "item.completed",
-		"thread_id":     "thread-1",
-		"turn_id":       "turn-1",
-		"item_id":       "item-1",
-		"item_type":     "agentMessage",
-		"item_phase":    "final_answer",
-		"stream":        "stdout",
-		"command":       "echo done",
-		"cwd":           "/tmp",
-		"chunk":         "done",
-		"exit_code":     0,
-		"input_tokens":  3,
+		"type":         "item.completed",
+		"thread_id":    "thread-1",
+		"turn_id":      "turn-1",
+		"item_id":      "item-1",
+		"item_type":    "agentMessage",
+		"item_phase":   "final_answer",
+		"stream":       "stdout",
+		"command":      "echo done",
+		"cwd":          "/tmp",
+		"chunk":        "done",
+		"exit_code":    0,
+		"input_tokens": 3,
 		"output_tokens": 4,
 		"total_tokens":  7,
-		"message":       " done ",
+		"message":      " done ",
 	})
 	if !ok || event.Message != "done" || event.ExitCode == nil || *event.ExitCode != 0 {
 		t.Fatalf("unexpected event parsing result: %+v ok=%v", event, ok)

@@ -50,7 +50,6 @@ type appServerClient struct {
 
 func startAppServer(ctx context.Context, spec agentruntime.RuntimeSpec, observers agentruntime.Observers) (agentruntime.Client, error) {
 	client := &appServerClient{}
-	permissions := spec.Permissions.ForProvider(agentruntime.ProviderCodex)
 	cfg := appserver.ClientConfig{
 		Executable:               "sh",
 		Args:                     []string{"-lc", spec.Command},
@@ -61,10 +60,10 @@ func startAppServer(ctx context.Context, spec agentruntime.RuntimeSpec, observer
 		IssueIdentifier:          spec.IssueIdentifier,
 		CodexCommand:             spec.Command,
 		ExpectedVersion:          spec.ExpectedVersion,
-		ApprovalPolicy:           permissions.ApprovalPolicy,
-		InitialCollaborationMode: permissions.CollaborationMode,
-		ThreadSandbox:            permissions.ThreadSandbox,
-		TurnSandboxPolicy:        permissions.TurnSandboxPolicy,
+		ApprovalPolicy:           spec.Permissions.ApprovalPolicy,
+		InitialCollaborationMode: spec.Permissions.CollaborationMode,
+		ThreadSandbox:            spec.Permissions.ThreadSandbox,
+		TurnSandboxPolicy:        spec.Permissions.TurnSandboxPolicy,
 		ReadTimeout:              spec.ReadTimeout,
 		TurnTimeout:              spec.TurnTimeout,
 		StallTimeout:             spec.StallTimeout,
@@ -124,8 +123,7 @@ func (c *appServerClient) RunTurn(ctx context.Context, request agentruntime.Turn
 }
 
 func (c *appServerClient) UpdatePermissions(config agentruntime.PermissionConfig) {
-	permissions := config.ForProvider(agentruntime.ProviderCodex)
-	c.delegate.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
+	c.delegate.UpdatePermissionConfig(config.ApprovalPolicy, config.ThreadSandbox, config.TurnSandboxPolicy)
 }
 
 func (c *appServerClient) RespondToInteraction(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {

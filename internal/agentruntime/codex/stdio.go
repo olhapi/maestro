@@ -91,7 +91,7 @@ func (c *stdioClient) RunTurn(ctx context.Context, request agentruntime.TurnRequ
 func (c *stdioClient) UpdatePermissions(config agentruntime.PermissionConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.spec.Permissions = config.Clone()
+	c.spec.Permissions = config
 }
 
 func (c *stdioClient) RespondToInteraction(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {

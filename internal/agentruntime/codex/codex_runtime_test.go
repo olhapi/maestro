@@ -125,13 +125,13 @@ func TestStdioClientRunTurnAndLifecycle(t *testing.T) {
 		t.Fatalf("unexpected activity events: %+v", events)
 	}
 
-	stdio.UpdatePermissions(agentruntime.PermissionConfig{}.WithProvider(agentruntime.ProviderCodex, agentruntime.ProviderPermissionConfig{
+	stdio.UpdatePermissions(agentruntime.PermissionConfig{
 		ApprovalPolicy:    "never",
 		ThreadSandbox:     "workspace-write",
 		TurnSandboxPolicy: map[string]interface{}{"type": "dangerFullAccess"},
-	}))
-	if got := stdio.spec.Permissions.ForProvider(agentruntime.ProviderCodex); got.ApprovalPolicy != "never" || got.ThreadSandbox != "workspace-write" {
-		t.Fatalf("expected permissions update to be applied, got %+v", got)
+	})
+	if stdio.spec.Permissions.ApprovalPolicy != "never" || stdio.spec.Permissions.ThreadSandbox != "workspace-write" {
+		t.Fatalf("expected permissions update to be applied, got %+v", stdio.spec.Permissions)
 	}
 
 	if err := client.RespondToInteraction(context.Background(), "interaction-1", agentruntime.PendingInteractionResponse{}); !errors.Is(err, agentruntime.ErrUnsupportedCapability) {
@@ -262,13 +262,9 @@ func TestStartAppServerUsesInheritedEnvironmentAndNilReceiverHelpers(t *testing.
 		IssueID:         "issue-1",
 		IssueIdentifier: "ISS-1",
 		Permissions: agentruntime.PermissionConfig{
-			Providers: map[agentruntime.Provider]agentruntime.ProviderPermissionConfig{
-				agentruntime.ProviderCodex: {
-					ThreadSandbox:     "workspace-write",
-					TurnSandboxPolicy: map[string]interface{}{"type": "workspaceWrite"},
-					CollaborationMode: "default",
-				},
-			},
+			ThreadSandbox:     "workspace-write",
+			TurnSandboxPolicy: map[string]interface{}{"type": "workspaceWrite"},
+			CollaborationMode: "default",
 		},
 	}, agentruntime.Observers{})
 	if err != nil {

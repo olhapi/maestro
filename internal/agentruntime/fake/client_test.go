@@ -19,11 +19,7 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 		IssueIdentifier: "MAES-321",
 		Env:             []string{"FOO=bar"},
 		Permissions: agentruntime.PermissionConfig{
-			Providers: map[agentruntime.Provider]agentruntime.ProviderPermissionConfig{
-				agentruntime.ProviderCodex: {
-					ThreadSandbox: "workspace-write",
-				},
-			},
+			ThreadSandbox: "workspace-write",
 			Metadata: map[string]interface{}{
 				"source": "test",
 			},
@@ -117,11 +113,7 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 	}
 
 	agentruntime.ApplyPermissionConfig(clientIface, agentruntime.PermissionConfig{
-		Providers: map[agentruntime.Provider]agentruntime.ProviderPermissionConfig{
-			agentruntime.ProviderCodex: {
-				ThreadSandbox: "danger-full-access",
-			},
-		},
+		ThreadSandbox: "danger-full-access",
 		Metadata: map[string]interface{}{
 			"source": "updated",
 		},
@@ -137,9 +129,6 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 	}
 
 	request.Env[0] = "FOO=changed"
-	requestPermissions := request.Permissions.Providers[agentruntime.ProviderCodex]
-	requestPermissions.ThreadSandbox = "mutated"
-	request.Permissions.Providers[agentruntime.ProviderCodex] = requestPermissions
 	request.Permissions.Metadata["source"] = "mutated"
 	request.DynamicTools[0]["name"] = "tool-mutated"
 	request.Metadata["request"] = "mutated"
@@ -155,9 +144,6 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 	if captured.Permissions.Metadata["source"] != "test" {
 		t.Fatalf("expected starter to clone permissions, got %#v", captured.Permissions.Metadata)
 	}
-	if got := captured.Permissions.ForProvider(agentruntime.ProviderCodex); got.ThreadSandbox != "workspace-write" {
-		t.Fatalf("expected starter to clone provider-specific permissions, got %+v", got)
-	}
 	if captured.DynamicTools[0]["name"] != "tool-1" {
 		t.Fatalf("expected starter to clone dynamic tools, got %#v", captured.DynamicTools)
 	}
@@ -170,7 +156,7 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 		t.Fatalf("expected one fake client, got %d", len(clients))
 	}
 	client := clients[0]
-	if len(client.PermissionUpdates()) != 1 || client.PermissionUpdates()[0].ForProvider(agentruntime.ProviderCodex).ThreadSandbox != "danger-full-access" {
+	if len(client.PermissionUpdates()) != 1 || client.PermissionUpdates()[0].ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected permission updates to be recorded, got %+v", client.PermissionUpdates())
 	}
 	if len(client.Responses()) != 1 || client.Responses()[0].InteractionID != "interaction-1" {

@@ -1,7 +1,6 @@
 package agentruntime
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 )
@@ -70,25 +69,25 @@ func TestSessionFromAnyParsesStoredSessionAndClonesMetadata(t *testing.T) {
 		},
 	}
 	raw := map[string]interface{}{
-		"issue_id":         "iss_456",
-		"issue_identifier": "ISS-456",
-		"session_id":       "thread-2-turn-2",
-		"thread_id":        "thread-2",
-		"turn_id":          "turn-2",
-		"process_id":       777,
-		"last_event":       "turn.completed",
-		"last_timestamp":   timestamp.Format(time.RFC3339),
-		"last_message":     "complete",
-		"input_tokens":     7,
-		"output_tokens":    8,
-		"total_tokens":     15,
-		"events_processed": 3,
-		"turns_started":    1,
-		"turns_completed":  1,
-		"terminal":         true,
-		"terminal_reason":  "turn.completed",
-		"history":          []interface{}{map[string]interface{}{"type": "turn.started", "thread_id": "thread-2", "turn_id": "turn-2"}},
-		"metadata":         rawMetadata,
+		"issue_id":             "iss_456",
+		"issue_identifier":     "ISS-456",
+		"session_id":           "thread-2-turn-2",
+		"thread_id":            "thread-2",
+		"turn_id":              "turn-2",
+		"codex_app_server_pid": 777,
+		"last_event":           "turn.completed",
+		"last_timestamp":       timestamp.Format(time.RFC3339),
+		"last_message":         "complete",
+		"input_tokens":         7,
+		"output_tokens":        8,
+		"total_tokens":         15,
+		"events_processed":     3,
+		"turns_started":        1,
+		"turns_completed":      1,
+		"terminal":             true,
+		"terminal_reason":      "turn.completed",
+		"history":              []interface{}{map[string]interface{}{"type": "turn.started", "thread_id": "thread-2", "turn_id": "turn-2"}},
+		"metadata":             rawMetadata,
 	}
 
 	session, ok := SessionFromAny(raw)
@@ -112,34 +111,5 @@ func TestSessionFromAnyParsesStoredSessionAndClonesMetadata(t *testing.T) {
 	rawNested["transport"] = "mutated"
 	if session.Metadata["nested"].(map[string]interface{})["transport"] != "app_server" {
 		t.Fatalf("expected metadata clone to be isolated from source mutation, got %+v", session.Metadata)
-	}
-}
-
-func TestSessionUsesNeutralProcessIDJSONKey(t *testing.T) {
-	data, err := json.Marshal(Session{ProcessID: 777})
-	if err != nil {
-		t.Fatalf("marshal session: %v", err)
-	}
-	var decoded map[string]interface{}
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal session: %v", err)
-	}
-	if _, ok := decoded["process_id"]; !ok {
-		t.Fatalf("expected neutral process_id key, got %#v", decoded)
-	}
-	if _, ok := decoded["codex_app_server_pid"]; ok {
-		t.Fatalf("expected codex-specific process key to be absent, got %#v", decoded)
-	}
-}
-
-func TestSessionFromAnySupportsLegacyCodexProcessIDKey(t *testing.T) {
-	session, ok := SessionFromAny(map[string]interface{}{
-		"codex_app_server_pid": 4242,
-	})
-	if !ok {
-		t.Fatal("expected legacy session payload to parse")
-	}
-	if session.ProcessID != 4242 {
-		t.Fatalf("expected legacy codex key to populate process id, got %+v", session)
 	}
 }

@@ -25,16 +25,12 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 		IssueIdentifier: "MAES-123",
 		Env:             []string{"FOO=bar"},
 		Permissions: agentruntime.PermissionConfig{
-			Providers: map[agentruntime.Provider]agentruntime.ProviderPermissionConfig{
-				agentruntime.ProviderCodex: {
-					ApprovalPolicy: map[string]interface{}{"mode": "never"},
-					ThreadSandbox:  "workspace-write",
-					TurnSandboxPolicy: map[string]interface{}{
-						"type": "workspaceWrite",
-					},
-					CollaborationMode: "plan",
-				},
+			ApprovalPolicy: map[string]interface{}{"mode": "never"},
+			ThreadSandbox:  "workspace-write",
+			TurnSandboxPolicy: map[string]interface{}{
+				"type": "workspaceWrite",
 			},
+			CollaborationMode: "plan",
 			Metadata: map[string]interface{}{
 				"source": "test",
 			},
@@ -80,8 +76,8 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	if len(spec.Env) != 1 || spec.Env[0] != "FOO=bar" {
 		t.Fatalf("expected env to be copied, got %#v", spec.Env)
 	}
-	if got := spec.Permissions.ForProvider(agentruntime.ProviderCodex); got.ThreadSandbox != "workspace-write" || got.CollaborationMode != "plan" {
-		t.Fatalf("expected permissions to be copied, got %+v", got)
+	if spec.Permissions.ThreadSandbox != "workspace-write" || spec.Permissions.CollaborationMode != "plan" {
+		t.Fatalf("expected permissions to be copied, got %+v", spec.Permissions)
 	}
 	if spec.Permissions.Metadata["source"] != "test" {
 		t.Fatalf("expected permission metadata to be copied, got %+v", spec.Permissions)
@@ -94,9 +90,7 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	}
 
 	request.Env[0] = "FOO=changed"
-	requestPermissions := request.Permissions.Providers[agentruntime.ProviderCodex]
-	requestPermissions.TurnSandboxPolicy["type"] = "dangerFullAccess"
-	request.Permissions.Providers[agentruntime.ProviderCodex] = requestPermissions
+	request.Permissions.TurnSandboxPolicy["type"] = "dangerFullAccess"
 	request.Permissions.Metadata["source"] = "mutated"
 	request.DynamicTools[0]["name"] = "tool-mutated"
 	request.Metadata["provider_hint"] = "mutated"
@@ -104,8 +98,8 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	if spec.Env[0] != "FOO=bar" {
 		t.Fatalf("expected env copy to be isolated, got %#v", spec.Env)
 	}
-	if got := spec.Permissions.ForProvider(agentruntime.ProviderCodex); got.TurnSandboxPolicy["type"] != "workspaceWrite" {
-		t.Fatalf("expected sandbox policy clone to be isolated, got %#v", got.TurnSandboxPolicy)
+	if spec.Permissions.TurnSandboxPolicy["type"] != "workspaceWrite" {
+		t.Fatalf("expected sandbox policy clone to be isolated, got %#v", spec.Permissions.TurnSandboxPolicy)
 	}
 	if spec.Permissions.Metadata["source"] != "test" {
 		t.Fatalf("expected permission metadata clone to be isolated, got %#v", spec.Permissions.Metadata)

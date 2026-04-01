@@ -32,11 +32,11 @@ func TestRuntimeContract(t *testing.T) {
 			if len(updates) != 1 {
 				t.Fatalf("expected one permission update, got %+v", updates)
 			}
-			if got := updates[0].ForProvider(agentruntime.ProviderCodex); got.ThreadSandbox != "danger-full-access" {
-				t.Fatalf("expected updated thread sandbox, got %+v", got)
+			if updates[0].ThreadSandbox != "danger-full-access" {
+				t.Fatalf("expected updated thread sandbox, got %+v", updates[0])
 			}
-			if got := updates[0].ForProvider(agentruntime.ProviderCodex); got.TurnSandboxPolicy["type"] != "dangerFullAccess" {
-				t.Fatalf("expected updated turn sandbox policy, got %+v", got.TurnSandboxPolicy)
+			if updates[0].TurnSandboxPolicy["type"] != "dangerFullAccess" {
+				t.Fatalf("expected updated turn sandbox policy, got %+v", updates[0].TurnSandboxPolicy)
 			}
 		},
 	})

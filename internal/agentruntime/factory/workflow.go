@@ -63,12 +63,22 @@ func RuntimeSpecFromWorkflow(request WorkflowStartRequest) (agentruntime.Runtime
 		ReadTimeout:     time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
 		TurnTimeout:     time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
 		StallTimeout:    time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
-		Permissions:     request.Permissions.Clone(),
+		Permissions:     clonePermissionConfig(request.Permissions),
 		DynamicTools:    cloneToolSpecs(request.DynamicTools),
 		ToolExecutor:    request.ToolExecutor,
 		ResumeToken:     strings.TrimSpace(request.ResumeToken),
 		Metadata:        cloneJSONMap(request.Metadata),
 	}, nil
+}
+
+func clonePermissionConfig(config agentruntime.PermissionConfig) agentruntime.PermissionConfig {
+	return agentruntime.PermissionConfig{
+		ApprovalPolicy:    cloneJSONValue(config.ApprovalPolicy),
+		ThreadSandbox:     config.ThreadSandbox,
+		TurnSandboxPolicy: cloneJSONMap(config.TurnSandboxPolicy),
+		CollaborationMode: config.CollaborationMode,
+		Metadata:          cloneJSONMap(config.Metadata),
+	}
 }
 
 func cloneJSONValue(value interface{}) interface{} {

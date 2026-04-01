@@ -33,7 +33,7 @@ type Session struct {
 	SessionID       string                 `json:"session_id"`
 	ThreadID        string                 `json:"thread_id"`
 	TurnID          string                 `json:"turn_id"`
-	ProcessID       int                    `json:"process_id,omitempty"`
+	ProcessID       int                    `json:"codex_app_server_pid,omitempty"`
 	LastEvent       string                 `json:"last_event"`
 	LastTimestamp   time.Time              `json:"last_timestamp"`
 	LastMessage     string                 `json:"last_message,omitempty"`
@@ -200,10 +200,6 @@ func sessionFromMap(raw map[string]interface{}) (Session, bool) {
 	}
 	if value, ok := stringValue(raw["turn_id"]); ok {
 		session.TurnID = value
-		parsed = true
-	}
-	if value, ok := intValue(raw["process_id"]); ok {
-		session.ProcessID = value
 		parsed = true
 	}
 	if value, ok := intValue(raw["codex_app_server_pid"]); ok {

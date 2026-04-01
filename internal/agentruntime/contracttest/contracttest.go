@@ -103,17 +103,16 @@ func RunSharedRuntimeContractTests(t *testing.T, contract Contract) {
 			if err := result.Client.RunTurn(context.Background(), firstTurnRequest(), nil); err != nil {
 				t.Fatalf("RunTurn first: %v", err)
 			}
-			update := agentruntime.PermissionConfig{}.WithProvider(agentruntime.ProviderCodex, agentruntime.ProviderPermissionConfig{
+			agentruntime.ApplyPermissionConfig(result.Client, agentruntime.PermissionConfig{
 				ThreadSandbox: "danger-full-access",
 				TurnSandboxPolicy: map[string]interface{}{
 					"type":          "dangerFullAccess",
 					"networkAccess": true,
 				},
+				Metadata: map[string]interface{}{
+					"source": "updated",
+				},
 			})
-			update.Metadata = map[string]interface{}{
-				"source": "updated",
-			}
-			agentruntime.ApplyPermissionConfig(result.Client, update)
 			if err := result.Client.RunTurn(context.Background(), secondTurnRequest(), nil); err != nil {
 				t.Fatalf("RunTurn second: %v", err)
 			}
