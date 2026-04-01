@@ -2807,7 +2807,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		}
 		if session != nil {
 			running.SessionID = session.SessionID
-			running.CodexAppServerPID = session.ProcessID
+			running.ProcessID = session.ProcessID
 			running.TurnCount = session.TurnsStarted
 			running.LastEvent = session.LastEvent
 			running.LastMessage = session.LastMessage

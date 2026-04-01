@@ -1504,10 +1504,10 @@ func TestOrchestratorCoverageRecurringOccupancyAndSnapshotBranches(t *testing.T)
 			fallbackRunning = entry
 		}
 	}
-	if liveRunning == nil || liveRunning.SessionID != "session-running" || liveRunning.CodexAppServerPID != 4321 {
+	if liveRunning == nil || liveRunning.SessionID != "session-running" || liveRunning.ProcessID != 4321 {
 		t.Fatalf("expected live session to be reflected in snapshot, got %#v", liveRunning)
 	}
-	if fallbackRunning == nil || fallbackRunning.SessionID != "" || fallbackRunning.CodexAppServerPID != 0 {
+	if fallbackRunning == nil || fallbackRunning.SessionID != "" || fallbackRunning.ProcessID != 0 {
 		t.Fatalf("expected missing live session to use fallback snapshot data, got %#v", fallbackRunning)
 	}
 }

@@ -11,7 +11,8 @@ var ErrUnsupportedCapability = errors.New("unsupported_runtime_capability")
 type Provider string
 
 const (
-	ProviderCodex Provider = "codex"
+	ProviderCodex  Provider = "codex"
+	ProviderClaude Provider = "claude"
 )
 
 type Transport string
@@ -30,12 +31,53 @@ type Capabilities struct {
 	RuntimePermissionUpdates bool
 }
 
-type PermissionConfig struct {
+type ProviderPermissionConfig struct {
 	ApprovalPolicy    interface{}            `json:"approval_policy,omitempty"`
 	ThreadSandbox     string                 `json:"thread_sandbox,omitempty"`
 	TurnSandboxPolicy map[string]interface{} `json:"turn_sandbox_policy,omitempty"`
 	CollaborationMode string                 `json:"collaboration_mode,omitempty"`
-	Metadata          map[string]interface{} `json:"metadata,omitempty"`
+}
+
+func (c ProviderPermissionConfig) Clone() ProviderPermissionConfig {
+	cloned := c
+	cloned.ApprovalPolicy = cloneJSONValue(c.ApprovalPolicy)
+	cloned.TurnSandboxPolicy = cloneJSONMap(c.TurnSandboxPolicy)
+	return cloned
+}
+
+type PermissionConfig struct {
+	Providers map[Provider]ProviderPermissionConfig `json:"providers,omitempty"`
+	Metadata  map[string]interface{}                `json:"metadata,omitempty"`
+}
+
+func (c PermissionConfig) Clone() PermissionConfig {
+	cloned := PermissionConfig{
+		Metadata: cloneJSONMap(c.Metadata),
+	}
+	if len(c.Providers) == 0 {
+		return cloned
+	}
+	cloned.Providers = make(map[Provider]ProviderPermissionConfig, len(c.Providers))
+	for provider, config := range c.Providers {
+		cloned.Providers[provider] = config.Clone()
+	}
+	return cloned
+}
+
+func (c PermissionConfig) ForProvider(provider Provider) ProviderPermissionConfig {
+	if len(c.Providers) == 0 {
+		return ProviderPermissionConfig{}
+	}
+	return c.Providers[provider].Clone()
+}
+
+func (c PermissionConfig) WithProvider(provider Provider, config ProviderPermissionConfig) PermissionConfig {
+	cloned := c.Clone()
+	if cloned.Providers == nil {
+		cloned.Providers = make(map[Provider]ProviderPermissionConfig, 1)
+	}
+	cloned.Providers[provider] = config.Clone()
+	return cloned
 }
 
 type RuntimeSpec struct {

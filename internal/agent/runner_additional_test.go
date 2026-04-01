@@ -251,7 +251,8 @@ func TestRunnerPureHelpersBranches(t *testing.T) {
 		TurnSandboxPolicy:        map[string]interface{}{"type": "sandbox"},
 		InitialCollaborationMode: config.InitialCollaborationModePlan,
 	})
-	if perm.CollaborationMode != config.InitialCollaborationModePlan || perm.ThreadSandbox != "workspace-write" {
+	gotPerm := perm.ForProvider(agentruntime.ProviderCodex)
+	if gotPerm.CollaborationMode != config.InitialCollaborationModePlan || gotPerm.ThreadSandbox != "workspace-write" {
 		t.Fatalf("unexpected runtime permission config: %#v", perm)
 	}
 

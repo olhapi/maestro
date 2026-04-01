@@ -292,7 +292,7 @@ export interface Session {
   session_id: string;
   thread_id: string;
   turn_id: string;
-  codex_app_server_pid?: number;
+  process_id?: number;
   last_event: string;
   last_timestamp: string;
   last_message?: string;
