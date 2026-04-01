@@ -678,6 +678,140 @@ func TestIssuePlanRevisionReopensClosedSession(t *testing.T) {
 	}
 }
 
+func TestLegacyPlanSessionReopenAndPermissionCascade(t *testing.T) {
+	store := setupTestStore(t)
+
+	var counts IssueStateCounts
+	counts.AddCount(StateBacklog, 0)
+	if counts.Total() != 0 || counts.Active() != 0 {
+		t.Fatalf("expected zero-count state bucket helper to stay empty, got %#v", counts)
+	}
+
+	if planning, err := store.GetIssuePlanning(nil); err != nil || planning != nil {
+		t.Fatalf("expected nil planning lookup to return nil, got planning=%#v err=%v", planning, err)
+	}
+	if planning := sessionPlanningRecord(nil, nil, nil); planning != nil {
+		t.Fatalf("expected nil session planning record to return nil, got %#v", planning)
+	}
+
+	project, err := store.CreateProject("Legacy plan cascade", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	primaryIssue, err := store.CreateIssue(project.ID, "", "Legacy plan issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue primary: %v", err)
+	}
+	siblingIssue, err := store.CreateIssue(project.ID, "", "Sibling issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue sibling: %v", err)
+	}
+
+	legacyOpenedAt := time.Date(2026, 3, 19, 8, 15, 0, 0, time.UTC)
+	legacyClosedAt := legacyOpenedAt.Add(12 * time.Minute)
+	legacyRevisionRequestedAt := legacyOpenedAt.Add(7 * time.Minute)
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatalf("Begin legacy session tx: %v", err)
+	}
+	legacySession := issuePlanSessionRecord{
+		ID:                         generateID("pls"),
+		IssueID:                    primaryIssue.ID,
+		Status:                     IssuePlanningStatusRevisionRequested,
+		CurrentVersionNumber:       0,
+		PendingRevisionNote:        "Legacy revision note",
+		PendingRevisionRequestedAt: &legacyRevisionRequestedAt,
+		OpenedAt:                   legacyOpenedAt,
+		UpdatedAt:                  legacyClosedAt,
+		ClosedAt:                   &legacyClosedAt,
+		ClosedReason:               "legacy closed",
+	}
+	if err := store.insertIssuePlanSessionTx(tx, legacySession); err != nil {
+		t.Fatalf("insertIssuePlanSessionTx legacy: %v", err)
+	}
+	if err := store.insertIssuePlanVersionTx(tx, IssuePlanVersion{
+		ID:            generateID("plv"),
+		SessionID:     legacySession.ID,
+		VersionNumber: 0,
+		Markdown:      "Legacy draft rollout",
+		CreatedAt:     legacyOpenedAt,
+	}); err != nil {
+		t.Fatalf("insertIssuePlanVersionTx legacy: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit legacy session tx: %v", err)
+	}
+
+	planning, err := store.GetIssuePlanning(primaryIssue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning legacy: %v", err)
+	}
+	if planning == nil || planning.SessionID != legacySession.ID {
+		t.Fatalf("expected legacy planning session, got %#v", planning)
+	}
+	if planning.CurrentVersionNumber != 0 || planning.CurrentVersion == nil {
+		t.Fatalf("expected derived current version metadata, got %#v", planning)
+	}
+	if planning.CurrentVersion.Markdown != "Legacy draft rollout" || planning.ClosedAt == nil || planning.ClosedReason != "legacy closed" {
+		t.Fatalf("unexpected legacy planning projection: %#v", planning)
+	}
+	if planning.PendingRevisionNote != "Legacy revision note" || planning.PendingRevisionRequestedAt == nil || !planning.PendingRevisionRequestedAt.Equal(legacyRevisionRequestedAt) {
+		t.Fatalf("unexpected legacy revision metadata: %#v", planning)
+	}
+
+	reopenedAt := legacyClosedAt.Add(5 * time.Minute)
+	if err := store.SetIssuePendingPlanApprovalWithContext(primaryIssue, "Publish the legacy rollout", reopenedAt, 4, "thread-legacy", "turn-legacy"); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext legacy reopen: %v", err)
+	}
+
+	reopenedPlanning, err := store.GetIssuePlanning(primaryIssue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning reopened: %v", err)
+	}
+	if reopenedPlanning == nil || reopenedPlanning.SessionID != legacySession.ID {
+		t.Fatalf("expected reopened planning session to reuse the legacy session id, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.CurrentVersionNumber != 1 || reopenedPlanning.CurrentVersion == nil {
+		t.Fatalf("expected reopened planning to keep a single version, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.CurrentVersion.Markdown != "Publish the legacy rollout" || reopenedPlanning.CurrentVersion.RevisionNote != "Legacy revision note" {
+		t.Fatalf("unexpected reopened plan projection: %#v", reopenedPlanning.CurrentVersion)
+	}
+	if reopenedPlanning.ClosedAt != nil || reopenedPlanning.PendingRevisionNote != "" {
+		t.Fatalf("expected reopened session to be open with no pending revision, got %#v", reopenedPlanning)
+	}
+
+	if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile full-access: %v", err)
+	}
+
+	updatedPrimary, err := store.GetIssue(primaryIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue primary after project update: %v", err)
+	}
+	if updatedPrimary.PlanApprovalPending || updatedPrimary.PendingPlanMarkdown != "" || updatedPrimary.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected project permission change to clear the open plan state, got %#v", updatedPrimary)
+	}
+	updatedSibling, err := store.GetIssue(siblingIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue sibling after project update: %v", err)
+	}
+	if updatedSibling.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected sibling issue to remain on the canonical override path, got %#v", updatedSibling)
+	}
+
+	if err := store.UpdateIssuePermissionProfile(primaryIssue.ID, PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile full-access: %v", err)
+	}
+	closedPlanning, err := store.GetIssuePlanning(primaryIssue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning closed after issue update: %v", err)
+	}
+	if closedPlanning == nil || closedPlanning.ClosedAt == nil || closedPlanning.ClosedReason != "project_permission_profile_updated" {
+		t.Fatalf("expected closed legacy planning session to stay closed, got %#v", closedPlanning)
+	}
+}
+
 func TestAppendRuntimeEventOnlyPersistsStandaloneEvent(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Standalone runtime event", "", 0, nil)

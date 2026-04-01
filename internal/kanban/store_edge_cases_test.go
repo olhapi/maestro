@@ -21,6 +21,15 @@ type countingReader struct {
 	remaining int64
 }
 
+func newFaultyStoreAt(t *testing.T, dbPath, failPattern string) *Store {
+	t.Helper()
+	store := openFaultySQLiteStoreAt(t, dbPath, failPattern)
+	if err := store.configureConnection(); err != nil {
+		t.Fatalf("configureConnection: %v", err)
+	}
+	return store
+}
+
 func TestKanbanCoverageAdditionalRollbackAndDecodeBranches(t *testing.T) {
 	newFaultyMigratedStore := func(t *testing.T, failPattern string) *Store {
 		t.Helper()
@@ -6233,6 +6242,142 @@ func TestKanbanCoverageFaultInjectedMutationBranches(t *testing.T) {
 				}
 			})
 
+			t.Run("plan approval helper failures", func(t *testing.T) {
+				t.Run("context wrapper begin failure", func(t *testing.T) {
+					dbPath := filepath.Join(t.TempDir(), "approval-context-begin.db")
+					base := openSQLiteStoreAt(t, dbPath)
+					issue, err := base.CreateIssue("", "", "Approval context begin", "", 0, nil)
+					if err != nil {
+						t.Fatalf("CreateIssue: %v", err)
+					}
+					if err := base.Close(); err != nil {
+						t.Fatalf("Close base store: %v", err)
+					}
+
+					store := newFaultyStoreAt(t, dbPath, "__begin__")
+					requestedAt := time.Date(2026, 3, 18, 16, 0, 0, 0, time.UTC)
+					if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Draft the plan", requestedAt, 1, "thread-context", "turn-context"); err == nil {
+						t.Fatal("expected SetIssuePendingPlanApprovalWithContext to fail when begin is injected")
+					}
+					reloaded, err := store.GetIssue(issue.ID)
+					if err != nil {
+						t.Fatalf("GetIssue after begin failure: %v", err)
+					}
+					if reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "" {
+						t.Fatalf("expected failed context wrapper to leave issue unchanged, got %#v", reloaded)
+					}
+				})
+
+				t.Run("context wrapper insert failure", func(t *testing.T) {
+					dbPath := filepath.Join(t.TempDir(), "approval-context-insert.db")
+					base := openSQLiteStoreAt(t, dbPath)
+					issue, err := base.CreateIssue("", "", "Approval context insert", "", 0, nil)
+					if err != nil {
+						t.Fatalf("CreateIssue: %v", err)
+					}
+					if err := base.Close(); err != nil {
+						t.Fatalf("Close base store: %v", err)
+					}
+
+					store := newFaultyStoreAt(t, dbPath, "insert into issue_plan_sessions")
+					requestedAt := time.Date(2026, 3, 18, 16, 10, 0, 0, time.UTC)
+					if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Draft the plan", requestedAt, 1, "thread-context", "turn-context"); err == nil {
+						t.Fatal("expected SetIssuePendingPlanApprovalWithContext to fail when session insert is injected")
+					}
+					reloaded, err := store.GetIssue(issue.ID)
+					if err != nil {
+						t.Fatalf("GetIssue after insert failure: %v", err)
+					}
+					if reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "" {
+						t.Fatalf("expected failed context wrapper to roll back pending approval, got %#v", reloaded)
+					}
+				})
+
+				t.Run("approve begin failure", func(t *testing.T) {
+					dbPath := filepath.Join(t.TempDir(), "approval-begin.db")
+					base := openSQLiteStoreAt(t, dbPath)
+					issue, err := base.CreateIssue("", "", "Approval begin", "", 0, nil)
+					if err != nil {
+						t.Fatalf("CreateIssue: %v", err)
+					}
+					requestedAt := time.Date(2026, 3, 18, 16, 20, 0, 0, time.UTC)
+					if err := base.SetIssuePendingPlanApproval(issue.ID, "Approve the rollout", requestedAt); err != nil {
+						t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+					}
+					if err := base.Close(); err != nil {
+						t.Fatalf("Close base store: %v", err)
+					}
+
+					store := newFaultyStoreAt(t, dbPath, "__begin__")
+					if err := store.ApproveIssuePlan(issue.ID); err == nil {
+						t.Fatal("expected ApproveIssuePlan to fail when begin is injected")
+					}
+					reloaded, err := store.GetIssue(issue.ID)
+					if err != nil {
+						t.Fatalf("GetIssue after approve begin failure: %v", err)
+					}
+					if !reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "Approve the rollout" {
+						t.Fatalf("expected pending approval to remain intact, got %#v", reloaded)
+					}
+				})
+
+				t.Run("approve update failure", func(t *testing.T) {
+					dbPath := filepath.Join(t.TempDir(), "approval-update.db")
+					base := openSQLiteStoreAt(t, dbPath)
+					issue, err := base.CreateIssue("", "", "Approval update", "", 0, nil)
+					if err != nil {
+						t.Fatalf("CreateIssue: %v", err)
+					}
+					requestedAt := time.Date(2026, 3, 18, 16, 30, 0, 0, time.UTC)
+					if err := base.SetIssuePendingPlanApproval(issue.ID, "Approve the rollout", requestedAt); err != nil {
+						t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+					}
+					if err := base.Close(); err != nil {
+						t.Fatalf("Close base store: %v", err)
+					}
+
+					store := newFaultyStoreAt(t, dbPath, "collaboration_mode_override = ?")
+					if err := store.ApproveIssuePlan(issue.ID); err == nil {
+						t.Fatal("expected ApproveIssuePlan to fail when the approval update is injected")
+					}
+					reloaded, err := store.GetIssue(issue.ID)
+					if err != nil {
+						t.Fatalf("GetIssue after approve update failure: %v", err)
+					}
+					if !reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "Approve the rollout" {
+						t.Fatalf("expected pending approval to remain intact, got %#v", reloaded)
+					}
+				})
+
+				t.Run("approve close failure", func(t *testing.T) {
+					dbPath := filepath.Join(t.TempDir(), "approval-close.db")
+					base := openSQLiteStoreAt(t, dbPath)
+					issue, err := base.CreateIssue("", "", "Approval close", "", 0, nil)
+					if err != nil {
+						t.Fatalf("CreateIssue: %v", err)
+					}
+					requestedAt := time.Date(2026, 3, 18, 16, 40, 0, 0, time.UTC)
+					if err := base.SetIssuePendingPlanApproval(issue.ID, "Approve the rollout", requestedAt); err != nil {
+						t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+					}
+					if err := base.Close(); err != nil {
+						t.Fatalf("Close base store: %v", err)
+					}
+
+					store := newFaultyStoreAt(t, dbPath, "update issue_plan_sessions")
+					if err := store.ApproveIssuePlan(issue.ID); err == nil {
+						t.Fatal("expected ApproveIssuePlan to fail when closing the session is injected")
+					}
+					reloaded, err := store.GetIssue(issue.ID)
+					if err != nil {
+						t.Fatalf("GetIssue after approve close failure: %v", err)
+					}
+					if !reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "Approve the rollout" {
+						t.Fatalf("expected pending approval to remain intact, got %#v", reloaded)
+					}
+				})
+			})
+
 			t.Run("maintenance delete failures", func(t *testing.T) {
 				cases := []struct {
 					name        string
@@ -6251,6 +6396,172 @@ func TestKanbanCoverageFaultInjectedMutationBranches(t *testing.T) {
 							t.Fatalf("expected RunMaintenance to fail when %s is injected", tc.failPattern)
 						}
 					})
+				}
+			})
+		})
+
+		t.Run("permission profile and planning lookup failures", func(t *testing.T) {
+			t.Run("planning lookup normalizes ids", func(t *testing.T) {
+				store := setupTestStore(t)
+				project, err := store.CreateProject("Planning lookup normalization", "", "", "")
+				if err != nil {
+					t.Fatalf("CreateProject: %v", err)
+				}
+				issueA, err := store.CreateIssue(project.ID, "", "Planning lookup issue A", "", 0, nil)
+				if err != nil {
+					t.Fatalf("CreateIssue issueA: %v", err)
+				}
+				issueB, err := store.CreateIssue(project.ID, "", "Planning lookup issue B", "", 0, nil)
+				if err != nil {
+					t.Fatalf("CreateIssue issueB: %v", err)
+				}
+
+				emptyMap, err := store.loadIssuePlanningMapByIDs([]string{"", " ", "\t"})
+				if err != nil {
+					t.Fatalf("loadIssuePlanningMapByIDs empty ids: %v", err)
+				}
+				if len(emptyMap) != 0 {
+					t.Fatalf("expected empty planning map for empty ids, got %#v", emptyMap)
+				}
+
+				planningMap, err := store.loadIssuePlanningMapByIDs([]string{issueA.ID, issueA.ID, issueB.ID})
+				if err != nil {
+					t.Fatalf("loadIssuePlanningMapByIDs duplicate ids: %v", err)
+				}
+				if len(planningMap) != 0 {
+					t.Fatalf("expected empty planning map without sessions, got %#v", planningMap)
+				}
+
+				applyIssuePlanning(nil, &IssuePlanning{SessionID: "ignored"})
+			})
+
+			t.Run("planning lookup query failures", func(t *testing.T) {
+				t.Run("session query failure", func(t *testing.T) {
+					dbPath := filepath.Join(t.TempDir(), "lookup-sessions.db")
+					base := openSQLiteStoreAt(t, dbPath)
+					issue, err := base.CreateIssue("", "", "Lookup session failure", "", 0, nil)
+					if err != nil {
+						t.Fatalf("CreateIssue: %v", err)
+					}
+					if err := base.Close(); err != nil {
+						t.Fatalf("Close base store: %v", err)
+					}
+
+					store := newFaultyStoreAt(t, dbPath, "from issue_plan_sessions")
+					if _, err := store.loadIssuePlanningMapByIDs([]string{issue.ID}); err == nil {
+						t.Fatal("expected loadIssuePlanningMapByIDs to fail when session query is injected")
+					}
+				})
+
+				t.Run("version query failure", func(t *testing.T) {
+					dbPath := filepath.Join(t.TempDir(), "lookup-versions.db")
+					base := openSQLiteStoreAt(t, dbPath)
+					issue, err := base.CreateIssue("", "", "Lookup version failure", "", 0, nil)
+					if err != nil {
+						t.Fatalf("CreateIssue: %v", err)
+					}
+					requestedAt := time.Date(2026, 3, 18, 14, 30, 0, 0, time.UTC)
+					if err := base.SetIssuePendingPlanApproval(issue.ID, "Draft the lookup", requestedAt); err != nil {
+						t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+					}
+					if err := base.Close(); err != nil {
+						t.Fatalf("Close base store: %v", err)
+					}
+
+					store := newFaultyStoreAt(t, dbPath, "from issue_plan_versions")
+					if _, err := store.loadIssuePlanningMapByIDs([]string{issue.ID}); err == nil {
+						t.Fatal("expected loadIssuePlanningMapByIDs to fail when version query is injected")
+					}
+				})
+			})
+
+			t.Run("project permission update failures", func(t *testing.T) {
+				dbPath := filepath.Join(t.TempDir(), "project-permission.db")
+				base := openSQLiteStoreAt(t, dbPath)
+				project, err := base.CreateProject("Permission failure project", "", "", "")
+				if err != nil {
+					t.Fatalf("CreateProject: %v", err)
+				}
+				issue, err := base.CreateIssue(project.ID, "", "Permission failure issue", "", 0, nil)
+				if err != nil {
+					t.Fatalf("CreateIssue: %v", err)
+				}
+				requestedAt := time.Date(2026, 3, 18, 15, 0, 0, 0, time.UTC)
+				if err := base.SetIssuePendingPlanApproval(issue.ID, "Draft the project plan", requestedAt); err != nil {
+					t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+				}
+				if err := base.Close(); err != nil {
+					t.Fatalf("Close base store: %v", err)
+				}
+
+				t.Run("begin failure", func(t *testing.T) {
+					store := newFaultyStoreAt(t, dbPath, "__begin__")
+					if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err == nil {
+						t.Fatal("expected UpdateProjectPermissionProfile to fail when begin is injected")
+					}
+					reloaded, err := store.GetProject(project.ID)
+					if err != nil {
+						t.Fatalf("GetProject after begin failure: %v", err)
+					}
+					if reloaded.PermissionProfile != PermissionProfileDefault {
+						t.Fatalf("expected project permission profile to remain default, got %q", reloaded.PermissionProfile)
+					}
+				})
+
+				t.Run("update statement failure", func(t *testing.T) {
+					store := newFaultyStoreAt(t, dbPath, "update projects set permission_profile")
+					if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err == nil {
+						t.Fatal("expected UpdateProjectPermissionProfile to fail when the project update is injected")
+					}
+					reloaded, err := store.GetProject(project.ID)
+					if err != nil {
+						t.Fatalf("GetProject after update failure: %v", err)
+					}
+					if reloaded.PermissionProfile != PermissionProfileDefault {
+						t.Fatalf("expected project permission profile to remain default, got %q", reloaded.PermissionProfile)
+					}
+				})
+
+				t.Run("issue lookup failure", func(t *testing.T) {
+					store := newFaultyStoreAt(t, dbPath, "from issues")
+					if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err == nil {
+						t.Fatal("expected UpdateProjectPermissionProfile to fail when the issue lookup is injected")
+					}
+					reloaded, err := store.GetIssue(issue.ID)
+					if err != nil {
+						t.Fatalf("GetIssue after lookup failure: %v", err)
+					}
+					if !reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "Draft the project plan" {
+						t.Fatalf("expected pending plan state to remain intact, got %#v", reloaded)
+					}
+				})
+			})
+
+			t.Run("issue permission update failure", func(t *testing.T) {
+				dbPath := filepath.Join(t.TempDir(), "issue-permission.db")
+				base := openSQLiteStoreAt(t, dbPath)
+				issue, err := base.CreateIssue("", "", "Issue permission failure", "", 0, nil)
+				if err != nil {
+					t.Fatalf("CreateIssue: %v", err)
+				}
+				requestedAt := time.Date(2026, 3, 18, 15, 30, 0, 0, time.UTC)
+				if err := base.SetIssuePendingPlanApproval(issue.ID, "Draft the issue plan", requestedAt); err != nil {
+					t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+				}
+				if err := base.Close(); err != nil {
+					t.Fatalf("Close base store: %v", err)
+				}
+
+				store := newFaultyStoreAt(t, dbPath, "set permission_profile = ?,")
+				if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileFullAccess); err == nil {
+					t.Fatal("expected UpdateIssuePermissionProfile to fail when the issue update is injected")
+				}
+				reloaded, err := store.GetIssue(issue.ID)
+				if err != nil {
+					t.Fatalf("GetIssue after permission failure: %v", err)
+				}
+				if reloaded.PermissionProfile != PermissionProfileDefault || !reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "Draft the issue plan" {
+					t.Fatalf("expected issue permission update to leave pending approval intact, got %#v", reloaded)
 				}
 			})
 		})
@@ -6298,15 +6609,6 @@ func TestKanbanCoverageFaultInjectedMutationBranches(t *testing.T) {
 }
 
 func TestKanbanCoverageRemainingFailureBranches(t *testing.T) {
-	newFaultyStoreAt := func(t *testing.T, dbPath, failPattern string) *Store {
-		t.Helper()
-		store := openFaultySQLiteStoreAt(t, dbPath, failPattern)
-		if err := store.configureConnection(); err != nil {
-			t.Fatalf("configureConnection: %v", err)
-		}
-		return store
-	}
-
 	t.Run("blocker validation", func(t *testing.T) {
 		store := setupTestStore(t)
 		issue, err := store.CreateIssue("", "", "Blocker validation issue", "", 0, nil)
