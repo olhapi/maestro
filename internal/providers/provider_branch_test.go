@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/olhapi/maestro/internal/kanban"
 )
@@ -399,4 +401,105 @@ func TestServiceCoverageBranches(t *testing.T) {
 			t.Fatal("expected unreadable attachment file to fail")
 		}
 	})
+}
+
+func TestBuildProjectValidationCandidateRuntimeFallbacks(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	candidate, err := buildProjectValidationCandidate(nil, "Name", "Description", "$HOME/repo", "$HOME/workflow/WORKFLOW.md", " STUB ", " ref ", map[string]interface{}{"team": "alpha"}, "")
+	if err != nil {
+		t.Fatalf("buildProjectValidationCandidate default runtime: %v", err)
+	}
+	if candidate.RuntimeName != "codex" {
+		t.Fatalf("expected default runtime codex, got %#v", candidate.RuntimeName)
+	}
+	if candidate.ProviderKind != "stub" || candidate.ProviderProjectRef != "ref" {
+		t.Fatalf("unexpected normalized provider fields: %#v", candidate)
+	}
+	if candidate.RepoPath != filepath.Join(homeDir, "repo") {
+		t.Fatalf("unexpected repo path: %#v", candidate.RepoPath)
+	}
+	if candidate.WorkflowPath != filepath.Join(homeDir, "workflow", "WORKFLOW.md") {
+		t.Fatalf("unexpected workflow path: %#v", candidate.WorkflowPath)
+	}
+
+	existing := &kanban.Project{
+		ID:                "proj-1",
+		State:             kanban.ProjectStateRunning,
+		PermissionProfile: kanban.PermissionProfileFullAccess,
+		RuntimeName:       "runtime-x",
+		CreatedAt:         time.Unix(10, 0).UTC(),
+		UpdatedAt:         time.Unix(20, 0).UTC(),
+	}
+	overridden, err := buildProjectValidationCandidate(existing, "Name 2", "Description 2", filepath.Join(homeDir, "repo-2"), "", "stub", "ref-2", nil, "runtime-y")
+	if err != nil {
+		t.Fatalf("buildProjectValidationCandidate override runtime: %v", err)
+	}
+	if overridden.ID != existing.ID || overridden.State != existing.State || overridden.PermissionProfile != existing.PermissionProfile {
+		t.Fatalf("expected existing identity and state to be preserved, got %#v", overridden)
+	}
+	if overridden.RuntimeName != "runtime-y" {
+		t.Fatalf("expected explicit runtime override, got %#v", overridden.RuntimeName)
+	}
+
+	inherited, err := buildProjectValidationCandidate(existing, "Name 3", "Description 3", filepath.Join(homeDir, "repo-3"), "", "stub", "ref-3", nil, "")
+	if err != nil {
+		t.Fatalf("buildProjectValidationCandidate inherited runtime: %v", err)
+	}
+	if inherited.RuntimeName != existing.RuntimeName {
+		t.Fatalf("expected existing runtime to be inherited, got %#v", inherited.RuntimeName)
+	}
+	if inherited.CreatedAt != existing.CreatedAt || inherited.UpdatedAt != existing.UpdatedAt {
+		t.Fatalf("expected timestamps to inherit from existing project, got %#v", inherited)
+	}
+}
+
+func TestServiceProjectRuntimeNameBranches(t *testing.T) {
+	store := newProvidersTestStore(t)
+	svc := NewService(store)
+	validateCalls := 0
+	svc.RegisterProvider(&serviceProviderStub{
+		kind: "stub",
+		validateFunc: func(_ context.Context, project *kanban.Project) error {
+			validateCalls++
+			if project.ProviderKind != "stub" {
+				t.Fatalf("expected stub provider kind, got %q", project.ProviderKind)
+			}
+			return nil
+		},
+	})
+
+	project, err := svc.CreateProject(context.Background(), "Project", "Description", filepath.Join(t.TempDir(), "repo"), "", "stub", "ref-1", nil, "runtime-x")
+	if err != nil {
+		t.Fatalf("CreateProject explicit runtime: %v", err)
+	}
+	if project.RuntimeName != "runtime-x" {
+		t.Fatalf("expected explicit runtime name to persist, got %#v", project.RuntimeName)
+	}
+
+	if err := svc.UpdateProject(context.Background(), project.ID, "Project 2", "Description 2", filepath.Join(t.TempDir(), "repo-2"), "", "stub", "ref-2", nil); err != nil {
+		t.Fatalf("UpdateProject preserve runtime: %v", err)
+	}
+	updated, err := store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject after preserve update: %v", err)
+	}
+	if updated.RuntimeName != "runtime-x" {
+		t.Fatalf("expected omitted runtime argument to preserve existing runtime, got %#v", updated.RuntimeName)
+	}
+
+	if err := svc.UpdateProject(context.Background(), project.ID, "Project 3", "Description 3", filepath.Join(t.TempDir(), "repo-3"), "", "stub", "ref-3", nil, ""); err != nil {
+		t.Fatalf("UpdateProject reset runtime: %v", err)
+	}
+	updated, err = store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject after reset update: %v", err)
+	}
+	if updated.RuntimeName != "codex" {
+		t.Fatalf("expected blank runtime argument to reset to codex, got %#v", updated.RuntimeName)
+	}
+	if validateCalls != 3 {
+		t.Fatalf("expected validation on each project mutation, got %d calls", validateCalls)
+	}
 }

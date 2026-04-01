@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1542,6 +1543,74 @@ func TestKanbanProviderDelegatesToStore(t *testing.T) {
 	}
 	if _, err := provider.GetIssue(context.Background(), project, issue.Identifier); !kanban.IsNotFound(err) {
 		t.Fatalf("expected deleted issue to be missing, got %v", err)
+	}
+}
+
+func TestKanbanProviderEdgeBranches(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits behave differently on Windows")
+	}
+
+	store := newProvidersTestStore(t)
+	provider := NewKanbanProvider(store)
+
+	project, err := store.CreateProject("Kanban Edge Project", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	issue, err := provider.CreateIssue(context.Background(), nil, IssueCreateInput{
+		ProjectID: project.ID,
+		Title:     "Backlog issue",
+		State:     string(kanban.StateBacklog),
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue backlog: %v", err)
+	}
+	if issue.ProjectID != project.ID {
+		t.Fatalf("expected CreateIssue to fall back to input project id, got %#v", issue)
+	}
+	if issue.State != kanban.StateBacklog {
+		t.Fatalf("expected backlog issue to remain backlog, got %#v", issue)
+	}
+
+	issues, err := provider.ListIssues(context.Background(), nil, kanban.IssueQuery{State: string(kanban.StateBacklog)})
+	if err != nil {
+		t.Fatalf("ListIssues nil project: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Identifier != issue.Identifier {
+		t.Fatalf("unexpected issues from nil-project list: %#v", issues)
+	}
+
+	body := "attachment"
+	attachmentPath := writeProviderCommentAttachment(t, "edge-attachment.txt", []byte("provider attachment"))
+	comment, err := provider.CreateIssueComment(context.Background(), nil, issue, IssueCommentInput{
+		Body: &body,
+		Attachments: []IssueCommentAttachment{{
+			Path:        attachmentPath,
+			ContentType: "text/plain",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueComment: %v", err)
+	}
+
+	attachment, storedPath, err := store.GetIssueCommentAttachmentContent(issue.ID, comment.ID, comment.Attachments[0].ID)
+	if err != nil {
+		t.Fatalf("GetIssueCommentAttachmentContent store lookup: %v", err)
+	}
+	if attachment.ID != comment.Attachments[0].ID {
+		t.Fatalf("unexpected attachment lookup: %#v", attachment)
+	}
+	if err := os.Chmod(storedPath, 0o000); err != nil {
+		t.Fatalf("Chmod stored attachment path: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(storedPath, 0o644)
+	})
+
+	if _, err := provider.GetIssueCommentAttachmentContent(context.Background(), nil, issue, comment.ID, comment.Attachments[0].ID); err == nil {
+		t.Fatal("expected unreadable attachment content lookup to fail")
 	}
 }
 

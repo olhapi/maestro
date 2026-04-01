@@ -386,3 +386,25 @@ func TestMCPDaemonRegistryErrorBranches(t *testing.T) {
 		}
 	})
 }
+
+func TestMCPWriteDaemonEntryRejectsFileRegistryRoot(t *testing.T) {
+	rootFile := filepath.Join(t.TempDir(), "registry-root")
+	if err := os.WriteFile(rootFile, []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("write registry root file: %v", err)
+	}
+	t.Setenv(daemonRegistryEnv, rootFile)
+
+	err := writeDaemonEntry(DaemonEntry{
+		StoreID:     "store-a",
+		DBPath:      filepath.Join(t.TempDir(), "maestro.db"),
+		PID:         os.Getpid(),
+		StartedAt:   time.Now().UTC(),
+		BaseURL:     "http://127.0.0.1:20001/mcp",
+		BearerToken: "secret-token",
+		Version:     "v1",
+		Transport:   daemonTransportHTTP,
+	})
+	if err == nil {
+		t.Fatal("expected writeDaemonEntry to fail when the registry root is a file")
+	}
+}
