@@ -14,6 +14,8 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
 	request := runtimefactory.WorkflowStartRequest{
 		Workflow:        workflow,
+		RuntimeName:     "codex-stdio",
+		RuntimeConfig:   workflow.Config.Runtime.Entries["codex-stdio"],
 		WorkspacePath:   "/tmp/workspaces/MAES-321",
 		IssueID:         "iss_321",
 		IssueIdentifier: "MAES-321",
@@ -129,6 +131,9 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 	}
 
 	request.Env[0] = "FOO=changed"
+	request.RuntimeName = "mutated"
+	request.RuntimeConfig.Command = "mutated"
+	request.RuntimeConfig.ApprovalPolicy = map[string]interface{}{"mode": "mutated"}
 	request.Permissions.Metadata["source"] = "mutated"
 	request.DynamicTools[0]["name"] = "tool-mutated"
 	request.Metadata["request"] = "mutated"
@@ -140,6 +145,15 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 	captured := capturedRequests[0]
 	if captured.Env[0] != "FOO=bar" {
 		t.Fatalf("expected starter to clone env, got %#v", captured.Env)
+	}
+	if captured.RuntimeName != "codex-stdio" {
+		t.Fatalf("expected starter to clone runtime name, got %#v", captured.RuntimeName)
+	}
+	if captured.RuntimeConfig.Command != workflow.Config.Runtime.Entries["codex-stdio"].Command {
+		t.Fatalf("expected starter to clone runtime config, got %#v", captured.RuntimeConfig)
+	}
+	if captured.RuntimeConfig.ApprovalPolicy != "never" {
+		t.Fatalf("expected starter to preserve runtime approval policy, got %#v", captured.RuntimeConfig)
 	}
 	if captured.Permissions.Metadata["source"] != "test" {
 		t.Fatalf("expected starter to clone permissions, got %#v", captured.Permissions.Metadata)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/olhapi/maestro/internal/agentruntime"
 	runtimefactory "github.com/olhapi/maestro/internal/agentruntime/factory"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 type Scenario struct {
@@ -349,6 +350,8 @@ func (c *Client) emitPendingInteractionDone(interactionID string) {
 func cloneRequest(request runtimefactory.WorkflowStartRequest) runtimefactory.WorkflowStartRequest {
 	return runtimefactory.WorkflowStartRequest{
 		Workflow:        request.Workflow,
+		RuntimeName:     request.RuntimeName,
+		RuntimeConfig:   cloneRuntimeConfig(request.RuntimeConfig),
 		WorkspacePath:   request.WorkspacePath,
 		IssueID:         request.IssueID,
 		IssueIdentifier: request.IssueIdentifier,
@@ -359,6 +362,11 @@ func cloneRequest(request runtimefactory.WorkflowStartRequest) runtimefactory.Wo
 		ResumeToken:     request.ResumeToken,
 		Metadata:        cloneJSONMap(request.Metadata),
 	}
+}
+
+func cloneRuntimeConfig(cfg config.RuntimeConfig) config.RuntimeConfig {
+	cfg.ApprovalPolicy = cloneJSONValue(cfg.ApprovalPolicy)
+	return cfg
 }
 
 func cloneTurnRequest(request agentruntime.TurnRequest) agentruntime.TurnRequest {

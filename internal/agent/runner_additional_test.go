@@ -281,7 +281,9 @@ func TestRunnerPureHelpersBranches(t *testing.T) {
 	}
 
 	workflow := defaultPromptWorkflowForTest()
-	workflow.Config.Codex.InitialCollaborationMode = config.InitialCollaborationModePlan
+	runtime := workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default]
+	runtime.InitialCollaborationMode = config.InitialCollaborationModePlan
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = runtime
 	if !runner.planModeForIssue(workflow, &kanban.Issue{}) {
 		t.Fatal("expected plan mode to be detected")
 	}
@@ -301,8 +303,11 @@ func TestRunnerPureHelpersBranches(t *testing.T) {
 		t.Fatalf("unexpected plan/full-access permission config: %#v", got)
 	}
 
-	if got := runner.applyIssuePermissionProfile(workflow, projectIssue); got == workflow {
-		t.Fatal("expected applyIssuePermissionProfile to clone workflow")
+	if got := runner.runtimeSelectionForIssue(nil, projectIssue); got.Name != "" || got.Config.Command != "" {
+		t.Fatalf("expected nil workflow runtime selection to be empty, got %#v", got)
+	}
+	if got := runner.runtimeSelectionForIssue(workflow, projectIssue); got.Name != workflow.Config.Runtime.Default {
+		t.Fatalf("expected workflow default runtime selection, got %#v", got)
 	}
 
 	storedProject, err := runner.store.CreateProject("Prompt project", "description", repoPath, "")
@@ -419,6 +424,107 @@ func TestRunnerPureHelpersBranches(t *testing.T) {
 	}
 }
 
+func TestRunnerResolveExecutionPolicyUsesExplicitRuntimeSelection(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "codex app-server", config.AgentModeAppServer)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Runtime selection", "", 0, nil)
+	if err := store.UpdateProjectPermissionProfile(project.ID, kanban.PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile: %v", err)
+	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
+	}); err != nil {
+		t.Fatalf("UpdateIssue collaboration override: %v", err)
+	}
+	if err := store.UpdateProject(project.ID, project.Name, project.Description, repoPath, "", "codex-stdio"); err != nil {
+		t.Fatalf("UpdateProject runtime: %v", err)
+	}
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	t.Run("project runtime fallback", func(t *testing.T) {
+		selection, permissions := runner.resolveExecutionPolicy(workflow, issue)
+		if selection.Name != "codex-stdio" {
+			t.Fatalf("expected project runtime selection, got %#v", selection)
+		}
+		if selection.Config.Transport != config.AgentModeStdio {
+			t.Fatalf("expected stdio transport, got %#v", selection.Config)
+		}
+		if selection.Config.Command != workflow.Config.Runtime.Entries["codex-stdio"].Command {
+			t.Fatalf("expected explicit runtime command, got %#v", selection.Config)
+		}
+		if policy, ok := permissions.ApprovalPolicy.(string); !ok || policy != "never" {
+			t.Fatalf("expected codex-stdio approval policy, got %#v", permissions.ApprovalPolicy)
+		}
+		if permissions.ThreadSandbox != "danger-full-access" {
+			t.Fatalf("expected project permission profile to expand sandbox, got %#v", permissions)
+		}
+		if permissions.InitialCollaborationMode != config.InitialCollaborationModePlan {
+			t.Fatalf("expected collaboration override to force plan mode, got %#v", permissions)
+		}
+
+		var captured runtimefactory.WorkflowStartRequest
+		runner.runtimeStarter = func(ctx context.Context, request runtimefactory.WorkflowStartRequest, observers agentruntime.Observers) (agentruntime.Client, error) {
+			captured = request
+			return &noopRuntimeClient{}, nil
+		}
+		if _, err := runner.startRuntimeClient(context.Background(), workflow, repoPath, issue, selection, permissions); err != nil {
+			t.Fatalf("startRuntimeClient: %v", err)
+		}
+		if captured.RuntimeName != "codex-stdio" {
+			t.Fatalf("expected explicit runtime name in request, got %#v", captured.RuntimeName)
+		}
+		if captured.RuntimeConfig.Command != selection.Config.Command {
+			t.Fatalf("expected explicit runtime config in request, got %#v", captured.RuntimeConfig)
+		}
+		if captured.RuntimeConfig.Transport != selection.Config.Transport {
+			t.Fatalf("expected explicit runtime transport in request, got %#v", captured.RuntimeConfig)
+		}
+		if policy, ok := captured.Permissions.ApprovalPolicy.(string); !ok || policy != "never" {
+			t.Fatalf("expected explicit runtime approval policy in request, got %#v", captured.Permissions.ApprovalPolicy)
+		}
+		if captured.Permissions.ThreadSandbox != "danger-full-access" || captured.Permissions.CollaborationMode != config.InitialCollaborationModePlan {
+			t.Fatalf("expected resolved permissions in request, got %#v", captured.Permissions)
+		}
+		if workflow.Config.Codex.Command != "codex app-server" {
+			t.Fatalf("expected workflow codex config to stay untouched, got %q", workflow.Config.Codex.Command)
+		}
+	})
+
+	t.Run("issue runtime override wins", func(t *testing.T) {
+		if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+			"runtime_name": "codex-appserver",
+		}); err != nil {
+			t.Fatalf("UpdateIssue runtime override: %v", err)
+		}
+		issue, err = store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue override: %v", err)
+		}
+		selection, permissions := runner.resolveExecutionPolicy(workflow, issue)
+		if selection.Name != "codex-appserver" {
+			t.Fatalf("expected issue runtime override to win, got %#v", selection)
+		}
+		if selection.Config.Transport != config.AgentModeAppServer {
+			t.Fatalf("expected app_server transport, got %#v", selection.Config)
+		}
+		if selection.Config.Command != workflow.Config.Codex.Command {
+			t.Fatalf("expected workflow default command, got %#v", selection.Config)
+		}
+		if permissions.ApprovalPolicy != selection.Config.ApprovalPolicy {
+			t.Fatalf("expected issue runtime override to inherit appserver approval policy, got %#v", permissions.ApprovalPolicy)
+		}
+		if permissions.ThreadSandbox != "danger-full-access" {
+			t.Fatalf("expected project permission profile to remain applied, got %#v", permissions)
+		}
+	})
+}
+
 func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	project := createWorkspaceProject(t, store, "Platform", repoPath)
@@ -432,10 +538,10 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 	}
 
 	// startRuntimeClient error branches.
-	if _, err := runner.startRuntimeClient(context.Background(), nil, repoPath, issue, permissionConfig{}); err == nil {
+	if _, err := runner.startRuntimeClient(context.Background(), nil, repoPath, issue, runtimeSelection{}, permissionConfig{}); err == nil {
 		t.Fatal("expected nil workflow to fail")
 	}
-	if _, err := runner.startRuntimeClient(context.Background(), workflow, repoPath, nil, permissionConfig{}); err == nil {
+	if _, err := runner.startRuntimeClient(context.Background(), workflow, repoPath, nil, runtimeSelection{}, permissionConfig{}); err == nil {
 		t.Fatal("expected nil issue to fail")
 	}
 
@@ -484,7 +590,10 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 		return &noopRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true, LocalImageInput: true}}, nil
 	}
 
-	client, err := runner.startRuntimeClient(context.Background(), workflow, repoPath, issue, permissionConfig{
+	client, err := runner.startRuntimeClient(context.Background(), workflow, repoPath, issue, runtimeSelection{
+		Name:   workflow.Config.Runtime.Default,
+		Config: workflow.Config.Codex,
+	}, permissionConfig{
 		ApprovalPolicy:           "policy",
 		ThreadSandbox:            "workspace-write",
 		InitialCollaborationMode: config.InitialCollaborationModePlan,
@@ -609,9 +718,6 @@ func TestRunnerBranchAndPromptCoverage(t *testing.T) {
 	t.Run("prompt_and_plan_helpers", func(t *testing.T) {
 		if got := runner.permissionConfigForIssue(nil, "policy", ""); got.ThreadSandbox != "workspace-write" || got.InitialCollaborationMode != config.InitialCollaborationModeDefault {
 			t.Fatalf("unexpected nil-issue permission config: %#v", got)
-		}
-		if got := runner.applyIssuePermissionProfile(nil, issue); got != nil {
-			t.Fatalf("expected nil workflow to stay nil, got %#v", got)
 		}
 		if got := runner.effectiveInitialCollaborationMode(&kanban.Issue{CollaborationModeOverride: config.InitialCollaborationModePlan}); got != config.InitialCollaborationModePlan {
 			t.Fatalf("expected collaboration override, got %q", got)
@@ -1083,13 +1189,13 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 	})
 
 	t.Run("run_pending_commands", func(t *testing.T) {
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), nil, workflow, issue, 1, "title"); err != nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), nil, workflow, issue, 1, "title", runtimeSelection{Config: workflow.Config.Codex}); err != nil || delivered {
 			t.Fatalf("expected nil client to short-circuit, got %v %v", delivered, err)
 		}
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &noopRuntimeClient{}, workflow, issue, 1, "title"); err != nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &noopRuntimeClient{}, workflow, issue, 1, "title", runtimeSelection{Config: workflow.Config.Codex}); err != nil || delivered {
 			t.Fatalf("expected resume-less client to short-circuit, got %v %v", delivered, err)
 		}
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, workflow, &kanban.Issue{ID: "missing"}, 1, "title"); err == nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, workflow, &kanban.Issue{ID: "missing"}, 1, "title", runtimeSelection{Config: workflow.Config.Codex}); err == nil || delivered {
 			t.Fatalf("expected missing issue to fail, got %v %v", delivered, err)
 		}
 		emptyIssue, err := store.CreateIssue(project.ID, "", "No pending commands", "", 0, nil)
@@ -1107,7 +1213,7 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 			capabilities: agentruntime.Capabilities{Resume: true},
 			session:      agentruntime.Session{ThreadID: "thread-empty"},
 		}
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), emptyClient, workflow, emptyIssue, 1, "Empty title"); err != nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), emptyClient, workflow, emptyIssue, 1, "Empty title", runtimeSelection{Config: workflow.Config.Codex}); err != nil || delivered {
 			t.Fatalf("expected no pending commands to short-circuit after polling, got %v %v", delivered, err)
 		}
 		commandIssue, err := store.CreateIssue(project.ID, "", "Deliver command", "", 0, nil)
@@ -1124,7 +1230,7 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 			capabilities: agentruntime.Capabilities{Resume: true},
 			session:      agentruntime.Session{ThreadID: "thread-deliver"},
 		}
-		delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), client, workflow, commandIssue, 1, "Deliver command")
+		delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), client, workflow, commandIssue, 1, "Deliver command", runtimeSelection{Config: workflow.Config.Codex})
 		if err != nil {
 			t.Fatalf("runPendingCommandsInActiveRuntime: %v", err)
 		}
@@ -1176,6 +1282,7 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 
 func TestRunPendingCommandsInActiveRuntimeContextCancel(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflow := defaultPromptWorkflowForTest()
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Cancel pending commands", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
@@ -1188,7 +1295,7 @@ func TestRunPendingCommandsInActiveRuntimeContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	delivered, err := runner.runPendingCommandsInActiveRuntime(ctx, &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, defaultPromptWorkflowForTest(), issue, 1, "Cancel flow")
+	delivered, err := runner.runPendingCommandsInActiveRuntime(ctx, &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, workflow, issue, 1, "Cancel flow", runtimeSelection{Config: workflow.Config.Codex})
 	if err == nil || !errors.Is(err, context.Canceled) || delivered {
 		t.Fatalf("expected canceled runtime command polling to stop, got delivered=%v err=%v", delivered, err)
 	}
@@ -2601,7 +2708,9 @@ func TestRefreshRepoForWorkspaceBootstrapContextCancel(t *testing.T) {
 func TestPrepareTurnPromptWithWorkspacePlanModeBranches(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	workflow := defaultPromptWorkflowForTest()
-	workflow.Config.Codex.InitialCollaborationMode = config.InitialCollaborationModePlan
+	runtime := workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default]
+	runtime.InitialCollaborationMode = config.InitialCollaborationModePlan
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = runtime
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Plan mode prompt", "Cover planning guidance", 0, nil)
 	issue.State = kanban.StateInProgress
 	issue.WorkflowPhase = kanban.WorkflowPhaseImplementation

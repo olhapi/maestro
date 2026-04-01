@@ -158,12 +158,16 @@ func TestCloneHelpersCopyNestedValues(t *testing.T) {
 
 func TestStartWorkflowUsesCodexRuntime(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
-	workflow.Config.Codex.Command = "cat"
-	workflow.Config.Codex.ExpectedVersion = ""
-	workflow.Config.Agent.Mode = config.AgentModeStdio
-	workflow.Config.Agent.DispatchMode = config.DispatchModeParallel
+	runtime := workflow.Config.Runtime.Entries["codex-stdio"]
+	runtime.Command = "cat"
 
-	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{Workflow: workflow}, agentruntime.Observers{})
+	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "codex-stdio",
+		RuntimeConfig:   runtime,
+		IssueID:         "iss-1",
+		IssueIdentifier: "ISS-1",
+	}, agentruntime.Observers{})
 	if err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
 	}

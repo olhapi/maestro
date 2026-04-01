@@ -10,7 +10,6 @@ import (
 
 func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
-	workflow.Config.Agent.Mode = config.AgentModeStdio
 	workflow.Config.Workspace.Root = "/repo/root"
 	workflow.Config.Codex.Command = "codex app-server"
 	workflow.Config.Codex.ExpectedVersion = "1.2.3"
@@ -55,8 +54,8 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	if spec.Provider != agentruntime.ProviderCodex {
 		t.Fatalf("expected codex provider, got %q", spec.Provider)
 	}
-	if spec.Transport != agentruntime.TransportStdio {
-		t.Fatalf("expected stdio transport, got %q", spec.Transport)
+	if spec.Transport != agentruntime.TransportAppServer {
+		t.Fatalf("expected app_server transport, got %q", spec.Transport)
 	}
 	if spec.Command != workflow.Config.Codex.Command || spec.ExpectedVersion != workflow.Config.Codex.ExpectedVersion {
 		t.Fatalf("expected codex command/version to be copied, got %+v", spec)
@@ -109,5 +108,42 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	}
 	if spec.Metadata["provider_hint"] != "codex" {
 		t.Fatalf("expected metadata clone to be isolated, got %#v", spec.Metadata)
+	}
+}
+
+func TestRuntimeSpecFromWorkflowUsesExplicitRuntimeSelection(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Agent.Mode = config.AgentModeAppServer
+	workflow.Config.Workspace.Root = "/repo/root"
+	workflow.Config.Codex.Command = "codex app-server"
+	workflow.Config.Codex.ExpectedVersion = "1.2.3"
+
+	request := WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "codex-stdio",
+		RuntimeConfig:   workflow.Config.Runtime.Entries["codex-stdio"],
+		WorkspacePath:   "/tmp/workspaces/MAES-123",
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+	}
+
+	spec, err := RuntimeSpecFromWorkflow(request)
+	if err != nil {
+		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
+	}
+	if spec.Provider != agentruntime.ProviderCodex {
+		t.Fatalf("expected codex provider, got %q", spec.Provider)
+	}
+	if spec.Transport != agentruntime.TransportStdio {
+		t.Fatalf("expected stdio transport, got %q", spec.Transport)
+	}
+	if spec.Command != workflow.Config.Runtime.Entries["codex-stdio"].Command {
+		t.Fatalf("expected explicit runtime command, got %q", spec.Command)
+	}
+	if spec.ExpectedVersion != workflow.Config.Runtime.Entries["codex-stdio"].ExpectedVersion {
+		t.Fatalf("expected explicit runtime version, got %q", spec.ExpectedVersion)
+	}
+	if workflow.Config.Codex.Command != "codex app-server" {
+		t.Fatalf("expected workflow codex config to stay untouched, got %q", workflow.Config.Codex.Command)
 	}
 }

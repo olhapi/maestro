@@ -589,7 +589,9 @@ func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
 func TestBuildTurnPromptUsesPlanningGuidanceWhenPlanModeEnabled(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	workflow := defaultPromptWorkflowForTest()
-	workflow.Config.Codex.InitialCollaborationMode = config.InitialCollaborationModePlan
+	runtime := workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default]
+	runtime.InitialCollaborationMode = config.InitialCollaborationModePlan
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = runtime
 
 	issue, err := store.CreateIssue("", "", "Plan the change", "Need clarification", 0, nil)
 	if err != nil {

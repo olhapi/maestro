@@ -14,6 +14,8 @@ import (
 
 type WorkflowStartRequest struct {
 	Workflow        *config.Workflow
+	RuntimeName     string
+	RuntimeConfig   config.RuntimeConfig
 	WorkspacePath   string
 	IssueID         string
 	IssueIdentifier string
@@ -49,30 +51,59 @@ func RuntimeSpecFromWorkflow(request WorkflowStartRequest) (agentruntime.Runtime
 	if len(env) == 0 {
 		env = os.Environ()
 	}
-	transport := agentruntime.Transport(strings.ToLower(strings.TrimSpace(workflow.Config.Agent.Mode)))
-	provider := agentruntime.Provider(strings.TrimSpace(workflow.Config.Codex.Provider))
+	runtimeConfig := workflow.Config.Codex
+	if strings.TrimSpace(request.RuntimeName) != "" {
+		runtimeConfig = mergeRuntimeConfig(request.RuntimeConfig, workflow.Config.Codex)
+	}
+	transport := agentruntime.Transport(strings.ToLower(strings.TrimSpace(runtimeConfig.Transport)))
+	provider := agentruntime.Provider(strings.TrimSpace(runtimeConfig.Provider))
 	if provider == "" {
 		provider = agentruntime.ProviderCodex
 	}
 	return agentruntime.RuntimeSpec{
 		Provider:        provider,
 		Transport:       transport,
-		Command:         workflow.Config.Codex.Command,
-		ExpectedVersion: workflow.Config.Codex.ExpectedVersion,
+		Command:         runtimeConfig.Command,
+		ExpectedVersion: runtimeConfig.ExpectedVersion,
 		Workspace:       request.WorkspacePath,
 		WorkspaceRoot:   workflow.Config.Workspace.Root,
 		IssueID:         request.IssueID,
 		IssueIdentifier: request.IssueIdentifier,
 		Env:             env,
-		ReadTimeout:     time.Duration(workflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
-		TurnTimeout:     time.Duration(workflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
-		StallTimeout:    time.Duration(workflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
+		ReadTimeout:     time.Duration(runtimeConfig.ReadTimeoutMs) * time.Millisecond,
+		TurnTimeout:     time.Duration(runtimeConfig.TurnTimeoutMs) * time.Millisecond,
+		StallTimeout:    time.Duration(runtimeConfig.StallTimeoutMs) * time.Millisecond,
 		Permissions:     clonePermissionConfig(request.Permissions),
 		DynamicTools:    cloneToolSpecs(request.DynamicTools),
 		ToolExecutor:    request.ToolExecutor,
 		ResumeToken:     strings.TrimSpace(request.ResumeToken),
 		Metadata:        cloneJSONMap(request.Metadata),
 	}, nil
+}
+
+func mergeRuntimeConfig(cfg, fallback config.RuntimeConfig) config.RuntimeConfig {
+	if strings.TrimSpace(cfg.Provider) == "" {
+		cfg.Provider = fallback.Provider
+	}
+	if strings.TrimSpace(cfg.Transport) == "" {
+		cfg.Transport = fallback.Transport
+	}
+	if strings.TrimSpace(cfg.Command) == "" {
+		cfg.Command = fallback.Command
+	}
+	if strings.TrimSpace(cfg.ExpectedVersion) == "" {
+		cfg.ExpectedVersion = fallback.ExpectedVersion
+	}
+	if cfg.ReadTimeoutMs <= 0 {
+		cfg.ReadTimeoutMs = fallback.ReadTimeoutMs
+	}
+	if cfg.TurnTimeoutMs <= 0 {
+		cfg.TurnTimeoutMs = fallback.TurnTimeoutMs
+	}
+	if cfg.StallTimeoutMs <= 0 {
+		cfg.StallTimeoutMs = fallback.StallTimeoutMs
+	}
+	return cfg
 }
 
 func clonePermissionConfig(config agentruntime.PermissionConfig) agentruntime.PermissionConfig {

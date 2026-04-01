@@ -214,7 +214,6 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	if err != nil {
 		return nil, err
 	}
-	workflow = r.applyIssuePermissionProfile(workflow, issue)
 
 	workspace, err := r.getOrCreateWorkspace(ctx, workflow, issue)
 	if err != nil {
@@ -247,17 +246,9 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	return result, nil
 }
 
-func (r *Runner) applyIssuePermissionProfile(workflow *config.Workflow, issue *kanban.Issue) *config.Workflow {
-	if workflow == nil {
-		return nil
-	}
-	cloned := *workflow
-	cloned.Config = workflow.Config
-	cloned.Config.Codex = workflow.Config.Codex
-	permissionConfig := r.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
-	cloned.Config.Codex.ApprovalPolicy = permissionConfig.ApprovalPolicy
-	cloned.Config.Codex.InitialCollaborationMode = permissionConfig.InitialCollaborationMode
-	return &cloned
+type runtimeSelection struct {
+	Name   string
+	Config config.RuntimeConfig
 }
 
 type permissionConfig struct {
@@ -265,6 +256,56 @@ type permissionConfig struct {
 	ThreadSandbox            string
 	TurnSandboxPolicy        map[string]interface{}
 	InitialCollaborationMode string
+}
+
+func (r *Runner) resolveExecutionPolicy(workflow *config.Workflow, issue *kanban.Issue) (runtimeSelection, permissionConfig) {
+	selectedRuntime := r.runtimeSelectionForIssue(workflow, issue)
+	permissions := r.permissionConfigForIssue(issue, selectedRuntime.Config.ApprovalPolicy, selectedRuntime.Config.InitialCollaborationMode)
+	return selectedRuntime, permissions
+}
+
+func (r *Runner) runtimeSelectionForIssue(workflow *config.Workflow, issue *kanban.Issue) runtimeSelection {
+	if workflow == nil {
+		return runtimeSelection{}
+	}
+
+	selectedName := strings.TrimSpace(workflow.Config.Runtime.Default)
+	selectedRuntime, ok := workflow.Config.Runtime.Entries[selectedName]
+	if !ok {
+		selectedRuntime = workflow.Config.Codex
+	}
+
+	if projectRuntimeName := r.projectRuntimeName(issue); projectRuntimeName != "" {
+		if runtimeConfig, ok := workflow.Config.Runtime.Entries[projectRuntimeName]; ok {
+			selectedName = projectRuntimeName
+			selectedRuntime = runtimeConfig
+		}
+	}
+
+	if issue != nil {
+		if issueRuntimeName := strings.TrimSpace(issue.RuntimeName); issueRuntimeName != "" {
+			if runtimeConfig, ok := workflow.Config.Runtime.Entries[issueRuntimeName]; ok {
+				selectedName = issueRuntimeName
+				selectedRuntime = runtimeConfig
+			}
+		}
+	}
+
+	return runtimeSelection{
+		Name:   selectedName,
+		Config: selectedRuntime,
+	}
+}
+
+func (r *Runner) projectRuntimeName(issue *kanban.Issue) string {
+	if issue == nil || r.store == nil || strings.TrimSpace(issue.ProjectID) == "" {
+		return ""
+	}
+	project, err := r.store.GetProject(issue.ProjectID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(project.RuntimeName)
 }
 
 func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy interface{}, initialCollaborationMode string) permissionConfig {
@@ -1230,9 +1271,9 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 		return nil, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
+	runtimeSelection, permissions := r.resolveExecutionPolicy(activeWorkflow, issue)
 	planMode := strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
-	client, err := r.startRuntimeClient(ctx, activeWorkflow, workspacePath, issue, permissions)
+	client, err := r.startRuntimeClient(ctx, activeWorkflow, workspacePath, issue, runtimeSelection, permissions)
 	if err != nil {
 		return &RunResult{Success: false, Error: err}, nil
 	}
@@ -1244,13 +1285,14 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 			return nil, err
 		}
 		issue = refreshedIssue
-		permissions = r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
+		permissions = r.permissionConfigForIssue(issue, runtimeSelection.Config.ApprovalPolicy, runtimeSelection.Config.InitialCollaborationMode)
 		agentruntime.ApplyPermissionConfig(client, runtimePermissionConfig(permissions))
 		prepared, err := r.prepareTurnPromptWithWorkspace(activeWorkflow, issue, attempt, turn, workspacePath)
 		if err != nil {
 			return nil, err
 		}
-		consumePlanRevision := turn == 1 && r.planModeForIssue(activeWorkflow, issue) && issueHasPendingPlanRevision(issue)
+		planMode = strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
+		consumePlanRevision := turn == 1 && planMode && issueHasPendingPlanRevision(issue)
 		input, err := r.prepareRuntimeTurnInput(client.Capabilities(), workspacePath, issue, prepared.Prompt, turn == 1)
 		if err != nil {
 			return &RunResult{
@@ -1322,7 +1364,7 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 				AppSession: client.Session(),
 			}, nil
 		}
-		deliveredManualCommands, err := r.runPendingCommandsInActiveRuntime(ctx, client, workflow, issue, attempt, title)
+		deliveredManualCommands, err := r.runPendingCommandsInActiveRuntime(ctx, client, workflow, issue, attempt, title, runtimeSelection)
 		if err != nil {
 			return &RunResult{
 				Success:    false,
@@ -1348,7 +1390,7 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 	return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
 }
 
-func (r *Runner) startRuntimeClient(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, permissions permissionConfig) (agentruntime.Client, error) {
+func (r *Runner) startRuntimeClient(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, runtime runtimeSelection, permissions permissionConfig) (agentruntime.Client, error) {
 	if workflow == nil || issue == nil {
 		return nil, fmt.Errorf("workflow and issue are required")
 	}
@@ -1358,6 +1400,8 @@ func (r *Runner) startRuntimeClient(ctx context.Context, workflow *config.Workfl
 	}
 	return startRuntime(ctx, runtimefactory.WorkflowStartRequest{
 		Workflow:        workflow,
+		RuntimeName:     runtime.Name,
+		RuntimeConfig:   runtime.Config,
 		WorkspacePath:   workspacePath,
 		IssueID:         issue.ID,
 		IssueIdentifier: issue.Identifier,
@@ -1871,7 +1915,7 @@ func (r *Runner) planModeForIssue(workflow *config.Workflow, issue *kanban.Issue
 	if workflow == nil {
 		return false
 	}
-	permissions := r.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	_, permissions := r.resolveExecutionPolicy(workflow, issue)
 	return strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
 }
 
@@ -1967,7 +2011,7 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 	})
 }
 
-func (r *Runner) runPendingCommandsInActiveRuntime(ctx context.Context, client agentruntime.Client, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string) (bool, error) {
+func (r *Runner) runPendingCommandsInActiveRuntime(ctx context.Context, client agentruntime.Client, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string, runtime runtimeSelection) (bool, error) {
 	if client == nil || !client.Capabilities().SupportsResume() {
 		return false, nil
 	}
@@ -1993,12 +2037,12 @@ func (r *Runner) runPendingCommandsInActiveRuntime(ctx context.Context, client a
 	if len(commands) == 0 {
 		return false, nil
 	}
-	activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
+	_, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
 	if err != nil {
 		return false, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
+	permissions := r.permissionConfigForIssue(issue, runtime.Config.ApprovalPolicy, runtime.Config.InitialCollaborationMode)
 	agentruntime.ApplyPermissionConfig(client, runtimePermissionConfig(permissions))
 	var deliverErr error
 	if err := client.RunTurn(ctx, agentruntime.TurnRequest{
