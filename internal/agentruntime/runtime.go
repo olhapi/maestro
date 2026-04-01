@@ -11,7 +11,8 @@ var ErrUnsupportedCapability = errors.New("unsupported_runtime_capability")
 type Provider string
 
 const (
-	ProviderCodex Provider = "codex"
+	ProviderCodex  Provider = "codex"
+	ProviderClaude Provider = "claude"
 )
 
 type Transport string

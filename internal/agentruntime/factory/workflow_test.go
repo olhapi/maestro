@@ -1,7 +1,9 @@
 package factory
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,8 +188,8 @@ func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.
 
 func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
-	workflow.Config.Codex.Provider = "claude"
-	workflow.Config.Codex.Command = "claude"
+	workflow.Config.Codex.Provider = "mistral"
+	workflow.Config.Codex.Command = "mistral"
 	workflow.Config.Codex.Transport = config.AgentModeStdio
 
 	_, err := StartWorkflow(t.Context(), WorkflowStartRequest{
@@ -200,5 +202,43 @@ func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
 	}
 	if !errors.Is(err, agentruntime.ErrUnsupportedCapability) {
 		t.Fatalf("expected unsupported capability error, got %v", err)
+	}
+}
+
+func TestStartWorkflowSelectsClaudeRuntime(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	runtimeConfig := workflow.Config.Runtime.Entries["claude"]
+	runtimeConfig.Command = "cat"
+
+	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "claude",
+		RuntimeConfig:   runtimeConfig,
+		WorkspacePath:   t.TempDir(),
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+	}, agentruntime.Observers{})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	if err := client.RunTurn(context.Background(), agentruntime.TurnRequest{
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: "hello claude"}},
+	}, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	session := client.Session()
+	if session == nil {
+		t.Fatal("expected session snapshot")
+	}
+	if session.Metadata["provider"] != string(agentruntime.ProviderClaude) || session.Metadata["transport"] != string(agentruntime.TransportStdio) {
+		t.Fatalf("expected claude stdio runtime metadata, got %+v", session.Metadata)
+	}
+	if !strings.Contains(client.Output(), "hello claude") {
+		t.Fatalf("expected claude runtime output, got %q", client.Output())
 	}
 }

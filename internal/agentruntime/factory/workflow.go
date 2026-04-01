@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/olhapi/maestro/internal/agentruntime"
+	clauderuntime "github.com/olhapi/maestro/internal/agentruntime/claude"
 	codexruntime "github.com/olhapi/maestro/internal/agentruntime/codex"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -37,6 +38,8 @@ func StartWorkflow(ctx context.Context, request WorkflowStartRequest, observers 
 	switch spec.Provider {
 	case "", agentruntime.ProviderCodex:
 		return codexruntime.Start(ctx, spec, observers)
+	case agentruntime.ProviderClaude:
+		return clauderuntime.Start(ctx, spec, observers)
 	default:
 		return nil, fmt.Errorf("%w: provider %q", agentruntime.ErrUnsupportedCapability, spec.Provider)
 	}
