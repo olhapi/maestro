@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -145,5 +146,59 @@ func TestRuntimeSpecFromWorkflowUsesExplicitRuntimeSelection(t *testing.T) {
 	}
 	if workflow.Config.Codex.Command != "codex app-server" {
 		t.Fatalf("expected workflow codex config to stay untouched, got %q", workflow.Config.Codex.Command)
+	}
+}
+
+func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+	workflow.Config.Codex.Provider = "codex"
+	workflow.Config.Codex.Transport = config.AgentModeAppServer
+	workflow.Config.Codex.Command = "codex app-server"
+	workflow.Config.Codex.ExpectedVersion = "1.2.3"
+	workflow.Config.Codex.ReadTimeoutMs = 11
+	workflow.Config.Codex.TurnTimeoutMs = 22
+	workflow.Config.Codex.StallTimeoutMs = 33
+
+	spec, err := RuntimeSpecFromWorkflow(WorkflowStartRequest{
+		Workflow:      workflow,
+		RuntimeName:   "codex-custom",
+		RuntimeConfig: config.RuntimeConfig{},
+		WorkspacePath: "/tmp/workspaces/MAES-123",
+	})
+	if err != nil {
+		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
+	}
+
+	if spec.Provider != agentruntime.ProviderCodex {
+		t.Fatalf("expected fallback provider, got %q", spec.Provider)
+	}
+	if spec.Transport != agentruntime.TransportAppServer {
+		t.Fatalf("expected fallback transport, got %q", spec.Transport)
+	}
+	if spec.Command != "codex app-server" || spec.ExpectedVersion != "1.2.3" {
+		t.Fatalf("expected fallback command and version, got %+v", spec)
+	}
+	if spec.ReadTimeout != 11*time.Millisecond || spec.TurnTimeout != 22*time.Millisecond || spec.StallTimeout != 33*time.Millisecond {
+		t.Fatalf("expected fallback timeouts, got %+v", spec)
+	}
+}
+
+func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Codex.Provider = "claude"
+	workflow.Config.Codex.Command = "claude"
+	workflow.Config.Codex.Transport = config.AgentModeStdio
+
+	_, err := StartWorkflow(t.Context(), WorkflowStartRequest{
+		Workflow:        workflow,
+		IssueID:         "iss_1",
+		IssueIdentifier: "MAES-1",
+	}, agentruntime.Observers{})
+	if err == nil {
+		t.Fatal("expected unsupported provider error")
+	}
+	if !errors.Is(err, agentruntime.ErrUnsupportedCapability) {
+		t.Fatalf("expected unsupported capability error, got %v", err)
 	}
 }
