@@ -18,6 +18,7 @@ import (
 
 	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/observability"
+	"github.com/olhapi/maestro/pkg/config"
 )
 
 // Store manages persistence for the kanban board
@@ -29,9 +30,10 @@ type Store struct {
 }
 
 const (
-	sqliteMaxOpenConns = 8
-	sqliteMaxIdleConns = 4
-	issueSelectColumns = `id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, pending_plan_revision_markdown, pending_plan_revision_requested_at, priority,
+	sqliteMaxOpenConns       = 8
+	sqliteMaxIdleConns       = 4
+	defaultIssueBranchPrefix = config.DefaultWorkspaceBranchPrefix
+	issueSelectColumns       = `id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, collaboration_mode_override, plan_approval_pending, pending_plan_markdown, pending_plan_requested_at, pending_plan_revision_markdown, pending_plan_revision_requested_at, priority,
 	       runtime_name, agent_name, agent_prompt, branch_name, pr_url, created_at, updated_at, total_tokens_spent, started_at, completed_at, last_synced_at`
 	qualifiedIssueSelectColumns = `i.id, i.project_id, i.epic_id, i.identifier, i.issue_type, i.provider_kind, i.provider_issue_ref, i.provider_shadow, i.title, i.description, i.state, i.workflow_phase, i.permission_profile, i.collaboration_mode_override, i.plan_approval_pending, i.pending_plan_markdown, i.pending_plan_requested_at, i.pending_plan_revision_markdown, i.pending_plan_revision_requested_at, i.priority,
 	       i.runtime_name, i.agent_name, i.agent_prompt, i.branch_name, i.pr_url, i.created_at, i.updated_at, i.total_tokens_spent, i.started_at, i.completed_at, i.last_synced_at`
@@ -604,6 +606,9 @@ func (s *Store) ensureIssueColumns() error {
 	if err := s.backfillWorkflowPhases(); err != nil {
 		return err
 	}
+	if err := s.backfillIssueBranchNames(); err != nil {
+		return err
+	}
 	if err := s.removeIssuePRNumberColumn(); err != nil {
 		return err
 	}
@@ -1006,6 +1011,32 @@ func (s *Store) backfillWorkflowPhases() error {
 		return err
 	}
 	if _, err := s.db.Exec(`INSERT OR REPLACE INTO store_metadata (key, value) VALUES ('workflow_phase_backfill_v1', 'done')`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) backfillIssueBranchNames() error {
+	const migrationKey = "issue_branch_name_backfill_v1"
+
+	var applied string
+	err := s.db.QueryRow(`SELECT value FROM store_metadata WHERE key = ?`, migrationKey).Scan(&applied)
+	switch {
+	case err == nil && applied == "done":
+		return nil
+	case err != nil && err != sql.ErrNoRows:
+		return err
+	}
+
+	if _, err := s.db.Exec(`
+		UPDATE issues
+		SET branch_name = ? || COALESCE(NULLIF(TRIM(identifier), ''), 'issue')
+		WHERE branch_name IS NULL OR TRIM(branch_name) = ''`,
+		defaultIssueBranchPrefix,
+	); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, 'done')`, migrationKey); err != nil {
 		return err
 	}
 	return nil
