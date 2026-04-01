@@ -21,6 +21,7 @@ const (
 	DispatchModePerProjectSerial    = "per_project_serial"
 	InitialCollaborationModePlan    = "plan"
 	InitialCollaborationModeDefault = "default"
+	DefaultWorkspaceBranchPrefix    = "maestro/"
 )
 
 var (
@@ -135,7 +136,7 @@ func DefaultConfig() Config {
 		Polling: PollingConfig{IntervalMs: 10000},
 		Workspace: WorkspaceConfig{
 			Root:         "~/.maestro/worktrees",
-			BranchPrefix: "maestro/",
+			BranchPrefix: DefaultWorkspaceBranchPrefix,
 		},
 		Hooks:        HooksConfig{TimeoutMs: 60000},
 		Orchestrator: orchestrator,
