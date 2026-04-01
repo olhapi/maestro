@@ -248,6 +248,9 @@ func TestInitWorkflowInteractiveWizardUsesDefaults(t *testing.T) {
 		"Runtime command",
 		"Agent mode",
 		"Dispatch mode",
+		"Initial collaboration mode",
+		"Start fresh runtime sessions in default mode.",
+		"Start fresh runtime sessions in plan mode.",
 	)
 }
 

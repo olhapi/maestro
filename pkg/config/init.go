@@ -74,8 +74,8 @@ var (
 	initCollaborationModeChoices = initChoiceSet{
 		Err: ErrInvalidInitCollaborationMode,
 		Choices: []initChoice{
-			{Value: InitialCollaborationModeDefault, Description: "Start fresh app_server threads in execution mode.", Aliases: []string{"def"}},
-			{Value: InitialCollaborationModePlan, Description: "Start fresh app_server threads in plan mode."},
+			{Value: InitialCollaborationModeDefault, Description: "Start fresh runtime sessions in default mode.", Aliases: []string{"def"}},
+			{Value: InitialCollaborationModePlan, Description: "Start fresh runtime sessions in plan mode."},
 		},
 	}
 )
