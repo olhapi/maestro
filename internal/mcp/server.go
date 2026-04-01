@@ -51,6 +51,30 @@ const (
 	mcpPaginationMaxLimit     = 500
 )
 
+// These tools are intentionally annotated as non-blocking for Codex so
+// unattended issue execution can manage local Maestro metadata without
+// tripping external MCP approval prompts.
+var nonBlockingBuiltInTools = map[string]struct{}{
+	"server_info":              {},
+	"list_projects":            {},
+	"list_epics":               {},
+	"get_issue":                {},
+	"list_issue_comments":      {},
+	"list_issues":              {},
+	"update_issue":             {},
+	"attach_issue_asset":       {},
+	"create_issue_comment":     {},
+	"update_issue_comment":     {},
+	"set_issue_state":          {},
+	"set_issue_workflow_phase": {},
+	"get_issue_execution":      {},
+	"board_overview":           {},
+	"set_blockers":             {},
+	"list_runtime_events":      {},
+	"get_runtime_snapshot":     {},
+	"list_sessions":            {},
+}
+
 // NewServer creates a new MCP server.
 func NewServer(store *kanban.Store) *Server {
 	return NewServerWithProvider(store, nil)
@@ -251,6 +275,7 @@ func (s *Server) registerTools() {
 			Name:        asString(spec["name"]),
 			Description: asString(spec["description"]),
 			InputSchema: extensionToolInputSchema(spec),
+			Annotations: extensionToolAnnotations(spec),
 		})
 	}
 
@@ -1193,6 +1218,10 @@ func extensionToolInputSchema(spec map[string]interface{}) mcpapi.ToolInputSchem
 	}
 }
 
+func extensionToolAnnotations(spec map[string]interface{}) mcpapi.ToolAnnotation {
+	return toolAnnotationFromMap(mapStringInterface(spec["annotations"]), defaultExtensionToolAnnotations())
+}
+
 func objectTool(name, description string, properties map[string]interface{}) mcpapi.Tool {
 	return mcpapi.Tool{
 		Name:        name,
@@ -1201,7 +1230,69 @@ func objectTool(name, description string, properties map[string]interface{}) mcp
 			Type:       "object",
 			Properties: properties,
 		},
+		Annotations: builtInToolAnnotations(name),
 	}
+}
+
+func builtInToolAnnotations(name string) mcpapi.ToolAnnotation {
+	if _, ok := nonBlockingBuiltInTools[name]; ok {
+		return localReadOnlyToolAnnotations()
+	}
+	return localMutatingToolAnnotations()
+}
+
+func localReadOnlyToolAnnotations() mcpapi.ToolAnnotation {
+	return newToolAnnotations("", true, false, true, false)
+}
+
+func localMutatingToolAnnotations() mcpapi.ToolAnnotation {
+	return newToolAnnotations("", false, true, false, false)
+}
+
+func defaultExtensionToolAnnotations() mcpapi.ToolAnnotation {
+	return newToolAnnotations("", false, true, false, true)
+}
+
+func newToolAnnotations(title string, readOnly, destructive, idempotent, openWorld bool) mcpapi.ToolAnnotation {
+	return mcpapi.ToolAnnotation{
+		Title:           strings.TrimSpace(title),
+		ReadOnlyHint:    boolPtr(readOnly),
+		DestructiveHint: boolPtr(destructive),
+		IdempotentHint:  boolPtr(idempotent),
+		OpenWorldHint:   boolPtr(openWorld),
+	}
+}
+
+func toolAnnotationFromMap(raw map[string]interface{}, fallback mcpapi.ToolAnnotation) mcpapi.ToolAnnotation {
+	annotation := fallback
+	if raw == nil {
+		return annotation
+	}
+	if title, ok := raw["title"].(string); ok {
+		annotation.Title = strings.TrimSpace(title)
+	}
+	if v, ok := raw["readOnlyHint"].(bool); ok {
+		annotation.ReadOnlyHint = boolPtr(v)
+	}
+	if v, ok := raw["destructiveHint"].(bool); ok {
+		annotation.DestructiveHint = boolPtr(v)
+	}
+	if v, ok := raw["idempotentHint"].(bool); ok {
+		annotation.IdempotentHint = boolPtr(v)
+	}
+	if v, ok := raw["openWorldHint"].(bool); ok {
+		annotation.OpenWorldHint = boolPtr(v)
+	}
+	return annotation
+}
+
+func mapStringInterface(value interface{}) map[string]interface{} {
+	out, _ := value.(map[string]interface{})
+	return out
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func stringProperty(description string) map[string]interface{} {

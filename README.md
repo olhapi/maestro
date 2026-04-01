@@ -305,6 +305,8 @@ If you do not want to preinstall Codex, Maestro also supports pinning the runtim
 
 `initial_collaboration_mode: default` keeps unattended runs execution-first for a fresh `app_server` thread. Use `plan` only when you explicitly want a plan-gated startup mode. Interactive approvals and `requestUserInput` prompts still depend on using a non-`never` approval policy, and those prompts are queued through the dashboard's global interrupt panel. Resumed threads and `stdio` runs do not use that startup-mode path.
 
+`codex.approval_policy: never` applies to Maestro-managed app-server turns. It does not automatically suppress Codex's separate trust prompts for attached external MCP servers such as `maestro mcp`; those prompts still depend on the MCP client's local trust settings and the tool annotations advertised by the server.
+
 Interactive `maestro workflow init` now walks through `workspace.root`, `codex.command`, `agent.mode`, `agent.dispatch_mode`, `agent.max_concurrent_agents`, `agent.max_turns`, and `agent.max_automatic_retries`, then asks for `codex.approval_policy` and `codex.initial_collaboration_mode` only for `app_server`.
 
 Enum prompts now render numbered menus. You can press Enter to keep the default, or enter the number, an alias, a unique prefix, or the full value. Examples: `server` for `app_server`, `serial` or `pps` for `per_project_serial`, `req` for `on-request`, and `def` for `default`. Ambiguous prefixes such as `on` are rejected and reprompted.
