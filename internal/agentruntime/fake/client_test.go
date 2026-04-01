@@ -19,6 +19,7 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 		WorkspacePath:   "/tmp/workspaces/MAES-321",
 		IssueID:         "iss_321",
 		IssueIdentifier: "MAES-321",
+		DBPath:          "/tmp/maestro.db",
 		Env:             []string{"FOO=bar"},
 		Permissions: agentruntime.PermissionConfig{
 			ThreadSandbox: "workspace-write",
@@ -154,6 +155,9 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 	}
 	if captured.RuntimeConfig.ApprovalPolicy != "never" {
 		t.Fatalf("expected starter to preserve runtime approval policy, got %#v", captured.RuntimeConfig)
+	}
+	if captured.DBPath != "/tmp/maestro.db" {
+		t.Fatalf("expected starter to clone db path, got %#v", captured.DBPath)
 	}
 	if captured.Permissions.Metadata["source"] != "test" {
 		t.Fatalf("expected starter to clone permissions, got %#v", captured.Permissions.Metadata)

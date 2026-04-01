@@ -485,6 +485,9 @@ func TestRunnerResolveExecutionPolicyUsesExplicitRuntimeSelection(t *testing.T) 
 		if captured.RuntimeConfig.Transport != selection.Config.Transport {
 			t.Fatalf("expected explicit runtime transport in request, got %#v", captured.RuntimeConfig)
 		}
+		if captured.DBPath != store.DBPath() {
+			t.Fatalf("expected live db path in runtime request, got %q want %q", captured.DBPath, store.DBPath())
+		}
 		if policy, ok := captured.Permissions.ApprovalPolicy.(string); !ok || policy != "never" {
 			t.Fatalf("expected explicit runtime approval policy in request, got %#v", captured.Permissions.ApprovalPolicy)
 		}
@@ -550,6 +553,7 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 		activitySeen    bool
 		interactionSeen bool
 		doneSeen        bool
+		capturedRequest runtimefactory.WorkflowStartRequest
 	)
 	runner.SetSessionObserver(func(issueID string, session *agentruntime.Session) {
 		sessionSeen = issueID == issue.ID && session != nil
@@ -568,6 +572,7 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 	})
 
 	runner.runtimeStarter = func(ctx context.Context, request runtimefactory.WorkflowStartRequest, observers agentruntime.Observers) (agentruntime.Client, error) {
+		capturedRequest = request
 		if request.IssueID != issue.ID || request.IssueIdentifier != issue.Identifier {
 			return nil, fmt.Errorf("unexpected runtime request: %#v", request)
 		}
@@ -604,6 +609,9 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 	}
 	if client == nil {
 		t.Fatal("expected runtime client")
+	}
+	if capturedRequest.DBPath != store.DBPath() {
+		t.Fatalf("expected live db path in runtime request, got %q want %q", capturedRequest.DBPath, store.DBPath())
 	}
 	if !sessionSeen || !activitySeen || !interactionSeen || !doneSeen {
 		t.Fatalf("expected observer callbacks to be invoked, got session=%v activity=%v interaction=%v done=%v", sessionSeen, activitySeen, interactionSeen, doneSeen)

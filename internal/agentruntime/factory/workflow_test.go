@@ -1,7 +1,8 @@
 package factory
 
 import (
-	"errors"
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -42,6 +43,7 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 			},
 		}},
 		ResumeToken: " thread-123 ",
+		DBPath:      "/tmp/maestro.db",
 		Metadata: map[string]interface{}{
 			"provider_hint": "codex",
 		},
@@ -72,6 +74,9 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	}
 	if spec.ResumeToken != "thread-123" {
 		t.Fatalf("expected resume token to be trimmed, got %q", spec.ResumeToken)
+	}
+	if spec.DBPath != "/tmp/maestro.db" {
+		t.Fatalf("expected db path to be preserved, got %q", spec.DBPath)
 	}
 	if len(spec.Env) != 1 || spec.Env[0] != "FOO=bar" {
 		t.Fatalf("expected env to be copied, got %#v", spec.Env)
@@ -184,21 +189,44 @@ func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.
 	}
 }
 
-func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
+func TestStartWorkflowUsesClaudeRuntime(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
-	workflow.Config.Codex.Provider = "claude"
-	workflow.Config.Codex.Command = "claude"
-	workflow.Config.Codex.Transport = config.AgentModeStdio
+	workflow.Config.Workspace.Root = "/repo/root"
+	workflow.Config.Runtime.Default = "claude"
+	workflow.Config.Runtime.Entries["claude"] = config.RuntimeConfig{
+		Provider:                 "claude",
+		Transport:                config.AgentModeStdio,
+		Command:                  "cat",
+		ApprovalPolicy:           "never",
+		InitialCollaborationMode: config.InitialCollaborationModeDefault,
+		TurnTimeoutMs:            1,
+		ReadTimeoutMs:            1,
+		StallTimeoutMs:           1,
+	}
+	workflow.Config.Codex = workflow.Config.Runtime.Entries["claude"]
 
-	_, err := StartWorkflow(t.Context(), WorkflowStartRequest{
+	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
 		Workflow:        workflow,
 		IssueID:         "iss_1",
 		IssueIdentifier: "MAES-1",
+		DBPath:          filepath.Join(t.TempDir(), "maestro.db"),
 	}, agentruntime.Observers{})
-	if err == nil {
-		t.Fatal("expected unsupported provider error")
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
 	}
-	if !errors.Is(err, agentruntime.ErrUnsupportedCapability) {
-		t.Fatalf("expected unsupported capability error, got %v", err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	session := client.Session()
+	if session == nil {
+		t.Fatal("expected runtime session")
+	}
+	if session.Metadata["provider"] != string(agentruntime.ProviderClaude) {
+		t.Fatalf("expected claude provider metadata, got %+v", session.Metadata)
+	}
+	if session.Metadata["transport"] != string(agentruntime.TransportStdio) {
+		t.Fatalf("expected stdio transport metadata, got %+v", session.Metadata)
+	}
+	if client.Output() != "" {
+		t.Fatalf("expected empty output before any turn, got %q", client.Output())
 	}
 }

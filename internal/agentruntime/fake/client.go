@@ -360,6 +360,7 @@ func cloneRequest(request runtimefactory.WorkflowStartRequest) runtimefactory.Wo
 		DynamicTools:    cloneToolSpecs(request.DynamicTools),
 		ToolExecutor:    request.ToolExecutor,
 		ResumeToken:     request.ResumeToken,
+		DBPath:          request.DBPath,
 		Metadata:        cloneJSONMap(request.Metadata),
 	}
 }
