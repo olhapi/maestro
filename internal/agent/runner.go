@@ -1387,12 +1387,12 @@ func (r *Runner) startRuntimeClient(ctx context.Context, workflow *config.Workfl
 }
 
 func runtimePermissionConfig(config permissionConfig) agentruntime.PermissionConfig {
-	return agentruntime.PermissionConfig{
+	return agentruntime.PermissionConfig{}.WithProvider(agentruntime.ProviderCodex, agentruntime.ProviderPermissionConfig{
 		ApprovalPolicy:    config.ApprovalPolicy,
 		ThreadSandbox:     config.ThreadSandbox,
 		TurnSandboxPolicy: config.TurnSandboxPolicy,
 		CollaborationMode: config.InitialCollaborationMode,
-	}
+	})
 }
 
 func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, session *agentruntime.Session, planMode bool) (bool, error) {

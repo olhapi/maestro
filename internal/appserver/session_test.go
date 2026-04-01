@@ -321,7 +321,7 @@ func TestSessionSummaryAndCoercionHelpers(t *testing.T) {
 		"session_id":            "session-1",
 		"thread_id":             "thread-1",
 		"turn_id":               "turn-1",
-		"codex_app_server_pid":  int64(99),
+		"process_id":            int64(99),
 		"last_event":            "turn.completed",
 		"last_timestamp":        timestamp.Format(time.RFC3339),
 		"last_message":          "all done",

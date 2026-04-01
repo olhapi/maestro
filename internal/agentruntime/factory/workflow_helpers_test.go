@@ -40,11 +40,15 @@ func TestRuntimeSpecFromWorkflowClonesMutableInputs(t *testing.T) {
 	workflow.Config.Workspace.Root = "/repo/root"
 
 	permissions := agentruntime.PermissionConfig{
-		ApprovalPolicy: map[string]interface{}{
-			"granular": map[string]interface{}{"rules": true},
-		},
-		TurnSandboxPolicy: map[string]interface{}{
-			"type": "workspaceWrite",
+		Providers: map[agentruntime.Provider]agentruntime.ProviderPermissionConfig{
+			agentruntime.ProviderCodex: {
+				ApprovalPolicy: map[string]interface{}{
+					"granular": map[string]interface{}{"rules": true},
+				},
+				TurnSandboxPolicy: map[string]interface{}{
+					"type": "workspaceWrite",
+				},
+			},
 		},
 		Metadata: map[string]interface{}{
 			"provider": "codex",
@@ -77,7 +81,9 @@ func TestRuntimeSpecFromWorkflowClonesMutableInputs(t *testing.T) {
 		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
 	}
 	request.Env[0] = "FOO=changed"
-	request.Permissions.TurnSandboxPolicy["type"] = "dangerFullAccess"
+	requestPermissions := request.Permissions.Providers[agentruntime.ProviderCodex]
+	requestPermissions.TurnSandboxPolicy["type"] = "dangerFullAccess"
+	request.Permissions.Providers[agentruntime.ProviderCodex] = requestPermissions
 	request.Permissions.Metadata["provider"] = "changed"
 	request.DynamicTools[0]["name"] = "tool-2"
 	request.Metadata["source"] = "changed"
@@ -85,8 +91,8 @@ func TestRuntimeSpecFromWorkflowClonesMutableInputs(t *testing.T) {
 	if spec.ResumeToken != "thread-1" {
 		t.Fatalf("expected resume token to be trimmed, got %q", spec.ResumeToken)
 	}
-	if spec.Permissions.TurnSandboxPolicy["type"] != "workspaceWrite" {
-		t.Fatalf("expected sandbox policy clone, got %#v", spec.Permissions.TurnSandboxPolicy)
+	if got := spec.Permissions.ForProvider(agentruntime.ProviderCodex); got.TurnSandboxPolicy["type"] != "workspaceWrite" {
+		t.Fatalf("expected sandbox policy clone, got %#v", got.TurnSandboxPolicy)
 	}
 	if spec.Permissions.Metadata["provider"] != "codex" {
 		t.Fatalf("expected permission metadata clone, got %#v", spec.Permissions.Metadata)
@@ -101,13 +107,17 @@ func TestRuntimeSpecFromWorkflowClonesMutableInputs(t *testing.T) {
 
 func TestCloneHelpersCopyNestedValues(t *testing.T) {
 	permissions := agentruntime.PermissionConfig{
-		ApprovalPolicy: map[string]interface{}{
-			"granular": map[string]interface{}{
-				"rules": true,
+		Providers: map[agentruntime.Provider]agentruntime.ProviderPermissionConfig{
+			agentruntime.ProviderCodex: {
+				ApprovalPolicy: map[string]interface{}{
+					"granular": map[string]interface{}{
+						"rules": true,
+					},
+				},
+				TurnSandboxPolicy: map[string]interface{}{
+					"type": "workspaceWrite",
+				},
 			},
-		},
-		TurnSandboxPolicy: map[string]interface{}{
-			"type": "workspaceWrite",
 		},
 		Metadata: map[string]interface{}{
 			"nested": map[string]interface{}{
@@ -116,11 +126,13 @@ func TestCloneHelpersCopyNestedValues(t *testing.T) {
 		},
 	}
 
-	cloned := clonePermissionConfig(permissions)
-	cloned.TurnSandboxPolicy["type"] = "dangerFullAccess"
+	cloned := permissions.Clone()
+	clonedPermissions := cloned.Providers[agentruntime.ProviderCodex]
+	clonedPermissions.TurnSandboxPolicy["type"] = "dangerFullAccess"
+	cloned.Providers[agentruntime.ProviderCodex] = clonedPermissions
 	cloned.Metadata["nested"].(map[string]interface{})["transport"] = "stdio"
-	if permissions.TurnSandboxPolicy["type"] != "workspaceWrite" {
-		t.Fatalf("expected original sandbox policy to remain unchanged, got %#v", permissions.TurnSandboxPolicy)
+	if got := permissions.ForProvider(agentruntime.ProviderCodex); got.TurnSandboxPolicy["type"] != "workspaceWrite" {
+		t.Fatalf("expected original sandbox policy to remain unchanged, got %#v", got.TurnSandboxPolicy)
 	}
 	if permissions.Metadata["nested"].(map[string]interface{})["transport"] != "app_server" {
 		t.Fatalf("expected original metadata to remain unchanged, got %#v", permissions.Metadata)

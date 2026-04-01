@@ -168,7 +168,7 @@ func (c *Client) RunTurn(ctx context.Context, request agentruntime.TurnRequest, 
 func (c *Client) UpdatePermissions(config agentruntime.PermissionConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.permissionUpdates = append(c.permissionUpdates, clonePermissionConfig(config))
+	c.permissionUpdates = append(c.permissionUpdates, config.Clone())
 }
 
 func (c *Client) RespondToInteraction(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {
@@ -222,7 +222,7 @@ func (c *Client) PermissionUpdates() []agentruntime.PermissionConfig {
 	defer c.mu.Unlock()
 	out := make([]agentruntime.PermissionConfig, 0, len(c.permissionUpdates))
 	for _, config := range c.permissionUpdates {
-		out = append(out, clonePermissionConfig(config))
+		out = append(out, config.Clone())
 	}
 	return out
 }
@@ -353,7 +353,7 @@ func cloneRequest(request runtimefactory.WorkflowStartRequest) runtimefactory.Wo
 		IssueID:         request.IssueID,
 		IssueIdentifier: request.IssueIdentifier,
 		Env:             append([]string(nil), request.Env...),
-		Permissions:     clonePermissionConfig(request.Permissions),
+		Permissions:     request.Permissions.Clone(),
 		DynamicTools:    cloneToolSpecs(request.DynamicTools),
 		ToolExecutor:    request.ToolExecutor,
 		ResumeToken:     request.ResumeToken,
@@ -384,16 +384,6 @@ func cloneInputItems(items []agentruntime.InputItem) []agentruntime.InputItem {
 		})
 	}
 	return out
-}
-
-func clonePermissionConfig(config agentruntime.PermissionConfig) agentruntime.PermissionConfig {
-	return agentruntime.PermissionConfig{
-		ApprovalPolicy:    cloneJSONValue(config.ApprovalPolicy),
-		ThreadSandbox:     config.ThreadSandbox,
-		TurnSandboxPolicy: cloneJSONMap(config.TurnSandboxPolicy),
-		CollaborationMode: config.CollaborationMode,
-		Metadata:          cloneJSONMap(config.Metadata),
-	}
 }
 
 func cloneInteractionResponse(response agentruntime.PendingInteractionResponse) agentruntime.PendingInteractionResponse {
