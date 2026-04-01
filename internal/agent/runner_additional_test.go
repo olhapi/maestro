@@ -213,7 +213,7 @@ func TestRunnerPureHelpersBranches(t *testing.T) {
 	if got := projectWorkspaceSlug(project); got != "team-alpha" {
 		t.Fatalf("unexpected project slug: %q", got)
 	}
-	if got := deterministicIssueBranch(&kanban.Issue{}); got != "codex/issue" {
+	if got := deterministicIssueBranch(&kanban.Issue{}); got != "maestro/issue" {
 		t.Fatalf("unexpected default branch: %q", got)
 	}
 	if got := deterministicIssueBranch(&kanban.Issue{Identifier: "ISSUE-1", BranchName: "  custom-branch  "}); got != "custom-branch" {
@@ -622,7 +622,7 @@ func TestRunnerBranchAndPromptCoverage(t *testing.T) {
 		if got := sanitizeWorkspaceKey("!!!"); got != "issue" {
 			t.Fatalf("expected empty sanitizeWorkspaceKey fallback, got %q", got)
 		}
-		if got := deterministicIssueBranch(&kanban.Issue{Identifier: " ", BranchName: " "}); got != "codex/issue" {
+		if got := deterministicIssueBranch(&kanban.Issue{Identifier: " ", BranchName: " "}); got != "maestro/issue" {
 			t.Fatalf("expected blank branch fallback, got %q", got)
 		}
 		if got := runner.planModeForIssue(nil, issue); got {

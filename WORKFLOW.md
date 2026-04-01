@@ -21,6 +21,8 @@ polling:
 # absolute paths, $ENV_VAR paths, and ~/ paths are also supported.
 workspace:
   root: ~/.maestro/worktrees
+  # Prefix used when Maestro prepares issue branches.
+  branch_prefix: maestro/
 
 # Optional shell hooks that run inside the issue workspace.
 hooks:
@@ -70,46 +72,50 @@ phases:
       - Do not remove the issue worktree yourself; leave the workspace intact for Maestro's post-run cleanup.
       - If merge conflicts, missing credentials, permissions, or required services block completion, report the blocker clearly and stop.
 
-# Agent runtime settings.
-agent:
+# Runtime scheduling settings.
+orchestrator:
   # Maximum concurrent issues per project when dispatch_mode is parallel.
   # dispatch_mode=per_project_serial forces effective per-project concurrency to 1.
   max_concurrent_agents: 2
-  # Maximum turns Maestro gives Codex before ending an attempt.
+  # Maximum turns Maestro gives the runtime before ending an attempt.
   max_turns: 40
   # Maximum delay between automatic retries after failed attempts.
   max_retry_backoff_ms: 60000
   # Maximum automatic retry attempts for the same issue before Maestro stops retrying.
   max_automatic_retries: 8
-  # Agent transport. Available values: app_server, stdio. Fresh maestro init default: app_server.
-  mode: app_server
   # Scheduling behavior. Available values: parallel, per_project_serial. Fresh maestro init default: parallel.
   dispatch_mode: per_project_serial
 
-# Codex CLI launch and collaboration settings.
-codex:
-  # Exact command Maestro launches for the agent.
-  command: codex app-server
-  # Expected codex --version. Mismatches warn but do not hard-fail.
-  expected_version: 0.117.0
-  # Approval mode for Codex. Available values: never, on-request, on-failure, untrusted. Fresh maestro init default: never.
-  # "never" keeps unattended runs non-interactive, so permission recovery must come
-  # from the project or issue permission profile rather than live approval prompts.
-  # Use on-request when initial_collaboration_mode is plan so the agent can ask
-  # questions and recover through approvals before Maestro promotes the run.
-  # A structured granular object is also supported for per-category approval policies.
-  approval_policy: never
-  # Initial collaboration mode for fresh app_server threads. Available values: default, plan. Fresh maestro init default: default.
-  # Use plan for a planning pass before implementation. Pair it with on-request
-  # when you want the agent to ask questions and pause for approval.
-  # Ignored for stdio runs and resumed threads.
-  initial_collaboration_mode: default
-  # Maximum total runtime for one turn before Maestro cancels it.
-  turn_timeout_ms: 1800000
-  # Maximum time to wait for streamed output before considering the stream stalled.
-  read_timeout_ms: 10000
-  # Maximum idle time without Codex activity before Maestro aborts the turn.
-  stall_timeout_ms: 300000
+# Named runtime entries. The default entry selects the runtime used for this repo.
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    expected_version: 0.117.0
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: codex exec
+    expected_version: 0.117.0
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
 ---
 
 You are working on issue {{ issue.identifier }}.

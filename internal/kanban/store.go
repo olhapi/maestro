@@ -18,7 +18,6 @@ import (
 
 	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/observability"
-	"github.com/olhapi/maestro/pkg/config"
 )
 
 // Store manages persistence for the kanban board
@@ -234,10 +233,6 @@ func newStoreWithMode(dbPath string, readOnly bool, migrateFn func(*Store) error
 		if err := migrateFn(store); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("failed to migrate: %w", err)
-		}
-		if err := store.backfillLegacyProjectPermissionProfiles(); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("failed to backfill legacy project permissions: %w", err)
 		}
 	}
 
@@ -1300,19 +1295,6 @@ func normalizeProviderKind(kind string) string {
 	}
 }
 
-func legacyWorkflowPermissionProfile(repoPath, workflowPath string) PermissionProfile {
-	repoPath = strings.TrimSpace(repoPath)
-	workflowPath = strings.TrimSpace(workflowPath)
-	if repoPath == "" && workflowPath == "" {
-		return PermissionProfileDefault
-	}
-	usesFullAccess, err := config.LegacyWorkflowUsesFullAccess(config.ResolveWorkflowPath(repoPath, workflowPath))
-	if err != nil || !usesFullAccess {
-		return PermissionProfileDefault
-	}
-	return PermissionProfileFullAccess
-}
-
 func cloneProviderConfig(config map[string]interface{}) map[string]interface{} {
 	if len(config) == 0 {
 		return map[string]interface{}{}
@@ -1443,7 +1425,7 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 	providerKind = normalizeProviderKind(providerKind)
 	providerProjectRef = strings.TrimSpace(providerProjectRef)
 	providerConfigJSON := encodeProviderConfig(providerConfig)
-	permissionProfile := legacyWorkflowPermissionProfile(repoPath, workflowPath)
+	permissionProfile := PermissionProfileDefault
 	selectedRuntimeName := string(agentruntime.ProviderCodex)
 	if len(runtimeName) > 0 {
 		if trimmed := strings.TrimSpace(runtimeName[0]); trimmed != "" {
@@ -1479,46 +1461,6 @@ func (s *Store) CreateProjectWithProvider(name, description, repoPath, workflowP
 		return nil, err
 	}
 	return project, nil
-}
-
-func (s *Store) backfillLegacyProjectPermissionProfiles() error {
-	rows, err := s.db.Query(`SELECT id, repo_path, workflow_path, permission_profile FROM projects`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	type candidate struct {
-		id      string
-		profile PermissionProfile
-	}
-	var updates []candidate
-	for rows.Next() {
-		var (
-			id                string
-			repoPath          string
-			workflowPath      string
-			permissionProfile string
-		)
-		if err := rows.Scan(&id, &repoPath, &workflowPath, &permissionProfile); err != nil {
-			return err
-		}
-		if NormalizePermissionProfile(permissionProfile) != PermissionProfileDefault {
-			continue
-		}
-		if profile := legacyWorkflowPermissionProfile(repoPath, workflowPath); profile != PermissionProfileDefault {
-			updates = append(updates, candidate{id: id, profile: profile})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, update := range updates {
-		if err := s.UpdateProjectPermissionProfile(update.id, update.profile); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Store) GetProject(id string) (*Project, error) {
@@ -1586,9 +1528,6 @@ func (s *Store) UpdateProjectWithProvider(id, name, description, repoPath, workf
 		selectedRuntimeName = string(agentruntime.ProviderCodex)
 	}
 	permissionProfile := current.PermissionProfile
-	if NormalizePermissionProfile(string(permissionProfile)) == PermissionProfileDefault {
-		permissionProfile = legacyWorkflowPermissionProfile(repoPath, workflowPath)
-	}
 	res, err := s.db.Exec(`
 		UPDATE projects SET name = ?, description = ?, permission_profile = ?, runtime_name = ?, repo_path = ?, workflow_path = ?, provider_kind = ?, provider_project_ref = ?, provider_config_json = ?, updated_at = ?
 		WHERE id = ?`,

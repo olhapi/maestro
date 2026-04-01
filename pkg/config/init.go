@@ -372,38 +372,54 @@ func buildWorkflowFile(opts InitOptions) string {
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
 		cfg.Workspace.Root = strings.TrimSpace(opts.WorkspaceRoot)
 	}
-	if strings.TrimSpace(opts.CodexCommand) != "" {
-		cfg.Codex.Command = strings.TrimSpace(opts.CodexCommand)
-	}
 	if strings.TrimSpace(opts.AgentMode) != "" {
 		cfg.Agent.Mode = strings.TrimSpace(opts.AgentMode)
 	}
 	if strings.TrimSpace(opts.DispatchMode) != "" {
-		cfg.Agent.DispatchMode = strings.TrimSpace(opts.DispatchMode)
+		cfg.Orchestrator.DispatchMode = strings.TrimSpace(opts.DispatchMode)
 	}
 	if opts.MaxConcurrentAgents > 0 {
-		cfg.Agent.MaxConcurrentAgents = opts.MaxConcurrentAgents
+		cfg.Orchestrator.MaxConcurrentAgents = opts.MaxConcurrentAgents
 	}
 	if opts.MaxTurns > 0 {
-		cfg.Agent.MaxTurns = opts.MaxTurns
+		cfg.Orchestrator.MaxTurns = opts.MaxTurns
 	}
 	if opts.MaxAutomaticRetries > 0 {
-		cfg.Agent.MaxAutomaticRetries = opts.MaxAutomaticRetries
+		cfg.Orchestrator.MaxAutomaticRetries = opts.MaxAutomaticRetries
 	}
-	if strings.TrimSpace(opts.ApprovalPolicy) != "" {
-		cfg.Codex.ApprovalPolicy = strings.TrimSpace(opts.ApprovalPolicy)
+	selectedRuntimeName := "codex-appserver"
+	if cfg.Agent.Mode == AgentModeStdio {
+		selectedRuntimeName = "codex-stdio"
 	}
-	if strings.TrimSpace(opts.InitialCollaborationMode) != "" {
-		cfg.Codex.InitialCollaborationMode = strings.TrimSpace(opts.InitialCollaborationMode)
+	if runtimeCfg, ok := cfg.Runtime.Entries[selectedRuntimeName]; ok {
+		if strings.TrimSpace(opts.CodexCommand) != "" {
+			runtimeCfg.Command = strings.TrimSpace(opts.CodexCommand)
+		}
+		if selectedRuntimeName == "codex-appserver" {
+			if strings.TrimSpace(opts.ApprovalPolicy) != "" {
+				runtimeCfg.ApprovalPolicy = strings.TrimSpace(opts.ApprovalPolicy)
+			}
+			if strings.TrimSpace(opts.InitialCollaborationMode) != "" {
+				runtimeCfg.InitialCollaborationMode = strings.TrimSpace(opts.InitialCollaborationMode)
+			}
+		}
+		cfg.Runtime.Entries[selectedRuntimeName] = runtimeCfg
 	}
+	cfg.Runtime.Default = selectedRuntimeName
+	cfg.applyDerivedRuntimeFields()
+
 	reviewPrompt := indentBlock(DefaultInitReviewPromptTemplate(), "      ")
 	donePrompt := indentBlock(DefaultInitDonePromptTemplate(), "      ")
 	reviewEnabledComment := formatInitBoolComment(initDefaults.Phases.Review.Enabled)
 	doneEnabledComment := formatInitBoolComment(initDefaults.Phases.Done.Enabled)
-	agentModeComment := formatInitChoiceComment(initAgentModeChoices, initDefaults.Agent.Mode)
-	dispatchModeComment := formatInitChoiceComment(initDispatchModeChoices, initDefaults.Agent.DispatchMode)
-	approvalPolicyComment := formatInitChoiceComment(initApprovalPolicyChoices, strings.TrimSpace(fmt.Sprintf("%v", initDefaults.Codex.ApprovalPolicy)))
-	initialCollaborationModeComment := formatInitChoiceComment(initCollaborationModeChoices, initDefaults.Codex.InitialCollaborationMode)
+	dispatchModeComment := formatInitChoiceComment(initDispatchModeChoices, initDefaults.Orchestrator.DispatchMode)
+
+	var runtimeBlock strings.Builder
+	runtimeBlock.WriteString(fmt.Sprintf("runtime:\n  default: %s\n", cfg.Runtime.Default))
+	runtimeBlock.WriteString(renderRuntimeEntry("codex-appserver", cfg.Runtime.Entries["codex-appserver"]))
+	runtimeBlock.WriteString(renderRuntimeEntry("codex-stdio", cfg.Runtime.Entries["codex-stdio"]))
+	runtimeBlock.WriteString(renderRuntimeEntry("claude", cfg.Runtime.Entries["claude"]))
+
 	return strings.TrimSpace(fmt.Sprintf(`
 ---
 # Tracker configuration. Supported tracker kind today: %s.
@@ -428,6 +444,8 @@ polling:
 # absolute paths, $ENV_VAR paths, and ~/ paths are also supported.
 workspace:
   root: %s
+  # Prefix used when Maestro prepares issue branches.
+  branch_prefix: %s
 
 # Optional shell hooks that run inside the issue workspace.
 hooks:
@@ -458,50 +476,45 @@ phases:
     prompt: |
 %s
 
-# Agent runtime settings.
-agent:
+# Runtime scheduling settings.
+orchestrator:
   # Maximum concurrent issues per project when dispatch_mode is parallel.
   # dispatch_mode=per_project_serial forces effective per-project concurrency to 1.
   max_concurrent_agents: %d
-  # Maximum turns Maestro gives Codex before ending an attempt.
+  # Maximum turns Maestro gives the runtime before ending an attempt.
   max_turns: %d
   # Maximum delay between automatic retries after failed attempts.
   max_retry_backoff_ms: %d
   # Maximum automatic retry attempts for the same issue before Maestro stops retrying.
   max_automatic_retries: %d
-  # Agent transport. %s
-  mode: %s
   # Scheduling behavior. %s
   dispatch_mode: %s
 
-# Codex CLI launch and collaboration settings.
-codex:
-  # Exact command Maestro launches for the agent.
-  command: %s
-  # Expected codex --version. Mismatches warn but do not hard-fail.
-  expected_version: %s
-  # Approval mode for Codex. %s
-  # "never" keeps unattended runs non-interactive, so permission recovery must come
-  # from the project or issue permission profile rather than live approval prompts.
-  # Use on-request when initial_collaboration_mode is plan so the agent can ask
-  # questions and recover through approvals before Maestro promotes the run.
-  # A structured granular object is also supported for per-category approval policies.
-  approval_policy: %v
-  # Initial collaboration mode for fresh app_server threads. %s
-  # Use plan for a planning pass before implementation. Pair it with on-request
-  # when you want the agent to ask questions and pause for approval.
-  # Ignored for stdio runs and resumed threads.
-  initial_collaboration_mode: %s
-  # Maximum total runtime for one turn before Maestro cancels it.
-  turn_timeout_ms: %d
-  # Maximum time to wait for streamed output before considering the stream stalled.
-  read_timeout_ms: %d
-  # Maximum idle time without Codex activity before Maestro aborts the turn.
-  stall_timeout_ms: %d
+# Named runtime entries. The default entry selects the runtime used for this repo.
+%s
 ---
 
 %s
-`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, reviewEnabledComment, cfg.Phases.Review.Enabled, reviewPrompt, doneEnabledComment, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, agentModeComment, cfg.Agent.Mode, dispatchModeComment, cfg.Agent.DispatchMode, cfg.Codex.Command, cfg.Codex.ExpectedVersion, approvalPolicyComment, cfg.Codex.ApprovalPolicy, initialCollaborationModeComment, cfg.Codex.InitialCollaborationMode, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
+`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Workspace.BranchPrefix, cfg.Hooks.TimeoutMs, reviewEnabledComment, cfg.Phases.Review.Enabled, reviewPrompt, doneEnabledComment, cfg.Phases.Done.Enabled, donePrompt, cfg.Orchestrator.MaxConcurrentAgents, cfg.Orchestrator.MaxTurns, cfg.Orchestrator.MaxRetryBackoffMs, cfg.Orchestrator.MaxAutomaticRetries, dispatchModeComment, cfg.Orchestrator.DispatchMode, runtimeBlock.String(), DefaultPromptTemplate()))
+}
+
+func renderRuntimeEntry(name string, runtime RuntimeConfig) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s:\n", name)
+	fmt.Fprintf(&b, "    provider: %s\n", runtime.Provider)
+	fmt.Fprintf(&b, "    transport: %s\n", runtime.Transport)
+	fmt.Fprintf(&b, "    command: %s\n", runtime.Command)
+	if strings.TrimSpace(runtime.ExpectedVersion) != "" {
+		fmt.Fprintf(&b, "    expected_version: %s\n", runtime.ExpectedVersion)
+	}
+	fmt.Fprintf(&b, "    approval_policy: %v\n", runtime.ApprovalPolicy)
+	if strings.TrimSpace(runtime.InitialCollaborationMode) != "" {
+		fmt.Fprintf(&b, "    initial_collaboration_mode: %s\n", runtime.InitialCollaborationMode)
+	}
+	fmt.Fprintf(&b, "    turn_timeout_ms: %d\n", runtime.TurnTimeoutMs)
+	fmt.Fprintf(&b, "    read_timeout_ms: %d\n", runtime.ReadTimeoutMs)
+	fmt.Fprintf(&b, "    stall_timeout_ms: %d\n", runtime.StallTimeoutMs)
+	return b.String()
 }
 
 func indentBlock(text, prefix string) string {

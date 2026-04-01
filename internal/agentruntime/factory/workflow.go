@@ -50,8 +50,12 @@ func RuntimeSpecFromWorkflow(request WorkflowStartRequest) (agentruntime.Runtime
 		env = os.Environ()
 	}
 	transport := agentruntime.Transport(strings.ToLower(strings.TrimSpace(workflow.Config.Agent.Mode)))
+	provider := agentruntime.Provider(strings.TrimSpace(workflow.Config.Codex.Provider))
+	if provider == "" {
+		provider = agentruntime.ProviderCodex
+	}
 	return agentruntime.RuntimeSpec{
-		Provider:        agentruntime.ProviderCodex,
+		Provider:        provider,
 		Transport:       transport,
 		Command:         workflow.Config.Codex.Command,
 		ExpectedVersion: workflow.Config.Codex.ExpectedVersion,

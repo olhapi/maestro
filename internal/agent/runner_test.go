@@ -16,6 +16,7 @@ import (
 
 	"github.com/olhapi/maestro/internal/agentruntime"
 	fakeruntime "github.com/olhapi/maestro/internal/agentruntime/fake"
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
@@ -134,13 +135,22 @@ func setupTestRunner(t *testing.T, command string, mode string) (*Runner, *kanba
 	}
 
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
-	workflowContent := `---
+	runtimeDefault := "codex-appserver"
+	appServerCommand := command
+	stdioCommand := "codex exec"
+	if strings.TrimSpace(mode) == config.AgentModeStdio {
+		runtimeDefault = "codex-stdio"
+		appServerCommand = "codex app-server"
+		stdioCommand = command
+	}
+	workflowContent := fmt.Sprintf(`---
 tracker:
   kind: kanban
 polling:
   interval_ms: 1000
 workspace:
-  root: ` + workspaceRoot + `
+  root: %s
+  branch_prefix: maestro/
 hooks:
   timeout_ms: 1000
 phases:
@@ -148,19 +158,44 @@ phases:
     enabled: false
   done:
     enabled: false
-agent:
+orchestrator:
   max_concurrent_agents: 2
   max_turns: 3
   max_retry_backoff_ms: 10000
-  mode: ` + mode + `
-codex:
-  command: ` + command + `
-  approval_policy: never
-  read_timeout_ms: 1000
-  turn_timeout_ms: 10000
+  max_automatic_retries: 8
+  dispatch_mode: parallel
+runtime:
+  default: %s
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: %s
+    expected_version: %s
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: %s
+    expected_version: %s
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
 ---
-Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt }}{% endif %}
-`
+Issue {{ issue.identifier }} {{ issue.title }}{%% if attempt %%} retry {{ attempt }}{%% endif %%}
+`, workspaceRoot, runtimeDefault, appServerCommand, codexschema.SupportedVersion, stdioCommand, codexschema.SupportedVersion)
 	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
 		t.Fatalf("Failed to write workflow: %v", err)
 	}
@@ -316,14 +351,14 @@ func TestGetOrCreateWorkspace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspace.Path, ".git")); err != nil {
 		t.Fatalf("expected git worktree metadata in workspace: %v", err)
 	}
-	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 	reloaded, err := store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
-	if reloaded.BranchName != "codex/"+issue.Identifier {
+	if reloaded.BranchName != "maestro/"+issue.Identifier {
 		t.Fatalf("expected branch name to persist on issue, got %q", reloaded.BranchName)
 	}
 }
@@ -1062,18 +1097,44 @@ tracker:
   kind: kanban
 workspace:
   root: ./workspaces
+  branch_prefix: maestro/
 hooks:
   timeout_ms: 1000
-agent:
+orchestrator:
   max_concurrent_agents: 2
   max_turns: 3
   max_retry_backoff_ms: 10000
-  mode: stdio
-codex:
-  command: cat
-  approval_policy: never
-  read_timeout_ms: 1000
-  turn_timeout_ms: 10000
+  max_automatic_retries: 8
+  dispatch_mode: parallel
+runtime:
+  default: codex-stdio
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: cat
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
 phases:
   review:
     enabled: true
@@ -1648,8 +1709,8 @@ func TestWorkspaceBootstrapUsesFreshRemoteDefaultBranch(t *testing.T) {
 	if got := runGitForTest(t, workspace.Path, "rev-parse", "HEAD"); got != remoteHead {
 		t.Fatalf("expected workspace HEAD to start from %s, got %s", remoteHead, got)
 	}
-	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1686,8 +1747,8 @@ func TestWorkspaceBootstrapFallsBackWhenRemoteTrackingBranchIsUnavailable(t *tes
 	if got := runGitForTest(t, workspace.Path, "rev-parse", "HEAD"); got != localMainHead {
 		t.Fatalf("expected workspace HEAD to fall back to %s, got %s", localMainHead, got)
 	}
-	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1851,8 +1912,8 @@ func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 	if err != nil || !fi.IsDir() {
 		t.Fatalf("expected workspace dir at %s", ws.Path)
 	}
-	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1883,8 +1944,8 @@ func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
 	if err != nil || !fi.IsDir() {
 		t.Fatalf("expected recreated workspace dir at %s", ws.Path)
 	}
-	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1901,8 +1962,8 @@ func TestWorkspaceBootstrapDetachedHeadUsesHEADBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected detached-head workspace bootstrap to succeed, got: %v", err)
 	}
-	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -2968,13 +3029,45 @@ tracker:
   kind: kanban
 workspace:
   root: ` + workspaceRoot + `
+  branch_prefix: maestro/
 hooks:
   before_remove: echo cleaned >> ` + traceFile + `
   timeout_ms: 1000
-agent:
-  mode: stdio
-codex:
-  command: cat
+orchestrator:
+  max_concurrent_agents: 2
+  max_turns: 3
+  max_retry_backoff_ms: 10000
+  max_automatic_retries: 8
+  dispatch_mode: parallel
+runtime:
+  default: codex-stdio
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: cat
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
 ---
 {{ issue.identifier }}
 `

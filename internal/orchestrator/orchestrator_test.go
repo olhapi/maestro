@@ -24,6 +24,7 @@ import (
 	"github.com/olhapi/maestro/internal/agent"
 	"github.com/olhapi/maestro/internal/agentruntime"
 	codexruntime "github.com/olhapi/maestro/internal/agentruntime/codex"
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
@@ -35,6 +36,45 @@ import (
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+func neutralWorkflowControlBlocks(defaultRuntime, appServerCommand, stdioCommand, approvalPolicy string, maxConcurrentAgents, maxTurns, maxRetryBackoffMs, maxAutomaticRetries, turnTimeoutMs, readTimeoutMs, stallTimeoutMs int) string {
+	return fmt.Sprintf(`orchestrator:
+  max_concurrent_agents: %d
+  max_turns: %d
+  max_retry_backoff_ms: %d
+  max_automatic_retries: %d
+  dispatch_mode: parallel
+runtime:
+  default: %s
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: %s
+    expected_version: %s
+    approval_policy: %s
+    initial_collaboration_mode: default
+    turn_timeout_ms: %d
+    read_timeout_ms: %d
+    stall_timeout_ms: %d
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: %s
+    expected_version: %s
+    approval_policy: never
+    turn_timeout_ms: %d
+    read_timeout_ms: %d
+    stall_timeout_ms: %d
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: %d
+    read_timeout_ms: %d
+    stall_timeout_ms: %d
+`, maxConcurrentAgents, maxTurns, maxRetryBackoffMs, maxAutomaticRetries, defaultRuntime, appServerCommand, codexschema.SupportedVersion, approvalPolicy, turnTimeoutMs, readTimeoutMs, stallTimeoutMs, stdioCommand, codexschema.SupportedVersion, turnTimeoutMs, readTimeoutMs, stallTimeoutMs, turnTimeoutMs, readTimeoutMs, stallTimeoutMs)
 }
 
 type blockingRunner struct {
@@ -385,20 +425,7 @@ phases:
     enabled: false
   done:
     enabled: false
-agent:
-  max_concurrent_agents: ` + fmt.Sprintf("%d", maxConcurrent) + `
-  max_turns: 2
-  max_retry_backoff_ms: 100
-  max_automatic_retries: 8
-  mode: stdio
-codex:
-  command: ` + command + `
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: 1000
+` + neutralWorkflowControlBlocks("codex-stdio", "codex app-server", command, "never", maxConcurrent, 2, 100, 8, 1000, 500, 300000) + `
 ---
 Test prompt for {{ issue.identifier }}
 `
@@ -455,20 +482,7 @@ workspace:
   root: ` + workspaceRoot + `
 hooks:
   timeout_ms: 1000
-agent:
-  max_concurrent_agents: 1
-  max_turns: 2
-  max_retry_backoff_ms: 100
-  max_automatic_retries: 8
-  mode: stdio
-codex:
-  command: cat
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: 1000
+` + neutralWorkflowControlBlocks("codex-stdio", "codex app-server", "cat", "never", 1, 2, 100, 8, 1000, 500, 300000) + `
 phases:
   review:
     enabled: true
@@ -516,21 +530,7 @@ phases:
     enabled: false
   done:
     enabled: false
-agent:
-  max_concurrent_agents: ` + fmt.Sprintf("%d", maxConcurrentAgents) + `
-  max_turns: 1
-  max_retry_backoff_ms: 100
-  max_automatic_retries: 8
-  mode: app_server
-codex:
-  command: ` + command + `
-  approval_policy: ` + approvalPolicy + `
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: ` + fmt.Sprintf("%d", turnTimeoutMs) + `
-  stall_timeout_ms: ` + fmt.Sprintf("%d", stallTimeoutMs) + `
+` + neutralWorkflowControlBlocks("codex-appserver", command, "codex exec", approvalPolicy, maxConcurrentAgents, 1, 100, 8, turnTimeoutMs, 500, stallTimeoutMs) + `
 ---
 Test prompt for {{ issue.identifier }}
 `
@@ -880,24 +880,10 @@ phases:
     enabled: %t
   done:
     enabled: false
-agent:
-  max_concurrent_agents: 1
-  max_turns: 1
-  max_retry_backoff_ms: 100
-  max_automatic_retries: %d
-  mode: app_server
-codex:
-  command: %s
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 200
-  turn_timeout_ms: %d
-  stall_timeout_ms: %d
+%s
 ---
 Shared retry stress harness for {{ issue.identifier }}
-`, workspaceRoot, reviewEnabled, maxAutomaticRetries, command, turnTimeoutMs, stallTimeoutMs)
+`, workspaceRoot, reviewEnabled, neutralWorkflowControlBlocks("codex-appserver", command, "codex exec", "never", 1, 1, 100, maxAutomaticRetries, turnTimeoutMs, 200, stallTimeoutMs))
 	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
 		t.Fatalf("WriteFile workflow: %v", err)
 	}
@@ -3994,20 +3980,7 @@ workspace:
   root: ` + workspaceRoot + `
 hooks:
   timeout_ms: 1000
-agent:
-  max_concurrent_agents: 1
-  max_turns: 1
-  max_retry_backoff_ms: 100
-  max_automatic_retries: 8
-  mode: stdio
-codex:
-  command: cat
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 500
-  turn_timeout_ms: 1000
+` + neutralWorkflowControlBlocks("codex-appserver", "cat", "codex exec", "never", 1, 1, 100, 8, 1000, 500, 300000) + `
 ---
 Test prompt for {{ issue.identifier }}
 `

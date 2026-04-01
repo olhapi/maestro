@@ -55,13 +55,6 @@ func Run(repoPath, dbPath string) Result {
 			res.Remediation["workflow_load"] = "Fix the WORKFLOW.md format or regenerate it with `maestro workflow init`."
 		} else {
 			res.Checks["workflow_load"] = "ok"
-			for _, advisory := range workflow.Advisories {
-				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: %s", advisory.Code, advisory.Message))
-				res.Checks[advisory.Code] = "warn"
-				if advisory.Remediation != "" {
-					res.Remediation[advisory.Code] = advisory.Remediation
-				}
-			}
 			status, err := codexruntime.DetectVersion(workflow.Config.Codex.Command)
 			switch {
 			case err != nil && status.Command != "":

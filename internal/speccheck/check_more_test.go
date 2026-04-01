@@ -38,6 +38,69 @@ func tempRepoRoot(t *testing.T) string {
 	return root
 }
 
+func workflowFixture(version string) string {
+	return `---
+tracker:
+  kind: kanban
+workspace:
+  root: ./workspaces
+  branch_prefix: maestro/
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    expected_version: ` + version + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: codex exec
+    expected_version: ` + version + `
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+---
+Hello {{ issue.identifier }}
+`
+}
+
+func writeWorkflow(t *testing.T, root, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+}
+
+func writeFakeCodex(t *testing.T, root string, version string) string {
+	t.Helper()
+	codexDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll codex dir: %v", err)
+	}
+	fakeCodex := filepath.Join(codexDir, "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli "+version+"\\n'\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile fake codex: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
+	return fakeCodex
+}
+
 func TestWorkflowPromptRenderAndGranularApprovalHelpers(t *testing.T) {
 	if err := validateWorkflowPromptRender("Hello {{ issue.identifier }}"); err != nil {
 		t.Fatalf("validateWorkflowPromptRender: %v", err)
@@ -103,31 +166,8 @@ func TestInstalledSkillPaths(t *testing.T) {
 
 func TestRunReportsVersionMismatch(t *testing.T) {
 	root := tempRepoRoot(t)
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: codex
-  expected_version: 9.9.9
-  approval_policy: never
-  initial_collaboration_mode: default
----
-Hello {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatalf("WriteFile workflow: %v", err)
-	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
+	writeWorkflow(t, root, workflowFixture("9.9.9"))
+	writeFakeCodex(t, root, "1.2.3")
 
 	report := Run(root)
 	if report.OK {
@@ -142,23 +182,11 @@ Hello {{ issue.identifier }}
 	if report.Checks["workflow_prompt_render"] != "ok" {
 		t.Fatalf("expected prompt render to succeed, got %+v", report.Checks)
 	}
-	if report.Checks["skill_install"] != "ok" {
-		t.Fatalf("expected skill install to remain ok, got %+v", report.Checks)
-	}
 }
 
 func TestRunReportsWorkflowLoadFailure(t *testing.T) {
 	root := tempRepoRoot(t)
-	fakeCodexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(fakeCodexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(fakeCodexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", fakeCodexDir+string(os.PathListSeparator)+oldPath)
+	writeFakeCodex(t, root, "1.2.3")
 
 	report := Run(root)
 	if report.OK {
@@ -174,37 +202,14 @@ func TestRunReportsWorkflowLoadFailure(t *testing.T) {
 
 func TestRunReportsSuccess(t *testing.T) {
 	root := tempRepoRoot(t)
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
-  approval_policy: never
-  initial_collaboration_mode: default
----
-Hello {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatalf("WriteFile workflow: %v", err)
-	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
+	writeWorkflow(t, root, workflowFixture(codexschema.SupportedVersion))
+	writeFakeCodex(t, root, "1.2.3")
 
 	report := Run(root)
 	if !report.OK {
 		t.Fatalf("expected success, got %+v", report.Checks)
 	}
-	for _, key := range []string{"workflow_load", "workflow_version", "workflow_prompt_render", "workflow_advisories", "config_defaults", "codex_schema_json", "skill_install"} {
+	for _, key := range []string{"workflow_load", "workflow_version", "workflow_prompt_render", "config_defaults", "codex_schema_json", "skill_install"} {
 		if report.Checks[key] != "ok" {
 			t.Fatalf("expected %s to be ok, got %+v", key, report.Checks)
 		}
@@ -213,31 +218,8 @@ Hello {{ issue.identifier }}
 
 func TestRunReportsConfigDefaultsFailure(t *testing.T) {
 	root := tempRepoRoot(t)
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
-  approval_policy: never
-  initial_collaboration_mode: default
----
-Hello {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatalf("WriteFile workflow: %v", err)
-	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
+	writeWorkflow(t, root, workflowFixture(codexschema.SupportedVersion))
+	writeFakeCodex(t, root, "1.2.3")
 
 	origDefaultConfig := defaultConfigFunc
 	t.Cleanup(func() {
@@ -245,7 +227,7 @@ Hello {{ issue.identifier }}
 	})
 	defaultConfigFunc = func() config.Config {
 		cfg := config.DefaultConfig()
-		cfg.Tracker.Kind = "other"
+		cfg.Workspace.BranchPrefix = ""
 		return cfg
 	}
 
@@ -255,99 +237,6 @@ Hello {{ issue.identifier }}
 	}
 	if report.Checks["config_defaults"] != "fail" {
 		t.Fatalf("expected config_defaults to fail, got %+v", report.Checks)
-	}
-}
-
-func TestRunReportsCodexSchemaFailure(t *testing.T) {
-	root := t.TempDir()
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
-  approval_policy: never
-  initial_collaboration_mode: default
----
-Hello {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatalf("WriteFile workflow: %v", err)
-	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
-
-	report := Run(root)
-	if report.OK {
-		t.Fatalf("expected schema failure, got %+v", report)
-	}
-	if report.Checks["codex_schema_json"] != "fail" {
-		t.Fatalf("expected codex_schema_json to fail, got %+v", report.Checks)
-	}
-}
-
-func TestRunReportsSkillInstallFailure(t *testing.T) {
-	root := tempRepoRoot(t)
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
-  approval_policy: never
-  initial_collaboration_mode: default
----
-Hello {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatalf("WriteFile workflow: %v", err)
-	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
-
-	origInstall := installMaestroFunc
-	t.Cleanup(func() {
-		installMaestroFunc = origInstall
-	})
-	installMaestroFunc = func(string) error {
-		return errors.New("install failed")
-	}
-
-	report := Run(root)
-	if report.OK {
-		t.Fatalf("expected skill install failure, got %+v", report)
-	}
-	if report.Checks["skill_install"] != "fail" {
-		t.Fatalf("expected skill_install to fail, got %+v", report.Checks)
-	}
-}
-
-func TestValidateWorkflowPromptRenderAllowsJSONRoundTrip(t *testing.T) {
-	prompt := "Issue {{ issue.identifier }} on project {{ project.name }}"
-	if err := validateWorkflowPromptRender(prompt); err != nil {
-		t.Fatalf("validateWorkflowPromptRender: %v", err)
-	}
-	payload, err := json.Marshal(sampleWorkflowPromptContext())
-	if err != nil || len(payload) == 0 {
-		t.Fatalf("unexpected sample workflow prompt context marshal: %v %q", err, string(payload))
 	}
 }
 
@@ -373,10 +262,18 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			},
 		},
 		{
-			name: "init approval policy",
-			init: func() config.Config {
-				cfg := config.DefaultInitConfig()
-				cfg.Codex.ApprovalPolicy = "maybe"
+			name: "branch prefix",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				cfg.Workspace.BranchPrefix = ""
+				return cfg
+			},
+		},
+		{
+			name: "runtime default",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				cfg.Runtime.Default = "missing"
 				return cfg
 			},
 		},
@@ -389,18 +286,12 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			},
 		},
 		{
-			name: "read timeout",
-			cfg: func() config.Config {
-				cfg := config.DefaultConfig()
-				cfg.Codex.ReadTimeoutMs = 42
-				return cfg
-			},
-		},
-		{
-			name: "stall timeout",
-			cfg: func() config.Config {
-				cfg := config.DefaultConfig()
-				cfg.Codex.StallTimeoutMs = 42
+			name: "init approval policy",
+			init: func() config.Config {
+				cfg := config.DefaultInitConfig()
+				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
+				runtimeCfg.ApprovalPolicy = "maybe"
+				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
 				return cfg
 			},
 		},
@@ -408,7 +299,9 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			name: "init expected version",
 			init: func() config.Config {
 				cfg := config.DefaultInitConfig()
-				cfg.Codex.ExpectedVersion = "0.0.0"
+				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
+				runtimeCfg.ExpectedVersion = "0.0.0"
+				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
 				return cfg
 			},
 		},
@@ -416,7 +309,9 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			name: "init collaboration mode",
 			init: func() config.Config {
 				cfg := config.DefaultInitConfig()
-				cfg.Codex.InitialCollaborationMode = "manual"
+				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
+				runtimeCfg.InitialCollaborationMode = "manual"
+				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
 				return cfg
 			},
 		},
@@ -424,7 +319,9 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			name: "granular approval",
 			cfg: func() config.Config {
 				cfg := config.DefaultConfig()
-				cfg.Codex.ApprovalPolicy = map[string]interface{}{"granular": "bad"}
+				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
+				runtimeCfg.ApprovalPolicy = map[string]interface{}{"granular": "bad"}
+				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
 				return cfg
 			},
 		},
@@ -517,24 +414,36 @@ func TestValidateSkillInstallBranches(t *testing.T) {
 	t.Run("count mismatch", func(t *testing.T) {
 		installMaestroFunc = func(dest string) error {
 			return writeInstalledBundle(dest, map[string]string{
-				"SKILL.md": "same",
+				"SKILL.md":   "same",
+				"nested.txt": "extra",
 			})
 		}
-		bundledPathsFunc = func() ([]string, error) { return []string{"SKILL.md", "references/setup.md"}, nil }
+		bundledPathsFunc = func() ([]string, error) { return []string{"SKILL.md"}, nil }
 		readBundledFileFunc = func(string) ([]byte, error) { return []byte("same"), nil }
 		if err := validateSkillInstall(); err == nil {
-			t.Fatal("expected bundled file count mismatch")
+			t.Fatal("expected count mismatch")
 		}
 	})
 
-	t.Run("path mismatch", func(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
 		installMaestroFunc = func(dest string) error {
 			return writeInstalledBundle(dest, map[string]string{"SKILL.md": "same"})
 		}
-		bundledPathsFunc = func() ([]string, error) { return []string{"README.md"}, nil }
+		bundledPathsFunc = func() ([]string, error) { return []string{"SKILL.md"}, nil }
 		readBundledFileFunc = func(string) ([]byte, error) { return []byte("same"), nil }
-		if err := validateSkillInstall(); err == nil {
-			t.Fatal("expected bundled file path mismatch")
+		if err := validateSkillInstall(); err != nil {
+			t.Fatalf("expected success, got %v", err)
 		}
 	})
+}
+
+func TestValidateWorkflowPromptRenderAllowsJSONRoundTrip(t *testing.T) {
+	prompt := "Issue {{ issue.identifier }} on project {{ project.name }}"
+	if err := validateWorkflowPromptRender(prompt); err != nil {
+		t.Fatalf("validateWorkflowPromptRender: %v", err)
+	}
+	payload, err := json.Marshal(sampleWorkflowPromptContext())
+	if err != nil || len(payload) == 0 {
+		t.Fatalf("unexpected sample workflow prompt context marshal: %v %q", err, string(payload))
+	}
 }

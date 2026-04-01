@@ -9,6 +9,58 @@ import (
 	"github.com/olhapi/maestro/internal/codexschema"
 )
 
+func workflowFixture(version string) string {
+	return `---
+tracker:
+  kind: kanban
+workspace:
+  root: ./workspaces
+  branch_prefix: maestro/
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex
+    expected_version: ` + version + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: codex exec
+    expected_version: ` + version + `
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+---
+Issue {{ issue.identifier }}
+`
+}
+
+func writeFakeCodex(t *testing.T, root, version string) string {
+	t.Helper()
+	codexPath := filepath.Join(root, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli "+version+"\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", filepath.Dir(codexPath)+string(os.PathListSeparator)+oldPath)
+	return codexPath
+}
+
 func TestRunVerification(t *testing.T) {
 	tmp := t.TempDir()
 	db := filepath.Join(tmp, "db", "maestro.db")
@@ -29,18 +81,8 @@ func TestRunVerification(t *testing.T) {
 
 func TestRunVerificationSucceedsForValidWorkflow(t *testing.T) {
 	tmp := t.TempDir()
-	workflow := `---
-tracker:
-  kind: kanban
-agent:
-  mode: stdio
-codex:
-  command: cat
-  approval_policy: never
----
-Issue {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+	writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,13 +134,7 @@ func TestRunVerificationSkipsLiteralDbDirCreationForUnresolvedEnvPath(t *testing
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("TEAM", "")
-	workflow := `---
-tracker:
-  kind: kanban
----
-Issue {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,20 +166,8 @@ Issue {{ issue.identifier }}
 
 func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
 	tmp := t.TempDir()
-	codexPath := filepath.Join(tmp, "codex")
-	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli 9.9.9\\n'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: ` + codexPath + ` app-server
-  expected_version: ` + codexschema.SupportedVersion + `
----
-Issue {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+	writeFakeCodex(t, tmp, "9.9.9")
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
@@ -157,12 +181,7 @@ Issue {{ issue.identifier }}
 
 func TestRunVerificationReportsWorkflowLoadFailure(t *testing.T) {
 	tmp := t.TempDir()
-	workflow := `---
-- not-a-map
----
-Issue {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte("---\n- not-a-map\n---\nIssue {{ issue.identifier }}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,16 +200,7 @@ func TestRunVerificationReportsDbDirFailure(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: cat
-  approval_policy: never
----
-Issue {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,81 +210,5 @@ Issue {{ issue.identifier }}
 	}
 	if res.Checks["db_open"] != "skipped" && res.Checks["db_open"] != "fail" {
 		t.Fatalf("expected db_open to be skipped or fail after db_dir error, got %+v", res.Checks)
-	}
-}
-
-func TestRunVerificationWarnsOnWorkflowAdvisories(t *testing.T) {
-	tmp := t.TempDir()
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  approval_policy: never
-  thread_sandbox: danger-full-access
-phases:
-  done:
-    prompt: |
-      Sync origin/main first.
-      Merge the issue branch into local main.
-      Push main to origin.
----
-## Instructions
-5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
-	if res.Checks["workflow_permissions"] != "warn" {
-		t.Fatalf("expected workflow permissions warning, got %+v", res)
-	}
-	if res.Checks["workflow_approval_policy"] != "warn" {
-		t.Fatalf("expected workflow approval policy warning, got %+v", res)
-	}
-	if res.Checks["workflow_prompt_branching"] != "warn" {
-		t.Fatalf("expected workflow prompt warning, got %+v", res)
-	}
-	joined := strings.Join(res.Warnings, "\n")
-	if !strings.Contains(joined, "workflow_permissions:") || !strings.Contains(joined, "workflow_approval_policy:") || !strings.Contains(joined, "workflow_prompt_branching:") {
-		t.Fatalf("expected advisory warnings, got %+v", res.Warnings)
-	}
-	if !strings.Contains(res.Remediation["workflow_permissions"], "permission profile") {
-		t.Fatalf("expected workflow permissions remediation, got %+v", res.Remediation)
-	}
-	if !strings.Contains(res.Remediation["workflow_approval_policy"], "approval_policy=never") {
-		t.Fatalf("expected workflow approval policy remediation, got %+v", res.Remediation)
-	}
-	if !strings.Contains(res.Remediation["workflow_prompt_branching"], "prepared by Maestro") {
-		t.Fatalf("expected workflow prompt remediation, got %+v", res.Remediation)
-	}
-}
-
-func TestRunVerificationWarnsWhenPlanModeKeepsApprovalPolicyNever(t *testing.T) {
-	tmp := t.TempDir()
-	workflow := `---
-tracker:
-  kind: kanban
-agent:
-  mode: app_server
-codex:
-  approval_policy: never
-  initial_collaboration_mode: plan
----
-Issue {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
-	if res.Checks["workflow_plan_approval_policy"] != "warn" {
-		t.Fatalf("expected plan-mode approval warning, got %+v", res)
-	}
-	if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, "\n"), "workflow_plan_approval_policy:") {
-		t.Fatalf("expected plan-mode warning entry, got %+v", res.Warnings)
-	}
-	if !strings.Contains(res.Remediation["workflow_plan_approval_policy"], "approval_policy=on-request") {
-		t.Fatalf("expected plan-mode remediation, got %+v", res.Remediation)
 	}
 }

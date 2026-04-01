@@ -58,24 +58,34 @@ func TestBinarySmokeRunAndMCP(t *testing.T) {
 	workflow := `---
 tracker:
   kind: kanban
-  active_states: [ready, in_progress, in_review]
-  terminal_states: [done, cancelled]
 polling:
   interval_ms: 50
 workspace:
   root: ` + workspaceRoot + `
+  branch_prefix: maestro/
 hooks:
   timeout_ms: 1000
-agent:
+orchestrator:
   max_concurrent_agents: 1
   max_turns: 1
   max_retry_backoff_ms: 100
-  mode: stdio
-codex:
-  command: cat
-  approval_policy: never
-  read_timeout_ms: 500
-  turn_timeout_ms: 1000
+  max_automatic_retries: 8
+  dispatch_mode: parallel
+phases:
+  review:
+    enabled: false
+  done:
+    enabled: false
+runtime:
+  default: codex-stdio
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: cat
+    approval_policy: never
+    turn_timeout_ms: 1000
+    read_timeout_ms: 500
+    stall_timeout_ms: 300000
 ---
 Test prompt for {{ issue.identifier }}
 `

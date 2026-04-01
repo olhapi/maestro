@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/olhapi/maestro/internal/codexschema"
@@ -13,17 +14,13 @@ import (
 )
 
 const (
-	TrackerKindKanban                  = "kanban"
-	AgentModeAppServer                 = "app_server"
-	AgentModeStdio                     = "stdio"
-	DispatchModeParallel               = "parallel"
-	DispatchModePerProjectSerial       = "per_project_serial"
-	InitialCollaborationModePlan       = "plan"
-	InitialCollaborationModeDefault    = "default"
-	WorkflowAdvisoryPermissions        = "workflow_permissions"
-	WorkflowAdvisoryApprovalPolicy     = "workflow_approval_policy"
-	WorkflowAdvisoryPlanApprovalPolicy = "workflow_plan_approval_policy"
-	WorkflowAdvisoryPromptBranching    = "workflow_prompt_branching"
+	TrackerKindKanban               = "kanban"
+	AgentModeAppServer              = "app_server"
+	AgentModeStdio                  = "stdio"
+	DispatchModeParallel            = "parallel"
+	DispatchModePerProjectSerial    = "per_project_serial"
+	InitialCollaborationModePlan    = "plan"
+	InitialCollaborationModeDefault = "default"
 )
 
 var (
@@ -33,13 +30,17 @@ var (
 )
 
 type Config struct {
-	Tracker   TrackerConfig   `yaml:"tracker"`
-	Polling   PollingConfig   `yaml:"polling"`
-	Workspace WorkspaceConfig `yaml:"workspace"`
-	Hooks     HooksConfig     `yaml:"hooks"`
-	Agent     AgentConfig     `yaml:"agent"`
-	Codex     CodexConfig     `yaml:"codex"`
-	Phases    PhasesConfig    `yaml:"phases"`
+	Tracker      TrackerConfig      `yaml:"tracker"`
+	Polling      PollingConfig      `yaml:"polling"`
+	Workspace    WorkspaceConfig    `yaml:"workspace"`
+	Hooks        HooksConfig        `yaml:"hooks"`
+	Orchestrator OrchestratorConfig `yaml:"orchestrator"`
+	Runtime      RuntimeCatalog     `yaml:"runtime"`
+	Phases       PhasesConfig       `yaml:"phases"`
+
+	// Derived fields used by the rest of the codebase during the migration.
+	Agent AgentConfig `yaml:"-"`
+	Codex CodexConfig `yaml:"-"`
 }
 
 type TrackerConfig struct {
@@ -53,7 +54,8 @@ type PollingConfig struct {
 }
 
 type WorkspaceConfig struct {
-	Root string `yaml:"root"`
+	Root         string `yaml:"root"`
+	BranchPrefix string `yaml:"branch_prefix"`
 }
 
 type HooksConfig struct {
@@ -64,7 +66,7 @@ type HooksConfig struct {
 	TimeoutMs    int    `yaml:"timeout_ms"`
 }
 
-type AgentConfig struct {
+type OrchestratorConfig struct {
 	MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
 	MaxTurns            int    `yaml:"max_turns"`
 	MaxRetryBackoffMs   int    `yaml:"max_retry_backoff_ms"`
@@ -73,7 +75,9 @@ type AgentConfig struct {
 	DispatchMode        string `yaml:"dispatch_mode"`
 }
 
-type CodexConfig struct {
+type RuntimeConfig struct {
+	Provider                 string      `yaml:"provider"`
+	Transport                string      `yaml:"transport"`
 	Command                  string      `yaml:"command"`
 	ExpectedVersion          string      `yaml:"expected_version"`
 	ApprovalPolicy           interface{} `yaml:"approval_policy"`
@@ -82,6 +86,15 @@ type CodexConfig struct {
 	ReadTimeoutMs            int         `yaml:"read_timeout_ms"`
 	StallTimeoutMs           int         `yaml:"stall_timeout_ms"`
 }
+
+type RuntimeCatalog struct {
+	Default string                   `yaml:"default"`
+	Entries map[string]RuntimeConfig `yaml:",inline"`
+}
+
+type AgentConfig = OrchestratorConfig
+
+type CodexConfig = RuntimeConfig
 
 type PhasesConfig struct {
 	Review PhasePromptConfig `yaml:"review"`
@@ -97,19 +110,11 @@ type Workflow struct {
 	Path           string
 	Config         Config
 	PromptTemplate string
-	Advisories     []WorkflowAdvisory
-}
-
-type WorkflowAdvisory struct {
-	Code        string
-	Message     string
-	Remediation string
 }
 
 type workflowPayload struct {
 	Config Config
 	Prompt string
-	Raw    map[string]interface{}
 }
 
 type fileStamp struct {
@@ -119,39 +124,22 @@ type fileStamp struct {
 }
 
 func DefaultConfig() Config {
-	return Config{
+	runtime := defaultRuntimeCatalog()
+	orchestrator := defaultOrchestratorConfig()
+	cfg := Config{
 		Tracker: TrackerConfig{
 			Kind:           TrackerKindKanban,
 			ActiveStates:   []string{"ready", "in_progress", "in_review"},
 			TerminalStates: []string{"done", "cancelled"},
 		},
-		Polling:   PollingConfig{IntervalMs: 10000},
-		Workspace: WorkspaceConfig{Root: "~/.maestro/worktrees"},
-		Hooks:     HooksConfig{TimeoutMs: 60000},
-		Agent: AgentConfig{
-			MaxConcurrentAgents: 3,
-			MaxTurns:            4,
-			MaxRetryBackoffMs:   60000,
-			MaxAutomaticRetries: 8,
-			Mode:                AgentModeAppServer,
-			DispatchMode:        DispatchModeParallel,
+		Polling: PollingConfig{IntervalMs: 10000},
+		Workspace: WorkspaceConfig{
+			Root:         "~/.maestro/worktrees",
+			BranchPrefix: "maestro/",
 		},
-		Codex: CodexConfig{
-			Command:         "codex app-server",
-			ExpectedVersion: codexschema.SupportedVersion,
-			ApprovalPolicy: map[string]interface{}{
-				"granular": map[string]interface{}{
-					"sandbox_approval":    true,
-					"rules":               true,
-					"mcp_elicitations":    true,
-					"request_permissions": false,
-				},
-			},
-			InitialCollaborationMode: InitialCollaborationModeDefault,
-			TurnTimeoutMs:            1800000,
-			ReadTimeoutMs:            10000,
-			StallTimeoutMs:           300000,
-		},
+		Hooks:        HooksConfig{TimeoutMs: 60000},
+		Orchestrator: orchestrator,
+		Runtime:      runtime,
 		Phases: PhasesConfig{
 			Review: PhasePromptConfig{
 				Enabled: true,
@@ -163,12 +151,230 @@ func DefaultConfig() Config {
 			},
 		},
 	}
+	cfg.applyDerivedRuntimeFields()
+	return cfg
 }
 
 func DefaultInitConfig() Config {
 	cfg := DefaultConfig()
-	cfg.Codex.ApprovalPolicy = "never"
+	if runtime, ok := cfg.Runtime.Entries["codex-appserver"]; ok {
+		runtime.ApprovalPolicy = "never"
+		cfg.Runtime.Entries["codex-appserver"] = runtime
+	}
+	cfg.Runtime.Default = "codex-appserver"
+	cfg.applyDerivedRuntimeFields()
 	return cfg
+}
+
+func defaultOrchestratorConfig() OrchestratorConfig {
+	return OrchestratorConfig{
+		MaxConcurrentAgents: 3,
+		MaxTurns:            4,
+		MaxRetryBackoffMs:   60000,
+		MaxAutomaticRetries: 8,
+		Mode:                AgentModeAppServer,
+		DispatchMode:        DispatchModeParallel,
+	}
+}
+
+func defaultRuntimeCatalog() RuntimeCatalog {
+	runtime := RuntimeCatalog{
+		Default: "codex-appserver",
+		Entries: map[string]RuntimeConfig{
+			"codex-appserver": {
+				Provider:        "codex",
+				Transport:       AgentModeAppServer,
+				Command:         "codex app-server",
+				ExpectedVersion: codexschema.SupportedVersion,
+				ApprovalPolicy: map[string]interface{}{
+					"granular": map[string]interface{}{
+						"sandbox_approval":    true,
+						"rules":               true,
+						"mcp_elicitations":    true,
+						"request_permissions": false,
+					},
+				},
+				InitialCollaborationMode: InitialCollaborationModeDefault,
+				TurnTimeoutMs:            1800000,
+				ReadTimeoutMs:            10000,
+				StallTimeoutMs:           300000,
+			},
+			"codex-stdio": {
+				Provider:        "codex",
+				Transport:       AgentModeStdio,
+				Command:         "codex exec",
+				ExpectedVersion: codexschema.SupportedVersion,
+				ApprovalPolicy:  "never",
+				TurnTimeoutMs:   1800000,
+				ReadTimeoutMs:   10000,
+				StallTimeoutMs:  300000,
+			},
+			"claude": {
+				Provider:       "claude",
+				Transport:      AgentModeStdio,
+				Command:        "claude",
+				ApprovalPolicy: "never",
+				TurnTimeoutMs:  1800000,
+				ReadTimeoutMs:  10000,
+				StallTimeoutMs: 300000,
+			},
+		},
+	}
+	return runtime
+}
+
+func (c *Config) applyDerivedRuntimeFields() {
+	if c == nil {
+		return
+	}
+	c.Orchestrator = normalizeOrchestratorConfig(c.Orchestrator)
+	c.Runtime = normalizeRuntimeCatalog(c.Runtime)
+	name, runtime := c.Runtime.defaultRuntime()
+	if name == "" {
+		name, runtime = defaultRuntimeCatalog().defaultRuntime()
+	}
+	c.Runtime.Default = name
+	c.Codex = runtime
+	c.Orchestrator.Mode = runtime.Transport
+	c.Agent = AgentConfig{
+		MaxConcurrentAgents: c.Orchestrator.MaxConcurrentAgents,
+		MaxTurns:            c.Orchestrator.MaxTurns,
+		MaxRetryBackoffMs:   c.Orchestrator.MaxRetryBackoffMs,
+		MaxAutomaticRetries: c.Orchestrator.MaxAutomaticRetries,
+		Mode:                runtime.Transport,
+		DispatchMode:        c.Orchestrator.DispatchMode,
+	}
+}
+
+func normalizeOrchestratorConfig(cfg OrchestratorConfig) OrchestratorConfig {
+	defaults := defaultOrchestratorConfig()
+	if cfg.MaxConcurrentAgents <= 0 {
+		cfg.MaxConcurrentAgents = defaults.MaxConcurrentAgents
+	}
+	if cfg.MaxTurns <= 0 {
+		cfg.MaxTurns = defaults.MaxTurns
+	}
+	if cfg.MaxRetryBackoffMs <= 0 {
+		cfg.MaxRetryBackoffMs = defaults.MaxRetryBackoffMs
+	}
+	if cfg.MaxAutomaticRetries <= 0 {
+		cfg.MaxAutomaticRetries = defaults.MaxAutomaticRetries
+	}
+	if strings.TrimSpace(cfg.Mode) == "" {
+		cfg.Mode = defaults.Mode
+	}
+	if strings.TrimSpace(cfg.DispatchMode) == "" {
+		cfg.DispatchMode = defaults.DispatchMode
+	}
+	return cfg
+}
+
+func normalizeRuntimeCatalog(catalog RuntimeCatalog) RuntimeCatalog {
+	defaults := defaultRuntimeCatalog()
+	out := RuntimeCatalog{
+		Default: strings.TrimSpace(catalog.Default),
+		Entries: make(map[string]RuntimeConfig, len(defaults.Entries)),
+	}
+	if len(catalog.Entries) == 0 {
+		for name, cfg := range defaults.Entries {
+			out.Entries[name] = cfg
+		}
+	} else {
+		for name, cfg := range catalog.Entries {
+			out.Entries[strings.TrimSpace(name)] = cfg
+		}
+		for name, cfg := range defaults.Entries {
+			current, ok := out.Entries[name]
+			if !ok {
+				out.Entries[name] = cfg
+				continue
+			}
+			out.Entries[name] = normalizeRuntimeConfig(current, cfg)
+		}
+	}
+	for name, cfg := range out.Entries {
+		out.Entries[name] = normalizeRuntimeConfig(cfg, defaults.Entries[name])
+	}
+	if out.Default == "" || !out.hasEntry(out.Default) {
+		out.Default = out.preferredDefaultName()
+	}
+	return out
+}
+
+func normalizeRuntimeConfig(cfg RuntimeConfig, defaults RuntimeConfig) RuntimeConfig {
+	if strings.TrimSpace(cfg.Provider) == "" {
+		cfg.Provider = defaults.Provider
+	}
+	if strings.TrimSpace(cfg.Transport) == "" {
+		cfg.Transport = defaults.Transport
+	}
+	if strings.TrimSpace(cfg.Command) == "" {
+		cfg.Command = defaults.Command
+	}
+	if strings.TrimSpace(cfg.ExpectedVersion) == "" {
+		cfg.ExpectedVersion = defaults.ExpectedVersion
+	}
+	normalizedApprovalPolicy, err := normalizeApprovalPolicyValue(cfg.ApprovalPolicy, cfg.ApprovalPolicy != nil)
+	if err != nil {
+		normalizedApprovalPolicy = cfg.ApprovalPolicy
+	}
+	if normalizedApprovalPolicy == nil {
+		cfg.ApprovalPolicy = defaults.ApprovalPolicy
+	} else {
+		cfg.ApprovalPolicy = normalizedApprovalPolicy
+	}
+	if strings.TrimSpace(cfg.InitialCollaborationMode) == "" {
+		cfg.InitialCollaborationMode = defaults.InitialCollaborationMode
+	}
+	if cfg.TurnTimeoutMs <= 0 {
+		cfg.TurnTimeoutMs = defaults.TurnTimeoutMs
+	}
+	if cfg.ReadTimeoutMs <= 0 {
+		cfg.ReadTimeoutMs = defaults.ReadTimeoutMs
+	}
+	if cfg.StallTimeoutMs <= 0 {
+		cfg.StallTimeoutMs = defaults.StallTimeoutMs
+	}
+	return cfg
+}
+
+func (catalog RuntimeCatalog) hasEntry(name string) bool {
+	if catalog.Entries == nil {
+		return false
+	}
+	_, ok := catalog.Entries[strings.TrimSpace(name)]
+	return ok
+}
+
+func (catalog RuntimeCatalog) defaultRuntime() (string, RuntimeConfig) {
+	if catalog.Entries == nil {
+		return "", RuntimeConfig{}
+	}
+	if name := strings.TrimSpace(catalog.Default); name != "" {
+		if runtime, ok := catalog.Entries[name]; ok {
+			return name, runtime
+		}
+	}
+	for _, preferred := range []string{"codex-appserver", "codex-stdio", "claude"} {
+		if runtime, ok := catalog.Entries[preferred]; ok {
+			return preferred, runtime
+		}
+	}
+	names := make([]string, 0, len(catalog.Entries))
+	for name := range catalog.Entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "", RuntimeConfig{}
+	}
+	name := names[0]
+	return name, catalog.Entries[name]
+}
+
+func (catalog RuntimeCatalog) preferredDefaultName() string {
+	name, _ := catalog.defaultRuntime()
+	return name
 }
 
 func DefaultPromptTemplate() string {
@@ -373,7 +579,6 @@ func LoadWorkflow(path string) (*Workflow, error) {
 		Path:           path,
 		Config:         cfg,
 		PromptTemplate: payload.Prompt,
-		Advisories:     detectWorkflowAdvisories(cfg, payload.Prompt, payload.Raw),
 	}, nil
 }
 
@@ -383,19 +588,15 @@ func parseWorkflowPayload(path, content string) (*workflowPayload, error) {
 		return nil, err
 	}
 
-	normalized, err := normalizeWorkflowKeys(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	encoded, err := yaml.Marshal(normalized)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
-	}
-
 	var cfg Config
-	if len(normalized) > 0 {
-		if err := yaml.Unmarshal(encoded, &cfg); err != nil {
+	if len(raw) > 0 {
+		encoded, err := yaml.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
+		}
+		dec := yaml.NewDecoder(strings.NewReader(string(encoded)))
+		dec.KnownFields(true)
+		if err := dec.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
 		}
 	}
@@ -413,7 +614,8 @@ func parseWorkflowPayload(path, content string) (*workflowPayload, error) {
 		return nil, err
 	}
 	cfg.Workspace.Root = root
-	return &workflowPayload{Config: cfg, Prompt: prompt, Raw: normalized}, nil
+	cfg.applyDerivedRuntimeFields()
+	return &workflowPayload{Config: cfg, Prompt: prompt}, nil
 }
 
 func parseWorkflowFrontMatter(content string) (map[string]interface{}, int, error) {
@@ -433,27 +635,24 @@ func parseWorkflowFrontMatter(content string) (map[string]interface{}, int, erro
 	if err := yaml.Unmarshal([]byte(frontMatter), &raw); err != nil {
 		return nil, 0, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
 	}
-
-	normalized, err := normalizeWorkflowFrontMatter(raw, frontMatter)
+	normalized, err := coerceWorkflowFrontMatter(raw)
 	if err != nil {
 		return nil, 0, err
 	}
-
 	return normalized, promptStart, nil
 }
 
-func normalizeWorkflowFrontMatter(raw interface{}, frontMatter string) (map[string]interface{}, error) {
+func coerceWorkflowFrontMatter(raw interface{}) (map[string]interface{}, error) {
 	if raw == nil {
 		return map[string]interface{}{}, nil
 	}
-
 	switch typed := raw.(type) {
 	case map[string]interface{}:
-		return normalizeWorkflowMap(typed), nil
+		return coerceWorkflowMap(typed), nil
 	case map[interface{}]interface{}:
 		out := make(map[string]interface{}, len(typed))
 		for key, value := range typed {
-			out[fmt.Sprint(key)] = normalizeWorkflowValue(value)
+			out[fmt.Sprint(key)] = coerceWorkflowValue(value)
 		}
 		return out, nil
 	default:
@@ -461,199 +660,33 @@ func normalizeWorkflowFrontMatter(raw interface{}, frontMatter string) (map[stri
 	}
 }
 
-func normalizeWorkflowMap(in map[string]interface{}) map[string]interface{} {
+func coerceWorkflowMap(in map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(in))
 	for key, value := range in {
-		out[key] = normalizeWorkflowValue(value)
+		out[key] = coerceWorkflowValue(value)
 	}
 	return out
 }
 
-func normalizeWorkflowValue(value interface{}) interface{} {
+func coerceWorkflowValue(value interface{}) interface{} {
 	switch typed := value.(type) {
 	case map[string]interface{}:
-		return normalizeWorkflowMap(typed)
+		return coerceWorkflowMap(typed)
 	case map[interface{}]interface{}:
 		out := make(map[string]interface{}, len(typed))
 		for key, child := range typed {
-			out[fmt.Sprint(key)] = normalizeWorkflowValue(child)
+			out[fmt.Sprint(key)] = coerceWorkflowValue(child)
 		}
 		return out
 	case []interface{}:
 		out := make([]interface{}, len(typed))
 		for i, child := range typed {
-			out[i] = normalizeWorkflowValue(child)
+			out[i] = coerceWorkflowValue(child)
 		}
 		return out
 	default:
 		return value
 	}
-}
-
-func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, error) {
-	if raw == nil {
-		return map[string]interface{}{}, nil
-	}
-
-	out := cloneMap(raw)
-	tracker := ensureMap(out, "tracker")
-	polling := ensureMap(out, "polling")
-	workspace := ensureMap(out, "workspace")
-	hooks := ensureMap(out, "hooks")
-	agent := ensureMap(out, "agent")
-	codex := ensureMap(out, "codex")
-	phases := ensureMap(out, "phases")
-	review := ensureMap(phases, "review")
-	done := ensureMap(phases, "done")
-
-	setBoolDefault(review, "enabled", true)
-	setBoolDefault(done, "enabled", true)
-
-	moveString(out, tracker, "tracker_kind", "kind")
-	moveStringSlice(out, tracker, "tracker_active_states", "active_states")
-	moveStringSlice(out, tracker, "tracker_terminal_states", "terminal_states")
-	moveString(out, polling, "poll_interval", "interval_ms")
-	moveString(out, polling, "poll_interval_ms", "interval_ms")
-	moveNumeric(out, polling, "poll_interval", "interval_ms")
-	moveNumeric(out, polling, "poll_interval_ms", "interval_ms")
-	moveString(out, workspace, "workspace_root", "root")
-	moveNumeric(out, hooks, "hooks_timeout_ms", "timeout_ms")
-	moveNumeric(out, agent, "max_concurrent", "max_concurrent_agents")
-	moveNumeric(out, agent, "max_concurrent_agents", "max_concurrent_agents")
-	moveNumeric(out, agent, "max_turns", "max_turns")
-	moveNumeric(out, agent, "max_retry_backoff_ms", "max_retry_backoff_ms")
-	moveNumeric(out, agent, "max_automatic_retries", "max_automatic_retries")
-	moveString(out, agent, "agent_mode", "mode")
-	moveString(out, agent, "dispatch_mode", "dispatch_mode")
-	moveString(out, codex, "codex_command", "command")
-	moveString(out, codex, "codex_expected_version", "expected_version")
-	moveValue(out, codex, "codex_approval_policy", "approval_policy")
-	moveString(out, codex, "codex_initial_collaboration_mode", "initial_collaboration_mode")
-	moveNumeric(out, codex, "codex_turn_timeout_ms", "turn_timeout_ms")
-	moveNumeric(out, codex, "codex_read_timeout_ms", "read_timeout_ms")
-	moveNumeric(out, codex, "codex_stall_timeout_ms", "stall_timeout_ms")
-	if value, ok := codex["approval_policy"]; ok {
-		normalized, err := normalizeApprovalPolicyValue(value, true)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
-		}
-		codex["approval_policy"] = normalized
-	}
-
-	unsupported := []string{"tracker_api_token", "tracker_project_slug", "tracker_assignee"}
-	for _, key := range unsupported {
-		if _, ok := out[key]; ok {
-			return nil, fmt.Errorf("%w: legacy workflow key %q is not supported in kanban mode", ErrWorkflowParse, key)
-		}
-	}
-	return out, nil
-}
-
-func cloneMap(in map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(in))
-	for k, v := range in {
-		if child, ok := v.(map[string]interface{}); ok {
-			out[k] = cloneMap(child)
-			continue
-		}
-		out[k] = v
-	}
-	return out
-}
-
-func ensureMap(root map[string]interface{}, key string) map[string]interface{} {
-	if current, ok := root[key].(map[string]interface{}); ok {
-		return current
-	}
-	child := map[string]interface{}{}
-	root[key] = child
-	return child
-}
-
-func moveValue(root, dest map[string]interface{}, from, to string) {
-	value, ok := root[from]
-	if !ok {
-		return
-	}
-	delete(root, from)
-	if _, exists := dest[to]; !exists {
-		dest[to] = value
-	}
-}
-
-func moveString(root, dest map[string]interface{}, from, to string) {
-	if value, ok := root[from].(string); ok {
-		delete(root, from)
-		if _, exists := dest[to]; !exists {
-			dest[to] = value
-		}
-	}
-}
-
-func moveMap(root, dest map[string]interface{}, from, to string) {
-	if value, ok := root[from].(map[string]interface{}); ok {
-		delete(root, from)
-		if _, exists := dest[to]; !exists {
-			dest[to] = value
-		}
-	}
-}
-
-func moveNumeric(root, dest map[string]interface{}, from, to string) {
-	value, ok := root[from]
-	if !ok {
-		return
-	}
-	switch value.(type) {
-	case int, int64, float64:
-		delete(root, from)
-		if _, exists := dest[to]; !exists {
-			dest[to] = value
-		}
-	}
-}
-
-func setBoolDefault(dest map[string]interface{}, key string, value bool) {
-	if _, exists := dest[key]; exists {
-		return
-	}
-	dest[key] = value
-}
-
-func moveStringSlice(root, dest map[string]interface{}, from, to string) {
-	value, ok := root[from]
-	if !ok {
-		return
-	}
-	switch typed := value.(type) {
-	case []interface{}:
-		delete(root, from)
-		if _, exists := dest[to]; !exists {
-			dest[to] = typed
-		}
-	case []string:
-		delete(root, from)
-		if _, exists := dest[to]; !exists {
-			dest[to] = typed
-		}
-	case string:
-		delete(root, from)
-		if _, exists := dest[to]; !exists {
-			dest[to] = splitCSVValues(typed)
-		}
-	}
-}
-
-func splitCSVValues(value string) []string {
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
 }
 
 func normalizeApprovalPolicyValue(value interface{}, present bool) (interface{}, error) {
@@ -676,11 +709,11 @@ func normalizeApprovalPolicyValue(value interface{}, present bool) (interface{},
 		}
 		return policy, nil
 	case map[string]interface{}:
-		return normalizeWorkflowMap(typed), nil
+		return coerceWorkflowMap(typed), nil
 	case map[interface{}]interface{}:
 		out := make(map[string]interface{}, len(typed))
 		for key, child := range typed {
-			out[fmt.Sprint(key)] = normalizeWorkflowValue(child)
+			out[fmt.Sprint(key)] = coerceWorkflowValue(child)
 		}
 		return out, nil
 	default:
@@ -724,51 +757,26 @@ func applyDefaults(c *Config) error {
 	if c.Hooks.TimeoutMs <= 0 {
 		c.Hooks.TimeoutMs = defaults.Hooks.TimeoutMs
 	}
-	if c.Agent.MaxConcurrentAgents <= 0 {
-		c.Agent.MaxConcurrentAgents = defaults.Agent.MaxConcurrentAgents
+	if strings.TrimSpace(c.Workspace.BranchPrefix) == "" {
+		c.Workspace.BranchPrefix = defaults.Workspace.BranchPrefix
 	}
-	if c.Agent.MaxTurns <= 0 {
-		c.Agent.MaxTurns = defaults.Agent.MaxTurns
+	if c.Orchestrator.MaxConcurrentAgents <= 0 {
+		c.Orchestrator.MaxConcurrentAgents = defaults.Orchestrator.MaxConcurrentAgents
 	}
-	if c.Agent.MaxRetryBackoffMs <= 0 {
-		c.Agent.MaxRetryBackoffMs = defaults.Agent.MaxRetryBackoffMs
+	if c.Orchestrator.MaxTurns <= 0 {
+		c.Orchestrator.MaxTurns = defaults.Orchestrator.MaxTurns
 	}
-	if c.Agent.MaxAutomaticRetries <= 0 {
-		c.Agent.MaxAutomaticRetries = defaults.Agent.MaxAutomaticRetries
+	if c.Orchestrator.MaxRetryBackoffMs <= 0 {
+		c.Orchestrator.MaxRetryBackoffMs = defaults.Orchestrator.MaxRetryBackoffMs
 	}
-	if strings.TrimSpace(c.Agent.Mode) == "" {
-		c.Agent.Mode = defaults.Agent.Mode
+	if c.Orchestrator.MaxAutomaticRetries <= 0 {
+		c.Orchestrator.MaxAutomaticRetries = defaults.Orchestrator.MaxAutomaticRetries
 	}
-	if strings.TrimSpace(c.Agent.DispatchMode) == "" {
-		c.Agent.DispatchMode = defaults.Agent.DispatchMode
+	if strings.TrimSpace(c.Orchestrator.Mode) == "" {
+		c.Orchestrator.Mode = defaults.Orchestrator.Mode
 	}
-	if strings.TrimSpace(c.Codex.Command) == "" {
-		c.Codex.Command = defaults.Codex.Command
-	}
-	if strings.TrimSpace(c.Codex.ExpectedVersion) == "" {
-		c.Codex.ExpectedVersion = defaults.Codex.ExpectedVersion
-	}
-	normalizedApprovalPolicy, err := normalizeApprovalPolicyValue(c.Codex.ApprovalPolicy, c.Codex.ApprovalPolicy != nil)
-	if err != nil {
-		return err
-	}
-	if normalizedApprovalPolicy == nil {
-		c.Codex.ApprovalPolicy = defaults.Codex.ApprovalPolicy
-	} else {
-		c.Codex.ApprovalPolicy = normalizedApprovalPolicy
-	}
-	c.Codex.InitialCollaborationMode = normalizeInitialCollaborationMode(c.Codex.InitialCollaborationMode)
-	if c.Codex.InitialCollaborationMode == "" {
-		c.Codex.InitialCollaborationMode = defaults.Codex.InitialCollaborationMode
-	}
-	if c.Codex.TurnTimeoutMs <= 0 {
-		c.Codex.TurnTimeoutMs = defaults.Codex.TurnTimeoutMs
-	}
-	if c.Codex.ReadTimeoutMs <= 0 {
-		c.Codex.ReadTimeoutMs = defaults.Codex.ReadTimeoutMs
-	}
-	if c.Codex.StallTimeoutMs <= 0 {
-		c.Codex.StallTimeoutMs = defaults.Codex.StallTimeoutMs
+	if strings.TrimSpace(c.Orchestrator.DispatchMode) == "" {
+		c.Orchestrator.DispatchMode = defaults.Orchestrator.DispatchMode
 	}
 	if c.Phases.Review.Enabled && strings.TrimSpace(c.Phases.Review.Prompt) == "" {
 		c.Phases.Review.Prompt = DefaultReviewPromptTemplate()
@@ -776,195 +784,41 @@ func applyDefaults(c *Config) error {
 	if c.Phases.Done.Enabled && strings.TrimSpace(c.Phases.Done.Prompt) == "" {
 		c.Phases.Done.Prompt = DefaultDonePromptTemplate()
 	}
+	c.applyDerivedRuntimeFields()
 	return nil
-}
-
-func LegacyWorkflowUsesFullAccess(path string) (bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	content := string(data)
-	if !strings.HasPrefix(content, "---\n") {
-		return false, nil
-	}
-
-	end := strings.Index(content[4:], "\n---\n")
-	frontMatter := content[4:]
-	if end != -1 {
-		frontMatter = content[4 : end+4]
-	}
-
-	var raw map[string]interface{}
-	if err := yaml.Unmarshal([]byte(frontMatter), &raw); err != nil {
-		return false, fmt.Errorf("%w: %v", ErrWorkflowParse, err)
-	}
-	if raw == nil {
-		return false, nil
-	}
-	return rawWorkflowUsesFullAccess(raw), nil
-}
-
-func rawWorkflowUsesFullAccess(raw map[string]interface{}) bool {
-	codex := extractMap(raw["codex"])
-	if strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", codex["thread_sandbox"])), "danger-full-access") {
-		return true
-	}
-	if policy := extractMap(codex["turn_sandbox_policy"]); strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", policy["type"])), "dangerFullAccess") {
-		return true
-	}
-	if strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", raw["codex_thread_sandbox"])), "danger-full-access") {
-		return true
-	}
-	if policy := extractMap(raw["codex_turn_sandbox_policy"]); strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", policy["type"])), "dangerFullAccess") {
-		return true
-	}
-	return false
-}
-
-func extractMap(raw interface{}) map[string]interface{} {
-	switch typed := raw.(type) {
-	case map[string]interface{}:
-		return typed
-	case map[interface{}]interface{}:
-		out := make(map[string]interface{}, len(typed))
-		for key, value := range typed {
-			out[fmt.Sprint(key)] = value
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func detectWorkflowAdvisories(cfg Config, prompt string, raw map[string]interface{}) []WorkflowAdvisory {
-	advisories := make([]WorkflowAdvisory, 0, 4)
-	hasLegacySandboxKeys := rawWorkflowHasLegacySandboxKeys(raw)
-	if hasLegacySandboxKeys {
-		advisories = append(advisories, WorkflowAdvisory{
-			Code:        WorkflowAdvisoryPermissions,
-			Message:     "Legacy sandbox keys in WORKFLOW.md are ignored. Maestro now resolves execution permissions from the project or issue permission profile in the database.",
-			Remediation: "Remove legacy sandbox settings from WORKFLOW.md and set the project or issue permission profile to the access level the run requires before starting the agent.",
-		})
-	}
-	if hasLegacySandboxKeys && workflowApprovalPolicyBlocksInteractiveRecovery(cfg) {
-		advisories = append(advisories, WorkflowAdvisory{
-			Code:        WorkflowAdvisoryApprovalPolicy,
-			Message:     "This workflow disables interactive approvals with codex.approval_policy=never while also carrying ignored legacy sandbox settings. If the project or issue permission profile does not already grant the access the task needs, the run can dead-end on sandbox or permission blockers.",
-			Remediation: "Either keep approval_policy=never and make sure the project or issue permission profile already grants the required access, or switch to a non-never approval policy if you want the agent to recover through user-approved permission escalations.",
-		})
-	}
-	if workflowPlanModeBlocksInteractiveRecovery(cfg) {
-		advisories = append(advisories, WorkflowAdvisory{
-			Code:        WorkflowAdvisoryPlanApprovalPolicy,
-			Message:     "This workflow starts app_server threads in plan mode but still uses codex.approval_policy=never. Plan turns can pause on <proposed_plan>, but they cannot ask clarifying questions or request approvals interactively until the approval policy allows it.",
-			Remediation: "Use approval_policy=on-request for plan-gated runs, or switch initial_collaboration_mode back to default when you want unattended execution-first runs.",
-		})
-	}
-	if cfg.Phases.Done.Enabled && workflowUsesLegacyBranchInstructions(prompt, cfg.Phases.Done.Prompt) {
-		advisories = append(advisories, WorkflowAdvisory{
-			Code:        WorkflowAdvisoryPromptBranching,
-			Message:     "The workflow prompt still tells agents to create or replace issue branches manually or merge through hard-coded mainline branches. Maestro already prepares the issue workspace branch and the repository default branch is not always main.",
-			Remediation: "Update WORKFLOW.md to use the branch already prepared by Maestro and describe finalization in terms of the repository default branch instead of hard-coded branch names.",
-		})
-	}
-	return advisories
-}
-
-func rawWorkflowHasLegacySandboxKeys(raw map[string]interface{}) bool {
-	if raw == nil {
-		return false
-	}
-	codex := extractMap(raw["codex"])
-	if _, ok := codex["thread_sandbox"]; ok {
-		return true
-	}
-	if _, ok := codex["turn_sandbox_policy"]; ok {
-		return true
-	}
-	if _, ok := raw["codex_thread_sandbox"]; ok {
-		return true
-	}
-	if _, ok := raw["codex_turn_sandbox_policy"]; ok {
-		return true
-	}
-	return false
-}
-
-func workflowApprovalPolicyBlocksInteractiveRecovery(cfg Config) bool {
-	if strings.TrimSpace(cfg.Agent.Mode) != AgentModeAppServer {
-		return false
-	}
-	policy, ok := cfg.Codex.ApprovalPolicy.(string)
-	if !ok {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(policy), "never")
-}
-
-func workflowPlanModeBlocksInteractiveRecovery(cfg Config) bool {
-	if strings.TrimSpace(cfg.Agent.Mode) != AgentModeAppServer {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(cfg.Codex.InitialCollaborationMode), InitialCollaborationModePlan) {
-		return false
-	}
-	policy, ok := cfg.Codex.ApprovalPolicy.(string)
-	if !ok {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(policy), "never")
-}
-
-func workflowUsesLegacyBranchInstructions(prompt, donePrompt string) bool {
-	combined := strings.ToLower(strings.TrimSpace(prompt + "\n" + donePrompt))
-	if combined == "" {
-		return false
-	}
-	legacyFragments := []string{
-		"create a dedicated issue branch before editing",
-		"use maestro/{{ issue.identifier }}",
-		"sync origin/main",
-		"merge the issue branch into local main",
-		"rerun the relevant validation on main",
-		"push main to origin",
-		"create a new branch from origin/main",
-	}
-	for _, fragment := range legacyFragments {
-		if strings.Contains(combined, fragment) {
-			return true
-		}
-	}
-	return false
 }
 
 func validateConfig(c *Config) error {
 	if strings.TrimSpace(c.Tracker.Kind) != TrackerKindKanban {
 		return fmt.Errorf("unsupported tracker.kind %q", strings.TrimSpace(c.Tracker.Kind))
 	}
-	if strings.TrimSpace(c.Agent.Mode) != AgentModeAppServer && strings.TrimSpace(c.Agent.Mode) != AgentModeStdio {
-		return fmt.Errorf("unsupported agent.mode %q", c.Agent.Mode)
+	if strings.TrimSpace(c.Workspace.Root) == "" {
+		return fmt.Errorf("workspace.root is required")
 	}
-	dispatchMode := strings.TrimSpace(c.Agent.DispatchMode)
+	if strings.TrimSpace(c.Workspace.BranchPrefix) == "" {
+		return fmt.Errorf("workspace.branch_prefix is required")
+	}
+	dispatchMode := strings.TrimSpace(c.Orchestrator.DispatchMode)
 	if dispatchMode != DispatchModeParallel && dispatchMode != DispatchModePerProjectSerial {
-		return fmt.Errorf("unsupported agent.dispatch_mode %q", c.Agent.DispatchMode)
+		return fmt.Errorf("unsupported orchestrator.dispatch_mode %q", c.Orchestrator.DispatchMode)
 	}
-	if strings.TrimSpace(c.Codex.Command) == "" {
-		return fmt.Errorf("codex.command is required")
+	if c.Runtime.Entries == nil || len(c.Runtime.Entries) == 0 {
+		return fmt.Errorf("runtime is required")
 	}
-	if err := validateApprovalPolicyValue(c.Codex.ApprovalPolicy); err != nil {
+	if strings.TrimSpace(c.Runtime.Default) == "" {
+		return fmt.Errorf("runtime.default is required")
+	}
+	runtime, ok := c.Runtime.Entries[strings.TrimSpace(c.Runtime.Default)]
+	if !ok {
+		return fmt.Errorf("runtime.default %q does not match a runtime entry", c.Runtime.Default)
+	}
+	if err := validateRuntimeConfig(runtime); err != nil {
 		return err
 	}
-	switch c.Codex.InitialCollaborationMode {
-	case InitialCollaborationModePlan, InitialCollaborationModeDefault:
-	case "":
-		return fmt.Errorf("codex.initial_collaboration_mode is required")
-	default:
-		return fmt.Errorf("unsupported codex.initial_collaboration_mode %q", c.Codex.InitialCollaborationMode)
+	for name, runtime := range c.Runtime.Entries {
+		if err := validateRuntimeEntry(name, runtime); err != nil {
+			return err
+		}
 	}
 	for _, prompt := range []string{strings.TrimSpace(c.Phases.Review.Prompt), strings.TrimSpace(c.Phases.Done.Prompt)} {
 		if prompt == "" {
@@ -977,25 +831,55 @@ func validateConfig(c *Config) error {
 	return nil
 }
 
+func validateRuntimeEntry(name string, runtime RuntimeConfig) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("runtime entry name is required")
+	}
+	if strings.TrimSpace(runtime.Provider) == "" {
+		return fmt.Errorf("runtime.%s.provider is required", name)
+	}
+	if strings.TrimSpace(runtime.Transport) != AgentModeAppServer && strings.TrimSpace(runtime.Transport) != AgentModeStdio {
+		return fmt.Errorf("unsupported runtime.%s.transport %q", name, runtime.Transport)
+	}
+	if strings.TrimSpace(runtime.Command) == "" {
+		return fmt.Errorf("runtime.%s.command is required", name)
+	}
+	if err := validateApprovalPolicyValue(runtime.ApprovalPolicy); err != nil {
+		return fmt.Errorf("runtime.%s.%w", name, err)
+	}
+	if strings.TrimSpace(runtime.InitialCollaborationMode) != "" {
+		switch normalizeInitialCollaborationMode(runtime.InitialCollaborationMode) {
+		case InitialCollaborationModePlan, InitialCollaborationModeDefault:
+		default:
+			return fmt.Errorf("unsupported runtime.%s.initial_collaboration_mode %q", name, runtime.InitialCollaborationMode)
+		}
+	}
+	return nil
+}
+
+func validateRuntimeConfig(runtime RuntimeConfig) error {
+	return validateRuntimeEntry("default", runtime)
+}
+
 func validateApprovalPolicyValue(value interface{}) error {
 	if value == nil {
-		return fmt.Errorf("codex.approval_policy is required")
+		return fmt.Errorf("runtime.approval_policy is required")
 	}
 
 	switch typed := value.(type) {
 	case string:
 		trimmed := strings.TrimSpace(typed)
 		if trimmed == "" {
-			return fmt.Errorf("codex.approval_policy is required")
+			return fmt.Errorf("runtime.approval_policy is required")
 		}
 		if _, ok := canonicalApprovalPolicyString(trimmed); !ok {
-			return fmt.Errorf("unsupported codex.approval_policy %q", typed)
+			return fmt.Errorf("unsupported runtime.approval_policy %q", typed)
 		}
 		return nil
 	case map[string]interface{}, map[interface{}]interface{}:
 		return nil
 	default:
-		return fmt.Errorf("unsupported codex.approval_policy type %T", value)
+		return fmt.Errorf("unsupported runtime.approval_policy type %T", value)
 	}
 }
 

@@ -2,183 +2,118 @@ package config
 
 import (
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestNormalizeWorkflowKeysMigratesLegacyFields(t *testing.T) {
-	raw := map[string]interface{}{
-		"tracker_kind":           "kanban",
-		"tracker_active_states":  "ready, in_progress, , in_review",
-		"tracker_terminal_states": []interface{}{"done", "cancelled"},
-		"poll_interval":          5000,
-		"workspace_root":        "./workspaces",
-		"hooks_timeout_ms":      1234,
-		"max_concurrent":        5,
-		"max_turns":            6,
-		"max_retry_backoff_ms": 7,
-		"max_automatic_retries": 8,
-		"agent_mode":           "stdio",
-		"dispatch_mode":        "per_project_serial",
-		"codex_command":        "codex app-server",
-		"codex_expected_version": "dev",
-		"codex_approval_policy": map[interface{}]interface{}{
-			"granular": map[interface{}]interface{}{
-				"sandbox_approval":    true,
-				"rules":               true,
-				"mcp_elicitations":    true,
-				"request_permissions": false,
+func assertGranularPolicy(t *testing.T, policy interface{}) {
+	t.Helper()
+	root, ok := policy.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected granular policy map, got %#v", policy)
+	}
+	granular, ok := root["granular"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected granular policy object, got %#v", policy)
+	}
+	if granular["sandbox_approval"] != true || granular["rules"] != true || granular["mcp_elicitations"] != true || granular["request_permissions"] != false {
+		t.Fatalf("unexpected granular policy shape: %#v", policy)
+	}
+}
+
+func TestDefaultConfigIncludesRuntimeCatalog(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.Workspace.BranchPrefix != "maestro/" {
+		t.Fatalf("expected neutral branch prefix, got %q", cfg.Workspace.BranchPrefix)
+	}
+	if cfg.Runtime.Default != "codex-appserver" {
+		t.Fatalf("expected codex-appserver default runtime, got %q", cfg.Runtime.Default)
+	}
+	appServer, ok := cfg.Runtime.Entries["codex-appserver"]
+	if !ok {
+		t.Fatal("expected codex-appserver runtime entry")
+	}
+	if appServer.Provider != "codex" || appServer.Transport != AgentModeAppServer {
+		t.Fatalf("unexpected codex-appserver runtime: %#v", appServer)
+	}
+	assertGranularPolicy(t, appServer.ApprovalPolicy)
+	if cfg.Runtime.Entries["codex-stdio"].Transport != AgentModeStdio {
+		t.Fatalf("unexpected codex-stdio runtime: %#v", cfg.Runtime.Entries["codex-stdio"])
+	}
+	if cfg.Runtime.Entries["claude"].Provider != "claude" || cfg.Runtime.Entries["claude"].Transport != AgentModeStdio {
+		t.Fatalf("unexpected claude runtime: %#v", cfg.Runtime.Entries["claude"])
+	}
+	if cfg.Agent.Mode != AgentModeAppServer || cfg.Agent.DispatchMode != DispatchModeParallel {
+		t.Fatalf("unexpected derived agent config: %#v", cfg.Agent)
+	}
+	if cfg.Codex.ExpectedVersion == "" || cfg.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
+		t.Fatalf("unexpected derived runtime config: %#v", cfg.Codex)
+	}
+}
+
+func TestApplyDefaultsPopulatesRuntimeCatalogAndValidation(t *testing.T) {
+	cfg := Config{
+		Tracker: TrackerConfig{Kind: TrackerKindKanban},
+		Orchestrator: OrchestratorConfig{
+			DispatchMode: DispatchModeParallel,
+		},
+		Runtime: RuntimeCatalog{
+			Entries: map[string]RuntimeConfig{
+				"codex-appserver": {
+					Provider:                 "codex",
+					Transport:                AgentModeAppServer,
+					Command:                  "codex app-server",
+					ExpectedVersion:          "9.9.9",
+					ApprovalPolicy:           "never",
+					InitialCollaborationMode: InitialCollaborationModeDefault,
+					TurnTimeoutMs:            1,
+					ReadTimeoutMs:            2,
+					StallTimeoutMs:           3,
+				},
 			},
 		},
-		"codex_initial_collaboration_mode": "plan",
-		"codex_turn_timeout_ms":            9,
-		"codex_read_timeout_ms":            10,
-		"codex_stall_timeout_ms":           11,
-	}
-
-	normalized, err := normalizeWorkflowKeys(raw)
-	if err != nil {
-		t.Fatalf("normalizeWorkflowKeys: %v", err)
-	}
-	if _, ok := normalized["tracker_kind"]; ok {
-		t.Fatal("expected tracker_kind to be moved")
-	}
-	tracker := normalized["tracker"].(map[string]interface{})
-	if tracker["kind"] != "kanban" {
-		t.Fatalf("unexpected tracker kind: %#v", tracker)
-	}
-	if got := tracker["active_states"].([]string); !reflect.DeepEqual(got, []string{"ready", "in_progress", "in_review"}) {
-		t.Fatalf("unexpected active states: %#v", got)
-	}
-	if got := tracker["terminal_states"].([]interface{}); !reflect.DeepEqual(got, []interface{}{"done", "cancelled"}) {
-		t.Fatalf("unexpected terminal states: %#v", got)
-	}
-	polling := normalized["polling"].(map[string]interface{})
-	if polling["interval_ms"] != 5000 {
-		t.Fatalf("unexpected polling interval: %#v", polling)
-	}
-	workspace := normalized["workspace"].(map[string]interface{})
-	if workspace["root"] != "./workspaces" {
-		t.Fatalf("unexpected workspace root: %#v", workspace)
-	}
-	codex := normalized["codex"].(map[string]interface{})
-	if codex["command"] != "codex app-server" || codex["expected_version"] != "dev" {
-		t.Fatalf("unexpected codex values: %#v", codex)
-	}
-	if _, ok := codex["approval_policy"].(map[string]interface{}); !ok {
-		t.Fatalf("expected approval policy to normalize to map, got %#v", codex["approval_policy"])
-	}
-	phases := normalized["phases"].(map[string]interface{})
-	if phases["review"].(map[string]interface{})["enabled"] != true || phases["done"].(map[string]interface{})["enabled"] != true {
-		t.Fatalf("expected phase defaults, got %#v", phases)
-	}
-}
-
-func TestMoveAndSplitHelpers(t *testing.T) {
-	root := map[string]interface{}{
-		"map": map[string]interface{}{"mode": "safe"},
-		"string": "value",
-		"numeric": float64(9),
-		"slice": "a, b, ,c",
-	}
-	dest := map[string]interface{}{}
-
-	moveMap(root, dest, "map", "nested")
-	moveValue(root, dest, "string", "text")
-	moveNumeric(root, dest, "numeric", "count")
-	moveStringSlice(root, dest, "slice", "items")
-
-	if _, ok := root["map"]; ok {
-		t.Fatal("expected moveMap to remove source key")
-	}
-	if dest["text"] != "value" || dest["count"] != float64(9) {
-		t.Fatalf("unexpected moveValue/moveNumeric results: %#v", dest)
-	}
-	if got := dest["items"].([]string); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
-		t.Fatalf("unexpected moveStringSlice result: %#v", got)
-	}
-	if got := splitCSVValues("x, y, , z"); !reflect.DeepEqual(got, []string{"x", "y", "z"}) {
-		t.Fatalf("unexpected splitCSVValues result: %#v", got)
-	}
-	if move := ensureMap(dest, "nested"); move == nil || move["mode"] != "safe" {
-		t.Fatalf("expected ensureMap to preserve nested map, got %#v", move)
-	}
-	setBoolDefault(dest, "enabled", true)
-	if dest["enabled"] != true {
-		t.Fatalf("expected setBoolDefault to populate missing key, got %#v", dest)
-	}
-	setBoolDefault(dest, "enabled", false)
-	if dest["enabled"] != true {
-		t.Fatalf("expected setBoolDefault not to overwrite existing key, got %#v", dest)
-	}
-}
-
-func TestDefaultsValidationAndPathHelpers(t *testing.T) {
-	cfg := Config{
 		Phases: PhasesConfig{
 			Review: PhasePromptConfig{Enabled: true},
 			Done:   PhasePromptConfig{Enabled: true},
 		},
 	}
+
 	if err := applyDefaults(&cfg); err != nil {
 		t.Fatalf("applyDefaults: %v", err)
 	}
-	if cfg.Tracker.Kind != TrackerKindKanban || cfg.Agent.Mode != AgentModeAppServer || cfg.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
-		t.Fatalf("expected defaults to populate missing fields, got %+v", cfg)
+	if cfg.Workspace.BranchPrefix != "maestro/" {
+		t.Fatalf("expected default branch prefix, got %q", cfg.Workspace.BranchPrefix)
 	}
-	if !strings.Contains(cfg.Phases.Review.Prompt, "review pass") || !strings.Contains(cfg.Phases.Done.Prompt, "done phase") {
-		t.Fatalf("expected default phase prompts, got %+v", cfg.Phases)
+	if cfg.Runtime.Default != "codex-appserver" {
+		t.Fatalf("expected runtime.default to resolve, got %q", cfg.Runtime.Default)
 	}
 	if err := validateConfig(&cfg); err != nil {
 		t.Fatalf("validateConfig: %v", err)
 	}
 
 	bad := cfg
-	bad.Tracker.Kind = "jira"
-	if err := validateConfig(&bad); err == nil || !strings.Contains(err.Error(), "unsupported tracker.kind") {
-		t.Fatalf("expected tracker validation error, got %v", err)
-	}
-	bad = cfg
-	bad.Agent.Mode = "invalid"
-	if err := validateConfig(&bad); err == nil || !strings.Contains(err.Error(), "unsupported agent.mode") {
-		t.Fatalf("expected agent validation error, got %v", err)
-	}
-	bad = cfg
-	bad.Codex.ApprovalPolicy = 123
-	if err := validateConfig(&bad); err == nil || !strings.Contains(err.Error(), "codex.approval_policy") {
-		t.Fatalf("expected approval policy validation error, got %v", err)
+	bad.Workspace.BranchPrefix = ""
+	if err := validateConfig(&bad); err == nil || !strings.Contains(err.Error(), "workspace.branch_prefix") {
+		t.Fatalf("expected branch prefix validation error, got %v", err)
 	}
 
-	home := filepath.Join(t.TempDir(), "home")
-	t.Setenv("MAESTRO_PATH", "/tmp/maestro")
-	t.Setenv("HOME", home)
-	if got := expandPathValue("$MAESTRO_PATH/work"); got != "/tmp/maestro/work" {
-		t.Fatalf("unexpected expanded env path: %q", got)
+	bad = cfg
+	bad.Runtime.Default = "missing-runtime"
+	if err := validateConfig(&bad); err == nil || !strings.Contains(err.Error(), "runtime.default") {
+		t.Fatalf("expected runtime.default validation error, got %v", err)
 	}
-	if got := expandPathValue("~"); got != home {
-		t.Fatalf("expected home expansion, got %q", got)
-	}
-	if got := resolvePathValue("/repo", "./work", "fallback"); got != filepath.Clean("/repo/work") {
-		t.Fatalf("unexpected relative path resolution: %q", got)
-	}
-	if got := resolvePathValue("/repo", "", "$MAESTRO_PATH/db"); got != filepath.Clean("/tmp/maestro/db") {
-		t.Fatalf("unexpected env path resolution: %q", got)
-	}
-	if got, ok := canonicalApprovalPolicyString("on_request"); !ok || got != "on-request" {
-		t.Fatalf("unexpected canonical approval policy: %q %v", got, ok)
-	}
-	if _, ok := canonicalApprovalPolicyString("maybe"); ok {
-		t.Fatal("expected invalid policy to fail canonicalization")
-	}
-	if got := normalizeInitialCollaborationMode(" PLAN "); got != "plan" {
-		t.Fatalf("unexpected collaboration mode normalization: %q", got)
+
+	bad = cfg
+	bad.Runtime.Entries["codex-appserver"] = RuntimeConfig{Provider: "codex", Transport: "invalid", Command: "codex"}
+	if err := validateConfig(&bad); err == nil || !strings.Contains(err.Error(), "unsupported runtime.default.transport") {
+		t.Fatalf("expected runtime transport validation error, got %v", err)
 	}
 }
 
-func TestApprovalPolicyAndAdvisoryHelpers(t *testing.T) {
+func TestApprovalPolicyHelpers(t *testing.T) {
 	if err := validateApprovalPolicyValue(nil); err == nil {
-		t.Fatal("expected nil approval policy to fail validation")
+		t.Fatal("expected nil approval policy to fail")
 	}
 	if err := validateApprovalPolicyValue("never"); err != nil {
 		t.Fatalf("validateApprovalPolicyValue string: %v", err)
@@ -193,30 +128,31 @@ func TestApprovalPolicyAndAdvisoryHelpers(t *testing.T) {
 	if got, err := normalizeApprovalPolicyValue(map[interface{}]interface{}{"granular": map[interface{}]interface{}{"rules": true}}, true); err != nil {
 		t.Fatalf("normalizeApprovalPolicyValue map: %v", err)
 	} else if _, ok := got.(map[string]interface{}); !ok {
-		t.Fatalf("expected map approval policy, got %#v", got)
+		t.Fatalf("expected normalized approval policy map, got %#v", got)
 	}
+	if policy, ok := canonicalApprovalPolicyString("ON_REQUEST"); !ok || policy != "on-request" {
+		t.Fatalf("unexpected canonical policy: %q %v", policy, ok)
+	}
+}
 
-	cfg := DefaultConfig()
-	cfg.Agent.Mode = AgentModeAppServer
-	cfg.Codex.ApprovalPolicy = "never"
-	cfg.Codex.InitialCollaborationMode = InitialCollaborationModePlan
-	if !workflowApprovalPolicyBlocksInteractiveRecovery(cfg) {
-		t.Fatal("expected approval policy blocker")
+func TestPathHelpers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", home)
+	t.Setenv("MAESTRO_PATH", "/tmp/maestro")
+
+	if got := expandPathValue("$MAESTRO_PATH/work"); got != "/tmp/maestro/work" {
+		t.Fatalf("unexpected expanded env path: %q", got)
 	}
-	if !workflowPlanModeBlocksInteractiveRecovery(cfg) {
-		t.Fatal("expected plan mode blocker")
+	if got := expandPathValue("~"); got != home {
+		t.Fatalf("unexpected home expansion: %q", got)
 	}
-	if !workflowUsesLegacyBranchInstructions(
-		"Create a dedicated issue branch before editing.",
-		"Merge the issue branch into local main and push main to origin.",
-	) {
-		t.Fatal("expected legacy branch instruction detection")
+	if got := resolvePathValue("/repo", "./work", "fallback"); got != filepath.Clean("/repo/work") {
+		t.Fatalf("unexpected relative path resolution: %q", got)
 	}
-	if !rawWorkflowUsesFullAccess(map[string]interface{}{
-		"codex": map[string]interface{}{
-			"turn_sandbox_policy": map[string]interface{}{"type": "dangerFullAccess"},
-		},
-	}) {
-		t.Fatal("expected raw workflow full access detection")
+	if got := resolvePathValue("/repo", "", "$MAESTRO_PATH/db"); got != filepath.Clean("/tmp/maestro/db") {
+		t.Fatalf("unexpected env path resolution: %q", got)
+	}
+	if got := normalizeInitialCollaborationMode(" PLAN "); got != "plan" {
+		t.Fatalf("unexpected collaboration mode normalization: %q", got)
 	}
 }

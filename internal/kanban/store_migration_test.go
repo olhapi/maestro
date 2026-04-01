@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -400,89 +399,19 @@ func TestStoreMigrationHelpersCoverage(t *testing.T) {
 		})
 	})
 
-	t.Run("legacy permission and foreign key backfills", func(t *testing.T) {
+	t.Run("foreign key normalization backfills", func(t *testing.T) {
 		store := setupTestStore(t)
 
 		repoA := t.TempDir()
-		workflowA := filepath.Join(repoA, "WORKFLOW.md")
-		if err := os.WriteFile(workflowA, []byte(`---
-codex:
-  thread_sandbox: workspace-write
----
-`), 0o644); err != nil {
-			t.Fatalf("WriteFile workflowA: %v", err)
-		}
-		projectA, err := store.CreateProject("Legacy project A", "", repoA, workflowA)
+		projectA, err := store.CreateProject("Project A", "", repoA, "")
 		if err != nil {
 			t.Fatalf("CreateProject A: %v", err)
 		}
 
 		repoB := t.TempDir()
-		workflowB := filepath.Join(repoB, "WORKFLOW.md")
-		if err := os.WriteFile(workflowB, []byte(`---
-codex:
-  thread_sandbox: workspace-write
----
-`), 0o644); err != nil {
-			t.Fatalf("WriteFile workflowB: %v", err)
-		}
-		projectB, err := store.CreateProject("Legacy project B", "", repoB, workflowB)
+		projectB, err := store.CreateProject("Project B", "", repoB, "")
 		if err != nil {
 			t.Fatalf("CreateProject B: %v", err)
-		}
-
-		repoSkip := t.TempDir()
-		workflowSkip := filepath.Join(repoSkip, "WORKFLOW.md")
-		if err := os.WriteFile(workflowSkip, []byte(`---
-codex:
-  thread_sandbox: workspace-write
----
-`), 0o644); err != nil {
-			t.Fatalf("WriteFile workflowSkip: %v", err)
-		}
-		projectSkip, err := store.CreateProject("Legacy project skip", "", repoSkip, workflowSkip)
-		if err != nil {
-			t.Fatalf("CreateProject skip: %v", err)
-		}
-		if err := store.UpdateProjectPermissionProfile(projectSkip.ID, PermissionProfileFullAccess); err != nil {
-			t.Fatalf("UpdateProjectPermissionProfile skip: %v", err)
-		}
-
-		if err := os.WriteFile(workflowA, []byte(`---
-codex:
-  thread_sandbox: danger-full-access
----
-`), 0o644); err != nil {
-			t.Fatalf("Rewrite workflowA full access: %v", err)
-		}
-
-		if err := store.backfillLegacyProjectPermissionProfiles(); err != nil {
-			t.Fatalf("backfillLegacyProjectPermissionProfiles: %v", err)
-		}
-		if err := store.backfillLegacyProjectPermissionProfiles(); err != nil {
-			t.Fatalf("backfillLegacyProjectPermissionProfiles idempotent call: %v", err)
-		}
-
-		loadedA, err := store.GetProject(projectA.ID)
-		if err != nil {
-			t.Fatalf("GetProject A: %v", err)
-		}
-		if loadedA.PermissionProfile != PermissionProfileFullAccess {
-			t.Fatalf("expected full-access permission profile after backfill, got %q", loadedA.PermissionProfile)
-		}
-		loadedB, err := store.GetProject(projectB.ID)
-		if err != nil {
-			t.Fatalf("GetProject B: %v", err)
-		}
-		if loadedB.PermissionProfile != PermissionProfileDefault {
-			t.Fatalf("expected default permission profile to remain unchanged, got %q", loadedB.PermissionProfile)
-		}
-		loadedSkip, err := store.GetProject(projectSkip.ID)
-		if err != nil {
-			t.Fatalf("GetProject skip: %v", err)
-		}
-		if loadedSkip.PermissionProfile != PermissionProfileFullAccess {
-			t.Fatalf("expected non-default permission profile to be preserved, got %q", loadedSkip.PermissionProfile)
 		}
 
 		epic, err := store.CreateEpic(projectA.ID, "Backfill epic", "")
@@ -569,7 +498,6 @@ codex:
 			{name: "issue types", call: store.backfillIssueTypes},
 			{name: "workflow phases", call: store.backfillWorkflowPhases},
 			{name: "plan sessions", call: store.backfillOpenIssuePlanSessions},
-			{name: "permission profiles", call: store.backfillLegacyProjectPermissionProfiles},
 			{name: "foreign key normalization", call: store.normalizeIssueForeignKeys},
 		}
 		for _, tc := range cases {

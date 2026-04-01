@@ -390,17 +390,25 @@ func workspacePathForIssue(rootAbs string, project *kanban.Project, issue *kanba
 }
 
 func deterministicIssueBranch(issue *kanban.Issue) string {
+	return deterministicIssueBranchForPrefix(config.DefaultConfig().Workspace.BranchPrefix, issue)
+}
+
+func deterministicIssueBranchForPrefix(prefix string, issue *kanban.Issue) string {
+	branchPrefix := strings.TrimSpace(prefix)
+	if branchPrefix == "" {
+		branchPrefix = config.DefaultConfig().Workspace.BranchPrefix
+	}
 	if issue == nil {
-		return "codex/issue"
+		return branchPrefix + "issue"
 	}
 	if branch := strings.TrimSpace(issue.BranchName); branch != "" {
 		return branch
 	}
 	identifier := strings.TrimSpace(issue.Identifier)
 	if identifier == "" {
-		return "codex/issue"
+		return branchPrefix + "issue"
 	}
-	return "codex/" + identifier
+	return branchPrefix + identifier
 }
 
 func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
@@ -942,7 +950,7 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 	if _, err := runGitCommand(ctx, repoPath, "rev-parse", "--show-toplevel"); err != nil {
 		return false, "", fmt.Errorf("repo validation failed: %w", err)
 	}
-	branchName := deterministicIssueBranch(issue)
+	branchName := deterministicIssueBranchForPrefix(workflow.Config.Workspace.BranchPrefix, issue)
 	if issue != nil && strings.TrimSpace(issue.BranchName) != branchName && r.store != nil {
 		if err := r.store.UpdateIssue(issue.ID, map[string]interface{}{"branch_name": branchName}); err == nil {
 			issue.BranchName = branchName
