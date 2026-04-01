@@ -30,6 +30,7 @@ The rule of thumb is simple:
 | Branch default | `codex/<issue>` in `internal/agent/runner.go` | public API change, persisted branch naming | Replace the provider-prefixed fallback branch name with a neutral issue branch name. |
 | User-facing runtime copy | `Codex` wording in `cmd/maestro/helpers.go`, `cmd/maestro/install.go`, `internal/appserver/client.go`, `apps/frontend/src/components/dashboard/global-interrupt-panel.tsx`, `apps/frontend/src/components/dashboard/elicitation-form.tsx`, `apps/frontend/src/components/dashboard/session-execution-card.tsx`, `apps/website/src/components/react/McpSetupAccordion.tsx`, `apps/website/public/images/screens/architecture-runtime.svg`, and `skills/maestro/references/setup.md` | docs/copy change | Rewrite copy that describes Maestro behavior or the UI, unless the sentence is intentionally about the vendor CLI itself. |
 | Workflow template copy | `Codex command`, `Codex CLI launch and collaboration settings`, `Codex` comments in `pkg/config/init.go`, `cmd/maestro/root.go`, and `WORKFLOW.md` | docs/copy change, persisted-schema change | Rewrite the scaffold text so the repo-local contract does not hard-code the provider name. |
+| Config validation and advisory copy | `codex.approval_policy=never`, `codex.initial_collaboration_mode`, and the legacy sandbox warnings/errors in `pkg/config/config.go` | docs/copy change | Reword the validation and advisory text so it describes the runtime neutrally. |
 | README and docs prose | `README.md`, `docs/OPERATIONS.md`, `docs/E2E_REAL_CODEX.md`, `docs/adr/AR-01-runtime-vocabulary-and-support-contract.md`, `apps/website/src/content/docs/install.mdx`, `apps/website/src/content/docs/quickstart.mdx`, `apps/website/src/content/docs/architecture.mdx`, `apps/website/src/content/docs/cli-reference.mdx`, `apps/website/src/content/docs/workflow-config.mdx`, and `apps/website/src/content/docs/advanced/e2e-harness.mdx` | docs-only change | Reword to neutral runtime language where the text is describing Maestro behavior rather than the upstream Codex CLI. |
 | Harness and maintenance names | `scripts/e2e_real_codex.sh`, `scripts/e2e_real_codex_phases.sh`, `scripts/e2e_real_codex_issue_images.sh`, `scripts/update_codex_schemas.sh`, `apps/website/scripts/smoke.mjs`, and `Makefile` targets `e2e-real-codex*` | docs/copy change | Keep the vendor-specific names only if the file is intentionally about the real Codex CLI. Otherwise rename the harness wording to neutral runtime language. |
 
@@ -41,7 +42,9 @@ These symbols do not cross a public boundary by themselves, but they should be r
 - `CodexCommand` fields in `pkg/config/init.go`, `cmd/maestro/root.go`, `internal/appserver/client.go`, `internal/agentruntime/factory/workflow.go`, and `internal/agentruntime/codex/runtime.go`
 - `CodexTotals` Go struct names in `internal/observability/model.go`
 - `CodexAppServerPID` Go struct names in `internal/observability/model.go` and `internal/agentruntime/session.go`
+- `ProviderCodex` in `internal/agentruntime/runtime.go`
 - `CodexVersionStatus`, `DetectCodexVersion`, `codexExecutableFromCommand`, `codexVersionCache`, and `codexVersionPattern` in `internal/appserver/version.go`
+- `warnOnCodexVersionMismatch` and `looksLikeCodexCommand` in `internal/appserver/client.go`
 - import aliases such as `codexruntime` in the runtime, agent, orchestrator, verification, and spec-check packages
 
 Decision:
