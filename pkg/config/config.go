@@ -414,7 +414,7 @@ No description provided.
 - Reproduce or inspect current behavior first so the target is explicit.
 - Keep metadata current: state, checklist, acceptance criteria, and links.
 - Treat the persistent workpad comment as the source of truth.
-- If you find meaningful out-of-scope work, file a separate maestro CLI issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
+- If you find meaningful out-of-scope work, file a separate Maestro issue instead of expanding scope. Include a clear title, description, and acceptance criteria; place it in Backlog; use the same project; link the current issue; and add a blocker relation when needed.
 - Move status only when the quality bar for that status is met.
 - Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.
 - In the done phase, after merge, push, and final validation succeed, leave the workspace intact; Maestro handles cleanup hooks and worktree removal after your run exits.
@@ -463,7 +463,7 @@ Description:
 No description provided.
 {% endif %}
 
-Review the implementation in the current workspace, run focused verification, and fix any issues you find.
+Review the implementation in the current issue workspace, run focused verification, and fix any issues you find.
 
 - If additional implementation is still required after review, move the issue back to in_progress.
 - If the issue is ready to finalize, move it to done.
@@ -472,7 +472,7 @@ Review the implementation in the current workspace, run focused verification, an
 
 func DefaultInitReviewPromptTemplate() string {
 	return strings.TrimSpace(`
-Review the implementation for issue {{ issue.identifier }} in the current workspace.
+Review the implementation for issue {{ issue.identifier }} in the current issue workspace.
 {% if project.description %}
 Project context:
 {{ project.description }}
@@ -500,7 +500,7 @@ Description:
 No description provided.
 {% endif %}
 
-The done phase owns merge-back and finalization for this issue from the current workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
+The done phase owns merge-back and finalization for this issue from the current issue workspace. Maestro handles preview publication, cleanup hooks, and worktree removal after your run exits.
 
 - Commit all remaining changes to the prepared issue branch.
 - Merge the issue branch into the repository default branch.
@@ -513,7 +513,7 @@ The done phase owns merge-back and finalization for this issue from the current 
 
 func DefaultInitDonePromptTemplate() string {
 	return strings.TrimSpace(`
-Finalize issue {{ issue.identifier }} from the current workspace.
+Finalize issue {{ issue.identifier }} from the current issue workspace.
 {% if project.description %}
 Project context:
 {{ project.description }}

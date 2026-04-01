@@ -29,15 +29,28 @@ func assertDefaultPromptSemantics(t *testing.T, prompt string) {
 		"Plan before coding. Design verification before changing code.",
 		"Reproduce or inspect current behavior first so the target is explicit.",
 		"Treat the persistent workpad comment as the source of truth.",
+		"file a separate Maestro issue instead of expanding scope.",
 		"Use the issue branch already prepared by Maestro in the provided workspace.",
 		"Do not consider the task complete until the change is merged into the repository default branch.",
 		"Use the blocked-access escape hatch only for genuine external blockers after documented fallbacks are exhausted.",
 	)
 }
 
+func assertDefaultReviewPromptSemantics(t *testing.T, prompt string) {
+	t.Helper()
+	assertContainsAll(t, prompt,
+		"Review the implementation",
+		"current issue workspace",
+		"focused verification",
+		"in_progress",
+		"done",
+	)
+}
+
 func assertDefaultDonePromptSemantics(t *testing.T, prompt string) {
 	t.Helper()
 	assertContainsAll(t, prompt,
+		"current issue workspace",
 		"Commit all remaining changes to the prepared issue branch.",
 		"Merge the issue branch into the repository default branch.",
 		"Rerun the relevant validation on the default branch.",
@@ -82,6 +95,7 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	assertGranularPolicy(t, cfg.Runtime.Entries["codex-appserver"].ApprovalPolicy)
 	assertDefaultPromptSemantics(t, DefaultPromptTemplate())
+	assertDefaultReviewPromptSemantics(t, DefaultReviewPromptTemplate())
 	assertDefaultDonePromptSemantics(t, DefaultDonePromptTemplate())
 }
 
@@ -188,10 +202,14 @@ func TestInitWorkflowWritesNeutralSchema(t *testing.T) {
 		"branch_prefix: maestro/",
 		"hooks:",
 		"orchestrator:",
+		"max_concurrent_agents: 4",
+		"max_turns: 5",
+		"max_automatic_retries: 6",
 		"dispatch_mode: per_project_serial",
 		"runtime:",
 		"default: codex-appserver",
 		"codex-appserver:",
+		"transport: app_server",
 		"command: codex app-server --model test",
 		"approval_policy: on-request",
 		"initial_collaboration_mode: plan",
@@ -203,6 +221,7 @@ func TestInitWorkflowWritesNeutralSchema(t *testing.T) {
 		t.Fatalf("expected neutral front matter, got %q", text)
 	}
 	assertDefaultPromptSemantics(t, text)
+	assertDefaultReviewPromptSemantics(t, text)
 	assertDefaultDonePromptSemantics(t, text)
 }
 

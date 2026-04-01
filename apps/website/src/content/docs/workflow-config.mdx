@@ -1,6 +1,6 @@
 ---
 title: Workflow config
-description: Tune how much work Maestro can offload, how aggressively it retries, and how Codex is launched through WORKFLOW.md.
+description: Tune how much work Maestro can offload, how aggressively it retries, and how the runtime is launched through WORKFLOW.md.
 section: concepts
 order: 2
 navLabel: Workflow config
@@ -17,45 +17,49 @@ When the default handoff is close but not quite right, `WORKFLOW.md` is where yo
 - tracker settings
 - workspace root
 - hook commands and timeout
-- agent concurrency, mode, and dispatch behavior
+- orchestrator concurrency, runtime transport, and dispatch behavior
 - optional review and done phase prompts
-- Codex command and collaboration settings
+- runtime command and collaboration settings
 - the prompt template rendered for each issue
 
 Project-level source selection is no longer part of this file. `WORKFLOW.md` still controls orchestration for every project, while `tracker.kind` remains `kanban`, the local tracker.
 
-## Typical Codex-backed section
+## Typical runtime-backed section
 
 ```yaml
-agent:
+orchestrator:
   max_concurrent_agents: 3
   max_turns: 4
   max_retry_backoff_ms: 60000
   max_automatic_retries: 8
-  mode: app_server
   dispatch_mode: parallel
-codex:
-  command: codex app-server
-  expected_version: 0.117.0
-  approval_policy: never
-  initial_collaboration_mode: default
-  turn_timeout_ms: 1800000
-  read_timeout_ms: 10000
-  stall_timeout_ms: 300000
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    expected_version: 0.117.0
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
 ```
 
 ## Main knobs
 
 - `tracker.kind`: orchestration tracker kind. This remains `kanban`, the local tracker.
-- `agent.mode`: use `app_server` for the Codex app-server protocol or `stdio` for `codex exec` style runners.
-- `agent.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
-- `agent.max_turns`: limit how many turns Maestro gives the agent before ending an attempt.
-- `agent.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time. `per_project_serial` effectively caps per-project concurrency at `1`.
-- `codex.command`: exact command Maestro launches.
-- `codex.expected_version`: version Maestro expects from `codex --version`.
-- `codex.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
-- `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. Pair `plan` with `approval_policy: on-request` if you want the agent to ask clarifying questions and wait for approval. This does not affect `stdio` or resumed threads.
-- `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
+- `orchestrator.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
+- `orchestrator.max_turns`: limit how many turns Maestro gives the runtime before ending an attempt.
+- `orchestrator.max_retry_backoff_ms` and `orchestrator.max_automatic_retries`: set retry pacing and the retry cap.
+- `orchestrator.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time. `per_project_serial` effectively caps per-project concurrency at `1`.
+- `runtime.<name>.transport`: use `app_server` for interactive sessions or `stdio` for stdin/stdout runners.
+- `runtime.<name>.command`: exact command Maestro launches.
+- `runtime.<name>.expected_version`: version Maestro expects from `command --version`.
+- `runtime.<name>.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
+- `runtime.<name>.initial_collaboration_mode`: controls the startup mode for fresh `app_server` sessions. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. Pair `plan` with `approval_policy: on-request` if you want the agent to ask clarifying questions and wait for approval. This does not affect `stdio` or resumed sessions.
+- `runtime.<name>.turn_timeout_ms`, `runtime.<name>.read_timeout_ms`, and `runtime.<name>.stall_timeout_ms`: set the run budget and inactivity limits.
 
 Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves runtime sandbox access from DB-backed permission profiles:
 
@@ -67,8 +71,8 @@ Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves 
 
 These two settings solve different problems:
 
-- `initial_collaboration_mode: default` starts a fresh unattended `app_server` thread in execution mode. Use `plan` only for explicitly plan-gated runs, and keep `approval_policy: on-request` if you want the turn to pause for questions or approval.
-- The global interrupt queue only appears when a live `app_server` turn actually asks for approval or user input, which requires an approval policy other than `never`.
+- `initial_collaboration_mode: default` starts a fresh unattended `app_server` session in execution mode. Use `plan` only for explicitly plan-gated runs, and keep `approval_policy: on-request` if you want the turn to pause for questions or approval.
+- The global interrupt queue only appears when a live `app_server` session actually asks for approval or user input, which requires an approval policy other than `never`.
 - Resumed threads keep their existing thread state and do not reapply the startup collaboration mode.
 - `stdio` runs stay non-interactive for this feature.
 
@@ -113,21 +117,21 @@ That scaffold currently includes:
 - `workspace.root: ~/.maestro/worktrees`
 - hook stubs with a `timeout_ms` budget
 - enabled `review` and `done` phases with starter prompt text already filled in, including done-phase guidance focused on merge-back, worktree cleanup, PR readiness, and blocker reporting
-- `agent.max_concurrent_agents: 3`, `max_turns: 4`, `max_automatic_retries: 8`, and `dispatch_mode: parallel`
-- `codex.command: codex app-server`, `agent.mode: app_server`, `approval_policy: never`, and `initial_collaboration_mode: default`
+- `orchestrator.max_concurrent_agents: 3`, `orchestrator.max_turns: 4`, `orchestrator.max_automatic_retries: 8`, and `orchestrator.dispatch_mode: parallel`
+- `runtime.default: codex-appserver`, `runtime.<name>.transport: app_server`, `runtime.<name>.command: codex app-server`, `runtime.<name>.approval_policy: never`, and `runtime.<name>.initial_collaboration_mode: default`
 - the default issue prompt template appended after the YAML front matter
 
 When `--defaults` is not set and both stdin and stdout are TTYs, `workflow init` becomes interactive. The current implementation prompts in this order:
 
 1. `Workspace root`
-2. `Codex command`
-3. `Agent mode`
+2. `Runtime command`
+3. `Agent mode` (runtime transport)
 4. `Dispatch mode`
 5. `Max concurrent agents`
 6. `Max turns`
 7. `Max automatic retries`
-8. If `agent.mode` is `app_server`, `Approval policy`
-9. If `agent.mode` is `app_server`, `Initial collaboration mode`
+8. If `runtime.transport` is `app_server`, `Approval policy`
+9. If `runtime.transport` is `app_server`, `Initial collaboration mode`
 
 Enum prompts render numbered menus. Press Enter to keep the default, or enter the number, an alias, a unique prefix, or the full value. Common shorthand includes `server` for `app_server`, `serial` or `pps` for `per_project_serial`, `req` for `on-request`, and `def` for `default`. Ambiguous prefixes such as `on` are rejected and reprompted.
 
@@ -136,12 +140,12 @@ Enum prompts render numbered menus. Press Enter to keep the default, or enter th
 Use flags when you want to skip prompts but still override part of the scaffold:
 
 <DocsCommandField
-  command={`maestro workflow init . --defaults --workspace-root ./tmp/workspaces --codex-command "codex app-server" --agent-mode server --dispatch-mode pps --max-concurrent-agents 4 --max-turns 5 --max-automatic-retries 6 --approval-policy on_request --initial-collaboration-mode plan`}
+  command={`maestro workflow init . --defaults --workspace-root ./tmp/workspaces --runtime-command "codex app-server" --agent-mode server --dispatch-mode pps --max-concurrent-agents 4 --max-turns 5 --max-automatic-retries 6 --approval-policy on_request --initial-collaboration-mode plan`}
 />
 
 - `--workspace-root` sets `workspace.root`
-- `--codex-command` sets the exact command Maestro launches
-- `--agent-mode` accepts numbered choices, aliases, unique prefixes, or `app_server` / `stdio`
+- `--runtime-command` sets the exact command Maestro launches
+- `--agent-mode` accepts numbered choices, aliases, unique prefixes, or `app_server` / `stdio` and writes the runtime transport into `WORKFLOW.md`
 - `--dispatch-mode`, `--approval-policy`, and `--initial-collaboration-mode` accept the same shorthand as the wizard and write canonical values into `WORKFLOW.md`
 - `--max-concurrent-agents`, `--max-turns`, and `--max-automatic-retries` set the matching numeric fields
 - `--force` overwrites an existing `WORKFLOW.md`
