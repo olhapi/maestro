@@ -270,6 +270,36 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			},
 		},
 		{
+			name: "app-server runtime entry",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
+				runtimeCfg.Provider = "other"
+				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
+				return cfg
+			},
+		},
+		{
+			name: "stdio runtime entry",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				runtimeCfg := cfg.Runtime.Entries["codex-stdio"]
+				runtimeCfg.Transport = "other"
+				cfg.Runtime.Entries["codex-stdio"] = runtimeCfg
+				return cfg
+			},
+		},
+		{
+			name: "claude runtime entry",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				runtimeCfg := cfg.Runtime.Entries["claude"]
+				runtimeCfg.Provider = "other"
+				cfg.Runtime.Entries["claude"] = runtimeCfg
+				return cfg
+			},
+		},
+		{
 			name: "runtime default",
 			cfg: func() config.Config {
 				cfg := config.DefaultConfig()
@@ -435,6 +465,49 @@ func TestValidateSkillInstallBranches(t *testing.T) {
 			t.Fatalf("expected success, got %v", err)
 		}
 	})
+}
+
+func TestRunReportsCodexSchemaFailure(t *testing.T) {
+	root := t.TempDir()
+	writeWorkflow(t, root, workflowFixture(codexschema.SupportedVersion))
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected schema failure to fail, got %+v", report.Checks)
+	}
+	if report.Checks["workflow_load"] != "ok" || report.Checks["workflow_version"] != "ok" || report.Checks["workflow_prompt_render"] != "ok" {
+		t.Fatalf("expected workflow checks to pass, got %+v", report.Checks)
+	}
+	if report.Checks["codex_schema_json"] != "fail" {
+		t.Fatalf("expected codex_schema_json to fail, got %+v", report.Checks)
+	}
+	if report.Checks["skill_install"] != "ok" {
+		t.Fatalf("expected skill_install to still pass, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsSkillInstallFailure(t *testing.T) {
+	root := tempRepoRoot(t)
+	writeWorkflow(t, root, workflowFixture(codexschema.SupportedVersion))
+
+	origInstall := installMaestroFunc
+	t.Cleanup(func() {
+		installMaestroFunc = origInstall
+	})
+	installMaestroFunc = func(string) error {
+		return errors.New("install failed")
+	}
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected skill install failure to fail, got %+v", report.Checks)
+	}
+	if report.Checks["codex_schema_json"] != "ok" {
+		t.Fatalf("expected codex_schema_json to pass, got %+v", report.Checks)
+	}
+	if report.Checks["skill_install"] != "fail" {
+		t.Fatalf("expected skill_install to fail, got %+v", report.Checks)
+	}
 }
 
 func TestValidateWorkflowPromptRenderAllowsJSONRoundTrip(t *testing.T) {
