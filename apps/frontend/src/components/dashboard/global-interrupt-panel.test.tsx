@@ -529,9 +529,13 @@ describe('GlobalInterruptPanel', () => {
 
     expect(screen.getByText('MCP elicitation')).toBeInTheDocument()
     expect(screen.getAllByText('Form')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: /accept and continue/i })).toBeEnabled()
+    const acceptButton = screen.getByRole('button', { name: /accept and continue/i })
+    const elicitationForm = acceptButton.closest('form')
+    expect(elicitationForm).not.toBeNull()
+    expect(elicitationForm).not.toHaveClass('border')
+    expect(acceptButton).toBeEnabled()
 
-    fireEvent.click(screen.getByRole('button', { name: /accept and continue/i }))
+    fireEvent.click(acceptButton)
 
     expect(onRespond).toHaveBeenCalledWith({
       interruptId: 'interrupt-elicitation',
