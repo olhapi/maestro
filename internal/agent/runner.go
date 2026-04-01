@@ -437,7 +437,7 @@ func deterministicIssueBranch(issue *kanban.Issue) string {
 func deterministicIssueBranchForPrefix(prefix string, issue *kanban.Issue) string {
 	branchPrefix := strings.TrimSpace(prefix)
 	if branchPrefix == "" {
-		branchPrefix = config.DefaultConfig().Workspace.BranchPrefix
+		branchPrefix = config.DefaultWorkspaceBranchPrefix
 	}
 	if issue == nil {
 		return branchPrefix + "issue"

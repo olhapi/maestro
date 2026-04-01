@@ -216,6 +216,9 @@ func TestRunnerPureHelpersBranches(t *testing.T) {
 	if got := deterministicIssueBranch(&kanban.Issue{}); got != "maestro/issue" {
 		t.Fatalf("unexpected default branch: %q", got)
 	}
+	if got := deterministicIssueBranchForPrefix("feature/", &kanban.Issue{Identifier: "ISSUE-1"}); got != "feature/ISSUE-1" {
+		t.Fatalf("unexpected custom prefix branch: %q", got)
+	}
 	if got := deterministicIssueBranch(&kanban.Issue{Identifier: "ISSUE-1", BranchName: "  custom-branch  "}); got != "custom-branch" {
 		t.Fatalf("unexpected deterministic branch: %q", got)
 	}
