@@ -197,3 +197,164 @@ func TestStarterClonesRequestsAndClientCapturesInteractions(t *testing.T) {
 		t.Fatalf("expected fake runtime to emit interaction completion notifications, got %#v", doneIDs)
 	}
 }
+
+func TestStarterClonesNestedScenarioData(t *testing.T) {
+	scenario := Scenario{
+		Capabilities: agentruntime.Capabilities{
+			QueuedInteractions:       true,
+			RuntimePermissionUpdates: true,
+		},
+		InitialSession: agentruntime.Session{
+			IssueID:         "iss_321",
+			IssueIdentifier: "MAES-321",
+			ThreadID:        "thread-initial",
+			Metadata: map[string]interface{}{
+				"provider": "fake",
+				"nested": map[string]interface{}{
+					"source": "original",
+				},
+			},
+		},
+		Turns: []Turn{{
+			StartedSession: &agentruntime.Session{
+				ThreadID: "thread-started",
+				TurnID:   "turn-started",
+				Metadata: map[string]interface{}{
+					"stage": "started",
+					"nested": map[string]interface{}{
+						"state": "original",
+					},
+				},
+			},
+			SessionUpdates: []agentruntime.Session{{
+				ThreadID: "thread-update",
+				TurnID:   "turn-update",
+				Metadata: map[string]interface{}{
+					"stage": "update",
+					"nested": map[string]interface{}{
+						"state": "original",
+					},
+				},
+			}},
+			Activities: []agentruntime.ActivityEvent{{
+				Type:     "item.started",
+				ThreadID: "thread-activity",
+				TurnID:   "turn-activity",
+				Metadata: map[string]interface{}{
+					"phase": "commentary",
+					"nested": map[string]interface{}{
+						"source": "original",
+					},
+				},
+			}},
+			PendingInteractions: []agentruntime.PendingInteraction{{
+				ID:          "interaction-1",
+				Kind:        agentruntime.PendingInteractionKindApproval,
+				RequestedAt: time.Now().UTC(),
+				Approval: &agentruntime.PendingApproval{
+					Command: "git status",
+					Decisions: []agentruntime.PendingApprovalDecision{{
+						Value: "approve",
+						Label: "Approve",
+					}},
+				},
+				Metadata: map[string]interface{}{
+					"source": "scenario",
+					"nested": map[string]interface{}{
+						"kind": "original",
+					},
+				},
+			}},
+			ClearedInteractions: []string{"interaction-1"},
+			FinalSession: &agentruntime.Session{
+				ThreadID: "thread-final",
+				TurnID:   "turn-final",
+				Metadata: map[string]interface{}{
+					"stage": "final",
+					"nested": map[string]interface{}{
+						"state": "original",
+					},
+				},
+			},
+			Output: "final answer",
+		}},
+	}
+
+	starter := NewStarter(scenario)
+	scenario.InitialSession.Metadata["nested"].(map[string]interface{})["source"] = "mutated"
+	scenario.Turns[0].StartedSession.Metadata["nested"].(map[string]interface{})["state"] = "mutated"
+	scenario.Turns[0].SessionUpdates[0].Metadata["nested"].(map[string]interface{})["state"] = "mutated"
+	scenario.Turns[0].Activities[0].Metadata["nested"].(map[string]interface{})["source"] = "mutated"
+	scenario.Turns[0].PendingInteractions[0].Metadata["nested"].(map[string]interface{})["kind"] = "mutated"
+	scenario.Turns[0].FinalSession.Metadata["nested"].(map[string]interface{})["state"] = "mutated"
+
+	var (
+		seenSessions     []agentruntime.Session
+		seenActivities   []agentruntime.ActivityEvent
+		seenInteractions []agentruntime.PendingInteraction
+	)
+	clientIface, err := starter.Start(context.Background(), runtimefactory.WorkflowStartRequest{}, agentruntime.Observers{
+		OnSessionUpdate: func(session *agentruntime.Session) {
+			if session != nil {
+				seenSessions = append(seenSessions, session.Clone())
+			}
+		},
+		OnActivityEvent: func(event agentruntime.ActivityEvent) {
+			seenActivities = append(seenActivities, event.Clone())
+		},
+		OnPendingInteraction: func(interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) {
+			if interaction != nil {
+				seenInteractions = append(seenInteractions, interaction.Clone())
+			}
+			if interaction == nil {
+				return
+			}
+			if err := responder(context.Background(), interaction.ID, agentruntime.PendingInteractionResponse{
+				Decision: "approve",
+			}); err != nil {
+				t.Fatalf("respond to fake interaction: %v", err)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	initialSession := clientIface.Session()
+	if initialSession.Metadata["nested"].(map[string]interface{})["source"] != "original" {
+		t.Fatalf("expected initial session metadata to remain cloned, got %+v", initialSession.Metadata)
+	}
+
+	if err := clientIface.RunTurn(context.Background(), agentruntime.TurnRequest{
+		Title: "Deep clone",
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: "prompt"}},
+	}, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	finalSession := clientIface.Session()
+	if finalSession.Metadata["nested"].(map[string]interface{})["state"] != "original" {
+		t.Fatalf("expected final session metadata to remain cloned, got %+v", finalSession.Metadata)
+	}
+	if len(seenSessions) < 3 {
+		t.Fatalf("expected session updates for start, update, and final snapshots, got %#v", seenSessions)
+	}
+	if seenSessions[0].Metadata["nested"].(map[string]interface{})["state"] != "original" {
+		t.Fatalf("expected started session metadata to remain cloned, got %+v", seenSessions[0].Metadata)
+	}
+	if seenSessions[1].Metadata["nested"].(map[string]interface{})["state"] != "original" {
+		t.Fatalf("expected update session metadata to remain cloned, got %+v", seenSessions[1].Metadata)
+	}
+	if seenSessions[len(seenSessions)-1].Metadata["nested"].(map[string]interface{})["state"] != "original" {
+		t.Fatalf("expected final session metadata to remain cloned, got %+v", seenSessions[len(seenSessions)-1].Metadata)
+	}
+	if len(seenActivities) != 1 || seenActivities[0].Metadata["nested"].(map[string]interface{})["source"] != "original" {
+		t.Fatalf("expected activity metadata to remain cloned, got %+v", seenActivities)
+	}
+	if len(seenInteractions) != 1 || seenInteractions[0].Metadata["nested"].(map[string]interface{})["kind"] != "original" {
+		t.Fatalf("expected interaction metadata to remain cloned, got %+v", seenInteractions)
+	}
+	if got := clientIface.Output(); got != "final answer" {
+		t.Fatalf("expected fake client output to remain intact, got %q", got)
+	}
+}

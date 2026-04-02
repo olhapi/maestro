@@ -59,12 +59,19 @@ func TestInputToAppServerAndTextInput(t *testing.T) {
 
 func TestRuntimeMetadataAndCloneHelpers(t *testing.T) {
 	metadata := runtimeMetadata(map[string]interface{}{
+		"source": "neutral",
 		"nested": map[string]interface{}{
 			"transport": "app_server",
 		},
 	}, agentruntime.TransportAppServer)
 	if metadata["provider"] != string(agentruntime.ProviderCodex) || metadata["transport"] != string(agentruntime.TransportAppServer) {
 		t.Fatalf("unexpected runtime metadata: %#v", metadata)
+	}
+	if metadata["source"] != "neutral" {
+		t.Fatalf("expected runtime metadata to preserve neutral fields, got %#v", metadata)
+	}
+	if metadata["nested"].(map[string]interface{})["transport"] != "app_server" {
+		t.Fatalf("expected nested metadata to survive cloning, got %#v", metadata)
 	}
 
 	answers := cloneAnswers(map[string][]string{
@@ -110,10 +117,11 @@ func TestConversionHelpers(t *testing.T) {
 		LastEvent:       "turn.completed",
 		LastTimestamp:   time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC),
 		Metadata: map[string]interface{}{
+			"source":   "neutral",
 			"provider": "codex",
 		},
 	}
-	if got := sessionFromAppServer(issue); got.SessionID != issue.SessionID || got.Metadata["provider"] != string(agentruntime.ProviderCodex) {
+	if got := sessionFromAppServer(issue); got.SessionID != issue.SessionID || got.Metadata["provider"] != string(agentruntime.ProviderCodex) || got.Metadata["source"] != "neutral" {
 		t.Fatalf("unexpected session conversion: %+v", got)
 	}
 	if got := sessionFromAppServer(nil); got.IssueID != "" || got.SessionID != "" || got.Metadata != nil {
@@ -150,12 +158,16 @@ func TestConversionHelpers(t *testing.T) {
 			"status": "ok",
 		},
 		Metadata: map[string]interface{}{
+			"source":    "neutral",
 			"transport": "stdio",
 		},
 	}
 	convertedActivity := activityFromAppServer(activity)
 	if convertedActivity.Metadata["provider"] != string(agentruntime.ProviderCodex) {
 		t.Fatalf("unexpected activity metadata: %+v", convertedActivity.Metadata)
+	}
+	if convertedActivity.Metadata["source"] != "neutral" {
+		t.Fatalf("expected neutral metadata to survive conversion, got %+v", convertedActivity.Metadata)
 	}
 	if convertedActivity.Raw["status"] != "ok" {
 		t.Fatalf("unexpected activity payload: %+v", convertedActivity)

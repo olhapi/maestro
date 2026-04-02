@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","cwd":"/tmp/claude","session_id":"claude-session-fixture","mcp_servers":[],"tools":[],"plugins":[]}
+{"type":"stream_event","event":{"type":"message_start","message":{"id":"turn-fixture","phase":"commentary"}}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"id":"block-fixture","type":"text"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"streamed fixture"}}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}}
+{"type":"stream_event","event":{"type":"message_stop"}}
+{"type":"assistant","message":{"id":"turn-fixture","type":"message","phase":"final_answer","content":[{"type":"text","text":"streamed fixture"}],"stop_reason":"end_turn"}}
+{"type":"result","subtype":"success","is_error":false,"result":"streamed fixture","stop_reason":"end_turn","session_id":"claude-session-fixture","usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}

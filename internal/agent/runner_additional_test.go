@@ -1422,6 +1422,18 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 		if got := extractProposedPlanMarkdown("no plan block here"); got != "" {
 			t.Fatalf("expected missing proposed plan block to stay empty, got %q", got)
 		}
+
+		data, err := os.ReadFile(filepath.Join("..", "agentruntime", "claude", "testdata", "plan_checkpoint.md"))
+		if err != nil {
+			t.Fatalf("read plan checkpoint fixture: %v", err)
+		}
+		if got := extractProposedPlanMarkdown(string(data)); got != strings.TrimSpace(`
+- Confirm the runtime-neutral contract harness.
+- Preserve fake runtime cloning for nested metadata.
+- Keep Claude parsing fixture-driven.
+`) {
+			t.Fatalf("unexpected planned checkpoint extraction from fixture: %q", got)
+		}
 	})
 }
 

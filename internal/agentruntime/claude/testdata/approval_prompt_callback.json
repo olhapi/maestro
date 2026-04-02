@@ -1,0 +1,76 @@
+{
+  "cases": [
+    {
+      "name": "allow callback",
+      "request": {
+        "tool_name": "Bash",
+        "input": {
+          "command": "pwd && git status --short",
+          "nested": [
+            {
+              "k": "v"
+            }
+          ]
+        },
+        "meta": {
+          "existing": "value",
+          "maestro/issue_id": "issue-1",
+          "maestro/issue_identifier": "MAES-19",
+          "maestro/issue_title": "Bridge approval prompt",
+          "maestro/project_id": "project-1",
+          "maestro/project_name": "Maestro",
+          "maestro/workspace_path": "/tmp/workspace",
+          "claudecode/toolUseId": "toolu_123",
+          "claude/toolUseId": "toolu_123"
+        }
+      },
+      "interaction": {
+        "approval_reason": "approval reason"
+      },
+      "response": {
+        "decision": "allow"
+      },
+      "want": {
+        "behavior": "allow",
+        "updated_input": {
+          "command": "pwd && git status --short",
+          "nested": [
+            {
+              "k": "v"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "deny callback",
+      "request": {
+        "tool_name": "Bash",
+        "input": {
+          "command": "pwd"
+        },
+        "meta": {
+          "existing": "value",
+          "maestro/issue_id": "issue-1",
+          "maestro/issue_identifier": "MAES-19",
+          "maestro/issue_title": "Bridge approval prompt",
+          "maestro/project_id": "project-1",
+          "maestro/project_name": "Maestro",
+          "maestro/workspace_path": "/tmp/workspace",
+          "claudecode/toolUseId": "toolu_124",
+          "claude/toolUseId": "toolu_124"
+        }
+      },
+      "interaction": {
+        "approval_reason": "approval reason"
+      },
+      "response": {
+        "decision": "deny"
+      },
+      "want": {
+        "behavior": "deny",
+        "message": "Maestro denied the request: approval reason"
+      }
+    }
+  ]
+}

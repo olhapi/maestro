@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -835,5 +837,100 @@ func TestApprovalPromptCloneHelpers(t *testing.T) {
 
 	if got := cloneJSONValue(nil); got != nil {
 		t.Fatalf("expected nil clone value to stay nil, got %#v", got)
+	}
+}
+
+func TestApprovalPromptFixtureCallbacks(t *testing.T) {
+	var fixture struct {
+		Cases []struct {
+			Name    string `json:"name"`
+			Request struct {
+				ToolName string                 `json:"tool_name"`
+				Input    map[string]interface{} `json:"input"`
+				Meta     map[string]interface{} `json:"meta"`
+			} `json:"request"`
+			Interaction struct {
+				ApprovalReason string `json:"approval_reason"`
+				LastActivity   string `json:"last_activity"`
+			} `json:"interaction"`
+			Response agentruntime.PendingInteractionResponse `json:"response"`
+			Want     struct {
+				Behavior     string                 `json:"behavior"`
+				UpdatedInput map[string]interface{} `json:"updated_input"`
+				Message      string                 `json:"message"`
+			} `json:"want"`
+		} `json:"cases"`
+	}
+
+	data, err := os.ReadFile(filepath.Join("..", "agentruntime", "claude", "testdata", "approval_prompt_callback.json"))
+	if err != nil {
+		t.Fatalf("read approval prompt fixture: %v", err)
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("unmarshal approval prompt fixture: %v", err)
+	}
+
+	for _, tc := range fixture.Cases {
+		tc := tc
+		t.Run(tc.Name, func(t *testing.T) {
+			request := mcpapi.CallToolRequest{
+				Params: mcpapi.CallToolParams{
+					Name: "approval_prompt",
+					Arguments: map[string]interface{}{
+						"tool_name": tc.Request.ToolName,
+						"input":     tc.Request.Input,
+					},
+					Meta: mcpapi.NewMetaFromMap(tc.Request.Meta),
+				},
+			}
+
+			call, err := parseApprovalPromptCall(request)
+			if err != nil {
+				t.Fatalf("parseApprovalPromptCall: %v", err)
+			}
+			if call.ToolUseID == "" {
+				t.Fatal("expected tool use id from fixture")
+			}
+			if call.RequestMeta["existing"] != "value" {
+				t.Fatalf("expected existing request metadata to survive, got %#v", call.RequestMeta)
+			}
+			if call.RequestMeta["claudecode/toolUseId"] != call.ToolUseID || call.RequestMeta["claude/toolUseId"] != call.ToolUseID {
+				t.Fatalf("expected tool use metadata to be normalized, got %#v", call.RequestMeta)
+			}
+
+			interaction := agentruntime.PendingInteraction{
+				Approval: &agentruntime.PendingApproval{
+					Reason: tc.Interaction.ApprovalReason,
+				},
+				LastActivity: tc.Interaction.LastActivity,
+				Metadata: map[string]interface{}{
+					"input": call.Input,
+				},
+			}
+
+			result, err := buildClaudePermissionPromptResult(interaction, tc.Response)
+			if err != nil {
+				t.Fatalf("buildClaudePermissionPromptResult: %v", err)
+			}
+			if result.Behavior != tc.Want.Behavior {
+				t.Fatalf("unexpected callback behavior: got %q want %q", result.Behavior, tc.Want.Behavior)
+			}
+			switch tc.Want.Behavior {
+			case "allow":
+				updatedInput, ok := result.UpdatedInput.(map[string]interface{})
+				if !ok {
+					t.Fatalf("expected allow callback to return updated input, got %#v", result.UpdatedInput)
+				}
+				if !reflect.DeepEqual(updatedInput, tc.Want.UpdatedInput) {
+					t.Fatalf("unexpected updated input from callback: got %#v want %#v", updatedInput, tc.Want.UpdatedInput)
+				}
+			case "deny":
+				if result.Message != tc.Want.Message {
+					t.Fatalf("unexpected denial message from callback: got %q want %q", result.Message, tc.Want.Message)
+				}
+			default:
+				t.Fatalf("unexpected expected behavior in fixture: %q", tc.Want.Behavior)
+			}
+		})
 	}
 }

@@ -49,7 +49,9 @@ type Starter struct {
 
 func NewStarter(scenarios ...Scenario) *Starter {
 	cloned := make([]Scenario, len(scenarios))
-	copy(cloned, scenarios)
+	for i, scenario := range scenarios {
+		cloned[i] = cloneScenario(scenario)
+	}
 	return &Starter{scenarios: cloned}
 }
 
@@ -101,6 +103,7 @@ type Client struct {
 }
 
 func NewClient(scenario Scenario, observers agentruntime.Observers) *Client {
+	scenario = cloneScenario(scenario)
 	session := scenario.InitialSession.Clone()
 	if session.MaxHistory <= 0 {
 		session.MaxHistory = agentruntime.DefaultSessionHistoryLimit
@@ -110,6 +113,53 @@ func NewClient(scenario Scenario, observers agentruntime.Observers) *Client {
 		observers: observers,
 		session:   session,
 	}
+}
+
+func cloneScenario(scenario Scenario) Scenario {
+	cloned := scenario
+	cloned.InitialSession = scenario.InitialSession.Clone()
+	cloned.Turns = cloneTurns(scenario.Turns)
+	return cloned
+}
+
+func cloneTurns(turns []Turn) []Turn {
+	if len(turns) == 0 {
+		return nil
+	}
+	out := make([]Turn, len(turns))
+	for i, turn := range turns {
+		out[i] = turn
+		if turn.StartedSession != nil {
+			session := turn.StartedSession.Clone()
+			out[i].StartedSession = &session
+		}
+		if len(turn.SessionUpdates) > 0 {
+			out[i].SessionUpdates = make([]agentruntime.Session, len(turn.SessionUpdates))
+			for j, session := range turn.SessionUpdates {
+				out[i].SessionUpdates[j] = session.Clone()
+			}
+		}
+		if len(turn.Activities) > 0 {
+			out[i].Activities = make([]agentruntime.ActivityEvent, len(turn.Activities))
+			for j, activity := range turn.Activities {
+				out[i].Activities[j] = activity.Clone()
+			}
+		}
+		if len(turn.PendingInteractions) > 0 {
+			out[i].PendingInteractions = make([]agentruntime.PendingInteraction, len(turn.PendingInteractions))
+			for j, interaction := range turn.PendingInteractions {
+				out[i].PendingInteractions[j] = interaction.Clone()
+			}
+		}
+		if len(turn.ClearedInteractions) > 0 {
+			out[i].ClearedInteractions = append([]string(nil), turn.ClearedInteractions...)
+		}
+		if turn.FinalSession != nil {
+			session := turn.FinalSession.Clone()
+			out[i].FinalSession = &session
+		}
+	}
+	return out
 }
 
 func (c *Client) Capabilities() agentruntime.Capabilities {
