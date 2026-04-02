@@ -39,6 +39,10 @@ func tempRepoRoot(t *testing.T) string {
 }
 
 func workflowFixture(version string) string {
+	return workflowFixtureWithPrompt(version, "Hello {{ issue.identifier }}")
+}
+
+func workflowFixtureWithPrompt(version, prompt string) string {
 	return `---
 tracker:
   kind: kanban
@@ -75,7 +79,7 @@ runtime:
     read_timeout_ms: 10000
     stall_timeout_ms: 300000
 ---
-Hello {{ issue.identifier }}
+` + prompt + `
 `
 }
 
@@ -216,6 +220,53 @@ func TestRunReportsSuccess(t *testing.T) {
 	}
 }
 
+func TestRunUsesCurrentWorkingDirectoryWhenRepoRootEmpty(t *testing.T) {
+	root := tempRepoRoot(t)
+	writeWorkflow(t, root, workflowFixture(codexschema.SupportedVersion))
+	writeFakeCodex(t, root, "1.2.3")
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(origWD); chdirErr != nil {
+			t.Errorf("restore working directory: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	report := Run("")
+	if !report.OK {
+		t.Fatalf("expected success, got %+v", report.Checks)
+	}
+	if report.Checks["workflow_load"] != "ok" || report.Checks["workflow_version"] != "ok" || report.Checks["workflow_prompt_render"] != "ok" {
+		t.Fatalf("expected workflow checks to pass, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsWorkflowPromptRenderFailure(t *testing.T) {
+	root := tempRepoRoot(t)
+	writeWorkflow(t, root, workflowFixtureWithPrompt(codexschema.SupportedVersion, "{{ issue.missing }}"))
+	writeFakeCodex(t, root, "1.2.3")
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected prompt render failure to fail, got %+v", report)
+	}
+	if report.Checks["workflow_load"] != "ok" {
+		t.Fatalf("expected workflow to load, got %+v", report.Checks)
+	}
+	if report.Checks["workflow_version"] != "ok" {
+		t.Fatalf("expected workflow version to pass, got %+v", report.Checks)
+	}
+	if report.Checks["workflow_prompt_render"] != "fail" {
+		t.Fatalf("expected workflow_prompt_render to fail, got %+v", report.Checks)
+	}
+}
+
 func TestRunReportsConfigDefaultsFailure(t *testing.T) {
 	root := tempRepoRoot(t)
 	writeWorkflow(t, root, workflowFixture(codexschema.SupportedVersion))
@@ -308,6 +359,14 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			},
 		},
 		{
+			name: "runtime default empty",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				cfg.Runtime.Default = ""
+				return cfg
+			},
+		},
+		{
 			name: "timeout defaults",
 			cfg: func() config.Config {
 				cfg := config.DefaultConfig()
@@ -324,6 +383,14 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
 				runtimeCfg.ApprovalPolicy = "maybe"
 				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
+				return cfg
+			},
+		},
+		{
+			name: "init runtime default empty",
+			init: func() config.Config {
+				cfg := config.DefaultInitConfig()
+				cfg.Runtime.Default = ""
 				return cfg
 			},
 		},
@@ -353,6 +420,42 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 				cfg := config.DefaultConfig()
 				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
 				runtimeCfg.ApprovalPolicy = map[string]interface{}{"granular": "bad"}
+				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
+				return cfg
+			},
+		},
+		{
+			name: "expected version",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
+				runtimeCfg.ExpectedVersion = "0.0.0"
+				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
+				return cfg
+			},
+		},
+		{
+			name: "codex stdio missing",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				delete(cfg.Runtime.Entries, "codex-stdio")
+				return cfg
+			},
+		},
+		{
+			name: "claude missing",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				delete(cfg.Runtime.Entries, "claude")
+				return cfg
+			},
+		},
+		{
+			name: "initial collaboration mode",
+			cfg: func() config.Config {
+				cfg := config.DefaultConfig()
+				runtimeCfg := cfg.Runtime.Entries["codex-appserver"]
+				runtimeCfg.InitialCollaborationMode = "manual"
 				cfg.Runtime.Entries["codex-appserver"] = runtimeCfg
 				return cfg
 			},
