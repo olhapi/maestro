@@ -56,8 +56,12 @@ func RuntimeSpecFromWorkflow(request WorkflowStartRequest) (agentruntime.Runtime
 		env = os.Environ()
 	}
 	runtimeConfig := workflow.Config.Codex
-	if strings.TrimSpace(request.RuntimeName) != "" {
-		runtimeConfig = mergeRuntimeConfig(request.RuntimeConfig, workflow.Config.Codex)
+	if runtimeName := strings.TrimSpace(request.RuntimeName); runtimeName != "" {
+		fallback := workflow.Config.Codex
+		if selectedRuntime, ok := workflow.Config.Runtime.Entries[runtimeName]; ok {
+			fallback = selectedRuntime
+		}
+		runtimeConfig = mergeRuntimeConfig(request.RuntimeConfig, fallback)
 	}
 	transport := agentruntime.Transport(strings.ToLower(strings.TrimSpace(runtimeConfig.Transport)))
 	provider := agentruntime.Provider(strings.TrimSpace(runtimeConfig.Provider))
