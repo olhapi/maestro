@@ -257,14 +257,18 @@ func detectClaudeAuthStatus(command string, env map[string]string) (claudeAuthSt
 }
 
 func detectClaudeSessionIssues(repoPath string, opts claudeCommandOptions, state claudeSettingsState) (string, string, []string) {
-	bareReason := ""
+	dangerousModeReason := ""
 	switch {
 	case opts.BareMode:
-		bareReason = "runtime command includes `--bare`"
+		dangerousModeReason = "runtime command includes `--bare`"
 	case strings.EqualFold(strings.TrimSpace(opts.PermissionMode), "bypassPermissions"):
-		bareReason = "runtime command sets `--permission-mode bypassPermissions`"
+		dangerousModeReason = "runtime command sets `--permission-mode bypassPermissions`"
+	case strings.EqualFold(strings.TrimSpace(opts.PermissionMode), "auto"):
+		dangerousModeReason = "runtime command sets `--permission-mode auto`"
 	case strings.EqualFold(strings.TrimSpace(state.DefaultMode), "bypassPermissions"):
-		bareReason = "Claude settings set `permissions.defaultMode: bypassPermissions`"
+		dangerousModeReason = "Claude settings set `permissions.defaultMode: bypassPermissions`"
+	case strings.EqualFold(strings.TrimSpace(state.DefaultMode), "auto"):
+		dangerousModeReason = "Claude settings set `permissions.defaultMode: auto`"
 	}
 
 	directories := append([]string(nil), state.AdditionalDirectories...)
@@ -273,11 +277,11 @@ func detectClaudeSessionIssues(repoPath string, opts claudeCommandOptions, state
 	}
 
 	status := "ok"
-	if bareReason != "" || len(directories) > 0 {
+	if dangerousModeReason != "" || len(directories) > 0 {
 		status = "fail"
 	}
 
-	return status, bareReason, directories
+	return status, dangerousModeReason, directories
 }
 
 func loadClaudeSettingsState(repoPath string, opts claudeCommandOptions) claudeSettingsState {

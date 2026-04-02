@@ -315,8 +315,14 @@ esac
 		if status, reason, _ := detectClaudeSessionIssues("", claudeCommandOptions{PermissionMode: "bypassPermissions"}, claudeSettingsState{}); status != "fail" || reason != "runtime command sets `--permission-mode bypassPermissions`" {
 			t.Fatalf("expected permission bypass failure, got status=%q reason=%q", status, reason)
 		}
+		if status, reason, _ := detectClaudeSessionIssues("", claudeCommandOptions{PermissionMode: "auto"}, claudeSettingsState{}); status != "fail" || reason != "runtime command sets `--permission-mode auto`" {
+			t.Fatalf("expected permission auto failure, got status=%q reason=%q", status, reason)
+		}
 		if status, reason, _ := detectClaudeSessionIssues("", claudeCommandOptions{}, claudeSettingsState{DefaultMode: "bypassPermissions"}); status != "fail" || reason != "Claude settings set `permissions.defaultMode: bypassPermissions`" {
 			t.Fatalf("expected settings default mode failure, got status=%q reason=%q", status, reason)
+		}
+		if status, reason, _ := detectClaudeSessionIssues("", claudeCommandOptions{}, claudeSettingsState{DefaultMode: "auto"}); status != "fail" || reason != "Claude settings set `permissions.defaultMode: auto`" {
+			t.Fatalf("expected settings auto mode failure, got status=%q reason=%q", status, reason)
 		}
 		if status, reason, dirs := detectClaudeSessionIssues("", claudeCommandOptions{AdditionalDirFlag: true}, claudeSettingsState{}); status != "fail" || reason != "" || !reflect.DeepEqual(dirs, []string{"--add-dir"}) {
 			t.Fatalf("expected add-dir flag to be converted into additional directories, got status=%q reason=%q dirs=%v", status, reason, dirs)

@@ -324,7 +324,7 @@ func validateClaudeReadiness(res *Result, workflow *config.Workflow, runtime con
 	if bareReason != "" {
 		res.Checks["claude_session_bare_mode"] = "fail"
 		res.Errors = append(res.Errors, "claude_session_bare_mode: "+bareReason)
-		res.Remediation["claude_session_bare_mode"] = "Remove `--bare`, `--permission-mode bypassPermissions`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration."
+		res.Remediation["claude_session_bare_mode"] = "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration."
 		res.OK = false
 	} else {
 		res.Checks["claude_session_bare_mode"] = "ok"

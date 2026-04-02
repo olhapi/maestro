@@ -401,11 +401,24 @@ func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
 			wantReason: "runtime command sets `--permission-mode bypassPermissions`",
 		},
 		{
+			name:       "permission auto",
+			command:    "claude --permission-mode auto",
+			wantCheck:  "claude_session_bare_mode",
+			wantReason: "runtime command sets `--permission-mode auto`",
+		},
+		{
 			name:         "settings default mode",
 			command:      "claude",
 			settingsJSON: `{"permissions":{"defaultMode":"bypassPermissions"}}`,
 			wantCheck:    "claude_session_bare_mode",
 			wantReason:   "Claude settings set `permissions.defaultMode: bypassPermissions`",
+		},
+		{
+			name:         "settings auto mode",
+			command:      "claude",
+			settingsJSON: `{"permissions":{"defaultMode":"auto"}}`,
+			wantCheck:    "claude_session_bare_mode",
+			wantReason:   "Claude settings set `permissions.defaultMode: auto`",
 		},
 		{
 			name:         "additional directories",
