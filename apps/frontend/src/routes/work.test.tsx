@@ -82,6 +82,10 @@ describe('WorkPage', () => {
     }))
   }
 
+  const waitForWorkPageHeading = async () => {
+    await screen.findByRole('heading', { name: 'Coordinate work on one board' }, { timeout: 5000 })
+  }
+
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
@@ -104,9 +108,7 @@ describe('WorkPage', () => {
 
     renderWithQueryClient(<WorkPage />)
 
-    await waitFor(() => {
-      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
-    })
+    await waitForWorkPageHeading()
 
     expect(screen.getByRole('heading', { name: 'Coordinate work on one board' })).toHaveClass('w-full')
     expect(screen.getByText('This surface is now optimized for live triage: drag work between lanes, inspect execution context in-place, and dive into full issue pages only when needed.')).toHaveClass('max-w-none')
@@ -144,9 +146,7 @@ describe('WorkPage', () => {
 
     renderWithQueryClient(<WorkPage />)
 
-    await waitFor(() => {
-      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
-    })
+    await waitForWorkPageHeading()
 
     await selectOption(/filter by project/i, /platform/i)
 
@@ -188,9 +188,7 @@ describe('WorkPage', () => {
 
     renderWithQueryClient(<WorkPage />)
 
-    await waitFor(() => {
-      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
-    })
+    await waitForWorkPageHeading()
 
     await selectOption(/filter by issue type/i, /recurring/i)
 
@@ -256,9 +254,7 @@ describe('WorkPage', () => {
 
     renderWithQueryClient(<Harness />)
 
-    await waitFor(() => {
-      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
-    })
+    await waitForWorkPageHeading()
 
     await selectOption(/filter by project/i, /operations/i)
     await waitFor(() => {
@@ -363,9 +359,7 @@ describe('WorkPage', () => {
 
     renderWithQueryClient(<WorkPage />)
 
-    await waitFor(() => {
-      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
-    })
+    await waitForWorkPageHeading()
 
     fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
 
