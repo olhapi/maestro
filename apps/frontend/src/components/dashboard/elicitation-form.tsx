@@ -738,58 +738,61 @@ export function ElicitationForm({
       : analysis.state === 'empty'
         ? 'No structured fields were supplied with this request.'
         : analysis.reason
+  const showsRequestDetailsCard = analysis.state !== 'empty'
 
   return (
     <div className="grid gap-4">
-      <div className="grid gap-4 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.03] p-4">
-        <div className="space-y-1">
-          <p className="text-sm font-medium text-white">Requested information</p>
-          <p className="text-sm leading-6 text-[var(--muted-foreground)]">{requestDetails}</p>
-        </div>
-        <p className="text-sm leading-6 text-[var(--muted-foreground)]">{message}</p>
-        {analysis.state === 'ready' ? (
-          <SchemaNodeEditor
-            disabled={disabled}
-            isRoot
-            node={analysis.node}
-            path="root"
-            value={draftValues}
-            onChange={(nextValue) => {
-              updateDraftState((current) => ({
-                ...current,
-                draftValues: nextValue,
-              }))
-            }}
-          />
-        ) : analysis.state === 'empty' ? null : (
-          <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 p-4">
-            <div className="space-y-1">
-              <p className="text-sm font-medium text-white">Manual JSON payload</p>
-              <p className="text-sm leading-6 text-amber-100/90">
-                Paste the JSON body that should be returned for this elicitation request.
-              </p>
-            </div>
-            <Textarea
-              className="min-h-[10rem] border-white/10 bg-black/20 text-white placeholder:text-white/30"
+      {showsRequestDetailsCard ? (
+        <div className="grid gap-4 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.03] p-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-white">Requested information</p>
+            <p className="text-sm leading-6 text-[var(--muted-foreground)]">{requestDetails}</p>
+          </div>
+          <p className="text-sm leading-6 text-[var(--muted-foreground)]">{message}</p>
+          {analysis.state === 'ready' ? (
+            <SchemaNodeEditor
               disabled={disabled}
-              placeholder='{"key":"value"}'
-              value={manualContent}
-              onChange={(event) => {
-                const nextManualContent = event.target.value
+              isRoot
+              node={analysis.node}
+              path="root"
+              value={draftValues}
+              onChange={(nextValue) => {
                 updateDraftState((current) => ({
                   ...current,
-                  manualContent: nextManualContent,
+                  draftValues: nextValue,
                 }))
               }}
             />
-          </div>
-        )}
-        {validation.error ? (
-          <p aria-live="polite" className="text-sm leading-6 text-rose-100">
-            {validation.error}
-          </p>
-        ) : null}
-      </div>
+          ) : (
+            <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.25rem)] border border-amber-400/20 bg-amber-400/10 p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-white">Manual JSON payload</p>
+                <p className="text-sm leading-6 text-amber-100/90">
+                  Paste the JSON body that should be returned for this elicitation request.
+                </p>
+              </div>
+              <Textarea
+                className="min-h-[10rem] border-white/10 bg-black/20 text-white placeholder:text-white/30"
+                disabled={disabled}
+                placeholder='{"key":"value"}'
+                value={manualContent}
+                onChange={(event) => {
+                  const nextManualContent = event.target.value
+                  updateDraftState((current) => ({
+                    ...current,
+                    manualContent: nextManualContent,
+                  }))
+                }}
+              />
+            </div>
+          )}
+          {validation.error ? (
+            <p aria-live="polite" className="text-sm leading-6 text-rose-100">
+              {validation.error}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-3">
         <Button

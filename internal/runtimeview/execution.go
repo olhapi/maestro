@@ -111,6 +111,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	currentError := deriveCurrentError(running != nil, retry, paused, persistedSession, events)
 	failureClass := deriveFailureClass(running != nil, retry, paused, persistedSession, events)
 	workspaceRecovery := deriveWorkspaceRecovery(events)
+	continueAvailable := deriveContinueAvailable(issue, running, retry, paused, pendingInterrupt, events)
 	retryState := "none"
 	if running != nil {
 		retryState = "active"
@@ -130,6 +131,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		"attempt_number":        attempt,
 		"failure_class":         failureClass,
 		"current_error":         currentError,
+		"continue_available":    continueAvailable,
 		"retry_state":           retryState,
 		"session_source":        sessionSource,
 		"runtime_events":        events,
@@ -174,6 +176,34 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		}
 	}
 	return payload, nil
+}
+
+func deriveContinueAvailable(
+	issue *kanban.Issue,
+	running *observability.RunningEntry,
+	retry *observability.RetryEntry,
+	paused *observability.PausedEntry,
+	pendingInterrupt *agentruntime.PendingInteraction,
+	events []kanban.RuntimeEvent,
+) bool {
+	if issue == nil || running != nil || retry != nil || paused == nil || pendingInterrupt != nil {
+		return false
+	}
+	if issue.State == kanban.StateDone || issue.State == kanban.StateCancelled {
+		return false
+	}
+	if issue.PlanApprovalPending || issueHasPendingPlanRevision(issue) {
+		return false
+	}
+
+	switch strings.TrimSpace(paused.Error) {
+	case "no_state_transition":
+		return true
+	case "retry_limit_reached":
+		return lastMeaningfulRunKindBeforeLatestPause(events) == "run_completed"
+	default:
+		return false
+	}
 }
 
 func findEntry[T any](entries []T, match func(*T) bool) *T {
@@ -242,6 +272,30 @@ func isPersistedPauseResetEvent(kind string) bool {
 	default:
 		return false
 	}
+}
+
+func lastMeaningfulRunKindBeforeLatestPause(events []kanban.RuntimeEvent) string {
+	pauseIndex := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == "retry_paused" {
+			pauseIndex = i
+			break
+		}
+	}
+	if pauseIndex <= 0 {
+		return ""
+	}
+	for i := pauseIndex - 1; i >= 0; i-- {
+		switch events[i].Kind {
+		case "run_completed", "run_failed", "run_unsuccessful", "run_interrupted":
+			return events[i].Kind
+		}
+	}
+	return ""
+}
+
+func issueHasPendingPlanRevision(issue *kanban.Issue) bool {
+	return issue != nil && strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil
 }
 
 func findLiveSession(all map[string]interface{}, identifier string) (agentruntime.Session, bool) {

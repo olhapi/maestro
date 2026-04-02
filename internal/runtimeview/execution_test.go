@@ -108,6 +108,45 @@ func TestIssueExecutionPayloadUsesLiveRuntimeWhenAvailable(t *testing.T) {
 	if payload["attempt_number"].(int) != 4 {
 		t.Fatalf("expected running attempt number, got %#v", payload["attempt_number"])
 	}
+	if payload["continue_available"] != false {
+		t.Fatalf("expected active runs to suppress continue, got %#v", payload["continue_available"])
+	}
+}
+
+func TestIssueExecutionPayloadKeepsContinueUnavailableForScheduledRetries(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Scheduled retry issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, testProvider{
+		snapshot: observability.Snapshot{
+			Retrying: []observability.RetryEntry{{
+				IssueID:    issue.ID,
+				Identifier: issue.Identifier,
+				Phase:      "implementation",
+				Attempt:    2,
+				Error:      "stall_timeout",
+				DueAt:      time.Date(2026, 3, 9, 12, 1, 0, 0, time.UTC),
+			}},
+		},
+	}, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["retry_state"] != "scheduled" {
+		t.Fatalf("expected scheduled retry state, got %#v", payload["retry_state"])
+	}
+	if payload["continue_available"] != false {
+		t.Fatalf("expected scheduled retries to suppress continue, got %#v", payload["continue_available"])
+	}
 }
 
 func TestIssueExecutionPayloadIncludesPendingInterruptMetadata(t *testing.T) {
@@ -787,6 +826,160 @@ func TestIssueExecutionPayloadReturnsRetryLimitPauseReason(t *testing.T) {
 	}
 	if payload["attempt_number"].(int) != 4 {
 		t.Fatalf("expected attempt number to remain anchored to the paused retry, got %#v", payload["attempt_number"])
+	}
+	if payload["continue_available"] != false {
+		t.Fatalf("expected retry-limit pause without a completed run to stay non-continuable, got %#v", payload["continue_available"])
+	}
+}
+
+func TestIssueExecutionPayloadMarksNoStateTransitionPauseAsContinuable(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Continuation issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	pausedAt := time.Date(2026, 3, 9, 12, 25, 0, 0, time.UTC)
+	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    2,
+		"paused_at":  pausedAt.Format(time.RFC3339),
+		"error":      "no_state_transition",
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent retry_paused: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["continue_available"] != true {
+		t.Fatalf("expected no-state-transition pause to be continuable, got %#v", payload["continue_available"])
+	}
+}
+
+func TestIssueExecutionPayloadMarksRetryLimitAfterCompletedRunAsContinuable(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Completed continuation issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	completedAt := time.Date(2026, 3, 9, 12, 30, 0, 0, time.UTC)
+	for _, event := range []struct {
+		kind    string
+		attempt int
+		fields  map[string]interface{}
+	}{
+		{
+			kind:    "run_completed",
+			attempt: 4,
+			fields:  map[string]interface{}{},
+		},
+		{
+			kind:    "retry_paused",
+			attempt: 5,
+			fields: map[string]interface{}{
+				"paused_at":       completedAt.Add(time.Minute).Format(time.RFC3339),
+				"error":           "retry_limit_reached",
+				"pause_threshold": 8,
+			},
+		},
+	} {
+		payload := map[string]interface{}{
+			"issue_id":   issue.ID,
+			"identifier": issue.Identifier,
+			"phase":      "implementation",
+			"attempt":    event.attempt,
+			"ts":         completedAt.Format(time.RFC3339),
+		}
+		for key, value := range event.fields {
+			payload[key] = value
+		}
+		if err := store.AppendRuntimeEvent(event.kind, payload); err != nil {
+			t.Fatalf("AppendRuntimeEvent %s: %v", event.kind, err)
+		}
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["continue_available"] != true {
+		t.Fatalf("expected retry-limit pause after a completed run to be continuable, got %#v", payload["continue_available"])
+	}
+}
+
+func TestIssueExecutionPayloadKeepsContinueUnavailableForHigherPriorityWaitStates(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Plan approval continuation blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"plan_approval_pending":     true,
+		"pending_plan_markdown":     "Review before continuing.",
+		"pending_plan_requested_at": &requestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("retry_paused", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    3,
+		"paused_at":  requestedAt.Format(time.RFC3339),
+		"error":      "no_state_transition",
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent retry_paused: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["continue_available"] != false {
+		t.Fatalf("expected plan-approval state to suppress continue, got %#v", payload["continue_available"])
 	}
 }
 

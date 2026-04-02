@@ -410,4 +410,58 @@ describe('SessionExecutionCard', () => {
     expect(screen.getByText('Project repo is outside the current server scope (/repo/current)')).toBeInTheDocument()
     expect(screen.getByText('Blocked issue is waiting for execution until the project scope mismatch is fixed.')).toBeInTheDocument()
   })
+
+  it('renders a Continue CTA for continuable paused runs and triggers the callback', () => {
+    const onContinue = vi.fn()
+
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          retry_state: 'paused',
+          pause_reason: 'no_state_transition',
+          continue_available: true,
+        })}
+        issueTotalTokens={120}
+        onContinue={onContinue}
+      />,
+    )
+
+    expect(screen.getByText('Continue this issue')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+
+    expect(onContinue).toHaveBeenCalledTimes(1)
+  })
+
+  it('suppresses the Continue CTA when a pending interrupt is the active next step', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          retry_state: 'paused',
+          pause_reason: 'no_state_transition',
+          continue_available: true,
+          pending_interrupt: {
+            id: 'interrupt-1',
+            kind: 'user_input',
+            issue_identifier: 'ISS-1',
+            issue_title: 'Needs operator input',
+            requested_at: '2026-03-16T12:00:00Z',
+            user_input: {
+              questions: [
+                {
+                  id: 'continue',
+                  question: 'Continue?',
+                },
+              ],
+            },
+          },
+        })}
+        issueTotalTokens={120}
+        onContinue={() => {}}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: /^continue$/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Waiting for operator input')).toBeInTheDocument()
+  })
 })

@@ -1828,4 +1828,110 @@ describe("IssueDetailPage", () => {
     expect(within(actionRow).queryByText("Retry now")).not.toBeInTheDocument();
     expect(within(actionRow).queryByText("Delete")).not.toBeInTheDocument();
   });
+
+  it("relabels the issue action retry control to Continue for continuable paused runs", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "in_progress" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 3,
+      retry_state: "paused",
+      pause_reason: "no_state_transition",
+      continue_available: true,
+      session_source: "persisted",
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: "thread-continue-turn-continue",
+        thread_id: "thread-continue",
+        turn_id: "turn-continue",
+        last_event: "turn.completed",
+        last_timestamp: "2026-03-18T12:00:00Z",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        events_processed: 1,
+        turns_started: 3,
+        turns_completed: 3,
+        terminal: true,
+      },
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.retryIssue).mockResolvedValue({ status: "queued_now", issue: issue.identifier });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Issue actions")).toBeInTheDocument();
+    });
+
+    const actionRow = screen.getByTestId("issue-actions-row");
+    expect(within(actionRow).getByRole("button", { name: /^continue$/i })).toBeInTheDocument();
+    expect(within(actionRow).queryByRole("button", { name: /retry now/i })).not.toBeInTheDocument();
+
+    fireEvent.click(within(actionRow).getByRole("button", { name: /^continue$/i }));
+
+    await waitFor(() => {
+      expect(api.retryIssue).toHaveBeenCalledWith("ISS-1");
+    });
+  });
+
+  it("wires the execution card Continue CTA to the retry endpoint", async () => {
+    const bootstrap = makeBootstrapResponse();
+    const issue = makeIssueDetail({ state: "in_progress" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
+    vi.mocked(api.getIssue).mockResolvedValue(issue);
+    vi.mocked(api.getIssueExecution).mockResolvedValue({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      active: false,
+      phase: "implementation",
+      attempt_number: 5,
+      retry_state: "paused",
+      pause_reason: "retry_limit_reached",
+      continue_available: true,
+      session_source: "persisted",
+      session: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        session_id: "thread-continue-turn-continue",
+        thread_id: "thread-continue",
+        turn_id: "turn-continue",
+        last_event: "turn.completed",
+        last_timestamp: "2026-03-18T12:00:00Z",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        events_processed: 1,
+        turns_started: 5,
+        turns_completed: 5,
+        terminal: true,
+      },
+      activity_groups: [],
+      debug_activity_groups: [],
+      runtime_events: [],
+      agent_commands: [],
+    });
+    vi.mocked(api.retryIssue).mockResolvedValue({ status: "queued_now", issue: issue.identifier });
+
+    renderWithQueryClient(<IssueDetailPage />);
+
+    await screen.findByText("Continue after retry limit");
+    const continueButtons = screen.getAllByRole("button", { name: /^continue$/i });
+    expect(continueButtons).toHaveLength(2);
+
+    fireEvent.click(continueButtons[1]);
+
+    await waitFor(() => {
+      expect(api.retryIssue).toHaveBeenCalledWith("ISS-1");
+    });
+  });
 });
