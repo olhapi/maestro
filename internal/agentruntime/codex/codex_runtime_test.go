@@ -234,8 +234,7 @@ func TestStartAppServerUsesInheritedEnvironmentAndNilReceiverHelpers(t *testing.
 					},
 				},
 			}},
-			ExitCode: fakeappserver.Int(0),
-		}),
+			}),
 	})
 	t.Cleanup(cfg.Close)
 
