@@ -181,6 +181,139 @@ END;`
 	}
 }
 
+func writeFakeClaudePlanApprovalCLI(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	script := strings.TrimSpace(`
+		#!/bin/sh
+		set -eu
+
+		: "${CLAUDE_ARGS_PATH:?}"
+		: "${CLAUDE_SESSION_PATH:?}"
+		: "${CLAUDE_TURN_COUNT_PATH:?}"
+
+		prompt=$(cat)
+		prompt_json=$(printf '%s' "$prompt" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+		if [ -f "$CLAUDE_SESSION_PATH" ]; then
+			session_id=$(cat "$CLAUDE_SESSION_PATH")
+		else
+			session_id=${CLAUDE_SESSION_ID:-claude-session-1}
+			printf '%s' "$session_id" > "$CLAUDE_SESSION_PATH"
+		fi
+
+		turn_number=1
+		if [ -f "$CLAUDE_TURN_COUNT_PATH" ]; then
+			turn_number=$(($(cat "$CLAUDE_TURN_COUNT_PATH") + 1))
+		fi
+		printf '%s' "$turn_number" > "$CLAUDE_TURN_COUNT_PATH"
+
+		{
+			printf '%s\n' '---'
+			for arg in "$@"; do
+				printf '%s\n' "$arg"
+			done
+		} >> "$CLAUDE_ARGS_PATH"
+
+		if [ "$turn_number" -gt 1 ]; then
+			expected_resume=$(cat "$CLAUDE_SESSION_PATH")
+			actual_resume=""
+			prev=""
+			for arg in "$@"; do
+				if [ "$prev" = "-r" ] || [ "$prev" = "--resume" ]; then
+					actual_resume="$arg"
+					break
+				fi
+				prev="$arg"
+			done
+			if [ "$actual_resume" != "$expected_resume" ]; then
+				printf 'expected resume %s, got %s\n' "$expected_resume" "$actual_resume" >&2
+				exit 33
+			fi
+		fi
+
+		output_text="$prompt_json"
+		if [ "$turn_number" -eq 1 ] && [ -n "${CLAUDE_FAKE_FIRST_TURN_PLAN_TEXT:-}" ]; then
+			output_text="<proposed_plan>${CLAUDE_FAKE_FIRST_TURN_PLAN_TEXT}</proposed_plan>"
+		elif [ -n "${CLAUDE_FAKE_EXECUTION_TEXT:-}" ]; then
+			output_text="$CLAUDE_FAKE_EXECUTION_TEXT"
+		fi
+		output_json=$(printf '%s' "$output_text" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+		emit() {
+			printf '%s\n' "$1"
+		}
+
+		emit "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$session_id\",\"mcp_servers\":[],\"tools\":[],\"plugins\":[]}"
+		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"turn-$turn_number\"}}}"
+		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}}"
+		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"$output_json\"}}}"
+		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\"}}"
+		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}}"
+		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_stop\"}}"
+		emit "{\"type\":\"assistant\",\"message\":{\"id\":\"turn-$turn_number\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"$output_json\"}],\"stop_reason\":\"end_turn\"}}"
+		emit "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$output_json\",\"stop_reason\":\"end_turn\",\"session_id\":\"$session_id\"}"
+	`) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude plan CLI: %v", err)
+	}
+	return path
+}
+
+func readClaudeInvocationArgs(t *testing.T, path string) [][]string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var (
+		invocations [][]string
+		current     []string
+	)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == "---" {
+			if len(current) > 0 {
+				invocations = append(invocations, current)
+				current = nil
+			}
+			continue
+		}
+		current = append(current, line)
+	}
+	if len(current) > 0 {
+		invocations = append(invocations, current)
+	}
+	return invocations
+}
+
+func claudeContainsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeArgValueAfter(t *testing.T, args []string, flag string) string {
+	t.Helper()
+
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
 func TestRunnerPureHelpersBranches(t *testing.T) {
 	runner, _, _, workspaceRoot, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 
@@ -1790,6 +1923,122 @@ func TestCapturePendingPlanApprovalErrorBranches(t *testing.T) {
 	}, true)
 	if err == nil || requested {
 		t.Fatalf("expected runtime event failure, got requested=%v err=%v", requested, err)
+	}
+}
+
+func TestRunAgentClaudePlanApprovalResumesWithStoredSessionID(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	workflow.Config.Agent.MaxTurns = 1
+	claudeRuntime := workflow.Config.Runtime.Entries["claude"]
+	claudeRuntime.Command = writeFakeClaudePlanApprovalCLI(t)
+	workflow.Config.Runtime.Entries["claude"] = claudeRuntime
+	runner.workflowProvider = staticWorkflowProvider{workflow: workflow}
+
+	envDir := t.TempDir()
+	argsPath := filepath.Join(envDir, "claude-args.txt")
+	sessionPath := filepath.Join(envDir, "claude-session.txt")
+	turnCountPath := filepath.Join(envDir, "claude-turn-count.txt")
+	t.Setenv("CLAUDE_ARGS_PATH", argsPath)
+	t.Setenv("CLAUDE_SESSION_PATH", sessionPath)
+	t.Setenv("CLAUDE_TURN_COUNT_PATH", turnCountPath)
+	t.Setenv("CLAUDE_SESSION_ID", "claude-session-1")
+	t.Setenv("CLAUDE_FAKE_FIRST_TURN_PLAN_TEXT", "Ship the guarded rollout.")
+	t.Setenv("CLAUDE_FAKE_EXECUTION_TEXT", "Execution resumed after approval.")
+
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Claude plan approval", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"runtime_name": "claude"}); err != nil {
+		t.Fatalf("UpdateIssue runtime_name: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	firstResult, err := runner.RunAttempt(context.Background(), issue, 0)
+	if err != nil {
+		t.Fatalf("RunAttempt first: %v", err)
+	}
+	if firstResult == nil || firstResult.StopReason != planApprovalStopReason {
+		t.Fatalf("expected Claude plan approval stop, got %#v", firstResult)
+	}
+	if firstResult.AppSession == nil || firstResult.AppSession.ThreadID != "claude-session-1" {
+		t.Fatalf("expected Claude session to be persisted, got %#v", firstResult.AppSession)
+	}
+
+	planning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning first: %v", err)
+	}
+	if planning == nil || planning.Status != kanban.IssuePlanningStatusAwaitingApproval {
+		t.Fatalf("expected awaiting approval planning status, got %#v", planning)
+	}
+	if planning.CurrentVersionNumber != 1 || len(planning.Versions) != 1 {
+		t.Fatalf("expected a single persisted plan version, got %#v", planning)
+	}
+	if planning.CurrentVersion == nil || planning.CurrentVersion.Markdown != "Ship the guarded rollout." {
+		t.Fatalf("expected canonical plan markdown to be persisted, got %#v", planning.CurrentVersion)
+	}
+
+	if err := store.ApproveIssuePlan(issue.ID); err != nil {
+		t.Fatalf("ApproveIssuePlan: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue after approval: %v", err)
+	}
+	issue.ResumeThreadID = firstResult.AppSession.ThreadID
+
+	approvedPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning after approval: %v", err)
+	}
+	if approvedPlanning == nil || approvedPlanning.Status != kanban.IssuePlanningStatusApproved || approvedPlanning.CurrentVersionNumber != 1 {
+		t.Fatalf("expected approved planning status to preserve version history, got %#v", approvedPlanning)
+	}
+
+	invocations := readClaudeInvocationArgs(t, argsPath)
+	if len(invocations) != 1 {
+		t.Fatalf("expected one Claude invocation before resume, got %#v", invocations)
+	}
+	if claudeContainsArg(invocations[0], "-r") {
+		t.Fatalf("did not expect a resume flag on the first Claude turn, got %#v", invocations[0])
+	}
+
+	secondResult, err := runner.RunAttempt(context.Background(), issue, 1)
+	if err != nil {
+		t.Fatalf("RunAttempt second: %v", err)
+	}
+	if secondResult == nil || !secondResult.Success {
+		t.Fatalf("expected resumed Claude execution to complete, got %#v", secondResult)
+	}
+	if secondResult.AppSession == nil || secondResult.AppSession.ThreadID != "claude-session-1" {
+		t.Fatalf("expected resumed Claude session to reuse the stored thread id, got %#v", secondResult.AppSession)
+	}
+
+	invocations = readClaudeInvocationArgs(t, argsPath)
+	if len(invocations) != 2 {
+		t.Fatalf("expected two Claude invocations after resume, got %#v", invocations)
+	}
+	if got := claudeArgValueAfter(t, invocations[1], "-r"); got != "claude-session-1" {
+		t.Fatalf("expected resume flag to reuse the stored thread id, got %q from %#v", got, invocations[1])
+	}
+
+	finalPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning final: %v", err)
+	}
+	if finalPlanning == nil || finalPlanning.Status != kanban.IssuePlanningStatusApproved || finalPlanning.CurrentVersionNumber != 1 || len(finalPlanning.Versions) != 1 {
+		t.Fatalf("expected plan history to remain unchanged after resume, got %#v", finalPlanning)
 	}
 }
 
