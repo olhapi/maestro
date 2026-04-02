@@ -770,7 +770,10 @@ export function GlobalInterruptPanel({
               ) : (
                 <form
                   id={formId}
-                  className={cn(detailColumnClassName, 'rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]')}
+                  className={cn(
+                    detailColumnClassName,
+                    isElicitation ? 'grid gap-4' : 'rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]',
+                  )}
                   onSubmit={(event) => {
                     event.preventDefault()
                     if (!valid || responseLocked || !isUserInput) {
@@ -855,8 +858,8 @@ export function GlobalInterruptPanel({
                         <PlanApprovalDocument markdown={approvalMarkdown} />
                       </ApprovalReviewPanel>
                     ) : isElicitation ? (
-                      <div className="grid gap-4 rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]">
-                        <div className="grid gap-4 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.03] p-5">
+                      <div className="grid gap-4">
+                        <div className="grid gap-4">
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge className="border-white/10 bg-white/5 text-white">
                               {selectedInterrupt.elicitation?.server_name || 'MCP server'}

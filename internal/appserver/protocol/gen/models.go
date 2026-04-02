@@ -1,11 +1,5 @@
 package gen
 
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-)
-
 type InitializeParams struct {
 	Capabilities *InitializeCapabilities `json:"capabilities"`
 	ClientInfo   ClientInfo              `json:"clientInfo"`
@@ -2169,62 +2163,4 @@ type Title struct {
 	Double      *float64
 	String      *string
 	StringArray []string
-}
-
-func (t *Title) UnmarshalJSON(data []byte) error {
-	if t == nil {
-		return nil
-	}
-	if isNullJSON(data) {
-		*t = Title{}
-		return nil
-	}
-
-	var boolValue bool
-	boolErr := json.Unmarshal(data, &boolValue)
-	if boolErr == nil {
-		*t = Title{Bool: &boolValue}
-		return nil
-	}
-
-	var doubleValue float64
-	doubleErr := json.Unmarshal(data, &doubleValue)
-	if doubleErr == nil {
-		*t = Title{Double: &doubleValue}
-		return nil
-	}
-
-	var stringValue string
-	stringErr := json.Unmarshal(data, &stringValue)
-	if stringErr == nil {
-		*t = Title{String: &stringValue}
-		return nil
-	}
-
-	var stringArrayValue []string
-	stringArrayErr := json.Unmarshal(data, &stringArrayValue)
-	if stringArrayErr == nil {
-		*t = Title{StringArray: stringArrayValue}
-		return nil
-	}
-
-	return fmt.Errorf("decode title union: %w", errors.Join(boolErr, doubleErr, stringErr, stringArrayErr))
-}
-
-func (t *Title) MarshalJSON() ([]byte, error) {
-	if t == nil {
-		return []byte("null"), nil
-	}
-	switch {
-	case t.Bool != nil:
-		return json.Marshal(*t.Bool)
-	case t.Double != nil:
-		return json.Marshal(*t.Double)
-	case t.String != nil:
-		return json.Marshal(*t.String)
-	case t.StringArray != nil:
-		return json.Marshal(t.StringArray)
-	default:
-		return []byte("null"), nil
-	}
 }

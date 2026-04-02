@@ -2,8 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,425 +14,758 @@ import (
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
-type rejectingApprovalPromptProvider struct {
+type approvalPromptRejectingProvider struct {
 	testRuntimeProvider
 }
 
-func (p rejectingApprovalPromptProvider) RegisterPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
-	_ = issueID
-	_ = interaction
-	_ = responder
+func (p approvalPromptRejectingProvider) RegisterPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
 	return false
 }
 
-func (p rejectingApprovalPromptProvider) ClearPendingInteraction(issueID string, interactionID string) {
-	_ = issueID
-	_ = interactionID
+func (p approvalPromptRejectingProvider) ClearPendingInteraction(issueID string, interactionID string) {
 }
 
-func TestApprovalPromptParseAndDecisionBranches(t *testing.T) {
-	_, project, issue, workspace := approvalPromptFixture(t)
+type approvalPromptSilentProvider struct {
+	testRuntimeProvider
+}
 
-	baseArgs := map[string]interface{}{
-		"tool_name": "Bash",
-		"input": map[string]interface{}{
-			"command": "pwd",
+func (p approvalPromptSilentProvider) RegisterPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
+	return true
+}
+
+func (p approvalPromptSilentProvider) ClearPendingInteraction(issueID string, interactionID string) {}
+
+func TestApprovalPromptHelperBranches(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+
+	cases := []struct {
+		name               string
+		toolName           string
+		input              map[string]interface{}
+		wantTarget         string
+		wantClassification string
+		wantCommand        string
+		wantReason         string
+		wantProtected      bool
+	}{
+		{
+			name:               "bash command",
+			toolName:           "Bash",
+			input:              map[string]interface{}{"command": "pwd && git status --short"},
+			wantClassification: "command",
+			wantCommand:        "pwd && git status --short",
+			wantReason:         "Claude requested command approval: pwd && git status --short",
+		},
+		{
+			name:               "bash empty command",
+			toolName:           "Bash",
+			input:              map[string]interface{}{},
+			wantClassification: "command",
+			wantCommand:        "",
+			wantReason:         "Claude requested command approval.",
+		},
+		{
+			name:               "write regular file_path",
+			toolName:           "Write",
+			input:              map[string]interface{}{"file_path": filepath.Join(workspace, "notes.txt")},
+			wantTarget:         filepath.Join(workspace, "notes.txt"),
+			wantClassification: "file_write",
+			wantCommand:        "Write " + filepath.Join(workspace, "notes.txt"),
+			wantReason:         "Claude requested a file write: " + filepath.Join(workspace, "notes.txt"),
+		},
+		{
+			name:               "write protected path",
+			toolName:           "Write",
+			input:              map[string]interface{}{"path": filepath.Join(workspace, ".git", "config")},
+			wantTarget:         filepath.Join(workspace, ".git", "config"),
+			wantClassification: "protected_directory_write",
+			wantCommand:        "Write " + filepath.Join(workspace, ".git", "config"),
+			wantReason:         "Claude requested a protected-directory write: " + filepath.Join(workspace, ".git", "config"),
+			wantProtected:      true,
+		},
+		{
+			name:               "edit protected target_path",
+			toolName:           "Edit",
+			input:              map[string]interface{}{"target_path": filepath.Join(workspace, ".git", "hooks", "pre-commit")},
+			wantTarget:         filepath.Join(workspace, ".git", "hooks", "pre-commit"),
+			wantClassification: "protected_directory_write",
+			wantCommand:        "Edit " + filepath.Join(workspace, ".git", "hooks", "pre-commit"),
+			wantReason:         "Claude requested a protected-directory edit: " + filepath.Join(workspace, ".git", "hooks", "pre-commit"),
+			wantProtected:      true,
+		},
+		{
+			name:               "multiedit regular",
+			toolName:           "MultiEdit",
+			input:              map[string]interface{}{"file_path": filepath.Join(workspace, "plan.md")},
+			wantTarget:         filepath.Join(workspace, "plan.md"),
+			wantClassification: "file_edit",
+			wantCommand:        "MultiEdit " + filepath.Join(workspace, "plan.md"),
+			wantReason:         "Claude requested a file edit: " + filepath.Join(workspace, "plan.md"),
+		},
+		{
+			name:               "default with target",
+			toolName:           "CustomTool",
+			input:              map[string]interface{}{"file_path": "/tmp/target"},
+			wantTarget:         "/tmp/target",
+			wantClassification: "approval",
+			wantCommand:        "CustomTool /tmp/target",
+			wantReason:         "Claude requested approval for /tmp/target",
+		},
+		{
+			name:               "default without target",
+			toolName:           "CustomTool",
+			input:              map[string]interface{}{},
+			wantClassification: "approval",
+			wantCommand:        "CustomTool",
+			wantReason:         "Claude requested approval.",
 		},
 	}
-	baseMeta := approvalPromptMeta(project, issue, workspace)
 
-	t.Run("parse validation", func(t *testing.T) {
-		cases := []struct {
-			name    string
-			args    map[string]interface{}
-			meta    map[string]interface{}
-			wantErr string
-		}{
-			{
-				name:    "empty arguments",
-				args:    map[string]interface{}{},
-				meta:    baseMeta,
-				wantErr: "approval_prompt requires a non-empty arguments object",
-			},
-			{
-				name: "missing tool name",
-				args: map[string]interface{}{
-					"input": map[string]interface{}{"command": "pwd"},
-				},
-				meta:    baseMeta,
-				wantErr: "approval_prompt requires tool_name",
-			},
-			{
-				name: "missing input",
-				args: map[string]interface{}{
-					"tool_name": "Bash",
-				},
-				meta:    baseMeta,
-				wantErr: "approval_prompt requires input",
-			},
-			{
-				name:    "missing issue metadata",
-				args:    baseArgs,
-				meta:    map[string]interface{}{"maestro/workspace_path": workspace},
-				wantErr: "approval_prompt requires maestro/issue_id metadata",
-			},
-			{
-				name:    "missing workspace metadata",
-				args:    baseArgs,
-				meta:    map[string]interface{}{"maestro/issue_id": issue.ID},
-				wantErr: "approval_prompt requires maestro/workspace_path metadata",
-			},
-			{
-				name: "explicit and metadata tool ids differ",
-				args: map[string]interface{}{
-					"tool_name":   "Bash",
-					"input":       map[string]interface{}{"command": "pwd"},
-					"tool_use_id": "explicit-tool-id",
-				},
-				meta: func() map[string]interface{} {
-					meta := approvalPromptMeta(project, issue, workspace)
-					meta["claudecode/toolUseId"] = "metadata-tool-id"
-					return meta
-				}(),
-				wantErr: "approval_prompt tool_use_id mismatch",
-			},
-			{
-				name: "metadata claudecode mismatches claude id",
-				args: map[string]interface{}{
-					"tool_name": "Bash",
-					"input":     map[string]interface{}{"command": "pwd"},
-				},
-				meta: func() map[string]interface{} {
-					meta := approvalPromptMeta(project, issue, workspace)
-					meta["claudecode/toolUseId"] = "legacy-tool-id"
-					meta["claude/toolUseId"] = "different-tool-id"
-					return meta
-				}(),
-				wantErr: "approval_prompt tool_use_id mismatch",
-			},
-		}
-
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				request := mcpapi.CallToolRequest{
-					Params: mcpapi.CallToolParams{
-						Name:      "approval_prompt",
-						Arguments: tc.args,
-						Meta:      mcpapi.NewMetaFromMap(tc.meta),
-					},
-				}
-
-				parsed, err := parseApprovalPromptCall(request)
-				if err == nil {
-					t.Fatalf("expected parse error for %s, got %#v", tc.name, parsed)
-				}
-				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("unexpected parse error: %v", err)
-				}
-			})
-		}
-
-		t.Run("fallback tool id is derived deterministically", func(t *testing.T) {
-			request := mcpapi.CallToolRequest{
-				Params: mcpapi.CallToolParams{
-					Name: "approval_prompt",
-					Arguments: map[string]interface{}{
-						"tool_name": "Bash",
-						"input": map[string]interface{}{
-							"command": "pwd && git status --short",
-							"extra": map[string]interface{}{
-								"nested": []interface{}{"value", 2},
-							},
-						},
-					},
-					Meta: mcpapi.NewMetaFromMap(baseMeta),
-				},
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := approvalPromptTargetPath(tc.input)
+			if target != tc.wantTarget {
+				t.Fatalf("unexpected target path: got %q want %q", target, tc.wantTarget)
+			}
+			if got := approvalPromptProtectedPath(target); got != tc.wantProtected {
+				t.Fatalf("unexpected protected-path classification: got %t want %t", got, tc.wantProtected)
 			}
 
-			parsed, err := parseApprovalPromptCall(request)
-			if err != nil {
-				t.Fatalf("parseApprovalPromptCall failed: %v", err)
+			classification := classifyApprovalPrompt(tc.toolName, tc.input)
+			if classification != tc.wantClassification {
+				t.Fatalf("unexpected classification: got %q want %q", classification, tc.wantClassification)
 			}
-			expected := approvalPromptFallbackToolUseID(parsed.Issue, parsed.ToolName, parsed.Input)
-			if parsed.ToolUseID != expected {
-				t.Fatalf("unexpected fallback tool use id: got %q want %q", parsed.ToolUseID, expected)
+
+			if got := approvalPromptCommand(tc.toolName, tc.input, target); got != tc.wantCommand {
+				t.Fatalf("unexpected command: got %q want %q", got, tc.wantCommand)
 			}
-			if got := parsed.RequestMeta["claudecode/toolUseId"]; got != expected {
-				t.Fatalf("expected claudecode/toolUseId to be injected, got %#v", got)
+			if got := approvalPromptReason(tc.toolName, classification, target, tc.input); got != tc.wantReason {
+				t.Fatalf("unexpected reason: got %q want %q", got, tc.wantReason)
 			}
-			if got := parsed.RequestMeta["claude/toolUseId"]; got != expected {
-				t.Fatalf("expected claude/toolUseId to be injected, got %#v", got)
+
+			command, reason, markdown := summarizeApprovalPrompt(tc.toolName, classification, tc.input, workspace)
+			if command != tc.wantCommand {
+				t.Fatalf("unexpected summarized command: got %q want %q", command, tc.wantCommand)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("unexpected summarized reason: got %q want %q", reason, tc.wantReason)
+			}
+			if !strings.Contains(markdown, "### Claude permission prompt") {
+				t.Fatalf("expected markdown heading, got %q", markdown)
+			}
+			if !strings.Contains(markdown, "- Tool: `"+tc.toolName+"`") {
+				t.Fatalf("expected markdown to include the tool name, got %q", markdown)
+			}
+			if !strings.Contains(markdown, "- Classification: `"+classification+"`") {
+				t.Fatalf("expected markdown to include the classification, got %q", markdown)
+			}
+			if !strings.Contains(markdown, "- Workspace: `"+workspace+"`") {
+				t.Fatalf("expected markdown to include the workspace, got %q", markdown)
 			}
 		})
-	})
+	}
 
-	t.Run("tool use id and prompt helper branches", func(t *testing.T) {
-		if got := approvalPromptToolUseIDFromMeta(map[string]interface{}{
-			"claudecode/toolUseId": "  ",
-			"claude/toolUseId":     "legacy",
-			"tool_use_id":          "fallback",
-		}); got != "legacy" {
-			t.Fatalf("unexpected tool use id precedence: %q", got)
-		}
-		if got := approvalPromptToolUseIDFromMeta(map[string]interface{}{"tool_use_id": "fallback"}); got != "fallback" {
-			t.Fatalf("unexpected fallback meta tool use id: %q", got)
-		}
-		if got := approvalPromptToolUseIDFromMeta(nil); got != "" {
-			t.Fatalf("expected nil meta to yield an empty id, got %q", got)
-		}
+	if got := approvalPromptTargetPath(nil); got != "" {
+		t.Fatalf("expected nil input to return empty target path, got %q", got)
+	}
+	if got := approvalPromptProtectedPath(""); got {
+		t.Fatalf("expected empty path to be treated as non-protected")
+	}
+}
 
-		if got := approvalPromptFallbackToolUseID(approvalPromptIssueContext{IssueID: issue.ID, IssueIdentifier: issue.Identifier}, "Bash", map[string]interface{}{"command": "pwd"}); got == "" {
-			t.Fatal("expected deterministic fallback tool use id")
-		}
-		if got := approvalPromptFallbackToolUseID(approvalPromptIssueContext{IssueID: issue.ID, IssueIdentifier: issue.Identifier}, "Bash", map[string]interface{}{"bad": make(chan int)}); got != "Bash" {
-			t.Fatalf("expected marshal failure fallback to tool name, got %q", got)
-		}
+func TestApprovalPromptSummarizeFallbackAndDecisionMessages(t *testing.T) {
+	commandInput := map[string]interface{}{
+		"command": "pwd",
+		"bad":     make(chan int),
+	}
+	command, reason, markdown := summarizeApprovalPrompt("Bash", "command", commandInput, "/tmp/workspace")
+	if command != "pwd" {
+		t.Fatalf("unexpected summarized command: got %q want %q", command, "pwd")
+	}
+	if reason != "Claude requested command approval: pwd" {
+		t.Fatalf("unexpected summarized reason: got %q", reason)
+	}
+	if !strings.Contains(markdown, "map[string]interface {}") {
+		t.Fatalf("expected marshal fallback markdown to use fmt formatting, got %q", markdown)
+	}
+	if !strings.Contains(markdown, "chan int") {
+		t.Fatalf("expected marshal fallback markdown to include the channel type, got %q", markdown)
+	}
 
-		if got := approvalPromptTargetPath(nil); got != "" {
-			t.Fatalf("expected empty target path for nil input, got %q", got)
-		}
-		if got := approvalPromptTargetPath(map[string]interface{}{"path": "first", "target_path": "second"}); got != "first" {
-			t.Fatalf("expected file path to win, got %q", got)
-		}
-		if got := approvalPromptTargetPath(map[string]interface{}{"target_path": "second"}); got != "second" {
-			t.Fatalf("expected target_path fallback, got %q", got)
-		}
+	cases := []struct {
+		name        string
+		behavior    string
+		interaction agentruntime.PendingInteraction
+		response    agentruntime.PendingInteractionResponse
+		wantMessage string
+	}{
+		{
+			name:        "deny note wins",
+			behavior:    "deny",
+			interaction: agentruntime.PendingInteraction{Approval: &agentruntime.PendingApproval{Reason: "approval reason"}},
+			response:    agentruntime.PendingInteractionResponse{Note: "custom deny"},
+			wantMessage: "custom deny",
+		},
+		{
+			name:        "deny approval reason fallback",
+			behavior:    "deny",
+			interaction: agentruntime.PendingInteraction{Approval: &agentruntime.PendingApproval{Reason: "approval reason"}},
+			response:    agentruntime.PendingInteractionResponse{},
+			wantMessage: "Maestro denied the request: approval reason",
+		},
+		{
+			name:        "ask last activity fallback",
+			behavior:    "ask",
+			interaction: agentruntime.PendingInteraction{LastActivity: "last activity"},
+			response:    agentruntime.PendingInteractionResponse{},
+			wantMessage: "Maestro needs clarification before approving this request: last activity",
+		},
+		{
+			name:        "deny generic fallback",
+			behavior:    "deny",
+			interaction: agentruntime.PendingInteraction{},
+			response:    agentruntime.PendingInteractionResponse{},
+			wantMessage: "Maestro denied the request.",
+		},
+		{
+			name:        "ask generic fallback",
+			behavior:    "ask",
+			interaction: agentruntime.PendingInteraction{},
+			response:    agentruntime.PendingInteractionResponse{},
+			wantMessage: "Maestro needs clarification before approving this request.",
+		},
+		{
+			name:        "unsupported behavior",
+			behavior:    "maybe",
+			interaction: agentruntime.PendingInteraction{},
+			response:    agentruntime.PendingInteractionResponse{},
+		},
+	}
 
-		if got := approvalPromptProtectedPath(""); got {
-			t.Fatal("expected empty path to be unprotected")
-		}
-		if got := approvalPromptProtectedPath(filepath.Join(workspace, ".git", "config")); !got {
-			t.Fatalf("expected .git path to be protected")
-		}
-
-		cases := []struct {
-			name     string
-			toolName string
-			input    map[string]interface{}
-			class    string
-			command  string
-			reason   string
-		}{
-			{
-				name:     "bash command",
-				toolName: "Bash",
-				input: map[string]interface{}{
-					"command": "pwd",
-				},
-				class:   "command",
-				command: "pwd",
-				reason:  "Claude requested command approval: pwd",
-			},
-			{
-				name:     "write uses path key",
-				toolName: "Write",
-				input: map[string]interface{}{
-					"path": "notes.txt",
-				},
-				class:   "file_write",
-				command: "Write notes.txt",
-				reason:  "Claude requested a file write: notes.txt",
-			},
-			{
-				name:     "edit uses target path key",
-				toolName: "Edit",
-				input: map[string]interface{}{
-					"target_path": "draft.md",
-				},
-				class:   "file_edit",
-				command: "Edit draft.md",
-				reason:  "Claude requested a file edit: draft.md",
-			},
-			{
-				name:     "multiedit is recognized",
-				toolName: "MultiEdit",
-				input: map[string]interface{}{
-					"file_path": "draft.md",
-				},
-				class:   "file_edit",
-				command: "MultiEdit draft.md",
-				reason:  "Claude requested a file edit: draft.md",
-			},
-			{
-				name:     "protected write",
-				toolName: "Write",
-				input: map[string]interface{}{
-					"file_path": filepath.Join(workspace, ".git", "config"),
-				},
-				class:   "protected_directory_write",
-				command: "Write " + filepath.Join(workspace, ".git", "config"),
-				reason:  "Claude requested a protected-directory write: " + filepath.Join(workspace, ".git", "config"),
-			},
-			{
-				name:     "default approval",
-				toolName: "Search",
-				input:    map[string]interface{}{},
-				class:    "approval",
-				command:  "Search",
-				reason:   "Claude requested approval.",
-			},
-		}
-
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				classification := classifyApprovalPrompt(tc.toolName, tc.input)
-				if classification != tc.class {
-					t.Fatalf("unexpected classification: got %q want %q", classification, tc.class)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			switch tc.behavior {
+			case "deny", "ask":
+				got := approvalPromptDecisionMessage(tc.behavior, tc.interaction, tc.response)
+				if got != tc.wantMessage {
+					t.Fatalf("unexpected decision message: got %q want %q", got, tc.wantMessage)
 				}
-				command := approvalPromptCommand(tc.toolName, tc.input, approvalPromptTargetPath(tc.input))
-				if command != tc.command {
-					t.Fatalf("unexpected command: got %q want %q", command, tc.command)
+			default:
+				if got := approvalPromptDecisionMessage(tc.behavior, tc.interaction, tc.response); got != "" {
+					t.Fatalf("expected unsupported behavior to return empty message, got %q", got)
 				}
-				reason := approvalPromptReason(tc.toolName, classification, approvalPromptTargetPath(tc.input), tc.input)
-				if reason != tc.reason {
-					t.Fatalf("unexpected reason: got %q want %q", reason, tc.reason)
-				}
-			})
-		}
+			}
+		})
+	}
 
-		if got := approvalPromptDecisionMessage("allow", agentruntime.PendingInteraction{}, agentruntime.PendingInteractionResponse{}); got != "" {
-			t.Fatalf("expected allow to produce no decision message, got %q", got)
-		}
-		if got := approvalPromptDecisionMessage("deny", agentruntime.PendingInteraction{
-			Approval:    &agentruntime.PendingApproval{Reason: "review required"},
-			LastActivity: "fallback",
-		}, agentruntime.PendingInteractionResponse{Note: "explicit note"}); got != "explicit note" {
-			t.Fatalf("expected note to win, got %q", got)
-		}
-		if got := approvalPromptDecisionMessage("deny", agentruntime.PendingInteraction{
-			Approval:    &agentruntime.PendingApproval{Reason: "review required"},
-			LastActivity: "fallback",
-		}, agentruntime.PendingInteractionResponse{}); got != "Maestro denied the request: review required" {
-			t.Fatalf("unexpected deny message: %q", got)
-		}
-		if got := approvalPromptDecisionMessage("ask", agentruntime.PendingInteraction{
-			LastActivity: "fallback",
-		}, agentruntime.PendingInteractionResponse{}); got != "Maestro needs clarification before approving this request: fallback" {
-			t.Fatalf("unexpected ask message: %q", got)
-		}
-
-		interaction := agentruntime.PendingInteraction{
-			Metadata: map[string]interface{}{
-				"input": map[string]interface{}{
-					"command": "pwd",
-					"nested": map[string]interface{}{
-						"values": []interface{}{"a", map[string]interface{}{"b": "c"}},
+	buildCases := []struct {
+		name         string
+		interaction  agentruntime.PendingInteraction
+		response     agentruntime.PendingInteractionResponse
+		wantBehavior string
+		wantUpdated  map[string]interface{}
+		wantMessage  string
+		wantError    bool
+	}{
+		{
+			name: "allow decision clones input",
+			interaction: agentruntime.PendingInteraction{
+				Metadata: map[string]interface{}{
+					"input": map[string]interface{}{
+						"command": "pwd",
+						"nested": []interface{}{
+							map[string]interface{}{"k": "v"},
+						},
 					},
 				},
 			},
+			response:     agentruntime.PendingInteractionResponse{Decision: "allow"},
+			wantBehavior: "allow",
+			wantUpdated:  map[string]interface{}{"command": "pwd", "nested": []interface{}{map[string]interface{}{"k": "v"}}},
+		},
+		{
+			name: "allow action fallback",
+			interaction: agentruntime.PendingInteraction{
+				Metadata: map[string]interface{}{
+					"input": map[string]interface{}{"command": "whoami"},
+				},
+			},
+			response:     agentruntime.PendingInteractionResponse{Action: "allow"},
+			wantBehavior: "allow",
+			wantUpdated:  map[string]interface{}{"command": "whoami"},
+		},
+		{
+			name: "deny uses decision message",
+			interaction: agentruntime.PendingInteraction{
+				Approval: &agentruntime.PendingApproval{Reason: "approval reason"},
+				Metadata: map[string]interface{}{"input": map[string]interface{}{"command": "pwd"}},
+			},
+			response:     agentruntime.PendingInteractionResponse{Decision: "deny"},
+			wantBehavior: "deny",
+			wantMessage:  "Maestro denied the request: approval reason",
+		},
+		{
+			name: "ask uses decision message",
+			interaction: agentruntime.PendingInteraction{
+				LastActivity: "last activity",
+				Metadata:     map[string]interface{}{"input": map[string]interface{}{"command": "pwd"}},
+			},
+			response:     agentruntime.PendingInteractionResponse{Decision: "ask"},
+			wantBehavior: "ask",
+			wantMessage:  "Maestro needs clarification before approving this request: last activity",
+		},
+		{
+			name:        "unsupported decision",
+			interaction: agentruntime.PendingInteraction{},
+			response:    agentruntime.PendingInteractionResponse{Decision: "maybe"},
+			wantError:   true,
+		},
+	}
+
+	for _, tc := range buildCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := buildClaudePermissionPromptResult(tc.interaction, tc.response)
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected unsupported decision to return an error")
+				}
+				if !strings.Contains(err.Error(), "unsupported approval decision") {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildClaudePermissionPromptResult failed: %v", err)
+			}
+			if result.Behavior != tc.wantBehavior {
+				t.Fatalf("unexpected behavior: got %q want %q", result.Behavior, tc.wantBehavior)
+			}
+			if tc.wantBehavior == "allow" {
+				updatedInput, ok := result.UpdatedInput.(map[string]interface{})
+				if !ok {
+					t.Fatalf("expected allow result to include updated input, got %#v", result.UpdatedInput)
+				}
+				if !reflect.DeepEqual(updatedInput, tc.wantUpdated) {
+					t.Fatalf("unexpected updated input: got %#v want %#v", updatedInput, tc.wantUpdated)
+				}
+			}
+			if tc.wantBehavior == "deny" || tc.wantBehavior == "ask" {
+				if result.Message != tc.wantMessage {
+					t.Fatalf("unexpected message: got %q want %q", result.Message, tc.wantMessage)
+				}
+			}
+		})
+	}
+
+	if _, err := encodeApprovalPromptResult(nil, agentruntime.PendingInteractionResponse{Decision: "allow"}); err == nil || !strings.Contains(err.Error(), "invalid approval prompt payload") {
+		t.Fatalf("expected nil interaction to fail encoding, got %v", err)
+	}
+
+	if got := approvalPromptFallbackToolUseID(approvalPromptIssueContext{}, "  Bash  ", map[string]interface{}{"bad": make(chan int)}); got != "Bash" {
+		t.Fatalf("expected marshal failure to fall back to trimmed tool name, got %q", got)
+	}
+}
+
+func TestApprovalPromptToolUseIDFromMetaPrecedence(t *testing.T) {
+	cases := []struct {
+		name string
+		meta map[string]interface{}
+		want string
+	}{
+		{
+			name: "claudecode wins",
+			meta: map[string]interface{}{
+				"claudecode/toolUseId": "  claudecode-id  ",
+				"claude/toolUseId":     "claude-id",
+				"tool_use_id":          "legacy-id",
+			},
+			want: "claudecode-id",
+		},
+		{
+			name: "claude fallback",
+			meta: map[string]interface{}{
+				"claude/toolUseId": "  claude-id  ",
+				"tool_use_id":      "legacy-id",
+			},
+			want: "claude-id",
+		},
+		{
+			name: "legacy fallback",
+			meta: map[string]interface{}{
+				"tool_use_id": "  legacy-id  ",
+			},
+			want: "legacy-id",
+		},
+		{
+			name: "empty",
+			meta: map[string]interface{}{},
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := approvalPromptToolUseIDFromMeta(tc.meta); got != tc.want {
+				t.Fatalf("unexpected tool use id: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApprovalPromptParseCallBranches(t *testing.T) {
+	_, _, project, issue, workspace := newApprovalPromptTestServer(t)
+
+	baseMeta := map[string]interface{}{
+		"maestro/issue_id":         issue.ID,
+		"maestro/issue_identifier": issue.Identifier,
+		"maestro/issue_title":      issue.Title,
+		"maestro/project_id":       project.ID,
+		"maestro/project_name":     project.Name,
+		"maestro/workspace_path":   workspace,
+	}
+
+	t.Run("missing args", func(t *testing.T) {
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{Name: "approval_prompt"},
 		}
-		allowResult, err := buildClaudePermissionPromptResult(interaction, agentruntime.PendingInteractionResponse{Decision: "allow"})
+		if _, err := parseApprovalPromptCall(request); err == nil || !strings.Contains(err.Error(), "non-empty arguments object") {
+			t.Fatalf("expected missing args error, got %v", err)
+		}
+	})
+
+	t.Run("missing tool name", func(t *testing.T) {
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"input": map[string]interface{}{"command": "pwd"}},
+				Meta:      mcpapi.NewMetaFromMap(baseMeta),
+			},
+		}
+		if _, err := parseApprovalPromptCall(request); err == nil || !strings.Contains(err.Error(), "requires tool_name") {
+			t.Fatalf("expected missing tool name error, got %v", err)
+		}
+	})
+
+	t.Run("missing input", func(t *testing.T) {
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash"},
+				Meta:      mcpapi.NewMetaFromMap(baseMeta),
+			},
+		}
+		if _, err := parseApprovalPromptCall(request); err == nil || !strings.Contains(err.Error(), "requires input") {
+			t.Fatalf("expected missing input error, got %v", err)
+		}
+	})
+
+	t.Run("missing issue metadata", func(t *testing.T) {
+		meta := map[string]interface{}{
+			"maestro/project_id":     project.ID,
+			"maestro/project_name":   project.Name,
+			"maestro/workspace_path": workspace,
+		}
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash", "input": map[string]interface{}{"command": "pwd"}},
+				Meta:      mcpapi.NewMetaFromMap(meta),
+			},
+		}
+		if _, err := parseApprovalPromptCall(request); err == nil || !strings.Contains(err.Error(), "requires maestro/issue_id metadata") {
+			t.Fatalf("expected missing issue metadata error, got %v", err)
+		}
+	})
+
+	t.Run("missing workspace metadata", func(t *testing.T) {
+		meta := map[string]interface{}{
+			"maestro/issue_id":         issue.ID,
+			"maestro/issue_identifier": issue.Identifier,
+			"maestro/issue_title":      issue.Title,
+			"maestro/project_id":       project.ID,
+			"maestro/project_name":     project.Name,
+		}
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash", "input": map[string]interface{}{"command": "pwd"}},
+				Meta:      mcpapi.NewMetaFromMap(meta),
+			},
+		}
+		if _, err := parseApprovalPromptCall(request); err == nil || !strings.Contains(err.Error(), "requires maestro/workspace_path metadata") {
+			t.Fatalf("expected missing workspace metadata error, got %v", err)
+		}
+	})
+
+	t.Run("explicit tool use id mismatch with meta claudecode", func(t *testing.T) {
+		meta := cloneJSONMap(baseMeta)
+		meta["claudecode/toolUseId"] = "meta-id"
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash", "input": map[string]interface{}{"command": "pwd"}, "tool_use_id": "arg-id"},
+				Meta:      mcpapi.NewMetaFromMap(meta),
+			},
+		}
+		if _, err := parseApprovalPromptCall(request); err == nil || !strings.Contains(err.Error(), "tool_use_id mismatch") {
+			t.Fatalf("expected explicit/meta mismatch error, got %v", err)
+		}
+	})
+
+	t.Run("explicit tool use id mismatch with meta claude", func(t *testing.T) {
+		meta := cloneJSONMap(baseMeta)
+		meta["claudecode/toolUseId"] = "arg-id"
+		meta["claude/toolUseId"] = "meta-id"
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash", "input": map[string]interface{}{"command": "pwd"}, "tool_use_id": "arg-id"},
+				Meta:      mcpapi.NewMetaFromMap(meta),
+			},
+		}
+		if _, err := parseApprovalPromptCall(request); err == nil || !strings.Contains(err.Error(), "tool_use_id mismatch") {
+			t.Fatalf("expected legacy tool-use mismatch error, got %v", err)
+		}
+	})
+
+	t.Run("explicit tool use id clones request metadata", func(t *testing.T) {
+		nested := map[string]interface{}{
+			"nested": map[string]interface{}{"slice": []interface{}{"a", map[string]interface{}{"b": "c"}}},
+		}
+		input := map[string]interface{}{"command": "pwd"}
+		meta := cloneJSONMap(baseMeta)
+		meta["extra"] = nested
+
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash", "input": input, "tool_use_id": "arg-id"},
+				Meta:      mcpapi.NewMetaFromMap(meta),
+			},
+		}
+
+		parsed, err := parseApprovalPromptCall(request)
 		if err != nil {
-			t.Fatalf("buildClaudePermissionPromptResult(allow) failed: %v", err)
+			t.Fatalf("parseApprovalPromptCall failed: %v", err)
 		}
-		if allowResult.Behavior != "allow" {
-			t.Fatalf("unexpected allow behavior: %#v", allowResult)
+		if parsed.ToolUseID != "arg-id" {
+			t.Fatalf("unexpected tool use id: got %q want %q", parsed.ToolUseID, "arg-id")
 		}
-		updatedInput, ok := allowResult.UpdatedInput.(map[string]interface{})
-		if !ok {
-			t.Fatalf("expected allow response to clone the original input, got %#v", allowResult.UpdatedInput)
+		if got := parsed.RequestMeta["claudecode/toolUseId"]; got != "arg-id" {
+			t.Fatalf("expected claudecode tool-use id to be injected, got %#v", got)
 		}
-		originalInput := interaction.Metadata["input"].(map[string]interface{})
-		originalInput["command"] = "changed"
-		nested := updatedInput["nested"].(map[string]interface{})
-		values := nested["values"].([]interface{})
-		if values[1].(map[string]interface{})["b"] != "c" {
-			t.Fatalf("expected deep clone of nested input, got %#v", allowResult.UpdatedInput)
+		if got := parsed.RequestMeta["claude/toolUseId"]; got != "arg-id" {
+			t.Fatalf("expected legacy tool-use id to be injected, got %#v", got)
+		}
+		if got := parsed.RequestMeta["extra"]; !reflect.DeepEqual(got, nested) {
+			t.Fatalf("unexpected nested request metadata: got %#v want %#v", got, nested)
 		}
 
-		denyResult, err := buildClaudePermissionPromptResult(interaction, agentruntime.PendingInteractionResponse{Decision: "deny", Note: "stop"})
+		input["command"] = "mutated"
+		nested["nested"].(map[string]interface{})["slice"].([]interface{})[0] = "changed"
+		if got := parsed.Input["command"]; got != "pwd" {
+			t.Fatalf("expected parsed input to be cloned, got %#v", got)
+		}
+		if got := parsed.RequestMeta["extra"]; !reflect.DeepEqual(got, map[string]interface{}{"nested": map[string]interface{}{"slice": []interface{}{"a", map[string]interface{}{"b": "c"}}}}) {
+			t.Fatalf("expected parsed meta to be cloned, got %#v", got)
+		}
+	})
+
+	t.Run("meta claudecode tool use id", func(t *testing.T) {
+		meta := cloneJSONMap(baseMeta)
+		meta["claudecode/toolUseId"] = "claudecode-id"
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash", "input": map[string]interface{}{"command": "pwd"}},
+				Meta:      mcpapi.NewMetaFromMap(meta),
+			},
+		}
+		parsed, err := parseApprovalPromptCall(request)
 		if err != nil {
-			t.Fatalf("buildClaudePermissionPromptResult(deny) failed: %v", err)
+			t.Fatalf("parseApprovalPromptCall failed: %v", err)
 		}
-		if denyResult.Behavior != "deny" || denyResult.Message != "stop" {
-			t.Fatalf("unexpected deny result: %#v", denyResult)
+		if parsed.ToolUseID != "claudecode-id" {
+			t.Fatalf("unexpected tool use id: got %q want %q", parsed.ToolUseID, "claudecode-id")
 		}
+	})
 
-		interactionWithActivity := interaction
-		interactionWithActivity.LastActivity = "fallback"
-		askResult, err := buildClaudePermissionPromptResult(interactionWithActivity, agentruntime.PendingInteractionResponse{Decision: "ask"})
+	t.Run("meta claude tool use id fallback", func(t *testing.T) {
+		meta := cloneJSONMap(baseMeta)
+		meta["claude/toolUseId"] = "claude-id"
+		meta["tool_use_id"] = "legacy-id"
+		request := mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      "approval_prompt",
+				Arguments: map[string]interface{}{"tool_name": "Bash", "input": map[string]interface{}{"command": "pwd"}},
+				Meta:      mcpapi.NewMetaFromMap(meta),
+			},
+		}
+		parsed, err := parseApprovalPromptCall(request)
 		if err != nil {
-			t.Fatalf("buildClaudePermissionPromptResult(ask) failed: %v", err)
+			t.Fatalf("parseApprovalPromptCall failed: %v", err)
 		}
-		if askResult.Behavior != "ask" || askResult.Message != "Maestro needs clarification before approving this request: fallback" {
-			t.Fatalf("unexpected ask result: %#v", askResult)
-		}
-
-		if _, err := buildClaudePermissionPromptResult(interaction, agentruntime.PendingInteractionResponse{Decision: "maybe"}); !errors.Is(err, agentruntime.ErrInvalidInteractionResponse) {
-			t.Fatalf("expected unsupported decision error, got %v", err)
-		}
-
-		if got := buildApprovalPromptInteraction(nil); got != nil {
-			t.Fatalf("expected nil approval prompt call to return nil interaction, got %#v", got)
-		}
-
-		if got := cloneJSONMap(nil); got != nil {
-			t.Fatalf("expected nil JSON map clone to remain nil, got %#v", got)
+		if parsed.ToolUseID != "claude-id" {
+			t.Fatalf("unexpected tool use id: got %q want %q", parsed.ToolUseID, "claude-id")
 		}
 	})
 }
 
-func TestApprovalPromptHandleErrorBranches(t *testing.T) {
-	store, project, issue, workspace := approvalPromptFixture(t)
-	request := makeApprovalPromptRequest(project, issue, workspace, "toolu-error-branch", "Bash", map[string]interface{}{
-		"command": "pwd",
-	})
+func TestApprovalPromptShouldAutoApproveBranches(t *testing.T) {
+	defaultServer, _, _, defaultIssue, _ := newApprovalPromptTestServer(t)
 
-	t.Run("runtime unavailable without registrar support", func(t *testing.T) {
-		server := NewServerWithProvider(store, testRuntimeProvider{store: store})
-		result, err := server.handleApprovalPrompt(context.Background(), request)
-		if err != nil {
-			t.Fatalf("handleApprovalPrompt returned error: %v", err)
-		}
-		if !result.IsError {
-			t.Fatalf("expected runtime unavailable response to be an error, got %#v", result)
-		}
-		envelope := decodeEnvelope(t, result)
-		if got := envelope["error"].(map[string]interface{})["message"]; !strings.Contains(got.(string), "pending-interaction support") {
-			t.Fatalf("unexpected runtime unavailable envelope: %#v", envelope)
-		}
-	})
+	issueFullAccessServer, _, _, issueFullAccessIssue, _ := newApprovalPromptTestServer(t)
+	if err := issueFullAccessServer.store.UpdateIssuePermissionProfile(issueFullAccessIssue.ID, kanban.PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
 
-	t.Run("register failure surfaces a runtime unavailable error", func(t *testing.T) {
-		server := NewServerWithProvider(store, rejectingApprovalPromptProvider{testRuntimeProvider{store: store}})
-		result, err := server.handleApprovalPrompt(context.Background(), request)
-		if err != nil {
-			t.Fatalf("handleApprovalPrompt returned error: %v", err)
-		}
-		if !result.IsError {
-			t.Fatalf("expected register failure to be an error, got %#v", result)
-		}
-		envelope := decodeEnvelope(t, result)
-		if got := envelope["error"].(map[string]interface{})["message"]; !strings.Contains(got.(string), "could not register") {
-			t.Fatalf("unexpected register failure envelope: %#v", envelope)
-		}
-	})
+	projectFullAccessServer, _, projectFullAccessProject, projectFullAccessIssue, _ := newApprovalPromptTestServer(t)
+	if err := projectFullAccessServer.store.UpdateProjectPermissionProfile(projectFullAccessProject.ID, kanban.PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile: %v", err)
+	}
 
-	t.Run("parse errors are returned as tool errors", func(t *testing.T) {
-		server := NewServerWithProvider(store, testRuntimeProvider{store: store})
-		result, err := server.handleApprovalPrompt(context.Background(), mcpapi.CallToolRequest{})
-		if err != nil {
-			t.Fatalf("handleApprovalPrompt returned error: %v", err)
-		}
-		if !result.IsError {
-			t.Fatalf("expected parse failure to be an error, got %#v", result)
-		}
-		envelope := decodeEnvelope(t, result)
-		if got := envelope["error"].(map[string]interface{})["message"]; !strings.Contains(got.(string), "approval_prompt requires") {
-			t.Fatalf("unexpected parse failure envelope: %#v", envelope)
-		}
-	})
+	blankProjectServer, _, _, blankProjectIssue, _ := newApprovalPromptTestServer(t)
+	if err := blankProjectServer.store.UpdateIssue(blankProjectIssue.ID, map[string]interface{}{"project_id": ""}); err != nil {
+		t.Fatalf("UpdateIssue clear project_id: %v", err)
+	}
 
-	t.Run("serialization failure is reported back to the caller", func(t *testing.T) {
-		server, provider, project, issue, workspace := newApprovalPromptTestServer(t)
-		request := approvalPromptCallRequest(t, project, issue, workspace, "toolu-serialization", "Bash", map[string]interface{}{
-			"command": "pwd",
-			"bad":     make(chan int),
+	cases := []struct {
+		name   string
+		server *Server
+		call   *approvalPromptRequest
+		want   bool
+	}{
+		{
+			name:   "nil server",
+			server: nil,
+			call:   &approvalPromptRequest{Issue: approvalPromptIssueContext{IssueID: defaultIssue.ID}},
+			want:   false,
+		},
+		{
+			name:   "nil store",
+			server: &Server{},
+			call:   &approvalPromptRequest{Issue: approvalPromptIssueContext{IssueID: defaultIssue.ID}},
+			want:   false,
+		},
+		{
+			name:   "nil call",
+			server: defaultServer,
+			call:   nil,
+			want:   false,
+		},
+		{
+			name:   "blank issue id",
+			server: defaultServer,
+			call:   &approvalPromptRequest{},
+			want:   false,
+		},
+		{
+			name:   "missing issue",
+			server: defaultServer,
+			call:   &approvalPromptRequest{Issue: approvalPromptIssueContext{IssueID: "missing"}},
+			want:   false,
+		},
+		{
+			name:   "issue full access",
+			server: issueFullAccessServer,
+			call:   &approvalPromptRequest{Issue: approvalPromptIssueContext{IssueID: issueFullAccessIssue.ID}},
+			want:   true,
+		},
+		{
+			name:   "project full access",
+			server: projectFullAccessServer,
+			call:   &approvalPromptRequest{Issue: approvalPromptIssueContext{IssueID: projectFullAccessIssue.ID}},
+			want:   true,
+		},
+		{
+			name:   "project id cleared",
+			server: blankProjectServer,
+			call:   &approvalPromptRequest{Issue: approvalPromptIssueContext{IssueID: blankProjectIssue.ID}},
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.server.shouldAutoApproveApprovalPrompt(tc.call); got != tc.want {
+				t.Fatalf("unexpected auto-approve decision: got %t want %t", got, tc.want)
+			}
 		})
+	}
+}
+
+func TestApprovalPromptHandleBranches(t *testing.T) {
+	t.Run("parse error", func(t *testing.T) {
+		server, _, _, _, _ := newApprovalPromptTestServer(t)
+		result, err := server.handleApprovalPrompt(context.Background(), mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{Name: "approval_prompt"},
+		})
+		if err != nil {
+			t.Fatalf("handleApprovalPrompt failed: %v", err)
+		}
+		if !result.IsError {
+			t.Fatalf("expected parse error to return an error envelope, got %#v", result)
+		}
+		envelope := decodeEnvelope(t, result)
+		errorPayload, ok := envelope["error"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected error payload, got %#v", envelope)
+		}
+		if got := asString(errorPayload["message"]); !strings.Contains(got, "non-empty arguments object") {
+			t.Fatalf("unexpected parse error message: %q", got)
+		}
+	})
+
+	t.Run("unsupported registrar", func(t *testing.T) {
+		server, _, project, issue, workspace := newApprovalPromptTestServer(t)
+		server = NewServerWithProvider(server.store, testRuntimeProvider{store: server.store})
+		request := approvalPromptCallRequest(t, project, issue, workspace, "toolu_unsupported", "Bash", map[string]interface{}{"command": "pwd"})
+		result, err := server.handleApprovalPrompt(context.Background(), request)
+		if err != nil {
+			t.Fatalf("handleApprovalPrompt failed: %v", err)
+		}
+		if !result.IsError {
+			t.Fatalf("expected unsupported registrar to return an error envelope, got %#v", result)
+		}
+		envelope := decodeEnvelope(t, result)
+		errorPayload, ok := envelope["error"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected error payload, got %#v", envelope)
+		}
+		if got := asString(errorPayload["message"]); !strings.Contains(got, "pending-interaction support") {
+			t.Fatalf("unexpected registrar error message: %q", got)
+		}
+	})
+
+	t.Run("register failure", func(t *testing.T) {
+		server, _, project, issue, workspace := newApprovalPromptTestServer(t)
+		server = NewServerWithProvider(server.store, approvalPromptRejectingProvider{testRuntimeProvider: testRuntimeProvider{store: server.store}})
+		request := approvalPromptCallRequest(t, project, issue, workspace, "toolu_reject", "Bash", map[string]interface{}{"command": "pwd"})
+		result, err := server.handleApprovalPrompt(context.Background(), request)
+		if err != nil {
+			t.Fatalf("handleApprovalPrompt failed: %v", err)
+		}
+		if !result.IsError {
+			t.Fatalf("expected register failure to return an error envelope, got %#v", result)
+		}
+		envelope := decodeEnvelope(t, result)
+		errorPayload, ok := envelope["error"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected error payload, got %#v", envelope)
+		}
+		if got := asString(errorPayload["message"]); !strings.Contains(got, "could not register") {
+			t.Fatalf("unexpected register failure message: %q", got)
+		}
+	})
+
+	t.Run("timeout waiting for responder", func(t *testing.T) {
+		server, _, project, issue, workspace := newApprovalPromptTestServer(t)
+		server = NewServerWithProvider(server.store, approvalPromptSilentProvider{testRuntimeProvider: testRuntimeProvider{store: server.store}})
+		request := approvalPromptCallRequest(t, project, issue, workspace, "toolu_timeout", "Bash", map[string]interface{}{"command": "pwd"})
 
 		resultCh := make(chan *mcpapi.CallToolResult, 1)
 		errCh := make(chan error, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
 		go func() {
@@ -446,176 +777,63 @@ func TestApprovalPromptHandleErrorBranches(t *testing.T) {
 			resultCh <- result
 		}()
 
-		interaction := <-provider.pendingCh
-		responder := <-provider.responderCh
-		if interaction.ID != approvalPromptInteractionID("toolu-serialization") {
-			t.Fatalf("unexpected interaction id: %q", interaction.ID)
-		}
-		if err := responder(context.Background(), interaction.ID, agentruntime.PendingInteractionResponse{Decision: "allow"}); err != nil {
-			t.Fatalf("responder failed: %v", err)
-		}
-
 		result := awaitApprovalPromptResult(t, resultCh, errCh)
 		if !result.IsError {
-			t.Fatalf("expected serialization failure to return an error envelope, got %#v", result)
+			t.Fatalf("expected timeout to return an error envelope, got %#v", result)
 		}
 		envelope := decodeEnvelope(t, result)
-		if got := envelope["error"].(map[string]interface{})["message"]; !strings.Contains(got.(string), "failed to encode approval response") {
-			t.Fatalf("unexpected serialization failure envelope: %#v", envelope)
+		errorPayload, ok := envelope["error"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected error payload, got %#v", envelope)
+		}
+		if got := asString(errorPayload["message"]); !strings.Contains(got, context.DeadlineExceeded.Error()) {
+			t.Fatalf("unexpected timeout message: %q", got)
 		}
 	})
 }
 
-func approvalPromptFixture(t *testing.T) (*kanban.Store, *kanban.Project, *kanban.Issue, string) {
-	t.Helper()
-
-	store := testStore(t, "")
-	workspace := filepath.Join(t.TempDir(), "workspace")
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
-	}
-	project, err := store.CreateProject("Approval prompt project", "", workspace, filepath.Join(workspace, "WORKFLOW.md"))
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	issue, err := store.CreateIssue(project.ID, "", "Approval prompt issue", "", 1, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
-	return store, project, issue, workspace
-}
-
-func approvalPromptMeta(project *kanban.Project, issue *kanban.Issue, workspace string) map[string]interface{} {
-	return map[string]interface{}{
-		"maestro/issue_id":         issue.ID,
-		"maestro/issue_identifier": issue.Identifier,
-		"maestro/issue_title":      issue.Title,
-		"maestro/project_id":       project.ID,
-		"maestro/project_name":     project.Name,
-		"maestro/workspace_path":   workspace,
-	}
-}
-
-func makeApprovalPromptRequest(project *kanban.Project, issue *kanban.Issue, workspace, toolUseID, toolName string, input map[string]interface{}) mcpapi.CallToolRequest {
-	return mcpapi.CallToolRequest{
-		Params: mcpapi.CallToolParams{
-			Name: "approval_prompt",
-			Arguments: map[string]interface{}{
-				"tool_name":   toolName,
-				"input":       input,
-				"tool_use_id": toolUseID,
-			},
-			Meta: mcpapi.NewMetaFromMap(func() map[string]interface{} {
-				meta := approvalPromptMeta(project, issue, workspace)
-				meta["claudecode/toolUseId"] = toolUseID
-				return meta
-			}()),
-		},
-	}
-}
-
-func TestApprovalPromptHandleUsesFallbackToolUseIDWithoutExplicitId(t *testing.T) {
-	server, provider, project, issue, workspace := newApprovalPromptTestServer(t)
-	request := mcpapi.CallToolRequest{
-		Params: mcpapi.CallToolParams{
-			Name: "approval_prompt",
-			Arguments: map[string]interface{}{
-				"tool_name": "Bash",
-				"input": map[string]interface{}{
-					"command": "whoami",
-				},
-			},
-			Meta: mcpapi.NewMetaFromMap(approvalPromptMeta(project, issue, workspace)),
-		},
-	}
-
-	resultCh := make(chan *mcpapi.CallToolResult, 1)
-	errCh := make(chan error, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	go func() {
-		result, err := server.handleApprovalPrompt(ctx, request)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		resultCh <- result
-	}()
-
-	interaction := <-provider.pendingCh
-	responder := <-provider.responderCh
-	expected := approvalPromptFallbackToolUseID(approvalPromptIssueContext{
-		IssueID:         issue.ID,
-		IssueIdentifier: issue.Identifier,
-		IssueTitle:      issue.Title,
-		ProjectID:       project.ID,
-		ProjectName:     project.Name,
-		WorkspacePath:   workspace,
-	}, "Bash", map[string]interface{}{"command": "whoami"})
-	if interaction.ID != approvalPromptInteractionID(expected) {
-		t.Fatalf("unexpected fallback interaction id: got %q want %q", interaction.ID, approvalPromptInteractionID(expected))
-	}
-	if err := responder(context.Background(), interaction.ID, agentruntime.PendingInteractionResponse{Decision: "allow"}); err != nil {
-		t.Fatalf("responder failed: %v", err)
-	}
-
-	result := awaitApprovalPromptResult(t, resultCh, errCh)
-	if result.IsError {
-		t.Fatalf("expected fallback prompt to succeed, got %#v", result)
-	}
-		payload := decodeApprovalPromptResult(t, result)
-		if got := payload["behavior"]; got != "allow" {
-			t.Fatalf("unexpected behavior: %#v", payload)
-		}
-	if got := interaction.Metadata["tool_use_id"]; got != expected {
-		t.Fatalf("expected fallback tool-use id metadata, got %#v", got)
-	}
-	requestMeta, ok := interaction.Metadata["request_meta"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected request_meta metadata, got %#v", interaction.Metadata["request_meta"])
-	}
-	if got := requestMeta["claudecode/toolUseId"]; got != expected {
-		t.Fatalf("expected fallback claudecode/toolUseId metadata, got %#v", got)
-	}
-	if got := requestMeta["claude/toolUseId"]; got != expected {
-		t.Fatalf("expected fallback claude/toolUseId metadata, got %#v", got)
-	}
-}
-
-func TestApprovalPromptClassifyAndCloneHelpers(t *testing.T) {
-	if got := cloneJSONValue(nil); got != nil {
-		t.Fatalf("expected nil clone to remain nil, got %#v", got)
-	}
-
-	original := map[string]interface{}{
-		"command": "pwd",
-		"nested": map[string]interface{}{
-			"list": []interface{}{"a", map[string]interface{}{"b": "c"}},
-		},
-	}
-	cloned := cloneJSONValue(original).(map[string]interface{})
-	original["command"] = "changed"
-	originalNested := original["nested"].(map[string]interface{})
-	originalNested["list"].([]interface{})[1].(map[string]interface{})["b"] = "changed"
-	if cloned["command"] != "pwd" {
-		t.Fatalf("expected clone to preserve original command, got %#v", cloned["command"])
-	}
-	clonedNested := cloned["nested"].(map[string]interface{})
-	if clonedNested["list"].([]interface{})[1].(map[string]interface{})["b"] != "c" {
-		t.Fatalf("expected deep clone to keep nested value, got %#v", clonedNested)
-	}
-
-	cloneMap := cloneJSONMap(map[string]interface{}{"list": []interface{}{1, map[string]interface{}{"value": "keep"}}})
-	if !reflect.DeepEqual(cloneMap["list"].([]interface{})[1].(map[string]interface{}), map[string]interface{}{"value": "keep"}) {
-		t.Fatalf("unexpected cloned map: %#v", cloneMap)
-	}
+func TestApprovalPromptCloneHelpers(t *testing.T) {
 	if got := cloneJSONMap(nil); got != nil {
 		t.Fatalf("expected nil map clone to stay nil, got %#v", got)
 	}
+	if got := cloneJSONMap(map[string]interface{}{}); got != nil {
+		t.Fatalf("expected empty map clone to return nil, got %#v", got)
+	}
 
-	_, _, markdown := summarizeApprovalPrompt("Bash", "command", map[string]interface{}{"command": "pwd"}, "workspace")
-	if !strings.Contains(markdown, "### Claude permission prompt") {
-		t.Fatalf("unexpected summary markdown: %s", markdown)
+	original := map[string]interface{}{
+		"nested": map[string]interface{}{
+			"slice": []interface{}{
+				map[string]interface{}{"k": "v"},
+			},
+		},
+	}
+	cloned, ok := cloneJSONValue(original).(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected cloned value to be a map, got %T", cloneJSONValue(original))
+	}
+	if !reflect.DeepEqual(cloned, original) {
+		t.Fatalf("expected clone to match original, got %#v want %#v", cloned, original)
+	}
+
+	original["nested"].(map[string]interface{})["slice"].([]interface{})[0].(map[string]interface{})["k"] = "changed"
+	if got := cloned["nested"].(map[string]interface{})["slice"].([]interface{})[0].(map[string]interface{})["k"]; got != "v" {
+		t.Fatalf("expected nested clone to be isolated, got %#v", got)
+	}
+
+	list := []interface{}{"value", map[string]interface{}{"k": "v"}}
+	clonedList, ok := cloneJSONValue(list).([]interface{})
+	if !ok {
+		t.Fatalf("expected cloned list to be a slice, got %T", cloneJSONValue(list))
+	}
+	if !reflect.DeepEqual(clonedList, list) {
+		t.Fatalf("expected cloned list to match original, got %#v want %#v", clonedList, list)
+	}
+	list[1].(map[string]interface{})["k"] = "changed"
+	if got := clonedList[1].(map[string]interface{})["k"]; got != "v" {
+		t.Fatalf("expected cloned list to be isolated, got %#v", got)
+	}
+
+	if got := cloneJSONValue(nil); got != nil {
+		t.Fatalf("expected nil clone value to stay nil, got %#v", got)
 	}
 }

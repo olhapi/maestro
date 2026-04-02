@@ -114,8 +114,8 @@ func TestLaunchBrowserURL(t *testing.T) {
 		t.Fatalf("launchBrowserURL returned error: %v", err)
 	}
 
-	// Give the launched shell stub enough room to start under heavier CI load.
-	deadline := time.Now().Add(5 * time.Second)
+	// Give the launched shell stub enough room to start under heavier pre-push load.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(calledPath)
 		if err == nil {

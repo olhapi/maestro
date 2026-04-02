@@ -401,11 +401,24 @@ func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
 			wantReason: "runtime command sets `--permission-mode bypassPermissions`",
 		},
 		{
+			name:       "permission auto",
+			command:    "claude --permission-mode auto",
+			wantCheck:  "claude_session_bare_mode",
+			wantReason: "runtime command sets `--permission-mode auto`",
+		},
+		{
 			name:         "settings default mode",
 			command:      "claude",
 			settingsJSON: `{"permissions":{"defaultMode":"bypassPermissions"}}`,
 			wantCheck:    "claude_session_bare_mode",
 			wantReason:   "Claude settings set `permissions.defaultMode: bypassPermissions`",
+		},
+		{
+			name:         "settings auto mode",
+			command:      "claude",
+			settingsJSON: `{"permissions":{"defaultMode":"auto"}}`,
+			wantCheck:    "claude_session_bare_mode",
+			wantReason:   "Claude settings set `permissions.defaultMode: auto`",
 		},
 		{
 			name:         "additional directories",
@@ -445,6 +458,74 @@ func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	npxPath := filepath.Join(tmp, "npx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"--version\" ]; then\n" +
+		"  echo \"unexpected version probe args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"printf 'codex-cli 9.9.9\\n'\n"
+	if err := os.WriteFile(npxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workflow := `---
+tracker:
+  kind: kanban
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: npx -y @openai/codex@0.118.0 app-server
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: codex exec
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if res.Checks["runtime_codex_appserver_version"] != "warn" {
+		t.Fatalf("expected codex warning, got %+v", res)
+	}
+	foundWarning := false
+	for _, warning := range res.Warnings {
+		if strings.Contains(warning, "expected "+codexschema.SupportedVersion+", found 9.9.9") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("unexpected warnings: %+v", res.Warnings)
 	}
 }
 

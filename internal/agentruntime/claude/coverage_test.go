@@ -308,6 +308,9 @@ func TestBuildClaudeCommandRequiresDBPathAndQuotesCommand(t *testing.T) {
 	if !strings.Contains(command, "--mcp-config") || !strings.Contains(command, "--strict-mcp-config") {
 		t.Fatalf("expected command to include bridge flags, got %q", command)
 	}
+	if !strings.Contains(command, "--settings") {
+		t.Fatalf("expected command to include the session overlay, got %q", command)
+	}
 	if got := shellQuoteArg(""); got != "''" {
 		t.Fatalf("expected empty shell quote, got %q", got)
 	}

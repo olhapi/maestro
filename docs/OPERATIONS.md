@@ -124,6 +124,8 @@ Operational behavior:
 
 `maestro mcp` does not start a separate server. It discovers the live daemon for the same `--db`, authenticates to the private MCP endpoint, and bridges that session over stdio for MCP clients.
 
+`codex.approval_policy: never` only disables Maestro-managed app-server approvals. It does not override a client's own trust gate for external MCP tools, so Codex can still prompt on `maestro mcp` calls when the local MCP configuration or advertised tool metadata requires review.
+
 Operationally:
 
 - start `maestro run` first
@@ -165,6 +167,12 @@ Each extension entry supports:
 - `name`: required unique tool name
 - `description`: required tool description
 - `command`: required shell command to execute
+- `annotations`: optional MCP tool metadata object
+- `annotations.title`: optional human-readable title
+- `annotations.read_only_hint`: optional boolean read-only hint
+- `annotations.destructive_hint`: optional boolean destructive hint
+- `annotations.idempotent_hint`: optional boolean idempotent hint
+- `annotations.open_world_hint`: optional boolean open-world hint
 - `timeout_sec`: optional command timeout, default `15`
 - `allowed`: optional boolean policy gate
 - `working_dir`: optional working directory for the command
@@ -179,6 +187,12 @@ Example:
     "name": "echo_issue",
     "description": "Print the args object for debugging",
     "command": "jq -r . <<< \"$MAESTRO_ARGS_JSON\"",
+    "annotations": {
+      "read_only_hint": true,
+      "destructive_hint": false,
+      "idempotent_hint": true,
+      "open_world_hint": false
+    },
     "timeout_sec": 10,
     "require_args": true
   }

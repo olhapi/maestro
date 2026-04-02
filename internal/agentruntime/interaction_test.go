@@ -36,6 +36,12 @@ func TestPendingInteractionCloneDeepCopiesNestedFields(t *testing.T) {
 			Message:    "Need input",
 			RequestedSchema: map[string]interface{}{
 				"type": "object",
+				"properties": map[string]interface{}{
+					"profile": map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					},
+				},
 			},
 			Meta: map[string]interface{}{
 				"channel": "browser",
@@ -74,6 +80,21 @@ func TestPendingInteractionCloneDeepCopiesNestedFields(t *testing.T) {
 	}
 	if interaction.Elicitation.RequestedSchema["type"] != "object" {
 		t.Fatalf("expected elicitation schema clone to be independent, got %+v", interaction.Elicitation)
+	}
+	properties, ok := interaction.Elicitation.RequestedSchema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected requested schema properties to stay an object, got %#v", interaction.Elicitation.RequestedSchema["properties"])
+	}
+	profile, ok := properties["profile"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested requested schema property to stay an object, got %#v", properties["profile"])
+	}
+	nestedProperties, ok := profile["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested empty properties object to survive clone, got %#v", profile["properties"])
+	}
+	if len(nestedProperties) != 0 {
+		t.Fatalf("expected nested properties to stay empty, got %#v", nestedProperties)
 	}
 	if interaction.Elicitation.Meta.(map[string]interface{})["channel"] != "browser" {
 		t.Fatalf("expected elicitation meta clone to be independent, got %+v", interaction.Elicitation.Meta)

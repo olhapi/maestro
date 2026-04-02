@@ -120,6 +120,13 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("expected MCP config file to exist before close, got %v", err)
 	}
+	settingsPath := argValueAfter(t, first, "--settings")
+	if settingsPath == "" {
+		t.Fatalf("expected settings overlay path in args, got %#v", first)
+	}
+	if _, err := os.Stat(settingsPath); err != nil {
+		t.Fatalf("expected settings overlay file to exist before close, got %v", err)
+	}
 
 	if len(activities) != 2 {
 		t.Fatalf("unexpected Claude activity count: %#v", activities)
@@ -133,6 +140,9 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Fatalf("expected MCP config file to be cleaned up, got %v", err)
+	}
+	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+		t.Fatalf("expected settings overlay file to be cleaned up, got %v", err)
 	}
 }
 
@@ -350,6 +360,34 @@ func TestStdioRuntimeCloseInterruptsActiveTurn(t *testing.T) {
 	}
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Fatalf("expected MCP config file to be removed on close, got %v", err)
+	}
+	settingsPath := argValueAfter(t, invocations[0], "--settings")
+	if settingsPath == "" {
+		t.Fatalf("expected settings overlay path in args, got %#v", invocations[0])
+	}
+	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+		t.Fatalf("expected settings overlay file to be removed on close, got %v", err)
+	}
+}
+
+func TestStdioRuntimeIgnoresStaleTurnCancellation(t *testing.T) {
+	client := &stdioClient{
+		activeTurn: &runningTurn{
+			pid:  0,
+			done: make(chan struct{}),
+		},
+	}
+
+	staleDone := make(chan struct{})
+	client.requestActiveTurnStop(staleDone)
+
+	if client.activeTurn == nil || client.activeTurn.interrupted {
+		t.Fatalf("expected stale cancellation to leave the active turn untouched, got %#v", client.activeTurn)
+	}
+
+	client.requestActiveTurnStop(client.activeTurn.done)
+	if client.activeTurn == nil || !client.activeTurn.interrupted {
+		t.Fatalf("expected matching cancellation to interrupt the active turn, got %#v", client.activeTurn)
 	}
 }
 

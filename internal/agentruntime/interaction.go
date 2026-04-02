@@ -199,7 +199,7 @@ func cloneJSONValue(value interface{}) interface{} {
 }
 
 func cloneJSONMap(in map[string]interface{}) map[string]interface{} {
-	if len(in) == 0 {
+	if in == nil {
 		return nil
 	}
 	out := make(map[string]interface{}, len(in))
