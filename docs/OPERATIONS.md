@@ -142,6 +142,64 @@ Projects use the local tracker only:
 
 If you are importing another tracker, create local Maestro projects and issues first, then let the orchestrator supervise those local records.
 
+## Claude Runtime Runbook
+
+The supported Claude runtime entry in `WORKFLOW.md` is:
+
+- `provider: claude`
+- `transport: stdio`
+- `command: claude`
+- `approval_policy: never`
+
+The dashboard and API surface the runtime identity as `runtime_name`, `runtime_provider`, `runtime_transport`, `runtime_auth_source`, `pending_interaction_state`, and `stop_reason`. Use those fields to distinguish Claude and Codex runs. `session_source` only tells you whether the row came from a live snapshot or a persisted snapshot.
+
+### Ambient Auth
+
+`maestro verify` reports Claude auth readiness through three checks:
+
+- `claude_auth_source`: the effective auth source
+- `claude_auth_source_detail`: provider-specific detail when available
+- `claude_auth_source_status`: `ok`, `warn`, or `fail`
+
+Common values mean:
+
+- `OAuth` means Claude Code is logged in with an interactive session.
+- `cloud provider` means Claude is using a managed cloud provider such as Bedrock, Vertex, or Foundry. The specific provider appears in `claude_auth_source_detail` when available.
+- `ANTHROPIC_AUTH_TOKEN` means the runtime is using a token-based environment credential.
+- `warn` means Maestro found a usable source but wants an operator to confirm it.
+- `fail` means the runtime is not ready for execution.
+
+### Preflight
+
+Before starting or resuming Claude work, run `maestro verify` in the repo root and confirm:
+
+- `claude_version_status`
+- `claude_auth_source_status`
+- `claude_session_status`
+- `claude_session_bare_mode`
+- `claude_session_additional_directories`
+- `runtime_claude`
+
+If `claude_session_bare_mode` fails, remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, or the corresponding config entries before retrying.
+
+If `claude_session_additional_directories` fails, remove `additionalDirectories` or `--add-dir` so the session stays scoped to the Maestro workspace.
+
+### Stale Workspace Cleanup
+
+If the dashboard or API reports `workspace_recovery.status = required`, treat the workspace as dirty rather than retrying blindly. Check the worktree for in-progress Git operations, clear stale build artifacts only after confirming nothing is still running, and retry once the workspace is clean. `git status` and the recovery message should be the source of truth.
+
+### Supported Session Invariants
+
+Supported session records should always let operators answer:
+
+- which issue and issue identifier the run belongs to
+- which runtime executed it
+- which transport and auth source were effective
+- whether the run is waiting on approval, user input, elicitation, or an alert
+- why the session stopped
+
+The dashboard exposes that information through `runtime_name`, `runtime_provider`, `runtime_transport`, `runtime_auth_source`, `pending_interaction_state`, and `stop_reason`.
+
 ## Workflow bootstrap and checks
 
 `WORKFLOW.md` is required for orchestration. The commands treat it differently:

@@ -48,16 +48,21 @@ func TestIssueForInterruptResolvesByIdentifierAndID(t *testing.T) {
 }
 
 func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
+	store, _ := setupDashboardServerTest(t, testProvider{})
 	now := time.Date(2026, 3, 18, 13, 30, 0, 0, time.UTC)
 	snapshot := kanban.ExecutionSessionSnapshot{
-		IssueID:    "issue-1",
-		Identifier: "ISS-1",
-		Phase:      "implementation",
-		Attempt:    2,
-		RunKind:    "retry_paused",
-		Error:      "plan_approval_pending",
-		StopReason: "plan_approval_pending",
-		UpdatedAt:  now,
+		IssueID:           "issue-1",
+		Identifier:        "ISS-1",
+		Phase:             "implementation",
+		Attempt:           2,
+		RunKind:           "retry_paused",
+		RuntimeName:       "claude",
+		RuntimeProvider:   "claude",
+		RuntimeTransport:  "stdio",
+		RuntimeAuthSource: "OAuth",
+		Error:             "plan_approval_pending",
+		StopReason:        "plan_approval_pending",
+		UpdatedAt:         now,
 		AppSession: agentruntime.Session{
 			IssueID:         "issue-1",
 			IssueIdentifier: "ISS-1",
@@ -67,10 +72,17 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 			TotalTokens:     42,
 			TurnsStarted:    3,
 			TurnsCompleted:  1,
+			Metadata: map[string]interface{}{
+				"provider":           "claude",
+				"transport":          "stdio",
+				"auth_source":        "OAuth",
+				"claude_stop_reason": "plan_approval_pending",
+			},
 		},
 	}
 
 	entry := buildPersistedSessionFeedEntry(
+		store,
 		snapshot,
 		observability.RetryEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
 		observability.PausedEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
@@ -91,9 +103,16 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 	if entry.TotalTokens != 42 || entry.TurnsStarted != 3 || entry.TurnsCompleted != 1 {
 		t.Fatalf("unexpected session counters: %+v", entry)
 	}
+	if entry.RuntimeName != "claude" || entry.RuntimeProvider != "claude" || entry.RuntimeTransport != "stdio" || entry.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("unexpected runtime surface metadata: %+v", entry)
+	}
+	if entry.StopReason != "plan_approval_pending" {
+		t.Fatalf("unexpected stop reason: %+v", entry)
+	}
 }
 
 func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
+	store, _ := setupDashboardServerTest(t, testProvider{})
 	now := time.Date(2026, 3, 18, 13, 30, 0, 0, time.UTC)
 	revisionRequestedAt := now.Add(2 * time.Minute)
 	snapshot := kanban.ExecutionSessionSnapshot{
@@ -118,6 +137,7 @@ func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
 	}
 
 	entry := buildPersistedSessionFeedEntry(
+		store,
 		snapshot,
 		observability.RetryEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
 		observability.PausedEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},

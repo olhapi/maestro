@@ -61,6 +61,13 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
+	var runtimeSession *agentruntime.Session
+	if liveSession != nil {
+		runtimeSession = liveSession
+	} else if persistedSession != nil {
+		runtimeSession = &persistedSession.AppSession
+	}
+	runtimeSurface := kanban.ResolveRuntimeSurface(store, issue, persistedSession, runtimeSession, pendingInterrupt, planning)
 	if paused == nil {
 		paused = findPersistedPausedEntry(events)
 	}
@@ -137,6 +144,24 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		"debug_activity_groups": debugActivityGroups,
 		"runtime_available":     runtimeAvailable,
 		"agent_commands":        commands,
+	}
+	if runtimeSurface.RuntimeName != "" {
+		payload["runtime_name"] = runtimeSurface.RuntimeName
+	}
+	if runtimeSurface.RuntimeProvider != "" {
+		payload["runtime_provider"] = runtimeSurface.RuntimeProvider
+	}
+	if runtimeSurface.RuntimeTransport != "" {
+		payload["runtime_transport"] = runtimeSurface.RuntimeTransport
+	}
+	if runtimeSurface.RuntimeAuthSource != "" {
+		payload["runtime_auth_source"] = runtimeSurface.RuntimeAuthSource
+	}
+	if runtimeSurface.PendingInteractionState != "" {
+		payload["pending_interaction_state"] = runtimeSurface.PendingInteractionState
+	}
+	if runtimeSurface.StopReason != "" {
+		payload["stop_reason"] = runtimeSurface.StopReason
 	}
 	if planning != nil {
 		payload["planning"] = planning

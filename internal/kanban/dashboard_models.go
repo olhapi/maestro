@@ -309,4 +309,5 @@ type SessionFeedEntry struct {
 	Terminal         bool                             `json:"terminal"`
 	TerminalReason   string                           `json:"terminal_reason,omitempty"`
 	Error            string                           `json:"error,omitempty"`
+	RuntimeSurface
 }

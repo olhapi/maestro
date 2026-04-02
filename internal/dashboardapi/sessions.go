@@ -78,6 +78,7 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 			pendingByIdentifier,
 		)
 		entry := buildLiveSessionFeedEntry(
+			store,
 			identifier,
 			session,
 			runningByIdentifier[identifier],
@@ -105,6 +106,7 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 		out = append(
 			out,
 			buildPersistedSessionFeedEntry(
+				store,
 				snapshot,
 				retryByIdentifier[identifier],
 				pausedByIdentifier[identifier],
@@ -282,6 +284,7 @@ func planningHasPendingRevision(planning *kanban.IssuePlanning) bool {
 }
 
 func buildLiveSessionFeedEntry(
+	store *kanban.Store,
 	identifier string,
 	session agentruntime.Session,
 	running observability.RunningEntry,
@@ -345,6 +348,7 @@ func buildLiveSessionFeedEntry(
 			}
 		}
 	}
+	runtimeSurface := kanban.ResolveRuntimeSurface(store, issue, nil, &session, pendingInterrupt, planning)
 
 	return kanban.SessionFeedEntry{
 		IssueID:          firstNonEmpty(session.IssueID, running.IssueID),
@@ -367,10 +371,12 @@ func buildLiveSessionFeedEntry(
 		TurnsCompleted:   session.TurnsCompleted,
 		Terminal:         session.Terminal,
 		TerminalReason:   session.TerminalReason,
+		RuntimeSurface:   runtimeSurface,
 	}
 }
 
 func buildPersistedSessionFeedEntry(
+	store *kanban.Store,
 	snapshot kanban.ExecutionSessionSnapshot,
 	retry observability.RetryEntry,
 	paused observability.PausedEntry,
@@ -452,6 +458,7 @@ func buildPersistedSessionFeedEntry(
 		failureClass = ""
 		errorText = ""
 	}
+	runtimeSurface := kanban.ResolveRuntimeSurface(store, issue, &snapshot, &session, nil, planning)
 
 	return kanban.SessionFeedEntry{
 		IssueID:         snapshot.IssueID,
@@ -475,6 +482,7 @@ func buildPersistedSessionFeedEntry(
 		Terminal:        session.Terminal,
 		TerminalReason:  session.TerminalReason,
 		Error:           errorText,
+		RuntimeSurface:  runtimeSurface,
 	}
 }
 

@@ -880,7 +880,7 @@ export function GlobalInterruptPanel({
                               {selectedInterrupt.elicitation?.message || 'MCP elicitation'}
                             </p>
                             <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                              Review the requested form below, then accept to send the structured response back to Codex.
+                              Review the requested form below, then accept to send the structured response back to the requesting agent.
                             </p>
                           </div>
                           {selectedInterrupt.elicitation?.url ? (

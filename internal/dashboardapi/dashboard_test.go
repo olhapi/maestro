@@ -15,7 +15,7 @@ import (
 )
 
 func TestDashboardWorkEpicsAndRuntimeEndpointsExposeCurrentData(t *testing.T) {
-	srv, project, epic := setupDashboardCoverageFixture(t)
+	_, srv, project, epic := setupDashboardCoverageFixture(t)
 
 	workResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/work", nil)
 	if workResp.StatusCode != http.StatusOK {
@@ -272,7 +272,7 @@ func TestDashboardHelperAndDecoderCoverage(t *testing.T) {
 	})
 }
 
-func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanban.Project, *kanban.Epic) {
+func setupDashboardCoverageFixture(t *testing.T) (*kanban.Store, *inprocessserver.Server, *kanban.Project, *kanban.Epic) {
 	t.Helper()
 
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
@@ -379,10 +379,16 @@ func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanb
 	}
 	t.Cleanup(srv.Close)
 
-	return srv, project, epic
+	return store, srv, project, epic
 }
 
 func TestDashboardScopeAndFeedHelpers(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
 	if got := projectScopeError("/repo", "/repo"); got != "" {
 		t.Fatalf("expected matching scopes to be allowed, got %q", got)
 	}
@@ -460,6 +466,7 @@ func TestDashboardScopeAndFeedHelpers(t *testing.T) {
 		UpdatedAt: now,
 	}
 	blocked := buildLiveSessionFeedEntry(
+		store,
 		"ISS-1",
 		agentruntime.Session{
 			IssueID:         "issue-1",
@@ -510,6 +517,7 @@ func TestDashboardScopeAndFeedHelpers(t *testing.T) {
 	}
 
 	revisionQueued := buildLiveSessionFeedEntry(
+		store,
 		"ISS-2",
 		agentruntime.Session{
 			IssueIdentifier: "ISS-2",

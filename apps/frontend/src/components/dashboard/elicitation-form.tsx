@@ -728,7 +728,7 @@ export function ElicitationForm({
     !disabled && validation.error === '' && (analysis.state !== 'unsupported' || manualContent.trim().length > 0)
   const message =
     analysis.state === 'ready'
-      ? 'Fill in the requested fields, then accept to send the structured response back to Codex.'
+      ? 'Fill in the requested fields, then accept to send the structured response back to the requesting agent.'
       : analysis.state === 'empty'
         ? 'This request only needs confirmation. Accept to continue or decline to stop.'
         : 'This request uses a schema shape that Maestro does not render yet. Paste the JSON payload to continue.'

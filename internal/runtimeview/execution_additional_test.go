@@ -59,13 +59,18 @@ func TestIssueExecutionPayloadIncludesPersistedSessionAndPlanFields(t *testing.T
 	}
 
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		Phase:      "review",
-		Attempt:    3,
-		RunKind:    "run_failed",
-		Error:      "turn_input_required",
-		UpdatedAt:  now,
+		IssueID:           issue.ID,
+		Identifier:        issue.Identifier,
+		Phase:             "review",
+		Attempt:           3,
+		RunKind:           "run_failed",
+		RuntimeName:       "claude",
+		RuntimeProvider:   "claude",
+		RuntimeTransport:  "stdio",
+		RuntimeAuthSource: "OAuth",
+		Error:             "turn_input_required",
+		StopReason:        "end_turn",
+		UpdatedAt:         now,
 		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
@@ -74,6 +79,12 @@ func TestIssueExecutionPayloadIncludesPersistedSessionAndPlanFields(t *testing.T
 			TurnID:          "turn-3",
 			LastEvent:       "turn.completed",
 			Terminal:        true,
+			Metadata: map[string]interface{}{
+				"provider":           "claude",
+				"transport":          "stdio",
+				"auth_source":        "OAuth",
+				"claude_stop_reason": "end_turn",
+			},
 		},
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession: %v", err)
@@ -141,6 +152,12 @@ func TestIssueExecutionPayloadIncludesPersistedSessionAndPlanFields(t *testing.T
 	}
 	if _, ok := payload["plan_revision"]; !ok {
 		t.Fatalf("expected plan revision payload, got %#v", payload)
+	}
+	if payload["runtime_name"] != "claude" || payload["runtime_provider"] != "claude" || payload["runtime_transport"] != "stdio" || payload["runtime_auth_source"] != "OAuth" {
+		t.Fatalf("unexpected runtime metadata payload: %#v", payload)
+	}
+	if payload["pending_interaction_state"] != "approval" || payload["stop_reason"] != "end_turn" {
+		t.Fatalf("unexpected runtime state payload: %#v", payload)
 	}
 }
 

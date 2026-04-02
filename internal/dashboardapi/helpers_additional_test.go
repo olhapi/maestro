@@ -57,7 +57,16 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 			LastTimestamp:   now,
 			TotalTokens:     0,
 			TurnsStarted:    1,
+			Metadata: map[string]interface{}{
+				"provider":           "claude",
+				"transport":          "stdio",
+				"auth_source":        "OAuth",
+				"claude_stop_reason": "end_turn",
+			},
 		},
+	}
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"runtime_name": "claude-stdio"}); err != nil {
+		t.Fatalf("UpdateIssue runtime_name: %v", err)
 	}
 
 	alert := agentruntime.PendingInteraction{
@@ -107,6 +116,12 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 	if entries[0].PendingInterrupt == nil || entries[0].PendingInterrupt.ID != alert.ID {
 		t.Fatalf("expected pending interrupt to be included, got %#v", entries[0].PendingInterrupt)
 	}
+	if entries[0].RuntimeName != "claude-stdio" || entries[0].RuntimeProvider != "claude" || entries[0].RuntimeTransport != "stdio" || entries[0].RuntimeAuthSource != "OAuth" {
+		t.Fatalf("expected live runtime metadata to be populated, got %#v", entries[0])
+	}
+	if entries[0].PendingInteractionState != "alert" || entries[0].StopReason != "end_turn" {
+		t.Fatalf("expected live pending state and stop reason, got %#v", entries[0])
+	}
 
 	provider.pendingInterruptsByIssue = nil
 	entries, err = buildSessionFeedEntries(store, provider, liveSessions)
@@ -118,6 +133,9 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 	}
 	if entries[0].Status != "revision_queued" || entries[0].LastMessage != queuedPlanRevisionText {
 		t.Fatalf("expected revision queued live entry, got %#v", entries[0])
+	}
+	if entries[0].PendingInteractionState != "revision_requested" {
+		t.Fatalf("expected revision requested pending state, got %#v", entries[0])
 	}
 
 	draftingAt := now.Add(-time.Minute)
@@ -243,7 +261,7 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			entry := buildPersistedSessionFeedEntry(tc.snapshot, tc.retry, tc.paused, tc.issue, tc.planning, issue.Title)
+			entry := buildPersistedSessionFeedEntry(store, tc.snapshot, tc.retry, tc.paused, tc.issue, tc.planning, issue.Title)
 			if entry.Status != tc.want {
 				t.Fatalf("expected %s status, got %#v", tc.want, entry)
 			}
@@ -298,7 +316,7 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
-				entry := buildPersistedSessionFeedEntry(tc.snapshot, tc.retry, tc.paused, &kanban.Issue{}, nil, issue.Title)
+				entry := buildPersistedSessionFeedEntry(store, tc.snapshot, tc.retry, tc.paused, &kanban.Issue{}, nil, issue.Title)
 				if entry.Status != tc.want {
 					t.Fatalf("expected %s status, got %#v", tc.want, entry)
 				}
@@ -414,6 +432,7 @@ func TestDashboardSessionFeedHelperBranches(t *testing.T) {
 
 	t.Run("completed terminal fallback fields", func(t *testing.T) {
 		entry := buildPersistedSessionFeedEntry(
+			store,
 			kanban.ExecutionSessionSnapshot{
 				IssueID:    issue.ID,
 				Identifier: issue.Identifier,

@@ -1021,6 +1021,9 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue failed failed: %v", err)
 	}
+	if err := store.UpdateIssue(liveIssue.ID, map[string]interface{}{"runtime_name": "claude-stdio"}); err != nil {
+		t.Fatalf("UpdateIssue live runtime_name failed: %v", err)
+	}
 
 	for _, snapshot := range []kanban.ExecutionSessionSnapshot{
 		{
@@ -1075,12 +1078,17 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 			},
 		},
 		{
-			IssueID:    completedIssue.ID,
-			Identifier: completedIssue.Identifier,
-			Phase:      "review",
-			Attempt:    1,
-			RunKind:    "run_completed",
-			UpdatedAt:  now.Add(-3 * time.Minute),
+			IssueID:           completedIssue.ID,
+			Identifier:        completedIssue.Identifier,
+			Phase:             "review",
+			Attempt:           1,
+			RunKind:           "run_completed",
+			RuntimeName:       "codex-appserver",
+			RuntimeProvider:   "codex",
+			RuntimeTransport:  "app_server",
+			RuntimeAuthSource: "cli",
+			StopReason:        "end_turn",
+			UpdatedAt:         now.Add(-3 * time.Minute),
 			AppSession: agentruntime.Session{
 				IssueID:         completedIssue.ID,
 				IssueIdentifier: completedIssue.Identifier,
@@ -1090,6 +1098,12 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 				LastMessage:     "Completed cleanly",
 				Terminal:        true,
 				TerminalReason:  "turn.completed",
+				Metadata: map[string]interface{}{
+					"provider":    "codex",
+					"transport":   "app_server",
+					"auth_source": "cli",
+					"stop_reason": "end_turn",
+				},
 			},
 		},
 		{
@@ -1238,6 +1252,9 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 	if got := findSessionFeedEntry(t, entries, liveIssue.Identifier)["source"]; got != "live" {
 		t.Fatalf("expected live source for duplicate issue, got %#v", got)
 	}
+	if got := findSessionFeedEntry(t, entries, liveIssue.Identifier)["runtime_name"]; got != "claude-stdio" {
+		t.Fatalf("expected live runtime name, got %#v", got)
+	}
 	if got := findSessionFeedEntry(t, entries, liveAlphaIssue.Identifier)["issue_title"]; got != liveAlphaIssue.Title {
 		t.Fatalf("expected issue title for live alpha entry, got %#v", got)
 	}
@@ -1246,6 +1263,9 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 	}
 	if got := findSessionFeedEntry(t, entries, completedIssue.Identifier)["status"]; got != "completed" {
 		t.Fatalf("expected completed status, got %#v", got)
+	}
+	if got := findSessionFeedEntry(t, entries, completedIssue.Identifier)["stop_reason"]; got != "end_turn" {
+		t.Fatalf("expected completed stop reason, got %#v", got)
 	}
 	if got := findSessionFeedEntry(t, entries, interruptedIssue.Identifier)["status"]; got != "interrupted" {
 		t.Fatalf("expected interrupted status, got %#v", got)
@@ -1296,19 +1316,30 @@ func TestIssueExecutionEndpointReturnsPausedRetryMetadata(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		Phase:      "implementation",
-		Attempt:    3,
-		RunKind:    "retry_paused",
-		Error:      "stall_timeout",
-		UpdatedAt:  now,
+		IssueID:           issue.ID,
+		Identifier:        issue.Identifier,
+		Phase:             "implementation",
+		Attempt:           3,
+		RunKind:           "retry_paused",
+		RuntimeName:       "claude",
+		RuntimeProvider:   "claude",
+		RuntimeTransport:  "stdio",
+		RuntimeAuthSource: "OAuth",
+		Error:             "stall_timeout",
+		StopReason:        "end_turn",
+		UpdatedAt:         now,
 		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-paused-turn-paused",
 			LastEvent:       "item.started",
 			LastTimestamp:   now,
+			Metadata: map[string]interface{}{
+				"provider":           "claude",
+				"transport":          "stdio",
+				"auth_source":        "OAuth",
+				"claude_stop_reason": "end_turn",
+			},
 		},
 	}); err != nil {
 		t.Fatalf("UpsertIssueExecutionSession failed: %v", err)
@@ -1341,6 +1372,12 @@ func TestIssueExecutionEndpointReturnsPausedRetryMetadata(t *testing.T) {
 	}
 	if payload["consecutive_failures"].(float64) != 3 || payload["pause_threshold"].(float64) != 3 {
 		t.Fatalf("unexpected paused streak payload: %#v", payload)
+	}
+	if payload["runtime_name"] != "claude" || payload["runtime_provider"] != "claude" || payload["runtime_transport"] != "stdio" || payload["runtime_auth_source"] != "OAuth" {
+		t.Fatalf("unexpected runtime surface payload: %#v", payload)
+	}
+	if payload["stop_reason"] != "end_turn" {
+		t.Fatalf("unexpected stop reason payload: %#v", payload)
 	}
 }
 
