@@ -60,7 +60,7 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 	waitForCondition(t, time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(sessions) >= 2 && len(activities) >= 4
+		return len(sessions) >= 2 && len(activities) >= 2
 	})
 
 	if started.SessionID != "claude-session-1" || started.ThreadID != "claude-session-1" {
@@ -116,7 +116,10 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 		t.Fatalf("expected MCP config file to exist before close, got %v", err)
 	}
 
-	if !hasActivityType(activities, "turn.started") || !hasActivityType(activities, "item.agentMessage.delta") || !hasActivityType(activities, "item.completed") || !hasActivityType(activities, "turn.completed") {
+	if len(activities) != 2 {
+		t.Fatalf("unexpected Claude activity count: %#v", activities)
+	}
+	if !hasActivityType(activities, "item.completed") || !hasActivityType(activities, "turn.completed") {
 		t.Fatalf("unexpected Claude activity stream: %#v", activities)
 	}
 

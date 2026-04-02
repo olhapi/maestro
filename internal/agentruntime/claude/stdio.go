@@ -256,12 +256,7 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 	}
 
 	if sessionID := strings.TrimSpace(stringFromMap(raw, "session_id")); sessionID != "" {
-		session := c.recordClaudeSessionID(sessionID)
-		if onStarted != nil && !state.sessionStarted {
-			onStarted(&session)
-			state.sessionStarted = true
-		}
-		c.emitSessionUpdate(session)
+		c.recordClaudeSessionID(sessionID)
 	}
 
 	switch strings.TrimSpace(asString(raw["type"])) {
@@ -283,7 +278,7 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 		if phase := assistantMessagePhase(message); phase != "" {
 			state.itemPhase = phase
 		}
-		c.ensureClaudeTurnStarted(state)
+		c.ensureClaudeTurnStarted(state, onStarted)
 	case "result":
 		state.resultSeen = true
 		state.resultText = firstNonEmpty(
@@ -310,7 +305,7 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 			state.outputTokens = output
 			state.totalTokens = total
 		}
-		c.ensureClaudeTurnStarted(state)
+		c.ensureClaudeTurnStarted(state, onStarted)
 	default:
 		event := mapValue(raw["event"])
 		if event == nil {
@@ -337,7 +332,7 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 					state.resultUUID,
 				)
 			}
-			c.ensureClaudeTurnStarted(state)
+			c.ensureClaudeTurnStarted(state, onStarted)
 		case "content_block_start":
 			block := mapValue(event["content_block"])
 			if block == nil {
@@ -351,7 +346,7 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 					state.turnID = id
 				}
 			}
-			c.ensureClaudeTurnStarted(state)
+			c.ensureClaudeTurnStarted(state, onStarted)
 		case "content_block_delta":
 			text := deltaText(event)
 			if text == "" {
@@ -360,21 +355,8 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 			if state.turnID == "" {
 				state.turnID = firstNonEmpty(state.resultUUID, fallbackClaudeTurnID(c, state))
 			}
-			c.ensureClaudeTurnStarted(state)
+			c.ensureClaudeTurnStarted(state, onStarted)
 			state.streamedOutput.WriteString(text)
-			sessionID := c.currentClaudeSessionIDLocked()
-			itemPhase := firstNonEmpty(state.itemPhase, "commentary")
-			c.emitActivity(agentruntime.ActivityEvent{
-				Type:      "item.agentMessage.delta",
-				ThreadID:  sessionID,
-				TurnID:    state.turnID,
-				ItemID:    state.turnID,
-				ItemType:  "agentMessage",
-				ItemPhase: itemPhase,
-				Delta:     text,
-				Metadata:  runtimeMetadata(sessionID),
-				Raw:       raw,
-			})
 		case "message_delta":
 			if stopReason := strings.TrimSpace(stringFromMap(event, "delta", "stop_reason")); stopReason != "" {
 				state.resultStop = stopReason
@@ -390,7 +372,7 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 	}
 }
 
-func (c *stdioClient) ensureClaudeTurnStarted(state *claudeTurnState) {
+func (c *stdioClient) ensureClaudeTurnStarted(state *claudeTurnState, onStarted func(*agentruntime.Session)) {
 	if state.turnStarted {
 		return
 	}
@@ -420,12 +402,10 @@ func (c *stdioClient) ensureClaudeTurnStarted(state *claudeTurnState) {
 	c.mu.Unlock()
 
 	c.emitSessionUpdate(session)
-	c.emitActivity(agentruntime.ActivityEvent{
-		Type:     "turn.started",
-		ThreadID: sessionID,
-		TurnID:   turnID,
-		Metadata: runtimeMetadata(sessionID),
-	})
+	if onStarted != nil && !state.sessionStarted {
+		state.sessionStarted = true
+		onStarted(&session)
+	}
 	state.turnStarted = true
 }
 
