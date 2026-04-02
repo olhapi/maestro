@@ -560,13 +560,8 @@ func (c *stdioClient) emitActivity(event agentruntime.ActivityEvent) {
 }
 
 func (c *stdioClient) buildClaudeCommand() (string, error) {
-	command := strings.TrimSpace(c.spec.Command)
-	if command == "" {
-		command = "claude"
-	}
-
 	c.mu.Lock()
-	permissions := c.spec.Permissions
+	spec := c.spec
 	resumeToken := strings.TrimSpace(c.session.ThreadID)
 	if resumeToken == "" {
 		resumeToken = strings.TrimSpace(c.spec.ResumeToken)
@@ -574,33 +569,7 @@ func (c *stdioClient) buildClaudeCommand() (string, error) {
 	mcpConfigPath := c.mcpConfigPath
 	c.mu.Unlock()
 
-	if strings.TrimSpace(mcpConfigPath) == "" {
-		return "", fmt.Errorf("claude runtime requires a mcp config path")
-	}
-
-	args := []string{
-		"-p",
-		"--verbose",
-		"--output-format=stream-json",
-		"--include-partial-messages",
-		"--permission-mode",
-		claudePermissionMode(permissions),
-	}
-
-	if resumeToken != "" {
-		args = append(args, "-r", resumeToken)
-	}
-
-	args = append(args,
-		"--mcp-config",
-		mcpConfigPath,
-		"--strict-mcp-config",
-	)
-
-	for _, arg := range args {
-		command += " " + shellQuoteArg(arg)
-	}
-	return command, nil
+	return composeClaudeCommand(spec, resumeToken, mcpConfigPath)
 }
 
 func (c *stdioClient) currentClaudeSessionIDLocked() string {
@@ -892,6 +861,56 @@ func claudePermissionMode(config agentruntime.PermissionConfig) string {
 	default:
 		return "bypassPermissions"
 	}
+}
+
+func buildClaudeCommand(spec agentruntime.RuntimeSpec) (string, func(), error) {
+	if strings.TrimSpace(spec.DBPath) == "" {
+		return "", nil, fmt.Errorf("claude runtime requires a db path for the live Maestro MCP bridge")
+	}
+	configPath, cleanup, err := writeClaudeMCPConfig(spec.DBPath)
+	if err != nil {
+		return "", nil, err
+	}
+	command, err := composeClaudeCommand(spec, strings.TrimSpace(spec.ResumeToken), configPath)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return command, cleanup, nil
+}
+
+func composeClaudeCommand(spec agentruntime.RuntimeSpec, resumeToken, mcpConfigPath string) (string, error) {
+	command := strings.TrimSpace(spec.Command)
+	if command == "" {
+		command = "claude"
+	}
+	if strings.TrimSpace(mcpConfigPath) == "" {
+		return "", fmt.Errorf("claude runtime requires a mcp config path")
+	}
+
+	args := []string{
+		"-p",
+		"--verbose",
+		"--output-format=stream-json",
+		"--include-partial-messages",
+		"--permission-mode",
+		claudePermissionMode(spec.Permissions),
+	}
+
+	if resumeToken != "" {
+		args = append(args, "-r", resumeToken)
+	}
+
+	args = append(args,
+		"--mcp-config",
+		mcpConfigPath,
+		"--strict-mcp-config",
+	)
+
+	for _, arg := range args {
+		command += " " + shellQuoteArg(arg)
+	}
+	return command, nil
 }
 
 func writeClaudeMCPConfig(dbPath string) (string, func(), error) {
