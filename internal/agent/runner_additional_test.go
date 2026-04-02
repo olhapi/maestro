@@ -578,6 +578,7 @@ func TestRunnerResolveExecutionPolicyUsesExplicitRuntimeSelection(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	defaultRuntime := workflow.Config.SelectedRuntimeConfig()
 	issue, err = store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
@@ -630,8 +631,8 @@ func TestRunnerResolveExecutionPolicyUsesExplicitRuntimeSelection(t *testing.T) 
 		if captured.Permissions.ThreadSandbox != "danger-full-access" || captured.Permissions.CollaborationMode != config.InitialCollaborationModePlan {
 			t.Fatalf("expected resolved permissions in request, got %#v", captured.Permissions)
 		}
-		if workflow.Config.Codex.Command != "codex app-server" {
-			t.Fatalf("expected workflow codex config to stay untouched, got %q", workflow.Config.Codex.Command)
+		if defaultRuntime.Command != "codex app-server" {
+			t.Fatalf("expected workflow default runtime to stay untouched, got %q", defaultRuntime.Command)
 		}
 	})
 
@@ -652,7 +653,7 @@ func TestRunnerResolveExecutionPolicyUsesExplicitRuntimeSelection(t *testing.T) 
 		if selection.Config.Transport != config.AgentModeAppServer {
 			t.Fatalf("expected app_server transport, got %#v", selection.Config)
 		}
-		if selection.Config.Command != workflow.Config.Codex.Command {
+		if selection.Config.Command != defaultRuntime.Command {
 			t.Fatalf("expected workflow default command, got %#v", selection.Config)
 		}
 		if permissions.ApprovalPolicy != selection.Config.ApprovalPolicy {
@@ -733,7 +734,7 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 
 	client, err := runner.startRuntimeClient(context.Background(), workflow, repoPath, issue, runtimeSelection{
 		Name:   workflow.Config.Runtime.Default,
-		Config: workflow.Config.Codex,
+		Config: workflow.Config.SelectedRuntimeConfig(),
 	}, permissionConfig{
 		ApprovalPolicy:           "policy",
 		ThreadSandbox:            "workspace-write",
@@ -1333,13 +1334,13 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 	})
 
 	t.Run("run_pending_commands", func(t *testing.T) {
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), nil, workflow, issue, 1, "title", runtimeSelection{Config: workflow.Config.Codex}); err != nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), nil, workflow, issue, 1, "title", runtimeSelection{Config: workflow.Config.SelectedRuntimeConfig()}); err != nil || delivered {
 			t.Fatalf("expected nil client to short-circuit, got %v %v", delivered, err)
 		}
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &noopRuntimeClient{}, workflow, issue, 1, "title", runtimeSelection{Config: workflow.Config.Codex}); err != nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &noopRuntimeClient{}, workflow, issue, 1, "title", runtimeSelection{Config: workflow.Config.SelectedRuntimeConfig()}); err != nil || delivered {
 			t.Fatalf("expected resume-less client to short-circuit, got %v %v", delivered, err)
 		}
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, workflow, &kanban.Issue{ID: "missing"}, 1, "title", runtimeSelection{Config: workflow.Config.Codex}); err == nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, workflow, &kanban.Issue{ID: "missing"}, 1, "title", runtimeSelection{Config: workflow.Config.SelectedRuntimeConfig()}); err == nil || delivered {
 			t.Fatalf("expected missing issue to fail, got %v %v", delivered, err)
 		}
 		emptyIssue, err := store.CreateIssue(project.ID, "", "No pending commands", "", 0, nil)
@@ -1357,7 +1358,7 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 			capabilities: agentruntime.Capabilities{Resume: true},
 			session:      agentruntime.Session{ThreadID: "thread-empty"},
 		}
-		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), emptyClient, workflow, emptyIssue, 1, "Empty title", runtimeSelection{Config: workflow.Config.Codex}); err != nil || delivered {
+		if delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), emptyClient, workflow, emptyIssue, 1, "Empty title", runtimeSelection{Config: workflow.Config.SelectedRuntimeConfig()}); err != nil || delivered {
 			t.Fatalf("expected no pending commands to short-circuit after polling, got %v %v", delivered, err)
 		}
 		commandIssue, err := store.CreateIssue(project.ID, "", "Deliver command", "", 0, nil)
@@ -1374,7 +1375,7 @@ func TestRunnerCommandFlowCoverage(t *testing.T) {
 			capabilities: agentruntime.Capabilities{Resume: true},
 			session:      agentruntime.Session{ThreadID: "thread-deliver"},
 		}
-		delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), client, workflow, commandIssue, 1, "Deliver command", runtimeSelection{Config: workflow.Config.Codex})
+		delivered, err := runner.runPendingCommandsInActiveRuntime(context.Background(), client, workflow, commandIssue, 1, "Deliver command", runtimeSelection{Config: workflow.Config.SelectedRuntimeConfig()})
 		if err != nil {
 			t.Fatalf("runPendingCommandsInActiveRuntime: %v", err)
 		}
@@ -1439,7 +1440,7 @@ func TestRunPendingCommandsInActiveRuntimeContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	delivered, err := runner.runPendingCommandsInActiveRuntime(ctx, &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, workflow, issue, 1, "Cancel flow", runtimeSelection{Config: workflow.Config.Codex})
+	delivered, err := runner.runPendingCommandsInActiveRuntime(ctx, &deliveringRuntimeClient{capabilities: agentruntime.Capabilities{Resume: true}}, workflow, issue, 1, "Cancel flow", runtimeSelection{Config: workflow.Config.SelectedRuntimeConfig()})
 	if err == nil || !errors.Is(err, context.Canceled) || delivered {
 		t.Fatalf("expected canceled runtime command polling to stop, got delivered=%v err=%v", delivered, err)
 	}

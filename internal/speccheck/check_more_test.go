@@ -311,7 +311,9 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			name: "timeout defaults",
 			cfg: func() config.Config {
 				cfg := config.DefaultConfig()
-				cfg.Codex.TurnTimeoutMs = 42
+				selectedRuntime := cfg.SelectedRuntimeConfig()
+				selectedRuntime.TurnTimeoutMs = 42
+				cfg.Runtime.Entries[cfg.Runtime.Default] = selectedRuntime
 				return cfg
 			},
 		},

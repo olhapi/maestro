@@ -269,14 +269,10 @@ func (r *Runner) runtimeSelectionForIssue(workflow *config.Workflow, issue *kanb
 		return runtimeSelection{}
 	}
 
-	selectedName := strings.TrimSpace(workflow.Config.Runtime.Default)
-	selectedRuntime, ok := workflow.Config.Runtime.Entries[selectedName]
-	if !ok {
-		selectedRuntime = workflow.Config.Codex
-	}
+	selectedName, selectedRuntime := workflow.Config.SelectedRuntime()
 
 	if projectRuntimeName := r.projectRuntimeName(issue); projectRuntimeName != "" {
-		if runtimeConfig, ok := workflow.Config.Runtime.Entries[projectRuntimeName]; ok {
+		if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(projectRuntimeName); ok {
 			selectedName = projectRuntimeName
 			selectedRuntime = runtimeConfig
 		}
@@ -284,7 +280,7 @@ func (r *Runner) runtimeSelectionForIssue(workflow *config.Workflow, issue *kanb
 
 	if issue != nil {
 		if issueRuntimeName := strings.TrimSpace(issue.RuntimeName); issueRuntimeName != "" {
-			if runtimeConfig, ok := workflow.Config.Runtime.Entries[issueRuntimeName]; ok {
+			if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(issueRuntimeName); ok {
 				selectedName = issueRuntimeName
 				selectedRuntime = runtimeConfig
 			}

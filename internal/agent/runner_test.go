@@ -440,15 +440,16 @@ func TestPermissionConfigForIssueUsesFullAccessForIssueOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
 	if permissions.TurnSandboxPolicy["type"] != "dangerFullAccess" {
 		t.Fatalf("expected dangerFullAccess turn policy, got %#v", permissions.TurnSandboxPolicy)
 	}
-	if workflow.Config.Codex.Command == "" {
+	if selectedRuntime.Command == "" {
 		t.Fatal("expected workflow to remain available")
 	}
 }
@@ -474,9 +475,10 @@ func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testi
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
-	if !reflect.DeepEqual(permissions.ApprovalPolicy, workflow.Config.Codex.ApprovalPolicy) {
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
+	if !reflect.DeepEqual(permissions.ApprovalPolicy, selectedRuntime.ApprovalPolicy) {
 		t.Fatalf("expected inherited approval policy, got %#v", permissions.ApprovalPolicy)
 	}
 	if permissions.ThreadSandbox != "workspace-write" {
@@ -551,8 +553,9 @@ func TestPermissionConfigForIssueFallsBackToProjectProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected inherited danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
@@ -576,8 +579,9 @@ func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "workspace-write" {
 		t.Fatalf("expected workspace-write thread sandbox, got %q", permissions.ThreadSandbox)
 	}

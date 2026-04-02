@@ -39,9 +39,8 @@ type Config struct {
 	Runtime      RuntimeCatalog     `yaml:"runtime"`
 	Phases       PhasesConfig       `yaml:"phases"`
 
-	// Derived fields used by the rest of the codebase during the migration.
+	// Derived fields used by the rest of the codebase.
 	Agent AgentConfig `yaml:"-"`
-	Codex CodexConfig `yaml:"-"`
 }
 
 type TrackerConfig struct {
@@ -94,8 +93,6 @@ type RuntimeCatalog struct {
 }
 
 type AgentConfig = OrchestratorConfig
-
-type CodexConfig = RuntimeConfig
 
 type PhasesConfig struct {
 	Review PhasePromptConfig `yaml:"review"`
@@ -158,11 +155,15 @@ func DefaultConfig() Config {
 
 func DefaultInitConfig() Config {
 	cfg := DefaultConfig()
-	if runtime, ok := cfg.Runtime.Entries["codex-appserver"]; ok {
-		runtime.ApprovalPolicy = "never"
-		cfg.Runtime.Entries["codex-appserver"] = runtime
+	selectedName, runtime := cfg.SelectedRuntime()
+	if selectedName == "" {
+		selectedName, runtime = defaultRuntimeCatalog().defaultRuntime()
 	}
-	cfg.Runtime.Default = "codex-appserver"
+	if selectedName != "" {
+		runtime.ApprovalPolicy = "never"
+		cfg.Runtime.Entries[selectedName] = runtime
+	}
+	cfg.Runtime.Default = selectedName
 	cfg.applyDerivedRuntimeFields()
 	return cfg
 }
@@ -230,12 +231,11 @@ func (c *Config) applyDerivedRuntimeFields() {
 	}
 	c.Orchestrator = normalizeOrchestratorConfig(c.Orchestrator)
 	c.Runtime = normalizeRuntimeCatalog(c.Runtime)
-	name, runtime := c.Runtime.defaultRuntime()
+	name, runtime := c.SelectedRuntime()
 	if name == "" {
 		name, runtime = defaultRuntimeCatalog().defaultRuntime()
 	}
 	c.Runtime.Default = name
-	c.Codex = runtime
 	c.Orchestrator.Mode = runtime.Transport
 	c.Agent = AgentConfig{
 		MaxConcurrentAgents: c.Orchestrator.MaxConcurrentAgents,
@@ -245,6 +245,23 @@ func (c *Config) applyDerivedRuntimeFields() {
 		Mode:                runtime.Transport,
 		DispatchMode:        c.Orchestrator.DispatchMode,
 	}
+}
+
+func (c Config) SelectedRuntime() (string, RuntimeConfig) {
+	return c.Runtime.defaultRuntime()
+}
+
+func (c Config) SelectedRuntimeConfig() RuntimeConfig {
+	_, runtime := c.SelectedRuntime()
+	return runtime
+}
+
+func (catalog RuntimeCatalog) RuntimeByName(name string) (RuntimeConfig, bool) {
+	if catalog.Entries == nil {
+		return RuntimeConfig{}, false
+	}
+	runtime, ok := catalog.Entries[strings.TrimSpace(name)]
+	return runtime, ok
 }
 
 func normalizeOrchestratorConfig(cfg OrchestratorConfig) OrchestratorConfig {

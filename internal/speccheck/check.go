@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/codexschema"
@@ -47,7 +48,9 @@ func Run(repoRoot string) Report {
 	} else {
 		checks["workflow_load"] = "ok"
 
-		if workflow.Config.Codex.ExpectedVersion == codexschema.SupportedVersion {
+		selectedName := strings.TrimSpace(workflow.Config.Runtime.Default)
+		selectedRuntime, found := workflow.Config.Runtime.RuntimeByName(selectedName)
+		if found && selectedRuntime.ExpectedVersion == codexschema.SupportedVersion {
 			checks["workflow_version"] = "ok"
 		} else {
 			ok = false
@@ -113,6 +116,16 @@ func sampleWorkflowPromptContext() map[string]interface{} {
 func validateDefaultConfig() error {
 	cfg := defaultConfigFunc()
 	initCfg := defaultInitConfigFunc()
+	selectedName := strings.TrimSpace(cfg.Runtime.Default)
+	selectedRuntime, ok := cfg.Runtime.RuntimeByName(selectedName)
+	if selectedName == "" {
+		ok = false
+	}
+	initSelectedName := strings.TrimSpace(initCfg.Runtime.Default)
+	initSelectedRuntime, initOK := initCfg.Runtime.RuntimeByName(initSelectedName)
+	if initSelectedName == "" {
+		initOK = false
+	}
 
 	if cfg.Tracker.Kind != config.TrackerKindKanban {
 		return fmt.Errorf("default tracker kind = %q", cfg.Tracker.Kind)
@@ -120,45 +133,49 @@ func validateDefaultConfig() error {
 	if cfg.Workspace.BranchPrefix != "maestro/" {
 		return fmt.Errorf("default branch prefix = %q", cfg.Workspace.BranchPrefix)
 	}
-	if cfg.Runtime.Default != "codex-appserver" {
+	if selectedName != "codex-appserver" || !ok {
 		return fmt.Errorf("default runtime.default = %q", cfg.Runtime.Default)
 	}
-	codexAppServer, ok := cfg.Runtime.Entries["codex-appserver"]
+	if selectedRuntime.Provider != "codex" || selectedRuntime.Transport != string(agentruntime.TransportAppServer) || selectedRuntime.Command == "" {
+		return fmt.Errorf("default codex-appserver runtime = %#v", selectedRuntime)
+	}
+	if selectedRuntime.ExpectedVersion != codexschema.SupportedVersion {
+		return fmt.Errorf("default expected_version = %q", selectedRuntime.ExpectedVersion)
+	}
+	codexStdio, ok := cfg.Runtime.RuntimeByName("codex-stdio")
 	if !ok {
-		return fmt.Errorf("default runtime catalog missing codex-appserver")
+		return fmt.Errorf("default runtime catalog missing codex-stdio")
 	}
-	if codexAppServer.Provider != "codex" || codexAppServer.Transport != string(agentruntime.TransportAppServer) || codexAppServer.Command == "" {
-		return fmt.Errorf("default codex-appserver runtime = %#v", codexAppServer)
+	if codexStdio.Provider != "codex" || codexStdio.Transport != string(agentruntime.TransportStdio) {
+		return fmt.Errorf("default codex-stdio runtime = %#v", codexStdio)
 	}
-	if codexAppServer.ExpectedVersion != codexschema.SupportedVersion {
-		return fmt.Errorf("default expected_version = %q", codexAppServer.ExpectedVersion)
+	claudeRuntime, ok := cfg.Runtime.RuntimeByName("claude")
+	if !ok {
+		return fmt.Errorf("default runtime catalog missing claude")
 	}
-	if cfg.Runtime.Entries["codex-stdio"].Provider != "codex" || cfg.Runtime.Entries["codex-stdio"].Transport != string(agentruntime.TransportStdio) {
-		return fmt.Errorf("default codex-stdio runtime = %#v", cfg.Runtime.Entries["codex-stdio"])
+	if claudeRuntime.Provider != "claude" || claudeRuntime.Transport != string(agentruntime.TransportStdio) {
+		return fmt.Errorf("default claude runtime = %#v", claudeRuntime)
 	}
-	if cfg.Runtime.Entries["claude"].Provider != "claude" || cfg.Runtime.Entries["claude"].Transport != string(agentruntime.TransportStdio) {
-		return fmt.Errorf("default claude runtime = %#v", cfg.Runtime.Entries["claude"])
+	if selectedRuntime.InitialCollaborationMode != config.InitialCollaborationModeDefault {
+		return fmt.Errorf("default initial_collaboration_mode = %q", selectedRuntime.InitialCollaborationMode)
 	}
-	if cfg.Codex.InitialCollaborationMode != config.InitialCollaborationModeDefault {
-		return fmt.Errorf("default initial_collaboration_mode = %q", cfg.Codex.InitialCollaborationMode)
+	if selectedRuntime.TurnTimeoutMs != 1800000 || selectedRuntime.ReadTimeoutMs != 10000 || selectedRuntime.StallTimeoutMs != 300000 {
+		return fmt.Errorf("unexpected runtime timeout defaults: turn=%d read=%d stall=%d", selectedRuntime.TurnTimeoutMs, selectedRuntime.ReadTimeoutMs, selectedRuntime.StallTimeoutMs)
 	}
-	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
-		return fmt.Errorf("unexpected codex timeout defaults: turn=%d read=%d stall=%d", cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs)
-	}
-	if initCfg.Runtime.Default != "codex-appserver" {
+	if initSelectedName != "codex-appserver" || !initOK {
 		return fmt.Errorf("default init runtime.default = %q", initCfg.Runtime.Default)
 	}
-	if initCfg.Runtime.Entries["codex-appserver"].ApprovalPolicy != "never" {
-		return fmt.Errorf("default init approval_policy = %#v", initCfg.Runtime.Entries["codex-appserver"].ApprovalPolicy)
+	if initSelectedRuntime.ApprovalPolicy != "never" {
+		return fmt.Errorf("default init approval_policy = %#v", initSelectedRuntime.ApprovalPolicy)
 	}
-	if initCfg.Runtime.Entries["codex-appserver"].ExpectedVersion != codexschema.SupportedVersion {
-		return fmt.Errorf("default init expected_version = %q", initCfg.Runtime.Entries["codex-appserver"].ExpectedVersion)
+	if initSelectedRuntime.ExpectedVersion != codexschema.SupportedVersion {
+		return fmt.Errorf("default init expected_version = %q", initSelectedRuntime.ExpectedVersion)
 	}
-	if initCfg.Runtime.Entries["codex-appserver"].InitialCollaborationMode != config.InitialCollaborationModeDefault {
-		return fmt.Errorf("default init initial_collaboration_mode = %q", initCfg.Runtime.Entries["codex-appserver"].InitialCollaborationMode)
+	if initSelectedRuntime.InitialCollaborationMode != config.InitialCollaborationModeDefault {
+		return fmt.Errorf("default init initial_collaboration_mode = %q", initSelectedRuntime.InitialCollaborationMode)
 	}
-	if !isGranularApprovalPolicy(cfg.Runtime.Entries["codex-appserver"].ApprovalPolicy) {
-		return fmt.Errorf("default approval_policy has unexpected shape: %#v", cfg.Runtime.Entries["codex-appserver"].ApprovalPolicy)
+	if !isGranularApprovalPolicy(selectedRuntime.ApprovalPolicy) {
+		return fmt.Errorf("default approval_policy has unexpected shape: %#v", selectedRuntime.ApprovalPolicy)
 	}
 	return nil
 }

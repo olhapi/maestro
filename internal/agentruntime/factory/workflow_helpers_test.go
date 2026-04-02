@@ -18,7 +18,9 @@ func TestRuntimeSpecFromWorkflowRejectsMissingWorkflow(t *testing.T) {
 
 func TestRuntimeSpecFromWorkflowUsesProcessEnvWhenRequestEnvMissing(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
-	workflow.Config.Codex.Command = "codex app-server"
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Command = "codex app-server"
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
 
 	spec, err := RuntimeSpecFromWorkflow(WorkflowStartRequest{
 		Workflow: workflow,

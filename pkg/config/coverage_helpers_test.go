@@ -109,7 +109,7 @@ func TestRuntimeCatalogHelpers(t *testing.T) {
 	if cfg.Runtime.Default != "codex-appserver" {
 		t.Fatalf("expected default runtime fallback, got %q", cfg.Runtime.Default)
 	}
-	if cfg.Agent.Mode != cfg.Codex.Transport {
+	if cfg.Agent.Mode != cfg.SelectedRuntimeConfig().Transport {
 		t.Fatalf("expected derived agent mode to match codex transport, got %#v", cfg.Agent)
 	}
 }
@@ -212,7 +212,7 @@ Prompt
 
 	coerced, err := coerceWorkflowFrontMatter(map[string]interface{}{
 		"nested": map[interface{}]interface{}{"key": "value"},
-		"items": []interface{}{map[interface{}]interface{}{"child": 1}},
+		"items":  []interface{}{map[interface{}]interface{}{"child": 1}},
 	})
 	if err != nil {
 		t.Fatalf("coerceWorkflowFrontMatter map[string]interface{}: %v", err)

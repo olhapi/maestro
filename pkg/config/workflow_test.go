@@ -96,8 +96,8 @@ Hello {{ issue.identifier }}
 	if workflow.Config.Runtime.Default != "codex-appserver" {
 		t.Fatalf("unexpected runtime default: %q", workflow.Config.Runtime.Default)
 	}
-	if workflow.Config.Codex.Command != "codex app-server" {
-		t.Fatalf("unexpected selected runtime command: %q", workflow.Config.Codex.Command)
+	if selectedRuntime := workflow.Config.SelectedRuntimeConfig(); selectedRuntime.Command != "codex app-server" {
+		t.Fatalf("unexpected selected runtime command: %q", selectedRuntime.Command)
 	}
 
 	payload, err := parseWorkflowPayload(path, content)
