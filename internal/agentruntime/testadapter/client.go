@@ -30,17 +30,15 @@ type Client struct {
 }
 
 func Start(spec agentruntime.RuntimeSpec, observers agentruntime.Observers) agentruntime.Client {
+	spec = cloneRuntimeSpec(spec)
 	return &Client{
 		spec:      spec,
 		observers: observers,
 		session: agentruntime.Session{
 			IssueID:         spec.IssueID,
 			IssueIdentifier: spec.IssueIdentifier,
-			Metadata: map[string]interface{}{
-				"provider":  ProviderName,
-				"transport": TransportName,
-			},
-			MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+			Metadata:        runtimeMetadata(spec.Metadata),
+			MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
 		},
 	}
 }
@@ -65,7 +63,7 @@ func (c *Client) RunTurn(ctx context.Context, request agentruntime.TurnRequest, 
 		Type:     "turn.started",
 		ThreadID: session.ThreadID,
 		TurnID:   session.TurnID,
-		Metadata: runtimeMetadata(),
+		Metadata: runtimeMetadata(c.spec.Metadata),
 	})
 
 	c.mu.Lock()
@@ -99,7 +97,7 @@ func (c *Client) RunTurn(ctx context.Context, request agentruntime.TurnRequest, 
 			ItemType:  "agentMessage",
 			ItemPhase: "final_answer",
 			Reason:    output,
-			Metadata:  runtimeMetadata(),
+			Metadata:  runtimeMetadata(c.spec.Metadata),
 		})
 	}
 	c.emitSessionUpdate(finalSession)
@@ -108,7 +106,7 @@ func (c *Client) RunTurn(ctx context.Context, request agentruntime.TurnRequest, 
 		ThreadID: finalSession.ThreadID,
 		TurnID:   finalSession.TurnID,
 		Reason:   output,
-		Metadata: runtimeMetadata(),
+		Metadata: runtimeMetadata(c.spec.Metadata),
 	})
 	return nil
 }
@@ -214,11 +212,22 @@ func textInput(items []agentruntime.InputItem) (string, error) {
 	return strings.Join(lines, "\n\n"), nil
 }
 
-func runtimeMetadata() map[string]interface{} {
-	return map[string]interface{}{
-		"provider":  ProviderName,
-		"transport": TransportName,
+func runtimeMetadata(existing map[string]interface{}) map[string]interface{} {
+	metadata := cloneJSONMap(existing)
+	if metadata == nil {
+		metadata = map[string]interface{}{}
 	}
+	metadata["provider"] = ProviderName
+	metadata["transport"] = TransportName
+	return metadata
+}
+
+func cloneRuntimeSpec(spec agentruntime.RuntimeSpec) agentruntime.RuntimeSpec {
+	spec.Env = append([]string(nil), spec.Env...)
+	spec.Permissions = clonePermissionConfig(spec.Permissions)
+	spec.DynamicTools = cloneToolSpecs(spec.DynamicTools)
+	spec.Metadata = cloneJSONMap(spec.Metadata)
+	return spec
 }
 
 func clonePermissionConfig(config agentruntime.PermissionConfig) agentruntime.PermissionConfig {
@@ -253,6 +262,17 @@ func cloneJSONMap(in map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(in))
 	for key, value := range in {
 		out[key] = cloneJSONValue(value)
+	}
+	return out
+}
+
+func cloneToolSpecs(specs []map[string]interface{}) []map[string]interface{} {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, cloneJSONMap(spec))
 	}
 	return out
 }

@@ -36,6 +36,17 @@ func RunSharedRuntimeContractTests(t *testing.T, contract Contract) {
 		runTwoTurns(t, result.Client)
 	})
 
+	t.Run("session_invariants", func(t *testing.T) {
+		result := start(t, contract, agentruntime.Observers{})
+		runTwoTurns(t, result.Client)
+
+		session := result.Client.Session()
+		if session == nil {
+			t.Fatal("expected session snapshot")
+		}
+		assertSharedSessionInvariants(t, session)
+	})
+
 	if !contract.Capabilities.SupportsLocalImageInput() {
 		t.Run("rejects_unsupported_local_image", func(t *testing.T) {
 			result := start(t, contract, agentruntime.Observers{})
@@ -165,6 +176,37 @@ func assertRuntimeMetadata(t *testing.T, metadata map[string]interface{}, provid
 	}
 	if metadata["transport"] != transport {
 		t.Fatalf("expected transport metadata %q, got %#v", transport, metadata)
+	}
+}
+
+func assertSharedSessionInvariants(t *testing.T, session *agentruntime.Session) {
+	t.Helper()
+	if session.IssueID == "" {
+		t.Fatalf("expected issue id to be preserved, got %+v", session)
+	}
+	if session.IssueIdentifier == "" {
+		t.Fatalf("expected issue identifier to be preserved, got %+v", session)
+	}
+	if session.TurnID == "" {
+		t.Fatalf("expected turn id to be populated, got %+v", session)
+	}
+	if session.TurnsStarted != 2 {
+		t.Fatalf("expected two started turns, got %+v", session)
+	}
+	if session.TurnsCompleted != 2 {
+		t.Fatalf("expected two completed turns, got %+v", session)
+	}
+	if session.EventsProcessed < 4 {
+		t.Fatalf("expected at least four processed events, got %+v", session)
+	}
+	if !session.Terminal {
+		t.Fatalf("expected terminal session snapshot, got %+v", session)
+	}
+	if session.TerminalReason != "turn.completed" {
+		t.Fatalf("expected completed terminal reason, got %+v", session)
+	}
+	if session.LastEvent != "turn.completed" {
+		t.Fatalf("expected completed last event, got %+v", session)
 	}
 }
 

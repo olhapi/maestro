@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","cwd":"/tmp/claude","mcp_servers":[],"tools":[],"plugins":[]}
+{"type":"stream_event","event":{"type":"message_start","message":{"id":"turn-resume","phase":"commentary"}}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"id":"block-resume","type":"text"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"resumed fixture"}}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":6,"total_tokens":11}}}
+{"type":"stream_event","event":{"type":"message_stop"}}
+{"type":"assistant","message":{"id":"turn-resume","type":"message","phase":"final_answer","content":[{"type":"text","text":"resumed fixture"}],"stop_reason":"end_turn"}}
+{"type":"result","subtype":"success","is_error":false,"result":"resumed fixture","stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":6,"total_tokens":11}}
