@@ -141,7 +141,7 @@ func (c *stdioClient) RunTurn(ctx context.Context, request agentruntime.TurnRequ
 	c.setActiveTurn(cmd.Process.Pid, done)
 	defer c.clearActiveTurn(done)
 
-	go c.watchTurnContext(turnCtx)
+	go c.watchTurnContext(turnCtx, done)
 
 	var stdoutRaw bytes.Buffer
 	var stderrRaw bytes.Buffer
@@ -194,7 +194,7 @@ func (c *stdioClient) Close() error {
 	if c == nil {
 		return nil
 	}
-	c.requestActiveTurnStop()
+	c.requestActiveTurnStop(nil)
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
 
@@ -625,9 +625,13 @@ func (c *stdioClient) clearActiveTurn(done chan struct{}) {
 	}
 }
 
-func (c *stdioClient) requestActiveTurnStop() {
+func (c *stdioClient) requestActiveTurnStop(done chan struct{}) {
 	c.mu.Lock()
 	active := c.activeTurn
+	if active != nil && done != nil && active.done != done {
+		c.mu.Unlock()
+		return
+	}
 	if active != nil {
 		active.interrupted = true
 	}
@@ -649,9 +653,9 @@ func (c *stdioClient) activeTurnInterrupted() bool {
 	return c.activeTurn.interrupted
 }
 
-func (c *stdioClient) watchTurnContext(ctx context.Context) {
+func (c *stdioClient) watchTurnContext(ctx context.Context, done chan struct{}) {
 	<-ctx.Done()
-	c.requestActiveTurnStop()
+	c.requestActiveTurnStop(done)
 }
 
 func firstNonEmpty(values ...string) string {

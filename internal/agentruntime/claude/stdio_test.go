@@ -370,6 +370,27 @@ func TestStdioRuntimeCloseInterruptsActiveTurn(t *testing.T) {
 	}
 }
 
+func TestStdioRuntimeIgnoresStaleTurnCancellation(t *testing.T) {
+	client := &stdioClient{
+		activeTurn: &runningTurn{
+			pid:  0,
+			done: make(chan struct{}),
+		},
+	}
+
+	staleDone := make(chan struct{})
+	client.requestActiveTurnStop(staleDone)
+
+	if client.activeTurn == nil || client.activeTurn.interrupted {
+		t.Fatalf("expected stale cancellation to leave the active turn untouched, got %#v", client.activeTurn)
+	}
+
+	client.requestActiveTurnStop(client.activeTurn.done)
+	if client.activeTurn == nil || !client.activeTurn.interrupted {
+		t.Fatalf("expected matching cancellation to interrupt the active turn, got %#v", client.activeTurn)
+	}
+}
+
 func TestStartRejectsUnsupportedProviderAndTransport(t *testing.T) {
 	if _, err := Start(context.Background(), agentruntime.RuntimeSpec{
 		Provider:  "other",
