@@ -218,12 +218,20 @@ func TestClaudeMetadataAndCommandHelpers(t *testing.T) {
 	})
 
 	t.Run("command assembly", func(t *testing.T) {
-		defaultCommand, err := composeClaudeCommand(agentruntime.RuntimeSpec{}, "", filepath.Join("tmp", "mcp.json"))
+		defaultCommand, err := composeClaudeCommand(
+			agentruntime.RuntimeSpec{},
+			"",
+			filepath.Join("tmp", "mcp.json"),
+			filepath.Join("tmp", "settings.json"),
+		)
 		if err != nil {
 			t.Fatalf("composeClaudeCommand default: %v", err)
 		}
 		if !strings.HasPrefix(defaultCommand, "claude ") {
 			t.Fatalf("composeClaudeCommand default should use claude, got %q", defaultCommand)
+		}
+		if !strings.Contains(defaultCommand, "'--settings'") {
+			t.Fatalf("composeClaudeCommand default should include the session overlay, got %q", defaultCommand)
 		}
 
 		resumeCommand, err := composeClaudeCommand(agentruntime.RuntimeSpec{
@@ -231,18 +239,21 @@ func TestClaudeMetadataAndCommandHelpers(t *testing.T) {
 			Permissions: agentruntime.PermissionConfig{
 				CollaborationMode: "plan",
 			},
-		}, "resume token", filepath.Join("tmp", "with space", "mcp.json"))
+		}, "resume token", filepath.Join("tmp", "with space", "mcp.json"), filepath.Join("tmp", "with space", "settings.json"))
 		if err != nil {
 			t.Fatalf("composeClaudeCommand resume: %v", err)
 		}
-		for _, want := range []string{"custom claude '-p'", "'-r' 'resume token'", "'--permission-mode' 'plan'"} {
+		for _, want := range []string{"custom claude '-p'", "'-r' 'resume token'", "'--permission-mode' 'plan'", "'--settings' 'tmp/with space/settings.json'"} {
 			if !strings.Contains(resumeCommand, want) {
 				t.Fatalf("composeClaudeCommand resume missing %q in %q", want, resumeCommand)
 			}
 		}
 
-		if _, err := composeClaudeCommand(agentruntime.RuntimeSpec{}, "", ""); err == nil {
+		if _, err := composeClaudeCommand(agentruntime.RuntimeSpec{}, "", "", filepath.Join("tmp", "settings.json")); err == nil {
 			t.Fatal("composeClaudeCommand should require an MCP config path")
+		}
+		if _, err := composeClaudeCommand(agentruntime.RuntimeSpec{}, "", filepath.Join("tmp", "mcp.json"), ""); err == nil {
+			t.Fatal("composeClaudeCommand should require a settings overlay path")
 		}
 	})
 
@@ -289,6 +300,53 @@ func TestClaudeMetadataAndCommandHelpers(t *testing.T) {
 			t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 			if _, _, err := writeClaudeMCPConfig(dbPath); err == nil {
 				t.Fatal("expected writeClaudeMCPConfig to fail when the temp directory is unavailable")
+			}
+		})
+
+		t.Run("session overlay", func(t *testing.T) {
+			configPath, settingsPath, cleanup, err := writeClaudeSupportFiles(dbPath)
+			if err != nil {
+				t.Fatalf("writeClaudeSupportFiles: %v", err)
+			}
+
+			if _, err := os.Stat(configPath); err != nil {
+				t.Fatalf("expected MCP config path to exist, got %v", err)
+			}
+
+			data, err := os.ReadFile(settingsPath)
+			if err != nil {
+				t.Fatalf("read settings overlay: %v", err)
+			}
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("unmarshal settings overlay: %v", err)
+			}
+			if got := raw["disableAutoMode"]; got != "disable" {
+				t.Fatalf("expected disableAutoMode to disable auto mode, got %#v", got)
+			}
+			if got := raw["useAutoModeDuringPlan"]; got != false {
+				t.Fatalf("expected useAutoModeDuringPlan to disable plan auto mode, got %#v", got)
+			}
+			if got := raw["disableAllHooks"]; got != true {
+				t.Fatalf("expected disableAllHooks to disable hooks, got %#v", got)
+			}
+			if got := raw["includeGitInstructions"]; got != false {
+				t.Fatalf("expected includeGitInstructions to disable git guidance, got %#v", got)
+			}
+			permissions, ok := raw["permissions"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected permissions object, got %#v", raw["permissions"])
+			}
+			if got := permissions["disableBypassPermissionsMode"]; got != "disable" {
+				t.Fatalf("expected disableBypassPermissionsMode to disable bypass, got %#v", got)
+			}
+
+			cleanup()
+			if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+				t.Fatalf("expected support-file cleanup to remove mcp config, got %v", err)
+			}
+			if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+				t.Fatalf("expected support-file cleanup to remove settings overlay, got %v", err)
 			}
 		})
 	})

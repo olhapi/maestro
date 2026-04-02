@@ -23,6 +23,7 @@ type stdioClient struct {
 	spec          agentruntime.RuntimeSpec
 	observers     agentruntime.Observers
 	mcpConfigPath string
+	settingsPath  string
 
 	mu          sync.Mutex
 	session     agentruntime.Session
@@ -61,7 +62,7 @@ func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers)
 	if strings.TrimSpace(spec.DBPath) == "" {
 		return nil, fmt.Errorf("claude runtime requires a db path for the live Maestro MCP bridge")
 	}
-	configPath, cleanup, err := writeClaudeMCPConfig(spec.DBPath)
+	configPath, settingsPath, cleanup, err := writeClaudeSupportFiles(spec.DBPath)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +81,7 @@ func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers)
 		spec:          spec,
 		observers:     observers,
 		mcpConfigPath: configPath,
+		settingsPath:  settingsPath,
 		session:       session,
 		cleanup:       cleanup,
 	}, nil
@@ -547,9 +549,10 @@ func (c *stdioClient) buildClaudeCommand() (string, error) {
 		resumeToken = strings.TrimSpace(c.spec.ResumeToken)
 	}
 	mcpConfigPath := c.mcpConfigPath
+	settingsPath := c.settingsPath
 	c.mu.Unlock()
 
-	return composeClaudeCommand(spec, resumeToken, mcpConfigPath)
+	return composeClaudeCommand(spec, resumeToken, mcpConfigPath, settingsPath)
 }
 
 func (c *stdioClient) currentClaudeSessionIDLocked() string {
@@ -847,11 +850,11 @@ func buildClaudeCommand(spec agentruntime.RuntimeSpec) (string, func(), error) {
 	if strings.TrimSpace(spec.DBPath) == "" {
 		return "", nil, fmt.Errorf("claude runtime requires a db path for the live Maestro MCP bridge")
 	}
-	configPath, cleanup, err := writeClaudeMCPConfig(spec.DBPath)
+	configPath, settingsPath, cleanup, err := writeClaudeSupportFiles(spec.DBPath)
 	if err != nil {
 		return "", nil, err
 	}
-	command, err := composeClaudeCommand(spec, strings.TrimSpace(spec.ResumeToken), configPath)
+	command, err := composeClaudeCommand(spec, strings.TrimSpace(spec.ResumeToken), configPath, settingsPath)
 	if err != nil {
 		cleanup()
 		return "", nil, err
@@ -859,13 +862,16 @@ func buildClaudeCommand(spec agentruntime.RuntimeSpec) (string, func(), error) {
 	return command, cleanup, nil
 }
 
-func composeClaudeCommand(spec agentruntime.RuntimeSpec, resumeToken, mcpConfigPath string) (string, error) {
+func composeClaudeCommand(spec agentruntime.RuntimeSpec, resumeToken, mcpConfigPath, settingsPath string) (string, error) {
 	command := strings.TrimSpace(spec.Command)
 	if command == "" {
 		command = "claude"
 	}
 	if strings.TrimSpace(mcpConfigPath) == "" {
 		return "", fmt.Errorf("claude runtime requires a mcp config path")
+	}
+	if strings.TrimSpace(settingsPath) == "" {
+		return "", fmt.Errorf("claude runtime requires a settings overlay path")
 	}
 
 	args := []string{
@@ -877,6 +883,8 @@ func composeClaudeCommand(spec agentruntime.RuntimeSpec, resumeToken, mcpConfigP
 		claudePermissionMode(spec.Permissions),
 		"--permission-prompt-tool",
 		"mcp__maestro__approval_prompt",
+		"--settings",
+		settingsPath,
 	}
 
 	if resumeToken != "" {
@@ -895,13 +903,20 @@ func composeClaudeCommand(spec agentruntime.RuntimeSpec, resumeToken, mcpConfigP
 	return command, nil
 }
 
-func writeClaudeMCPConfig(dbPath string) (string, func(), error) {
+func writeClaudeSupportFiles(dbPath string) (string, string, func(), error) {
 	dir, err := os.MkdirTemp("", "maestro-claude-mcp-*")
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	configPath := filepath.Join(dir, "mcp.json")
-	config := map[string]interface{}{
+
+	cleanup := func() {
+		_ = os.RemoveAll(dir)
+	}
+
+	mcpConfigPath := filepath.Join(dir, "mcp.json")
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	mcpConfig := map[string]interface{}{
 		"mcpServers": map[string]interface{}{
 			"maestro": map[string]interface{}{
 				"type":    "stdio",
@@ -914,18 +929,48 @@ func writeClaudeMCPConfig(dbPath string) (string, func(), error) {
 			},
 		},
 	}
-	data, err := json.MarshalIndent(config, "", "  ")
+	if err := writeClaudeJSONFile(mcpConfigPath, mcpConfig); err != nil {
+		cleanup()
+		return "", "", nil, err
+	}
+	if err := writeClaudeJSONFile(settingsPath, claudeSessionSettingsOverlay()); err != nil {
+		cleanup()
+		return "", "", nil, err
+	}
+
+	return mcpConfigPath, settingsPath, cleanup, nil
+}
+
+func writeClaudeMCPConfig(dbPath string) (string, func(), error) {
+	configPath, _, cleanup, err := writeClaudeSupportFiles(dbPath)
 	if err != nil {
-		_ = os.RemoveAll(dir)
 		return "", nil, err
 	}
-	if err := os.WriteFile(configPath, append(data, '\n'), 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", nil, err
+	return configPath, cleanup, nil
+}
+
+// This overlay keeps Claude inside Maestro-managed approval flows for the session.
+func claudeSessionSettingsOverlay() map[string]interface{} {
+	return map[string]interface{}{
+		"disableAutoMode":        "disable",
+		"useAutoModeDuringPlan":  false,
+		"disableAllHooks":        true,
+		"includeGitInstructions": false,
+		"permissions": map[string]interface{}{
+			"disableBypassPermissionsMode": "disable",
+		},
 	}
-	return configPath, func() {
-		_ = os.RemoveAll(dir)
-	}, nil
+}
+
+func writeClaudeJSONFile(path string, value interface{}) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return nil
 }
 
 func shellQuoteArg(value string) string {
