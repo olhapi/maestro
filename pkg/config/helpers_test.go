@@ -47,8 +47,9 @@ func TestDefaultConfigIncludesRuntimeCatalog(t *testing.T) {
 	if cfg.Agent.Mode != AgentModeAppServer || cfg.Agent.DispatchMode != DispatchModeParallel {
 		t.Fatalf("unexpected derived agent config: %#v", cfg.Agent)
 	}
-	if cfg.Codex.ExpectedVersion == "" || cfg.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
-		t.Fatalf("unexpected derived runtime config: %#v", cfg.Codex)
+	selectedRuntime := cfg.SelectedRuntimeConfig()
+	if selectedRuntime.ExpectedVersion == "" || selectedRuntime.InitialCollaborationMode != InitialCollaborationModeDefault {
+		t.Fatalf("unexpected derived runtime config: %#v", selectedRuntime)
 	}
 }
 

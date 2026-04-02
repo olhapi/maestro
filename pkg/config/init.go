@@ -140,16 +140,17 @@ func InitWorkflowAtPath(path string, opts InitOptions) error {
 
 func defaultInitOptions() InitOptions {
 	cfg := DefaultInitConfig()
+	selectedRuntime := cfg.SelectedRuntimeConfig()
 	return InitOptions{
 		WorkspaceRoot:            cfg.Workspace.Root,
-		RuntimeCommand:           cfg.Codex.Command,
+		RuntimeCommand:           selectedRuntime.Command,
 		AgentMode:                cfg.Agent.Mode,
 		DispatchMode:             cfg.Agent.DispatchMode,
 		MaxConcurrentAgents:      cfg.Agent.MaxConcurrentAgents,
 		MaxTurns:                 cfg.Agent.MaxTurns,
 		MaxAutomaticRetries:      cfg.Agent.MaxAutomaticRetries,
-		ApprovalPolicy:           strings.TrimSpace(fmt.Sprintf("%v", cfg.Codex.ApprovalPolicy)),
-		InitialCollaborationMode: cfg.Codex.InitialCollaborationMode,
+		ApprovalPolicy:           strings.TrimSpace(fmt.Sprintf("%v", selectedRuntime.ApprovalPolicy)),
+		InitialCollaborationMode: selectedRuntime.InitialCollaborationMode,
 	}
 }
 

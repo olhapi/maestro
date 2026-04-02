@@ -90,8 +90,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.Mode != AgentModeAppServer || cfg.Agent.DispatchMode != DispatchModeParallel {
 		t.Fatalf("unexpected derived agent config: %+v", cfg.Agent)
 	}
-	if cfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
-		t.Fatalf("expected codex expected version %s, got %q", codexschema.SupportedVersion, cfg.Codex.ExpectedVersion)
+	selectedRuntime := cfg.SelectedRuntimeConfig()
+	if selectedRuntime.ExpectedVersion != codexschema.SupportedVersion {
+		t.Fatalf("expected codex expected version %s, got %q", codexschema.SupportedVersion, selectedRuntime.ExpectedVersion)
 	}
 	assertGranularPolicy(t, cfg.Runtime.Entries["codex-appserver"].ApprovalPolicy)
 	assertDefaultPromptSemantics(t, DefaultPromptTemplate())
@@ -278,13 +279,14 @@ func TestGeneratedWorkflowRoundTrips(t *testing.T) {
 	if workflow.Config.Workspace.Root != filepath.Join(tmpDir, "ws") {
 		t.Fatalf("unexpected workspace root: %s", workflow.Config.Workspace.Root)
 	}
-	if workflow.Config.Runtime.Default != "codex-appserver" || workflow.Config.Codex.Command != "codex app-server --model test" {
-		t.Fatalf("unexpected selected runtime: %+v", workflow.Config.Codex)
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	if workflow.Config.Runtime.Default != "codex-appserver" || selectedRuntime.Command != "codex app-server --model test" {
+		t.Fatalf("unexpected selected runtime: %+v", selectedRuntime)
 	}
-	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModePlan {
-		t.Fatalf("unexpected initial collaboration mode: %q", workflow.Config.Codex.InitialCollaborationMode)
+	if selectedRuntime.InitialCollaborationMode != InitialCollaborationModePlan {
+		t.Fatalf("unexpected initial collaboration mode: %q", selectedRuntime.InitialCollaborationMode)
 	}
-	if got := strings.TrimSpace(fmt.Sprintf("%v", workflow.Config.Codex.ApprovalPolicy)); got != "on-request" {
+	if got := strings.TrimSpace(fmt.Sprintf("%v", selectedRuntime.ApprovalPolicy)); got != "on-request" {
 		t.Fatalf("unexpected approval policy: %q", got)
 	}
 }

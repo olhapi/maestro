@@ -16,11 +16,13 @@ import (
 func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
 	workflow.Config.Workspace.Root = "/repo/root"
-	workflow.Config.Codex.Command = "codex app-server"
-	workflow.Config.Codex.ExpectedVersion = "1.2.3"
-	workflow.Config.Codex.ReadTimeoutMs = 11
-	workflow.Config.Codex.TurnTimeoutMs = 22
-	workflow.Config.Codex.StallTimeoutMs = 33
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Command = "codex app-server"
+	selectedRuntime.ExpectedVersion = "1.2.3"
+	selectedRuntime.ReadTimeoutMs = 11
+	selectedRuntime.TurnTimeoutMs = 22
+	selectedRuntime.StallTimeoutMs = 33
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
 
 	request := WorkflowStartRequest{
 		Workflow:        workflow,
@@ -63,7 +65,7 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	if spec.Transport != agentruntime.TransportAppServer {
 		t.Fatalf("expected app_server transport, got %q", spec.Transport)
 	}
-	if spec.Command != workflow.Config.Codex.Command || spec.ExpectedVersion != workflow.Config.Codex.ExpectedVersion {
+	if spec.Command != selectedRuntime.Command || spec.ExpectedVersion != selectedRuntime.ExpectedVersion {
 		t.Fatalf("expected codex command/version to be copied, got %+v", spec)
 	}
 	if spec.Workspace != request.WorkspacePath || spec.WorkspaceRoot != workflow.Config.Workspace.Root {
@@ -124,8 +126,10 @@ func TestRuntimeSpecFromWorkflowUsesExplicitRuntimeSelection(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
 	workflow.Config.Agent.Mode = config.AgentModeAppServer
 	workflow.Config.Workspace.Root = "/repo/root"
-	workflow.Config.Codex.Command = "codex app-server"
-	workflow.Config.Codex.ExpectedVersion = "1.2.3"
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Command = "codex app-server"
+	selectedRuntime.ExpectedVersion = "1.2.3"
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
 
 	request := WorkflowStartRequest{
 		Workflow:        workflow,
@@ -152,8 +156,8 @@ func TestRuntimeSpecFromWorkflowUsesExplicitRuntimeSelection(t *testing.T) {
 	if spec.ExpectedVersion != workflow.Config.Runtime.Entries["codex-stdio"].ExpectedVersion {
 		t.Fatalf("expected explicit runtime version, got %q", spec.ExpectedVersion)
 	}
-	if workflow.Config.Codex.Command != "codex app-server" {
-		t.Fatalf("expected workflow codex config to stay untouched, got %q", workflow.Config.Codex.Command)
+	if got := workflow.Config.SelectedRuntimeConfig().Command; got != "codex app-server" {
+		t.Fatalf("expected workflow default runtime to stay untouched, got %q", got)
 	}
 }
 
@@ -187,13 +191,15 @@ func TestRuntimeSpecFromWorkflowUsesNamedRuntimeDefaultsForClaude(t *testing.T) 
 func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
 	workflow.Config.Workspace.Root = "/repo/root"
-	workflow.Config.Codex.Provider = "codex"
-	workflow.Config.Codex.Transport = config.AgentModeAppServer
-	workflow.Config.Codex.Command = "codex app-server"
-	workflow.Config.Codex.ExpectedVersion = "1.2.3"
-	workflow.Config.Codex.ReadTimeoutMs = 11
-	workflow.Config.Codex.TurnTimeoutMs = 22
-	workflow.Config.Codex.StallTimeoutMs = 33
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Provider = "codex"
+	selectedRuntime.Transport = config.AgentModeAppServer
+	selectedRuntime.Command = "codex app-server"
+	selectedRuntime.ExpectedVersion = "1.2.3"
+	selectedRuntime.ReadTimeoutMs = 11
+	selectedRuntime.TurnTimeoutMs = 22
+	selectedRuntime.StallTimeoutMs = 33
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
 
 	spec, err := RuntimeSpecFromWorkflow(WorkflowStartRequest{
 		Workflow:      workflow,
@@ -221,9 +227,11 @@ func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.
 
 func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
-	workflow.Config.Codex.Provider = "mistral"
-	workflow.Config.Codex.Command = "mistral"
-	workflow.Config.Codex.Transport = config.AgentModeStdio
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Provider = "mistral"
+	selectedRuntime.Command = "mistral"
+	selectedRuntime.Transport = config.AgentModeStdio
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
 
 	_, err := StartWorkflow(context.Background(), WorkflowStartRequest{
 		Workflow:        workflow,
@@ -249,8 +257,6 @@ func TestStartWorkflowSelectsClaudeRuntime(t *testing.T) {
 	runtimeConfig.ApprovalPolicy = "never"
 	runtimeConfig.InitialCollaborationMode = config.InitialCollaborationModeDefault
 	workflow.Config.Runtime.Entries["claude"] = runtimeConfig
-	workflow.Config.Codex = runtimeConfig
-
 	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
 		Workflow:        workflow,
 		RuntimeName:     "claude",
