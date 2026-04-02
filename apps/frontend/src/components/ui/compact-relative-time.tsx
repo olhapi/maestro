@@ -2,6 +2,29 @@ import { useEffect, useState } from 'react'
 
 import { formatRelativeTimeCompact } from '@/lib/utils'
 
+// Share one ticking interval across all relative-time labels to avoid per-instance timers.
+const compactRelativeTimeListeners = new Set<() => void>()
+let compactRelativeTimeInterval: number | null = null
+
+function subscribeCompactRelativeTime(listener: () => void) {
+  compactRelativeTimeListeners.add(listener)
+  if (compactRelativeTimeInterval === null) {
+    compactRelativeTimeInterval = window.setInterval(() => {
+      for (const nextListener of compactRelativeTimeListeners) {
+        nextListener()
+      }
+    }, 1000)
+  }
+
+  return () => {
+    compactRelativeTimeListeners.delete(listener)
+    if (compactRelativeTimeListeners.size === 0 && compactRelativeTimeInterval !== null) {
+      window.clearInterval(compactRelativeTimeInterval)
+      compactRelativeTimeInterval = null
+    }
+  }
+}
+
 export function CompactRelativeTime({ value }: { value?: string | null }) {
   const [nowMs, setNowMs] = useState(() => Date.now())
 
@@ -15,13 +38,9 @@ export function CompactRelativeTime({ value }: { value?: string | null }) {
       return
     }
 
-    const interval = window.setInterval(() => {
+    return subscribeCompactRelativeTime(() => {
       setNowMs(Date.now())
-    }, 1000)
-
-    return () => {
-      window.clearInterval(interval)
-    }
+    })
   }, [value])
 
   return <>{formatRelativeTimeCompact(value, nowMs)}</>

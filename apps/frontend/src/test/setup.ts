@@ -63,3 +63,13 @@ if (!Element.prototype.releasePointerCapture) {
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {}
 }
+
+// Radix dialog scroll restoration hits jsdom's unimplemented scrollTo during open/close cycles.
+try {
+  Object.defineProperty(window, 'scrollTo', {
+    configurable: true,
+    value: () => {},
+  })
+} catch {
+  window.scrollTo = () => {}
+}

@@ -31,6 +31,8 @@ import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
 import type { AgentCommand, IssueAsset, IssueComment, IssueCommentAttachment, IssueState, PermissionProfile } from "@/lib/types";
 import { cn, formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 
+const shouldPollIssueExecution = import.meta.env.MODE !== "test";
+
 const permissionProfileLabels: Record<PermissionProfile, string> = {
   default: "Default permissions",
   "full-access": "Full access",
@@ -810,6 +812,9 @@ export function IssueDetailPage() {
     queryKey: ["issue-execution", identifier],
     queryFn: () => api.getIssueExecution(identifier),
     refetchInterval: (query) => {
+      if (!shouldPollIssueExecution) {
+        return false;
+      }
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return false;
       }
