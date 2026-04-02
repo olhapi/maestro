@@ -78,7 +78,6 @@ func TestAppServerRuntimeAcceptsLocalImageInput(t *testing.T) {
 					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-image"}}}},
 					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-image", "turn": map[string]interface{}{"id": "turn-image"}}}},
 				},
-				ExitCode: fakeappserver.Int(0),
 			},
 		),
 	}, nil, agentruntime.Observers{})
@@ -112,7 +111,6 @@ func TestAppServerRuntimeFreshAndResumedTurns(t *testing.T) {
 						{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-fresh"}}}},
 						{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-fresh", "turn": map[string]interface{}{"id": "turn-fresh"}}}},
 					},
-					ExitCode: fakeappserver.Int(0),
 				},
 			),
 		}, func(spec *agentruntime.RuntimeSpec) {
@@ -152,7 +150,6 @@ func TestAppServerRuntimeFreshAndResumedTurns(t *testing.T) {
 						{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-resumed"}}}},
 						{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-resumed", "turn": map[string]interface{}{"id": "turn-resumed"}}}},
 					},
-					ExitCode: fakeappserver.Int(0),
 				},
 			),
 		}, func(spec *agentruntime.RuntimeSpec) {
@@ -257,7 +254,6 @@ func TestAppServerRuntimeNormalizesSessionActivityAndInteractions(t *testing.T) 
 						},
 					}}},
 				},
-				ExitCode: fakeappserver.Int(0),
 			},
 		),
 	}, nil, agentruntime.Observers{
@@ -466,7 +462,6 @@ func startSharedAppServerRuntime(t *testing.T, observers agentruntime.Observers)
 					{Text: "second prompt"},
 					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-contract", "turnId": "turn-2"}}},
 				},
-				ExitCode: fakeappserver.Int(0),
 			},
 		),
 	}, func(spec *agentruntime.RuntimeSpec) {
