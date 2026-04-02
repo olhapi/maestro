@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -203,6 +204,78 @@ func TestMCPBridgeSendNotificationWithNilRemote(t *testing.T) {
 
 	if err := bridge.sendNotification(context.Background(), mcpapi.JSONRPCNotification{Notification: mcpapi.Notification{Method: initializedNotificationName}}, replayHandshakeNone); err != nil {
 		t.Fatalf("expected notification to connect and send, got %v", err)
+	}
+}
+
+func TestMCPBridgeAnnotatesToolsCallRequestsWithMaestroMetadata(t *testing.T) {
+	bridge := &stdioBridge{
+		issueContext: &bridgeIssueContext{
+			IssueID:         "issue-1",
+			IssueIdentifier: "MAES-19",
+			IssueTitle:      "Bridge approval prompt",
+			ProjectID:       "project-1",
+			ProjectName:     "Maestro",
+			WorkspacePath:   "/tmp/workspace",
+		},
+	}
+
+	request, err := bridge.annotateToolsCallRequest(transport.JSONRPCRequest{
+		JSONRPC: mcpapi.JSONRPC_VERSION,
+		ID:      mcpapi.NewRequestId("req-1"),
+		Method:  string(mcpapi.MethodToolsCall),
+		Params:  json.RawMessage(`{"name":"approval_prompt","arguments":{"tool_name":"Bash","input":{"command":"pwd"},"tool_use_id":"toolu_123"},"_meta":{"existing":"value"}}`),
+	})
+	if err != nil {
+		t.Fatalf("annotateToolsCallRequest failed: %v", err)
+	}
+
+	params, err := jsonObjectFromAny(request.Params)
+	if err != nil {
+		t.Fatalf("jsonObjectFromAny failed: %v", err)
+	}
+	meta, ok := params["_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected _meta payload, got %#v", params["_meta"])
+	}
+	if got := meta["existing"]; got != "value" {
+		t.Fatalf("expected existing meta to be preserved, got %#v", got)
+	}
+	if got := meta["claudecode/toolUseId"]; got != "toolu_123" {
+		t.Fatalf("expected tool-use id meta, got %#v", got)
+	}
+	if got := meta["maestro/issue_id"]; got != "issue-1" {
+		t.Fatalf("expected issue id meta, got %#v", got)
+	}
+	if got := meta["maestro/issue_identifier"]; got != "MAES-19" {
+		t.Fatalf("expected issue identifier meta, got %#v", got)
+	}
+	if got := meta["maestro/workspace_path"]; got != "/tmp/workspace" {
+		t.Fatalf("expected workspace path meta, got %#v", got)
+	}
+
+	fallbackRequest, err := bridge.annotateToolsCallRequest(transport.JSONRPCRequest{
+		JSONRPC: mcpapi.JSONRPC_VERSION,
+		ID:      mcpapi.NewRequestId("req-2"),
+		Method:  string(mcpapi.MethodToolsCall),
+		Params:  json.RawMessage(`{"name":"approval_prompt","arguments":{"tool_name":"Bash","input":{"command":"pwd"}},"_meta":{"existing":"value"}}`),
+	})
+	if err != nil {
+		t.Fatalf("annotateToolsCallRequest fallback failed: %v", err)
+	}
+
+	fallbackParams, err := jsonObjectFromAny(fallbackRequest.Params)
+	if err != nil {
+		t.Fatalf("jsonObjectFromAny fallback failed: %v", err)
+	}
+	fallbackMeta, ok := fallbackParams["_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected fallback _meta payload, got %#v", fallbackParams["_meta"])
+	}
+	if got := fallbackMeta["claudecode/toolUseId"]; got != "req-2" {
+		t.Fatalf("expected request id fallback tool-use id, got %#v", got)
+	}
+	if got := fallbackMeta["claude/toolUseId"]; got != "req-2" {
+		t.Fatalf("expected legacy tool-use id fallback, got %#v", got)
 	}
 }
 

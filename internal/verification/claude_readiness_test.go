@@ -26,7 +26,7 @@ func newClaudeResult() *Result {
 }
 
 func TestClaudeCommandParsingHelpers(t *testing.T) {
-	command := `env FOO=bar BAR="baz qux" CLAUDE_CODE_SIMPLE=yes claude --bare --add-dir=docs --permission-mode bypassPermissions --settings='{"apiKeyHelper":"inline-helper"}' --settings=override.json --setting-sources=user,project,,local`
+	command := `env FOO=bar BAR="baz qux" CLAUDE_CODE_SIMPLE=yes claude --bare --add-dir=docs --permission-mode default --allowedTools Bash,Edit,Write,MultiEdit --permission-prompt-tool mcp__maestro__approval_prompt --settings='{"apiKeyHelper":"inline-helper"}' --settings=override.json --setting-sources=user,project,,local`
 
 	parts := splitClaudeCommand(command)
 	if parts.Executable != "claude" {
@@ -67,8 +67,14 @@ func TestClaudeCommandParsingHelpers(t *testing.T) {
 	if !opts.BareMode || opts.BareReason != "--bare" {
 		t.Fatalf("expected bare mode from command, got %+v", opts)
 	}
-	if opts.PermissionMode != "bypassPermissions" {
-		t.Fatalf("expected permission mode bypassPermissions, got %q", opts.PermissionMode)
+	if opts.PermissionMode != "default" {
+		t.Fatalf("expected permission mode default, got %q", opts.PermissionMode)
+	}
+	if got, want := opts.AllowedTools, []string{"Bash", "Edit", "Write", "MultiEdit"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected allowed tools: got %v want %v", got, want)
+	}
+	if opts.PermissionPromptTool != "mcp__maestro__approval_prompt" {
+		t.Fatalf("expected permission prompt tool mcp__maestro__approval_prompt, got %q", opts.PermissionPromptTool)
 	}
 	if !opts.AdditionalDirFlag {
 		t.Fatalf("expected additional dir flag to be detected, got %+v", opts)

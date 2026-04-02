@@ -839,7 +839,7 @@ func claudePermissionMode(config agentruntime.PermissionConfig) string {
 	case "plan":
 		return "plan"
 	default:
-		return "bypassPermissions"
+		return "default"
 	}
 }
 
@@ -875,6 +875,8 @@ func composeClaudeCommand(spec agentruntime.RuntimeSpec, resumeToken, mcpConfigP
 		"--include-partial-messages",
 		"--permission-mode",
 		claudePermissionMode(spec.Permissions),
+		"--permission-prompt-tool",
+		"mcp__maestro__approval_prompt",
 	}
 
 	if resumeToken != "" {

@@ -96,7 +96,9 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 		"--output-format=stream-json",
 		"--include-partial-messages",
 		"--permission-mode",
-		"bypassPermissions",
+		"default",
+		"--permission-prompt-tool",
+		"mcp__maestro__approval_prompt",
 		"--mcp-config",
 		"--strict-mcp-config",
 	} {
@@ -106,6 +108,9 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 	}
 	if containsArg(first, "-r") {
 		t.Fatalf("did not expect resume flag on the first Claude turn, got %#v", first)
+	}
+	if containsArg(first, "--allowed-tools") {
+		t.Fatalf("did not expect the runtime to pre-allow Bash/Edit/Write tools, got %#v", first)
 	}
 
 	configPath := argValueAfter(t, first, "--mcp-config")

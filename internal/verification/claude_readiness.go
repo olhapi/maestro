@@ -25,14 +25,16 @@ type claudeCommandParts struct {
 }
 
 type claudeCommandOptions struct {
-	CommandEnv        map[string]string
-	Executable        string
-	BareMode          bool
-	BareReason        string
-	PermissionMode    string
-	SettingSources    []string
-	SettingsValues    []string
-	AdditionalDirFlag bool
+	CommandEnv           map[string]string
+	Executable           string
+	BareMode             bool
+	BareReason           string
+	PermissionMode       string
+	AllowedTools         []string
+	PermissionPromptTool string
+	SettingSources       []string
+	SettingsValues       []string
+	AdditionalDirFlag    bool
 }
 
 type claudeSettingsState struct {
@@ -102,6 +104,22 @@ func parseClaudeCommandOptions(command string) claudeCommandOptions {
 			}
 		case strings.HasPrefix(token, "--permission-mode="):
 			opts.PermissionMode = strings.TrimPrefix(token, "--permission-mode=")
+		case token == "--allowed-tools" || token == "--allowedTools":
+			if i+1 < len(tokens) {
+				opts.AllowedTools = append(opts.AllowedTools, splitClaudeSettingSources(tokens[i+1])...)
+				i++
+			}
+		case strings.HasPrefix(token, "--allowed-tools="):
+			opts.AllowedTools = append(opts.AllowedTools, splitClaudeSettingSources(strings.TrimPrefix(token, "--allowed-tools="))...)
+		case strings.HasPrefix(token, "--allowedTools="):
+			opts.AllowedTools = append(opts.AllowedTools, splitClaudeSettingSources(strings.TrimPrefix(token, "--allowedTools="))...)
+		case token == "--permission-prompt-tool":
+			if i+1 < len(tokens) {
+				opts.PermissionPromptTool = tokens[i+1]
+				i++
+			}
+		case strings.HasPrefix(token, "--permission-prompt-tool="):
+			opts.PermissionPromptTool = strings.TrimPrefix(token, "--permission-prompt-tool=")
 		case token == "--settings":
 			if i+1 < len(tokens) {
 				opts.SettingsValues = append(opts.SettingsValues, tokens[i+1])

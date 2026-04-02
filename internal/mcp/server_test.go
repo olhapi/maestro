@@ -16,6 +16,7 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
@@ -42,6 +43,13 @@ type testLookupProvider struct {
 	kind     string
 	listFunc func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
 	getFunc  func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
+}
+
+type approvalPromptTestProvider struct {
+	testRuntimeProvider
+	pendingCh   chan *agentruntime.PendingInteraction
+	responderCh chan agentruntime.InteractionResponder
+	clearedCh   chan string
 }
 
 func (p *testLookupProvider) Kind() string {
@@ -104,6 +112,36 @@ func (p *testLookupProvider) DeleteIssueComment(context.Context, *kanban.Project
 
 func (p *testLookupProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
 	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *approvalPromptTestProvider) RegisterPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
+	if interaction == nil {
+		return false
+	}
+	if p.pendingCh != nil {
+		cloned := interaction.Clone()
+		select {
+		case p.pendingCh <- &cloned:
+		default:
+		}
+	}
+	if p.responderCh != nil {
+		select {
+		case p.responderCh <- responder:
+		default:
+		}
+	}
+	return true
+}
+
+func (p *approvalPromptTestProvider) ClearPendingInteraction(issueID string, interactionID string) {
+	if p.clearedCh == nil {
+		return
+	}
+	select {
+	case p.clearedCh <- interactionID:
+	default:
+	}
 }
 
 func (c *testMCPClient) CallTool(ctx context.Context, name string, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -469,6 +507,7 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 		"set_blockers",
 		"list_runtime_events",
 		"get_runtime_snapshot",
+		"approval_prompt",
 		"list_sessions",
 		"ext_schema",
 		"ext_fallback",
@@ -500,6 +539,7 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_issue_execution"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_runtime_snapshot"))
+	assertToolProperties(t, findTool(t, tools.Tools, "approval_prompt"), "input", "tool_name", "tool_use_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_sessions"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "retry_issue"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "run_issue_now"), "identifier")

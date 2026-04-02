@@ -2951,9 +2951,21 @@ func (o *Orchestrator) RespondToInterrupt(ctx context.Context, interactionID str
 	return entry.respond(ctx, interactionID, response)
 }
 
+func (o *Orchestrator) RegisterPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
+	return o.registerPendingInteractionLocked(issueID, interaction, responder)
+}
+
+func (o *Orchestrator) ClearPendingInteraction(issueID string, interactionID string) {
+	o.clearPendingInteraction(issueID, interactionID)
+}
+
 func (o *Orchestrator) registerPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) {
+	_ = o.registerPendingInteractionLocked(issueID, interaction, responder)
+}
+
+func (o *Orchestrator) registerPendingInteractionLocked(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
 	if interaction == nil || strings.TrimSpace(issueID) == "" {
-		return
+		return false
 	}
 
 	shouldBroadcast := false
@@ -2988,7 +3000,9 @@ func (o *Orchestrator) registerPendingInteraction(issueID string, interaction *a
 
 	if shouldBroadcast {
 		observability.BroadcastUpdate()
+		return true
 	}
+	return false
 }
 
 func (o *Orchestrator) clearPendingInteraction(issueID string, interactionID string) {

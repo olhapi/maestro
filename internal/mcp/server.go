@@ -241,6 +241,19 @@ func (s *Server) registerTools() {
 			"limit": numberProperty("Maximum events to return"),
 		}),
 		objectTool("get_runtime_snapshot", "Get the live Maestro runtime snapshot", nil),
+		{
+			Name:        "approval_prompt",
+			Description: "Resolve Claude permission prompts as Maestro-managed pending interactions",
+			InputSchema: mcpapi.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"tool_name":   stringProperty("Claude tool name being approved"),
+					"input":       objectProperty("Raw permission prompt payload from Claude"),
+					"tool_use_id": stringProperty("Claude tool-use identifier"),
+				},
+				Required: []string{"tool_name", "input"},
+			},
+		},
 		objectTool("list_sessions", "List live Maestro sessions or fetch one issue session", map[string]interface{}{
 			"identifier": stringProperty("Issue identifier to fetch a single live session"),
 		}),
@@ -255,21 +268,28 @@ func (s *Server) registerTools() {
 	}
 
 	for _, tool := range s.tools {
-		tool := tool
 		s.server.AddTool(tool, func(ctx context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
-			args := map[string]interface{}{}
-			if request.Params.Arguments != nil {
-				if typed, ok := request.Params.Arguments.(map[string]interface{}); ok {
-					args = typed
-				}
-			}
-			return s.handleCallTool(ctx, tool.Name, args)
+			return s.handleCallToolRequest(ctx, request)
 		})
 	}
 }
 
+// handleCallToolRequest routes tool calls to appropriate handlers.
+func (s *Server) handleCallToolRequest(ctx context.Context, request mcpapi.CallToolRequest) (result *mcpapi.CallToolResult, err error) {
+	args := request.GetArguments()
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	request.Params.Arguments = args
+	return s.handleCallToolWithMeta(ctx, request.Params.Name, args, request.Params.Meta)
+}
+
 // handleCallTool routes tool calls to appropriate handlers.
 func (s *Server) handleCallTool(ctx context.Context, name string, args map[string]interface{}) (result *mcpapi.CallToolResult, err error) {
+	return s.handleCallToolWithMeta(ctx, name, args, nil)
+}
+
+func (s *Server) handleCallToolWithMeta(ctx context.Context, name string, args map[string]interface{}, meta *mcpapi.Meta) (result *mcpapi.CallToolResult, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result = s.toolError(name, fmt.Sprintf("panic recovered: %v", recovered))
@@ -340,6 +360,14 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 		return s.handleListRuntimeEvents(ctx, args)
 	case "get_runtime_snapshot":
 		return s.handleGetRuntimeSnapshot(ctx, args)
+	case "approval_prompt":
+		return s.handleApprovalPrompt(ctx, mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      name,
+				Arguments: args,
+				Meta:      meta,
+			},
+		})
 	case "list_sessions":
 		return s.handleListSessions(ctx, args)
 	default:
