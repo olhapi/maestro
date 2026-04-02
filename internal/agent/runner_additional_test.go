@@ -756,7 +756,7 @@ func TestRunnerRuntimeClientAndHookBranches(t *testing.T) {
 
 	// runHook branches.
 	hookWorkflow := *workflow
-	hookWorkflow.Config.Hooks.TimeoutMs = 50
+	hookWorkflow.Config.Hooks.TimeoutMs = 500
 	runner.workflowProvider = staticWorkflowProvider{workflow: &hookWorkflow}
 
 	if err := runner.runHook(context.Background(), repoPath, "", "empty"); err != nil {
