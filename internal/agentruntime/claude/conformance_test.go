@@ -2,8 +2,6 @@ package claude
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/olhapi/maestro/internal/agentruntime"
@@ -24,7 +22,7 @@ func TestStdioRuntimeContract(t *testing.T) {
 
 func mustStartStdioRuntime(t *testing.T, observers agentruntime.Observers) agentruntime.Client {
 	t.Helper()
-	argsPath := filepath.Join(t.TempDir(), "claude-args.txt")
+	harness := newClaudeHarness(t)
 	client, err := Start(context.Background(), agentruntime.RuntimeSpec{
 		Provider:        agentruntime.ProviderClaude,
 		Transport:       agentruntime.TransportStdio,
@@ -32,10 +30,8 @@ func mustStartStdioRuntime(t *testing.T, observers agentruntime.Observers) agent
 		Workspace:       t.TempDir(),
 		IssueID:         "iss-claude",
 		IssueIdentifier: "ISS-CLAUDE",
-		DBPath:          filepath.Join(t.TempDir(), "maestro.db"),
-		Env: append(os.Environ(),
-			"CLAUDE_ARGS_PATH="+argsPath,
-		),
+		DBPath:          harness.dbPath,
+		Env:             harness.env,
 	}, observers)
 	if err != nil {
 		t.Fatalf("Start: %v", err)

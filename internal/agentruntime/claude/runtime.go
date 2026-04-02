@@ -7,7 +7,10 @@ import (
 	"github.com/olhapi/maestro/internal/agentruntime"
 )
 
-var stdioCapabilities = agentruntime.Capabilities{}
+var stdioCapabilities = agentruntime.Capabilities{
+	Resume:     true,
+	PlanGating: true,
+}
 
 func Start(ctx context.Context, spec agentruntime.RuntimeSpec, observers agentruntime.Observers) (agentruntime.Client, error) {
 	if spec.Provider != "" && spec.Provider != agentruntime.ProviderClaude {
