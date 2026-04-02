@@ -1578,11 +1578,53 @@ func TestServiceUpdateIssueClearsProviderBackedLocalMetadata(t *testing.T) {
 	}
 }
 
-func TestServiceUpdateIssueReappliesPermissionProfileForProviderBackedIssue(t *testing.T) {
+func TestServiceUpdateIssueReappliesPermissionProfileForProviderBackedIssueWithPendingPlanState(t *testing.T) {
 	store, _, _, issue := newProviderBackedIssueFixture(t)
 	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
 	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft plan", requestedAt); err != nil {
 		t.Fatalf("SetIssuePendingPlanApproval setup: %v", err)
+	}
+
+	updateCalled := false
+	svc := NewService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
+		getIssue: issue,
+		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+			updateCalled = true
+			return nil, nil
+		},
+	}
+
+	detail, err := svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"permission_profile": "full-access",
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if updateCalled {
+		t.Fatal("expected provider update to be skipped for permission profile refresh")
+	}
+	if detail.PermissionProfile != kanban.PermissionProfileFullAccess {
+		t.Fatalf("expected full-access permission profile, got %#v", detail)
+	}
+	if detail.CollaborationModeOverride != kanban.CollaborationModeOverrideNone || detail.PlanApprovalPending || detail.PendingPlanMarkdown != "" || detail.PendingPlanRequestedAt != nil || detail.PendingPlanRevisionMarkdown != "" {
+		t.Fatalf("expected pending plan state to clear, got %#v", detail)
+	}
+}
+
+func TestServiceUpdateIssueReappliesPermissionProfileForProviderBackedIssueWithPendingPlanFields(t *testing.T) {
+	store, _, _, issue := newProviderBackedIssueFixture(t)
+	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"permission_profile":             kanban.PermissionProfileFullAccess,
+		"collaboration_mode_override":    kanban.CollaborationModeOverridePlan,
+		"plan_approval_pending":          true,
+		"pending_plan_markdown":          "Draft plan",
+		"pending_plan_requested_at":      &requestedAt,
+		"pending_plan_revision_markdown": "Revise plan",
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
 	}
 
 	updateCalled := false

@@ -33,33 +33,30 @@ orchestrator:
   max_retry_backoff_ms: 60000
   max_automatic_retries: 8
   dispatch_mode: parallel
-runtime:
-  default: codex-appserver
-  codex-appserver:
-    provider: codex
-    transport: app_server
-    command: codex app-server
-    expected_version: 0.117.0
-    approval_policy: never
-    initial_collaboration_mode: default
-    turn_timeout_ms: 1800000
-    read_timeout_ms: 10000
-    stall_timeout_ms: 300000
+codex:
+  command: codex app-server
+  expected_version: 0.118.0
+  approval_policy: never
+  initial_collaboration_mode: default
+  turn_timeout_ms: 1800000
+  read_timeout_ms: 10000
+  stall_timeout_ms: 300000
 ```
 
 ## Main knobs
 
 - `tracker.kind`: orchestration tracker kind. This remains `kanban`, the local tracker.
-- `orchestrator.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
-- `orchestrator.max_turns`: limit how many turns Maestro gives the runtime before ending an attempt.
-- `orchestrator.max_retry_backoff_ms` and `orchestrator.max_automatic_retries`: set retry pacing and the retry cap.
-- `orchestrator.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time. `per_project_serial` effectively caps per-project concurrency at `1`.
-- `runtime.<name>.transport`: use `app_server` for interactive sessions or `stdio` for stdin/stdout runners.
-- `runtime.<name>.command`: exact command Maestro launches.
-- `runtime.<name>.expected_version`: version Maestro expects from `command --version`.
-- `runtime.<name>.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
-- `runtime.<name>.initial_collaboration_mode`: controls the startup mode for fresh `app_server` sessions. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. Pair `plan` with `approval_policy: on-request` if you want the agent to ask clarifying questions and wait for approval. This does not affect `stdio` or resumed sessions.
-- `runtime.<name>.turn_timeout_ms`, `runtime.<name>.read_timeout_ms`, and `runtime.<name>.stall_timeout_ms`: set the run budget and inactivity limits.
+- `agent.mode`: use `app_server` for the Codex app-server protocol or `stdio` for `codex exec` style runners.
+- `agent.max_concurrent_agents`: cap simultaneous issues per project when dispatch is parallel.
+- `agent.max_turns`: limit how many turns Maestro gives the agent before ending an attempt.
+- `agent.dispatch_mode`: use `parallel` by default or `per_project_serial` when only one issue per project should run at a time. `per_project_serial` effectively caps per-project concurrency at `1`.
+- `codex.command`: exact command Maestro launches.
+- `codex.expected_version`: version Maestro expects from the configured Codex CLI invocation.
+- `codex.approval_policy`: keep this at `never` for unattended runs. Interactive approval and input requests are only queued for `app_server` runs when this is not `never`.
+- `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. Pair `plan` with `approval_policy: on-request` if you want the agent to ask clarifying questions and wait for approval. This does not affect `stdio` or resumed threads.
+- `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
+
+If you do not want to preinstall Codex, `codex.command` can be pinned to `npx -y @openai/codex@0.118.0 app-server`. Maestro verification supports that form when checking the expected version.
 
 Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves runtime sandbox access from DB-backed permission profiles:
 

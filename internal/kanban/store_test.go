@@ -3044,11 +3044,15 @@ func TestUpdateIssuePermissionProfileViaGenericUpdateClearsPendingPlanApproval(t
 
 	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
 	revisionRequestedAt := time.Date(2026, 3, 18, 11, 30, 0, 0, time.UTC)
-	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft plan", requestedAt); err != nil {
-		t.Fatalf("SetIssuePendingPlanApproval setup: %v", err)
-	}
-	if err := store.SetIssuePendingPlanRevision(issue.ID, "Revised plan", revisionRequestedAt); err != nil {
-		t.Fatalf("SetIssuePendingPlanRevision setup: %v", err)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override":        CollaborationModeOverridePlan,
+		"plan_approval_pending":              true,
+		"pending_plan_markdown":              "Draft plan",
+		"pending_plan_requested_at":          &requestedAt,
+		"pending_plan_revision_markdown":     "Revised plan",
+		"pending_plan_revision_requested_at": &revisionRequestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
 	}
 
 	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"permission_profile": "full-access"}); err != nil {

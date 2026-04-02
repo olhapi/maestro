@@ -374,7 +374,7 @@ func (b *stdioBridge) reconnect(ctx context.Context, failed transport.Bidirectio
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if time.Now().After(deadline) {
+		if !time.Now().Before(deadline) {
 			if lastErr != nil {
 				return lastErr
 			}

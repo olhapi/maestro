@@ -538,6 +538,58 @@ func TestInterruptEndpointsExposeQueueAndForwardResponses(t *testing.T) {
 	}
 }
 
+func TestInterruptEndpointPreservesEmptyElicitationObjectSchemas(t *testing.T) {
+	provider := testProvider{
+		pendingInterruptsByIssue: map[string]agentruntime.PendingInteraction{
+			"ISS-9": {
+				ID:              "elicitation-empty",
+				Kind:            agentruntime.PendingInteractionKindElicitation,
+				IssueIdentifier: "ISS-9",
+				ThreadID:        "thread-1",
+				TurnID:          "turn-1",
+				RequestedAt:     time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC),
+				Elicitation: &agentruntime.PendingElicitation{
+					ServerName: "maestro",
+					Message:    "Confirm tool call",
+					Mode:       "form",
+					RequestedSchema: map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					},
+				},
+			},
+		},
+	}
+	_, srv := setupDashboardServerTest(t, provider)
+
+	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/interrupts", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	payload := decodeResponse(t, resp)
+	items := payload["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("unexpected interrupt items: %#v", payload)
+	}
+	current := items[0].(map[string]interface{})
+	elicitation, ok := current["elicitation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected elicitation payload, got %#v", current["elicitation"])
+	}
+	requestedSchema, ok := elicitation["requested_schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected requested schema object, got %#v", elicitation["requested_schema"])
+	}
+	properties, ok := requestedSchema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected empty properties object to survive JSON encoding, got %#v", requestedSchema["properties"])
+	}
+	if len(properties) != 0 {
+		t.Fatalf("expected empty properties object, got %#v", properties)
+	}
+}
+
 func TestInterruptEndpointForwardsStructuredDecisionPayloads(t *testing.T) {
 	provider := &interruptProvider{}
 	_, srv := setupDashboardServerTest(t, provider)

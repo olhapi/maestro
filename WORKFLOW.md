@@ -93,7 +93,7 @@ runtime:
     provider: codex
     transport: app_server
     command: codex app-server
-    expected_version: 0.117.0
+    expected_version: 0.118.0
     approval_policy: never
     initial_collaboration_mode: default
     turn_timeout_ms: 1800000
@@ -103,7 +103,7 @@ runtime:
     provider: codex
     transport: stdio
     command: codex exec
-    expected_version: 0.117.0
+    expected_version: 0.118.0
     approval_policy: never
     turn_timeout_ms: 1800000
     read_timeout_ms: 10000
@@ -117,6 +117,8 @@ runtime:
     read_timeout_ms: 10000
     stall_timeout_ms: 300000
 ---
+
+If Codex is not installed globally, `codex.command` can instead be pinned to `npx -y @openai/codex@0.118.0 app-server`.
 
 You are working on issue {{ issue.identifier }}.
 

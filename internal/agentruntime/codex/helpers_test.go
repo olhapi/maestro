@@ -88,6 +88,13 @@ func TestRuntimeMetadataAndCloneHelpers(t *testing.T) {
 	if clone["provider"] != "other" {
 		t.Fatalf("expected clone map mutation, got %#v", clone)
 	}
+	emptyClone := cloneMap(map[string]interface{}{})
+	if emptyClone == nil {
+		t.Fatal("expected empty map clone to stay non-nil")
+	}
+	if len(emptyClone) != 0 {
+		t.Fatalf("expected empty map clone to stay empty, got %#v", emptyClone)
+	}
 	if cloneMap(nil) != nil {
 		t.Fatal("expected nil map clone to stay nil")
 	}

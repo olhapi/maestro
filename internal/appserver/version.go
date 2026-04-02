@@ -23,21 +23,25 @@ type CodexVersionStatus struct {
 
 func DetectCodexVersion(command string) (CodexVersionStatus, error) {
 	status := CodexVersionStatus{Command: strings.TrimSpace(command)}
-	executable := codexExecutableFromCommand(command)
-	if executable == "" {
+	invocation, ok := codexVersionInvocationFromCommand(command)
+	if !ok {
 		return status, nil
 	}
-	resolved, err := exec.LookPath(executable)
+	resolved, err := exec.LookPath(invocation.Executable)
 	if err != nil {
 		return status, err
 	}
 	resolved = filepath.Clean(resolved)
 	status.ExecutablePath = resolved
-	if cached, ok := codexVersionCache.Load(resolved); ok {
+	cacheKey := resolved
+	if invocation.CacheKey != "" {
+		cacheKey += "\x00" + invocation.CacheKey
+	}
+	if cached, ok := codexVersionCache.Load(cacheKey); ok {
 		status.Actual = cached.(string)
 		return status, nil
 	}
-	cmd := exec.Command(resolved, "--version")
+	cmd := exec.Command(resolved, invocation.Args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return status, err
@@ -46,24 +50,73 @@ func DetectCodexVersion(command string) (CodexVersionStatus, error) {
 	if actual == "" {
 		return status, fmt.Errorf("unable to parse codex version from %q", strings.TrimSpace(string(output)))
 	}
-	codexVersionCache.Store(resolved, actual)
+	codexVersionCache.Store(cacheKey, actual)
 	status.Actual = actual
 	return status, nil
 }
 
-func codexExecutableFromCommand(command string) string {
+type codexVersionInvocation struct {
+	Executable string
+	Args       []string
+	CacheKey   string
+}
+
+func codexVersionInvocationFromCommand(command string) (codexVersionInvocation, bool) {
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return ""
+		return codexVersionInvocation{}, false
 	}
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
-		return ""
+		return codexVersionInvocation{}, false
 	}
 	if looksLikeCodexCommand(parts[0]) {
-		return parts[0]
+		return codexVersionInvocation{
+			Executable: parts[0],
+			Args:       []string{"--version"},
+		}, true
 	}
-	return ""
+	if looksLikeNPXCommand(parts[0]) {
+		return npxCodexVersionInvocation(parts)
+	}
+	return codexVersionInvocation{}, false
+}
+
+func npxCodexVersionInvocation(parts []string) (codexVersionInvocation, bool) {
+	args := make([]string, 0, len(parts))
+	for i := 1; i < len(parts); i++ {
+		token := strings.TrimSpace(parts[i])
+		if token == "" {
+			continue
+		}
+		if token == "--" {
+			return codexVersionInvocation{}, false
+		}
+		if strings.HasPrefix(token, "-") {
+			args = append(args, token)
+			continue
+		}
+		if !looksLikeCodexPackageSpec(token) {
+			return codexVersionInvocation{}, false
+		}
+		args = append(args, token, "--version")
+		return codexVersionInvocation{
+			Executable: parts[0],
+			Args:       args,
+			CacheKey:   strings.Join(args, "\x00"),
+		}, true
+	}
+	return codexVersionInvocation{}, false
+}
+
+func looksLikeNPXCommand(executable string) bool {
+	base := strings.ToLower(filepath.Base(strings.TrimSpace(executable)))
+	return base == "npx" || base == "npx.cmd" || base == "npx.exe"
+}
+
+func looksLikeCodexPackageSpec(token string) bool {
+	token = strings.TrimSpace(token)
+	return token == "@openai/codex" || strings.HasPrefix(token, "@openai/codex@")
 }
 
 func parseCodexVersion(output []byte) string {

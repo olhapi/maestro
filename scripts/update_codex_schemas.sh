@@ -9,18 +9,19 @@ if [[ -z "$DEFAULT_VERSION" ]]; then
   echo "failed to determine supported Codex schema version from $METADATA_FILE" >&2
   exit 1
 fi
+DEFAULT_QUICKTYPE_VERSION="$(sed -n 's/^[[:space:]]*QuicktypeVersion = "\(.*\)"/\1/p' "$METADATA_FILE")"
+if [[ -z "$DEFAULT_QUICKTYPE_VERSION" ]]; then
+  echo "failed to determine quicktype version from $METADATA_FILE" >&2
+  exit 1
+fi
 VERSION="${CODEX_SCHEMA_VERSION:-$DEFAULT_VERSION}"
-QUICKTYPE_VERSION="${QUICKTYPE_VERSION:-23.2.6}"
+QUICKTYPE_VERSION="${QUICKTYPE_VERSION:-$DEFAULT_QUICKTYPE_VERSION}"
 SCHEMA_DIR="$ROOT/schemas/codex/$VERSION/json"
 GEN_DIR="$ROOT/internal/appserver/protocol/gen"
 GEN_FILE="$GEN_DIR/models.go"
+CODEX_PACKAGE="@openai/codex@$VERSION"
 
-if ! command -v codex >/dev/null 2>&1; then
-  echo "codex is required" >&2
-  exit 1
-fi
-
-actual_version="$(codex --version | awk '{print $2}')"
+actual_version="$(npx --yes "$CODEX_PACKAGE" --version | awk '{print $2}')"
 if [[ "$actual_version" != "$VERSION" ]]; then
   echo "warning: generating schemas for codex-cli $actual_version while CODEX_SCHEMA_VERSION=$VERSION" >&2
 fi
@@ -28,7 +29,7 @@ fi
 rm -rf "$SCHEMA_DIR"
 mkdir -p "$SCHEMA_DIR" "$GEN_DIR"
 
-codex app-server generate-json-schema --out "$SCHEMA_DIR"
+npx --yes "$CODEX_PACKAGE" app-server generate-json-schema --out "$SCHEMA_DIR"
 
 schema_files=(
   "$SCHEMA_DIR/v1/InitializeParams.json"
