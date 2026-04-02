@@ -20,6 +20,33 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
 }))
 
+vi.mock('@/components/dashboard/issue-preview-boundary', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+
+  return {
+    IssuePreviewBoundary: ({
+      bootstrap,
+      issue,
+      open,
+    }: {
+      bootstrap?: {
+        overview?: {
+          snapshot?: {
+            running?: Array<{ last_event?: string }>
+          }
+        }
+      }
+      issue?: { identifier?: string }
+      open: boolean
+    }) =>
+      React.createElement(
+        'div',
+        { 'data-testid': 'issue-preview-boundary' },
+        open && issue ? bootstrap?.overview?.snapshot?.running?.[0]?.last_event ?? 'No live session' : null,
+      ),
+  }
+})
+
 vi.mock('@/lib/api', () => ({
   api: {
     bootstrap: vi.fn(),

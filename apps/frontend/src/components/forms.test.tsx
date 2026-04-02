@@ -18,6 +18,138 @@ vi.mock('@/lib/api', () => ({
   },
 }))
 
+vi.mock('@/components/ui/multi-combobox', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+
+  function normalize(value: string) {
+    return value.trim().toLowerCase()
+  }
+
+  function MockMultiCombobox({
+    ariaLabel,
+    labelledBy,
+    disabled,
+    emptyText,
+    loading = false,
+    onChange,
+    onSearchChange,
+    options,
+    placeholder,
+    value,
+    allowCreate = false,
+    createLabel,
+  }: {
+    ariaLabel?: string
+    labelledBy?: string
+    disabled?: boolean
+    emptyText: string
+    loading?: boolean
+    onChange: (next: string[]) => void
+    onSearchChange?: (query: string) => void
+    options: Array<{ value: string; label: string; keywords?: string[] }>
+    placeholder: string
+    value: string[]
+    allowCreate?: boolean
+    createLabel?: (value: string) => string
+  }) {
+    const [query, setQuery] = React.useState('')
+    const [open, setOpen] = React.useState(false)
+    const normalizedQuery = normalize(query)
+    const selectedSet = new Set(value)
+    const filteredOptions = options.filter((option) => {
+      if (selectedSet.has(option.value)) {
+        return false
+      }
+
+      if (!normalizedQuery) {
+        return true
+      }
+
+      return [option.value, option.label, ...(option.keywords ?? [])].some((candidate) =>
+        normalize(candidate).includes(normalizedQuery),
+      )
+    })
+    const trimmedQuery = query.trim()
+    const canCreate =
+      allowCreate &&
+      trimmedQuery.length > 0 &&
+      !options.some(
+        (option) =>
+          normalize(option.value) === normalize(trimmedQuery) ||
+          normalize(option.label) === normalize(trimmedQuery),
+      ) &&
+      !selectedSet.has(trimmedQuery)
+
+    return (
+      <div>
+        <input
+          aria-label={ariaLabel}
+          aria-labelledby={labelledBy}
+          disabled={disabled}
+          placeholder={value.length > 0 ? 'Add more…' : placeholder}
+          value={query}
+          onClick={() => {
+            if (!disabled) {
+              setOpen(true)
+            }
+          }}
+          onChange={(event) => {
+            const nextValue = event.target.value
+            setQuery(nextValue)
+            onSearchChange?.(nextValue)
+            if (!disabled) {
+              setOpen(true)
+            }
+          }}
+          onFocus={() => {
+            if (!disabled) {
+              setOpen(true)
+            }
+          }}
+        />
+        {open && !disabled ? (
+          <div role="listbox">
+            {loading ? <div>Loading…</div> : null}
+            {!loading && filteredOptions.length === 0 && !canCreate ? <div>{emptyText}</div> : null}
+            {!loading
+              ? filteredOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="option"
+                    onClick={() => {
+                      onChange([...value, option.value])
+                      setQuery('')
+                      onSearchChange?.('')
+                      setOpen(false)
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))
+              : null}
+            {!loading && canCreate ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onChange([...value, trimmedQuery])
+                  setQuery('')
+                  onSearchChange?.('')
+                  setOpen(false)
+                }}
+              >
+                {createLabel ? createLabel(trimmedQuery) : `Add "${trimmedQuery}"`}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  return { MultiCombobox: MockMultiCombobox }
+})
+
 const { api } = await import('@/lib/api')
 
 describe('IssueDialog', () => {

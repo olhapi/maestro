@@ -8,6 +8,26 @@ type ConsoleCall = {
   args: unknown[]
 }
 
+class ResizeObserverMock {
+  observe() {}
+
+  unobserve() {}
+
+  disconnect() {}
+}
+
+class IntersectionObserverMock {
+  observe() {}
+
+  unobserve() {}
+
+  disconnect() {}
+
+  takeRecords() {
+    return []
+  }
+}
+
 let unexpectedConsoleCalls: ConsoleCall[] = []
 
 function formatConsoleArg(arg: unknown) {
@@ -24,6 +44,15 @@ function formatConsoleArg(arg: unknown) {
 beforeEach(() => {
   unexpectedConsoleCalls = []
 
+  vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+  vi.stubGlobal('IntersectionObserver', IntersectionObserverMock)
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    return window.setTimeout(() => callback(0), 0)
+  })
+  vi.stubGlobal('cancelAnimationFrame', (animationFrameID: number) => {
+    window.clearTimeout(animationFrameID)
+  })
+
   vi.spyOn(console, 'error').mockImplementation((...args) => {
     unexpectedConsoleCalls.push({ level: 'error', args })
   })
@@ -36,6 +65,7 @@ afterEach(() => {
   const calls = unexpectedConsoleCalls.slice()
   unexpectedConsoleCalls = []
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 
   if (calls.length === 0) {
     return
