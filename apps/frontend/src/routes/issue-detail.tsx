@@ -846,7 +846,7 @@ export function IssueDetailPage() {
   const retryMutation = useMutation({
     mutationFn: () => api.retryIssue(identifier),
     onSuccess: async () => {
-      toast.success(planApprovalPending ? "Plan thread restarted" : "Retry requested");
+      toast.success(planApprovalPending ? "Plan thread restarted" : continueAvailable ? "Continue requested" : "Retry requested");
       await invalidate();
     },
   });
@@ -1057,6 +1057,8 @@ export function IssueDetailPage() {
   ) || Boolean(
     execution.data.plan_approval?.markdown || execution.data.pending_interrupt?.approval?.markdown,
   );
+  const continueAvailable = execution.data.continue_available === true;
+  const retryActionLabel = planApprovalPending ? "Restart plan thread" : continueAvailable ? "Continue" : "Retry now";
   const commentItems = Array.isArray(comments.data?.items)
     ? comments.data.items.map(normalizeIssueComment)
     : [];
@@ -1341,10 +1343,14 @@ export function IssueDetailPage() {
 
           <SessionExecutionCard
             approvingPlan={planApprovalResponseMutation.isPending}
+            continuing={retryMutation.isPending}
             execution={execution.data}
             issueTotalTokens={issue.data.total_tokens_spent}
             onApprovePlan={(note) => {
               planApprovalResponseMutation.mutate({ approved: true, note });
+            }}
+            onContinue={() => {
+              retryMutation.mutate();
             }}
             onRequestPlanRevision={(note) => {
               planApprovalResponseMutation.mutate({ approved: false, note });
@@ -1414,8 +1420,8 @@ export function IssueDetailPage() {
                   className="h-12 w-full"
                   onClick={() => retryMutation.mutate()}
                   disabled={retryMutation.isPending}
-                  aria-label={planApprovalPending ? "Restart plan thread" : "Retry now"}
-                  title={planApprovalPending ? "Restart plan thread" : "Retry now"}
+                  aria-label={retryActionLabel}
+                  title={retryActionLabel}
                 >
                   <RotateCcw className="size-4" />
                 </Button>

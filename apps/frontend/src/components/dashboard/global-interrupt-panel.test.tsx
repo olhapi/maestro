@@ -529,6 +529,11 @@ describe('GlobalInterruptPanel', () => {
 
     expect(screen.getByText('MCP elicitation')).toBeInTheDocument()
     expect(screen.getAllByText('Form')).toHaveLength(2)
+    expect(screen.queryByText('Requested information')).not.toBeInTheDocument()
+    expect(screen.queryByText('No structured fields were supplied with this request.')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('This request only needs confirmation. Accept to continue or decline to stop.'),
+    ).not.toBeInTheDocument()
     const acceptButton = screen.getByRole('button', { name: /accept and continue/i })
     const elicitationForm = acceptButton.closest('form')
     expect(elicitationForm).not.toBeNull()

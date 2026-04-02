@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { PlanApprovalActionBar, PlanApprovalDocument } from '@/components/dashboard/plan-approval-review'
 import { MarkdownText, wrappedOutputClassName } from '@/components/ui/markdown'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
 import { describeFailureRuns, failureStatusLabel } from '@/lib/execution'
@@ -42,22 +43,46 @@ function planningSummary(status: string | undefined) {
   }
 }
 
+function continuationHeadline(reason: string | undefined) {
+  switch (reason) {
+    case 'retry_limit_reached':
+      return 'Continue after retry limit'
+    case 'no_state_transition':
+    default:
+      return 'Continue this issue'
+  }
+}
+
+function continuationSummary(reason: string | undefined) {
+  switch (reason) {
+    case 'retry_limit_reached':
+      return 'The last turn finished cleanly, but Maestro paused before the next continuation turn after reaching the automatic retry limit.'
+    case 'no_state_transition':
+    default:
+      return 'The last turn finished cleanly, but Maestro needs a manual continuation because the issue stayed in the same phase and state.'
+  }
+}
+
 export function SessionExecutionCard({
   execution,
   issueTotalTokens,
   title = 'Execution triage',
   pausedActionHint = 'Use Retry now after checking the workspace or runtime conditions.',
   onApprovePlan,
+  onContinue,
   onRequestPlanRevision,
   approvingPlan = false,
+  continuing = false,
 }: {
   execution: IssueExecutionDetail
   issueTotalTokens: number
   title?: string
   pausedActionHint?: string
   onApprovePlan?: (note?: string) => void
+  onContinue?: () => void
   onRequestPlanRevision?: (note: string) => void
   approvingPlan?: boolean
+  continuing?: boolean
 }) {
   const session = execution.session
   const activityGroups = execution.activity_groups ?? []
@@ -75,6 +100,7 @@ export function SessionExecutionCard({
   const currentPlanVersion = planning?.current_version ?? (planningVersions.length > 0 ? planningVersions[planningVersions.length - 1] : undefined)
   const pendingPlanApproval = execution.plan_approval
   const pendingPlanRevision = execution.plan_revision
+  const continueAvailable = execution.continue_available === true
   const activePlanApprovalMarkdown =
     pendingInterrupt?.approval?.markdown?.trim() ||
     pendingPlanApproval?.markdown?.trim() ||
@@ -130,6 +156,11 @@ export function SessionExecutionCard({
     execution.consecutive_failures,
     failureSummaryReason,
   )
+  const continueActionsVisible =
+    continueAvailable &&
+    execution.retry_state === 'paused' &&
+    !hasOpenPlanningSession &&
+    !pendingInterrupt
   const planningBadgeLabel =
     effectivePlanningStatus === 'drafting'
       ? 'Drafting'
@@ -253,7 +284,36 @@ export function SessionExecutionCard({
           ) : null}
         </div>
 
-        {execution.retry_state === 'paused' && !hasOpenPlanningSession ? (
+        {continueActionsVisible ? (
+          <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-sky-400/25 bg-[linear-gradient(180deg,rgba(83,217,255,0.12),rgba(255,255,255,0.03))] p-3.5 text-sm text-sky-50">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 size-4 text-sky-200" />
+                <div>
+                  <p className="font-medium text-sky-100">{continuationHeadline(execution.pause_reason)}</p>
+                  <p className="mt-2 text-sky-50/90">
+                    {continuationSummary(execution.pause_reason)}
+                  </p>
+                  <p className="mt-2 text-sky-100/80">
+                    Continue to queue the next turn for this issue.
+                  </p>
+                </div>
+              </div>
+              <Button
+                className="shrink-0"
+                disabled={continuing || !onContinue}
+                type="button"
+                onClick={() => {
+                  onContinue?.()
+                }}
+              >
+                {continuing ? 'Continuing...' : 'Continue'}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {execution.retry_state === 'paused' && !hasOpenPlanningSession && !continueActionsVisible ? (
           <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-amber-400/25 bg-amber-400/10 p-3.5 text-sm text-amber-50">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 size-4 text-amber-200" />

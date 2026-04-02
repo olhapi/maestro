@@ -557,6 +557,7 @@ export interface IssueExecutionDetail {
   attempt_number: number;
   failure_class?: string;
   current_error?: string;
+  continue_available?: boolean;
   retry_state: "none" | "active" | "scheduled" | "paused";
   next_retry_at?: string;
   paused_at?: string;
