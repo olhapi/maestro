@@ -12,6 +12,7 @@ import (
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/olhapi/maestro/internal/agentruntime"
+	"github.com/olhapi/maestro/internal/kanban"
 )
 
 type pendingInteractionRegistrar interface {
@@ -48,13 +49,17 @@ func (s *Server) handleApprovalPrompt(ctx context.Context, request mcpapi.CallTo
 		return s.toolError("approval_prompt", err.Error()), nil
 	}
 
-	registrar, ok := s.provider.(pendingInteractionRegistrar)
-	if !ok || registrar == nil {
-		return s.toolError("approval_prompt", "runtime_unavailable: this Maestro MCP server was started without pending-interaction support"), nil
-	}
 	interaction := buildApprovalPromptInteraction(call)
 	if interaction == nil {
 		return s.toolError("approval_prompt", "invalid approval prompt payload"), nil
+	}
+	if s.shouldAutoApproveApprovalPrompt(call) {
+		return encodeApprovalPromptResult(interaction, agentruntime.PendingInteractionResponse{Decision: "allow"})
+	}
+
+	registrar, ok := s.provider.(pendingInteractionRegistrar)
+	if !ok || registrar == nil {
+		return s.toolError("approval_prompt", "runtime_unavailable: this Maestro MCP server was started without pending-interaction support"), nil
 	}
 
 	resultCh := make(chan claudePermissionPromptResult, 1)
@@ -92,6 +97,51 @@ func (s *Server) handleApprovalPrompt(ctx context.Context, request mcpapi.CallTo
 	case <-ctx.Done():
 		return s.toolError("approval_prompt", ctx.Err().Error()), nil
 	}
+}
+
+func (s *Server) shouldAutoApproveApprovalPrompt(call *approvalPromptRequest) bool {
+	if s == nil || s.store == nil || call == nil || strings.TrimSpace(call.Issue.IssueID) == "" {
+		return false
+	}
+
+	issue, err := s.store.GetIssue(call.Issue.IssueID)
+	if err != nil || issue == nil {
+		return false
+	}
+
+	profile := kanban.NormalizePermissionProfile(string(issue.PermissionProfile))
+	if profile == kanban.PermissionProfileFullAccess {
+		return true
+	}
+	projectID := strings.TrimSpace(issue.ProjectID)
+	if projectID == "" {
+		return false
+	}
+	project, err := s.store.GetProject(projectID)
+	if err != nil || project == nil {
+		return false
+	}
+	return kanban.NormalizePermissionProfile(string(project.PermissionProfile)) == kanban.PermissionProfileFullAccess
+}
+
+func encodeApprovalPromptResult(interaction *agentruntime.PendingInteraction, response agentruntime.PendingInteractionResponse) (*mcpapi.CallToolResult, error) {
+	if interaction == nil {
+		return nil, fmt.Errorf("invalid approval prompt payload")
+	}
+	result, err := buildClaudePermissionPromptResult(*interaction, response)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode approval response: %w", err)
+	}
+	return &mcpapi.CallToolResult{
+		Content: []mcpapi.Content{mcpapi.TextContent{
+			Type: "text",
+			Text: string(body),
+		}},
+	}, nil
 }
 
 func parseApprovalPromptCall(request mcpapi.CallToolRequest) (*approvalPromptRequest, error) {

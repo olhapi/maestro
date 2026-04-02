@@ -237,6 +237,82 @@ func TestApprovalPromptHandleCallToolTimesOutDeterministically(t *testing.T) {
 	}
 }
 
+func TestApprovalPromptHandleCallToolAutoApprovesFullAccessProfiles(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, server *Server, project *kanban.Project, issue *kanban.Issue)
+	}{
+		{
+			name: "issue full-access",
+			setup: func(t *testing.T, server *Server, project *kanban.Project, issue *kanban.Issue) {
+				if err := server.store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfileFullAccess); err != nil {
+					t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+				}
+			},
+		},
+		{
+			name: "project full-access",
+			setup: func(t *testing.T, server *Server, project *kanban.Project, issue *kanban.Issue) {
+				if err := server.store.UpdateProjectPermissionProfile(project.ID, kanban.PermissionProfileFullAccess); err != nil {
+					t.Fatalf("UpdateProjectPermissionProfile: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, provider, project, issue, workspace := newApprovalPromptTestServer(t)
+			tc.setup(t, server, project, issue)
+
+			request := approvalPromptCallRequest(t, project, issue, workspace, "toolu_full_access", "Bash", map[string]interface{}{
+				"command": "pwd",
+			})
+
+			resultCh := make(chan *mcpapi.CallToolResult, 1)
+			errCh := make(chan error, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			go func() {
+				result, err := server.handleCallToolRequest(ctx, request)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				resultCh <- result
+			}()
+
+			result := awaitApprovalPromptResult(t, resultCh, errCh)
+			if result.IsError {
+				t.Fatalf("expected auto-approved prompt to succeed, got %#v", result)
+			}
+			payload := decodeApprovalPromptResult(t, result)
+			if got := payload["behavior"]; got != "allow" {
+				t.Fatalf("unexpected behavior: got %#v want %q", got, "allow")
+			}
+			updatedInput, ok := payload["updatedInput"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected auto-approved response to include updatedInput, got %#v", payload)
+			}
+			if !reflect.DeepEqual(updatedInput, map[string]interface{}{"command": "pwd"}) {
+				t.Fatalf("unexpected auto-approved payload: got %#v", updatedInput)
+			}
+
+			select {
+			case interaction := <-provider.pendingCh:
+				t.Fatalf("did not expect a pending interaction for full-access auto-approval, got %#v", interaction)
+			default:
+			}
+			select {
+			case responder := <-provider.responderCh:
+				t.Fatalf("did not expect a pending interaction responder for full-access auto-approval, got %#v", responder)
+			default:
+			}
+		})
+	}
+}
+
 func TestApprovalPromptHandleCallToolUsesFallbackToolUseIDWhenMissing(t *testing.T) {
 	server, provider, project, issue, workspace := newApprovalPromptTestServer(t)
 
