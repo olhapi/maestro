@@ -14,11 +14,12 @@ import (
 )
 
 type claudeHarness struct {
-	dbPath        string
-	argsPath      string
-	sessionPath   string
-	turnCountPath string
-	env           []string
+	dbPath         string
+	argsPath       string
+	sessionPath    string
+	streamMarkPath string
+	turnCountPath  string
+	env            []string
 }
 
 func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
@@ -262,6 +263,10 @@ func TestStdioRuntimeInterruptsOnContextCancellation(t *testing.T) {
 		session := client.Session()
 		return session != nil && session.LastEvent == "turn.started"
 	})
+	waitForCondition(t, 5*time.Second, func() bool {
+		_, err := os.Stat(harness.streamMarkPath)
+		return err == nil
+	})
 
 	cancel()
 
@@ -322,6 +327,10 @@ func TestStdioRuntimeCloseInterruptsActiveTurn(t *testing.T) {
 	waitForCondition(t, time.Second, func() bool {
 		session := client.Session()
 		return session != nil && session.LastEvent == "turn.started"
+	})
+	waitForCondition(t, 5*time.Second, func() bool {
+		_, err := os.Stat(harness.streamMarkPath)
+		return err == nil
 	})
 
 	if err := client.Close(); err != nil {
@@ -427,19 +436,22 @@ func mustStartClaudeRuntime(t *testing.T, harness claudeHarness, observers agent
 func newClaudeHarness(t *testing.T, extraEnv ...string) claudeHarness {
 	t.Helper()
 	dir := t.TempDir()
+	streamMarkPath := filepath.Join(dir, "claude-streamed.txt")
 	env := append(os.Environ(),
 		"CLAUDE_ARGS_PATH="+filepath.Join(dir, "claude-args.txt"),
 		"CLAUDE_SESSION_PATH="+filepath.Join(dir, "claude-session.txt"),
+		"CLAUDE_STREAM_MARK_PATH="+streamMarkPath,
 		"CLAUDE_TURN_COUNT_PATH="+filepath.Join(dir, "claude-turn-count.txt"),
 		"CLAUDE_SESSION_ID=claude-session-1",
 	)
 	env = append(env, extraEnv...)
 	return claudeHarness{
-		dbPath:        filepath.Join(dir, "maestro.db"),
-		argsPath:      filepath.Join(dir, "claude-args.txt"),
-		sessionPath:   filepath.Join(dir, "claude-session.txt"),
-		turnCountPath: filepath.Join(dir, "claude-turn-count.txt"),
-		env:           env,
+		dbPath:         filepath.Join(dir, "maestro.db"),
+		argsPath:       filepath.Join(dir, "claude-args.txt"),
+		sessionPath:    filepath.Join(dir, "claude-session.txt"),
+		streamMarkPath: streamMarkPath,
+		turnCountPath:  filepath.Join(dir, "claude-turn-count.txt"),
+		env:            env,
 	}
 }
 
@@ -506,6 +518,10 @@ func writeFakeClaudeCLI(t *testing.T) string {
 		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\"}}"
 		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}}"
 		emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_stop\"}}"
+
+		if [ -n "${CLAUDE_STREAM_MARK_PATH:-}" ]; then
+			printf '%s' "$prompt_json" > "$CLAUDE_STREAM_MARK_PATH"
+		fi
 
 		if [ "${CLAUDE_FAKE_INTERRUPT_AFTER_STREAM:-0}" = "1" ]; then
 			sleep "${CLAUDE_FAKE_INTERRUPT_SLEEP_SECONDS:-60}"
