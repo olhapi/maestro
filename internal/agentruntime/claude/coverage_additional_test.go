@@ -163,7 +163,7 @@ func TestClaudeHelperConversions(t *testing.T) {
 		if got := claudePermissionMode(agentruntime.PermissionConfig{CollaborationMode: " PLAN "}); got != "plan" {
 			t.Fatalf("claudePermissionMode plan: got %q", got)
 		}
-		if got := claudePermissionMode(agentruntime.PermissionConfig{}); got != "bypassPermissions" {
+		if got := claudePermissionMode(agentruntime.PermissionConfig{}); got != "default" {
 			t.Fatalf("claudePermissionMode default: got %q", got)
 		}
 	})
