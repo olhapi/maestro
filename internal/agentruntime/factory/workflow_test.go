@@ -157,6 +157,33 @@ func TestRuntimeSpecFromWorkflowUsesExplicitRuntimeSelection(t *testing.T) {
 	}
 }
 
+func TestRuntimeSpecFromWorkflowUsesNamedRuntimeDefaultsForClaude(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+
+	spec, err := RuntimeSpecFromWorkflow(WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "claude",
+		RuntimeConfig:   config.RuntimeConfig{Provider: "claude", Transport: config.AgentModeStdio},
+		WorkspacePath:   "/tmp/workspaces/MAES-123",
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+	})
+	if err != nil {
+		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
+	}
+
+	if spec.Provider != agentruntime.ProviderClaude {
+		t.Fatalf("expected claude provider, got %q", spec.Provider)
+	}
+	if spec.Transport != agentruntime.TransportStdio {
+		t.Fatalf("expected stdio transport, got %q", spec.Transport)
+	}
+	if spec.Command != workflow.Config.Runtime.Entries["claude"].Command {
+		t.Fatalf("expected named runtime command, got %q", spec.Command)
+	}
+}
+
 func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
 	workflow.Config.Workspace.Root = "/repo/root"
@@ -254,6 +281,48 @@ func TestStartWorkflowSelectsClaudeRuntime(t *testing.T) {
 		t.Fatalf("expected claude stdio runtime metadata, got %+v", session.Metadata)
 	}
 	if !strings.Contains(client.Output(), "hello claude") {
+		t.Fatalf("expected claude runtime output, got %q", client.Output())
+	}
+}
+
+func TestStartWorkflowSelectsClaudeRuntimeFromNamedDefaults(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+	workflow.Config.Runtime.Default = "claude"
+	runtimeConfig := workflow.Config.Runtime.Entries["claude"]
+	runtimeConfig.Command = writePassThroughClaudeCLI(t)
+	workflow.Config.Runtime.Entries["claude"] = runtimeConfig
+
+	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "claude",
+		RuntimeConfig:   config.RuntimeConfig{Provider: "claude", Transport: config.AgentModeStdio},
+		WorkspacePath:   t.TempDir(),
+		IssueID:         "iss_456",
+		IssueIdentifier: "MAES-456",
+		DBPath:          filepath.Join(t.TempDir(), "maestro.db"),
+	}, agentruntime.Observers{})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	if err := client.RunTurn(context.Background(), agentruntime.TurnRequest{
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: "hello named claude"}},
+	}, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	session := client.Session()
+	if session == nil {
+		t.Fatal("expected session snapshot")
+	}
+	if session.Metadata["provider"] != string(agentruntime.ProviderClaude) || session.Metadata["transport"] != string(agentruntime.TransportStdio) {
+		t.Fatalf("expected claude stdio runtime metadata, got %+v", session.Metadata)
+	}
+	if !strings.Contains(client.Output(), "hello named claude") {
 		t.Fatalf("expected claude runtime output, got %q", client.Output())
 	}
 }
