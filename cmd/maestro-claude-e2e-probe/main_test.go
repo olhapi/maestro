@@ -367,8 +367,11 @@ func TestWantsInterruptObservation(t *testing.T) {
 		want bool
 	}{
 		{name: "no_interrupt_fields", opts: options{}, want: false},
+		{name: "approval_type_only", opts: options{interruptApprovalType: "plan_approval"}, want: true},
 		{name: "classification_only", opts: options{interruptClass: "command"}, want: true},
 		{name: "tool_name_only", opts: options{interruptToolName: "Bash"}, want: true},
+		{name: "plan_status_only", opts: options{interruptPlanStatus: "awaiting_approval"}, want: true},
+		{name: "plan_version_only", opts: options{interruptPlanVersion: 2}, want: true},
 		{name: "decision_only", opts: options{interruptDecision: "allow"}, want: true},
 		{name: "note_only", opts: options{interruptNote: "operator approved"}, want: true},
 	}
@@ -570,6 +573,37 @@ func TestValidatePendingInterrupt(t *testing.T) {
 		err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 3)
 		if err == nil || !strings.Contains(err.Error(), "expected plan version") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want plan version mismatch", err)
+		}
+	})
+
+	t.Run("rejects plan approval collaboration mode mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		interaction := validPlanApprovalInterrupt()
+		interaction.CollaborationMode = "default"
+		err := validatePendingInterrupt(interaction, "CL-3", "plan_approval", "", "", "awaiting_approval", 2)
+		if err == nil || !strings.Contains(err.Error(), "expected plan collaboration mode") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want collaboration mode mismatch", err)
+		}
+	})
+
+	t.Run("rejects plan approval reason mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		interaction := validPlanApprovalInterrupt()
+		interaction.Approval.Reason = "other"
+		err := validatePendingInterrupt(interaction, "CL-3", "plan_approval", "", "", "awaiting_approval", 2)
+		if err == nil || !strings.Contains(err.Error(), "expected plan approval reason") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want plan approval reason mismatch", err)
+		}
+	})
+
+	t.Run("rejects unsupported approval type", func(t *testing.T) {
+		t.Parallel()
+
+		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "unknown", "command", "Bash", "", 0)
+		if err == nil || !strings.Contains(err.Error(), `unsupported interrupt approval type "unknown"`) {
+			t.Fatalf("validatePendingInterrupt() error = %v, want unsupported approval type", err)
 		}
 	})
 }
@@ -1480,6 +1514,183 @@ func TestRunWithInterruptObservation(t *testing.T) {
 		"permission_prompt_tool=mcp__maestro__approval_prompt",
 		"runtime_event_count=1",
 		"runtime_event_kinds=run_started",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary evidence missing %q: %s", want, summary)
+		}
+	}
+}
+
+func TestRunWithPlanApprovalObservation(t *testing.T) {
+	fixture := newProbeRunFixture(t, "happy")
+
+	store, err := kanban.NewStore(fixture.dbPath)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	issue, err := store.GetIssueByIdentifier(fixture.opts.issueIdentifier)
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("GetIssueByIdentifier() error = %v", err)
+	}
+	requestedAt := time.Date(2026, 4, 3, 20, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpdateIssuePermissionProfile() error = %v", err)
+	}
+	if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Ship the guarded rollout.", requestedAt, 2, "thread-plan-1", "turn-plan-1"); err != nil {
+		_ = store.Close()
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext() error = %v", err)
+	}
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Add an explicit rollback check.", requestedAt.Add(2*time.Minute)); err != nil {
+		_ = store.Close()
+		t.Fatalf("SetIssuePendingPlanRevision() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	interaction := validPlanApprovalInterrupt()
+	interaction.IssueIdentifier = fixture.opts.issueIdentifier
+	interaction.Approval.PlanVersionNumber = 1
+
+	var mu sync.Mutex
+	responded := false
+	captured := agentruntime.PendingInteractionResponse{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-a" {
+			t.Fatalf("Authorization header = %q, want Bearer token-a", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/sessions":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []map[string]any{
+					{
+						"issue_identifier": fixture.opts.issueIdentifier,
+						"status":           "paused",
+						"stop_reason":      "plan_approval_pending",
+						"source":           "live",
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/interrupts":
+			mu.Lock()
+			items := []agentruntime.PendingInteraction{interaction}
+			if responded {
+				items = nil
+			}
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{Items: items})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/interrupts/"+interaction.ID+"/respond":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode response payload: %v", err)
+			}
+			mu.Lock()
+			responded = true
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	writeJSONFile(t, fixture.registryEntryPath, maestromcp.DaemonEntry{
+		StoreID:     fixture.storeID,
+		DBPath:      fixture.dbPath,
+		PID:         10,
+		BaseURL:     server.URL + "/mcp",
+		BearerToken: "token-a",
+		Version:     "1.0.0",
+		Transport:   "stdio",
+	})
+
+	fixture.opts.allowedTools = ""
+	fixture.opts.permissionMode = "plan"
+	fixture.opts.permissionPromptTool = "mcp__maestro__approval_prompt"
+	fixture.opts.interruptApprovalType = "plan_approval"
+	fixture.opts.interruptPlanStatus = "awaiting_approval"
+	fixture.opts.interruptPlanVersion = 1
+	fixture.opts.interruptDecision = "approved"
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	mu.Lock()
+	if !responded {
+		mu.Unlock()
+		t.Fatal("expected plan approval response to be posted")
+	}
+	mu.Unlock()
+	if captured.Decision != "approved" {
+		t.Fatalf("captured response = %+v, want approved", captured)
+	}
+
+	jsonBytes, err := os.ReadFile(fixture.evidencePrefix + ".json")
+	if err != nil {
+		t.Fatalf("read JSON evidence: %v", err)
+	}
+	var evidence probeEvidence
+	if err := json.Unmarshal(jsonBytes, &evidence); err != nil {
+		t.Fatalf("decode JSON evidence: %v", err)
+	}
+	if !evidence.Interrupt.Requested || !evidence.Interrupt.Cleared {
+		t.Fatalf("interrupt evidence = %+v, want requested+cleared", evidence.Interrupt)
+	}
+	if got, want := evidence.Interrupt.ResponseDecision, "approved"; got != want {
+		t.Fatalf("evidence.Interrupt.ResponseDecision = %q, want %q", got, want)
+	}
+	if got, want := evidence.Interrupt.Interaction.CollaborationMode, "plan"; got != want {
+		t.Fatalf("evidence.Interrupt.Interaction.CollaborationMode = %q, want %q", got, want)
+	}
+	if got, want := evidence.Issue.PermissionProfile, string(kanban.PermissionProfilePlanThenFullAccess); got != want {
+		t.Fatalf("evidence.Issue.PermissionProfile = %q, want %q", got, want)
+	}
+	if !evidence.Issue.PlanApprovalPending {
+		t.Fatalf("evidence.Issue.PlanApprovalPending = false, want true")
+	}
+	if !evidence.Planning.Present {
+		t.Fatal("evidence.Planning.Present = false, want true")
+	}
+	if got, want := evidence.Planning.Status, string(kanban.IssuePlanningStatusRevisionRequested); got != want {
+		t.Fatalf("evidence.Planning.Status = %q, want %q", got, want)
+	}
+	if got, want := evidence.Planning.CurrentVersionNumber, 1; got != want {
+		t.Fatalf("evidence.Planning.CurrentVersionNumber = %d, want %d", got, want)
+	}
+	if got, want := evidence.Planning.CurrentVersionThreadID, "thread-plan-1"; got != want {
+		t.Fatalf("evidence.Planning.CurrentVersionThreadID = %q, want %q", got, want)
+	}
+	if got, want := evidence.Planning.CurrentVersionTurnID, "turn-plan-1"; got != want {
+		t.Fatalf("evidence.Planning.CurrentVersionTurnID = %q, want %q", got, want)
+	}
+	if got, want := evidence.Planning.PendingRevisionNote, "Add an explicit rollback check."; got != want {
+		t.Fatalf("evidence.Planning.PendingRevisionNote = %q, want %q", got, want)
+	}
+
+	summaryBytes, err := os.ReadFile(fixture.evidencePrefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary evidence: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range []string{
+		"interrupt_collaboration_mode=plan",
+		"interrupt_plan_status=awaiting_approval",
+		"interrupt_plan_version=1",
+		"interrupt_response_decision=approved",
+		"issue_permission_profile=plan-then-full-access",
+		"issue_plan_approval_pending=true",
+		"planning_present=true",
+		"planning_current_version_number=1",
+		"planning_current_version_thread_id=thread-plan-1",
+		"planning_current_version_turn_id=turn-plan-1",
+		"planning_pending_revision_note=Add an explicit rollback check.",
 	} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary evidence missing %q: %s", want, summary)
