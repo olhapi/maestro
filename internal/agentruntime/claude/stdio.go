@@ -850,6 +850,17 @@ func claudePermissionMode(config agentruntime.PermissionConfig) string {
 	}
 }
 
+func claudeUsesApprovalPrompt(config agentruntime.PermissionConfig) bool {
+	return strings.TrimSpace(config.ThreadSandbox) != "danger-full-access"
+}
+
+func claudeAllowedTools(config agentruntime.PermissionConfig) string {
+	if !claudeUsesApprovalPrompt(config) {
+		return "Bash,Edit,Write,MultiEdit"
+	}
+	return ""
+}
+
 func buildClaudeCommand(spec agentruntime.RuntimeSpec) (string, func(), error) {
 	if strings.TrimSpace(spec.DBPath) == "" {
 		return "", nil, fmt.Errorf("claude runtime requires a db path for the live Maestro MCP bridge")
@@ -885,10 +896,20 @@ func composeClaudeCommand(spec agentruntime.RuntimeSpec, resumeToken, mcpConfigP
 		"--include-partial-messages",
 		"--permission-mode",
 		claudePermissionMode(spec.Permissions),
-		"--permission-prompt-tool",
-		"mcp__maestro__approval_prompt",
 		"--settings",
 		settingsPath,
+	}
+
+	if allowedTools := claudeAllowedTools(spec.Permissions); allowedTools != "" {
+		args = append(args,
+			"--allowed-tools",
+			allowedTools,
+		)
+	} else {
+		args = append(args,
+			"--permission-prompt-tool",
+			"mcp__maestro__approval_prompt",
+		)
 	}
 
 	if resumeToken != "" {

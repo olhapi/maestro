@@ -345,6 +345,7 @@ Missing-file behavior differs by command:
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md): runtime surfaces, HTTP endpoints, extension tools, logs, and operational details
 - [`docs/NPM_RELEASE.md`](docs/NPM_RELEASE.md): first npm prerelease bootstrap and the trusted-publishing release flow
 - [`docs/E2E_REAL_CODEX.md`](docs/E2E_REAL_CODEX.md): end-to-end harness that runs the real Codex CLI against deterministic issues
+- [`docs/E2E_REAL_CLAUDE.md`](docs/E2E_REAL_CLAUDE.md): end-to-end harness that runs the real Claude CLI against a deterministic issue with shared preflight and failure diagnostics
 - [`WORKFLOW.md`](WORKFLOW.md): the workflow configuration used by this repository
 
 ## Contributor Setup

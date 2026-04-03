@@ -166,6 +166,18 @@ func TestClaudeHelperConversions(t *testing.T) {
 		if got := claudePermissionMode(agentruntime.PermissionConfig{}); got != "default" {
 			t.Fatalf("claudePermissionMode default: got %q", got)
 		}
+		if claudeUsesApprovalPrompt(agentruntime.PermissionConfig{ThreadSandbox: "danger-full-access"}) {
+			t.Fatal("claudeUsesApprovalPrompt full access should be false")
+		}
+		if got := claudeAllowedTools(agentruntime.PermissionConfig{ThreadSandbox: "danger-full-access"}); got != "Bash,Edit,Write,MultiEdit" {
+			t.Fatalf("claudeAllowedTools full access: got %q", got)
+		}
+		if !claudeUsesApprovalPrompt(agentruntime.PermissionConfig{}) {
+			t.Fatal("claudeUsesApprovalPrompt default should be true")
+		}
+		if got := claudeAllowedTools(agentruntime.PermissionConfig{}); got != "" {
+			t.Fatalf("claudeAllowedTools default: got %q", got)
+		}
 	})
 }
 
@@ -233,6 +245,9 @@ func TestClaudeMetadataAndCommandHelpers(t *testing.T) {
 		if !strings.Contains(defaultCommand, "'--settings'") {
 			t.Fatalf("composeClaudeCommand default should include the session overlay, got %q", defaultCommand)
 		}
+		if !strings.Contains(defaultCommand, "'--permission-prompt-tool' 'mcp__maestro__approval_prompt'") {
+			t.Fatalf("composeClaudeCommand default should include the approval prompt tool, got %q", defaultCommand)
+		}
 
 		resumeCommand, err := composeClaudeCommand(agentruntime.RuntimeSpec{
 			Command: "custom claude",
@@ -247,6 +262,21 @@ func TestClaudeMetadataAndCommandHelpers(t *testing.T) {
 			if !strings.Contains(resumeCommand, want) {
 				t.Fatalf("composeClaudeCommand resume missing %q in %q", want, resumeCommand)
 			}
+		}
+
+		fullAccessCommand, err := composeClaudeCommand(agentruntime.RuntimeSpec{
+			Permissions: agentruntime.PermissionConfig{
+				ThreadSandbox: "danger-full-access",
+			},
+		}, "", filepath.Join("tmp", "mcp.json"), filepath.Join("tmp", "settings.json"))
+		if err != nil {
+			t.Fatalf("composeClaudeCommand full access: %v", err)
+		}
+		if !strings.Contains(fullAccessCommand, "'--allowed-tools' 'Bash,Edit,Write,MultiEdit'") {
+			t.Fatalf("composeClaudeCommand full access should pre-allow built-ins, got %q", fullAccessCommand)
+		}
+		if strings.Contains(fullAccessCommand, "mcp__maestro__approval_prompt") {
+			t.Fatalf("composeClaudeCommand full access should skip the approval prompt tool, got %q", fullAccessCommand)
 		}
 
 		if _, err := composeClaudeCommand(agentruntime.RuntimeSpec{}, "", "", filepath.Join("tmp", "settings.json")); err == nil {

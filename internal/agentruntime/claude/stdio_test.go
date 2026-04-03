@@ -235,6 +235,49 @@ func TestStdioRuntimeUsesProvidedResumeTokenOnFirstTurn(t *testing.T) {
 	}
 }
 
+func TestStdioRuntimeFullAccessOmitsApprovalPromptAndPreAllowsBuiltins(t *testing.T) {
+	harness := newClaudeHarness(t)
+	client, err := Start(context.Background(), agentruntime.RuntimeSpec{
+		Provider:        agentruntime.ProviderClaude,
+		Transport:       agentruntime.TransportStdio,
+		Command:         writeFakeClaudeCLI(t),
+		Workspace:       t.TempDir(),
+		IssueID:         "iss-1",
+		IssueIdentifier: "ISS-1",
+		DBPath:          harness.dbPath,
+		Env:             harness.env,
+		Permissions: agentruntime.PermissionConfig{
+			ThreadSandbox: "danger-full-access",
+		},
+	}, agentruntime.Observers{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	if err := client.RunTurn(context.Background(), agentruntime.TurnRequest{
+		Title: "full access",
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: "hello"}},
+	}, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	invocations := readInvocationArgs(t, harness.argsPath)
+	if len(invocations) != 1 {
+		t.Fatalf("expected a single Claude invocation, got %#v", invocations)
+	}
+	first := invocations[0]
+	if !containsArg(first, "--allowed-tools") {
+		t.Fatalf("expected full-access Claude args to include --allowed-tools, got %#v", first)
+	}
+	if got := argValueAfter(t, first, "--allowed-tools"); got != "Bash,Edit,Write,MultiEdit" {
+		t.Fatalf("expected full-access allowed tools, got %q from %#v", got, first)
+	}
+	if containsArg(first, "--permission-prompt-tool") {
+		t.Fatalf("did not expect the approval prompt tool in full-access mode, got %#v", first)
+	}
+}
+
 func TestStdioRuntimeInterruptsOnContextCancellation(t *testing.T) {
 	harness := newClaudeHarness(t, "CLAUDE_FAKE_INTERRUPT_AFTER_STREAM=1", "CLAUDE_FAKE_INTERRUPT_SLEEP_SECONDS=60")
 	var (
