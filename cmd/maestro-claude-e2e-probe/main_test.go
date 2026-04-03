@@ -530,6 +530,33 @@ func TestRunHappyPath(t *testing.T) {
 	}
 }
 
+func TestRunFinalModeUsesPersistedExecution(t *testing.T) {
+	fixture := newProbeRunFixture(t, "execution-final")
+	fixture.opts.mode = "final"
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run(final) error = %v", err)
+	}
+
+	jsonBytes, err := os.ReadFile(fixture.evidencePrefix + ".json")
+	if err != nil {
+		t.Fatalf("read JSON evidence: %v", err)
+	}
+	var evidence probeEvidence
+	if err := json.Unmarshal(jsonBytes, &evidence); err != nil {
+		t.Fatalf("decode JSON evidence: %v", err)
+	}
+	if evidence.LiveSessionSeen {
+		t.Fatal("evidence.LiveSessionSeen = true, want false in final mode")
+	}
+	if evidence.Execution.SessionSource != "persisted" || evidence.Execution.StopReason != "end_turn" {
+		t.Fatalf("unexpected final execution evidence: %+v", evidence.Execution)
+	}
+	if evidence.DashboardSession.Source != "persisted" || evidence.DashboardSession.StopReason != "end_turn" {
+		t.Fatalf("unexpected final dashboard evidence: %+v", evidence.DashboardSession)
+	}
+}
+
 func TestRunReportsProbeFailures(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -721,6 +748,282 @@ func TestWaitForClaudeSessionIgnoresMalformedPayloads(t *testing.T) {
 	}
 }
 
+func TestResolveIssueIdentifier(t *testing.T) {
+	t.Parallel()
+
+	issues := listIssuesData{
+		Items: []interface{}{
+			map[string]interface{}{"identifier": "MAES-1", "state": "backlog"},
+			map[string]interface{}{"identifier": "MAES-2", "state": "ready"},
+			map[string]interface{}{"identifier": "MAES-3", "state": "in_progress"},
+		},
+	}
+
+	if got := resolveIssueIdentifier("USER-1", issues); got != "USER-1" {
+		t.Fatalf("resolveIssueIdentifier(explicit) = %q, want USER-1", got)
+	}
+	if got := resolveIssueIdentifier("", issues); got != "MAES-2" {
+		t.Fatalf("resolveIssueIdentifier(ready) = %q, want MAES-2", got)
+	}
+	if got := resolveIssueIdentifier("", listIssuesData{
+		Items: []interface{}{
+			map[string]interface{}{"identifier": "MAES-9", "state": "backlog"},
+		},
+	}); got != "MAES-9" {
+		t.Fatalf("resolveIssueIdentifier(fallback) = %q, want MAES-9", got)
+	}
+	if got := resolveIssueIdentifier("", listIssuesData{
+		Items: []interface{}{
+			"skip",
+			map[string]interface{}{"identifier": "", "state": "ready"},
+			map[string]interface{}{"identifier": "MAES-10", "state": "in_progress"},
+		},
+	}); got != "MAES-10" {
+		t.Fatalf("resolveIssueIdentifier(malformed) = %q, want MAES-10", got)
+	}
+	if got := resolveIssueIdentifier("", listIssuesData{}); got != "" {
+		t.Fatalf("resolveIssueIdentifier(empty) = %q, want empty", got)
+	}
+}
+
+func TestWaitForExecutionObservationModes(t *testing.T) {
+	t.Run("live", func(t *testing.T) {
+		client := newProbeTestClient(t, "happy")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		observation, err := waitForExecutionObservation(ctx, client, "MAES-28", "live", "")
+		if err != nil {
+			t.Fatalf("waitForExecutionObservation(live) error = %v", err)
+		}
+		if !observation.Active || observation.SessionSource != "live" || !observation.StreamSeen {
+			t.Fatalf("unexpected live observation: %+v", observation)
+		}
+		if observation.RuntimeProvider != "claude" || observation.RuntimeTransport != "stdio" {
+			t.Fatalf("unexpected live runtime observation: %+v", observation)
+		}
+	})
+
+	t.Run("final", func(t *testing.T) {
+		client := newProbeTestClient(t, "execution-final")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		observation, err := waitForExecutionObservation(ctx, client, "MAES-28", "final", "")
+		if err != nil {
+			t.Fatalf("waitForExecutionObservation(final) error = %v", err)
+		}
+		if observation.Active || observation.SessionSource != "persisted" || observation.StopReason != "end_turn" {
+			t.Fatalf("unexpected final observation: %+v", observation)
+		}
+	})
+
+	t.Run("deadline", func(t *testing.T) {
+		client := newProbeTestClient(t, "execution-bad-data")
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, err := waitForExecutionObservation(ctx, client, "MAES-28", "live", "")
+		if err == nil || err.Error() != "did not observe issue execution before context deadline" {
+			t.Fatalf("waitForExecutionObservation(deadline) error = %v, want context deadline message", err)
+		}
+	})
+}
+
+func TestWaitForDashboardSessionObservation(t *testing.T) {
+	t.Run("live", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != "Bearer token-a" {
+				t.Fatalf("Authorization header = %q, want Bearer token-a", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []map[string]any{
+					{
+						"issue_identifier": "MAES-28",
+						"status":           "running",
+						"stop_reason":      "",
+						"source":           "live",
+					},
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		observation, err := waitForDashboardSessionObservation(ctx, maestromcp.DaemonEntry{
+			BaseURL:     server.URL + "/mcp",
+			BearerToken: "token-a",
+		}, "MAES-28", "live")
+		if err != nil {
+			t.Fatalf("waitForDashboardSessionObservation(live) error = %v", err)
+		}
+		if observation.Source != "live" || observation.Status != "running" {
+			t.Fatalf("unexpected live dashboard observation: %+v", observation)
+		}
+	})
+
+	t.Run("final", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []map[string]any{
+					{
+						"issue_identifier": "MAES-28",
+						"status":           "completed",
+						"stop_reason":      "end_turn",
+						"source":           "persisted",
+					},
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		observation, err := waitForDashboardSessionObservation(ctx, maestromcp.DaemonEntry{
+			BaseURL: server.URL + "/mcp",
+		}, "MAES-28", "final")
+		if err != nil {
+			t.Fatalf("waitForDashboardSessionObservation(final) error = %v", err)
+		}
+		if observation.Source != "persisted" || observation.StopReason != "end_turn" {
+			t.Fatalf("unexpected final dashboard observation: %+v", observation)
+		}
+	})
+
+	t.Run("deadline", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"entries": []map[string]any{}})
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_, err := waitForDashboardSessionObservation(ctx, maestromcp.DaemonEntry{
+			BaseURL: server.URL + "/mcp",
+		}, "MAES-28", "live")
+		if err == nil || err.Error() != "did not observe dashboard session before context deadline" {
+			t.Fatalf("waitForDashboardSessionObservation(deadline) error = %v, want context deadline message", err)
+		}
+	})
+
+	t.Run("ignores_wrong_source", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []map[string]any{
+					{
+						"issue_identifier": "MAES-28",
+						"status":           "completed",
+						"stop_reason":      "end_turn",
+						"source":           "persisted",
+					},
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_, err := waitForDashboardSessionObservation(ctx, maestromcp.DaemonEntry{
+			BaseURL: server.URL + "/mcp",
+		}, "MAES-28", "live")
+		if err == nil || err.Error() != "did not observe dashboard session before context deadline" {
+			t.Fatalf("waitForDashboardSessionObservation(ignores_wrong_source) error = %v, want context deadline message", err)
+		}
+	})
+}
+
+func TestDashboardSessionObservationForIssueErrors(t *testing.T) {
+	t.Run("success_and_no_match", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []any{
+					"skip",
+					map[string]any{
+						"issue_identifier": "OTHER-1",
+						"status":           "running",
+						"stop_reason":      "",
+						"source":           "live",
+					},
+					map[string]any{
+						"issue_identifier": "MAES-28",
+						"status":           "completed",
+						"stop_reason":      "end_turn",
+						"source":           "persisted",
+					},
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		observation, ok, err := dashboardSessionObservationForIssue(maestromcp.DaemonEntry{
+			BaseURL: server.URL + "/mcp",
+		}, "MAES-28")
+		if err != nil || !ok {
+			t.Fatalf("dashboardSessionObservationForIssue(success) = (%+v, %v, %v), want success", observation, ok, err)
+		}
+		if observation.Source != "persisted" || observation.StopReason != "end_turn" {
+			t.Fatalf("unexpected dashboard session observation: %+v", observation)
+		}
+
+		observation, ok, err = dashboardSessionObservationForIssue(maestromcp.DaemonEntry{
+			BaseURL: server.URL + "/mcp",
+		}, "MISSING-1")
+		if err != nil || ok {
+			t.Fatalf("dashboardSessionObservationForIssue(no_match) = (%+v, %v, %v), want no match", observation, ok, err)
+		}
+	})
+
+	t.Run("missing_base_url", func(t *testing.T) {
+		_, ok, err := dashboardSessionObservationForIssue(maestromcp.DaemonEntry{}, "MAES-28")
+		if err == nil || err.Error() != "daemon registry base_url missing" || ok {
+			t.Fatalf("dashboardSessionObservationForIssue(missing_base_url) = (%v, %v), want missing base_url error", ok, err)
+		}
+	})
+
+	t.Run("bad_status", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "nope", http.StatusBadGateway)
+		}))
+		t.Cleanup(server.Close)
+
+		_, ok, err := dashboardSessionObservationForIssue(maestromcp.DaemonEntry{
+			BaseURL: server.URL + "/mcp",
+		}, "MAES-28")
+		if err == nil || !strings.Contains(err.Error(), "dashboard sessions returned 502: nope") || ok {
+			t.Fatalf("dashboardSessionObservationForIssue(bad_status) = (%v, %v), want 502 error", ok, err)
+		}
+	})
+
+	t.Run("invalid_json", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("{"))
+		}))
+		t.Cleanup(server.Close)
+
+		_, ok, err := dashboardSessionObservationForIssue(maestromcp.DaemonEntry{
+			BaseURL: server.URL + "/mcp",
+		}, "MAES-28")
+		if err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") || ok {
+			t.Fatalf("dashboardSessionObservationForIssue(invalid_json) = (%v, %v), want JSON decode error", ok, err)
+		}
+	})
+}
+
+func TestBoolFromMap(t *testing.T) {
+	t.Parallel()
+
+	if !boolFromMap(map[string]interface{}{"ok": true}, "ok") {
+		t.Fatal("boolFromMap(true) = false, want true")
+	}
+	if boolFromMap(map[string]interface{}{"ok": "true"}, "ok") {
+		t.Fatal("boolFromMap(non-bool) = true, want false")
+	}
+	if boolFromMap(map[string]interface{}{}, "missing") {
+		t.Fatal("boolFromMap(missing) = true, want false")
+	}
+}
+
 func TestMainHappyPath(t *testing.T) {
 	fixture := newProbeRunFixture(t, "happy")
 
@@ -899,6 +1202,14 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 	settingsPath := filepath.Join(root, "settings.json")
 	evidencePrefix := filepath.Join(root, "evidence")
 	storeID := "store-a"
+	dashboardStatus := "running"
+	dashboardStopReason := ""
+	dashboardSource := "live"
+	if scenario == "execution-final" {
+		dashboardStatus = "completed"
+		dashboardStopReason = "end_turn"
+		dashboardSource = "persisted"
+	}
 	dashboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/app/sessions" {
 			http.NotFound(w, r)
@@ -909,9 +1220,9 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 			"entries": []map[string]any{
 				{
 					"issue_identifier": issueIdentifier,
-					"status":           "running",
-					"stop_reason":      "",
-					"source":           "live",
+					"status":           dashboardStatus,
+					"stop_reason":      dashboardStopReason,
+					"source":           dashboardSource,
 				},
 			},
 		})
@@ -1137,6 +1448,35 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 			"pagination": map[string]any{},
 		}, true, "")
 	case "get_issue_execution":
+		if scenario == "execution-bad-data" {
+			return probeEnvelopeResultWithRawData("get_issue_execution", meta, json.RawMessage(`"bad"`), true, "")
+		}
+		if scenario == "execution-final" {
+			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
+				"active":            false,
+				"session_source":    "persisted",
+				"failure_class":     "",
+				"stop_reason":       "end_turn",
+				"runtime_name":      "claude",
+				"runtime_provider":  "claude",
+				"runtime_transport": "stdio",
+				"session": agentruntime.Session{
+					IssueID:         "iss_1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "thread-1",
+					ThreadID:        "thread-1",
+					TurnID:          "turn-1",
+					LastEvent:       "turn.completed",
+					LastMessage:     "STREAM:MAES-28:success-live",
+					Metadata: map[string]interface{}{
+						"provider":                    "claude",
+						"transport":                   "stdio",
+						"provider_session_id":         "thread-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			}, true, "")
+		}
 		return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
 			"active":            true,
 			"session_source":    "live",
