@@ -2407,7 +2407,7 @@ func TestOrphanedGracefulAppServerRunSchedulesImmediateResumeRetry(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.RunKind != "run_interrupted" || snapshot.ResumeEligible || snapshot.StopReason != "" {
+	if snapshot.RunKind != "run_interrupted" || snapshot.ResumeEligible || snapshot.StopReason != "run_interrupted" {
 		t.Fatalf("expected interrupted snapshot with cleared resume marker, got %+v", snapshot)
 	}
 }

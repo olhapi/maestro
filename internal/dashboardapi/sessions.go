@@ -411,6 +411,8 @@ func buildPersistedSessionFeedEntry(
 		status = "paused"
 	case strings.EqualFold(snapshot.RunKind, "run_completed"):
 		status = "completed"
+	case strings.EqualFold(snapshot.RunKind, "run_interrupted"):
+		status = "interrupted"
 	case strings.EqualFold(snapshot.RunKind, "run_started"):
 		status = "interrupted"
 	case failureClass != "":

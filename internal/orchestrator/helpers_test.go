@@ -312,7 +312,7 @@ func TestReconcileRecoversOrphanedRunWithBackoffRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" {
+	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" || snapshot.StopReason != "run_interrupted" {
 		t.Fatalf("expected interrupted snapshot, got %#v", snapshot)
 	}
 
@@ -593,7 +593,7 @@ func TestReconcileRecoversBlockedOrphanWithoutRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" {
+	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" || snapshot.StopReason != "run_interrupted" {
 		t.Fatalf("expected interrupted snapshot without retry, got %#v", snapshot)
 	}
 }

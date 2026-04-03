@@ -60,6 +60,42 @@ func TestSessionApplyEventTracksTurnLifecycle(t *testing.T) {
 	}
 }
 
+func TestSessionApplyEventTracksStreamingAgentMessageProgress(t *testing.T) {
+	session := &Session{
+		IssueID:         "iss_stream",
+		IssueIdentifier: "ISS-STREAM",
+		MaxHistory:      8,
+	}
+
+	session.ApplyEvent(Event{Type: "turn.started", ThreadID: "thread-stream", TurnID: "turn-1"})
+	session.ApplyEvent(Event{
+		Type:      "item.started",
+		ThreadID:  "thread-stream",
+		TurnID:    "turn-1",
+		ItemID:    "stream-turn-1",
+		ItemType:  "agentMessage",
+		ItemPhase: "commentary",
+		Message:   "Planning",
+	})
+	if session.LastEvent != "item.started" || session.LastMessage != "Planning" {
+		t.Fatalf("expected started agent message summary, got %+v", session)
+	}
+
+	session.ApplyEvent(Event{
+		Type:      "item.agentMessage.delta",
+		ThreadID:  "thread-stream",
+		TurnID:    "turn-1",
+		ItemID:    "stream-turn-1",
+		ItemType:  "agentMessage",
+		ItemPhase: "commentary",
+		Chunk:     " the fix",
+		Message:   "Planning the fix",
+	})
+	if session.LastEvent != "item.agentMessage.delta" || session.LastMessage != "Planning the fix" {
+		t.Fatalf("expected delta agent message summary, got %+v", session)
+	}
+}
+
 func TestSessionFromAnyParsesStoredSessionAndClonesMetadata(t *testing.T) {
 	timestamp := time.Now().UTC().Truncate(time.Second)
 	rawMetadata := map[string]interface{}{

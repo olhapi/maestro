@@ -475,8 +475,8 @@ func jsonNumber(value string) interface{} {
 	return json.Number(value)
 }
 
-func TestSessionApplyEventIgnoresStreamingAgentMessageDeltasForLastMessage(t *testing.T) {
-	s := &Session{LastMessage: "Completed summary"}
+func TestSessionApplyEventTracksStreamingAgentMessageDeltasInLastMessage(t *testing.T) {
+	s := &Session{}
 
 	s.ApplyEvent(Event{
 		Type:     "item.agentMessage.delta",
@@ -486,8 +486,8 @@ func TestSessionApplyEventIgnoresStreamingAgentMessageDeltasForLastMessage(t *te
 		ItemType: "agentMessage",
 		Message:  "Partial stream chunk",
 	})
-	if s.LastMessage != "Completed summary" {
-		t.Fatalf("expected agent delta to leave last message unchanged, got %+v", s)
+	if s.LastMessage != "Partial stream chunk" {
+		t.Fatalf("expected agent delta to update last message, got %+v", s)
 	}
 	if s.LastEvent != "item.agentMessage.delta" || len(s.History) != 1 {
 		t.Fatalf("expected streaming delta to remain in session history, got %+v", s)

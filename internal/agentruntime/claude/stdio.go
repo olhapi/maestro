@@ -44,6 +44,7 @@ type runningTurn struct {
 type claudeTurnState struct {
 	sessionStarted bool
 	turnStarted    bool
+	streamStarted  bool
 	turnID         string
 	itemPhase      string
 	lastAssistant  string
@@ -359,6 +360,7 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 			}
 			c.ensureClaudeTurnStarted(state, onStarted)
 			state.streamedOutput.WriteString(text)
+			c.recordClaudeStreamDelta(state, text)
 		case "message_delta":
 			if stopReason := strings.TrimSpace(stringFromMap(event, "delta", "stop_reason")); stopReason != "" {
 				state.resultStop = stopReason
@@ -524,6 +526,82 @@ func (c *stdioClient) finishTurnLocked(state *claudeTurnState, stdoutRaw, stderr
 		finalErr = context.Canceled
 	}
 	return output, terminalType, finalErr
+}
+
+func (c *stdioClient) recordClaudeStreamDelta(state *claudeTurnState, delta string) {
+	if state == nil || delta == "" {
+		return
+	}
+
+	sessionID := c.currentClaudeSessionIDLocked()
+	turnID := strings.TrimSpace(state.turnID)
+	if turnID == "" {
+		turnID = fallbackClaudeTurnID(c, state)
+		state.turnID = turnID
+	}
+	itemID := "stream-" + turnID
+	phase := firstNonEmpty(state.itemPhase, "commentary")
+	text := strings.TrimSpace(state.streamedOutput.String())
+
+	eventType := "item.agentMessage.delta"
+	c.mu.Lock()
+	c.session.IssueID = c.spec.IssueID
+	c.session.IssueIdentifier = c.spec.IssueIdentifier
+	if sessionID != "" {
+		c.session.ThreadID = sessionID
+		c.session.SessionID = sessionID
+		c.syncClaudeMetadataLocked(sessionID)
+	}
+	if !state.streamStarted {
+		eventType = "item.started"
+		state.streamStarted = true
+	}
+	event := agentruntime.Event{
+		Type:      eventType,
+		ThreadID:  sessionID,
+		TurnID:    turnID,
+		ItemID:    itemID,
+		ItemType:  "agentMessage",
+		ItemPhase: phase,
+		Message:   text,
+	}
+	if eventType == "item.agentMessage.delta" {
+		event.Chunk = delta
+	}
+	c.session.ApplyEvent(event)
+	c.normalizeClaudeSessionIdentityLocked()
+	session := c.session.Clone()
+	c.mu.Unlock()
+
+	if eventType == "item.started" {
+		c.emitActivity(agentruntime.ActivityEvent{
+			Type:      "item.started",
+			ThreadID:  sessionID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			ItemType:  "agentMessage",
+			ItemPhase: phase,
+			Item: map[string]interface{}{
+				"id":    itemID,
+				"type":  "agentMessage",
+				"phase": phase,
+				"text":  text,
+			},
+			Metadata: runtimeMetadata(sessionID),
+		})
+	} else {
+		c.emitActivity(agentruntime.ActivityEvent{
+			Type:      "item.agentMessage.delta",
+			ThreadID:  sessionID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			ItemType:  "agentMessage",
+			ItemPhase: phase,
+			Delta:     delta,
+			Metadata:  runtimeMetadata(sessionID),
+		})
+	}
+	c.emitSessionUpdate(session)
 }
 
 func (c *stdioClient) emitSessionUpdate(session agentruntime.Session) {
