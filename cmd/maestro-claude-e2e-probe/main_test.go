@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -404,6 +405,147 @@ func TestValidatePendingInterrupt(t *testing.T) {
 			t.Fatalf("validatePendingInterrupt() error = %v, want classification mismatch", err)
 		}
 	})
+
+	tests := []struct {
+		name string
+		edit func(*agentruntime.PendingInteraction)
+		want string
+	}{
+		{
+			name: "missing_id",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.ID = ""
+			},
+			want: "pending interrupt id missing",
+		},
+		{
+			name: "wrong_kind",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Kind = agentruntime.PendingInteractionKindUserInput
+			},
+			want: "expected approval interrupt",
+		},
+		{
+			name: "wrong_method",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Method = "other"
+			},
+			want: "expected approval_prompt interrupt method",
+		},
+		{
+			name: "wrong_issue_identifier",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.IssueIdentifier = "OTHER-1"
+			},
+			want: `expected interrupt issue "CL-1"`,
+		},
+		{
+			name: "missing_request_and_item_ids",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.RequestID = ""
+				interaction.ItemID = ""
+			},
+			want: "expected interrupt request and item ids",
+		},
+		{
+			name: "missing_approval_payload",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval = nil
+			},
+			want: "expected approval payload on pending interrupt",
+		},
+		{
+			name: "missing_command",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.Command = ""
+			},
+			want: "expected approval command on pending interrupt",
+		},
+		{
+			name: "missing_cwd",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.CWD = ""
+			},
+			want: "expected approval cwd on pending interrupt",
+		},
+		{
+			name: "missing_reason",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.Reason = ""
+			},
+			want: "expected approval reason on pending interrupt",
+		},
+		{
+			name: "missing_markdown",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.Markdown = ""
+			},
+			want: "expected approval markdown on pending interrupt",
+		},
+		{
+			name: "missing_decisions",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.Decisions = nil
+			},
+			want: "expected approval decisions on pending interrupt",
+		},
+		{
+			name: "wrong_source",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Metadata["source"] = "other"
+			},
+			want: `expected claude_permission_prompt source`,
+		},
+		{
+			name: "missing_workspace_path",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				delete(interaction.Metadata, "workspace_path")
+			},
+			want: "expected interrupt workspace_path metadata",
+		},
+		{
+			name: "missing_input",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				delete(interaction.Metadata, "input")
+			},
+			want: "expected interrupt input metadata",
+		},
+		{
+			name: "missing_request_meta",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				delete(interaction.Metadata, "request_meta")
+			},
+			want: "expected interrupt request_meta payload",
+		},
+		{
+			name: "missing_tool_use_id",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Metadata["request_meta"] = map[string]interface{}{"other": "value"}
+			},
+			want: "expected request_meta toolUseId correlation",
+		},
+		{
+			name: "tool_name_mismatch",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Metadata["tool_name"] = "Write"
+			},
+			want: `expected interrupt tool "Bash"`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			interaction := validPendingInterrupt()
+			tt.edit(&interaction)
+			err := validatePendingInterrupt(interaction, "CL-1", "command", "Bash")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validatePendingInterrupt() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
 }
 
 func TestFilterRuntimeEventsByIssue(t *testing.T) {
@@ -1159,6 +1301,273 @@ func TestDashboardSessionObservationForIssueErrors(t *testing.T) {
 		}, "MAES-28")
 		if err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") || ok {
 			t.Fatalf("dashboardSessionObservationForIssue(invalid_json) = (%v, %v), want JSON decode error", ok, err)
+		}
+	})
+}
+
+func TestRunWithInterruptObservation(t *testing.T) {
+	fixture := newProbeRunFixture(t, "happy")
+	interaction := validPendingInterrupt()
+	interaction.IssueIdentifier = fixture.opts.issueIdentifier
+	interaction.Approval.Command = "printf 'ok'\n"
+
+	var mu sync.Mutex
+	responded := false
+	captured := agentruntime.PendingInteractionResponse{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-a" {
+			t.Fatalf("Authorization header = %q, want Bearer token-a", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/sessions":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []map[string]any{
+					{
+						"issue_identifier": fixture.opts.issueIdentifier,
+						"status":           "running",
+						"stop_reason":      "",
+						"source":           "live",
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/interrupts":
+			mu.Lock()
+			items := []agentruntime.PendingInteraction{interaction}
+			if responded {
+				items = nil
+			}
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{Items: items})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/interrupts/"+interaction.ID+"/respond":
+			if got := r.Header.Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode response payload: %v", err)
+			}
+			mu.Lock()
+			responded = true
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	writeJSONFile(t, fixture.registryEntryPath, maestromcp.DaemonEntry{
+		StoreID:     fixture.storeID,
+		DBPath:      fixture.dbPath,
+		PID:         10,
+		BaseURL:     server.URL + "/mcp",
+		BearerToken: "token-a",
+		Version:     "1.0.0",
+		Transport:   "stdio",
+	})
+
+	fixture.opts.allowedTools = ""
+	fixture.opts.permissionPromptTool = "mcp__maestro__approval_prompt"
+	fixture.opts.interruptClass = "command"
+	fixture.opts.interruptToolName = "Bash"
+	fixture.opts.interruptDecision = "allow"
+	fixture.opts.interruptNote = "operator approved"
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	mu.Lock()
+	if !responded {
+		mu.Unlock()
+		t.Fatal("expected interrupt response to be posted")
+	}
+	mu.Unlock()
+	if captured.Decision != "allow" || captured.Note != "operator approved" {
+		t.Fatalf("captured response = %+v, want allow/operator approved", captured)
+	}
+
+	jsonBytes, err := os.ReadFile(fixture.evidencePrefix + ".json")
+	if err != nil {
+		t.Fatalf("read JSON evidence: %v", err)
+	}
+	var evidence probeEvidence
+	if err := json.Unmarshal(jsonBytes, &evidence); err != nil {
+		t.Fatalf("decode JSON evidence: %v", err)
+	}
+	if !evidence.Interrupt.Requested || !evidence.Interrupt.Cleared {
+		t.Fatalf("interrupt evidence = %+v, want requested+cleared", evidence.Interrupt)
+	}
+	if evidence.Interrupt.ResponseStatus != "accepted" || evidence.Interrupt.ResponseDecision != "allow" {
+		t.Fatalf("interrupt response evidence = %+v", evidence.Interrupt)
+	}
+	if got := strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["classification"])); got != "command" {
+		t.Fatalf("interrupt classification = %q, want command", got)
+	}
+	if len(evidence.RuntimeEvents.Items) != 1 || evidence.RuntimeEvents.Items[0].Kind != "run_started" {
+		t.Fatalf("runtime events = %+v, want single run_started event", evidence.RuntimeEvents.Items)
+	}
+
+	summaryBytes, err := os.ReadFile(fixture.evidencePrefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary evidence: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range []string{
+		"interrupt_cleared=true",
+		"interrupt_classification=command",
+		"interrupt_response_decision=allow",
+		"interrupt_response_status=accepted",
+		"permission_prompt_tool=mcp__maestro__approval_prompt",
+		"runtime_event_count=1",
+		"runtime_event_kinds=run_started",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary evidence missing %q: %s", want, summary)
+		}
+	}
+}
+
+func TestPendingInterruptHelpers(t *testing.T) {
+	t.Run("waits_for_interrupt_and_clear", func(t *testing.T) {
+		var mu sync.Mutex
+		interaction := validPendingInterrupt()
+		seenMatchingPoll := false
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/interrupts":
+				mu.Lock()
+				items := []agentruntime.PendingInteraction{}
+				if !seenMatchingPoll {
+					items = []agentruntime.PendingInteraction{
+						{ID: "other", IssueIdentifier: "OTHER-1", Metadata: map[string]interface{}{"classification": "command", "tool_name": "Bash"}},
+						interaction,
+					}
+					seenMatchingPoll = true
+				}
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{Items: items})
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/interrupts/"+interaction.ID+"/respond":
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted"})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		entry := maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		got, pendingCount, err := waitForPendingInterrupt(ctx, entry, "CL-1", "command", "Bash")
+		if err != nil {
+			t.Fatalf("waitForPendingInterrupt() error = %v", err)
+		}
+		if pendingCount != 2 {
+			t.Fatalf("pendingCount = %d, want 2", pendingCount)
+		}
+		if got.ID != interaction.ID {
+			t.Fatalf("interaction ID = %q, want %q", got.ID, interaction.ID)
+		}
+
+		status, err := respondToPendingInterrupt(entry, interaction.ID, agentruntime.PendingInteractionResponse{Decision: "allow"})
+		if err != nil {
+			t.Fatalf("respondToPendingInterrupt() error = %v", err)
+		}
+		if status != "accepted" {
+			t.Fatalf("respondToPendingInterrupt() status = %q, want accepted", status)
+		}
+		if err := waitForPendingInterruptClear(ctx, entry, interaction.ID); err != nil {
+			t.Fatalf("waitForPendingInterruptClear() error = %v", err)
+		}
+	})
+
+	t.Run("fetch_and_respond_errors", func(t *testing.T) {
+		t.Run("fetch_bad_status", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "nope", http.StatusBadGateway)
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := fetchPendingInterrupts(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"})
+			if err == nil || !strings.Contains(err.Error(), "dashboard interrupts returned 502: nope") {
+				t.Fatalf("fetchPendingInterrupts() error = %v, want 502 error", err)
+			}
+		})
+
+		t.Run("fetch_invalid_json", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte("{"))
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := fetchPendingInterrupts(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"})
+			if err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") {
+				t.Fatalf("fetchPendingInterrupts() error = %v, want JSON decode error", err)
+			}
+		})
+
+		t.Run("respond_bad_status", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "nope", http.StatusConflict)
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := respondToPendingInterrupt(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "interrupt-1", agentruntime.PendingInteractionResponse{Decision: "allow"})
+			if err == nil || !strings.Contains(err.Error(), "dashboard interrupt respond returned 409: nope") {
+				t.Fatalf("respondToPendingInterrupt() error = %v, want 409 error", err)
+			}
+		})
+
+		t.Run("respond_invalid_json", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte("{"))
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := respondToPendingInterrupt(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "interrupt-1", agentruntime.PendingInteractionResponse{Decision: "allow"})
+			if err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") {
+				t.Fatalf("respondToPendingInterrupt() error = %v, want JSON decode error", err)
+			}
+		})
+	})
+
+	t.Run("deadline_errors", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{
+				Items: []agentruntime.PendingInteraction{validPendingInterrupt()},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		entry := maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, _, err := waitForPendingInterrupt(ctx, entry, "MISSING-1", "command", "Bash")
+		if err == nil || err.Error() != "did not observe a matching pending interrupt before context deadline" {
+			t.Fatalf("waitForPendingInterrupt(deadline) error = %v", err)
+		}
+
+		if err := waitForPendingInterruptClear(ctx, entry, validPendingInterrupt().ID); err == nil || err.Error() != "pending interrupt did not clear before context deadline" {
+			t.Fatalf("waitForPendingInterruptClear(deadline) error = %v", err)
+		}
+	})
+
+	t.Run("dashboard_request_missing_base_url", func(t *testing.T) {
+		_, _, err := dashboardRequest(maestromcp.DaemonEntry{}, http.MethodGet, "/api/v1/app/interrupts", nil)
+		if err == nil || err.Error() != "daemon registry base_url missing" {
+			t.Fatalf("dashboardRequest() error = %v, want missing base_url", err)
 		}
 	})
 }
