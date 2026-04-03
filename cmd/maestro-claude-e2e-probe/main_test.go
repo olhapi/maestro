@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/olhapi/maestro/internal/agentruntime"
+	"github.com/olhapi/maestro/internal/kanban"
 	maestromcp "github.com/olhapi/maestro/internal/mcp"
 )
 
@@ -258,57 +260,72 @@ func TestLoadSettingsAndValidateSettings(t *testing.T) {
 func TestValidatePermissionFlags(t *testing.T) {
 	t.Parallel()
 
-	valid := options{
-		allowedTools:         "Bash,Edit,Write,MultiEdit",
-		permissionMode:       "default",
-		permissionPromptTool: "",
-		strictMCPConfig:      "true",
-	}
-	if err := validatePermissionFlags(valid); err != nil {
-		t.Fatalf("validatePermissionFlags(valid) error = %v", err)
-	}
-
 	tests := []struct {
-		name string
-		opts options
-		want string
+		name    string
+		opts    options
+		wantErr string
 	}{
+		{
+			name: "full_access_allowed_tools",
+			opts: options{
+				allowedTools:    "Bash,Edit,Write,MultiEdit",
+				permissionMode:  "default",
+				strictMCPConfig: "true",
+			},
+		},
+		{
+			name: "maestro_approval_prompt",
+			opts: options{
+				permissionMode:       "default",
+				permissionPromptTool: "mcp__maestro__approval_prompt",
+				strictMCPConfig:      "true",
+			},
+		},
 		{
 			name: "permission_mode",
 			opts: options{
-				allowedTools:    valid.allowedTools,
+				allowedTools:    "Bash,Edit,Write,MultiEdit",
 				permissionMode:  "auto",
-				strictMCPConfig: valid.strictMCPConfig,
+				strictMCPConfig: "true",
 			},
-			want: `expected Claude permission mode default`,
+			wantErr: `expected Claude permission mode default`,
 		},
 		{
 			name: "allowed_tools",
 			opts: options{
 				allowedTools:    "Bash",
-				permissionMode:  valid.permissionMode,
-				strictMCPConfig: valid.strictMCPConfig,
+				permissionMode:  "default",
+				strictMCPConfig: "true",
 			},
-			want: `expected allowed tools Bash,Edit,Write,MultiEdit`,
+			wantErr: `expected allowed tools Bash,Edit,Write,MultiEdit`,
 		},
 		{
-			name: "permission_prompt_tool",
+			name: "approval_prompt_forbids_allowed_tools",
 			opts: options{
-				allowedTools:         valid.allowedTools,
-				permissionMode:       valid.permissionMode,
-				permissionPromptTool: "ask",
-				strictMCPConfig:      valid.strictMCPConfig,
+				allowedTools:         "Bash",
+				permissionMode:       "default",
+				permissionPromptTool: "mcp__maestro__approval_prompt",
+				strictMCPConfig:      "true",
 			},
-			want: `expected no permission prompt tool`,
+			wantErr: `expected no allowed-tools`,
+		},
+		{
+			name: "unsupported_permission_prompt_tool",
+			opts: options{
+				permissionMode:       "default",
+				permissionPromptTool: "custom_prompt",
+				strictMCPConfig:      "true",
+			},
+			wantErr: `expected supported permission prompt tool`,
 		},
 		{
 			name: "strict_mcp_config",
 			opts: options{
-				allowedTools:    valid.allowedTools,
-				permissionMode:  valid.permissionMode,
+				allowedTools:    "Bash,Edit,Write,MultiEdit",
+				permissionMode:  "default",
 				strictMCPConfig: "false",
 			},
-			want: `expected strict-mcp-config=true`,
+			wantErr: `expected strict-mcp-config=true`,
 		},
 	}
 
@@ -317,10 +334,145 @@ func TestValidatePermissionFlags(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := validatePermissionFlags(tt.opts)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("validatePermissionFlags() error = %v, want substring %q", err, tt.want)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validatePermissionFlags() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validatePermissionFlags() error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestWantsInterruptObservation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts options
+		want bool
+	}{
+		{name: "no_interrupt_fields", opts: options{}, want: false},
+		{name: "classification_only", opts: options{interruptClass: "command"}, want: true},
+		{name: "tool_name_only", opts: options{interruptToolName: "Bash"}, want: true},
+		{name: "decision_only", opts: options{interruptDecision: "allow"}, want: true},
+		{name: "note_only", opts: options{interruptNote: "operator approved"}, want: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := wantsInterruptObservation(tt.opts); got != tt.want {
+				t.Fatalf("wantsInterruptObservation() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidatePendingInterrupt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepts_maestro_managed_payload", func(t *testing.T) {
+		t.Parallel()
+
+		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "command", "Bash"); err != nil {
+			t.Fatalf("validatePendingInterrupt() error = %v", err)
+		}
+	})
+
+	t.Run("rejects_missing_request_meta_correlation", func(t *testing.T) {
+		t.Parallel()
+
+		interaction := validPendingInterrupt()
+		interaction.Metadata["request_meta"] = map[string]interface{}{}
+
+		err := validatePendingInterrupt(interaction, "CL-1", "command", "Bash")
+		if err == nil || !strings.Contains(err.Error(), "toolUseId correlation") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want missing toolUseId correlation", err)
+		}
+	})
+
+	t.Run("rejects_classification_mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "file_write", "Bash")
+		if err == nil || !strings.Contains(err.Error(), "expected interrupt classification") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want classification mismatch", err)
+		}
+	})
+}
+
+func TestFilterRuntimeEventsByIssue(t *testing.T) {
+	t.Parallel()
+
+	events := []kanban.RuntimeEvent{
+		{Identifier: "CL-1", Kind: "run_completed"},
+		{Identifier: "CL-2", Kind: "run_failed"},
+		{Identifier: "CL-1", Kind: "retry_paused"},
+	}
+
+	filtered := filterRuntimeEventsByIssue(events, "CL-1")
+	if len(filtered) != 2 {
+		t.Fatalf("filterRuntimeEventsByIssue() len = %d, want 2", len(filtered))
+	}
+	if filtered[0].Kind != "run_completed" || filtered[1].Kind != "retry_paused" {
+		t.Fatalf("unexpected filtered events: %+v", filtered)
+	}
+
+	all := filterRuntimeEventsByIssue(events, "")
+	if !reflect.DeepEqual(all, events) {
+		t.Fatalf("filterRuntimeEventsByIssue() with blank issue = %+v, want %+v", all, events)
+	}
+}
+
+func TestRuntimeEventKinds(t *testing.T) {
+	t.Parallel()
+
+	events := []kanban.RuntimeEvent{
+		{Kind: " run_completed "},
+		{Kind: "retry_paused"},
+	}
+
+	got := runtimeEventKinds(events)
+	want := []string{"run_completed", "retry_paused"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtimeEventKinds() = %#v, want %#v", got, want)
+	}
+}
+
+func validPendingInterrupt() agentruntime.PendingInteraction {
+	return agentruntime.PendingInteraction{
+		ID:              "interrupt-1",
+		RequestID:       "toolu_123",
+		Kind:            agentruntime.PendingInteractionKindApproval,
+		Method:          "approval_prompt",
+		IssueIdentifier: "CL-1",
+		ItemID:          "toolu_123",
+		Approval: &agentruntime.PendingApproval{
+			Command:  "pwd",
+			CWD:      "/tmp/workspace",
+			Reason:   "Claude requested command approval: pwd",
+			Markdown: "Approve the command request.",
+			Decisions: []agentruntime.PendingApprovalDecision{
+				{Value: "allow", Label: "Allow once"},
+			},
+		},
+		Metadata: map[string]interface{}{
+			"source":         "claude_permission_prompt",
+			"classification": "command",
+			"tool_name":      "Bash",
+			"workspace_path": "/tmp/workspace",
+			"input": map[string]interface{}{
+				"command": "pwd",
+			},
+			"request_meta": map[string]interface{}{
+				"claudecode/toolUseId": "toolu_123",
+			},
+		},
 	}
 }
 
@@ -435,7 +587,7 @@ func TestWriteEvidence(t *testing.T) {
 	evidence.Bridge.StrictMCPConfig = true
 	evidence.Bridge.PermissionMode = "default"
 	evidence.Bridge.PermissionPromptTool = "<none>"
-	evidence.Bridge.ToolNames = []string{"create_issue", "get_issue_execution", "get_runtime_snapshot", "list_issues", "list_sessions", "server_info"}
+	evidence.Bridge.ToolNames = []string{"approval_prompt", "create_issue", "get_issue_execution", "get_runtime_snapshot", "list_issues", "list_runtime_events", "list_sessions", "server_info"}
 	evidence.Settings.DisableAllHooks = true
 	evidence.Settings.DisableAutoMode = "disable"
 	evidence.Settings.Permissions.DisableBypassPermissionsMode = "disable"
@@ -470,8 +622,9 @@ func TestWriteEvidence(t *testing.T) {
 		"permission_mode=default",
 		"permission_prompt_tool=<none>",
 		"tool_call_get_issue_execution=ok",
+		"tool_call_list_runtime_events=ok",
 		"tool_call_server_info=ok",
-		"tool_names=create_issue,get_issue_execution,get_runtime_snapshot,list_issues,list_sessions,server_info",
+		"tool_names=approval_prompt,create_issue,get_issue_execution,get_runtime_snapshot,list_issues,list_runtime_events,list_sessions,server_info",
 	} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary evidence missing %q: %s", want, summary)
@@ -1352,9 +1505,9 @@ func TestHelperProcessProbeMCPServer(t *testing.T) {
 	listSessionCalls := 0
 
 	mcp := mcpserver.NewMCPServer("probe-helper", "1.0.0")
-	toolNames := []string{"server_info", "create_issue", "list_issues", "get_issue_execution", "get_runtime_snapshot", "list_sessions"}
+	toolNames := []string{"approval_prompt", "create_issue", "get_issue_execution", "get_runtime_snapshot", "list_issues", "list_runtime_events", "list_sessions", "server_info"}
 	if scenario == "missing-tool" {
-		toolNames = []string{"server_info", "list_issues", "get_issue_execution", "get_runtime_snapshot", "list_sessions"}
+		toolNames = []string{"approval_prompt", "get_issue_execution", "get_runtime_snapshot", "list_issues", "list_runtime_events", "list_sessions", "server_info"}
 	}
 	for _, name := range toolNames {
 		toolName := name
@@ -1595,6 +1748,19 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 					},
 				},
 			},
+		}, true, "")
+	case "list_runtime_events":
+		events := []kanban.RuntimeEvent{
+			{Identifier: "OTHER-1", Kind: "run_completed"},
+		}
+		switch scenario {
+		case "execution-final":
+			events = append(events, kanban.RuntimeEvent{Identifier: "MAES-28", Kind: "run_completed"})
+		default:
+			events = append(events, kanban.RuntimeEvent{Identifier: "MAES-28", Kind: "run_started"})
+		}
+		return probeEnvelopeResult("list_runtime_events", meta, map[string]any{
+			"events": events,
 		}, true, "")
 	default:
 		return probeEnvelopeResult(name, meta, map[string]any{}, true, "")
