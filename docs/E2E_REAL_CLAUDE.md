@@ -78,4 +78,4 @@ That leaves the generated `WORKFLOW.md`, SQLite store, per-issue workspaces, and
 - `E2E_KEEP_HARNESS`: keep the temporary harness directory after success. Default `1`.
 - `E2E_ROOT`: reuse a specific harness directory instead of creating a new temp directory.
 - `E2E_PORT`: override the temporary loopback HTTP port passed to `maestro run`. Default `0` to let the OS choose a free port.
-- `E2E_CLAUDE_COMMAND`: override the Claude command written into the generated workflow, mainly for local harness validation.
+- `E2E_CLAUDE_COMMAND`: override the Claude command written into the generated workflow and validated during shell preflight, mainly for local harness validation.

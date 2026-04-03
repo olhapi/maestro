@@ -141,6 +141,13 @@ case "${1:-}" in
 esac
 EOF
 
+  cat >"$bin_dir/claude-wrapper" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'claude-wrapper %s\n' "$*" >>"$MOCK_TOOL_LOG"
+exit 0
+EOF
+
   cat >"$bin_dir/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -155,7 +162,7 @@ printf 'sqlite3 %s\n' "$*" >>"$MOCK_TOOL_LOG"
 exit 0
 EOF
 
-  chmod +x "$bin_dir/go" "$bin_dir/claude" "$bin_dir/git" "$bin_dir/sqlite3"
+  chmod +x "$bin_dir/go" "$bin_dir/claude" "$bin_dir/claude-wrapper" "$bin_dir/git" "$bin_dir/sqlite3"
 }
 
 test_successful_run_builds_claude_workflow_and_verifies_first() {
@@ -227,9 +234,37 @@ test_timeout_failure_prints_issue_and_path_diagnostics() {
   assert_contains "$tmp_dir/stderr.txt" "mock orchestrator started but did not finish"
 }
 
+test_override_command_is_used_for_preflight_requirement() {
+  local tmp_dir bin_dir harness_root restricted_path
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-override.XXXXXX")"
+  bin_dir="$tmp_dir/bin"
+  harness_root="$tmp_dir/harness"
+  restricted_path="$bin_dir:/usr/bin:/bin"
+
+  mkdir -p "$tmp_dir/state"
+  : >"$tmp_dir/tool.log"
+  : >"$tmp_dir/maestro.log"
+  write_mock_toolchain "$bin_dir"
+  rm -f "$bin_dir/claude"
+
+  PATH="$restricted_path" \
+  MOCK_TOOL_LOG="$tmp_dir/tool.log" \
+  FAKE_MAESTRO_LOG="$tmp_dir/maestro.log" \
+  FAKE_STATE_DIR="$tmp_dir/state" \
+  FAKE_HARNESS_ROOT="$harness_root" \
+  E2E_ROOT="$harness_root" \
+  E2E_KEEP_HARNESS=1 \
+  E2E_CLAUDE_COMMAND="claude-wrapper --verbose" \
+  bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
+
+  assert_contains "$harness_root/WORKFLOW.md" "command: 'claude-wrapper --verbose'"
+  [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected override command run to avoid stderr output"
+}
+
 main() {
   test_successful_run_builds_claude_workflow_and_verifies_first
   test_timeout_failure_prints_issue_and_path_diagnostics
+  test_override_command_is_used_for_preflight_requirement
 }
 
 main "$@"

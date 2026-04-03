@@ -16,7 +16,7 @@ EXPECTED_ARTIFACT_TEXT="maestro claude e2e ok"
 cd "$ROOT_DIR"
 
 require_cmd go
-require_cmd claude
+require_command_string "Claude" "$CLAUDE_COMMAND"
 require_cmd git
 require_cmd sqlite3
 

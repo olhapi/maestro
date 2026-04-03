@@ -26,6 +26,36 @@ require_cmd() {
   fi
 }
 
+extract_command_executable() (
+  set -f
+  local command_string="$1"
+  local -a parsed=()
+  local token
+  if [[ -z "${command_string// }" ]]; then
+    return 1
+  fi
+  eval "parsed=($command_string)"
+  for token in "${parsed[@]}"; do
+    if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      continue
+    fi
+    printf '%s\n' "$token"
+    return 0
+  done
+  return 1
+)
+
+require_command_string() {
+  local label="$1"
+  local command_string="$2"
+  local executable
+  if ! executable="$(extract_command_executable "$command_string")"; then
+    echo "unable to determine executable for $label command: $command_string" >&2
+    exit 1
+  fi
+  require_cmd "$executable"
+}
+
 ensure_harness_dirs() {
   mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$DB_PATH")"
 }
