@@ -749,7 +749,7 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 				}
 				continue
 			}
-			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(100*time.Millisecond) {
+			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(managedProcessKillWait) {
 				c.logger.Info("Codex turn completed after clean app-server exit",
 					"session_id", c.session.SessionID,
 					"thread_id", c.session.ThreadID,

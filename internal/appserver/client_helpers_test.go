@@ -366,7 +366,7 @@ func TestAwaitTurnCompletionWaitsBrieflyForCleanExitAfterEOF(t *testing.T) {
 	close(client.lines)
 	client.lineErr <- io.EOF
 	go func() {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 		client.waitCh <- nil
 	}()
 
