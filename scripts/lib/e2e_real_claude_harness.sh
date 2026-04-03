@@ -9,11 +9,16 @@ BIN_DIR="${BIN_DIR:-$HARNESS_ROOT/bin}"
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$HARNESS_ROOT/artifacts}"
 WORKSPACES_DIR="${WORKSPACES_DIR:-$HARNESS_ROOT/workspaces}"
 LOGS_DIR="${LOGS_DIR:-$HARNESS_ROOT/logs}"
+DAEMON_REGISTRY_DIR="${DAEMON_REGISTRY_DIR:-$HARNESS_ROOT/.maestro-daemons}"
+CLAUDE_EVIDENCE_DIR="${CLAUDE_EVIDENCE_DIR:-$HARNESS_ROOT/claude-support}"
 DB_PATH="${DB_PATH:-$HARNESS_ROOT/.maestro/maestro.db}"
 WORKFLOW_PATH="${WORKFLOW_PATH:-$HARNESS_ROOT/WORKFLOW.md}"
 VERIFY_LOG="${VERIFY_LOG:-$HARNESS_ROOT/verify.log}"
 ORCH_LOG="${ORCH_LOG:-$HARNESS_ROOT/orchestrator.log}"
 MAESTRO_BIN="${MAESTRO_BIN:-$BIN_DIR/maestro}"
+CLAUDE_PROBE_BIN="${CLAUDE_PROBE_BIN:-$BIN_DIR/maestro-claude-e2e-probe}"
+CLAUDE_WRAPPER_BIN="${CLAUDE_WRAPPER_BIN:-$BIN_DIR/claude-e2e-wrapper}"
+CLAUDE_EVIDENCE_SUMMARY="${CLAUDE_EVIDENCE_SUMMARY:-$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt}"
 TIMEOUT_SEC="${E2E_TIMEOUT_SEC:-600}"
 POLL_SEC="${E2E_POLL_SEC:-2}"
 RUN_PORT="${E2E_PORT:-0}"
@@ -28,12 +33,17 @@ require_command_string() {
 }
 
 ensure_harness_dirs() {
-  mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$DB_PATH")"
+  mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$DAEMON_REGISTRY_DIR" "$CLAUDE_EVIDENCE_DIR" "$(dirname "$DB_PATH")"
 }
 
 build_maestro() {
   echo "Building Maestro binary into $MAESTRO_BIN"
   go build -o "$MAESTRO_BIN" ./cmd/maestro
+}
+
+build_claude_probe() {
+  echo "Building Claude harness probe into $CLAUDE_PROBE_BIN"
+  go build -o "$CLAUDE_PROBE_BIN" ./cmd/maestro-claude-e2e-probe
 }
 
 init_harness_repo() {
@@ -153,10 +163,222 @@ run_claude_verify() {
   require_verify_check 'claude_session_additional_directories=ok' '"claude_session_additional_directories":"ok"'
 }
 
+prepare_claude_command_wrapper() {
+  local raw_command="$1"
+  local -a command_env=()
+  local -a command_args=()
+  local token=""
+  local env_prefix=0
+
+  shell_split_words "$raw_command"
+  for token in "${E2E_SHELL_WORDS[@]}"; do
+    if [[ "$env_prefix" -eq 0 && "$token" == "env" ]]; then
+      env_prefix=1
+      continue
+    fi
+    if [[ "${#command_args[@]}" -eq 0 ]]; then
+      if is_shell_assignment "$token"; then
+        command_env+=("$token")
+        continue
+      fi
+      if [[ "$env_prefix" -eq 1 && "$token" == "--" ]]; then
+        env_prefix=2
+        continue
+      fi
+      if [[ "$env_prefix" -eq 1 && "$token" == -* ]]; then
+        continue
+      fi
+    fi
+    command_args+=("$token")
+  done
+
+  if [[ "${#command_args[@]}" -eq 0 ]]; then
+    echo "unable to determine wrapped Claude command: $raw_command" >&2
+    exit 1
+  fi
+
+  {
+    cat <<EOF
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+CLAUDE_EVIDENCE_DIR=$(printf '%q' "$CLAUDE_EVIDENCE_DIR")
+CLAUDE_PROBE_BIN=$(printf '%q' "$CLAUDE_PROBE_BIN")
+CLAUDE_DB_PATH=$(printf '%q' "$DB_PATH")
+CLAUDE_DAEMON_REGISTRY_DIR=$(printf '%q' "$DAEMON_REGISTRY_DIR")
+EOF
+    printf 'REAL_COMMAND_ENV=('
+    for token in "${command_env[@]}"; do
+      printf ' %q' "$token"
+    done
+    printf ' )\n'
+    printf 'REAL_COMMAND_ARGS=('
+    for token in "${command_args[@]}"; do
+      printf ' %q' "$token"
+    done
+    cat <<'EOF'
+ )
+
+next_launch_prefix() {
+  mkdir -p "$CLAUDE_EVIDENCE_DIR"
+  local counter_file="$CLAUDE_EVIDENCE_DIR/launch.counter"
+  local counter=0
+  if [[ -f "$counter_file" ]]; then
+    counter="$(cat "$counter_file")"
+  fi
+  counter=$((counter + 1))
+  printf '%s' "$counter" >"$counter_file"
+  printf '%s/launch-%s' "$CLAUDE_EVIDENCE_DIR" "$counter"
+}
+
+main() {
+  local mcp_config=""
+  local settings_path=""
+  local allowed_tools=""
+  local permission_prompt_tool=""
+  local permission_mode=""
+  local strict_mcp_config="false"
+  local -a runtime_args=("$@")
+  local idx=0
+
+  while [[ "$idx" -lt "${#runtime_args[@]}" ]]; do
+    local arg="${runtime_args[idx]}"
+    case "$arg" in
+      --mcp-config)
+        if [[ "$idx" -lt $(( ${#runtime_args[@]} - 1 )) ]]; then
+          mcp_config="${runtime_args[idx + 1]}"
+        fi
+        idx=$((idx + 2))
+        continue
+        ;;
+      --settings)
+        if [[ "$idx" -lt $(( ${#runtime_args[@]} - 1 )) ]]; then
+          settings_path="${runtime_args[idx + 1]}"
+        fi
+        idx=$((idx + 2))
+        continue
+        ;;
+      --allowed-tools)
+        if [[ "$idx" -lt $(( ${#runtime_args[@]} - 1 )) ]]; then
+          allowed_tools="${runtime_args[idx + 1]}"
+        fi
+        idx=$((idx + 2))
+        continue
+        ;;
+      --permission-prompt-tool)
+        if [[ "$idx" -lt $(( ${#runtime_args[@]} - 1 )) ]]; then
+          permission_prompt_tool="${runtime_args[idx + 1]}"
+        fi
+        idx=$((idx + 2))
+        continue
+        ;;
+      --permission-mode)
+        if [[ "$idx" -lt $(( ${#runtime_args[@]} - 1 )) ]]; then
+          permission_mode="${runtime_args[idx + 1]}"
+        fi
+        idx=$((idx + 2))
+        continue
+        ;;
+      --strict-mcp-config)
+        strict_mcp_config="true"
+        idx=$((idx + 1))
+        continue
+        ;;
+      *)
+        idx=$((idx + 1))
+        ;;
+    esac
+  done
+
+  if [[ -z "$mcp_config" || -z "$settings_path" ]]; then
+    exec env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@"
+  fi
+
+  local evidence_prefix
+  evidence_prefix="$(next_launch_prefix)"
+  printf '%s\n' "$@" >"$evidence_prefix.args.txt"
+
+  env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@" &
+  local child_pid="$!"
+
+  if ! "$CLAUDE_PROBE_BIN" \
+    --mcp-config "$mcp_config" \
+    --settings "$settings_path" \
+    --db "$CLAUDE_DB_PATH" \
+    --registry-dir "$CLAUDE_DAEMON_REGISTRY_DIR" \
+    --evidence-prefix "$evidence_prefix" \
+    --allowed-tools "$allowed_tools" \
+    --permission-prompt-tool "$permission_prompt_tool" \
+    --permission-mode "$permission_mode" \
+    --strict-mcp-config "$strict_mcp_config"; then
+    kill "$child_pid" >/dev/null 2>&1 || true
+    wait "$child_pid" >/dev/null 2>&1 || true
+    exit 1
+  fi
+
+  wait "$child_pid"
+}
+
+main "$@"
+EOF
+  } >"$CLAUDE_WRAPPER_BIN"
+  chmod +x "$CLAUDE_WRAPPER_BIN"
+}
+
+assert_evidence_line() {
+  local path="$1"
+  local expected="$2"
+  if ! grep -Fqx -- "$expected" "$path"; then
+    echo "expected Claude harness evidence line missing: $expected" >&2
+    return 1
+  fi
+}
+
+assert_claude_runtime_evidence() {
+  if [[ ! -f "$CLAUDE_EVIDENCE_SUMMARY" ]]; then
+    echo "expected Claude runtime evidence summary missing: $CLAUDE_EVIDENCE_SUMMARY" >&2
+    return 1
+  fi
+
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "expected_tools_present=true"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_server_info=ok"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_list_issues=ok"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_get_runtime_snapshot=ok"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_list_sessions=ok"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_registry_entries_before=1"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_registry_entries_after=1"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_entry_stable=true"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "server_db_path=$DB_PATH"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_db_path=$DB_PATH"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "bridge_db_path=$DB_PATH"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "strict_mcp_config=true"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "permission_mode=default"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "allowed_tools=Bash,Edit,Write,MultiEdit"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "permission_prompt_tool=<none>"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_disable_auto_mode=disable"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_use_auto_mode_during_plan=false"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_disable_all_hooks=true"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_include_git_instructions=false"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_disable_bypass_permissions_mode=disable"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "live_claude_session_seen=true"
+
+  if ! grep -Eq '^server_store_id=.+$' "$CLAUDE_EVIDENCE_SUMMARY"; then
+    echo "expected server_store_id in Claude runtime evidence summary" >&2
+    return 1
+  fi
+  if ! grep -Eq '^daemon_store_id=.+$' "$CLAUDE_EVIDENCE_SUMMARY"; then
+    echo "expected daemon_store_id in Claude runtime evidence summary" >&2
+    return 1
+  fi
+}
+
 print_failure_context() {
   echo "Harness root: $HARNESS_ROOT" >&2
   echo "Workflow path: $WORKFLOW_PATH" >&2
   echo "Database: $DB_PATH" >&2
+  echo "Daemon registry dir: $DAEMON_REGISTRY_DIR" >&2
+  echo "Claude evidence dir: $CLAUDE_EVIDENCE_DIR" >&2
   echo "Verify log: $VERIFY_LOG" >&2
   echo "Logs root: $LOGS_DIR" >&2
   echo "Orchestrator log: $ORCH_LOG" >&2
@@ -181,6 +403,18 @@ print_failure_context() {
   if [[ -f "$ORCH_LOG" ]]; then
     echo "Last orchestrator output:" >&2
     tail -n 100 "$ORCH_LOG" >&2 || true
+  fi
+  if [[ -d "$CLAUDE_EVIDENCE_DIR" ]]; then
+    echo "Claude evidence files:" >&2
+    find "$CLAUDE_EVIDENCE_DIR" -maxdepth 1 -type f | sort >&2 || true
+  fi
+  if [[ -f "$CLAUDE_EVIDENCE_SUMMARY" ]]; then
+    echo "Claude evidence summary:" >&2
+    cat "$CLAUDE_EVIDENCE_SUMMARY" >&2 || true
+  fi
+  if [[ -d "$DAEMON_REGISTRY_DIR" ]]; then
+    echo "Daemon registry entries:" >&2
+    find "$DAEMON_REGISTRY_DIR" -maxdepth 1 -name '*.json' -type f | sort >&2 || true
   fi
 }
 
