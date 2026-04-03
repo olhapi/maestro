@@ -1,6 +1,6 @@
 # Real Claude E2E Harness
 
-This harness exercises the full Maestro loop with the real Claude CLI:
+These harnesses exercise the full Maestro loop with the real Claude CLI:
 
 1. build `maestro`
 2. build `maestro-claude-e2e-probe`
@@ -8,36 +8,35 @@ This harness exercises the full Maestro loop with the real Claude CLI:
 4. write a dedicated `WORKFLOW.md`
 5. initialize a minimal committed Git repo at that harness root
 6. run a Claude preflight with `maestro verify`
-7. create one deterministic issue and move it to `ready`
-8. switch that issue to `full-access` so Claude's local file and shell actions are auto-approved
+7. create deterministic issues for the scenario under test
+8. set the issue permission profiles required by that scenario
 9. start `maestro run` on a temporary loopback HTTP port
 10. launch Claude through a harness wrapper that copies the generated support files and probes the configured `maestro mcp` bridge
-11. wait for Claude to complete the issue
-12. verify the expected output artifact plus the bridge/daemon evidence summary
+11. wait for Claude to complete, pause, revise, or resume as required by the scenario
+12. verify the expected output artifacts plus the bridge/daemon evidence summaries
 
 ## Entry Point
 
 ```bash
 make e2e-real-claude
+make e2e-real-claude-profiles
 ```
 
 The target runs:
 
-- [`scripts/e2e_real_claude.sh`](../scripts/e2e_real_claude.sh) for the baseline single-issue flow
+- [`scripts/e2e_real_claude.sh`](../scripts/e2e_real_claude.sh) for the lifecycle flow (`full-access` success, resume, and interruption)
+- [`scripts/e2e_real_claude_profiles.sh`](../scripts/e2e_real_claude_profiles.sh) for permission-profile coverage (`default`, `full-access`, and `plan-then-full-access`)
 - [`scripts/lib/e2e_real_claude_harness.sh`](../scripts/lib/e2e_real_claude_harness.sh) for the reusable Claude bootstrap, preflight, orchestration, and failure-diagnostics helpers
 
 ## What It Verifies
 
-The generated workflow asks Claude to:
+The generated workflows ask Claude to:
 
 - read the issue description
-- create the requested artifact in a shared output directory
-- confirm the file contents from the shell
-- mark the issue `done`
-
-The deterministic issue is:
-
-- `claude-artifact.txt` must contain `maestro claude e2e ok`
+- emit deterministic stream markers so the probe can correlate live execution
+- use exactly the requested built-in tool calls
+- confirm the requested file contents or pause for plan approval as directed
+- mark the issue `done` only when the scenario explicitly requires it
 
 The harness also enforces the real-Claude prerequisites before the run starts:
 
@@ -58,9 +57,16 @@ During the real runtime launch, the wrapper and probe also verify:
 - the daemon registry still contains exactly one stable entry before and after the bridge probe
 - a live Claude `stdio` session is visible through `list_sessions` while the run is active
 
-## Why It Uses `full-access`
+The permission-profile harness adds explicit verification that:
 
-The baseline issue is set to `full-access` so the Claude runtime can pre-allow the local built-in tools needed by the harness and avoid the current approval-prompt bridge path during unattended local runs. The file and shell work still stays inside the temporary harness root, and the only non-local dependency should remain the operator's existing Claude auth/session.
+- `default` keeps approvals Maestro-managed through the permission-prompt bridge
+- `full-access` switches to `--allowed-tools` without enabling Claude auto/bypass modes
+- `plan-then-full-access` launches in Claude `plan` mode, pauses in `plan_approval_pending`, preserves planning session/version lineage, supports plan revision requests, and only switches to `--allowed-tools` after approval
+- the same Claude session is resumed from planning through post-approval execution
+
+## Why It Covers Multiple Profiles
+
+The lifecycle harness uses `full-access` so Claude can complete the deterministic local file-and-shell tasks without stopping on approval prompts. The permission-profile harness then exercises the Maestro-managed differences between `default`, `full-access`, and `plan-then-full-access` explicitly, while still keeping the work inside the temporary harness root and relying only on the operator's existing Claude auth/session.
 
 ## Failure Diagnostics
 

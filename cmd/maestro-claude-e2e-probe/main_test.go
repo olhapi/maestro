@@ -34,6 +34,14 @@ func TestValidatePermissionFlags(t *testing.T) {
 			},
 		},
 		{
+			name: "plan mode still uses maestro approval prompt",
+			opts: options{
+				permissionMode:       "plan",
+				permissionPromptTool: "mcp__maestro__approval_prompt",
+				strictMCPConfig:      "true",
+			},
+		},
+		{
 			name: "approval prompt forbids allowed tools",
 			opts: options{
 				permissionMode:       "default",
@@ -105,7 +113,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("accepts maestro managed approval payload", func(t *testing.T) {
 		t.Parallel()
 
-		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "command", "Bash"); err != nil {
+		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "command", "Bash", "", 0); err != nil {
 			t.Fatalf("validatePendingInterrupt() error = %v", err)
 		}
 	})
@@ -116,7 +124,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 		interaction := validPendingInterrupt()
 		interaction.Metadata["request_meta"] = map[string]interface{}{}
 
-		err := validatePendingInterrupt(interaction, "CL-1", "command", "Bash")
+		err := validatePendingInterrupt(interaction, "CL-1", "", "command", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "toolUseId correlation") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want missing toolUseId correlation", err)
 		}
@@ -125,9 +133,26 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("rejects classification mismatch", func(t *testing.T) {
 		t.Parallel()
 
-		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "file_write", "Bash")
+		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "file_write", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "expected interrupt classification") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want classification mismatch", err)
+		}
+	})
+
+	t.Run("accepts plan approval payload", func(t *testing.T) {
+		t.Parallel()
+
+		if err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 2); err != nil {
+			t.Fatalf("validatePendingInterrupt() error = %v", err)
+		}
+	})
+
+	t.Run("rejects plan approval version mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 3)
+		if err == nil || !strings.Contains(err.Error(), "expected plan version") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want plan version mismatch", err)
 		}
 	})
 }
@@ -197,6 +222,24 @@ func validPendingInterrupt() agentruntime.PendingInteraction {
 			},
 			"request_meta": map[string]interface{}{
 				"claudecode/toolUseId": "toolu_123",
+			},
+		},
+	}
+}
+
+func validPlanApprovalInterrupt() agentruntime.PendingInteraction {
+	return agentruntime.PendingInteraction{
+		ID:                "plan-approval-1",
+		Kind:              agentruntime.PendingInteractionKindApproval,
+		IssueIdentifier:   "CL-3",
+		CollaborationMode: "plan",
+		Approval: &agentruntime.PendingApproval{
+			Reason:            "Review the proposed plan before execution.",
+			Markdown:          "Ship the guarded rollout.",
+			PlanStatus:        "awaiting_approval",
+			PlanVersionNumber: 2,
+			Decisions: []agentruntime.PendingApprovalDecision{
+				{Value: "approved", Label: "Approve plan"},
 			},
 		},
 	}
