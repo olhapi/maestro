@@ -115,6 +115,14 @@ func decorateProjectSummaries(projects []kanban.ProjectSummary, scopedRepoPath s
 	return projects
 }
 
+func issueStateCountsFromMap(counts map[kanban.State]int) kanban.IssueStateCounts {
+	board := kanban.IssueStateCounts{}
+	for state, count := range counts {
+		board.AddCount(state, count)
+	}
+	return board
+}
+
 func validateScopedRepoPath(repoPath, scopedRepoPath string) error {
 	if strings.TrimSpace(scopedRepoPath) == "" {
 		return nil
@@ -204,10 +212,12 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := s.provider.Snapshot()
-	board := kanban.IssueStateCounts{}
-	for _, issue := range issues {
-		board.Add(issue.State)
+	boardCounts, err := s.store.CountIssuesByState("")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
 	}
+	board := issueStateCountsFromMap(boardCounts)
 
 	writeJSON(w, map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
@@ -263,10 +273,12 @@ func (s *Server) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := s.provider.Snapshot()
-	board := kanban.IssueStateCounts{}
-	for _, issue := range issues {
-		board.Add(issue.State)
+	boardCounts, err := s.store.CountIssuesByState("")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
 	}
+	board := issueStateCountsFromMap(boardCounts)
 
 	writeJSON(w, map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),

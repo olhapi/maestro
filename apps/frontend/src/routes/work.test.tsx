@@ -36,6 +36,19 @@ vi.mock('@/lib/api', () => ({
 
 const { api } = await import('@/lib/api')
 
+function makeDoneIssues(count: number) {
+  return Array.from({ length: count }, (_, index) =>
+    makeIssueSummary({
+      id: `done-${index + 1}`,
+      identifier: `DONE-${String(index + 1).padStart(2, '0')}`,
+      title: `Done task ${index + 1}`,
+      state: 'done',
+      priority: 2,
+      updated_at: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T11:00:00Z`,
+    }),
+  )
+}
+
 describe('WorkPage', () => {
   const mockWorkBootstrap = (bootstrap = makeBootstrapResponse()) => {
     vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse({
@@ -102,6 +115,57 @@ describe('WorkPage', () => {
     await waitFor(() => {
       expect(screen.getByText('turn.started')).toBeInTheDocument()
     })
+  })
+
+  it('limits the done lane in board view without affecting list view results', async () => {
+    const base = makeBootstrapResponse()
+    const doneIssues = makeDoneIssues(35)
+    const bootstrap = {
+      ...base,
+      overview: {
+        ...base.overview,
+        board: {
+          ...base.overview.board,
+          ready: 0,
+          in_progress: 0,
+          done: doneIssues.length,
+        },
+      },
+      issues: {
+        items: doneIssues,
+        total: doneIssues.length,
+        limit: 200,
+        offset: 0,
+      },
+    }
+
+    mockWorkBootstrap(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: doneIssues,
+      total: doneIssues.length,
+      limit: 200,
+      offset: 0,
+    })
+
+    renderWithQueryClient(<WorkPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
+    })
+
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(30)
+    expect(screen.getByText('Showing 30 of 35')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Load 5 more' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('columnheader', { name: 'Issue' })).toBeInTheDocument()
+    })
+
+    expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
   })
 
   it('filters issues by project from the work toolbar', async () => {

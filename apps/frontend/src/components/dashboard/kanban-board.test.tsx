@@ -24,6 +24,18 @@ vi.mock('@tanstack/react-router', () => ({
   )),
 }))
 
+function makeDoneIssues(count: number) {
+  return Array.from({ length: count }, (_, index) =>
+    makeIssueSummary({
+      id: `done-${index + 1}`,
+      identifier: `DONE-${String(index + 1).padStart(2, '0')}`,
+      title: `Done task ${index + 1}`,
+      state: 'done',
+      updated_at: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T11:00:00Z`,
+    }),
+  )
+}
+
 describe('KanbanBoard', () => {
   it('collapses and expands grouped status rows independently', () => {
     renderWithQueryClient(
@@ -70,5 +82,99 @@ describe('KanbanBoard', () => {
       'true',
     )
     expect(screen.getByText('Investigate retries')).toBeInTheDocument()
+  })
+
+  it('progressively reveals done issues in grouped mode', () => {
+    renderWithQueryClient(
+      <KanbanBoard
+        items={[
+          makeIssueSummary({
+            id: 'ready-1',
+            identifier: 'READY-1',
+            title: 'Ready task',
+            state: 'ready',
+          }),
+          ...makeDoneIssues(35),
+        ]}
+        mode="grouped"
+        onCreateIssue={vi.fn()}
+        onMoveIssue={vi.fn()}
+        onOpenIssue={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Ready task')).toBeInTheDocument()
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(30)
+    expect(screen.getByText('Showing 30 of 35')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Load 5 more' })).toBeInTheDocument()
+    expect(screen.queryByText('Done task 31')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load 5 more' }))
+
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
+    expect(screen.getByText('Done task 31')).toBeInTheDocument()
+    expect(screen.queryByText('Showing 30 of 35')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
+  })
+
+  it('progressively reveals done issues in board mode', () => {
+    const { rerender } = renderWithQueryClient(
+      <KanbanBoard
+        items={[
+          makeIssueSummary({
+            id: 'ready-1',
+            identifier: 'READY-1',
+            title: 'Ready task',
+            state: 'ready',
+          }),
+          ...makeDoneIssues(35),
+        ]}
+        onCreateIssue={vi.fn()}
+        onMoveIssue={vi.fn()}
+        onOpenIssue={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Ready task')).toBeInTheDocument()
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(30)
+    expect(screen.getByText('Showing 30 of 35')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Load 5 more' })).toBeInTheDocument()
+    expect(screen.queryByText('Done task 31')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load 5 more' }))
+
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
+    expect(screen.getByText('Done task 31')).toBeInTheDocument()
+    expect(screen.queryByText('Showing 30 of 35')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
+
+    rerender(
+      <KanbanBoard
+        items={[
+          makeIssueSummary({
+            id: 'ready-1',
+            identifier: 'READY-1',
+            title: 'Ready task',
+            state: 'ready',
+          }),
+          makeIssueSummary({
+            id: 'backlog-1',
+            identifier: 'BACKLOG-1',
+            title: 'Backlog task',
+            state: 'backlog',
+          }),
+          ...makeDoneIssues(35),
+        ]}
+        onCreateIssue={vi.fn()}
+        onMoveIssue={vi.fn()}
+        onOpenIssue={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Backlog task')).toBeInTheDocument()
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(30)
+    expect(screen.getByText('Showing 30 of 35')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Load 5 more' })).toBeInTheDocument()
+    expect(screen.queryByText('Done task 31')).not.toBeInTheDocument()
   })
 })
