@@ -115,6 +115,23 @@ describe('KanbanBoard', () => {
     expect(screen.getByText('Done task 31')).toBeInTheDocument()
     expect(screen.queryByText('Showing 30 of 35')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /collapse done status row/i }))
+
+    expect(screen.getByRole('button', { name: /expand done status row/i })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /expand done status row/i }))
+
+    expect(screen.getByRole('button', { name: /collapse done status row/i })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
+    expect(screen.queryByText('Showing 30 of 35')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
   })
 
   it('progressively reveals done issues in board mode', () => {

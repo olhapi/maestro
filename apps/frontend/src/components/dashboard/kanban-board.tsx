@@ -143,7 +143,7 @@ function GroupedKanbanBoard({
             </div>
 
             <div hidden={collapsed} id={bodyId} className="grid gap-2.5 p-[var(--panel-padding)]">
-              {!collapsed && (lane.items.length > 0 ? (
+              {lane.items.length > 0 ? (
                 lane.state === 'done' ? (
                   <DoneLaneProgress
                     key={doneLaneKey}
@@ -169,7 +169,7 @@ function GroupedKanbanBoard({
                       </>
                     )}
                   </DoneLaneProgress>
-                ) : (
+                ) : !collapsed ? (
                   lane.items.map((issue) => (
                     <IssueCard
                       key={issue.id}
@@ -180,15 +180,15 @@ function GroupedKanbanBoard({
                       onStateChange={onMoveIssue}
                     />
                   ))
-                )
-              ) : (
+                ) : null
+              ) : !collapsed ? (
                 <button
                   className="flex min-h-28 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
                   onClick={() => onCreateIssue?.(lane.state)}
                 >
                   Add the next issue
                 </button>
-              ))}
+              ) : null}
             </div>
           </div>
         )
