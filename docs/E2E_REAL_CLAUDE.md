@@ -50,6 +50,7 @@ The harness also enforces the real-Claude prerequisites before the run starts:
 During the real runtime launch, the wrapper and probe also verify:
 
 - Claude received the generated `--mcp-config`, `--settings`, and `--strict-mcp-config` flags from Maestro's real startup path
+- the wrapper keeps the orchestrator-provided stdin attached to the real Claude process while the bridge probe runs
 - the copied `mcp.json` points at `maestro mcp --db <same-db>`
 - the copied `settings.json` disables auto mode, bypass mode, hooks, and built-in git instructions
 - the attached bridge exposes the expected Maestro tools and can successfully call `server_info`, `list_issues`, `get_runtime_snapshot`, and `list_sessions`

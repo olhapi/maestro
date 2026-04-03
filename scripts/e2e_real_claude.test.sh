@@ -277,7 +277,11 @@ case "${1:-}" in
     fi
     ;;
   -p)
-    cat >/dev/null
+    if [[ -n "${FAKE_CLAUDE_STDIN_LOG:-}" ]]; then
+      cat >"$FAKE_CLAUDE_STDIN_LOG"
+    else
+      cat >/dev/null
+    fi
     sleep "${FAKE_CLAUDE_RUNTIME_SLEEP_SECONDS:-0.2}"
     ;;
 esac
@@ -309,10 +313,11 @@ EOF
 }
 
 test_successful_run_builds_claude_workflow_and_verifies_first() {
-  local tmp_dir bin_dir harness_root
+  local tmp_dir bin_dir harness_root stdin_log
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-success.XXXXXX")"
   bin_dir="$tmp_dir/bin"
   harness_root="$tmp_dir/harness"
+  stdin_log="$tmp_dir/claude-stdin.txt"
 
   mkdir -p "$tmp_dir/state"
   : >"$tmp_dir/tool.log"
@@ -324,6 +329,7 @@ test_successful_run_builds_claude_workflow_and_verifies_first() {
   MOCK_TOOL_LOG="$tmp_dir/tool.log" \
   FAKE_MAESTRO_LOG="$tmp_dir/maestro.log" \
   FAKE_PROBE_LOG="$tmp_dir/probe.log" \
+  FAKE_CLAUDE_STDIN_LOG="$stdin_log" \
   FAKE_STATE_DIR="$tmp_dir/state" \
   FAKE_HARNESS_ROOT="$harness_root" \
   E2E_ROOT="$harness_root" \
@@ -342,6 +348,7 @@ test_successful_run_builds_claude_workflow_and_verifies_first() {
   assert_contains "$harness_root/bin/claude-e2e-wrapper" "REAL_COMMAND_ARGS=( claude"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "daemon_entry_stable=true"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "live_claude_session_seen=true"
+  assert_contains "$stdin_log" "runtime prompt"
   assert_contains "$tmp_dir/stdout.txt" "Running maestro verify preflight"
   assert_contains "$tmp_dir/stdout.txt" "Real Claude e2e flow completed successfully."
   assert_contains "$tmp_dir/stdout.txt" "CL-1 -> $harness_root/artifacts/claude-artifact.txt"

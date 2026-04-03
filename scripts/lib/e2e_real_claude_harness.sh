@@ -299,8 +299,10 @@ main() {
   evidence_prefix="$(next_launch_prefix)"
   printf '%s\n' "$@" >"$evidence_prefix.args.txt"
 
-  env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@" &
+  exec 3<&0
+  env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@" <&3 &
   local child_pid="$!"
+  exec 3<&-
 
   if ! "$CLAUDE_PROBE_BIN" \
     --mcp-config "$mcp_config" \
