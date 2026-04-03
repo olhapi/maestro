@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=./e2e_real_codex_preflight.sh
+source "$ROOT_DIR/scripts/lib/e2e_real_codex_preflight.sh"
 HARNESS_LABEL="${HARNESS_LABEL:-maestro-real-claude-e2e}"
 HARNESS_ROOT="${E2E_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/${HARNESS_LABEL}.XXXXXX")}"
 BIN_DIR="${BIN_DIR:-$HARNESS_ROOT/bin}"
@@ -19,41 +21,10 @@ KEEP_HARNESS="${E2E_KEEP_HARNESS:-1}"
 ORCH_PID="${ORCH_PID:-}"
 CURRENT_ISSUE="${CURRENT_ISSUE:-}"
 
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "missing required command: $1" >&2
-    exit 1
-  fi
-}
-
-extract_command_executable() (
-  set -f
-  local command_string="$1"
-  local -a parsed=()
-  local token
-  if [[ -z "${command_string// }" ]]; then
-    return 1
-  fi
-  eval "parsed=($command_string)"
-  for token in "${parsed[@]}"; do
-    if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-      continue
-    fi
-    printf '%s\n' "$token"
-    return 0
-  done
-  return 1
-)
-
 require_command_string() {
   local label="$1"
   local command_string="$2"
-  local executable
-  if ! executable="$(extract_command_executable "$command_string")"; then
-    echo "unable to determine executable for $label command: $command_string" >&2
-    exit 1
-  fi
-  require_cmd "$executable"
+  require_command_from_shell_command "$label command" "$command_string"
 }
 
 ensure_harness_dirs() {

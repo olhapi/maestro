@@ -261,10 +261,69 @@ test_override_command_is_used_for_preflight_requirement() {
   [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected override command run to avoid stderr output"
 }
 
+test_override_command_with_env_assignment_is_used_for_preflight_requirement() {
+  local tmp_dir bin_dir harness_root restricted_path
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-override-env.XXXXXX")"
+  bin_dir="$tmp_dir/bin"
+  harness_root="$tmp_dir/harness"
+  restricted_path="$bin_dir:/usr/bin:/bin"
+
+  mkdir -p "$tmp_dir/state"
+  : >"$tmp_dir/tool.log"
+  : >"$tmp_dir/maestro.log"
+  write_mock_toolchain "$bin_dir"
+  rm -f "$bin_dir/claude"
+
+  PATH="$restricted_path" \
+  MOCK_TOOL_LOG="$tmp_dir/tool.log" \
+  FAKE_MAESTRO_LOG="$tmp_dir/maestro.log" \
+  FAKE_STATE_DIR="$tmp_dir/state" \
+  FAKE_HARNESS_ROOT="$harness_root" \
+  E2E_ROOT="$harness_root" \
+  E2E_KEEP_HARNESS=1 \
+  E2E_CLAUDE_COMMAND="CLAUDE_CONFIG_DIR=$tmp_dir/claude-config claude-wrapper --verbose" \
+  bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
+
+  assert_contains "$harness_root/WORKFLOW.md" "command: 'CLAUDE_CONFIG_DIR=$tmp_dir/claude-config claude-wrapper --verbose'"
+  [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected env-assignment override run to avoid stderr output"
+}
+
+test_override_command_validation_does_not_execute_command_substitutions() {
+  local tmp_dir bin_dir harness_root restricted_path probe_path override_command
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-no-eval.XXXXXX")"
+  bin_dir="$tmp_dir/bin"
+  harness_root="$tmp_dir/harness"
+  restricted_path="$bin_dir:/usr/bin:/bin"
+  probe_path="$tmp_dir/preflight-side-effect.txt"
+  override_command="claude-wrapper \$(touch $probe_path) --verbose"
+
+  mkdir -p "$tmp_dir/state"
+  : >"$tmp_dir/tool.log"
+  : >"$tmp_dir/maestro.log"
+  write_mock_toolchain "$bin_dir"
+  rm -f "$bin_dir/claude"
+
+  PATH="$restricted_path" \
+  MOCK_TOOL_LOG="$tmp_dir/tool.log" \
+  FAKE_MAESTRO_LOG="$tmp_dir/maestro.log" \
+  FAKE_STATE_DIR="$tmp_dir/state" \
+  FAKE_HARNESS_ROOT="$harness_root" \
+  E2E_ROOT="$harness_root" \
+  E2E_KEEP_HARNESS=1 \
+  E2E_CLAUDE_COMMAND="$override_command" \
+  bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
+
+  [[ ! -e "$probe_path" ]] || fail "expected preflight validation to avoid executing command substitutions"
+  assert_contains "$harness_root/WORKFLOW.md" "command: 'claude-wrapper \$(touch $probe_path) --verbose'"
+  [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected command-substitution override run to avoid stderr output"
+}
+
 main() {
   test_successful_run_builds_claude_workflow_and_verifies_first
   test_timeout_failure_prints_issue_and_path_diagnostics
   test_override_command_is_used_for_preflight_requirement
+  test_override_command_with_env_assignment_is_used_for_preflight_requirement
+  test_override_command_validation_does_not_execute_command_substitutions
 }
 
 main "$@"
