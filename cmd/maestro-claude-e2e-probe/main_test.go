@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -433,7 +435,7 @@ func TestWriteEvidence(t *testing.T) {
 	evidence.Bridge.StrictMCPConfig = true
 	evidence.Bridge.PermissionMode = "default"
 	evidence.Bridge.PermissionPromptTool = "<none>"
-	evidence.Bridge.ToolNames = []string{"create_issue", "server_info"}
+	evidence.Bridge.ToolNames = []string{"create_issue", "get_issue_execution", "get_runtime_snapshot", "list_issues", "list_sessions", "server_info"}
 	evidence.Settings.DisableAllHooks = true
 	evidence.Settings.DisableAutoMode = "disable"
 	evidence.Settings.Permissions.DisableBypassPermissionsMode = "disable"
@@ -467,8 +469,9 @@ func TestWriteEvidence(t *testing.T) {
 		"daemon_entry_stable=true",
 		"permission_mode=default",
 		"permission_prompt_tool=<none>",
+		"tool_call_get_issue_execution=ok",
 		"tool_call_server_info=ok",
-		"tool_names=create_issue,server_info",
+		"tool_names=create_issue,get_issue_execution,get_runtime_snapshot,list_issues,list_sessions,server_info",
 	} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary evidence missing %q: %s", want, summary)
@@ -515,7 +518,9 @@ func TestRunHappyPath(t *testing.T) {
 	for _, want := range []string{
 		"bridge_db_path=" + fixture.dbPath,
 		"daemon_entry_stable=true",
+		"issue_identifier=MAES-28",
 		"live_claude_session_seen=true",
+		"tool_call_get_issue_execution=ok",
 		"tool_call_list_sessions=ok",
 		"tool_call_server_info=ok",
 	} {
@@ -723,11 +728,13 @@ func TestMainHappyPath(t *testing.T) {
 		os.Args[0],
 		"-test.run=TestHelperProcessProbeMain",
 		"--",
+		"-mode="+fixture.opts.mode,
 		"-mcp-config="+fixture.opts.mcpConfig,
 		"-settings="+fixture.opts.settings,
 		"-db="+fixture.opts.dbPath,
 		"-registry-dir="+fixture.opts.registryDir,
 		"-evidence-prefix="+fixture.opts.evidencePrefix,
+		"-issue-identifier="+fixture.opts.issueIdentifier,
 		"-allowed-tools="+fixture.opts.allowedTools,
 		"-permission-mode="+fixture.opts.permissionMode,
 		"-strict-mcp-config="+fixture.opts.strictMCPConfig,
@@ -883,6 +890,7 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 	if err != nil {
 		t.Fatalf("resolve db path: %v", err)
 	}
+	issueIdentifier := "MAES-28"
 	registryDir := filepath.Join(root, "registry")
 	if err := os.MkdirAll(registryDir, 0o755); err != nil {
 		t.Fatalf("mkdir registry dir: %v", err)
@@ -891,6 +899,25 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 	settingsPath := filepath.Join(root, "settings.json")
 	evidencePrefix := filepath.Join(root, "evidence")
 	storeID := "store-a"
+	dashboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/app/sessions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"entries": []map[string]any{
+				{
+					"issue_identifier": issueIdentifier,
+					"status":           "running",
+					"stop_reason":      "",
+					"source":           "live",
+				},
+			},
+		})
+	}))
+	t.Cleanup(dashboardServer.Close)
+	dashboardBaseURL := dashboardServer.URL + "/mcp"
 
 	writeJSONFile(t, configPath, map[string]any{
 		"mcpServers": map[string]any{
@@ -916,7 +943,7 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 		StoreID:     storeID,
 		DBPath:      absDBPath,
 		PID:         10,
-		BaseURL:     "http://127.0.0.1:8080/mcp",
+		BaseURL:     dashboardBaseURL,
 		BearerToken: "token-a",
 		Version:     "1.0.0",
 		Transport:   "stdio",
@@ -936,10 +963,13 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 	t.Setenv("GO_PROBE_STORE_ID", storeID)
 	t.Setenv("GO_PROBE_REGISTRY_DIR", registryDir)
 	t.Setenv("GO_PROBE_REGISTRY_ENTRY", registryEntryPath)
+	t.Setenv("GO_PROBE_BASE_URL", dashboardBaseURL)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	return probeRunFixture{
 		opts: options{
+			mode:                 "live",
+			issueIdentifier:      issueIdentifier,
 			mcpConfig:            configPath,
 			settings:             settingsPath,
 			dbPath:               absDBPath,
@@ -1007,17 +1037,18 @@ func TestHelperProcessProbeMCPServer(t *testing.T) {
 	storeID := firstNonEmpty(os.Getenv("GO_PROBE_STORE_ID"), "store-test")
 	registryDir := strings.TrimSpace(os.Getenv("GO_PROBE_REGISTRY_DIR"))
 	registryEntryPath := strings.TrimSpace(os.Getenv("GO_PROBE_REGISTRY_ENTRY"))
+	baseURL := firstNonEmpty(strings.TrimSpace(os.Getenv("GO_PROBE_BASE_URL")), "http://127.0.0.1:8080/mcp")
 	listSessionCalls := 0
 
 	mcp := mcpserver.NewMCPServer("probe-helper", "1.0.0")
-	toolNames := []string{"server_info", "create_issue", "list_issues", "get_runtime_snapshot", "list_sessions"}
+	toolNames := []string{"server_info", "create_issue", "list_issues", "get_issue_execution", "get_runtime_snapshot", "list_sessions"}
 	if scenario == "missing-tool" {
-		toolNames = []string{"server_info", "list_issues", "get_runtime_snapshot", "list_sessions"}
+		toolNames = []string{"server_info", "list_issues", "get_issue_execution", "get_runtime_snapshot", "list_sessions"}
 	}
 	for _, name := range toolNames {
 		toolName := name
 		mcp.AddTool(mcpapi.NewTool(toolName), func(context.Context, mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
-			return probeToolResult(toolName, scenario, dbPath, storeID, registryDir, registryEntryPath, &listSessionCalls)
+			return probeToolResult(toolName, scenario, dbPath, storeID, registryDir, registryEntryPath, baseURL, &listSessionCalls)
 		})
 	}
 
@@ -1044,7 +1075,7 @@ func TestHelperProcessProbeMain(t *testing.T) {
 	os.Exit(0)
 }
 
-func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntryPath string, listSessionCalls *int) (*mcpapi.CallToolResult, error) {
+func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntryPath, baseURL string, listSessionCalls *int) (*mcpapi.CallToolResult, error) {
 	meta := responseEnvelopeMeta{
 		DBPath:           dbPath,
 		StoreID:          storeID,
@@ -1094,11 +1125,41 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 			return probeEnvelopeResultWithRawData("list_issues", meta, json.RawMessage(`"bad"`), true, "")
 		}
 		return probeEnvelopeResult("list_issues", meta, map[string]any{
-			"items":      []any{},
-			"total":      0,
+			"items": []any{
+				map[string]any{
+					"identifier": "MAES-28",
+					"state":      "ready",
+				},
+			},
+			"total":      1,
 			"limit":      50,
 			"offset":     0,
 			"pagination": map[string]any{},
+		}, true, "")
+	case "get_issue_execution":
+		return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
+			"active":            true,
+			"session_source":    "live",
+			"failure_class":     "",
+			"stop_reason":       "",
+			"runtime_name":      "claude",
+			"runtime_provider":  "claude",
+			"runtime_transport": "stdio",
+			"session": agentruntime.Session{
+				IssueID:         "iss_1",
+				IssueIdentifier: "MAES-28",
+				SessionID:       "thread-1",
+				ThreadID:        "thread-1",
+				TurnID:          "turn-1",
+				LastEvent:       "turn.started",
+				LastMessage:     "STREAM:MAES-28:success-live",
+				Metadata: map[string]interface{}{
+					"provider":                    "claude",
+					"transport":                   "stdio",
+					"provider_session_id":         "thread-1",
+					"session_identifier_strategy": "provider_session_uuid",
+				},
+			},
 		}, true, "")
 	case "get_runtime_snapshot":
 		if scenario == "runtime-snapshot-invalid-json" {
@@ -1161,7 +1222,7 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 				StoreID:     storeID,
 				DBPath:      dbPath,
 				PID:         10,
-				BaseURL:     "http://127.0.0.1:8080/mcp",
+				BaseURL:     baseURL,
 				BearerToken: "token-b",
 				Version:     "1.0.0",
 				Transport:   "stdio",
@@ -1172,7 +1233,7 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 				StoreID:     storeID,
 				DBPath:      filepath.Join(filepath.Dir(dbPath), "other.db"),
 				PID:         10,
-				BaseURL:     "http://127.0.0.1:8080/mcp",
+				BaseURL:     baseURL,
 				BearerToken: "token-a",
 				Version:     "1.0.0",
 				Transport:   "stdio",

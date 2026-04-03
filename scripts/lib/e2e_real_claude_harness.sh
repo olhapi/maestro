@@ -424,6 +424,7 @@ assert_claude_runtime_evidence() {
   fi
 
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "expected_tools_present=true"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_get_issue_execution=ok"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_server_info=ok"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_list_issues=ok"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "tool_call_get_runtime_snapshot=ok"
