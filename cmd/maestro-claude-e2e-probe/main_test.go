@@ -1,14 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
 	maestromcp "github.com/olhapi/maestro/internal/mcp"
 )
 
@@ -469,6 +476,755 @@ func TestWriteEvidence(t *testing.T) {
 	}
 }
 
+func TestRunHappyPath(t *testing.T) {
+	fixture := newProbeRunFixture(t, "happy")
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	jsonBytes, err := os.ReadFile(fixture.evidencePrefix + ".json")
+	if err != nil {
+		t.Fatalf("read JSON evidence: %v", err)
+	}
+	var evidence probeEvidence
+	if err := json.Unmarshal(jsonBytes, &evidence); err != nil {
+		t.Fatalf("decode JSON evidence: %v", err)
+	}
+	if !evidence.LiveSessionSeen {
+		t.Fatalf("evidence.LiveSessionSeen = false, want true")
+	}
+	if got, want := evidence.Bridge.ServerName, "maestro"; got != want {
+		t.Fatalf("evidence.Bridge.ServerName = %q, want %q", got, want)
+	}
+	if got, want := filepath.Clean(evidence.Bridge.DBPath), filepath.Clean(fixture.dbPath); got != want {
+		t.Fatalf("evidence.Bridge.DBPath = %q, want %q", got, want)
+	}
+	if got, want := evidence.ServerInfo.Meta.StoreID, fixture.storeID; got != want {
+		t.Fatalf("evidence.ServerInfo.Meta.StoreID = %q, want %q", got, want)
+	}
+	if got := strings.TrimSpace(asString(evidence.LiveSession.Metadata["provider"])); got != "claude" {
+		t.Fatalf("live session provider = %q, want claude", got)
+	}
+
+	summaryBytes, err := os.ReadFile(fixture.evidencePrefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary evidence: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range []string{
+		"bridge_db_path=" + fixture.dbPath,
+		"daemon_entry_stable=true",
+		"live_claude_session_seen=true",
+		"tool_call_list_sessions=ok",
+		"tool_call_server_info=ok",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary evidence missing %q: %s", want, summary)
+		}
+	}
+}
+
+func TestRunReportsProbeFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		scenario string
+		mutate   func(*probeRunFixture)
+		want     string
+	}{
+		{
+			name:     "bridge_db_path_mismatch",
+			scenario: "happy",
+			mutate: func(fixture *probeRunFixture) {
+				fixture.opts.dbPath = filepath.Join(filepath.Dir(fixture.dbPath), "other.db")
+			},
+			want: "bridge db path mismatch",
+		},
+		{
+			name:     "daemon_registry_count_before",
+			scenario: "happy",
+			mutate: func(fixture *probeRunFixture) {
+				writeJSONFile(t, filepath.Join(filepath.Dir(fixture.registryEntryPath), "second.json"), maestromcp.DaemonEntry{
+					StoreID: "store-b",
+					DBPath:  fixture.dbPath,
+				})
+			},
+			want: "expected exactly one daemon registry entry before bridge probe",
+		},
+		{
+			name:     "daemon_registry_db_mismatch_before",
+			scenario: "happy",
+			mutate: func(fixture *probeRunFixture) {
+				writeJSONFile(t, fixture.registryEntryPath, maestromcp.DaemonEntry{
+					StoreID: fixture.storeID,
+					DBPath:  filepath.Join(filepath.Dir(fixture.dbPath), "other.db"),
+				})
+			},
+			want: "daemon registry db path mismatch",
+		},
+		{
+			name:     "missing_tool",
+			scenario: "missing-tool",
+			want:     `expected tool "create_issue" in bridge surface`,
+		},
+		{
+			name:     "runtime_unavailable",
+			scenario: "runtime-unavailable",
+			want:     "server_info reported runtime_available=false",
+		},
+		{
+			name:     "server_info_bad_data",
+			scenario: "server-info-bad-data",
+			want:     "decode server_info",
+		},
+		{
+			name:     "server_info_db_mismatch",
+			scenario: "server-info-db-mismatch",
+			want:     "server_info db path mismatch",
+		},
+		{
+			name:     "server_info_store_mismatch",
+			scenario: "server-info-store-mismatch",
+			want:     "server_info store id mismatch",
+		},
+		{
+			name:     "list_issues_invalid_json",
+			scenario: "list-issues-invalid-json",
+			want:     "call list_issues",
+		},
+		{
+			name:     "list_issues_bad_data",
+			scenario: "list-issues-bad-data",
+			want:     "decode list_issues",
+		},
+		{
+			name:     "runtime_snapshot_invalid_json",
+			scenario: "runtime-snapshot-invalid-json",
+			want:     "call get_runtime_snapshot",
+		},
+		{
+			name:     "runtime_snapshot_bad_data",
+			scenario: "runtime-snapshot-bad-data",
+			want:     "decode get_runtime_snapshot",
+		},
+		{
+			name:     "daemon_registry_count_after",
+			scenario: "registry-count-after",
+			want:     "expected exactly one daemon registry entry after bridge probe",
+		},
+		{
+			name:     "daemon_registry_db_drift_after",
+			scenario: "registry-db-drift-after",
+			want:     "daemon registry db path drifted",
+		},
+		{
+			name:     "daemon_registry_entry_changed",
+			scenario: "registry-drift-after",
+			want:     "daemon registry entry changed during Claude bridge probe",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newProbeRunFixture(t, tt.scenario)
+			if tt.mutate != nil {
+				tt.mutate(&fixture)
+			}
+
+			err := run(fixture.opts)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("run() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCallToolEnvelopeFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		scenario string
+		want     string
+	}{
+		{name: "no_content", scenario: "call-no-content", want: "server_info returned no content"},
+		{name: "wrong_content_type", scenario: "call-wrong-content", want: "server_info returned unexpected content type"},
+		{name: "invalid_json", scenario: "call-invalid-json", want: "server_info response decode"},
+		{name: "tool_failure", scenario: "call-fail", want: "server_info failed: scenario failure"},
+		{name: "tool_failure_unknown_error", scenario: "call-fail-empty-message", want: "server_info failed: unknown error"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			client := newProbeTestClient(t, tt.scenario)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			_, err := callToolEnvelope(ctx, client, "server_info", map[string]interface{}{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("callToolEnvelope() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForClaudeSessionContextDeadline(t *testing.T) {
+	client := newProbeTestClient(t, "list-sessions-empty")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	sessionKey, session, err := waitForClaudeSession(ctx, client)
+	if err == nil || err.Error() != "did not observe a live Claude session before context deadline" {
+		t.Fatalf("waitForClaudeSession() error = %v, want context deadline message", err)
+	}
+	if sessionKey != "" {
+		t.Fatalf("waitForClaudeSession() sessionKey = %q, want empty", sessionKey)
+	}
+	if session.SessionID != "" || session.ThreadID != "" {
+		t.Fatalf("waitForClaudeSession() session = %+v, want zero value", session)
+	}
+}
+
+func TestWaitForClaudeSessionSkipsUnsupportedEntries(t *testing.T) {
+	client := newProbeTestClient(t, "list-sessions-mixed")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sessionKey, session, err := waitForClaudeSession(ctx, client)
+	if err != nil {
+		t.Fatalf("waitForClaudeSession() error = %v", err)
+	}
+	if got, want := sessionKey, "MAES-28"; got != want {
+		t.Fatalf("waitForClaudeSession() sessionKey = %q, want %q", got, want)
+	}
+	if got := strings.TrimSpace(asString(session.Metadata["provider"])); got != "claude" {
+		t.Fatalf("waitForClaudeSession() provider = %q, want claude", got)
+	}
+	if got := strings.TrimSpace(asString(session.Metadata["transport"])); got != "stdio" {
+		t.Fatalf("waitForClaudeSession() transport = %q, want stdio", got)
+	}
+}
+
+func TestWaitForClaudeSessionIgnoresMalformedPayloads(t *testing.T) {
+	client := newProbeTestClient(t, "list-sessions-bad-data")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, _, err := waitForClaudeSession(ctx, client)
+	if err == nil || err.Error() != "did not observe a live Claude session before context deadline" {
+		t.Fatalf("waitForClaudeSession() error = %v, want context deadline message", err)
+	}
+}
+
+func TestMainHappyPath(t *testing.T) {
+	fixture := newProbeRunFixture(t, "happy")
+
+	cmd := exec.Command(
+		os.Args[0],
+		"-test.run=TestHelperProcessProbeMain",
+		"--",
+		"-mcp-config="+fixture.opts.mcpConfig,
+		"-settings="+fixture.opts.settings,
+		"-db="+fixture.opts.dbPath,
+		"-registry-dir="+fixture.opts.registryDir,
+		"-evidence-prefix="+fixture.opts.evidencePrefix,
+		"-allowed-tools="+fixture.opts.allowedTools,
+		"-permission-mode="+fixture.opts.permissionMode,
+		"-strict-mcp-config="+fixture.opts.strictMCPConfig,
+	)
+	cmd.Env = append(os.Environ(), "GO_WANT_PROBE_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("main subprocess error = %v\n%s", err, output)
+	}
+
+	if _, err := os.Stat(fixture.evidencePrefix + ".json"); err != nil {
+		t.Fatalf("expected JSON evidence after main(): %v", err)
+	}
+}
+
+func TestLoadSettingsOverlayErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing_file", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := loadSettingsOverlay(filepath.Join(t.TempDir(), "missing.json"))
+		if err == nil || !strings.Contains(err.Error(), "read settings overlay") {
+			t.Fatalf("loadSettingsOverlay() error = %v, want read settings overlay", err)
+		}
+	})
+
+	t.Run("invalid_json", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "settings.json")
+		if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+			t.Fatalf("write invalid JSON: %v", err)
+		}
+		_, _, err := loadSettingsOverlay(path)
+		if err == nil || !strings.Contains(err.Error(), "decode settings overlay") {
+			t.Fatalf("loadSettingsOverlay() error = %v, want decode settings overlay", err)
+		}
+	})
+}
+
+func TestLoadBridgeConfigAdditionalFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "invalid_json",
+			body: "{",
+			want: "decode MCP config",
+		},
+		{
+			name: "multiple_servers",
+			body: `{"mcpServers":{"maestro":{"type":"stdio","command":"maestro","args":["mcp","--db","db.sqlite"]},"other":{"type":"stdio","command":"maestro","args":["mcp","--db","db.sqlite"]}}}`,
+			want: "expected exactly one MCP server in config",
+		},
+		{
+			name: "bad_args_prefix",
+			body: `{"mcpServers":{"maestro":{"type":"stdio","command":"maestro","args":["serve","--db","db.sqlite"]}}}`,
+			want: `expected maestro MCP args to start with "mcp --db"`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			configPath := filepath.Join(t.TempDir(), "mcp.json")
+			if err := os.WriteFile(configPath, []byte(tt.body), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			_, _, _, _, err := loadBridgeConfig(configPath)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("loadBridgeConfig() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadDaemonEntriesErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing_dir", func(t *testing.T) {
+		t.Parallel()
+		_, err := loadDaemonEntries(filepath.Join(t.TempDir(), "missing"))
+		if err == nil || !strings.Contains(err.Error(), "read daemon registry dir") {
+			t.Fatalf("loadDaemonEntries() error = %v, want read daemon registry dir", err)
+		}
+	})
+
+	t.Run("invalid_json", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "entry.json"), []byte("{"), 0o600); err != nil {
+			t.Fatalf("write invalid entry: %v", err)
+		}
+		_, err := loadDaemonEntries(dir)
+		if err == nil || !strings.Contains(err.Error(), "decode daemon registry entry entry.json") {
+			t.Fatalf("loadDaemonEntries() error = %v, want decode daemon registry entry", err)
+		}
+	})
+}
+
+func TestWriteEvidenceErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("json_write", func(t *testing.T) {
+		t.Parallel()
+		prefix := filepath.Join(t.TempDir(), "missing", "launch")
+		err := writeEvidence(prefix, probeEvidence{})
+		if err == nil || !strings.Contains(err.Error(), "write JSON evidence") {
+			t.Fatalf("writeEvidence() error = %v, want write JSON evidence", err)
+		}
+	})
+
+	t.Run("summary_write", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		prefix := filepath.Join(dir, "launch")
+		if err := os.Mkdir(prefix+".summary.txt", 0o755); err != nil {
+			t.Fatalf("mkdir summary path: %v", err)
+		}
+		err := writeEvidence(prefix, probeEvidence{})
+		if err == nil || !strings.Contains(err.Error(), "write summary evidence") {
+			t.Fatalf("writeEvidence() error = %v, want write summary evidence", err)
+		}
+	})
+}
+
+func TestFirstNonEmptyAllEmpty(t *testing.T) {
+	t.Parallel()
+	if got := firstNonEmpty("", " ", "\t"); got != "" {
+		t.Fatalf("firstNonEmpty() = %q, want empty", got)
+	}
+}
+
+type probeRunFixture struct {
+	opts              options
+	dbPath            string
+	storeID           string
+	registryDir       string
+	registryEntryPath string
+	evidencePrefix    string
+}
+
+func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
+	t.Helper()
+
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "maestro.db")
+	absDBPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		t.Fatalf("resolve db path: %v", err)
+	}
+	registryDir := filepath.Join(root, "registry")
+	if err := os.MkdirAll(registryDir, 0o755); err != nil {
+		t.Fatalf("mkdir registry dir: %v", err)
+	}
+	configPath := filepath.Join(root, "mcp.json")
+	settingsPath := filepath.Join(root, "settings.json")
+	evidencePrefix := filepath.Join(root, "evidence")
+	storeID := "store-a"
+
+	writeJSONFile(t, configPath, map[string]any{
+		"mcpServers": map[string]any{
+			"maestro": map[string]any{
+				"type":    "stdio",
+				"command": "maestro",
+				"args":    []string{"mcp", "--db", absDBPath},
+			},
+		},
+	})
+	writeJSONFile(t, settingsPath, map[string]any{
+		"disableAutoMode":        "disable",
+		"useAutoModeDuringPlan":  false,
+		"disableAllHooks":        true,
+		"includeGitInstructions": false,
+		"permissions": map[string]any{
+			"disableBypassPermissionsMode": "disable",
+		},
+	})
+
+	registryEntryPath := filepath.Join(registryDir, "entry.json")
+	writeJSONFile(t, registryEntryPath, maestromcp.DaemonEntry{
+		StoreID:     storeID,
+		DBPath:      absDBPath,
+		PID:         10,
+		BaseURL:     "http://127.0.0.1:8080/mcp",
+		BearerToken: "token-a",
+		Version:     "1.0.0",
+		Transport:   "stdio",
+	})
+
+	binDir := t.TempDir()
+	wrapperPath := filepath.Join(binDir, "maestro")
+	wrapper := "#!/bin/sh\nexec \"$GO_PROBE_TEST_BINARY\" -test.run=TestHelperProcessProbeMCPServer -- \"$@\"\n"
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write wrapper: %v", err)
+	}
+
+	t.Setenv("GO_PROBE_TEST_BINARY", os.Args[0])
+	t.Setenv("GO_WANT_PROBE_MCP_SERVER", "1")
+	t.Setenv("GO_PROBE_SCENARIO", scenario)
+	t.Setenv("GO_PROBE_DB_PATH", absDBPath)
+	t.Setenv("GO_PROBE_STORE_ID", storeID)
+	t.Setenv("GO_PROBE_REGISTRY_DIR", registryDir)
+	t.Setenv("GO_PROBE_REGISTRY_ENTRY", registryEntryPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	return probeRunFixture{
+		opts: options{
+			mcpConfig:            configPath,
+			settings:             settingsPath,
+			dbPath:               absDBPath,
+			registryDir:          registryDir,
+			evidencePrefix:       evidencePrefix,
+			allowedTools:         "Bash,Edit,Write,MultiEdit",
+			permissionMode:       "default",
+			strictMCPConfig:      "true",
+			permissionPromptTool: "",
+		},
+		dbPath:            absDBPath,
+		storeID:           storeID,
+		registryDir:       registryDir,
+		registryEntryPath: registryEntryPath,
+		evidencePrefix:    evidencePrefix,
+	}
+}
+
+func newProbeTestClient(t *testing.T, scenario string) *mcpclient.Client {
+	t.Helper()
+
+	envPath, err := exec.LookPath("env")
+	if err != nil {
+		t.Fatalf("env lookup failed: %v", err)
+	}
+	args := []string{
+		"GO_WANT_PROBE_MCP_SERVER=1",
+		"GO_PROBE_SCENARIO=" + scenario,
+		"GO_PROBE_DB_PATH=/tmp/maestro-probe.db",
+		"GO_PROBE_STORE_ID=store-test",
+		os.Args[0],
+		"-test.run=TestHelperProcessProbeMCPServer",
+		"--",
+	}
+	client, err := mcpclient.NewStdioMCPClient(envPath, nil, args...)
+	if err != nil {
+		t.Fatalf("NewStdioMCPClient() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.Initialize(ctx, mcpapi.InitializeRequest{
+		Params: mcpapi.InitializeParams{
+			ProtocolVersion: mcpapi.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcpapi.Implementation{Name: "probe-test", Version: "1.0.0"},
+			Capabilities:    mcpapi.ClientCapabilities{},
+		},
+	}); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	return client
+}
+
+func TestHelperProcessProbeMCPServer(t *testing.T) {
+	if os.Getenv("GO_WANT_PROBE_MCP_SERVER") != "1" {
+		return
+	}
+
+	scenario := strings.TrimSpace(os.Getenv("GO_PROBE_SCENARIO"))
+	dbPath := firstNonEmpty(os.Getenv("GO_PROBE_DB_PATH"), "/tmp/maestro-probe.db")
+	storeID := firstNonEmpty(os.Getenv("GO_PROBE_STORE_ID"), "store-test")
+	registryDir := strings.TrimSpace(os.Getenv("GO_PROBE_REGISTRY_DIR"))
+	registryEntryPath := strings.TrimSpace(os.Getenv("GO_PROBE_REGISTRY_ENTRY"))
+	listSessionCalls := 0
+
+	mcp := mcpserver.NewMCPServer("probe-helper", "1.0.0")
+	toolNames := []string{"server_info", "create_issue", "list_issues", "get_runtime_snapshot", "list_sessions"}
+	if scenario == "missing-tool" {
+		toolNames = []string{"server_info", "list_issues", "get_runtime_snapshot", "list_sessions"}
+	}
+	for _, name := range toolNames {
+		toolName := name
+		mcp.AddTool(mcpapi.NewTool(toolName), func(context.Context, mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
+			return probeToolResult(toolName, scenario, dbPath, storeID, registryDir, registryEntryPath, &listSessionCalls)
+		})
+	}
+
+	if err := mcpserver.ServeStdio(mcp); err != nil {
+		t.Fatalf("ServeStdio() error = %v", err)
+	}
+}
+
+func TestHelperProcessProbeMain(t *testing.T) {
+	if os.Getenv("GO_WANT_PROBE_MAIN") != "1" {
+		return
+	}
+
+	args := []string{"maestro-claude-e2e-probe"}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			args = append(args, os.Args[i+1:]...)
+			break
+		}
+	}
+	os.Args = args
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	main()
+	os.Exit(0)
+}
+
+func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntryPath string, listSessionCalls *int) (*mcpapi.CallToolResult, error) {
+	meta := responseEnvelopeMeta{
+		DBPath:           dbPath,
+		StoreID:          storeID,
+		ServerInstanceID: "probe-helper",
+		ChangeSeq:        1,
+	}
+
+	switch name {
+	case "server_info":
+		switch scenario {
+		case "call-no-content":
+			return &mcpapi.CallToolResult{}, nil
+		case "call-wrong-content":
+			return &mcpapi.CallToolResult{Content: []mcpapi.Content{mcpapi.NewImageContent("Zm9v", "image/png")}}, nil
+		case "call-invalid-json":
+			return mcpapi.NewToolResultText("{"), nil
+		case "call-fail":
+			return probeEnvelopeResult("server_info", meta, nil, false, "scenario failure")
+		case "call-fail-empty-message":
+			return probeEnvelopeResult("server_info", meta, nil, false, "")
+		case "runtime-unavailable":
+			return probeEnvelopeResult("server_info", meta, map[string]any{
+				"project_count":     0,
+				"issue_count":       0,
+				"runtime_available": false,
+			}, true, "")
+		case "server-info-bad-data":
+			return probeEnvelopeResultWithRawData("server_info", meta, json.RawMessage(`"bad"`), true, "")
+		case "server-info-db-mismatch":
+			meta.DBPath = filepath.Join(filepath.Dir(dbPath), "other.db")
+		case "server-info-store-mismatch":
+			meta.StoreID = "store-other"
+		default:
+		}
+		return probeEnvelopeResult("server_info", meta, map[string]any{
+			"project_count":     0,
+			"issue_count":       0,
+			"runtime_available": true,
+		}, true, "")
+	case "create_issue":
+		return probeEnvelopeResult("create_issue", meta, map[string]any{"id": "iss_1"}, true, "")
+	case "list_issues":
+		if scenario == "list-issues-invalid-json" {
+			return mcpapi.NewToolResultText("{"), nil
+		}
+		if scenario == "list-issues-bad-data" {
+			return probeEnvelopeResultWithRawData("list_issues", meta, json.RawMessage(`"bad"`), true, "")
+		}
+		return probeEnvelopeResult("list_issues", meta, map[string]any{
+			"items":      []any{},
+			"total":      0,
+			"limit":      50,
+			"offset":     0,
+			"pagination": map[string]any{},
+		}, true, "")
+	case "get_runtime_snapshot":
+		if scenario == "runtime-snapshot-invalid-json" {
+			return mcpapi.NewToolResultText("{"), nil
+		}
+		if scenario == "runtime-snapshot-bad-data" {
+			return probeEnvelopeResultWithRawData("get_runtime_snapshot", meta, json.RawMessage(`"bad"`), true, "")
+		}
+		return probeEnvelopeResult("get_runtime_snapshot", meta, map[string]any{
+			"running": []any{},
+		}, true, "")
+	case "list_sessions":
+		if listSessionCalls != nil {
+			*listSessionCalls++
+		}
+		if scenario == "list-sessions-empty" {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{},
+			}, true, "")
+		}
+		if scenario == "list-sessions-bad-data" {
+			return probeEnvelopeResultWithRawData("list_sessions", meta, json.RawMessage(`"bad"`), true, "")
+		}
+		if scenario == "list-sessions-mixed" && listSessionCalls != nil && *listSessionCalls == 1 {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{
+					"wrong-provider": agentruntime.Session{
+						SessionID: "session-provider",
+						ThreadID:  "thread-provider",
+						Metadata: map[string]interface{}{
+							"provider":  "codex",
+							"transport": "stdio",
+						},
+					},
+					"wrong-transport": agentruntime.Session{
+						SessionID: "session-transport",
+						ThreadID:  "thread-transport",
+						Metadata: map[string]interface{}{
+							"provider":  "claude",
+							"transport": "http",
+						},
+					},
+					"missing-ids": agentruntime.Session{
+						Metadata: map[string]interface{}{
+							"provider":  "claude",
+							"transport": "stdio",
+						},
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "registry-count-after" && strings.TrimSpace(registryDir) != "" {
+			writeJSONFileForHelper(filepath.Join(registryDir, "second.json"), maestromcp.DaemonEntry{
+				StoreID: "store-b",
+				DBPath:  dbPath,
+			})
+		}
+		if scenario == "registry-drift-after" && strings.TrimSpace(registryEntryPath) != "" {
+			writeJSONFileForHelper(registryEntryPath, maestromcp.DaemonEntry{
+				StoreID:     storeID,
+				DBPath:      dbPath,
+				PID:         10,
+				BaseURL:     "http://127.0.0.1:8080/mcp",
+				BearerToken: "token-b",
+				Version:     "1.0.0",
+				Transport:   "stdio",
+			})
+		}
+		if scenario == "registry-db-drift-after" && strings.TrimSpace(registryEntryPath) != "" {
+			writeJSONFileForHelper(registryEntryPath, maestromcp.DaemonEntry{
+				StoreID:     storeID,
+				DBPath:      filepath.Join(filepath.Dir(dbPath), "other.db"),
+				PID:         10,
+				BaseURL:     "http://127.0.0.1:8080/mcp",
+				BearerToken: "token-a",
+				Version:     "1.0.0",
+				Transport:   "stdio",
+			})
+		}
+		return probeEnvelopeResult("list_sessions", meta, map[string]any{
+			"sessions": map[string]any{
+				"MAES-28": agentruntime.Session{
+					IssueID:         "iss_1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "session-1",
+					ThreadID:        "thread-1",
+					TurnID:          "turn-1",
+					LastEvent:       "turn.started",
+					LastMessage:     "Working",
+					Metadata: map[string]interface{}{
+						"provider":  "claude",
+						"transport": "stdio",
+					},
+				},
+			},
+		}, true, "")
+	default:
+		return probeEnvelopeResult(name, meta, map[string]any{}, true, "")
+	}
+}
+
+func probeEnvelopeResult(tool string, meta responseEnvelopeMeta, data any, ok bool, message string) (*mcpapi.CallToolResult, error) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	return probeEnvelopeResultWithRawData(tool, meta, payload, ok, message)
+}
+
+func probeEnvelopeResultWithRawData(tool string, meta responseEnvelopeMeta, payload json.RawMessage, ok bool, message string) (*mcpapi.CallToolResult, error) {
+	envelope := responseEnvelope{
+		OK:   ok,
+		Tool: tool,
+		Meta: meta,
+		Data: payload,
+	}
+	if !ok {
+		envelope.Error = &responseError{Message: message}
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	return mcpapi.NewToolResultText(string(body)), nil
+}
+
 func writeJSONFile(t *testing.T, path string, value any) {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -477,6 +1233,16 @@ func writeJSONFile(t *testing.T, path string, value any) {
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func writeJSONFileForHelper(path string, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		panic(err)
 	}
 }
 
