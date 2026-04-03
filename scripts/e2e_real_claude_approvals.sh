@@ -219,11 +219,11 @@ assert_claude_runtime_surface() {
   assert_evidence_line "$path" "dashboard_session_runtime_name=claude"
   assert_evidence_line "$path" "dashboard_session_runtime_provider=claude"
   assert_evidence_line "$path" "dashboard_session_runtime_transport=stdio"
-  assert_evidence_line "$path" "dashboard_session_runtime_auth_source=OAuth"
+  assert_claude_runtime_auth_source_line "$path" "dashboard_session_runtime_auth_source"
   assert_evidence_line "$path" "execution_runtime_name=claude"
   assert_evidence_line "$path" "execution_runtime_provider=claude"
   assert_evidence_line "$path" "execution_runtime_transport=stdio"
-  assert_evidence_line "$path" "execution_runtime_auth_source=OAuth"
+  assert_claude_runtime_auth_source_line "$path" "execution_runtime_auth_source"
 }
 
 assert_permission_prompt_launch_summary() {

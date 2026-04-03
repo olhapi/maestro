@@ -417,6 +417,21 @@ assert_evidence_line() {
   fi
 }
 
+assert_evidence_line_matches() {
+  local path="$1"
+  local pattern="$2"
+  if ! grep -Eq -- "$pattern" "$path"; then
+    echo "expected Claude harness evidence line matching $pattern in $path" >&2
+    return 1
+  fi
+}
+
+assert_claude_runtime_auth_source_line() {
+  local path="$1"
+  local key="$2"
+  assert_evidence_line_matches "$path" "^${key}=(OAuth|cloud provider)$"
+}
+
 assert_claude_runtime_evidence() {
   if [[ ! -f "$CLAUDE_EVIDENCE_SUMMARY" ]]; then
     echo "expected Claude runtime evidence summary missing: $CLAUDE_EVIDENCE_SUMMARY" >&2
@@ -438,14 +453,14 @@ assert_claude_runtime_evidence() {
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_name=claude"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_provider=claude"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_transport=stdio"
-  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_auth_source=OAuth"
+  assert_claude_runtime_auth_source_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_auth_source"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "strict_mcp_config=true"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "permission_mode=default"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "allowed_tools=Bash,Edit,Write,MultiEdit"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "execution_runtime_name=claude"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "execution_runtime_provider=claude"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "execution_runtime_transport=stdio"
-  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "execution_runtime_auth_source=OAuth"
+  assert_claude_runtime_auth_source_line "$CLAUDE_EVIDENCE_SUMMARY" "execution_runtime_auth_source"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "permission_prompt_tool=<none>"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_disable_auto_mode=disable"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_use_auto_mode_during_plan=false"

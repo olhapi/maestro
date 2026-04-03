@@ -21,6 +21,20 @@ assert_contains() {
   fi
 }
 
+assert_matches() {
+  local file="$1"
+  local pattern="$2"
+  if ! grep -Eq -- "$pattern" "$file"; then
+    fail "expected to match '$pattern' in $file"
+  fi
+}
+
+assert_runtime_auth_source_line() {
+  local file="$1"
+  local key="$2"
+  assert_matches "$file" "^${key}=(OAuth|cloud provider)$"
+}
+
 assert_in_order() {
   local file="$1"
   local first="$2"
@@ -107,6 +121,7 @@ interrupt_plan_status=""
 interrupt_plan_version=""
 interrupt_decision=""
 interrupt_note=""
+fake_claude_auth_source="${FAKE_CLAUDE_AUTH_SOURCE:-OAuth}"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -619,14 +634,14 @@ dashboard_session_pending_interaction_state=$dashboard_pending_interaction_state
 dashboard_session_runtime_name=claude
 dashboard_session_runtime_provider=claude
 dashboard_session_runtime_transport=stdio
-dashboard_session_runtime_auth_source=OAuth
+dashboard_session_runtime_auth_source=$fake_claude_auth_source
 dashboard_session_source=$dashboard_source
 dashboard_session_status=$dashboard_status
 dashboard_session_stop_reason=$dashboard_stop_reason
 execution_active=$execution_active
 execution_failure_class=$execution_failure_class
 execution_pending_interaction_state=$execution_pending_interaction_state
-execution_runtime_auth_source=OAuth
+execution_runtime_auth_source=$fake_claude_auth_source
 execution_runtime_name=claude
 execution_runtime_provider=claude
 execution_runtime_transport=stdio
@@ -720,7 +735,7 @@ verify_case="${FAKE_VERIFY_SCENARIO:-ok}"
 print_verify_json() {
   case "$verify_case" in
     ok)
-      printf '{"ok":true,"checks":{"runtime_default":"ok","claude_version_status":"ok","runtime_claude":"ok","claude_auth_source":"OAuth","claude_auth_source_status":"ok","claude_session_status":"ok","claude_session_bare_mode":"ok","claude_session_additional_directories":"ok"},"remediation":{}}\n'
+      printf '{"ok":true,"checks":{"runtime_default":"ok","claude_version_status":"ok","runtime_claude":"ok","claude_auth_source":"%s","claude_auth_source_status":"ok","claude_session_status":"ok","claude_session_bare_mode":"ok","claude_session_additional_directories":"ok"},"remediation":{}}\n' "${FAKE_CLAUDE_AUTH_SOURCE:-OAuth}"
       ;;
     token-auth)
       printf '{"ok":true,"checks":{"runtime_default":"warn","claude_version_status":"ok","runtime_claude":"warn","claude_auth_source":"ANTHROPIC_AUTH_TOKEN","claude_auth_source_status":"warn","claude_session_status":"ok","claude_session_bare_mode":"ok","claude_session_additional_directories":"ok"},"warnings":["claude_auth_source: ANTHROPIC_AUTH_TOKEN"],"remediation":{}}\n'
@@ -786,7 +801,7 @@ DOCTOR_FAIL
   cat <<DOCTOR_OK
 Doctor
 ======
-claude_auth_source: $( [[ "$verify_case" == "token-auth" ]] && printf 'ANTHROPIC_AUTH_TOKEN' || printf 'OAuth' )
+claude_auth_source: $( [[ "$verify_case" == "token-auth" ]] && printf 'ANTHROPIC_AUTH_TOKEN' || printf '%s' "${FAKE_CLAUDE_AUTH_SOURCE:-OAuth}" )
 claude_auth_source_status: $( [[ "$verify_case" == "token-auth" ]] && printf 'warn' || printf 'ok' )
 claude_session_additional_directories: ok
 claude_session_bare_mode: ok
@@ -1465,10 +1480,10 @@ runtime:
 Issue {{ issue.identifier }}
 WORKFLOW_DOC
         printf 'Initialized %s/WORKFLOW.md\n\n' "$repo_path"
-        cat <<'WORKFLOW_INIT_OUTPUT'
+        cat <<WORKFLOW_INIT_OUTPUT
 Verification
 ============
-claude_auth_source: OAuth
+claude_auth_source: ${FAKE_CLAUDE_AUTH_SOURCE:-OAuth}
 claude_auth_source_status: ok
 claude_session_additional_directories: ok
 claude_session_bare_mode: ok
@@ -1795,7 +1810,7 @@ test_successful_run_bootstraps_and_checks_claude_preflight() {
   harness_root="$tmp_dir/harness"
   stdin_log="$tmp_dir/claude-stdin.txt"
 
-  run_harness "$tmp_dir" "E2E_CODEX_COMMAND=$CODEX_OVERRIDE" "FAKE_CLAUDE_STDIN_LOG=$stdin_log"
+  run_harness "$tmp_dir" "E2E_CODEX_COMMAND=$CODEX_OVERRIDE" "FAKE_CLAUDE_STDIN_LOG=$stdin_log" "FAKE_CLAUDE_AUTH_SOURCE=cloud provider"
 
   [[ -f "$harness_root/WORKFLOW.md" ]] || fail "expected WORKFLOW.md to be created"
   [[ -f "$harness_root/artifacts/CL-1.success.txt" ]] || fail "expected success artifact to be created"
@@ -1821,7 +1836,8 @@ test_successful_run_bootstraps_and_checks_claude_preflight() {
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "tool_call_get_issue_execution=ok"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "issue_identifier=CL-1"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "live_claude_session_seen=true"
-  assert_contains "$harness_root/claude-support/launch-1.summary.txt" "dashboard_session_runtime_auth_source=OAuth"
+  assert_runtime_auth_source_line "$harness_root/claude-support/launch-1.summary.txt" "dashboard_session_runtime_auth_source"
+  assert_runtime_auth_source_line "$harness_root/claude-support/launch-1.summary.txt" "execution_runtime_auth_source"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "execution_runtime_name=claude"
   assert_contains "$harness_root/claude-support/launch-3.args.txt" "-r"
   assert_contains "$harness_root/claude-support/launch-3.args.txt" "claude-session-2"
@@ -1840,6 +1856,7 @@ test_successful_run_bootstraps_and_checks_claude_preflight() {
   assert_contains "$tmp_dir/stdout.txt" "recovery: CL-4 -> workspace recovery guidance, manual retry, then $harness_root/artifacts/CL-4.recovery.txt"
   assert_contains "$tmp_dir/stdout.txt" "claude evidence dir: $harness_root/claude-support"
   assert_contains "$harness_root/workflow-init.log" "claude_version_status: ok"
+  assert_contains "$harness_root/workflow-init.log" "claude_auth_source: cloud provider"
   assert_contains "$harness_root/workflow-init.log" "claude_auth_source_status: ok"
   assert_contains "$harness_root/spec-check.log" "workflow_version: ok"
   assert_contains "$harness_root/verify.log" '"claude_session_bare_mode":"ok"'
@@ -1894,6 +1911,7 @@ test_approval_run_covers_each_supported_claude_approval_class() {
   FAKE_PROBE_LOG="$tmp_dir/probe.log" \
   FAKE_STATE_DIR="$tmp_dir/state" \
   FAKE_HARNESS_ROOT="$harness_root" \
+  FAKE_CLAUDE_AUTH_SOURCE="cloud provider" \
   E2E_ROOT="$harness_root" \
   E2E_KEEP_HARNESS=1 \
   bash "$APPROVALS_SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
@@ -2000,6 +2018,7 @@ test_permission_profile_run_covers_default_full_access_and_plan_lineage() {
   FAKE_PROBE_LOG="$tmp_dir/probe.log" \
   FAKE_STATE_DIR="$tmp_dir/state" \
   FAKE_HARNESS_ROOT="$harness_root" \
+  FAKE_CLAUDE_AUTH_SOURCE="cloud provider" \
   E2E_ROOT="$harness_root" \
   E2E_KEEP_HARNESS=1 \
   bash "$PROFILES_SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
@@ -2021,7 +2040,8 @@ test_permission_profile_run_covers_default_full_access_and_plan_lineage() {
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "permission_mode=default"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "permission_prompt_tool=mcp__maestro__approval_prompt"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "allowed_tools="
-  assert_contains "$harness_root/claude-support/launch-1.summary.txt" "dashboard_session_runtime_auth_source=OAuth"
+  assert_runtime_auth_source_line "$harness_root/claude-support/launch-1.summary.txt" "dashboard_session_runtime_auth_source"
+  assert_runtime_auth_source_line "$harness_root/claude-support/launch-1.summary.txt" "execution_runtime_auth_source"
   if grep -Fq -- "--allowed-tools" "$harness_root/claude-support/launch-1.args.txt"; then
     fail "expected default profile launch to avoid --allowed-tools"
   fi

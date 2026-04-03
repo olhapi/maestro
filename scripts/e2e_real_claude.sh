@@ -246,11 +246,11 @@ assert_claude_runtime_surface() {
   assert_evidence_value "$path" "dashboard_session_runtime_name" "claude"
   assert_evidence_value "$path" "dashboard_session_runtime_provider" "claude"
   assert_evidence_value "$path" "dashboard_session_runtime_transport" "stdio"
-  assert_evidence_value "$path" "dashboard_session_runtime_auth_source" "OAuth"
+  assert_claude_runtime_auth_source_line "$path" "dashboard_session_runtime_auth_source"
   assert_evidence_value "$path" "execution_runtime_name" "claude"
   assert_evidence_value "$path" "execution_runtime_provider" "claude"
   assert_evidence_value "$path" "execution_runtime_transport" "stdio"
-  assert_evidence_value "$path" "execution_runtime_auth_source" "OAuth"
+  assert_claude_runtime_auth_source_line "$path" "execution_runtime_auth_source"
 }
 
 assert_success_snapshot() {
@@ -269,7 +269,7 @@ assert_success_snapshot() {
   assert_evidence_value "$final_summary" "execution_runtime_name" "claude"
   assert_evidence_value "$final_summary" "execution_runtime_provider" "claude"
   assert_evidence_value "$final_summary" "execution_runtime_transport" "stdio"
-  assert_evidence_value "$final_summary" "execution_runtime_auth_source" "OAuth"
+  assert_claude_runtime_auth_source_line "$final_summary" "execution_runtime_auth_source"
   assert_evidence_value "$final_summary" "execution_pending_interaction_state" ""
   assert_evidence_value "$final_summary" "execution_stop_reason" "end_turn"
   assert_evidence_value "$final_summary" "execution_workspace_recovery_present" "false"
