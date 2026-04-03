@@ -79,6 +79,9 @@ func TestClaudeCommandParsingHelpers(t *testing.T) {
 	if !opts.AdditionalDirFlag {
 		t.Fatalf("expected additional dir flag to be detected, got %+v", opts)
 	}
+	if got, want := opts.AdditionalDirectories, []string{"docs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected additional directories: got %v want %v", got, want)
+	}
 	if got, want := opts.SettingSources, []string{"user", "project", "local"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected setting sources: got %v want %v", got, want)
 	}
@@ -326,6 +329,9 @@ esac
 		}
 		if status, reason, dirs := detectClaudeSessionIssues("", claudeCommandOptions{AdditionalDirFlag: true}, claudeSettingsState{}); status != "fail" || reason != "" || !reflect.DeepEqual(dirs, []string{"--add-dir"}) {
 			t.Fatalf("expected add-dir flag to be converted into additional directories, got status=%q reason=%q dirs=%v", status, reason, dirs)
+		}
+		if status, reason, dirs := detectClaudeSessionIssues("", claudeCommandOptions{AdditionalDirFlag: true, AdditionalDirectories: []string{"../docs"}}, claudeSettingsState{}); status != "fail" || reason != "" || !reflect.DeepEqual(dirs, []string{"../docs"}) {
+			t.Fatalf("expected add-dir value to be preserved, got status=%q reason=%q dirs=%v", status, reason, dirs)
 		}
 		if status, reason, dirs := detectClaudeSessionIssues("", claudeCommandOptions{AdditionalDirFlag: true}, claudeSettingsState{AdditionalDirectories: []string{"docs"}}); status != "fail" || reason != "" || !reflect.DeepEqual(dirs, []string{"docs"}) {
 			t.Fatalf("expected configured additional directories to be preserved, got status=%q reason=%q dirs=%v", status, reason, dirs)

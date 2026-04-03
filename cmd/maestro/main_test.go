@@ -84,6 +84,71 @@ printf 'claude-cli {{VERSION}}\n'
 	return path
 }
 
+func writeFakePinnedNPXCodexCLI(t *testing.T, version string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake npx dir: %v", err)
+	}
+	path := filepath.Join(dir, "npx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"-y\" ]; then\n" +
+		"  echo \"unexpected npx args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"@openai/codex@" + version + "\" ]; then\n" +
+		"  echo \"unexpected package: $1\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"--version\" ]; then\n" +
+		"  echo \"unexpected version probe args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"printf 'codex-cli " + version + "\\n'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake npx: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	return "npx -y @openai/codex@" + version + " app-server"
+}
+
+func writeClaudeWorkflow(t *testing.T, repoPath, command string) {
+	t.Helper()
+	workflow := `---
+tracker:
+  kind: kanban
+runtime:
+  default: claude
+  claude:
+    provider: claude
+    transport: stdio
+    command: '` + command + `'
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(repoPath, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+}
+
+func writeClaudeSettingsFile(t *testing.T, repoPath, body string) {
+	t.Helper()
+	dir := filepath.Join(repoPath, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+}
+
 func sampleMainPNGBytes() []byte {
 	return []byte{
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -892,6 +957,134 @@ func TestVerifyAndDoctorOutputs(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("unexpected doctor output: %s", stdout)
 		}
+	}
+}
+
+func TestVerifyAndDoctorReportClaudeReadinessFailures(t *testing.T) {
+	type verifyPayload struct {
+		OK          bool              `json:"ok"`
+		Checks      map[string]string `json:"checks"`
+		Errors      []string          `json:"errors"`
+		Remediation map[string]string `json:"remediation"`
+	}
+
+	_ = writeFakeRuntimeCLI(t, "claude", "1.2.3")
+
+	cases := []struct {
+		name               string
+		command            string
+		settingsJSON       string
+		authStatusJSON     string
+		wantCheck          string
+		wantReason         string
+		wantRemediationKey string
+		wantRemediation    string
+	}{
+		{
+			name:               "missing claude",
+			command:            "missing-claude",
+			wantCheck:          "claude_version_status",
+			wantReason:         "claude: unable to locate executable",
+			wantRemediationKey: "claude",
+			wantRemediation:    "Install Claude Code or update `runtime.claude.command` in WORKFLOW.md, then re-run `maestro verify`.",
+		},
+		{
+			name:               "auth failure",
+			command:            "claude",
+			authStatusJSON:     `{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstParty"}`,
+			wantCheck:          "claude_auth_source_status",
+			wantReason:         "claude_auth_source: OAuth",
+			wantRemediationKey: "claude_auth_source",
+			wantRemediation:    "Log in with Claude Code or configure a supported auth source, then re-run `maestro verify`.",
+		},
+		{
+			name:               "bare mode",
+			command:            "claude --bare",
+			wantCheck:          "claude_session_bare_mode",
+			wantReason:         "runtime command includes `--bare`",
+			wantRemediationKey: "claude_session_bare_mode",
+			wantRemediation:    "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
+		},
+		{
+			name:               "permission auto",
+			command:            "claude --permission-mode auto",
+			wantCheck:          "claude_session_bare_mode",
+			wantReason:         "runtime command sets `--permission-mode auto`",
+			wantRemediationKey: "claude_session_bare_mode",
+			wantRemediation:    "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
+		},
+		{
+			name:               "permission bypass",
+			command:            "claude --permission-mode bypassPermissions",
+			wantCheck:          "claude_session_bare_mode",
+			wantReason:         "runtime command sets `--permission-mode bypassPermissions`",
+			wantRemediationKey: "claude_session_bare_mode",
+			wantRemediation:    "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
+		},
+		{
+			name:               "additional directories",
+			command:            "claude --add-dir=../docs",
+			wantCheck:          "claude_session_additional_directories",
+			wantReason:         "claude_session_additional_directories: ../docs",
+			wantRemediationKey: "claude_session_additional_directories",
+			wantRemediation:    "Remove `additionalDirectories` or `--add-dir` from Claude configuration so the session stays scoped to the Maestro workspace.",
+		},
+		{
+			name:               "settings additional directories",
+			command:            "claude",
+			settingsJSON:       `{"permissions":{"additionalDirectories":["../docs"]}}`,
+			wantCheck:          "claude_session_additional_directories",
+			wantReason:         "claude_session_additional_directories: ../docs",
+			wantRemediationKey: "claude_session_additional_directories",
+			wantRemediation:    "Remove `additionalDirectories` or `--add-dir` from Claude configuration so the session stays scoped to the Maestro workspace.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "maestro.db")
+			repoPath := t.TempDir()
+			writeClaudeWorkflow(t, repoPath, tc.command)
+			if tc.settingsJSON != "" {
+				writeClaudeSettingsFile(t, repoPath, tc.settingsJSON)
+			}
+			t.Setenv("FAKE_CLAUDE_AUTH_STATUS_JSON", tc.authStatusJSON)
+
+			code, stdout, stderr := runCLI(t, "--db", dbPath, "verify", "--repo", repoPath, "--json")
+			if code != 0 {
+				t.Fatalf("verify json failed: %d stderr=%s", code, stderr)
+			}
+			var payload verifyPayload
+			if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+				t.Fatalf("unmarshal verify json: %v stdout=%s", err, stdout)
+			}
+			if payload.OK {
+				t.Fatalf("expected failing readiness payload, got %+v", payload)
+			}
+			if got := payload.Checks[tc.wantCheck]; got != "fail" {
+				t.Fatalf("expected %s to fail, got %q payload=%+v", tc.wantCheck, got, payload)
+			}
+			if !strings.Contains(strings.Join(payload.Errors, "\n"), tc.wantReason) {
+				t.Fatalf("expected verify errors to mention %q, got %+v", tc.wantReason, payload.Errors)
+			}
+			if got := payload.Remediation[tc.wantRemediationKey]; got != tc.wantRemediation {
+				t.Fatalf("expected remediation %q, got %q", tc.wantRemediation, got)
+			}
+
+			code, stdout, stderr = runCLI(t, "--db", dbPath, "doctor", "--repo", repoPath)
+			if code == 0 {
+				t.Fatalf("expected doctor to fail for %s, stdout=%s stderr=%s", tc.name, stdout, stderr)
+			}
+			if !strings.Contains(stdout, tc.wantCheck+": fail") {
+				t.Fatalf("expected doctor output to contain failed check %q, got %q", tc.wantCheck, stdout)
+			}
+			if !strings.Contains(stdout, tc.wantReason) {
+				t.Fatalf("expected doctor output to mention %q, got %q", tc.wantReason, stdout)
+			}
+			if !strings.Contains(stdout, tc.wantRemediationKey+": "+tc.wantRemediation) {
+				t.Fatalf("expected doctor remediation %q, got %q", tc.wantRemediation, stdout)
+			}
+		})
 	}
 }
 

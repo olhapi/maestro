@@ -13,7 +13,10 @@ DAEMON_REGISTRY_DIR="${DAEMON_REGISTRY_DIR:-$HARNESS_ROOT/.maestro-daemons}"
 CLAUDE_EVIDENCE_DIR="${CLAUDE_EVIDENCE_DIR:-$HARNESS_ROOT/claude-support}"
 DB_PATH="${DB_PATH:-$HARNESS_ROOT/.maestro/maestro.db}"
 WORKFLOW_PATH="${WORKFLOW_PATH:-$HARNESS_ROOT/WORKFLOW.md}"
+WORKFLOW_INIT_LOG="${WORKFLOW_INIT_LOG:-$HARNESS_ROOT/workflow-init.log}"
+SPEC_CHECK_LOG="${SPEC_CHECK_LOG:-$HARNESS_ROOT/spec-check.log}"
 VERIFY_LOG="${VERIFY_LOG:-$HARNESS_ROOT/verify.log}"
+DOCTOR_LOG="${DOCTOR_LOG:-$HARNESS_ROOT/doctor.log}"
 ORCH_LOG="${ORCH_LOG:-$HARNESS_ROOT/orchestrator.log}"
 MAESTRO_BIN="${MAESTRO_BIN:-$BIN_DIR/maestro}"
 CLAUDE_PROBE_BIN="${CLAUDE_PROBE_BIN:-$BIN_DIR/maestro-claude-e2e-probe}"
@@ -30,6 +33,18 @@ require_command_string() {
   local label="$1"
   local command_string="$2"
   require_command_from_shell_command "$label command" "$command_string"
+}
+
+default_codex_command() {
+  if [[ -n "${E2E_CODEX_COMMAND:-}" ]]; then
+    printf '%s\n' "$E2E_CODEX_COMMAND"
+    return 0
+  fi
+  if command -v codex >/dev/null 2>&1; then
+    printf '%s\n' "codex app-server"
+    return 0
+  fi
+  printf '%s\n' "npx -y @openai/codex@0.118.0 app-server"
 }
 
 ensure_harness_dirs() {
@@ -149,6 +164,55 @@ require_verify_check() {
   fi
 }
 
+require_output_contains() {
+  local label="$1"
+  local log_file="$2"
+  local expected="$3"
+  if ! grep -Fq -- "$expected" "$log_file"; then
+    echo "$label missing expected output: $expected" >&2
+    return 1
+  fi
+}
+
+require_output_matches() {
+  local label="$1"
+  local log_file="$2"
+  local pattern="$3"
+  if ! grep -Eq "$pattern" "$log_file"; then
+    echo "$label missing expected pattern: $pattern" >&2
+    return 1
+  fi
+}
+
+run_claude_workflow_init() {
+  local codex_command="$1"
+  echo "Running maestro workflow init bootstrap"
+  if ! "$MAESTRO_BIN" --db "$DB_PATH" workflow init "$HARNESS_ROOT" --defaults --runtime-command "$codex_command" >"$WORKFLOW_INIT_LOG" 2>&1; then
+    echo "maestro workflow init failed for the Claude harness" >&2
+    return 1
+  fi
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "Initialized $WORKFLOW_PATH"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "Verification"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "claude_version_status: ok"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "claude_auth_source_status: ok"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "claude_session_status: ok"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "claude_session_bare_mode: ok"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "claude_session_additional_directories: ok"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "runtime_claude: ok"
+}
+
+run_claude_spec_check() {
+  echo "Running maestro spec-check"
+  if ! "$MAESTRO_BIN" spec-check --repo "$HARNESS_ROOT" >"$SPEC_CHECK_LOG" 2>&1; then
+    echo "maestro spec-check failed for the Claude harness" >&2
+    return 1
+  fi
+  require_output_contains "spec-check" "$SPEC_CHECK_LOG" "Spec Check"
+  require_output_contains "spec-check" "$SPEC_CHECK_LOG" "workflow_load: ok"
+  require_output_contains "spec-check" "$SPEC_CHECK_LOG" "workflow_prompt_render: ok"
+  require_output_contains "spec-check" "$SPEC_CHECK_LOG" "workflow_version: ok"
+}
+
 run_claude_verify() {
   echo "Running maestro verify preflight"
   if ! "$MAESTRO_BIN" --json verify --repo "$HARNESS_ROOT" --db "$DB_PATH" >"$VERIFY_LOG" 2>&1; then
@@ -161,6 +225,22 @@ run_claude_verify() {
   require_verify_check 'claude_session_status=ok' '"claude_session_status":"ok"'
   require_verify_check 'claude_session_bare_mode=ok' '"claude_session_bare_mode":"ok"'
   require_verify_check 'claude_session_additional_directories=ok' '"claude_session_additional_directories":"ok"'
+}
+
+run_claude_doctor() {
+  echo "Running maestro doctor preflight"
+  if ! "$MAESTRO_BIN" doctor --repo "$HARNESS_ROOT" --db "$DB_PATH" >"$DOCTOR_LOG" 2>&1; then
+    echo "maestro doctor failed for the Claude harness" >&2
+    return 1
+  fi
+  require_output_contains "doctor" "$DOCTOR_LOG" "Doctor"
+  require_output_matches "doctor" "$DOCTOR_LOG" 'claude_auth_source: (OAuth|cloud provider)'
+  require_output_contains "doctor" "$DOCTOR_LOG" "claude_version_status: ok"
+  require_output_contains "doctor" "$DOCTOR_LOG" "claude_auth_source_status: ok"
+  require_output_contains "doctor" "$DOCTOR_LOG" "claude_session_status: ok"
+  require_output_contains "doctor" "$DOCTOR_LOG" "claude_session_bare_mode: ok"
+  require_output_contains "doctor" "$DOCTOR_LOG" "claude_session_additional_directories: ok"
+  require_output_contains "doctor" "$DOCTOR_LOG" "runtime_claude: ok"
 }
 
 prepare_claude_command_wrapper() {
@@ -382,7 +462,10 @@ print_failure_context() {
   echo "Database: $DB_PATH" >&2
   echo "Daemon registry dir: $DAEMON_REGISTRY_DIR" >&2
   echo "Claude evidence dir: $CLAUDE_EVIDENCE_DIR" >&2
+  echo "Workflow init log: $WORKFLOW_INIT_LOG" >&2
+  echo "Spec-check log: $SPEC_CHECK_LOG" >&2
   echo "Verify log: $VERIFY_LOG" >&2
+  echo "Doctor log: $DOCTOR_LOG" >&2
   echo "Logs root: $LOGS_DIR" >&2
   echo "Orchestrator log: $ORCH_LOG" >&2
   echo "Workspaces root: $WORKSPACES_DIR" >&2
@@ -402,6 +485,18 @@ print_failure_context() {
   if [[ -f "$VERIFY_LOG" ]]; then
     echo "Last verify output:" >&2
     tail -n 50 "$VERIFY_LOG" >&2 || true
+  fi
+  if [[ -f "$DOCTOR_LOG" ]]; then
+    echo "Last doctor output:" >&2
+    tail -n 50 "$DOCTOR_LOG" >&2 || true
+  fi
+  if [[ -f "$SPEC_CHECK_LOG" ]]; then
+    echo "Last spec-check output:" >&2
+    tail -n 50 "$SPEC_CHECK_LOG" >&2 || true
+  fi
+  if [[ -f "$WORKFLOW_INIT_LOG" ]]; then
+    echo "Last workflow init output:" >&2
+    tail -n 50 "$WORKFLOW_INIT_LOG" >&2 || true
   fi
   if [[ -f "$ORCH_LOG" ]]; then
     echo "Last orchestrator output:" >&2

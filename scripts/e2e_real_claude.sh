@@ -9,6 +9,7 @@ source "$ROOT_DIR/scripts/lib/e2e_real_claude_harness.sh"
 trap cleanup EXIT INT TERM
 
 CLAUDE_COMMAND="${E2E_CLAUDE_COMMAND:-claude}"
+CODEX_COMMAND="$(default_codex_command)"
 
 success_stream_marker() {
   printf 'STREAM:%s:success-live' "$1"
@@ -264,6 +265,7 @@ cd "$ROOT_DIR"
 
 require_cmd go
 require_command_string "Claude" "$CLAUDE_COMMAND"
+require_command_string "Codex" "$CODEX_COMMAND"
 require_cmd git
 require_cmd sqlite3
 
@@ -275,6 +277,8 @@ export PATH="$BIN_DIR:$PATH"
 export MAESTRO_DAEMON_REGISTRY_DIR="$DAEMON_REGISTRY_DIR"
 
 CLAUDE_WORKFLOW_COMMAND="$(yaml_quote "$CLAUDE_WRAPPER_BIN")"
+
+run_claude_workflow_init "$CODEX_COMMAND"
 
 cat >"$WORKFLOW_PATH" <<EOF
 ---
@@ -340,7 +344,9 @@ Requirements:
 EOF
 
 init_harness_repo "$HARNESS_ROOT"
+run_claude_spec_check
 run_claude_verify
+run_claude_doctor
 
 PROJECT_ID="$("$MAESTRO_BIN" project create "Real Claude Lifecycle E2E Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
 start_project "$PROJECT_ID"
