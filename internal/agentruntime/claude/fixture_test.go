@@ -54,6 +54,9 @@ func TestClaudeStreamFixtureParsing(t *testing.T) {
 	if session.Metadata["provider_session_id"] != "claude-session-fixture" {
 		t.Fatalf("expected provider session id metadata, got %+v", session.Metadata)
 	}
+	if session.Metadata["auth_source"] != "OAuth" {
+		t.Fatalf("expected auth source metadata from runtime defaults, got %+v", session.Metadata)
+	}
 	if session.Metadata["claude_stop_reason"] != "end_turn" {
 		t.Fatalf("expected stop reason metadata from fixture, got %+v", session.Metadata)
 	}
@@ -99,6 +102,9 @@ func TestClaudeResumeFixtureMetadata(t *testing.T) {
 	}
 	if session.Metadata["provider_session_id"] != "claude-session-resume" {
 		t.Fatalf("expected resume token metadata to survive, got %+v", session.Metadata)
+	}
+	if session.Metadata["auth_source"] != "OAuth" {
+		t.Fatalf("expected auth source metadata to survive resume, got %+v", session.Metadata)
 	}
 }
 

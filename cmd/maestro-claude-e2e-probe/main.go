@@ -23,25 +23,28 @@ import (
 )
 
 type options struct {
-	mode                 string
-	issueIdentifier      string
-	streamMarker         string
-	mcpConfig            string
-	settings             string
-	dbPath               string
-	registryDir          string
-	evidencePrefix       string
-	allowedTools         string
-	permissionPromptTool string
-	permissionMode       string
-	strictMCPConfig      string
+	mode                  string
+	issueIdentifier       string
+	streamMarker          string
+	mcpConfig             string
+	settings              string
+	dbPath                string
+	registryDir           string
+	evidencePrefix        string
+	allowedTools          string
+	permissionPromptTool  string
+	permissionMode        string
+	strictMCPConfig       string
 	interruptApprovalType string
-	interruptClass       string
-	interruptToolName    string
-	interruptPlanStatus  string
-	interruptPlanVersion int
-	interruptDecision    string
-	interruptNote        string
+	interruptKind         string
+	interruptAction       string
+	interruptAlertCode    string
+	interruptClass        string
+	interruptToolName     string
+	interruptPlanStatus   string
+	interruptPlanVersion  int
+	interruptDecision     string
+	interruptNote         string
 }
 
 type mcpConfigFile struct {
@@ -98,16 +101,19 @@ type listIssuesData struct {
 }
 
 type executionObservation struct {
-	Active           bool                 `json:"active"`
-	SessionSource    string               `json:"session_source,omitempty"`
-	FailureClass     string               `json:"failure_class,omitempty"`
-	StopReason       string               `json:"stop_reason,omitempty"`
-	RuntimeName      string               `json:"runtime_name,omitempty"`
-	RuntimeProvider  string               `json:"runtime_provider,omitempty"`
-	RuntimeTransport string               `json:"runtime_transport,omitempty"`
-	StreamMarker     string               `json:"stream_marker,omitempty"`
-	StreamSeen       bool                 `json:"stream_seen"`
-	Session          agentruntime.Session `json:"session,omitempty"`
+	Active                  bool                      `json:"active"`
+	SessionSource           string                    `json:"session_source,omitempty"`
+	FailureClass            string                    `json:"failure_class,omitempty"`
+	StopReason              string                    `json:"stop_reason,omitempty"`
+	RuntimeName             string                    `json:"runtime_name,omitempty"`
+	RuntimeProvider         string                    `json:"runtime_provider,omitempty"`
+	RuntimeTransport        string                    `json:"runtime_transport,omitempty"`
+	RuntimeAuthSource       string                    `json:"runtime_auth_source,omitempty"`
+	PendingInteractionState string                    `json:"pending_interaction_state,omitempty"`
+	StreamMarker            string                    `json:"stream_marker,omitempty"`
+	StreamSeen              bool                      `json:"stream_seen"`
+	Session                 agentruntime.Session      `json:"session,omitempty"`
+	WorkspaceRecovery       *kanban.WorkspaceRecovery `json:"workspace_recovery,omitempty"`
 }
 
 type runtimeEventsData struct {
@@ -115,15 +121,22 @@ type runtimeEventsData struct {
 }
 
 type dashboardSessionObservation struct {
-	Status     string `json:"status,omitempty"`
-	StopReason string `json:"stop_reason,omitempty"`
-	Source     string `json:"source,omitempty"`
+	Status                  string `json:"status,omitempty"`
+	StopReason              string `json:"stop_reason,omitempty"`
+	Source                  string `json:"source,omitempty"`
+	FailureClass            string `json:"failure_class,omitempty"`
+	RuntimeName             string `json:"runtime_name,omitempty"`
+	RuntimeProvider         string `json:"runtime_provider,omitempty"`
+	RuntimeTransport        string `json:"runtime_transport,omitempty"`
+	RuntimeAuthSource       string `json:"runtime_auth_source,omitempty"`
+	PendingInteractionState string `json:"pending_interaction_state,omitempty"`
 }
 
 type interruptObservation struct {
 	Requested        bool                            `json:"requested"`
 	PendingCount     int                             `json:"pending_count,omitempty"`
 	Matched          bool                            `json:"matched"`
+	Action           string                          `json:"action,omitempty"`
 	ResponseStatus   string                          `json:"response_status,omitempty"`
 	ResponseDecision string                          `json:"response_decision,omitempty"`
 	Cleared          bool                            `json:"cleared"`
@@ -208,6 +221,9 @@ func main() {
 	flag.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode passed to Claude")
 	flag.StringVar(&opts.strictMCPConfig, "strict-mcp-config", "", "Whether --strict-mcp-config was present")
 	flag.StringVar(&opts.interruptApprovalType, "interrupt-approval-type", "", "Expected interrupt approval type: claude_permission_prompt or plan_approval")
+	flag.StringVar(&opts.interruptKind, "interrupt-kind", "", "Expected interrupt kind: approval or alert")
+	flag.StringVar(&opts.interruptAction, "interrupt-action", "", "Interrupt action to invoke: respond or acknowledge")
+	flag.StringVar(&opts.interruptAlertCode, "interrupt-alert-code", "", "Expected alert code on a pending alert interrupt")
 	flag.StringVar(&opts.interruptClass, "interrupt-classification", "", "Expected pending interrupt classification")
 	flag.StringVar(&opts.interruptToolName, "interrupt-tool-name", "", "Expected pending interrupt tool name")
 	flag.StringVar(&opts.interruptPlanStatus, "interrupt-plan-status", "", "Expected pending plan approval status")
@@ -372,17 +388,29 @@ func run(opts options) error {
 	}
 	evidence.RuntimeSnapshot = runtimeSnapshot
 
-	execution, err := waitForExecutionObservation(ctx, client, issueIdentifier, strings.TrimSpace(opts.mode), strings.TrimSpace(opts.streamMarker))
-	if err != nil {
-		return err
+	if _, err := callToolEnvelope(ctx, client, "get_issue_execution", map[string]interface{}{
+		"identifier": issueIdentifier,
+	}); err != nil {
+		return fmt.Errorf("call get_issue_execution: %w", err)
 	}
-	evidence.Execution = execution
+	if _, err := callToolEnvelope(ctx, client, "list_sessions", map[string]interface{}{}); err != nil {
+		return fmt.Errorf("call list_sessions: %w", err)
+	}
 
-	dashboardSession, err := waitForDashboardSessionObservation(ctx, entryBefore, issueIdentifier, strings.TrimSpace(opts.mode))
-	if err != nil {
-		return err
+	interruptOnlyMode := strings.EqualFold(strings.TrimSpace(opts.mode), "interrupt")
+	if !interruptOnlyMode {
+		execution, err := waitForIssueExecutionObservation(entryBefore, issueIdentifier, strings.TrimSpace(opts.mode), strings.TrimSpace(opts.streamMarker))
+		if err != nil {
+			return err
+		}
+		evidence.Execution = execution
+
+		dashboardSession, err := waitForDashboardSessionObservation(ctx, entryBefore, issueIdentifier, strings.TrimSpace(opts.mode))
+		if err != nil {
+			return err
+		}
+		evidence.DashboardSession = dashboardSession
 	}
-	evidence.DashboardSession = dashboardSession
 
 	if strings.EqualFold(strings.TrimSpace(opts.mode), "live") {
 		sessionKey, liveSession, err := waitForClaudeSession(ctx, client)
@@ -395,14 +423,23 @@ func run(opts options) error {
 	}
 
 	if wantsInterruptObservation(opts) {
-		interrupt, pendingCount, err := waitForPendingInterrupt(ctx, entryBefore, issueIdentifier, strings.TrimSpace(opts.interruptClass), strings.TrimSpace(opts.interruptToolName))
+		interrupt, pendingCount, err := waitForPendingInterrupt(
+			ctx,
+			entryBefore,
+			issueIdentifier,
+			strings.TrimSpace(opts.interruptKind),
+			strings.TrimSpace(opts.interruptClass),
+			strings.TrimSpace(opts.interruptToolName),
+		)
 		if err != nil {
 			return err
 		}
 		if err := validatePendingInterrupt(
 			interrupt,
 			issueIdentifier,
+			strings.TrimSpace(opts.interruptKind),
 			strings.TrimSpace(opts.interruptApprovalType),
+			strings.TrimSpace(opts.interruptAlertCode),
 			strings.TrimSpace(opts.interruptClass),
 			strings.TrimSpace(opts.interruptToolName),
 			strings.TrimSpace(opts.interruptPlanStatus),
@@ -414,9 +451,34 @@ func run(opts options) error {
 		evidence.Interrupt.PendingCount = pendingCount
 		evidence.Interrupt.Matched = true
 		evidence.Interrupt.Interaction = interrupt
+		evidence.Interrupt.Action = strings.TrimSpace(opts.interruptAction)
+		if !interruptOnlyMode {
+			expectedState := pendingInteractionStateForInterrupt(interrupt)
+			if expectedState != "" {
+				execution, dashboardSession, err := waitForPendingInteractionSurfaceObservation(
+					ctx,
+					entryBefore,
+					issueIdentifier,
+					strings.TrimSpace(opts.mode),
+					strings.TrimSpace(evidence.Execution.StreamMarker),
+					expectedState,
+				)
+				if err != nil {
+					return err
+				}
+				evidence.Execution = execution
+				evidence.DashboardSession = dashboardSession
+			}
+		}
 		decision := strings.ToLower(strings.TrimSpace(opts.interruptDecision))
 		note := strings.TrimSpace(opts.interruptNote)
-		if decision != "" || note != "" {
+		action := strings.TrimSpace(opts.interruptAction)
+		if action == "" && (decision != "" || note != "") {
+			action = "respond"
+		}
+		switch action {
+		case "":
+		case "respond":
 			status, err := respondToPendingInterrupt(entryBefore, interrupt.ID, agentruntime.PendingInteractionResponse{
 				Decision: decision,
 				Note:     note,
@@ -430,6 +492,18 @@ func run(opts options) error {
 				return err
 			}
 			evidence.Interrupt.Cleared = true
+		case "acknowledge":
+			status, err := acknowledgePendingInterrupt(entryBefore, interrupt.ID)
+			if err != nil {
+				return err
+			}
+			evidence.Interrupt.ResponseStatus = status
+			if err := waitForPendingInterruptClear(ctx, entryBefore, strings.TrimSpace(interrupt.ID)); err != nil {
+				return err
+			}
+			evidence.Interrupt.Cleared = true
+		default:
+			return fmt.Errorf("unsupported interrupt action %q", action)
 		}
 	}
 
@@ -715,7 +789,7 @@ func resolveIssueIdentifier(requested string, listIssues listIssuesData) string 
 	return requested
 }
 
-func waitForExecutionObservation(ctx context.Context, client *mcpclient.Client, issueIdentifier, mode, streamMarker string) (executionObservation, error) {
+func waitForIssueExecutionObservation(entry maestromcp.DaemonEntry, issueIdentifier, mode, streamMarker string) (executionObservation, error) {
 	deadline := time.Now().Add(12 * time.Second)
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	marker := strings.TrimSpace(streamMarker)
@@ -723,45 +797,9 @@ func waitForExecutionObservation(ctx context.Context, client *mcpclient.Client, 
 		marker = "STREAM:" + issueIdentifier + ":"
 	}
 	for {
-		envelope, err := callToolEnvelope(ctx, client, "get_issue_execution", map[string]interface{}{
-			"identifier": issueIdentifier,
-		})
-		if err == nil {
-			raw := map[string]interface{}{}
-			if decodeErr := decodeData(envelope, &raw); decodeErr == nil {
-				observation := executionObservation{
-					Active:           boolFromMap(raw, "active"),
-					SessionSource:    strings.TrimSpace(asString(raw["session_source"])),
-					FailureClass:     strings.TrimSpace(asString(raw["failure_class"])),
-					StopReason:       strings.TrimSpace(asString(raw["stop_reason"])),
-					RuntimeName:      strings.TrimSpace(asString(raw["runtime_name"])),
-					RuntimeProvider:  strings.TrimSpace(asString(raw["runtime_provider"])),
-					RuntimeTransport: strings.TrimSpace(asString(raw["runtime_transport"])),
-					StreamMarker:     marker,
-				}
-				if session, ok := agentruntime.SessionFromAny(raw["session"]); ok {
-					observation.Session = session
-				}
-				if marker != "" && strings.Contains(observation.Session.LastMessage, marker) {
-					observation.StreamSeen = true
-				}
-				if liveMode {
-					if observation.Active &&
-						observation.SessionSource == "live" &&
-						strings.TrimSpace(observation.Session.ThreadID) != "" &&
-						strings.TrimSpace(observation.Session.SessionID) != "" &&
-						observation.StreamSeen {
-						return observation, nil
-					}
-				} else {
-					if !observation.Active &&
-						observation.SessionSource == "persisted" &&
-						strings.TrimSpace(observation.Session.ThreadID) != "" &&
-						strings.TrimSpace(observation.Session.SessionID) != "" {
-						return observation, nil
-					}
-				}
-			}
+		observation, ok, err := issueExecutionObservationForIssue(entry, issueIdentifier, marker)
+		if err == nil && ok && executionObservationMatchesMode(observation, mode) {
+			return observation, nil
 		}
 		if time.Now().After(deadline) {
 			if liveMode {
@@ -769,12 +807,61 @@ func waitForExecutionObservation(ctx context.Context, client *mcpclient.Client, 
 			}
 			return executionObservation{}, fmt.Errorf("did not observe persisted issue execution for %s", issueIdentifier)
 		}
-		select {
-		case <-ctx.Done():
-			return executionObservation{}, errors.New("did not observe issue execution before context deadline")
-		case <-time.After(250 * time.Millisecond):
-		}
+		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+func executionObservationMatchesMode(observation executionObservation, mode string) bool {
+	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
+	if liveMode {
+		return observation.Active &&
+			observation.SessionSource == "live" &&
+			strings.TrimSpace(observation.Session.ThreadID) != "" &&
+			strings.TrimSpace(observation.Session.SessionID) != "" &&
+			observation.StreamSeen
+	}
+	if observation.Active || observation.SessionSource != "persisted" {
+		return false
+	}
+	if strings.TrimSpace(observation.Session.ThreadID) != "" &&
+		strings.TrimSpace(observation.Session.SessionID) != "" {
+		return true
+	}
+	return observation.WorkspaceRecovery != nil || strings.TrimSpace(observation.FailureClass) != ""
+}
+
+func issueExecutionObservationForIssue(entry maestromcp.DaemonEntry, issueIdentifier, marker string) (executionObservation, bool, error) {
+	body, statusCode, err := dashboardRequest(entry, http.MethodGet, "/api/v1/app/issues/"+strings.TrimSpace(issueIdentifier)+"/execution", nil)
+	if err != nil {
+		return executionObservation{}, false, err
+	}
+	if statusCode != http.StatusOK {
+		return executionObservation{}, false, fmt.Errorf("issue execution returned %d: %s", statusCode, strings.TrimSpace(string(body)))
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return executionObservation{}, false, err
+	}
+	observation := executionObservation{
+		Active:                  boolFromMap(raw, "active"),
+		SessionSource:           strings.TrimSpace(asString(raw["session_source"])),
+		FailureClass:            strings.TrimSpace(asString(raw["failure_class"])),
+		StopReason:              strings.TrimSpace(asString(raw["stop_reason"])),
+		RuntimeName:             strings.TrimSpace(asString(raw["runtime_name"])),
+		RuntimeProvider:         strings.TrimSpace(asString(raw["runtime_provider"])),
+		RuntimeTransport:        strings.TrimSpace(asString(raw["runtime_transport"])),
+		RuntimeAuthSource:       strings.TrimSpace(asString(raw["runtime_auth_source"])),
+		PendingInteractionState: strings.TrimSpace(asString(raw["pending_interaction_state"])),
+		StreamMarker:            marker,
+		WorkspaceRecovery:       workspaceRecoveryFromAny(raw["workspace_recovery"]),
+	}
+	if session, ok := agentruntime.SessionFromAny(raw["session"]); ok {
+		observation.Session = session
+	}
+	if marker != "" && strings.Contains(observation.Session.LastMessage, marker) {
+		observation.StreamSeen = true
+	}
+	return observation, true, nil
 }
 
 func waitForDashboardSessionObservation(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, mode string) (dashboardSessionObservation, error) {
@@ -827,16 +914,72 @@ func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIden
 			continue
 		}
 		return dashboardSessionObservation{
-			Status:     strings.TrimSpace(asString(entryMap["status"])),
-			StopReason: strings.TrimSpace(asString(entryMap["stop_reason"])),
-			Source:     strings.TrimSpace(asString(entryMap["source"])),
+			Status:                  strings.TrimSpace(asString(entryMap["status"])),
+			StopReason:              strings.TrimSpace(asString(entryMap["stop_reason"])),
+			Source:                  strings.TrimSpace(asString(entryMap["source"])),
+			FailureClass:            strings.TrimSpace(asString(entryMap["failure_class"])),
+			RuntimeName:             strings.TrimSpace(asString(entryMap["runtime_name"])),
+			RuntimeProvider:         strings.TrimSpace(asString(entryMap["runtime_provider"])),
+			RuntimeTransport:        strings.TrimSpace(asString(entryMap["runtime_transport"])),
+			RuntimeAuthSource:       strings.TrimSpace(asString(entryMap["runtime_auth_source"])),
+			PendingInteractionState: strings.TrimSpace(asString(entryMap["pending_interaction_state"])),
 		}, true, nil
 	}
 	return dashboardSessionObservation{}, false, nil
 }
 
+func waitForPendingInteractionSurfaceObservation(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, mode, streamMarker, expectedState string) (executionObservation, dashboardSessionObservation, error) {
+	deadline := time.Now().Add(12 * time.Second)
+	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
+	expectedState = strings.TrimSpace(expectedState)
+	for {
+		execution, executionOK, executionErr := issueExecutionObservationForIssue(entry, issueIdentifier, streamMarker)
+		dashboard, dashboardOK, dashboardErr := dashboardSessionObservationForIssue(entry, issueIdentifier)
+		if executionErr == nil && executionOK && dashboardErr == nil && dashboardOK {
+			executionSourceOK := execution.SessionSource == "persisted"
+			dashboardSourceOK := dashboard.Source == "persisted"
+			if liveMode {
+				executionSourceOK = execution.SessionSource == "live"
+				dashboardSourceOK = dashboard.Source == "live"
+			}
+			if executionSourceOK &&
+				dashboardSourceOK &&
+				strings.EqualFold(strings.TrimSpace(execution.PendingInteractionState), expectedState) &&
+				strings.EqualFold(strings.TrimSpace(dashboard.PendingInteractionState), expectedState) {
+				return execution, dashboard, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return executionObservation{}, dashboardSessionObservation{}, fmt.Errorf("did not observe pending interaction state %q for %s", expectedState, issueIdentifier)
+		}
+		select {
+		case <-ctx.Done():
+			return executionObservation{}, dashboardSessionObservation{}, errors.New("did not observe pending interaction surface before context deadline")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func pendingInteractionStateForInterrupt(interaction agentruntime.PendingInteraction) string {
+	switch interaction.Kind {
+	case agentruntime.PendingInteractionKindApproval:
+		return "approval"
+	case agentruntime.PendingInteractionKindUserInput:
+		return "user_input"
+	case agentruntime.PendingInteractionKindElicitation:
+		return "elicitation"
+	case agentruntime.PendingInteractionKindAlert:
+		return "alert"
+	default:
+		return ""
+	}
+}
+
 func wantsInterruptObservation(opts options) bool {
 	return firstNonEmpty(
+		strings.TrimSpace(opts.interruptKind),
+		strings.TrimSpace(opts.interruptAction),
+		strings.TrimSpace(opts.interruptAlertCode),
 		strings.TrimSpace(opts.interruptApprovalType),
 		strings.TrimSpace(opts.interruptClass),
 		strings.TrimSpace(opts.interruptToolName),
@@ -852,13 +995,16 @@ func wantsInterruptObservation(opts options) bool {
 	) != ""
 }
 
-func waitForPendingInterrupt(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, classification, toolName string) (agentruntime.PendingInteraction, int, error) {
+func waitForPendingInterrupt(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, kind, classification, toolName string) (agentruntime.PendingInteraction, int, error) {
 	deadline := time.Now().Add(12 * time.Second)
 	for {
 		snapshot, err := fetchPendingInterrupts(entry)
 		if err == nil {
 			for _, item := range snapshot.Items {
 				if strings.TrimSpace(item.IssueIdentifier) != strings.TrimSpace(issueIdentifier) {
+					continue
+				}
+				if kind != "" && !strings.EqualFold(string(item.Kind), kind) {
 					continue
 				}
 				if classification != "" && !strings.EqualFold(asString(item.Metadata["classification"]), classification) {
@@ -908,14 +1054,30 @@ func waitForPendingInterruptClear(ctx context.Context, entry maestromcp.DaemonEn
 	}
 }
 
-func validatePendingInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, approvalType, classification, toolName, planStatus string, planVersion int) error {
-	switch strings.ToLower(strings.TrimSpace(approvalType)) {
-	case "", "claude_permission_prompt":
-		return validateClaudePermissionInterrupt(interaction, issueIdentifier, classification, toolName)
-	case "plan_approval":
-		return validatePlanApprovalInterrupt(interaction, issueIdentifier, planStatus, planVersion)
+func validatePendingInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, kind, approvalType, alertCode, classification, toolName, planStatus string, planVersion int) error {
+	switch strings.ToLower(firstNonEmpty(
+		strings.TrimSpace(kind),
+		func() string {
+			if strings.TrimSpace(alertCode) != "" {
+				return "alert"
+			}
+			return ""
+		}(),
+		"approval",
+	)) {
+	case "alert":
+		return validateAlertInterrupt(interaction, issueIdentifier, alertCode)
+	case "approval":
+		switch strings.ToLower(strings.TrimSpace(approvalType)) {
+		case "", "claude_permission_prompt":
+			return validateClaudePermissionInterrupt(interaction, issueIdentifier, classification, toolName)
+		case "plan_approval":
+			return validatePlanApprovalInterrupt(interaction, issueIdentifier, planStatus, planVersion)
+		default:
+			return fmt.Errorf("unsupported interrupt approval type %q", approvalType)
+		}
 	default:
-		return fmt.Errorf("unsupported interrupt approval type %q", approvalType)
+		return fmt.Errorf("unsupported interrupt kind %q", kind)
 	}
 }
 
@@ -1015,6 +1177,31 @@ func validatePlanApprovalInterrupt(interaction agentruntime.PendingInteraction, 
 	return nil
 }
 
+func validateAlertInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, alertCode string) error {
+	if strings.TrimSpace(interaction.ID) == "" {
+		return errors.New("pending alert id missing")
+	}
+	if interaction.Kind != agentruntime.PendingInteractionKindAlert {
+		return fmt.Errorf("expected alert interrupt, got %q", interaction.Kind)
+	}
+	if strings.TrimSpace(interaction.IssueIdentifier) != strings.TrimSpace(issueIdentifier) {
+		return fmt.Errorf("expected alert issue %q, got %q", issueIdentifier, interaction.IssueIdentifier)
+	}
+	if interaction.Alert == nil {
+		return errors.New("expected alert payload on pending interrupt")
+	}
+	if alertCode != "" && !strings.EqualFold(strings.TrimSpace(interaction.Alert.Code), alertCode) {
+		return fmt.Errorf("expected alert code %q, got %q", alertCode, interaction.Alert.Code)
+	}
+	if strings.TrimSpace(interaction.Alert.Title) == "" || strings.TrimSpace(interaction.Alert.Message) == "" {
+		return errors.New("expected alert title and message")
+	}
+	if !interaction.HasAction(agentruntime.PendingInteractionActionAcknowledge) {
+		return errors.New("expected acknowledge action on alert interrupt")
+	}
+	return nil
+}
+
 func fetchPendingInterrupts(entry maestromcp.DaemonEntry) (agentruntime.PendingInteractionSnapshot, error) {
 	body, statusCode, err := dashboardRequest(entry, http.MethodGet, "/api/v1/app/interrupts", nil)
 	if err != nil {
@@ -1037,6 +1224,23 @@ func respondToPendingInterrupt(entry maestromcp.DaemonEntry, interactionID strin
 	}
 	if statusCode != http.StatusAccepted {
 		return "", fmt.Errorf("dashboard interrupt respond returned %d: %s", statusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(payload.Status), nil
+}
+
+func acknowledgePendingInterrupt(entry maestromcp.DaemonEntry, interactionID string) (string, error) {
+	body, statusCode, err := dashboardRequest(entry, http.MethodPost, "/api/v1/app/interrupts/"+strings.TrimSpace(interactionID)+"/acknowledge", map[string]interface{}{})
+	if err != nil {
+		return "", err
+	}
+	if statusCode != http.StatusAccepted {
+		return "", fmt.Errorf("dashboard interrupt acknowledge returned %d: %s", statusCode, strings.TrimSpace(string(body)))
 	}
 	var payload struct {
 		Status string `json:"status"`
@@ -1106,6 +1310,22 @@ func boolFromMap(raw map[string]interface{}, key string) bool {
 		return typed
 	default:
 		return false
+	}
+}
+
+func workspaceRecoveryFromAny(value interface{}) *kanban.WorkspaceRecovery {
+	raw, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	status := strings.TrimSpace(asString(raw["status"]))
+	message := strings.TrimSpace(asString(raw["message"]))
+	if status == "" && message == "" {
+		return nil
+	}
+	return &kanban.WorkspaceRecovery{
+		Status:  status,
+		Message: message,
 	}
 }
 
@@ -1183,11 +1403,19 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		fmt.Sprintf("daemon_registry_entries_after=%d", evidence.Daemon.EntriesAfter),
 		fmt.Sprintf("daemon_registry_entries_before=%d", evidence.Daemon.EntriesBefore),
 		fmt.Sprintf("daemon_store_id=%s", evidence.Daemon.EntryBefore.StoreID),
+		"dashboard_session_failure_class=" + evidence.DashboardSession.FailureClass,
+		"dashboard_session_pending_interaction_state=" + evidence.DashboardSession.PendingInteractionState,
+		"dashboard_session_runtime_auth_source=" + evidence.DashboardSession.RuntimeAuthSource,
+		"dashboard_session_runtime_name=" + evidence.DashboardSession.RuntimeName,
+		"dashboard_session_runtime_provider=" + evidence.DashboardSession.RuntimeProvider,
+		"dashboard_session_runtime_transport=" + evidence.DashboardSession.RuntimeTransport,
 		"dashboard_session_source=" + evidence.DashboardSession.Source,
 		"dashboard_session_status=" + evidence.DashboardSession.Status,
 		"dashboard_session_stop_reason=" + evidence.DashboardSession.StopReason,
 		fmt.Sprintf("execution_active=%t", evidence.Execution.Active),
 		"execution_failure_class=" + evidence.Execution.FailureClass,
+		"execution_pending_interaction_state=" + evidence.Execution.PendingInteractionState,
+		"execution_runtime_auth_source=" + evidence.Execution.RuntimeAuthSource,
 		"execution_runtime_name=" + evidence.Execution.RuntimeName,
 		"execution_runtime_provider=" + evidence.Execution.RuntimeProvider,
 		"execution_runtime_transport=" + evidence.Execution.RuntimeTransport,
@@ -1199,7 +1427,27 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		fmt.Sprintf("execution_stream_seen=%t", evidence.Execution.StreamSeen),
 		"execution_thread_id=" + strings.TrimSpace(evidence.Execution.Session.ThreadID),
 		"execution_provider_session_id=" + strings.TrimSpace(asString(evidence.Execution.Session.Metadata["provider_session_id"])),
+		fmt.Sprintf("execution_workspace_recovery_present=%t", evidence.Execution.WorkspaceRecovery != nil),
+		"execution_workspace_recovery_status=" + func() string {
+			if evidence.Execution.WorkspaceRecovery == nil {
+				return ""
+			}
+			return strings.TrimSpace(evidence.Execution.WorkspaceRecovery.Status)
+		}(),
+		"execution_workspace_recovery_message=" + func() string {
+			if evidence.Execution.WorkspaceRecovery == nil {
+				return ""
+			}
+			return summaryValue(evidence.Execution.WorkspaceRecovery.Message)
+		}(),
 		"expected_tools_present=true",
+		"interrupt_action=" + evidence.Interrupt.Action,
+		"interrupt_alert_code=" + func() string {
+			if evidence.Interrupt.Interaction.Alert == nil {
+				return ""
+			}
+			return strings.TrimSpace(evidence.Interrupt.Interaction.Alert.Code)
+		}(),
 		fmt.Sprintf("interrupt_cleared=%t", evidence.Interrupt.Cleared),
 		"interrupt_classification=" + strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["classification"])),
 		"interrupt_collaboration_mode=" + strings.TrimSpace(evidence.Interrupt.Interaction.CollaborationMode),

@@ -370,6 +370,9 @@ func TestWantsInterruptObservation(t *testing.T) {
 		{name: "approval_type_only", opts: options{interruptApprovalType: "plan_approval"}, want: true},
 		{name: "classification_only", opts: options{interruptClass: "command"}, want: true},
 		{name: "tool_name_only", opts: options{interruptToolName: "Bash"}, want: true},
+		{name: "kind_only", opts: options{interruptKind: "alert"}, want: true},
+		{name: "action_only", opts: options{interruptAction: "acknowledge"}, want: true},
+		{name: "alert_code_only", opts: options{interruptAlertCode: "project_dispatch_blocked"}, want: true},
 		{name: "plan_status_only", opts: options{interruptPlanStatus: "awaiting_approval"}, want: true},
 		{name: "plan_version_only", opts: options{interruptPlanVersion: 2}, want: true},
 		{name: "decision_only", opts: options{interruptDecision: "allow"}, want: true},
@@ -393,7 +396,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("accepts_maestro_managed_payload", func(t *testing.T) {
 		t.Parallel()
 
-		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "command", "Bash", "", 0); err != nil {
+		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "", "", "command", "Bash", "", 0); err != nil {
 			t.Fatalf("validatePendingInterrupt() error = %v", err)
 		}
 	})
@@ -404,7 +407,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 		interaction := validPendingInterrupt()
 		interaction.Metadata["request_meta"] = map[string]interface{}{}
 
-		err := validatePendingInterrupt(interaction, "CL-1", "", "command", "Bash", "", 0)
+		err := validatePendingInterrupt(interaction, "CL-1", "", "", "", "command", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "toolUseId correlation") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want missing toolUseId correlation", err)
 		}
@@ -413,7 +416,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("rejects_classification_mismatch", func(t *testing.T) {
 		t.Parallel()
 
-		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "file_write", "Bash", "", 0)
+		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "", "", "file_write", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "expected interrupt classification") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want classification mismatch", err)
 		}
@@ -552,7 +555,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 
 			interaction := validPendingInterrupt()
 			tt.edit(&interaction)
-			err := validatePendingInterrupt(interaction, "CL-1", "", "command", "Bash", "", 0)
+			err := validatePendingInterrupt(interaction, "CL-1", "", "", "", "command", "Bash", "", 0)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("validatePendingInterrupt() error = %v, want substring %q", err, tt.want)
 			}
@@ -562,7 +565,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("accepts plan approval payload", func(t *testing.T) {
 		t.Parallel()
 
-		if err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 2); err != nil {
+		if err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "", "plan_approval", "", "", "", "awaiting_approval", 2); err != nil {
 			t.Fatalf("validatePendingInterrupt() error = %v", err)
 		}
 	})
@@ -570,7 +573,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("rejects plan approval version mismatch", func(t *testing.T) {
 		t.Parallel()
 
-		err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 3)
+		err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "", "plan_approval", "", "", "", "awaiting_approval", 3)
 		if err == nil || !strings.Contains(err.Error(), "expected plan version") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want plan version mismatch", err)
 		}
@@ -581,7 +584,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 
 		interaction := validPlanApprovalInterrupt()
 		interaction.CollaborationMode = "default"
-		err := validatePendingInterrupt(interaction, "CL-3", "plan_approval", "", "", "awaiting_approval", 2)
+		err := validatePendingInterrupt(interaction, "CL-3", "", "plan_approval", "", "", "", "awaiting_approval", 2)
 		if err == nil || !strings.Contains(err.Error(), "expected plan collaboration mode") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want collaboration mode mismatch", err)
 		}
@@ -592,7 +595,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 
 		interaction := validPlanApprovalInterrupt()
 		interaction.Approval.Reason = "other"
-		err := validatePendingInterrupt(interaction, "CL-3", "plan_approval", "", "", "awaiting_approval", 2)
+		err := validatePendingInterrupt(interaction, "CL-3", "", "plan_approval", "", "", "", "awaiting_approval", 2)
 		if err == nil || !strings.Contains(err.Error(), "expected plan approval reason") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want plan approval reason mismatch", err)
 		}
@@ -601,11 +604,111 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("rejects unsupported approval type", func(t *testing.T) {
 		t.Parallel()
 
-		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "unknown", "command", "Bash", "", 0)
+		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "unknown", "", "command", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), `unsupported interrupt approval type "unknown"`) {
 			t.Fatalf("validatePendingInterrupt() error = %v, want unsupported approval type", err)
 		}
 	})
+
+	t.Run("accepts alert payload", func(t *testing.T) {
+		t.Parallel()
+
+		if err := validatePendingInterrupt(validAlertInterrupt(), "CL-9", "alert", "", "project_dispatch_blocked", "", "", "", 0); err != nil {
+			t.Fatalf("validatePendingInterrupt() error = %v", err)
+		}
+	})
+
+	t.Run("infers alert validation from alert code", func(t *testing.T) {
+		t.Parallel()
+
+		if err := validatePendingInterrupt(validAlertInterrupt(), "CL-9", "", "", "project_dispatch_blocked", "", "", "", 0); err != nil {
+			t.Fatalf("validatePendingInterrupt() error = %v", err)
+		}
+	})
+
+	t.Run("rejects alert without acknowledge action", func(t *testing.T) {
+		t.Parallel()
+
+		interaction := validAlertInterrupt()
+		interaction.Actions = nil
+
+		err := validatePendingInterrupt(interaction, "CL-9", "alert", "", "project_dispatch_blocked", "", "", "", 0)
+		if err == nil || !strings.Contains(err.Error(), "expected acknowledge action") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want acknowledge action mismatch", err)
+		}
+	})
+}
+
+func TestExecutionObservationMatchesMode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepts live execution with stream marker", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{
+			Active:        true,
+			SessionSource: "live",
+			StreamSeen:    true,
+			Session: agentruntime.Session{
+				SessionID: "session-1",
+				ThreadID:  "thread-1",
+			},
+		}
+		if !executionObservationMatchesMode(observation, "live") {
+			t.Fatalf("expected live observation to match: %+v", observation)
+		}
+	})
+
+	t.Run("accepts persisted recovery payload without session ids", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{
+			SessionSource: "persisted",
+			FailureClass:  "workspace_bootstrap",
+			WorkspaceRecovery: &kanban.WorkspaceRecovery{
+				Status:  "required",
+				Message: "Workspace bootstrap failed. Review the blocker and retry once it is resolved.",
+			},
+		}
+		if !executionObservationMatchesMode(observation, "final") {
+			t.Fatalf("expected persisted recovery observation to match final mode: %+v", observation)
+		}
+	})
+
+	t.Run("rejects persisted payload without session ids or recovery evidence", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{SessionSource: "persisted"}
+		if executionObservationMatchesMode(observation, "final") {
+			t.Fatalf("expected incomplete persisted observation to fail: %+v", observation)
+		}
+	})
+}
+
+func TestPendingInteractionStateForInterrupt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		interaction agentruntime.PendingInteraction
+		want        string
+	}{
+		{name: "approval", interaction: validPendingInterrupt(), want: "approval"},
+		{name: "alert", interaction: validAlertInterrupt(), want: "alert"},
+		{name: "user input", interaction: agentruntime.PendingInteraction{Kind: agentruntime.PendingInteractionKindUserInput}, want: "user_input"},
+		{name: "elicitation", interaction: agentruntime.PendingInteraction{Kind: agentruntime.PendingInteractionKindElicitation}, want: "elicitation"},
+		{name: "unknown", interaction: agentruntime.PendingInteraction{}, want: ""},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pendingInteractionStateForInterrupt(tc.interaction); got != tc.want {
+				t.Fatalf("pendingInteractionStateForInterrupt() = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestFilterRuntimeEventsByIssue(t *testing.T) {
@@ -643,6 +746,97 @@ func TestRuntimeEventKinds(t *testing.T) {
 	want := []string{"run_completed", "retry_paused"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("runtimeEventKinds() = %#v, want %#v", got, want)
+	}
+}
+
+func TestWriteEvidenceIncludesOperatorSurfaceFields(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "probe")
+	evidence := probeEvidence{
+		Mode:            "final",
+		IssueIdentifier: "CL-9",
+		Execution: executionObservation{
+			FailureClass:            "workspace_recovery_required",
+			RuntimeName:             "claude",
+			RuntimeProvider:         "claude",
+			RuntimeTransport:        "stdio",
+			RuntimeAuthSource:       "OAuth",
+			PendingInteractionState: "pending",
+			SessionSource:           "persisted",
+			StopReason:              "end_turn",
+			StreamMarker:            "STREAM:CL-9",
+			StreamSeen:              true,
+			Session: agentruntime.Session{
+				SessionID: "session-9",
+				ThreadID:  "thread-9",
+				Metadata: map[string]interface{}{
+					"provider_session_id":         "provider-9",
+					"session_identifier_strategy": "provider_session_uuid",
+				},
+			},
+			WorkspaceRecovery: &kanban.WorkspaceRecovery{
+				Status:  "recovery_required",
+				Message: "Reset the workspace before retrying.",
+			},
+		},
+		DashboardSession: dashboardSessionObservation{
+			FailureClass:            "workspace_recovery_required",
+			RuntimeName:             "claude",
+			RuntimeProvider:         "claude",
+			RuntimeTransport:        "stdio",
+			RuntimeAuthSource:       "OAuth",
+			PendingInteractionState: "pending",
+			Source:                  "persisted",
+			Status:                  "failed",
+			StopReason:              "end_turn",
+		},
+		Interrupt: interruptObservation{
+			Action:         "acknowledge",
+			Cleared:        true,
+			PendingCount:   1,
+			Requested:      true,
+			ResponseStatus: "accepted",
+			Interaction: agentruntime.PendingInteraction{
+				ID:              "interrupt-9",
+				Kind:            agentruntime.PendingInteractionKindAlert,
+				IssueIdentifier: "CL-9",
+				Alert: &agentruntime.PendingAlert{
+					Code:    "project_dispatch_blocked",
+					Title:   "Dispatch blocked",
+					Message: "Another issue is active.",
+				},
+				Metadata: map[string]interface{}{
+					"source": "runtime_alert",
+				},
+			},
+		},
+	}
+
+	if err := writeEvidence(prefix, evidence); err != nil {
+		t.Fatalf("writeEvidence() error = %v", err)
+	}
+
+	summary, err := os.ReadFile(prefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	text := string(summary)
+	for _, want := range []string{
+		"dashboard_session_failure_class=workspace_recovery_required",
+		"dashboard_session_runtime_auth_source=OAuth",
+		"execution_pending_interaction_state=pending",
+		"execution_runtime_auth_source=OAuth",
+		"execution_workspace_recovery_present=true",
+		"execution_workspace_recovery_status=recovery_required",
+		"execution_workspace_recovery_message=Reset the workspace before retrying.",
+		"interrupt_action=acknowledge",
+		"interrupt_alert_code=project_dispatch_blocked",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("summary missing %q\n%s", want, text)
+		}
 	}
 }
 
@@ -753,6 +947,21 @@ func validPlanApprovalInterrupt() agentruntime.PendingInteraction {
 	}
 }
 
+func validAlertInterrupt() agentruntime.PendingInteraction {
+	return agentruntime.PendingInteraction{
+		ID:              "alert-1",
+		Kind:            agentruntime.PendingInteractionKindAlert,
+		IssueIdentifier: "CL-9",
+		Alert: &agentruntime.PendingAlert{
+			Code:    "project_dispatch_blocked",
+			Title:   "Dispatch blocked",
+			Message: "Another issue is active.",
+		},
+		Actions: []agentruntime.PendingInteractionAction{
+			{Kind: agentruntime.PendingInteractionActionAcknowledge, Label: "Acknowledge"},
+		},
+	}
+}
 func TestDecodeDataAndStringHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -1172,13 +1381,29 @@ func TestResolveIssueIdentifier(t *testing.T) {
 
 func TestWaitForExecutionObservationModes(t *testing.T) {
 	t.Run("live", func(t *testing.T) {
-		client := newProbeTestClient(t, "happy")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/app/issues/MAES-28/execution" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active":            true,
+				"session_source":    "live",
+				"runtime_provider":  "claude",
+				"runtime_transport": "stdio",
+				"session": map[string]any{
+					"session_id":   "session-1",
+					"thread_id":    "thread-1",
+					"last_message": "STREAM:MAES-28:live",
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
 
-		observation, err := waitForExecutionObservation(ctx, client, "MAES-28", "live", "")
+		observation, err := waitForIssueExecutionObservation(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "MAES-28", "live", "")
 		if err != nil {
-			t.Fatalf("waitForExecutionObservation(live) error = %v", err)
+			t.Fatalf("waitForIssueExecutionObservation(live) error = %v", err)
 		}
 		if !observation.Active || observation.SessionSource != "live" || !observation.StreamSeen {
 			t.Fatalf("unexpected live observation: %+v", observation)
@@ -1189,27 +1414,46 @@ func TestWaitForExecutionObservationModes(t *testing.T) {
 	})
 
 	t.Run("final", func(t *testing.T) {
-		client := newProbeTestClient(t, "execution-final")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/app/issues/MAES-28/execution" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active":         false,
+				"session_source": "persisted",
+				"stop_reason":    "end_turn",
+				"session": map[string]any{
+					"session_id": "session-1",
+					"thread_id":  "thread-1",
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
 
-		observation, err := waitForExecutionObservation(ctx, client, "MAES-28", "final", "")
+		observation, err := waitForIssueExecutionObservation(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "MAES-28", "final", "")
 		if err != nil {
-			t.Fatalf("waitForExecutionObservation(final) error = %v", err)
+			t.Fatalf("waitForIssueExecutionObservation(final) error = %v", err)
 		}
 		if observation.Active || observation.SessionSource != "persisted" || observation.StopReason != "end_turn" {
 			t.Fatalf("unexpected final observation: %+v", observation)
 		}
 	})
 
-	t.Run("deadline", func(t *testing.T) {
-		client := newProbeTestClient(t, "execution-bad-data")
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
+	t.Run("bad_payload", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/app/issues/MAES-28/execution" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(`"bad"`))
+		}))
+		t.Cleanup(server.Close)
 
-		_, err := waitForExecutionObservation(ctx, client, "MAES-28", "live", "")
-		if err == nil || err.Error() != "did not observe issue execution before context deadline" {
-			t.Fatalf("waitForExecutionObservation(deadline) error = %v, want context deadline message", err)
+		_, ok, err := issueExecutionObservationForIssue(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "MAES-28", "")
+		if err == nil || ok {
+			t.Fatalf("issueExecutionObservationForIssue(bad_payload) error = %v, ok = %t, want decode error", err, ok)
 		}
 	})
 }
@@ -1394,6 +1638,95 @@ func TestDashboardSessionObservationForIssueErrors(t *testing.T) {
 	})
 }
 
+func TestWaitForPendingInteractionSurfaceObservation(t *testing.T) {
+	t.Run("live", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v1/app/issues/MAES-28/execution":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"active":                    true,
+					"session_source":            "live",
+					"pending_interaction_state": "approval",
+					"session": map[string]any{
+						"session_id":   "session-1",
+						"thread_id":    "thread-1",
+						"last_message": "STREAM:MAES-28:pending",
+					},
+				})
+			case "/api/v1/app/sessions":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"entries": []map[string]any{
+						{
+							"issue_identifier":          "MAES-28",
+							"status":                    "waiting",
+							"source":                    "live",
+							"pending_interaction_state": "approval",
+						},
+					},
+				})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		execution, dashboard, err := waitForPendingInteractionSurfaceObservation(ctx, maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "MAES-28", "live", "STREAM:MAES-28:", "approval")
+		if err != nil {
+			t.Fatalf("waitForPendingInteractionSurfaceObservation() error = %v", err)
+		}
+		if execution.PendingInteractionState != "approval" || dashboard.PendingInteractionState != "approval" {
+			t.Fatalf("unexpected pending states: execution=%+v dashboard=%+v", execution, dashboard)
+		}
+	})
+
+	t.Run("context_deadline", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v1/app/issues/MAES-28/execution":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"active":                    true,
+					"session_source":            "live",
+					"pending_interaction_state": "alert",
+					"session": map[string]any{
+						"session_id":   "session-1",
+						"thread_id":    "thread-1",
+						"last_message": "STREAM:MAES-28:mismatch",
+					},
+				})
+			case "/api/v1/app/sessions":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"entries": []map[string]any{
+						{
+							"issue_identifier":          "MAES-28",
+							"status":                    "blocked",
+							"source":                    "live",
+							"pending_interaction_state": "alert",
+						},
+					},
+				})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, _, err := waitForPendingInteractionSurfaceObservation(ctx, maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "MAES-28", "live", "STREAM:MAES-28:", "approval")
+		if err == nil || err.Error() != "did not observe pending interaction surface before context deadline" {
+			t.Fatalf("waitForPendingInteractionSurfaceObservation(deadline) error = %v", err)
+		}
+	})
+}
+
 func TestRunWithInterruptObservation(t *testing.T) {
 	fixture := newProbeRunFixture(t, "happy")
 	interaction := validPendingInterrupt()
@@ -1409,15 +1742,36 @@ func TestRunWithInterruptObservation(t *testing.T) {
 			t.Fatalf("Authorization header = %q, want Bearer token-a", got)
 		}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/issues/"+fixture.opts.issueIdentifier+"/execution":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active":                    true,
+				"session_source":            "live",
+				"runtime_name":              "claude",
+				"runtime_provider":          "claude",
+				"runtime_transport":         "stdio",
+				"runtime_auth_source":       "OAuth",
+				"pending_interaction_state": "approval",
+				"session": map[string]any{
+					"session_id":   "session-1",
+					"thread_id":    "thread-1",
+					"last_message": "STREAM:" + fixture.opts.issueIdentifier + ":interrupt",
+					"metadata": map[string]any{
+						"provider_session_id":         "session-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/sessions":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"entries": []map[string]any{
 					{
-						"issue_identifier": fixture.opts.issueIdentifier,
-						"status":           "running",
-						"stop_reason":      "",
-						"source":           "live",
+						"issue_identifier":          fixture.opts.issueIdentifier,
+						"status":                    "waiting",
+						"stop_reason":               "",
+						"pending_interaction_state": "approval",
+						"source":                    "live",
 					},
 				},
 			})
@@ -1563,15 +1917,37 @@ func TestRunWithPlanApprovalObservation(t *testing.T) {
 			t.Fatalf("Authorization header = %q, want Bearer token-a", got)
 		}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/issues/"+fixture.opts.issueIdentifier+"/execution":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active":                    true,
+				"session_source":            "live",
+				"stop_reason":               "plan_approval_pending",
+				"runtime_name":              "claude",
+				"runtime_provider":          "claude",
+				"runtime_transport":         "stdio",
+				"runtime_auth_source":       "OAuth",
+				"pending_interaction_state": "approval",
+				"session": map[string]any{
+					"session_id":   "session-1",
+					"thread_id":    "thread-1",
+					"last_message": "STREAM:" + fixture.opts.issueIdentifier + ":plan",
+					"metadata": map[string]any{
+						"provider_session_id":         "session-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/sessions":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"entries": []map[string]any{
 					{
-						"issue_identifier": fixture.opts.issueIdentifier,
-						"status":           "paused",
-						"stop_reason":      "plan_approval_pending",
-						"source":           "live",
+						"issue_identifier":          fixture.opts.issueIdentifier,
+						"status":                    "paused",
+						"stop_reason":               "plan_approval_pending",
+						"pending_interaction_state": "approval",
+						"source":                    "live",
 					},
 				},
 			})
@@ -1698,6 +2074,86 @@ func TestRunWithPlanApprovalObservation(t *testing.T) {
 	}
 }
 
+func TestRunWithAlertAcknowledgeObservation(t *testing.T) {
+	fixture := newProbeRunFixture(t, "happy")
+	interaction := validAlertInterrupt()
+	interaction.IssueIdentifier = fixture.opts.issueIdentifier
+
+	var mu sync.Mutex
+	acknowledged := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-a" {
+			t.Fatalf("Authorization header = %q, want Bearer token-a", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/interrupts":
+			mu.Lock()
+			items := []agentruntime.PendingInteraction{interaction}
+			if acknowledged {
+				items = nil
+			}
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{Items: items})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/app/interrupts/"+interaction.ID+"/acknowledge":
+			mu.Lock()
+			acknowledged = true
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	writeJSONFile(t, fixture.registryEntryPath, maestromcp.DaemonEntry{
+		StoreID:     fixture.storeID,
+		DBPath:      fixture.dbPath,
+		PID:         10,
+		BaseURL:     server.URL + "/mcp",
+		BearerToken: "token-a",
+		Version:     "1.0.0",
+		Transport:   "stdio",
+	})
+
+	fixture.opts.mode = "interrupt"
+	fixture.opts.interruptKind = "alert"
+	fixture.opts.interruptAction = "acknowledge"
+	fixture.opts.interruptAlertCode = "project_dispatch_blocked"
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	mu.Lock()
+	if !acknowledged {
+		mu.Unlock()
+		t.Fatal("expected alert acknowledgement to be posted")
+	}
+	mu.Unlock()
+
+	jsonBytes, err := os.ReadFile(fixture.evidencePrefix + ".json")
+	if err != nil {
+		t.Fatalf("read JSON evidence: %v", err)
+	}
+	var evidence probeEvidence
+	if err := json.Unmarshal(jsonBytes, &evidence); err != nil {
+		t.Fatalf("decode JSON evidence: %v", err)
+	}
+	if !evidence.Interrupt.Requested || !evidence.Interrupt.Cleared {
+		t.Fatalf("interrupt evidence = %+v, want requested+cleared", evidence.Interrupt)
+	}
+	if got, want := evidence.Interrupt.Action, "acknowledge"; got != want {
+		t.Fatalf("evidence.Interrupt.Action = %q, want %q", got, want)
+	}
+	if got, want := evidence.Interrupt.Interaction.Alert.Code, "project_dispatch_blocked"; got != want {
+		t.Fatalf("alert code = %q, want %q", got, want)
+	}
+}
+
 func TestPendingInterruptHelpers(t *testing.T) {
 	t.Run("waits_for_interrupt_and_clear", func(t *testing.T) {
 		var mu sync.Mutex
@@ -1733,7 +2189,7 @@ func TestPendingInterruptHelpers(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		got, pendingCount, err := waitForPendingInterrupt(ctx, entry, "CL-1", "command", "Bash")
+		got, pendingCount, err := waitForPendingInterrupt(ctx, entry, "CL-1", "approval", "command", "Bash")
 		if err != nil {
 			t.Fatalf("waitForPendingInterrupt() error = %v", err)
 		}
@@ -1753,6 +2209,38 @@ func TestPendingInterruptHelpers(t *testing.T) {
 		}
 		if err := waitForPendingInterruptClear(ctx, entry, interaction.ID); err != nil {
 			t.Fatalf("waitForPendingInterruptClear() error = %v", err)
+		}
+	})
+
+	t.Run("matches_alert_kind", func(t *testing.T) {
+		alert := validAlertInterrupt()
+		alert.IssueIdentifier = "CL-1"
+		approval := validPendingInterrupt()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/interrupts" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{
+					Items: []agentruntime.PendingInteraction{approval, alert},
+				})
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		got, pendingCount, err := waitForPendingInterrupt(ctx, maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "CL-1", "alert", "", "")
+		if err != nil {
+			t.Fatalf("waitForPendingInterrupt(alert) error = %v", err)
+		}
+		if pendingCount != 2 {
+			t.Fatalf("pendingCount = %d, want 2", pendingCount)
+		}
+		if got.Kind != agentruntime.PendingInteractionKindAlert {
+			t.Fatalf("matched kind = %q, want alert", got.Kind)
 		}
 	})
 
@@ -1805,6 +2293,48 @@ func TestPendingInterruptHelpers(t *testing.T) {
 				t.Fatalf("respondToPendingInterrupt() error = %v, want JSON decode error", err)
 			}
 		})
+
+		t.Run("acknowledge_success", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted"})
+			}))
+			t.Cleanup(server.Close)
+
+			status, err := acknowledgePendingInterrupt(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "interrupt-1")
+			if err != nil {
+				t.Fatalf("acknowledgePendingInterrupt() error = %v", err)
+			}
+			if status != "accepted" {
+				t.Fatalf("acknowledgePendingInterrupt() status = %q, want accepted", status)
+			}
+		})
+
+		t.Run("acknowledge_bad_status", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "nope", http.StatusConflict)
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := acknowledgePendingInterrupt(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "interrupt-1")
+			if err == nil || !strings.Contains(err.Error(), "dashboard interrupt acknowledge returned 409: nope") {
+				t.Fatalf("acknowledgePendingInterrupt() error = %v, want 409 error", err)
+			}
+		})
+
+		t.Run("acknowledge_invalid_json", func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte("{"))
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := acknowledgePendingInterrupt(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "interrupt-1")
+			if err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") {
+				t.Fatalf("acknowledgePendingInterrupt() error = %v, want JSON decode error", err)
+			}
+		})
 	})
 
 	t.Run("deadline_errors", func(t *testing.T) {
@@ -1820,7 +2350,7 @@ func TestPendingInterruptHelpers(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
-		_, _, err := waitForPendingInterrupt(ctx, entry, "MISSING-1", "command", "Bash")
+		_, _, err := waitForPendingInterrupt(ctx, entry, "MISSING-1", "approval", "command", "Bash")
 		if err == nil || err.Error() != "did not observe a matching pending interrupt before context deadline" {
 			t.Fatalf("waitForPendingInterrupt(deadline) error = %v", err)
 		}
@@ -1849,6 +2379,24 @@ func TestBoolFromMap(t *testing.T) {
 	}
 	if boolFromMap(map[string]interface{}{}, "missing") {
 		t.Fatal("boolFromMap(missing) = true, want false")
+	}
+}
+
+func TestWorkspaceRecoveryFromAny(t *testing.T) {
+	t.Parallel()
+
+	if got := workspaceRecoveryFromAny("bad"); got != nil {
+		t.Fatalf("workspaceRecoveryFromAny(non-map) = %+v, want nil", got)
+	}
+	if got := workspaceRecoveryFromAny(map[string]interface{}{}); got != nil {
+		t.Fatalf("workspaceRecoveryFromAny(empty) = %+v, want nil", got)
+	}
+	got := workspaceRecoveryFromAny(map[string]interface{}{
+		"status":  "required",
+		"message": "Retry after cleanup.",
+	})
+	if got == nil || got.Status != "required" || got.Message != "Retry after cleanup." {
+		t.Fatalf("workspaceRecoveryFromAny(valid) = %+v", got)
 	}
 }
 
@@ -2079,27 +2627,55 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 	dashboardStatus := "running"
 	dashboardStopReason := ""
 	dashboardSource := "live"
+	executionActive := true
+	executionSource := "live"
+	executionStopReason := ""
 	if scenario == "execution-final" {
 		dashboardStatus = "completed"
 		dashboardStopReason = "end_turn"
 		dashboardSource = "persisted"
+		executionActive = false
+		executionSource = "persisted"
+		executionStopReason = "end_turn"
 	}
 	dashboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/app/sessions" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"entries": []map[string]any{
-				{
-					"issue_identifier": issueIdentifier,
-					"status":           dashboardStatus,
-					"stop_reason":      dashboardStopReason,
-					"source":           dashboardSource,
+		switch r.URL.Path {
+		case "/api/v1/app/sessions":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []map[string]any{
+					{
+						"issue_identifier": issueIdentifier,
+						"status":           dashboardStatus,
+						"stop_reason":      dashboardStopReason,
+						"source":           dashboardSource,
+					},
 				},
-			},
-		})
+			})
+		case "/api/v1/app/issues/" + issueIdentifier + "/execution":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active":                    executionActive,
+				"session_source":            executionSource,
+				"stop_reason":               executionStopReason,
+				"runtime_name":              "claude",
+				"runtime_provider":          "claude",
+				"runtime_transport":         "stdio",
+				"runtime_auth_source":       "OAuth",
+				"pending_interaction_state": "",
+				"session": map[string]any{
+					"session_id":   "session-1",
+					"thread_id":    "thread-1",
+					"last_message": "STREAM:" + issueIdentifier + ":fixture",
+					"metadata": map[string]any{
+						"provider_session_id":         "session-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	t.Cleanup(dashboardServer.Close)
 	dashboardBaseURL := dashboardServer.URL + "/mcp"

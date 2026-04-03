@@ -9,6 +9,8 @@ source "$ROOT_DIR/scripts/lib/e2e_real_claude_harness.sh"
 trap cleanup EXIT INT TERM
 
 CLAUDE_COMMAND="${E2E_CLAUDE_COMMAND:-claude}"
+PROJECT_NAME="Real Claude Lifecycle E2E Project"
+PROJECT_WORKSPACE_SLUG="real-claude-lifecycle-e2e-project"
 CODEX_COMMAND="$(default_codex_command)"
 
 success_stream_marker() {
@@ -21,6 +23,18 @@ resume_stream_marker() {
 
 interrupt_stream_marker() {
   printf 'STREAM:%s:interrupt-live' "$1"
+}
+
+recovery_stream_marker() {
+  printf 'STREAM:%s:recovery-live' "$1"
+}
+
+project_workspace_root() {
+  printf '%s/%s' "$WORKSPACES_DIR" "$PROJECT_WORKSPACE_SLUG"
+}
+
+issue_workspace_path() {
+  printf '%s/%s' "$(project_workspace_root)" "$1"
 }
 
 success_gate_path() {
@@ -43,12 +57,20 @@ resume_artifact_path() {
   printf '%s/%s.resume.txt' "$ARTIFACTS_DIR" "$1"
 }
 
+recovery_artifact_path() {
+  printf '%s/%s.recovery.txt' "$ARTIFACTS_DIR" "$1"
+}
+
 success_artifact_text() {
   printf 'maestro claude success e2e ok'
 }
 
 resume_artifact_text() {
   printf 'maestro claude resume e2e ok'
+}
+
+recovery_artifact_text() {
+  printf 'maestro claude recovery e2e ok'
 }
 
 sql_value() {
@@ -160,6 +182,19 @@ wait_for_evidence_line() {
   return 1
 }
 
+wait_for_path_absent() {
+  local path="$1"
+  local deadline
+  deadline=$((SECONDS + TIMEOUT_SEC))
+  while (( SECONDS < deadline )); do
+    if [[ ! -e "$path" ]]; then
+      return 0
+    fi
+    sleep "$POLL_SEC"
+  done
+  return 1
+}
+
 evidence_value() {
   local path="$1"
   local key="$2"
@@ -206,6 +241,18 @@ run_post_probe() {
     --strict-mcp-config true
 }
 
+assert_claude_runtime_surface() {
+  local path="$1"
+  assert_evidence_value "$path" "dashboard_session_runtime_name" "claude"
+  assert_evidence_value "$path" "dashboard_session_runtime_provider" "claude"
+  assert_evidence_value "$path" "dashboard_session_runtime_transport" "stdio"
+  assert_claude_runtime_auth_source_line "$path" "dashboard_session_runtime_auth_source"
+  assert_evidence_value "$path" "execution_runtime_name" "claude"
+  assert_evidence_value "$path" "execution_runtime_provider" "claude"
+  assert_evidence_value "$path" "execution_runtime_transport" "stdio"
+  assert_claude_runtime_auth_source_line "$path" "execution_runtime_auth_source"
+}
+
 assert_success_snapshot() {
   local issue_id="$1"
   local expected_session="$2"
@@ -217,14 +264,20 @@ assert_success_snapshot() {
   assert_evidence_value "$final_summary" "dashboard_session_status" "completed"
   assert_evidence_value "$final_summary" "dashboard_session_source" "persisted"
   assert_evidence_value "$final_summary" "dashboard_session_stop_reason" "end_turn"
+  assert_evidence_value "$final_summary" "dashboard_session_pending_interaction_state" ""
   assert_evidence_value "$final_summary" "execution_session_source" "persisted"
+  assert_evidence_value "$final_summary" "execution_runtime_name" "claude"
   assert_evidence_value "$final_summary" "execution_runtime_provider" "claude"
   assert_evidence_value "$final_summary" "execution_runtime_transport" "stdio"
+  assert_claude_runtime_auth_source_line "$final_summary" "execution_runtime_auth_source"
+  assert_evidence_value "$final_summary" "execution_pending_interaction_state" ""
   assert_evidence_value "$final_summary" "execution_stop_reason" "end_turn"
+  assert_evidence_value "$final_summary" "execution_workspace_recovery_present" "false"
   assert_evidence_value "$final_summary" "execution_thread_id" "$expected_session"
   assert_evidence_value "$final_summary" "execution_session_id" "$expected_session"
   assert_evidence_value "$final_summary" "execution_provider_session_id" "$expected_session"
   assert_evidence_value "$final_summary" "execution_session_identifier_strategy" "provider_session_uuid"
+  assert_claude_runtime_surface "$final_summary"
   [[ "$(issue_execution_value "$issue_id" "runtime_provider")" == "claude" ]] || {
     echo "expected runtime_provider=claude for $issue_id" >&2
     return 1
@@ -260,6 +313,7 @@ PROJECT_ID=""
 SUCCESS_ISSUE=""
 RESUME_ISSUE=""
 INTERRUPT_ISSUE=""
+RECOVERY_ISSUE=""
 
 cd "$ROOT_DIR"
 
@@ -348,17 +402,19 @@ run_claude_spec_check
 run_claude_verify
 run_claude_doctor
 
-PROJECT_ID="$("$MAESTRO_BIN" project create "Real Claude Lifecycle E2E Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
+PROJECT_ID="$("$MAESTRO_BIN" project create "$PROJECT_NAME" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
 start_project "$PROJECT_ID"
 
 echo "Creating Claude lifecycle e2e issues in $DB_PATH"
 SUCCESS_ISSUE="$("$MAESTRO_BIN" issue create "Claude lifecycle success" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 RESUME_ISSUE="$("$MAESTRO_BIN" issue create "Claude lifecycle resume" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 INTERRUPT_ISSUE="$("$MAESTRO_BIN" issue create "Claude lifecycle interrupt" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
+RECOVERY_ISSUE="$("$MAESTRO_BIN" issue create "Claude lifecycle recovery required" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 
 set_issue_permission_profile "$SUCCESS_ISSUE" full-access
 set_issue_permission_profile "$RESUME_ISSUE" full-access
 set_issue_permission_profile "$INTERRUPT_ISSUE" full-access
+set_issue_permission_profile "$RECOVERY_ISSUE" full-access
 
 update_issue_description "$SUCCESS_ISSUE" "$(cat <<EOF
 Stream marker: $(success_stream_marker "$SUCCESS_ISSUE")
@@ -406,6 +462,21 @@ Requirements:
 EOF
 )"
 
+update_issue_description "$RECOVERY_ISSUE" "$(cat <<EOF
+Stream marker: $(recovery_stream_marker "$RECOVERY_ISSUE")
+Artifact file: $(recovery_artifact_path "$RECOVERY_ISSUE")
+Artifact text: $(recovery_artifact_text)
+
+Requirements:
+1. Immediately emit exactly: $(recovery_stream_marker "$RECOVERY_ISSUE")
+2. Create the artifact file with the exact artifact text followed by one trailing newline.
+3. Verify the artifact file from the shell.
+4. Mark the issue done with:
+   $MAESTRO_BIN issue move $RECOVERY_ISSUE done --db $DB_PATH
+5. Stop after the issue is marked done.
+EOF
+)"
+
 start_orchestrator
 
 echo "Running success scenario for $SUCCESS_ISSUE"
@@ -418,12 +489,22 @@ if ! wait_for_evidence_line "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt" "executi
   echo "success scenario never exposed the live stream marker" >&2
   exit 1
 fi
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt" "dashboard_session_source" "live"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt" "dashboard_session_status" "active"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt" "dashboard_session_pending_interaction_state" ""
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt" "execution_session_source" "live"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt" "execution_pending_interaction_state" ""
 printf 'go\n' >"$(success_gate_path "$SUCCESS_ISSUE")"
 if ! wait_for_done "$SUCCESS_ISSUE"; then
   echo "$SUCCESS_ISSUE did not reach done within ${TIMEOUT_SEC}s" >&2
   exit 1
 fi
 assert_file_content "$(success_artifact_path "$SUCCESS_ISSUE")" "$(success_artifact_text)"
+if ! wait_for_path_absent "$(issue_workspace_path "$SUCCESS_ISSUE")"; then
+  echo "success workspace was not cleaned up for $SUCCESS_ISSUE" >&2
+  exit 1
+fi
 assert_claude_runtime_evidence
 SUCCESS_SESSION_ID="$(evidence_value "$CLAUDE_EVIDENCE_DIR/launch-1.summary.txt" "execution_thread_id")"
 run_post_probe "$SUCCESS_ISSUE" 1 "success-final"
@@ -439,6 +520,10 @@ if ! wait_for_evidence_line "$CLAUDE_EVIDENCE_DIR/launch-2.summary.txt" "executi
   echo "resume scenario never exposed the first live stream marker" >&2
   exit 1
 fi
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/launch-2.summary.txt"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-2.summary.txt" "dashboard_session_source" "live"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-2.summary.txt" "dashboard_session_status" "active"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-2.summary.txt" "dashboard_session_pending_interaction_state" ""
 RESUME_SESSION_ID="$(evidence_value "$CLAUDE_EVIDENCE_DIR/launch-2.summary.txt" "execution_thread_id")"
 stop_orchestrator
 start_orchestrator
@@ -446,6 +531,10 @@ if ! wait_for_evidence_line "$CLAUDE_EVIDENCE_DIR/launch-3.summary.txt" "issue_i
   echo "resume scenario never produced the resumed live summary" >&2
   exit 1
 fi
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/launch-3.summary.txt"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-3.summary.txt" "dashboard_session_source" "live"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-3.summary.txt" "dashboard_session_status" "active"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-3.summary.txt" "dashboard_session_pending_interaction_state" ""
 if [[ "$(args_resume_value "$CLAUDE_EVIDENCE_DIR/launch-3.args.txt")" != "$RESUME_SESSION_ID" ]]; then
   echo "expected resumed Claude launch to reuse session $RESUME_SESSION_ID" >&2
   exit 1
@@ -464,6 +553,10 @@ if ! wait_for_runtime_event "$RESUME_ISSUE" "retry_scheduled"; then
   echo "resume scenario never recorded retry_scheduled" >&2
   exit 1
 fi
+if ! wait_for_path_absent "$(issue_workspace_path "$RESUME_ISSUE")"; then
+  echo "resume workspace was not cleaned up for $RESUME_ISSUE" >&2
+  exit 1
+fi
 run_post_probe "$RESUME_ISSUE" 3 "resume-final"
 assert_success_snapshot "$RESUME_ISSUE" "$RESUME_SESSION_ID" "$CLAUDE_EVIDENCE_DIR/resume-final.summary.txt"
 
@@ -477,6 +570,9 @@ if ! wait_for_evidence_line "$CLAUDE_EVIDENCE_DIR/launch-4.summary.txt" "executi
   echo "interrupt scenario never exposed the live stream marker" >&2
   exit 1
 fi
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/launch-4.summary.txt"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-4.summary.txt" "dashboard_session_source" "live"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-4.summary.txt" "dashboard_session_status" "active"
 "$MAESTRO_BIN" project stop "$PROJECT_ID" >/dev/null
 if ! wait_for_runtime_event "$INTERRUPT_ISSUE" "run_stopped"; then
   echo "interrupt scenario never recorded run_stopped" >&2
@@ -514,11 +610,71 @@ if [[ -e "$(interrupt_gate_path "$INTERRUPT_ISSUE")" ]]; then
   exit 1
 fi
 
+start_project "$PROJECT_ID"
+
+echo "Running recovery-required workspace scenario for $RECOVERY_ISSUE"
+mkdir -p "$(project_workspace_root)"
+printf 'stale\n' >"$(issue_workspace_path "$RECOVERY_ISSUE")"
+chmod 0555 "$(project_workspace_root)"
+"$MAESTRO_BIN" issue move "$RECOVERY_ISSUE" ready --db "$DB_PATH" >/dev/null
+if ! wait_for_runtime_event "$RECOVERY_ISSUE" "workspace_bootstrap_failed"; then
+  echo "recovery-required scenario never recorded workspace_bootstrap_failed" >&2
+  exit 1
+fi
+if ! wait_for_runtime_event "$RECOVERY_ISSUE" "retry_paused"; then
+  echo "recovery-required scenario never paused automatic retries" >&2
+  exit 1
+fi
+if [[ "$(runtime_event_count "$RECOVERY_ISSUE" "retry_scheduled")" != "0" ]]; then
+  echo "did not expect retry_scheduled for workspace recovery issue $RECOVERY_ISSUE" >&2
+  exit 1
+fi
+run_post_probe "$RECOVERY_ISSUE" 4 "recovery-required-final"
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "dashboard_session_source" "persisted"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "dashboard_session_status" "paused"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "dashboard_session_failure_class" "workspace_bootstrap"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "execution_session_source" "persisted"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "execution_failure_class" "workspace_bootstrap"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "execution_workspace_recovery_present" "true"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "execution_workspace_recovery_status" "required"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "execution_workspace_recovery_message" "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved."
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "execution_thread_id" ""
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt" "execution_session_id" ""
+
+chmod 0755 "$(project_workspace_root)"
+rm -f "$(issue_workspace_path "$RECOVERY_ISSUE")"
+"$MAESTRO_BIN" issue retry "$RECOVERY_ISSUE" --db "$DB_PATH" --quiet >/dev/null
+if ! wait_for_evidence_line "$CLAUDE_EVIDENCE_DIR/launch-5.summary.txt" "issue_identifier=$RECOVERY_ISSUE"; then
+  echo "recovery retry scenario never produced the live summary" >&2
+  exit 1
+fi
+if ! wait_for_evidence_line "$CLAUDE_EVIDENCE_DIR/launch-5.summary.txt" "execution_stream_seen=true"; then
+  echo "recovery retry scenario never exposed the live stream marker" >&2
+  exit 1
+fi
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/launch-5.summary.txt"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-5.summary.txt" "dashboard_session_source" "live"
+assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-5.summary.txt" "dashboard_session_status" "active"
+RECOVERY_SESSION_ID="$(evidence_value "$CLAUDE_EVIDENCE_DIR/launch-5.summary.txt" "execution_thread_id")"
+if ! wait_for_done "$RECOVERY_ISSUE"; then
+  echo "$RECOVERY_ISSUE did not reach done within ${TIMEOUT_SEC}s" >&2
+  exit 1
+fi
+assert_file_content "$(recovery_artifact_path "$RECOVERY_ISSUE")" "$(recovery_artifact_text)"
+if ! wait_for_path_absent "$(issue_workspace_path "$RECOVERY_ISSUE")"; then
+  echo "recovery workspace was not cleaned up for $RECOVERY_ISSUE" >&2
+  exit 1
+fi
+run_post_probe "$RECOVERY_ISSUE" 5 "recovery-final"
+assert_success_snapshot "$RECOVERY_ISSUE" "$RECOVERY_SESSION_ID" "$CLAUDE_EVIDENCE_DIR/recovery-final.summary.txt"
+
 echo "Real Claude lifecycle e2e flow completed successfully."
 echo "Verified:"
 echo "  success: $SUCCESS_ISSUE -> $(success_artifact_path "$SUCCESS_ISSUE")"
 echo "  resume: $RESUME_ISSUE -> $(resume_artifact_path "$RESUME_ISSUE")"
 echo "  interrupt: $INTERRUPT_ISSUE -> run_interrupted"
+echo "  recovery: $RECOVERY_ISSUE -> workspace recovery guidance, manual retry, then $(recovery_artifact_path "$RECOVERY_ISSUE")"
 echo "  verify log: $VERIFY_LOG"
 echo "  orchestrator log: $ORCH_LOG"
 echo "  claude evidence dir: $CLAUDE_EVIDENCE_DIR"
