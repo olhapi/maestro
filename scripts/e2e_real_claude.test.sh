@@ -1612,13 +1612,13 @@ test_timeout_failure_prints_issue_and_path_diagnostics() {
     FAKE_RUN_STICKS=1 \
     E2E_ROOT="$harness_root" \
     E2E_KEEP_HARNESS=1 \
-    E2E_TIMEOUT_SEC=1 \
+    E2E_TIMEOUT_SEC=3 \
     E2E_POLL_SEC=0.1 \
     bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"; then
     fail "expected the harness to fail when the issue never reaches done"
   fi
 
-  assert_contains "$tmp_dir/stderr.txt" "CL-1 did not reach done within 1s"
+  assert_contains "$tmp_dir/stderr.txt" "CL-1 did not reach done within 3s"
   assert_contains "$tmp_dir/stderr.txt" "Harness root: $harness_root"
   assert_contains "$tmp_dir/stderr.txt" "Daemon registry dir: $harness_root/.maestro-daemons"
   assert_contains "$tmp_dir/stderr.txt" "Claude evidence dir: $harness_root/claude-support"
