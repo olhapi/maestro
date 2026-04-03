@@ -10,7 +10,6 @@ trap cleanup EXIT INT TERM
 
 CLAUDE_COMMAND="${E2E_CLAUDE_COMMAND:-claude}"
 CODEX_COMMAND="$(default_codex_command)"
-CLAUDE_COMMAND_YAML="$(yaml_quote "$CLAUDE_COMMAND")"
 EXPECTED_ARTIFACT_NAME="claude-artifact.txt"
 EXPECTED_ARTIFACT_TEXT="maestro claude e2e ok"
 
@@ -24,6 +23,12 @@ require_cmd sqlite3
 
 ensure_harness_dirs
 build_maestro
+build_claude_probe
+prepare_claude_command_wrapper "$CLAUDE_COMMAND"
+export PATH="$BIN_DIR:$PATH"
+export MAESTRO_DAEMON_REGISTRY_DIR="$DAEMON_REGISTRY_DIR"
+
+CLAUDE_WORKFLOW_COMMAND="$(yaml_quote "$CLAUDE_WRAPPER_BIN")"
 
 run_claude_workflow_init "$CODEX_COMMAND"
 
@@ -58,7 +63,7 @@ runtime:
   claude:
     provider: claude
     transport: stdio
-    command: '$CLAUDE_COMMAND_YAML'
+    command: '$CLAUDE_WORKFLOW_COMMAND'
     approval_policy: never
     turn_timeout_ms: 300000
     read_timeout_ms: 5000
@@ -112,9 +117,11 @@ if ! wait_for_done "$ISSUE_ID"; then
 fi
 
 assert_file_content "$ARTIFACTS_DIR/$EXPECTED_ARTIFACT_NAME" "$EXPECTED_ARTIFACT_TEXT"
+assert_claude_runtime_evidence
 
 echo "Real Claude e2e flow completed successfully."
 echo "Verified:"
 echo "  $ISSUE_ID -> $ARTIFACTS_DIR/$EXPECTED_ARTIFACT_NAME"
 echo "  verify log: $VERIFY_LOG"
 echo "  orchestrator log: $ORCH_LOG"
+echo "  claude evidence: $CLAUDE_EVIDENCE_SUMMARY"
