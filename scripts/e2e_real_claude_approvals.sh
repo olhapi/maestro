@@ -11,6 +11,8 @@ trap cleanup EXIT INT TERM
 CLAUDE_COMMAND="${E2E_CLAUDE_COMMAND:-claude}"
 PROJECT_NAME="Real Claude Approval E2E Project"
 PROJECT_WORKSPACE_SLUG="real-claude-approval-e2e-project"
+ALERT_PROJECT_NAME="Real Claude Alert E2E Project"
+ALERT_REPO_PATH="${HARNESS_ROOT}.external-alert-repo"
 
 command_stream_marker() {
   printf 'STREAM:%s:command-approval' "$1"
@@ -26,6 +28,10 @@ edit_stream_marker() {
 
 protected_stream_marker() {
   printf 'STREAM:%s:protected-write-approval' "$1"
+}
+
+alert_ack_stream_marker() {
+  printf 'STREAM:%s:dispatch-alert' "$1"
 }
 
 issue_workspace_path() {
@@ -171,6 +177,26 @@ run_interrupt_probe() {
   "$CLAUDE_PROBE_BIN" "${args[@]}"
 }
 
+run_alert_probe() {
+  local issue_id="$1"
+  local launch_number="$2"
+  local prefix="$3"
+  "$CLAUDE_PROBE_BIN" \
+    --mode interrupt \
+    --issue-identifier "$issue_id" \
+    --mcp-config "$(launch_prefix "$launch_number").mcp.json" \
+    --settings "$(launch_prefix "$launch_number").settings.json" \
+    --db "$DB_PATH" \
+    --registry-dir "$DAEMON_REGISTRY_DIR" \
+    --evidence-prefix "$CLAUDE_EVIDENCE_DIR/$prefix" \
+    --permission-prompt-tool "mcp__maestro__approval_prompt" \
+    --permission-mode default \
+    --strict-mcp-config true \
+    --interrupt-kind alert \
+    --interrupt-action acknowledge \
+    --interrupt-alert-code project_dispatch_blocked
+}
+
 run_final_probe() {
   local issue_id="$1"
   local launch_number="$2"
@@ -188,6 +214,18 @@ run_final_probe() {
     --strict-mcp-config true
 }
 
+assert_claude_runtime_surface() {
+  local path="$1"
+  assert_evidence_line "$path" "dashboard_session_runtime_name=claude"
+  assert_evidence_line "$path" "dashboard_session_runtime_provider=claude"
+  assert_evidence_line "$path" "dashboard_session_runtime_transport=stdio"
+  assert_evidence_line "$path" "dashboard_session_runtime_auth_source=OAuth"
+  assert_evidence_line "$path" "execution_runtime_name=claude"
+  assert_evidence_line "$path" "execution_runtime_provider=claude"
+  assert_evidence_line "$path" "execution_runtime_transport=stdio"
+  assert_evidence_line "$path" "execution_runtime_auth_source=OAuth"
+}
+
 assert_permission_prompt_launch_summary() {
   local path="$1"
   local issue_id="$2"
@@ -198,6 +236,9 @@ assert_permission_prompt_launch_summary() {
   assert_evidence_line "$path" "allowed_tools="
   assert_evidence_line "$path" "strict_mcp_config=true"
   assert_evidence_line "$path" "tool_call_list_runtime_events=ok"
+  assert_evidence_line "$path" "dashboard_session_source=live"
+  assert_evidence_line "$path" "execution_session_source=live"
+  assert_claude_runtime_surface "$path"
 }
 
 assert_interrupt_summary() {
@@ -218,6 +259,24 @@ assert_interrupt_summary() {
   assert_evidence_line "$path" "interrupt_cleared=$cleared"
 }
 
+assert_approval_surface_summary() {
+  local path="$1"
+  assert_claude_runtime_surface "$path"
+  assert_evidence_line "$path" "dashboard_session_status=waiting"
+  assert_evidence_line "$path" "dashboard_session_pending_interaction_state=approval"
+  assert_evidence_line "$path" "execution_pending_interaction_state=approval"
+}
+
+assert_alert_summary() {
+  local path="$1"
+  assert_evidence_line "$path" "interrupt_requested=true"
+  assert_evidence_line "$path" "interrupt_kind=alert"
+  assert_evidence_line "$path" "interrupt_action=acknowledge"
+  assert_evidence_line "$path" "interrupt_alert_code=project_dispatch_blocked"
+  assert_evidence_line "$path" "interrupt_response_status=accepted"
+  assert_evidence_line "$path" "interrupt_cleared=true"
+}
+
 assert_missing_path() {
   local path="$1"
   if [[ -e "$path" ]]; then
@@ -230,6 +289,7 @@ COMMAND_ISSUE=""
 WRITE_ISSUE=""
 EDIT_ISSUE=""
 PROTECTED_ISSUE=""
+ALERT_ISSUE=""
 
 cd "$ROOT_DIR"
 
@@ -310,12 +370,20 @@ run_claude_verify
 
 PROJECT_ID="$("$MAESTRO_BIN" project create "$PROJECT_NAME" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
 start_project "$PROJECT_ID"
+mkdir -p "$ALERT_REPO_PATH"
+(
+  cd "$ALERT_REPO_PATH"
+  git init -q
+)
+ALERT_PROJECT_ID="$("$MAESTRO_BIN" project create "$ALERT_PROJECT_NAME" --repo "$ALERT_REPO_PATH" --db "$DB_PATH" --quiet)"
+start_project "$ALERT_PROJECT_ID"
 
 echo "Creating Claude approval e2e issues in $DB_PATH"
 COMMAND_ISSUE="$("$MAESTRO_BIN" issue create "Claude approval command allow" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 WRITE_ISSUE="$("$MAESTRO_BIN" issue create "Claude approval write deny" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 EDIT_ISSUE="$("$MAESTRO_BIN" issue create "Claude approval edit timeout" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 PROTECTED_ISSUE="$("$MAESTRO_BIN" issue create "Claude approval protected write allow" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
+ALERT_ISSUE="$("$MAESTRO_BIN" issue create "Claude shared alert acknowledgement" --project "$ALERT_PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 
 "$MAESTRO_BIN" issue update "$COMMAND_ISSUE" --desc "$(cat <<EOF
 Stream marker: $(command_stream_marker "$COMMAND_ISSUE")
@@ -373,6 +441,16 @@ Requirements:
 EOF
 )" --db "$DB_PATH" >/dev/null
 
+"$MAESTRO_BIN" issue update "$ALERT_ISSUE" --desc "$(cat <<EOF
+Stream marker: $(alert_ack_stream_marker "$ALERT_ISSUE")
+
+Requirements:
+1. Immediately emit exactly: $(alert_ack_stream_marker "$ALERT_ISSUE")
+2. Wait for operator acknowledgement before continuing.
+3. Do not change the issue state.
+EOF
+)" --db "$DB_PATH" >/dev/null
+
 start_orchestrator
 
 echo "Running command approval scenario for $COMMAND_ISSUE"
@@ -384,12 +462,14 @@ fi
 assert_permission_prompt_launch_summary "$(launch_prefix 1).summary.txt" "$COMMAND_ISSUE"
 run_interrupt_probe "$COMMAND_ISSUE" 1 "command-live" "command" "Bash" "allow"
 assert_interrupt_summary "$CLAUDE_EVIDENCE_DIR/command-live.summary.txt" "command" "Bash" "allow" "accepted" "true"
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/command-live.summary.txt"
 if ! wait_for_done "$COMMAND_ISSUE"; then
   echo "$COMMAND_ISSUE did not reach done within ${TIMEOUT_SEC}s" >&2
   exit 1
 fi
 assert_file_content "$(command_artifact_path "$COMMAND_ISSUE")" "$(command_artifact_text)"
 run_final_probe "$COMMAND_ISSUE" 1 "command-final"
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/command-final.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/command-final.summary.txt" "dashboard_session_status=completed"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/command-final.summary.txt" "execution_session_source=persisted"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/command-final.summary.txt" "execution_stop_reason=end_turn"
@@ -405,12 +485,14 @@ fi
 assert_permission_prompt_launch_summary "$(launch_prefix 2).summary.txt" "$WRITE_ISSUE"
 run_interrupt_probe "$WRITE_ISSUE" 2 "write-live" "file_write" "Write" "deny"
 assert_interrupt_summary "$CLAUDE_EVIDENCE_DIR/write-live.summary.txt" "file_write" "Write" "deny" "accepted" "true"
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/write-live.summary.txt"
 if ! wait_for_done "$WRITE_ISSUE"; then
   echo "$WRITE_ISSUE did not reach done within ${TIMEOUT_SEC}s" >&2
   exit 1
 fi
 assert_missing_path "$(write_artifact_path "$WRITE_ISSUE")"
 run_final_probe "$WRITE_ISSUE" 2 "write-final"
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/write-final.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/write-final.summary.txt" "dashboard_session_status=completed"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/write-final.summary.txt" "execution_session_source=persisted"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/write-final.summary.txt" "execution_stop_reason=end_turn"
@@ -426,6 +508,7 @@ fi
 assert_permission_prompt_launch_summary "$(launch_prefix 3).summary.txt" "$EDIT_ISSUE"
 run_interrupt_probe "$EDIT_ISSUE" 3 "edit-live" "file_edit" "Edit"
 assert_interrupt_summary "$CLAUDE_EVIDENCE_DIR/edit-live.summary.txt" "file_edit" "Edit" "" "" "false"
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/edit-live.summary.txt"
 if ! wait_for_runtime_event "$EDIT_ISSUE" "run_failed"; then
   echo "file edit timeout scenario never recorded run_failed" >&2
   exit 1
@@ -444,6 +527,7 @@ case "$TIMEOUT_ERROR" in
     ;;
 esac
 run_final_probe "$EDIT_ISSUE" 3 "edit-final"
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/edit-final.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/edit-final.summary.txt" "dashboard_session_status=paused"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/edit-final.summary.txt" "dashboard_session_stop_reason=retry_limit_reached"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/edit-final.summary.txt" "execution_session_source=persisted"
@@ -464,17 +548,24 @@ fi
 assert_permission_prompt_launch_summary "$(launch_prefix 4).summary.txt" "$PROTECTED_ISSUE"
 run_interrupt_probe "$PROTECTED_ISSUE" 4 "protected-live" "protected_directory_write" "Write" "allow"
 assert_interrupt_summary "$CLAUDE_EVIDENCE_DIR/protected-live.summary.txt" "protected_directory_write" "Write" "allow" "accepted" "true"
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/protected-live.summary.txt"
 if ! wait_for_done "$PROTECTED_ISSUE"; then
   echo "$PROTECTED_ISSUE did not reach done within ${TIMEOUT_SEC}s" >&2
   exit 1
 fi
 assert_file_content "$(protected_artifact_path "$PROTECTED_ISSUE")" "$(protected_artifact_text)"
 run_final_probe "$PROTECTED_ISSUE" 4 "protected-final"
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/protected-final.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/protected-final.summary.txt" "dashboard_session_status=completed"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/protected-final.summary.txt" "execution_session_source=persisted"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/protected-final.summary.txt" "execution_stop_reason=end_turn"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/protected-final.summary.txt" "runtime_event_count=1"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/protected-final.summary.txt" "runtime_event_kinds=run_completed"
+
+echo "Running shared alert acknowledgement scenario for $ALERT_ISSUE"
+"$MAESTRO_BIN" issue move "$ALERT_ISSUE" ready --db "$DB_PATH" >/dev/null
+run_alert_probe "$ALERT_ISSUE" 4 "alert-live"
+assert_alert_summary "$CLAUDE_EVIDENCE_DIR/alert-live.summary.txt"
 
 echo "Real Claude approval bridge e2e flow completed successfully."
 echo "Verified:"
@@ -482,6 +573,7 @@ echo "  command allow: $COMMAND_ISSUE -> $(command_artifact_path "$COMMAND_ISSUE
 echo "  write deny: $WRITE_ISSUE -> denied without file creation"
 echo "  edit timeout: $EDIT_ISSUE -> timeout recorded"
 echo "  protected allow: $PROTECTED_ISSUE -> $(protected_artifact_path "$PROTECTED_ISSUE")"
+echo "  alert acknowledge: $ALERT_ISSUE -> project_dispatch_blocked acknowledged"
 echo "  verify log: $VERIFY_LOG"
 echo "  orchestrator log: $ORCH_LOG"
 echo "  claude evidence dir: $CLAUDE_EVIDENCE_DIR"

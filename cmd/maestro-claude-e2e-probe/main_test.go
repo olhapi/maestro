@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -92,6 +94,9 @@ func TestWantsInterruptObservation(t *testing.T) {
 		{name: "no interrupt fields", opts: options{}, want: false},
 		{name: "classification only", opts: options{interruptClass: "command"}, want: true},
 		{name: "tool name only", opts: options{interruptToolName: "Bash"}, want: true},
+		{name: "kind only", opts: options{interruptKind: "alert"}, want: true},
+		{name: "action only", opts: options{interruptAction: "acknowledge"}, want: true},
+		{name: "alert code only", opts: options{interruptAlertCode: "project_dispatch_blocked"}, want: true},
 		{name: "decision only", opts: options{interruptDecision: "allow"}, want: true},
 		{name: "note only", opts: options{interruptNote: "operator approved"}, want: true},
 	}
@@ -113,7 +118,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("accepts maestro managed approval payload", func(t *testing.T) {
 		t.Parallel()
 
-		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "command", "Bash", "", 0); err != nil {
+		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "", "", "command", "Bash", "", 0); err != nil {
 			t.Fatalf("validatePendingInterrupt() error = %v", err)
 		}
 	})
@@ -124,7 +129,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 		interaction := validPendingInterrupt()
 		interaction.Metadata["request_meta"] = map[string]interface{}{}
 
-		err := validatePendingInterrupt(interaction, "CL-1", "", "command", "Bash", "", 0)
+		err := validatePendingInterrupt(interaction, "CL-1", "", "", "", "command", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "toolUseId correlation") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want missing toolUseId correlation", err)
 		}
@@ -133,7 +138,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("rejects classification mismatch", func(t *testing.T) {
 		t.Parallel()
 
-		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "file_write", "Bash", "", 0)
+		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "", "", "file_write", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "expected interrupt classification") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want classification mismatch", err)
 		}
@@ -142,7 +147,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("accepts plan approval payload", func(t *testing.T) {
 		t.Parallel()
 
-		if err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 2); err != nil {
+		if err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "", "plan_approval", "", "", "", "awaiting_approval", 2); err != nil {
 			t.Fatalf("validatePendingInterrupt() error = %v", err)
 		}
 	})
@@ -150,11 +155,111 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("rejects plan approval version mismatch", func(t *testing.T) {
 		t.Parallel()
 
-		err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 3)
+		err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "", "plan_approval", "", "", "", "awaiting_approval", 3)
 		if err == nil || !strings.Contains(err.Error(), "expected plan version") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want plan version mismatch", err)
 		}
 	})
+
+	t.Run("accepts alert payload", func(t *testing.T) {
+		t.Parallel()
+
+		if err := validatePendingInterrupt(validAlertInterrupt(), "CL-9", "alert", "", "project_dispatch_blocked", "", "", "", 0); err != nil {
+			t.Fatalf("validatePendingInterrupt() error = %v", err)
+		}
+	})
+
+	t.Run("infers alert validation from alert code", func(t *testing.T) {
+		t.Parallel()
+
+		if err := validatePendingInterrupt(validAlertInterrupt(), "CL-9", "", "", "project_dispatch_blocked", "", "", "", 0); err != nil {
+			t.Fatalf("validatePendingInterrupt() error = %v", err)
+		}
+	})
+
+	t.Run("rejects alert without acknowledge action", func(t *testing.T) {
+		t.Parallel()
+
+		interaction := validAlertInterrupt()
+		interaction.Actions = nil
+
+		err := validatePendingInterrupt(interaction, "CL-9", "alert", "", "project_dispatch_blocked", "", "", "", 0)
+		if err == nil || !strings.Contains(err.Error(), "expected acknowledge action") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want acknowledge action mismatch", err)
+		}
+	})
+}
+
+func TestExecutionObservationMatchesMode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepts live execution with stream marker", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{
+			Active:        true,
+			SessionSource: "live",
+			StreamSeen:    true,
+			Session: agentruntime.Session{
+				SessionID: "session-1",
+				ThreadID:  "thread-1",
+			},
+		}
+		if !executionObservationMatchesMode(observation, "live") {
+			t.Fatalf("expected live observation to match: %+v", observation)
+		}
+	})
+
+	t.Run("accepts persisted recovery payload without session ids", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{
+			SessionSource: "persisted",
+			FailureClass:  "workspace_bootstrap",
+			WorkspaceRecovery: &kanban.WorkspaceRecovery{
+				Status:  "required",
+				Message: "Workspace bootstrap failed. Review the blocker and retry once it is resolved.",
+			},
+		}
+		if !executionObservationMatchesMode(observation, "final") {
+			t.Fatalf("expected persisted recovery observation to match final mode: %+v", observation)
+		}
+	})
+
+	t.Run("rejects persisted payload without session ids or recovery evidence", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{SessionSource: "persisted"}
+		if executionObservationMatchesMode(observation, "final") {
+			t.Fatalf("expected incomplete persisted observation to fail: %+v", observation)
+		}
+	})
+}
+
+func TestPendingInteractionStateForInterrupt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		interaction agentruntime.PendingInteraction
+		want        string
+	}{
+		{name: "approval", interaction: validPendingInterrupt(), want: "approval"},
+		{name: "alert", interaction: validAlertInterrupt(), want: "alert"},
+		{name: "user input", interaction: agentruntime.PendingInteraction{Kind: agentruntime.PendingInteractionKindUserInput}, want: "user_input"},
+		{name: "elicitation", interaction: agentruntime.PendingInteraction{Kind: agentruntime.PendingInteractionKindElicitation}, want: "elicitation"},
+		{name: "unknown", interaction: agentruntime.PendingInteraction{}, want: ""},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pendingInteractionStateForInterrupt(tc.interaction); got != tc.want {
+				t.Fatalf("pendingInteractionStateForInterrupt() = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestFilterRuntimeEventsByIssue(t *testing.T) {
@@ -192,6 +297,97 @@ func TestRuntimeEventKinds(t *testing.T) {
 	want := []string{"run_completed", "retry_paused"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("runtimeEventKinds() = %#v, want %#v", got, want)
+	}
+}
+
+func TestWriteEvidenceIncludesOperatorSurfaceFields(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "probe")
+	evidence := probeEvidence{
+		Mode:            "final",
+		IssueIdentifier: "CL-9",
+		Execution: executionObservation{
+			FailureClass:            "workspace_recovery_required",
+			RuntimeName:             "claude",
+			RuntimeProvider:         "claude",
+			RuntimeTransport:        "stdio",
+			RuntimeAuthSource:       "OAuth",
+			PendingInteractionState: "pending",
+			SessionSource:           "persisted",
+			StopReason:              "end_turn",
+			StreamMarker:            "STREAM:CL-9",
+			StreamSeen:              true,
+			Session: agentruntime.Session{
+				SessionID: "session-9",
+				ThreadID:  "thread-9",
+				Metadata: map[string]interface{}{
+					"provider_session_id":         "provider-9",
+					"session_identifier_strategy": "provider_session_uuid",
+				},
+			},
+			WorkspaceRecovery: &kanban.WorkspaceRecovery{
+				Status:  "recovery_required",
+				Message: "Reset the workspace before retrying.",
+			},
+		},
+		DashboardSession: dashboardSessionObservation{
+			FailureClass:            "workspace_recovery_required",
+			RuntimeName:             "claude",
+			RuntimeProvider:         "claude",
+			RuntimeTransport:        "stdio",
+			RuntimeAuthSource:       "OAuth",
+			PendingInteractionState: "pending",
+			Source:                  "persisted",
+			Status:                  "failed",
+			StopReason:              "end_turn",
+		},
+		Interrupt: interruptObservation{
+			Action:         "acknowledge",
+			Cleared:        true,
+			PendingCount:   1,
+			Requested:      true,
+			ResponseStatus: "accepted",
+			Interaction: agentruntime.PendingInteraction{
+				ID:              "interrupt-9",
+				Kind:            agentruntime.PendingInteractionKindAlert,
+				IssueIdentifier: "CL-9",
+				Alert: &agentruntime.PendingAlert{
+					Code:    "project_dispatch_blocked",
+					Title:   "Dispatch blocked",
+					Message: "Another issue is active.",
+				},
+				Metadata: map[string]interface{}{
+					"source": "runtime_alert",
+				},
+			},
+		},
+	}
+
+	if err := writeEvidence(prefix, evidence); err != nil {
+		t.Fatalf("writeEvidence() error = %v", err)
+	}
+
+	summary, err := os.ReadFile(prefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	text := string(summary)
+	for _, want := range []string{
+		"dashboard_session_failure_class=workspace_recovery_required",
+		"dashboard_session_runtime_auth_source=OAuth",
+		"execution_pending_interaction_state=pending",
+		"execution_runtime_auth_source=OAuth",
+		"execution_workspace_recovery_present=true",
+		"execution_workspace_recovery_status=recovery_required",
+		"execution_workspace_recovery_message=Reset the workspace before retrying.",
+		"interrupt_action=acknowledge",
+		"interrupt_alert_code=project_dispatch_blocked",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("summary missing %q\n%s", want, text)
+		}
 	}
 }
 
@@ -241,6 +437,22 @@ func validPlanApprovalInterrupt() agentruntime.PendingInteraction {
 			Decisions: []agentruntime.PendingApprovalDecision{
 				{Value: "approved", Label: "Approve plan"},
 			},
+		},
+	}
+}
+
+func validAlertInterrupt() agentruntime.PendingInteraction {
+	return agentruntime.PendingInteraction{
+		ID:              "alert-1",
+		Kind:            agentruntime.PendingInteractionKindAlert,
+		IssueIdentifier: "CL-9",
+		Alert: &agentruntime.PendingAlert{
+			Code:    "project_dispatch_blocked",
+			Title:   "Dispatch blocked",
+			Message: "Another issue is active.",
+		},
+		Actions: []agentruntime.PendingInteractionAction{
+			{Kind: agentruntime.PendingInteractionActionAcknowledge, Label: "Acknowledge"},
 		},
 	}
 }

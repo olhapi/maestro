@@ -128,6 +128,18 @@ run_probe() {
   "$CLAUDE_PROBE_BIN" "${args[@]}"
 }
 
+assert_claude_runtime_surface() {
+  local path="$1"
+  assert_evidence_line "$path" "dashboard_session_runtime_name=claude"
+  assert_evidence_line "$path" "dashboard_session_runtime_provider=claude"
+  assert_evidence_line "$path" "dashboard_session_runtime_transport=stdio"
+  assert_evidence_line "$path" "dashboard_session_runtime_auth_source=OAuth"
+  assert_evidence_line "$path" "execution_runtime_name=claude"
+  assert_evidence_line "$path" "execution_runtime_provider=claude"
+  assert_evidence_line "$path" "execution_runtime_transport=stdio"
+  assert_evidence_line "$path" "execution_runtime_auth_source=OAuth"
+}
+
 assert_common_launch_summary() {
   local path="$1"
   local issue_id="$2"
@@ -142,6 +154,9 @@ assert_common_launch_summary() {
   assert_evidence_line "$path" "tool_call_get_issue_execution=ok"
   assert_evidence_line "$path" "tool_call_list_runtime_events=ok"
   assert_evidence_line "$path" "live_claude_session_seen=true"
+  assert_evidence_line "$path" "dashboard_session_source=live"
+  assert_evidence_line "$path" "execution_session_source=live"
+  assert_claude_runtime_surface "$path"
 }
 
 assert_prompt_launch_summary() {
@@ -177,6 +192,13 @@ assert_full_access_launch_summary() {
     echo "did not expect --permission-prompt-tool in ${path%.summary.txt}.args.txt" >&2
     return 1
   fi
+}
+
+assert_approval_surface_summary() {
+  local path="$1"
+  assert_claude_runtime_surface "$path"
+  assert_evidence_line "$path" "dashboard_session_pending_interaction_state=approval"
+  assert_evidence_line "$path" "execution_pending_interaction_state=approval"
 }
 
 DEFAULT_ISSUE=""
@@ -338,12 +360,14 @@ run_probe live "$DEFAULT_ISSUE" 1 "default-live" "default" "" "$MAESTRO_PROMPT_T
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/default-live.summary.txt" "interrupt_requested=true"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/default-live.summary.txt" "interrupt_response_decision=allow"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/default-live.summary.txt" "interrupt_response_status=accepted"
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/default-live.summary.txt"
 if ! wait_for_done "$DEFAULT_ISSUE"; then
   echo "$DEFAULT_ISSUE did not reach done within ${TIMEOUT_SEC}s" >&2
   exit 1
 fi
 assert_file_content "$(default_artifact_path "$DEFAULT_ISSUE")" "$(default_artifact_text)"
 run_probe final "$DEFAULT_ISSUE" 1 "default-final" "default" "" "$MAESTRO_PROMPT_TOOL"
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/default-final.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/default-final.summary.txt" "dashboard_session_status=completed"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/default-final.summary.txt" "execution_stop_reason=end_turn"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/default-final.summary.txt" "issue_permission_profile=default"
@@ -362,6 +386,7 @@ if ! wait_for_done "$FULL_ACCESS_ISSUE"; then
 fi
 assert_file_content "$(full_access_artifact_path "$FULL_ACCESS_ISSUE")" "$(full_access_artifact_text)"
 run_probe final "$FULL_ACCESS_ISSUE" 2 "full-access-final" "default" "$ALLOWED_TOOLS" ""
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/full-access-final.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/full-access-final.summary.txt" "dashboard_session_status=completed"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/full-access-final.summary.txt" "execution_stop_reason=end_turn"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/full-access-final.summary.txt" "issue_permission_profile=full-access"
@@ -382,6 +407,7 @@ run_probe final "$PLAN_ISSUE" 3 "plan-pending-v1" "plan" "" "$MAESTRO_PROMPT_TOO
   --interrupt-approval-type plan_approval \
   --interrupt-plan-status awaiting_approval \
   --interrupt-plan-version 1
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/plan-pending-v1.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-pending-v1.summary.txt" "dashboard_session_status=paused"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-pending-v1.summary.txt" "dashboard_session_stop_reason=plan_approval_pending"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-pending-v1.summary.txt" "execution_stop_reason=plan_approval_pending"
@@ -401,6 +427,7 @@ run_probe final "$PLAN_ISSUE" 3 "plan-revision-requested" "plan" "" "$MAESTRO_PR
   --interrupt-note "$PLAN_REVISION_NOTE"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-revision-requested.summary.txt" "interrupt_requested=true"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-revision-requested.summary.txt" "interrupt_response_status=accepted"
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/plan-revision-requested.summary.txt"
 
 if ! wait_for_evidence_line "$(launch_prefix 4).summary.txt" "issue_identifier=$PLAN_ISSUE"; then
   echo "plan revision redispatch never produced launch-4 summary" >&2
@@ -415,6 +442,7 @@ run_probe final "$PLAN_ISSUE" 4 "plan-pending-v2" "plan" "" "$MAESTRO_PROMPT_TOO
   --interrupt-approval-type plan_approval \
   --interrupt-plan-status awaiting_approval \
   --interrupt-plan-version 2
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/plan-pending-v2.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-pending-v2.summary.txt" "dashboard_session_status=paused"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-pending-v2.summary.txt" "execution_stop_reason=plan_approval_pending"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-pending-v2.summary.txt" "issue_permission_profile=plan-then-full-access"
@@ -434,6 +462,7 @@ run_probe final "$PLAN_ISSUE" 4 "plan-approved" "plan" "" "$MAESTRO_PROMPT_TOOL"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-approved.summary.txt" "interrupt_requested=true"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-approved.summary.txt" "interrupt_response_decision=approved"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-approved.summary.txt" "interrupt_response_status=accepted"
+assert_approval_surface_summary "$CLAUDE_EVIDENCE_DIR/plan-approved.summary.txt"
 
 if ! wait_for_evidence_line "$(launch_prefix 5).summary.txt" "issue_identifier=$PLAN_ISSUE"; then
   echo "post-approval execution never produced launch-5 summary" >&2
@@ -450,6 +479,7 @@ if ! wait_for_done "$PLAN_ISSUE"; then
 fi
 assert_file_content "$(plan_artifact_path "$PLAN_ISSUE")" "$(plan_artifact_text)"
 run_probe final "$PLAN_ISSUE" 5 "plan-final" "default" "$ALLOWED_TOOLS" ""
+assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/plan-final.summary.txt"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-final.summary.txt" "dashboard_session_status=completed"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-final.summary.txt" "execution_stop_reason=end_turn"
 assert_evidence_line "$CLAUDE_EVIDENCE_DIR/plan-final.summary.txt" "issue_permission_profile=full-access"
