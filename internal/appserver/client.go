@@ -689,6 +689,15 @@ func (c *Client) awaitResponse(ctx context.Context, requestID int) (protocol.Mes
 			continue
 		}
 		c.captureEvent(line, payload)
+		if payload.Method != "" {
+			handled, err := c.handleRequest(ctx, payload)
+			if err != nil {
+				return protocol.Message{}, err
+			}
+			if handled {
+				continue
+			}
+		}
 		if payload.IsResponseTo(requestID) {
 			if payload.Error != nil {
 				return protocol.Message{}, &RunError{Kind: "response_error", Payload: payload.Raw, Err: fmt.Errorf("%v", payload.Error)}
@@ -740,7 +749,7 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 				}
 				continue
 			}
-			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(100*time.Millisecond) {
+			if errors.Is(err, io.EOF) && c.turnFinishedByCleanProcessExit(managedProcessKillWait) {
 				c.logger.Info("Codex turn completed after clean app-server exit",
 					"session_id", c.session.SessionID,
 					"thread_id", c.session.ThreadID,

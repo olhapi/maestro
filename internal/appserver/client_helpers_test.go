@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -82,6 +83,102 @@ func TestAwaitResponseBranches(t *testing.T) {
 			t.Fatalf("expected missing-result response_error, got %v", err)
 		}
 	})
+}
+
+func TestAwaitResponseDispatchesPendingInteractionBeforeMatchingResponse(t *testing.T) {
+	stdin := &bufferWriteCloser{}
+	interactionIDs := make(chan string, 1)
+	doneIDs := make(chan string, 1)
+	responseErrs := make(chan error, 1)
+	client := &Client{
+		cfg: ClientConfig{
+			IssueID:         "issue-1",
+			IssueIdentifier: "ISS-1",
+			Workspace:       t.TempDir(),
+			ReadTimeout:     100 * time.Millisecond,
+			OnPendingInteractionDone: func(interactionID string) {
+				doneIDs <- interactionID
+			},
+		},
+		stdin:               stdin,
+		lines:               make(chan string, 2),
+		lineErr:             make(chan error, 1),
+		waitCh:              make(chan error, 1),
+		session:             &Session{SessionID: "session-1", ThreadID: "thread-1", TurnID: "turn-1", MaxHistory: 4},
+		logger:              discardLogger(),
+		pendingInteractions: make(map[string]*interactionWaiter),
+	}
+	client.cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction == nil {
+			responseErrs <- fmt.Errorf("nil interaction")
+			return
+		}
+		interactionIDs <- interaction.ID
+		responseErrs <- client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+			Decision: "acceptForSession",
+		})
+	}
+
+	resultCh := make(chan struct {
+		msg protocol.Message
+		err error
+	}, 1)
+	go func() {
+		msg, err := client.awaitResponse(context.Background(), 7)
+		resultCh <- struct {
+			msg protocol.Message
+			err error
+		}{msg: msg, err: err}
+	}()
+
+	client.lines <- `{"id":99,"method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"file-change-1","reason":"Need approval"}}`
+	client.lines <- `{"id":7,"result":{"ok":true}}`
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("awaitResponse failed: %v", result.err)
+		}
+		if string(result.msg.Result) != `{"ok":true}` {
+			t.Fatalf("unexpected response payload %s", result.msg.Result)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for matching response")
+	}
+
+	select {
+	case interactionID := <-interactionIDs:
+		if interactionID == "" {
+			t.Fatal("expected pending interaction callback to provide an id")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected pending interaction callback to fire")
+	}
+
+	select {
+	case err := <-responseErrs:
+		if err != nil {
+			t.Fatalf("synchronous response failed: %v", err)
+		}
+	default:
+		t.Fatal("expected callback to respond synchronously")
+	}
+
+	select {
+	case doneID := <-doneIDs:
+		if doneID == "" {
+			t.Fatal("expected pending interaction cleanup callback to provide an id")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected pending interaction cleanup callback")
+	}
+
+	if len(client.pendingInteractions) != 0 {
+		t.Fatalf("expected pending interactions to be cleared, got %#v", client.pendingInteractions)
+	}
+	if !strings.Contains(stdin.String(), `"decision":"acceptForSession"`) {
+		t.Fatalf("expected approval response in output, got %q", stdin.String())
+	}
 }
 
 func TestInitializeUsesGeneratedRequestIDForConfiguredWorkspace(t *testing.T) {
@@ -269,7 +366,7 @@ func TestAwaitTurnCompletionWaitsBrieflyForCleanExitAfterEOF(t *testing.T) {
 	close(client.lines)
 	client.lineErr <- io.EOF
 	go func() {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 		client.waitCh <- nil
 	}()
 

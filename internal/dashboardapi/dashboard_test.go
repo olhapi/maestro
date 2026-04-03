@@ -1,6 +1,7 @@
 package dashboardapi
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -136,6 +137,66 @@ func TestDashboardOverviewEndpointsSurfaceStoreErrors(t *testing.T) {
 			}
 			_ = decodeResponse(t, resp)
 		})
+	}
+}
+
+func TestDashboardBoardCountsUseFullIssueSet(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for i := 0; i < 114; i++ {
+		issue, err := store.CreateIssue("", "", fmt.Sprintf("Done %03d", i), "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue done %d: %v", i, err)
+		}
+		if err := store.UpdateIssueState(issue.ID, kanban.StateDone); err != nil {
+			t.Fatalf("UpdateIssueState done %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 85; i++ {
+		if _, err := store.CreateIssue("", "", fmt.Sprintf("Backlog %03d", i), "", 0, nil); err != nil {
+			t.Fatalf("CreateIssue backlog %d: %v", i, err)
+		}
+	}
+	ready, err := store.CreateIssue("", "", "Ready 000", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue ready: %v", err)
+	}
+	if err := store.UpdateIssueState(ready.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState ready: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewServer(store, testProvider{}).Register(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{"/api/v1/app/work", "/api/v1/app/bootstrap"} {
+		resp := requestJSON(t, srv, http.MethodGet, path, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s expected 200, got %d", path, resp.StatusCode)
+		}
+
+		payload := decodeResponse(t, resp)
+		overview := payload["overview"].(map[string]interface{})
+		board := overview["board"].(map[string]interface{})
+		if board["ready"].(float64) != 1 || board["backlog"].(float64) != 85 || board["done"].(float64) != 114 {
+			t.Fatalf("%s expected full board counts, got %#v", path, board)
+		}
+
+		issues := payload["issues"].(map[string]interface{})
+		if issues["total"].(float64) != 200 {
+			t.Fatalf("%s expected issues total 200, got %#v", path, issues)
+		}
+		if len(issues["items"].([]interface{})) != 100 {
+			t.Fatalf("%s expected issues page length 100, got %#v", path, issues["items"])
+		}
 	}
 }
 
@@ -462,11 +523,11 @@ func TestDashboardScopeAndFeedHelpers(t *testing.T) {
 	blocked := buildLiveSessionFeedEntry(
 		"ISS-1",
 		agentruntime.Session{
-			IssueID:        "issue-1",
+			IssueID:         "issue-1",
 			IssueIdentifier: "ISS-1",
-			LastTimestamp:  time.Time{},
-			LastMessage:    "",
-			TotalTokens:    0,
+			LastTimestamp:   time.Time{},
+			LastMessage:     "",
+			TotalTokens:     0,
 		},
 		observability.RunningEntry{
 			IssueID:    "issue-1",
@@ -485,20 +546,20 @@ func TestDashboardScopeAndFeedHelpers(t *testing.T) {
 			},
 		},
 		&kanban.Issue{
-			ID:                            "issue-1",
-			Identifier:                    "ISS-1",
-			Title:                         "Blocked issue",
-			PendingPlanRevisionMarkdown:   "draft",
+			ID:                             "issue-1",
+			Identifier:                     "ISS-1",
+			Title:                          "Blocked issue",
+			PendingPlanRevisionMarkdown:    "draft",
 			PendingPlanRevisionRequestedAt: &requestedAt,
 		},
 		planning,
 		"Blocked issue",
 		&agentruntime.PendingInteraction{
-			ID:             "alert-1",
-			Kind:           agentruntime.PendingInteractionKindAlert,
-			LastActivity:   "Blocked by policy",
+			ID:              "alert-1",
+			Kind:            agentruntime.PendingInteractionKindAlert,
+			LastActivity:    "Blocked by policy",
 			LastActivityAt:  &alertAt,
-			RequestedAt:    now,
+			RequestedAt:     now,
 			IssueIdentifier: "ISS-1",
 		},
 	)
@@ -523,10 +584,10 @@ func TestDashboardScopeAndFeedHelpers(t *testing.T) {
 			TurnCount:  2,
 		},
 		&kanban.Issue{
-			ID:                            "issue-2",
-			Identifier:                    "ISS-2",
-			Title:                         "Revision queued issue",
-			PendingPlanRevisionMarkdown:   "draft",
+			ID:                             "issue-2",
+			Identifier:                     "ISS-2",
+			Title:                          "Revision queued issue",
+			PendingPlanRevisionMarkdown:    "draft",
 			PendingPlanRevisionRequestedAt: &requestedAt,
 		},
 		nil,

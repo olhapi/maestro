@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { type ReactNode, useId, useState } from 'react'
 import { ChevronDown, ChevronUp, Plus } from 'lucide-react'
 
 import { IssueCard } from '@/components/dashboard/issue-card'
@@ -17,19 +17,69 @@ type KanbanLane = {
   state: IssueState
 }
 
+const DONE_LANE_BATCH_SIZE = 30
+
 function stateRowBodyId(boardId: string, state: string) {
   return `${boardId}-${state.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+}
+
+function DoneLaneFooter({
+  visibleCount,
+  totalCount,
+  onLoadMore,
+}: {
+  visibleCount: number
+  totalCount: number
+  onLoadMore: () => void
+}) {
+  const remaining = totalCount - visibleCount
+  if (remaining <= 0) {
+    return null
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-white/[0.03] px-4 py-3">
+      <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+        Showing {visibleCount} of {totalCount}
+      </p>
+      <Button
+        variant="secondary"
+        size="sm"
+        className="rounded-full border-white/12 bg-white/6 text-white hover:bg-white/10"
+        onClick={onLoadMore}
+      >
+        Load {Math.min(DONE_LANE_BATCH_SIZE, remaining)} more
+      </Button>
+    </div>
+  )
+}
+
+function DoneLaneProgress({
+  items,
+  children,
+}: {
+  items: IssueSummary[]
+  children: (visibleItems: IssueSummary[], onLoadMore: () => void) => ReactNode
+}) {
+  const [visibleCount, setVisibleCount] = useState(DONE_LANE_BATCH_SIZE)
+  const visibleItems = items.slice(0, visibleCount)
+
+  return children(visibleItems, () => {
+    setVisibleCount((current) => current + DONE_LANE_BATCH_SIZE)
+  })
 }
 
 function GroupedKanbanBoard({
   lanes,
   bootstrap,
+  doneLaneKey,
   onOpenIssue,
   onMoveIssue,
   onCreateIssue,
 }: {
   lanes: KanbanLane[]
   bootstrap?: DashboardWorkSource
+  doneLaneKey: string
   onOpenIssue: (issue: IssueSummary) => void
   onMoveIssue: (issue: IssueSummary, nextState: IssueState) => void
   onCreateIssue?: (state?: IssueState) => void
@@ -93,25 +143,52 @@ function GroupedKanbanBoard({
             </div>
 
             <div hidden={collapsed} id={bodyId} className="grid gap-2.5 p-[var(--panel-padding)]">
-              {!collapsed && (lane.items.length > 0 ? (
-                lane.items.map((issue) => (
-                  <IssueCard
-                    key={issue.id}
-                    issue={issue}
-                    bootstrap={bootstrap}
-                    compact
-                    onOpen={onOpenIssue}
-                    onStateChange={onMoveIssue}
-                  />
-                ))
-              ) : (
+              {lane.items.length > 0 ? (
+                lane.state === 'done' ? (
+                  <DoneLaneProgress
+                    key={doneLaneKey}
+                    items={lane.items}
+                  >
+                    {(visibleItems, onLoadMore) => (
+                      <>
+                        {visibleItems.map((issue) => (
+                          <IssueCard
+                            key={issue.id}
+                            issue={issue}
+                            bootstrap={bootstrap}
+                            compact
+                            onOpen={onOpenIssue}
+                            onStateChange={onMoveIssue}
+                          />
+                        ))}
+                        <DoneLaneFooter
+                          totalCount={lane.items.length}
+                          visibleCount={visibleItems.length}
+                          onLoadMore={onLoadMore}
+                        />
+                      </>
+                    )}
+                  </DoneLaneProgress>
+                ) : !collapsed ? (
+                  lane.items.map((issue) => (
+                    <IssueCard
+                      key={issue.id}
+                      issue={issue}
+                      bootstrap={bootstrap}
+                      compact
+                      onOpen={onOpenIssue}
+                      onStateChange={onMoveIssue}
+                    />
+                  ))
+                ) : null
+              ) : !collapsed ? (
                 <button
                   className="flex min-h-28 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
                   onClick={() => onCreateIssue?.(lane.state)}
                 >
                   Add the next issue
                 </button>
-              ))}
+              ) : null}
             </div>
           </div>
         )
@@ -137,6 +214,7 @@ export function KanbanBoard({
 }) {
   const [dragged, setDragged] = useState<IssueSummary | null>(null)
   const [dropState, setDropState] = useState<IssueState | null>(null)
+  const doneLaneKey = items.map((item) => item.id).join('|')
 
   const lanes = issueStatesFor(items).map((state) => {
     const laneItems = items.filter((item) => item.state === state)
@@ -153,6 +231,7 @@ export function KanbanBoard({
       <GroupedKanbanBoard
         bootstrap={bootstrap}
         lanes={lanes}
+        doneLaneKey={doneLaneKey}
         onCreateIssue={onCreateIssue}
         onMoveIssue={onMoveIssue}
         onOpenIssue={onOpenIssue}
@@ -216,27 +295,65 @@ export function KanbanBoard({
                 </div>
 
                 <div className="flex flex-1 flex-col gap-2.5 p-2.5">
-                  {lane.items.map((issue) => (
-                    <div
-                      key={issue.id}
-                      draggable
-                      className="cursor-grab active:cursor-grabbing"
-                      onDragStart={() => setDragged(issue)}
-                      onDragEnd={() => {
-                        setDragged(null)
-                        setDropState(null)
-                      }}
+                  {lane.state === 'done' ? (
+                    <DoneLaneProgress
+                      key={doneLaneKey}
+                      items={lane.items}
                     >
-                      <IssueCard
-                        issue={issue}
-                        bootstrap={bootstrap}
-                        compact
+                      {(visibleItems, onLoadMore) => (
+                        <>
+                          {visibleItems.map((issue) => (
+                            <div
+                              key={issue.id}
+                              draggable
+                              className="cursor-grab active:cursor-grabbing"
+                              onDragStart={() => setDragged(issue)}
+                              onDragEnd={() => {
+                                setDragged(null)
+                                setDropState(null)
+                              }}
+                            >
+                              <IssueCard
+                                issue={issue}
+                                bootstrap={bootstrap}
+                                compact
+                                className="cursor-grab active:cursor-grabbing"
+                                onOpen={onOpenIssue}
+                                onStateChange={onMoveIssue}
+                              />
+                            </div>
+                          ))}
+                          <DoneLaneFooter
+                            totalCount={lane.items.length}
+                            visibleCount={visibleItems.length}
+                            onLoadMore={onLoadMore}
+                          />
+                        </>
+                      )}
+                    </DoneLaneProgress>
+                  ) : (
+                    lane.items.map((issue) => (
+                      <div
+                        key={issue.id}
+                        draggable
                         className="cursor-grab active:cursor-grabbing"
-                        onOpen={onOpenIssue}
-                        onStateChange={onMoveIssue}
-                      />
-                    </div>
-                  ))}
+                        onDragStart={() => setDragged(issue)}
+                        onDragEnd={() => {
+                          setDragged(null)
+                          setDropState(null)
+                        }}
+                      >
+                        <IssueCard
+                          issue={issue}
+                          bootstrap={bootstrap}
+                          compact
+                          className="cursor-grab active:cursor-grabbing"
+                          onOpen={onOpenIssue}
+                          onStateChange={onMoveIssue}
+                        />
+                      </div>
+                    ))
+                  )}
                   {lane.items.length === 0 ? (
                     <button
                       className="flex flex-1 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
