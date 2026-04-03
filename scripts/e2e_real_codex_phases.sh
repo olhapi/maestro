@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=./lib/e2e_real_codex_preflight.sh
+source "$ROOT_DIR/scripts/lib/e2e_real_codex_preflight.sh"
 HARNESS_ROOT="${E2E_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/maestro-real-codex-phases-e2e.XXXXXX")}"
 BIN_DIR="$HARNESS_ROOT/bin"
 ARTIFACTS_DIR="$HARNESS_ROOT/artifacts"
@@ -18,13 +20,6 @@ KEEP_HARNESS="${E2E_KEEP_HARNESS:-1}"
 ORCH_PID=""
 
 cd "$ROOT_DIR"
-
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "missing required command: $1" >&2
-    exit 1
-  fi
-}
 
 cleanup() {
   local exit_code="$?"
@@ -164,8 +159,10 @@ update_issue_description() {
   "$MAESTRO_BIN" issue update "$issue_id" --desc "$description" --db "$DB_PATH" >/dev/null
 }
 
+CODEX_COMMAND="${E2E_CODEX_COMMAND:-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd . --add-dir $(printf '%q' "$HARNESS_ROOT") -}"
+
 require_cmd go
-require_cmd codex
+require_command_from_shell_command "E2E_CODEX_COMMAND" "$CODEX_COMMAND"
 require_cmd git
 require_cmd sqlite3
 
@@ -174,7 +171,6 @@ mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$
 echo "Building Maestro binary into $MAESTRO_BIN"
 go build -o "$MAESTRO_BIN" ./cmd/maestro
 
-CODEX_COMMAND="${E2E_CODEX_COMMAND:-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd . --add-dir $(printf '%q' "$HARNESS_ROOT") -}"
 CODEX_COMMAND_YAML="$(yaml_quote "$CODEX_COMMAND")"
 
 cat >"$WORKFLOW_PATH" <<EOF
