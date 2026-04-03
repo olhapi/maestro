@@ -18,6 +18,7 @@ import (
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/olhapi/maestro/internal/agentruntime"
+	"github.com/olhapi/maestro/internal/kanban"
 	maestromcp "github.com/olhapi/maestro/internal/mcp"
 )
 
@@ -34,6 +35,10 @@ type options struct {
 	permissionPromptTool string
 	permissionMode       string
 	strictMCPConfig      string
+	interruptClass       string
+	interruptToolName    string
+	interruptDecision    string
+	interruptNote        string
 }
 
 type mcpConfigFile struct {
@@ -102,10 +107,24 @@ type executionObservation struct {
 	Session          agentruntime.Session `json:"session,omitempty"`
 }
 
+type runtimeEventsData struct {
+	Events []kanban.RuntimeEvent `json:"events"`
+}
+
 type dashboardSessionObservation struct {
 	Status     string `json:"status,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
 	Source     string `json:"source,omitempty"`
+}
+
+type interruptObservation struct {
+	Requested        bool                            `json:"requested"`
+	PendingCount     int                             `json:"pending_count,omitempty"`
+	Matched          bool                            `json:"matched"`
+	ResponseStatus   string                          `json:"response_status,omitempty"`
+	ResponseDecision string                          `json:"response_decision,omitempty"`
+	Cleared          bool                            `json:"cleared"`
+	Interaction      agentruntime.PendingInteraction `json:"interaction,omitempty"`
 }
 
 type probeEvidence struct {
@@ -137,9 +156,13 @@ type probeEvidence struct {
 	ListIssues struct {
 		Total int `json:"total"`
 	} `json:"list_issues"`
-	RuntimeSnapshot  map[string]interface{}      `json:"runtime_snapshot"`
+	RuntimeSnapshot map[string]interface{} `json:"runtime_snapshot"`
+	RuntimeEvents   struct {
+		Items []kanban.RuntimeEvent `json:"items,omitempty"`
+	} `json:"runtime_events"`
 	Execution        executionObservation        `json:"execution"`
 	DashboardSession dashboardSessionObservation `json:"dashboard_session"`
+	Interrupt        interruptObservation        `json:"interrupt"`
 	LiveSessionSeen  bool                        `json:"live_session_seen"`
 	LiveSessionKey   string                      `json:"live_session_key,omitempty"`
 	LiveSession      agentruntime.Session        `json:"live_session,omitempty"`
@@ -159,6 +182,10 @@ func main() {
 	flag.StringVar(&opts.permissionPromptTool, "permission-prompt-tool", "", "Permission prompt tool passed to Claude")
 	flag.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode passed to Claude")
 	flag.StringVar(&opts.strictMCPConfig, "strict-mcp-config", "", "Whether --strict-mcp-config was present")
+	flag.StringVar(&opts.interruptClass, "interrupt-classification", "", "Expected pending interrupt classification")
+	flag.StringVar(&opts.interruptToolName, "interrupt-tool-name", "", "Expected pending interrupt tool name")
+	flag.StringVar(&opts.interruptDecision, "interrupt-decision", "", "Decision to post back to the pending interrupt")
+	flag.StringVar(&opts.interruptNote, "interrupt-note", "", "Optional note to include with the pending interrupt response")
 	flag.Parse()
 
 	if err := run(opts); err != nil {
@@ -266,7 +293,7 @@ func run(opts options) error {
 	}
 	toolNames := sortedToolNames(tools.Tools)
 	evidence.Bridge.ToolNames = toolNames
-	for _, want := range []string{"server_info", "create_issue", "list_issues", "get_issue_execution", "get_runtime_snapshot", "list_sessions"} {
+	for _, want := range []string{"server_info", "create_issue", "list_issues", "get_issue_execution", "get_runtime_snapshot", "list_runtime_events", "list_sessions", "approval_prompt"} {
 		if !containsString(toolNames, want) {
 			return fmt.Errorf("expected tool %q in bridge surface, got %s", want, strings.Join(toolNames, ","))
 		}
@@ -338,6 +365,45 @@ func run(opts options) error {
 		evidence.LiveSessionKey = sessionKey
 		evidence.LiveSession = liveSession
 	}
+
+	if wantsInterruptObservation(opts) {
+		interrupt, pendingCount, err := waitForPendingInterrupt(ctx, entryBefore, issueIdentifier, strings.TrimSpace(opts.interruptClass), strings.TrimSpace(opts.interruptToolName))
+		if err != nil {
+			return err
+		}
+		if err := validatePendingInterrupt(interrupt, issueIdentifier, strings.TrimSpace(opts.interruptClass), strings.TrimSpace(opts.interruptToolName)); err != nil {
+			return err
+		}
+		evidence.Interrupt.Requested = true
+		evidence.Interrupt.PendingCount = pendingCount
+		evidence.Interrupt.Matched = true
+		evidence.Interrupt.Interaction = interrupt
+		if decision := strings.ToLower(strings.TrimSpace(opts.interruptDecision)); decision != "" {
+			status, err := respondToPendingInterrupt(entryBefore, interrupt.ID, agentruntime.PendingInteractionResponse{
+				Decision: decision,
+				Note:     strings.TrimSpace(opts.interruptNote),
+			})
+			if err != nil {
+				return err
+			}
+			evidence.Interrupt.ResponseStatus = status
+			evidence.Interrupt.ResponseDecision = decision
+			if err := waitForPendingInterruptClear(ctx, entryBefore, strings.TrimSpace(interrupt.ID)); err != nil {
+				return err
+			}
+			evidence.Interrupt.Cleared = true
+		}
+	}
+
+	runtimeEventsEnvelope, err := callToolEnvelope(ctx, client, "list_runtime_events", map[string]interface{}{"limit": 200})
+	if err != nil {
+		return fmt.Errorf("call list_runtime_events: %w", err)
+	}
+	var runtimeEvents runtimeEventsData
+	if err := decodeData(runtimeEventsEnvelope, &runtimeEvents); err != nil {
+		return fmt.Errorf("decode list_runtime_events: %w", err)
+	}
+	evidence.RuntimeEvents.Items = filterRuntimeEventsByIssue(runtimeEvents.Events, issueIdentifier)
 
 	entriesAfter, err := loadDaemonEntries(opts.registryDir)
 	if err != nil {
@@ -432,14 +498,20 @@ func validatePermissionFlags(opts options) error {
 	if strings.TrimSpace(opts.permissionMode) != "default" {
 		return fmt.Errorf("expected Claude permission mode default, got %q", opts.permissionMode)
 	}
-	if strings.TrimSpace(opts.allowedTools) != "Bash,Edit,Write,MultiEdit" {
-		return fmt.Errorf("expected allowed tools Bash,Edit,Write,MultiEdit, got %q", opts.allowedTools)
-	}
-	if strings.TrimSpace(opts.permissionPromptTool) != "" {
-		return fmt.Errorf("expected no permission prompt tool for full-access session, got %q", opts.permissionPromptTool)
-	}
 	if !strings.EqualFold(strings.TrimSpace(opts.strictMCPConfig), "true") {
 		return fmt.Errorf("expected strict-mcp-config=true, got %q", opts.strictMCPConfig)
+	}
+	switch promptTool := strings.TrimSpace(opts.permissionPromptTool); promptTool {
+	case "":
+		if strings.TrimSpace(opts.allowedTools) != "Bash,Edit,Write,MultiEdit" {
+			return fmt.Errorf("expected allowed tools Bash,Edit,Write,MultiEdit, got %q", opts.allowedTools)
+		}
+	case "mcp__maestro__approval_prompt":
+		if strings.TrimSpace(opts.allowedTools) != "" {
+			return fmt.Errorf("expected no allowed-tools when using the Maestro approval prompt, got %q", opts.allowedTools)
+		}
+	default:
+		return fmt.Errorf("expected supported permission prompt tool, got %q", opts.permissionPromptTool)
 	}
 	return nil
 }
@@ -687,31 +759,12 @@ func waitForDashboardSessionObservation(ctx context.Context, entry maestromcp.Da
 }
 
 func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIdentifier string) (dashboardSessionObservation, bool, error) {
-	baseURL := strings.TrimSpace(entry.BaseURL)
-	baseURL = strings.TrimSuffix(baseURL, "/mcp")
-	if baseURL == "" {
-		return dashboardSessionObservation{}, false, errors.New("daemon registry base_url missing")
-	}
-
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/app/sessions", nil)
+	body, statusCode, err := dashboardRequest(entry, http.MethodGet, "/api/v1/app/sessions", nil)
 	if err != nil {
 		return dashboardSessionObservation{}, false, err
 	}
-	if token := strings.TrimSpace(entry.BearerToken); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return dashboardSessionObservation{}, false, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return dashboardSessionObservation{}, false, fmt.Errorf("dashboard sessions returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return dashboardSessionObservation{}, false, err
+	if statusCode != http.StatusOK {
+		return dashboardSessionObservation{}, false, fmt.Errorf("dashboard sessions returned %d: %s", statusCode, strings.TrimSpace(string(body)))
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -733,6 +786,214 @@ func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIden
 		}, true, nil
 	}
 	return dashboardSessionObservation{}, false, nil
+}
+
+func wantsInterruptObservation(opts options) bool {
+	return firstNonEmpty(
+		strings.TrimSpace(opts.interruptClass),
+		strings.TrimSpace(opts.interruptToolName),
+		strings.TrimSpace(opts.interruptDecision),
+		strings.TrimSpace(opts.interruptNote),
+	) != ""
+}
+
+func waitForPendingInterrupt(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, classification, toolName string) (agentruntime.PendingInteraction, int, error) {
+	deadline := time.Now().Add(12 * time.Second)
+	for {
+		snapshot, err := fetchPendingInterrupts(entry)
+		if err == nil {
+			for _, item := range snapshot.Items {
+				if strings.TrimSpace(item.IssueIdentifier) != strings.TrimSpace(issueIdentifier) {
+					continue
+				}
+				if classification != "" && !strings.EqualFold(asString(item.Metadata["classification"]), classification) {
+					continue
+				}
+				if toolName != "" && !strings.EqualFold(asString(item.Metadata["tool_name"]), toolName) {
+					continue
+				}
+				return item.Clone(), len(snapshot.Items), nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return agentruntime.PendingInteraction{}, 0, fmt.Errorf("did not observe a matching pending interrupt for %s", issueIdentifier)
+		}
+		select {
+		case <-ctx.Done():
+			return agentruntime.PendingInteraction{}, 0, errors.New("did not observe a matching pending interrupt before context deadline")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func waitForPendingInterruptClear(ctx context.Context, entry maestromcp.DaemonEntry, interactionID string) error {
+	deadline := time.Now().Add(12 * time.Second)
+	for {
+		snapshot, err := fetchPendingInterrupts(entry)
+		if err == nil {
+			found := false
+			for _, item := range snapshot.Items {
+				if strings.TrimSpace(item.ID) == strings.TrimSpace(interactionID) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("pending interrupt %s did not clear", interactionID)
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("pending interrupt did not clear before context deadline")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func validatePendingInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, classification, toolName string) error {
+	if strings.TrimSpace(interaction.ID) == "" {
+		return errors.New("pending interrupt id missing")
+	}
+	if interaction.Kind != agentruntime.PendingInteractionKindApproval {
+		return fmt.Errorf("expected approval interrupt, got %q", interaction.Kind)
+	}
+	if strings.TrimSpace(interaction.Method) != "approval_prompt" {
+		return fmt.Errorf("expected approval_prompt interrupt method, got %q", interaction.Method)
+	}
+	if strings.TrimSpace(interaction.IssueIdentifier) != strings.TrimSpace(issueIdentifier) {
+		return fmt.Errorf("expected interrupt issue %q, got %q", issueIdentifier, interaction.IssueIdentifier)
+	}
+	if strings.TrimSpace(interaction.RequestID) == "" || strings.TrimSpace(interaction.ItemID) == "" {
+		return fmt.Errorf("expected interrupt request and item ids, got %+v", interaction)
+	}
+	if interaction.Approval == nil {
+		return errors.New("expected approval payload on pending interrupt")
+	}
+	if strings.TrimSpace(interaction.Approval.Command) == "" {
+		return errors.New("expected approval command on pending interrupt")
+	}
+	if strings.TrimSpace(interaction.Approval.CWD) == "" {
+		return errors.New("expected approval cwd on pending interrupt")
+	}
+	if strings.TrimSpace(interaction.Approval.Reason) == "" {
+		return errors.New("expected approval reason on pending interrupt")
+	}
+	if strings.TrimSpace(interaction.Approval.Markdown) == "" {
+		return errors.New("expected approval markdown on pending interrupt")
+	}
+	if len(interaction.Approval.Decisions) == 0 {
+		return errors.New("expected approval decisions on pending interrupt")
+	}
+	if source := strings.TrimSpace(asString(interaction.Metadata["source"])); source != "claude_permission_prompt" {
+		return fmt.Errorf("expected claude_permission_prompt source, got %q", source)
+	}
+	if classification != "" && !strings.EqualFold(asString(interaction.Metadata["classification"]), classification) {
+		return fmt.Errorf("expected interrupt classification %q, got %q", classification, asString(interaction.Metadata["classification"]))
+	}
+	if toolName != "" && !strings.EqualFold(asString(interaction.Metadata["tool_name"]), toolName) {
+		return fmt.Errorf("expected interrupt tool %q, got %q", toolName, asString(interaction.Metadata["tool_name"]))
+	}
+	if strings.TrimSpace(asString(interaction.Metadata["workspace_path"])) == "" {
+		return errors.New("expected interrupt workspace_path metadata")
+	}
+	if _, ok := interaction.Metadata["input"]; !ok {
+		return errors.New("expected interrupt input metadata")
+	}
+	requestMeta, ok := interaction.Metadata["request_meta"].(map[string]interface{})
+	if !ok {
+		return errors.New("expected interrupt request_meta payload")
+	}
+	if firstNonEmpty(
+		strings.TrimSpace(asString(requestMeta["claudecode/toolUseId"])),
+		strings.TrimSpace(asString(requestMeta["claude/toolUseId"])),
+	) == "" {
+		return errors.New("expected request_meta toolUseId correlation")
+	}
+	return nil
+}
+
+func fetchPendingInterrupts(entry maestromcp.DaemonEntry) (agentruntime.PendingInteractionSnapshot, error) {
+	body, statusCode, err := dashboardRequest(entry, http.MethodGet, "/api/v1/app/interrupts", nil)
+	if err != nil {
+		return agentruntime.PendingInteractionSnapshot{}, err
+	}
+	if statusCode != http.StatusOK {
+		return agentruntime.PendingInteractionSnapshot{}, fmt.Errorf("dashboard interrupts returned %d: %s", statusCode, strings.TrimSpace(string(body)))
+	}
+	var snapshot agentruntime.PendingInteractionSnapshot
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		return agentruntime.PendingInteractionSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func respondToPendingInterrupt(entry maestromcp.DaemonEntry, interactionID string, response agentruntime.PendingInteractionResponse) (string, error) {
+	body, statusCode, err := dashboardRequest(entry, http.MethodPost, "/api/v1/app/interrupts/"+strings.TrimSpace(interactionID)+"/respond", response)
+	if err != nil {
+		return "", err
+	}
+	if statusCode != http.StatusAccepted {
+		return "", fmt.Errorf("dashboard interrupt respond returned %d: %s", statusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(payload.Status), nil
+}
+
+func dashboardRequest(entry maestromcp.DaemonEntry, method, path string, payload interface{}) ([]byte, int, error) {
+	baseURL := strings.TrimSuffix(strings.TrimSpace(entry.BaseURL), "/mcp")
+	if baseURL == "" {
+		return nil, 0, errors.New("daemon registry base_url missing")
+	}
+	var body io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return nil, 0, err
+		}
+		body = strings.NewReader(string(data))
+	}
+	req, err := http.NewRequest(method, baseURL+path, body)
+	if err != nil {
+		return nil, 0, err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token := strings.TrimSpace(entry.BearerToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, resp.StatusCode, nil
+}
+
+func filterRuntimeEventsByIssue(events []kanban.RuntimeEvent, issueIdentifier string) []kanban.RuntimeEvent {
+	if strings.TrimSpace(issueIdentifier) == "" {
+		return append([]kanban.RuntimeEvent(nil), events...)
+	}
+	filtered := make([]kanban.RuntimeEvent, 0, len(events))
+	for _, event := range events {
+		if strings.TrimSpace(event.Identifier) != strings.TrimSpace(issueIdentifier) {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered
 }
 
 func boolFromMap(raw map[string]interface{}, key string) bool {
@@ -795,11 +1056,23 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		"execution_thread_id=" + strings.TrimSpace(evidence.Execution.Session.ThreadID),
 		"execution_provider_session_id=" + strings.TrimSpace(asString(evidence.Execution.Session.Metadata["provider_session_id"])),
 		"expected_tools_present=true",
+		fmt.Sprintf("interrupt_cleared=%t", evidence.Interrupt.Cleared),
+		"interrupt_classification=" + strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["classification"])),
+		"interrupt_id=" + strings.TrimSpace(evidence.Interrupt.Interaction.ID),
+		"interrupt_kind=" + string(evidence.Interrupt.Interaction.Kind),
+		fmt.Sprintf("interrupt_pending_count=%d", evidence.Interrupt.PendingCount),
+		fmt.Sprintf("interrupt_requested=%t", evidence.Interrupt.Requested),
+		"interrupt_response_decision=" + evidence.Interrupt.ResponseDecision,
+		"interrupt_response_status=" + evidence.Interrupt.ResponseStatus,
+		"interrupt_source=" + strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["source"])),
+		"interrupt_tool_name=" + strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["tool_name"])),
 		"issue_identifier=" + evidence.IssueIdentifier,
 		fmt.Sprintf("live_claude_session_seen=%t", evidence.LiveSessionSeen),
 		"mode=" + evidence.Mode,
 		"permission_mode=" + evidence.Bridge.PermissionMode,
 		"permission_prompt_tool=" + evidence.Bridge.PermissionPromptTool,
+		fmt.Sprintf("runtime_event_count=%d", len(evidence.RuntimeEvents.Items)),
+		"runtime_event_kinds=" + strings.Join(runtimeEventKinds(evidence.RuntimeEvents.Items), ","),
 		fmt.Sprintf("server_db_path=%s", evidence.ServerInfo.Meta.DBPath),
 		fmt.Sprintf("server_store_id=%s", evidence.ServerInfo.Meta.StoreID),
 		fmt.Sprintf("settings_disable_all_hooks=%t", evidence.Settings.DisableAllHooks),
@@ -811,6 +1084,7 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		"tool_call_get_issue_execution=ok",
 		"tool_call_get_runtime_snapshot=ok",
 		"tool_call_list_issues=ok",
+		"tool_call_list_runtime_events=ok",
 		"tool_call_list_sessions=ok",
 		"tool_call_server_info=ok",
 		"tool_names=" + strings.Join(evidence.Bridge.ToolNames, ","),
@@ -819,6 +1093,17 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		return fmt.Errorf("write summary evidence: %w", err)
 	}
 	return nil
+}
+
+func runtimeEventKinds(events []kanban.RuntimeEvent) []string {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(events))
+	for _, event := range events {
+		out = append(out, strings.TrimSpace(event.Kind))
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {
