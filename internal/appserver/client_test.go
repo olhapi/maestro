@@ -1283,21 +1283,50 @@ func TestRunStopsWaitingIfAppServerExitsDuringInteraction(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	scenario := baseScenario("thread-exit-wait", "turn-exit-wait",
-		fakeappserver.Output{
-			JSON: map[string]interface{}{
-				"id":     140,
-				"method": "item/commandExecution/requestApproval",
-				"params": map[string]interface{}{
-					"threadId": "thread-exit-wait",
-					"turnId":   "turn-exit-wait",
-					"itemId":   "approval-item-exit",
-					"command":  "git status",
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id":     1,
+						"result": map[string]interface{}{},
+					},
+				}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id": 2,
+						"result": map[string]interface{}{
+							"thread": map[string]interface{}{"id": "thread-exit-wait"},
+						},
+					},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				// Emit the request before any turn/start response so awaitResponse has to dispatch it.
+				Emit: []fakeappserver.Output{
+					{
+						JSON: map[string]interface{}{
+							"id":     140,
+							"method": "item/commandExecution/requestApproval",
+							"params": map[string]interface{}{
+								"threadId": "thread-exit-wait",
+								"turnId":   "turn-exit-wait",
+								"itemId":   "approval-item-exit",
+								"command":  "git status",
+							},
+						},
+					},
 				},
+				ExitCode: fakeappserver.Int(1),
 			},
 		},
-	)
-	scenario.Steps[3].ExitCode = fakeappserver.Int(1)
+	}
 	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
 	interrupts := make(chan PendingInteraction, 1)
 	doneIDs := make(chan string, 1)

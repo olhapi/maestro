@@ -689,6 +689,15 @@ func (c *Client) awaitResponse(ctx context.Context, requestID int) (protocol.Mes
 			continue
 		}
 		c.captureEvent(line, payload)
+		if payload.Method != "" {
+			handled, err := c.handleRequest(ctx, payload)
+			if err != nil {
+				return protocol.Message{}, err
+			}
+			if handled {
+				continue
+			}
+		}
 		if payload.IsResponseTo(requestID) {
 			if payload.Error != nil {
 				return protocol.Message{}, &RunError{Kind: "response_error", Payload: payload.Raw, Err: fmt.Errorf("%v", payload.Error)}
