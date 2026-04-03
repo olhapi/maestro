@@ -9,6 +9,7 @@ source "$ROOT_DIR/scripts/lib/e2e_real_claude_harness.sh"
 trap cleanup EXIT INT TERM
 
 CLAUDE_COMMAND="${E2E_CLAUDE_COMMAND:-claude}"
+CODEX_COMMAND="$(default_codex_command)"
 CLAUDE_COMMAND_YAML="$(yaml_quote "$CLAUDE_COMMAND")"
 EXPECTED_ARTIFACT_NAME="claude-artifact.txt"
 EXPECTED_ARTIFACT_TEXT="maestro claude e2e ok"
@@ -17,11 +18,14 @@ cd "$ROOT_DIR"
 
 require_cmd go
 require_command_string "Claude" "$CLAUDE_COMMAND"
+require_command_string "Codex" "$CODEX_COMMAND"
 require_cmd git
 require_cmd sqlite3
 
 ensure_harness_dirs
 build_maestro
+
+run_claude_workflow_init "$CODEX_COMMAND"
 
 cat >"$WORKFLOW_PATH" <<EOF
 ---
@@ -86,7 +90,9 @@ Requirements:
 EOF
 
 init_harness_repo "$HARNESS_ROOT"
+run_claude_spec_check
 run_claude_verify
+run_claude_doctor
 
 PROJECT_ID="$("$MAESTRO_BIN" project create "Real Claude E2E Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
 start_project "$PROJECT_ID"

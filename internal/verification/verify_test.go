@@ -382,50 +382,64 @@ func TestRunVerificationReportsClaudeAuthPrecedence(t *testing.T) {
 
 func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
 	cases := []struct {
-		name         string
-		command      string
-		settingsJSON string
-		wantCheck    string
-		wantReason   string
+		name            string
+		command         string
+		settingsJSON    string
+		wantCheck       string
+		wantReason      string
+		wantRemediation string
 	}{
 		{
-			name:       "bare flag",
-			command:    "claude --bare",
-			wantCheck:  "claude_session_bare_mode",
-			wantReason: "runtime command includes `--bare`",
+			name:            "bare flag",
+			command:         "claude --bare",
+			wantCheck:       "claude_session_bare_mode",
+			wantReason:      "runtime command includes `--bare`",
+			wantRemediation: "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
 		},
 		{
-			name:       "permission bypass",
-			command:    "claude --permission-mode bypassPermissions",
-			wantCheck:  "claude_session_bare_mode",
-			wantReason: "runtime command sets `--permission-mode bypassPermissions`",
+			name:            "permission bypass",
+			command:         "claude --permission-mode bypassPermissions",
+			wantCheck:       "claude_session_bare_mode",
+			wantReason:      "runtime command sets `--permission-mode bypassPermissions`",
+			wantRemediation: "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
 		},
 		{
-			name:       "permission auto",
-			command:    "claude --permission-mode auto",
-			wantCheck:  "claude_session_bare_mode",
-			wantReason: "runtime command sets `--permission-mode auto`",
+			name:            "permission auto",
+			command:         "claude --permission-mode auto",
+			wantCheck:       "claude_session_bare_mode",
+			wantReason:      "runtime command sets `--permission-mode auto`",
+			wantRemediation: "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
 		},
 		{
-			name:         "settings default mode",
-			command:      "claude",
-			settingsJSON: `{"permissions":{"defaultMode":"bypassPermissions"}}`,
-			wantCheck:    "claude_session_bare_mode",
-			wantReason:   "Claude settings set `permissions.defaultMode: bypassPermissions`",
+			name:            "settings default mode",
+			command:         "claude",
+			settingsJSON:    `{"permissions":{"defaultMode":"bypassPermissions"}}`,
+			wantCheck:       "claude_session_bare_mode",
+			wantReason:      "Claude settings set `permissions.defaultMode: bypassPermissions`",
+			wantRemediation: "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
 		},
 		{
-			name:         "settings auto mode",
-			command:      "claude",
-			settingsJSON: `{"permissions":{"defaultMode":"auto"}}`,
-			wantCheck:    "claude_session_bare_mode",
-			wantReason:   "Claude settings set `permissions.defaultMode: auto`",
+			name:            "settings auto mode",
+			command:         "claude",
+			settingsJSON:    `{"permissions":{"defaultMode":"auto"}}`,
+			wantCheck:       "claude_session_bare_mode",
+			wantReason:      "Claude settings set `permissions.defaultMode: auto`",
+			wantRemediation: "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
 		},
 		{
-			name:         "additional directories",
-			command:      "claude",
-			settingsJSON: `{"permissions":{"additionalDirectories":["../docs"]}}`,
-			wantCheck:    "claude_session_additional_directories",
-			wantReason:   "../docs",
+			name:            "additional directories",
+			command:         "claude",
+			settingsJSON:    `{"permissions":{"additionalDirectories":["../docs"]}}`,
+			wantCheck:       "claude_session_additional_directories",
+			wantReason:      "../docs",
+			wantRemediation: "Remove `additionalDirectories` or `--add-dir` from Claude configuration so the session stays scoped to the Maestro workspace.",
+		},
+		{
+			name:            "command add-dir",
+			command:         "claude --add-dir=../docs",
+			wantCheck:       "claude_session_additional_directories",
+			wantReason:      "../docs",
+			wantRemediation: "Remove `additionalDirectories` or `--add-dir` from Claude configuration so the session stays scoped to the Maestro workspace.",
 		},
 	}
 
@@ -457,14 +471,147 @@ func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
 					t.Fatalf("expected errors to mention %q, got %+v", tc.wantReason, res.Errors)
 				}
 			}
+			if got := res.Remediation[tc.wantCheck]; got != tc.wantRemediation {
+				t.Fatalf("expected remediation %q, got %q", tc.wantRemediation, got)
+			}
 		})
 	}
 }
 
-func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
+func TestRunVerificationFailsOnClaudeAuthAndBinaryWithRemediation(t *testing.T) {
+	t.Run("auth", func(t *testing.T) {
+		tmp := t.TempDir()
+		writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+		writeFakeClaude(t, tmp, "1.2.3")
+		if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixtureWithClaude("claude")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("FAKE_CLAUDE_AUTH_STATUS_JSON", `{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstParty"}`)
+
+		res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+		if res.OK {
+			t.Fatalf("expected rejected auth to fail readiness, got %+v", res)
+		}
+		if got := res.Checks["claude_auth_source_status"]; got != "fail" {
+			t.Fatalf("expected auth status fail, got %q checks=%+v", got, res.Checks)
+		}
+		if got := res.Remediation["claude_auth_source"]; got != "Log in with Claude Code or configure a supported auth source, then re-run `maestro verify`." {
+			t.Fatalf("unexpected auth remediation: %q", got)
+		}
+	})
+
+	t.Run("missing binary", func(t *testing.T) {
+		tmp := t.TempDir()
+		writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+		if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixtureWithClaude("missing-claude")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+		if res.OK {
+			t.Fatalf("expected missing Claude binary to fail readiness, got %+v", res)
+		}
+		if got := res.Checks["claude_version_status"]; got != "fail" {
+			t.Fatalf("expected version status fail, got %q checks=%+v", got, res.Checks)
+		}
+		if got := res.Remediation["claude"]; got != "Install Claude Code or update `runtime.claude.command` in WORKFLOW.md, then re-run `maestro verify`." {
+			t.Fatalf("unexpected Claude remediation: %q", got)
+		}
+	})
+}
+
+func TestRunVerificationSupportsPinnedNPXCodexCommand(t *testing.T) {
+	resetRuntimeVersionCache(t)
 	tmp := t.TempDir()
 	npxPath := filepath.Join(tmp, "npx")
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"-y\" ]; then\n" +
+		"  echo \"unexpected npx args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"@openai/codex@0.118.0\" ]; then\n" +
+		"  echo \"unexpected package: $1\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"--version\" ]; then\n" +
+		"  echo \"unexpected version probe args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"printf 'codex-cli 0.118.0\\n'\n"
+	if err := os.WriteFile(npxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeClaude(t, tmp, "1.2.3")
+
+	workflow := `---
+tracker:
+  kind: kanban
+runtime:
+  default: codex-appserver
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: npx -y @openai/codex@0.118.0 app-server
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: codex exec
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if !res.OK {
+		t.Fatalf("expected pinned npx Codex command to pass, got %+v", res)
+	}
+	if got := res.Checks["runtime_codex_appserver_version"]; got != "ok" {
+		t.Fatalf("expected Codex version ok, got %q checks=%+v", got, res.Checks)
+	}
+	if got := res.Checks["runtime_default"]; got != "ok" {
+		t.Fatalf("expected runtime_default ok, got %q checks=%+v", got, res.Checks)
+	}
+}
+
+func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
+	resetRuntimeVersionCache(t)
+	tmp := t.TempDir()
+	npxPath := filepath.Join(tmp, "npx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"-y\" ]; then\n" +
+		"  echo \"unexpected npx args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"@openai/codex@0.118.0\" ]; then\n" +
+		"  echo \"unexpected package: $1\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
 		"if [ \"$1\" != \"--version\" ]; then\n" +
 		"  echo \"unexpected version probe args: $*\" >&2\n" +
 		"  exit 1\n" +

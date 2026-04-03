@@ -12,6 +12,7 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -374,6 +375,13 @@ type runtimeVersionStatus struct {
 
 func detectRuntimeVersion(command string) (runtimeVersionStatus, error) {
 	status := runtimeVersionStatus{Command: strings.TrimSpace(command)}
+	if codexStatus, err := appserver.DetectCodexVersion(command); err != nil || codexStatus.ExecutablePath != "" {
+		return runtimeVersionStatus{
+			Command:        codexStatus.Command,
+			ExecutablePath: codexStatus.ExecutablePath,
+			Actual:         codexStatus.Actual,
+		}, err
+	}
 	executable := runtimeExecutableFromCommand(command)
 	if executable == "" {
 		return status, nil

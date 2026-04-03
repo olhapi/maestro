@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/olhapi/maestro/internal/codexschema"
@@ -81,6 +82,18 @@ runtime:
 ---
 ` + prompt + `
 `
+}
+
+func workflowFixtureWithClaudeDefault(version, provider, transport string) string {
+	workflow := workflowFixture(version)
+	workflow = strings.Replace(workflow, "  default: codex-appserver\n", "  default: claude\n", 1)
+	workflow = strings.Replace(
+		workflow,
+		"  claude:\n    provider: claude\n    transport: stdio\n",
+		"  claude:\n    provider: "+provider+"\n    transport: "+transport+"\n",
+		1,
+	)
+	return workflow
 }
 
 func writeWorkflow(t *testing.T, root, content string) {
@@ -217,6 +230,47 @@ func TestRunReportsSuccess(t *testing.T) {
 		if report.Checks[key] != "ok" {
 			t.Fatalf("expected %s to be ok, got %+v", key, report.Checks)
 		}
+	}
+}
+
+func TestRunSupportsClaudeDefaultRuntime(t *testing.T) {
+	root := tempRepoRoot(t)
+	writeWorkflow(t, root, workflowFixtureWithClaudeDefault(codexschema.SupportedVersion, "claude", "stdio"))
+	writeFakeCodex(t, root, "1.2.3")
+
+	report := Run(root)
+	if !report.OK {
+		t.Fatalf("expected Claude default runtime to pass, got %+v", report.Checks)
+	}
+	if report.Checks["workflow_version"] != "ok" {
+		t.Fatalf("expected workflow_version to pass for Claude default, got %+v", report.Checks)
+	}
+}
+
+func TestRunRejectsUnsupportedClaudeDefaultRuntimeModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		provider  string
+		transport string
+	}{
+		{name: "provider", provider: "other", transport: "stdio"},
+		{name: "transport", provider: "claude", transport: "grpc"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := tempRepoRoot(t)
+			writeWorkflow(t, root, workflowFixtureWithClaudeDefault(codexschema.SupportedVersion, tc.provider, tc.transport))
+			writeFakeCodex(t, root, "1.2.3")
+
+			report := Run(root)
+			if report.OK {
+				t.Fatalf("expected unsupported Claude runtime model to fail, got %+v", report.Checks)
+			}
+			if report.Checks["workflow_load"] != "fail" && report.Checks["workflow_version"] != "fail" {
+				t.Fatalf("expected workflow validation to fail, got %+v", report.Checks)
+			}
+		})
 	}
 }
 
