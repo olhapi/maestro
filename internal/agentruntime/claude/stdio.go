@@ -74,7 +74,7 @@ func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers)
 		IssueIdentifier: spec.IssueIdentifier,
 		SessionID:       resumeToken,
 		ThreadID:        resumeToken,
-		Metadata:        runtimeMetadata(resumeToken),
+		Metadata:        runtimeMetadataWithExtras(resumeToken, spec.Metadata),
 		MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
 	}
 
@@ -457,7 +457,7 @@ func (c *stdioClient) finishTurnLocked(state *claudeTurnState, stdoutRaw, stderr
 		}
 	}
 	if c.session.Metadata == nil {
-		c.session.Metadata = runtimeMetadata(sessionID)
+		c.session.Metadata = runtimeMetadataWithExtras(sessionID, c.spec.Metadata)
 	}
 	if sessionID != "" {
 		c.session.Metadata["provider_session_id"] = sessionID
@@ -506,7 +506,7 @@ func (c *stdioClient) finishTurnLocked(state *claudeTurnState, stdoutRaw, stderr
 				"phase": "final_answer",
 				"text":  output,
 			},
-			Metadata: runtimeMetadata(sessionID),
+			Metadata: runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
 		})
 	}
 	c.emitActivity(agentruntime.ActivityEvent{
@@ -518,7 +518,7 @@ func (c *stdioClient) finishTurnLocked(state *claudeTurnState, stdoutRaw, stderr
 		InputTokens:  state.inputTokens,
 		OutputTokens: state.outputTokens,
 		TotalTokens:  state.totalTokens,
-		Metadata:     runtimeMetadata(sessionID),
+		Metadata:     runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
 	})
 	c.emitSessionUpdate(session)
 
@@ -587,7 +587,7 @@ func (c *stdioClient) recordClaudeStreamDelta(state *claudeTurnState, delta stri
 				"phase": phase,
 				"text":  text,
 			},
-			Metadata: runtimeMetadata(sessionID),
+			Metadata: runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
 		})
 	} else {
 		c.emitActivity(agentruntime.ActivityEvent{
@@ -598,7 +598,7 @@ func (c *stdioClient) recordClaudeStreamDelta(state *claudeTurnState, delta stri
 			ItemType:  "agentMessage",
 			ItemPhase: phase,
 			Delta:     delta,
-			Metadata:  runtimeMetadata(sessionID),
+			Metadata:  runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
 		})
 	}
 	c.emitSessionUpdate(session)
@@ -661,7 +661,7 @@ func (c *stdioClient) recordClaudeSessionIDLocked(sessionID string) {
 
 func (c *stdioClient) syncClaudeMetadataLocked(sessionID string) {
 	if c.session.Metadata == nil {
-		c.session.Metadata = runtimeMetadata(sessionID)
+		c.session.Metadata = runtimeMetadataWithExtras(sessionID, c.spec.Metadata)
 	}
 	c.session.Metadata["session_identifier_strategy"] = claudeSessionIdentifierStrategy
 	if sessionID != "" {
@@ -671,7 +671,7 @@ func (c *stdioClient) syncClaudeMetadataLocked(sessionID string) {
 
 func (c *stdioClient) normalizeClaudeSessionIdentityLocked() {
 	if c.session.Metadata == nil {
-		c.session.Metadata = runtimeMetadata("")
+		c.session.Metadata = runtimeMetadataWithExtras("", c.spec.Metadata)
 	}
 	c.session.Metadata["provider"] = string(agentruntime.ProviderClaude)
 	c.session.Metadata["transport"] = string(agentruntime.TransportStdio)
@@ -1112,10 +1112,17 @@ func combineOutput(stdout, stderr string) string {
 }
 
 func runtimeMetadata(sessionID string) map[string]interface{} {
+	return runtimeMetadataWithExtras(sessionID, nil)
+}
+
+func runtimeMetadataWithExtras(sessionID string, extra map[string]interface{}) map[string]interface{} {
 	metadata := map[string]interface{}{
 		"provider":                    string(agentruntime.ProviderClaude),
 		"transport":                   string(agentruntime.TransportStdio),
 		"session_identifier_strategy": claudeSessionIdentifierStrategy,
+	}
+	for key, value := range extra {
+		metadata[key] = value
 	}
 	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
 		metadata["provider_session_id"] = sessionID

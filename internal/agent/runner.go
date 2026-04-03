@@ -1289,7 +1289,7 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 		}
 		planMode = strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
 		consumePlanRevision := turn == 1 && planMode && issueHasPendingPlanRevision(issue)
-		input, err := r.prepareRuntimeTurnInput(client.Capabilities(), workspacePath, issue, prepared.Prompt, turn == 1)
+		input, err := r.prepareRuntimeTurnInput(client.Capabilities(), runtimeSelection.Name, workspacePath, issue, prepared.Prompt, turn == 1)
 		if err != nil {
 			return &RunResult{
 				Success:    false,
@@ -1412,6 +1412,9 @@ func (r *Runner) startRuntimeClient(ctx context.Context, workflow *config.Workfl
 			}
 			return r.store.DBPath()
 		}(),
+		Metadata: map[string]interface{}{
+			"runtime_name": runtime.Name,
+		},
 	}, agentruntime.Observers{
 		OnSessionUpdate: func(session *agentruntime.Session) {
 			if r.sessionObserver == nil || issue == nil || session == nil {
@@ -1564,12 +1567,23 @@ func (r *Runner) currentWorkflowIssue(workflow *config.Workflow, issue *kanban.I
 	return workflow, refreshed, nil
 }
 
-func (r *Runner) prepareRuntimeTurnInput(capabilities agentruntime.Capabilities, workspacePath string, issue *kanban.Issue, prompt string, includeImages bool) ([]agentruntime.InputItem, error) {
+func (r *Runner) prepareRuntimeTurnInput(capabilities agentruntime.Capabilities, runtimeName, workspacePath string, issue *kanban.Issue, prompt string, includeImages bool) ([]agentruntime.InputItem, error) {
 	input := []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: prompt}}
-	if !capabilities.SupportsLocalImageInput() {
+	if !includeImages || issue == nil {
 		return input, nil
 	}
-	if !includeImages || issue == nil {
+	if !capabilities.SupportsLocalImageInput() {
+		hasImages, err := r.issueHasImageAssets(issue)
+		if err != nil {
+			return nil, err
+		}
+		if hasImages {
+			name := strings.TrimSpace(runtimeName)
+			if name == "" {
+				name = "selected runtime"
+			}
+			return nil, fmt.Errorf("%w: issue %s has image attachments, but runtime %q does not support local_image input; remove the issue image or switch to a runtime with local_image support", agentruntime.ErrUnsupportedCapability, issue.Identifier, name)
+		}
 		return input, nil
 	}
 
@@ -1578,6 +1592,22 @@ func (r *Runner) prepareRuntimeTurnInput(capabilities agentruntime.Capabilities,
 		return nil, err
 	}
 	return append(input, imageInput...), nil
+}
+
+func (r *Runner) issueHasImageAssets(issue *kanban.Issue) (bool, error) {
+	if issue == nil {
+		return false, nil
+	}
+	assets, err := r.store.ListIssueAssets(issue.ID)
+	if err != nil {
+		return false, fmt.Errorf("load issue assets for %s: %w", issue.Identifier, err)
+	}
+	for _, asset := range assets {
+		if strings.HasPrefix(strings.TrimSpace(asset.ContentType), "image/") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *Runner) stageIssueAssetsForRuntime(workspacePath string, issue *kanban.Issue) ([]agentruntime.InputItem, error) {

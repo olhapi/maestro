@@ -2213,6 +2213,8 @@ func pausesWithoutStateReset(errText string) bool {
 		return true
 	case strings.Contains(value, "workspace_bootstrap"):
 		return true
+	case strings.Contains(value, "unsupported_runtime_capability"):
+		return true
 	default:
 		return false
 	}
@@ -3799,6 +3801,9 @@ func (o *Orchestrator) executionSessionRuntimeIdentity(issue *kanban.Issue, sess
 		}
 	}
 	if session != nil && session.Metadata != nil {
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["runtime_name"])); value != "" {
+			name = value
+		}
 		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["provider"])); value != "" {
 			provider = value
 		}

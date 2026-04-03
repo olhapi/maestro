@@ -153,6 +153,8 @@ The supported Claude runtime entry in `WORKFLOW.md` is:
 
 The dashboard and API surface the runtime identity as `runtime_name`, `runtime_provider`, `runtime_transport`, `runtime_auth_source`, `pending_interaction_state`, and `stop_reason`. Use those fields to distinguish Claude and Codex runs. `session_source` only tells you whether the row came from a live snapshot or a persisted snapshot.
 
+For failures, use `failure_class` plus `current_error` together. Claude guardrail failures that are out of contract, such as unsupported `local_image` delivery, surface as `failure_class=unsupported_runtime_capability` while `current_error` keeps the specific remediation text.
+
 ### Ambient Auth
 
 `maestro verify` reports Claude auth readiness through three checks:

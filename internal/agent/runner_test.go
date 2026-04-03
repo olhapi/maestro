@@ -2721,6 +2721,63 @@ func TestRunAgentAppServerFailsWhenIssueAssetStagingFails(t *testing.T) {
 	}
 }
 
+func TestRunAgentClaudeFailsWhenIssueImagesRequireUnsupportedLocalImageInput(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+
+	workflowData, err := os.ReadFile(manager.Path())
+	if err != nil {
+		t.Fatalf("ReadFile workflow: %v", err)
+	}
+	updated := strings.Replace(string(workflowData), "default: codex-stdio", "default: claude", 1)
+	if updated == string(workflowData) {
+		t.Fatal("expected workflow to contain the codex-stdio default")
+	}
+	if err := os.WriteFile(manager.Path(), []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatalf("Refresh workflow: %v", err)
+	}
+
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Unsupported Claude image input", "", 0, nil)
+	if _, err := store.CreateIssueAsset(issue.ID, "prompt.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
+		t.Fatalf("CreateIssueAsset: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Success || result.Error == nil {
+		t.Fatalf("expected unsupported local_image failure, got %+v", result)
+	}
+	for _, want := range []string{
+		"unsupported_runtime_capability",
+		issue.Identifier,
+		`runtime "claude"`,
+		"local_image",
+	} {
+		if !strings.Contains(result.Error.Error(), want) {
+			t.Fatalf("expected error to mention %q, got %v", want, result.Error)
+		}
+	}
+	if result.AppSession == nil {
+		t.Fatalf("expected Claude session snapshot on failure, got %+v", result)
+	}
+	if got := result.AppSession.Metadata["provider"]; got != "claude" {
+		t.Fatalf("expected Claude provider metadata, got %+v", result.AppSession.Metadata)
+	}
+
+	workspace, err := store.GetWorkspace(issue.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	stagedDir := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueAssetStageDir))
+	if _, err := os.Stat(stagedDir); !os.IsNotExist(err) {
+		t.Fatalf("expected unsupported image failure to avoid staging issue assets, got %v", err)
+	}
+}
+
 func TestRunAgentAppServerDoesNotResendImageAssetsOnContinuationTurn(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "trace.log")
 	t.Setenv("TRACE_FILE", traceFile)
