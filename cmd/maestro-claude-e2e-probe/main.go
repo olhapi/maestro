@@ -35,8 +35,11 @@ type options struct {
 	permissionPromptTool string
 	permissionMode       string
 	strictMCPConfig      string
+	interruptApprovalType string
 	interruptClass       string
 	interruptToolName    string
+	interruptPlanStatus  string
+	interruptPlanVersion int
 	interruptDecision    string
 	interruptNote        string
 }
@@ -127,6 +130,26 @@ type interruptObservation struct {
 	Interaction      agentruntime.PendingInteraction `json:"interaction,omitempty"`
 }
 
+type issueObservation struct {
+	State                     string `json:"state,omitempty"`
+	PermissionProfile         string `json:"permission_profile,omitempty"`
+	CollaborationModeOverride string `json:"collaboration_mode_override,omitempty"`
+	PlanApprovalPending       bool   `json:"plan_approval_pending"`
+	PendingPlanRevisionNote   string `json:"pending_plan_revision_note,omitempty"`
+}
+
+type planningObservation struct {
+	Present                    bool   `json:"present"`
+	SessionID                  string `json:"session_id,omitempty"`
+	Status                     string `json:"status,omitempty"`
+	VersionCount               int    `json:"version_count,omitempty"`
+	CurrentVersionNumber       int    `json:"current_version_number,omitempty"`
+	CurrentVersionRevisionNote string `json:"current_version_revision_note,omitempty"`
+	CurrentVersionThreadID     string `json:"current_version_thread_id,omitempty"`
+	CurrentVersionTurnID       string `json:"current_version_turn_id,omitempty"`
+	PendingRevisionNote        string `json:"pending_revision_note,omitempty"`
+}
+
 type probeEvidence struct {
 	Mode            string `json:"mode,omitempty"`
 	IssueIdentifier string `json:"issue_identifier,omitempty"`
@@ -163,6 +186,8 @@ type probeEvidence struct {
 	Execution        executionObservation        `json:"execution"`
 	DashboardSession dashboardSessionObservation `json:"dashboard_session"`
 	Interrupt        interruptObservation        `json:"interrupt"`
+	Issue            issueObservation            `json:"issue"`
+	Planning         planningObservation         `json:"planning"`
 	LiveSessionSeen  bool                        `json:"live_session_seen"`
 	LiveSessionKey   string                      `json:"live_session_key,omitempty"`
 	LiveSession      agentruntime.Session        `json:"live_session,omitempty"`
@@ -182,8 +207,11 @@ func main() {
 	flag.StringVar(&opts.permissionPromptTool, "permission-prompt-tool", "", "Permission prompt tool passed to Claude")
 	flag.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode passed to Claude")
 	flag.StringVar(&opts.strictMCPConfig, "strict-mcp-config", "", "Whether --strict-mcp-config was present")
+	flag.StringVar(&opts.interruptApprovalType, "interrupt-approval-type", "", "Expected interrupt approval type: claude_permission_prompt or plan_approval")
 	flag.StringVar(&opts.interruptClass, "interrupt-classification", "", "Expected pending interrupt classification")
 	flag.StringVar(&opts.interruptToolName, "interrupt-tool-name", "", "Expected pending interrupt tool name")
+	flag.StringVar(&opts.interruptPlanStatus, "interrupt-plan-status", "", "Expected pending plan approval status")
+	flag.IntVar(&opts.interruptPlanVersion, "interrupt-plan-version", 0, "Expected pending plan approval version number")
 	flag.StringVar(&opts.interruptDecision, "interrupt-decision", "", "Decision to post back to the pending interrupt")
 	flag.StringVar(&opts.interruptNote, "interrupt-note", "", "Optional note to include with the pending interrupt response")
 	flag.Parse()
@@ -371,17 +399,27 @@ func run(opts options) error {
 		if err != nil {
 			return err
 		}
-		if err := validatePendingInterrupt(interrupt, issueIdentifier, strings.TrimSpace(opts.interruptClass), strings.TrimSpace(opts.interruptToolName)); err != nil {
+		if err := validatePendingInterrupt(
+			interrupt,
+			issueIdentifier,
+			strings.TrimSpace(opts.interruptApprovalType),
+			strings.TrimSpace(opts.interruptClass),
+			strings.TrimSpace(opts.interruptToolName),
+			strings.TrimSpace(opts.interruptPlanStatus),
+			opts.interruptPlanVersion,
+		); err != nil {
 			return err
 		}
 		evidence.Interrupt.Requested = true
 		evidence.Interrupt.PendingCount = pendingCount
 		evidence.Interrupt.Matched = true
 		evidence.Interrupt.Interaction = interrupt
-		if decision := strings.ToLower(strings.TrimSpace(opts.interruptDecision)); decision != "" {
+		decision := strings.ToLower(strings.TrimSpace(opts.interruptDecision))
+		note := strings.TrimSpace(opts.interruptNote)
+		if decision != "" || note != "" {
 			status, err := respondToPendingInterrupt(entryBefore, interrupt.ID, agentruntime.PendingInteractionResponse{
 				Decision: decision,
-				Note:     strings.TrimSpace(opts.interruptNote),
+				Note:     note,
 			})
 			if err != nil {
 				return err
@@ -404,6 +442,13 @@ func run(opts options) error {
 		return fmt.Errorf("decode list_runtime_events: %w", err)
 	}
 	evidence.RuntimeEvents.Items = filterRuntimeEventsByIssue(runtimeEvents.Events, issueIdentifier)
+
+	issueEvidence, planningEvidence, err := loadIssuePlanningEvidence(expectedDBPath, issueIdentifier)
+	if err != nil {
+		return err
+	}
+	evidence.Issue = issueEvidence
+	evidence.Planning = planningEvidence
 
 	entriesAfter, err := loadDaemonEntries(opts.registryDir)
 	if err != nil {
@@ -495,8 +540,10 @@ func validateSettings(settings claudeSettingsOverlay) error {
 }
 
 func validatePermissionFlags(opts options) error {
-	if strings.TrimSpace(opts.permissionMode) != "default" {
-		return fmt.Errorf("expected Claude permission mode default, got %q", opts.permissionMode)
+	switch mode := strings.TrimSpace(opts.permissionMode); mode {
+	case "default", "plan":
+	default:
+		return fmt.Errorf("expected Claude permission mode default or plan, got %q", opts.permissionMode)
 	}
 	if !strings.EqualFold(strings.TrimSpace(opts.strictMCPConfig), "true") {
 		return fmt.Errorf("expected strict-mcp-config=true, got %q", opts.strictMCPConfig)
@@ -790,8 +837,16 @@ func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIden
 
 func wantsInterruptObservation(opts options) bool {
 	return firstNonEmpty(
+		strings.TrimSpace(opts.interruptApprovalType),
 		strings.TrimSpace(opts.interruptClass),
 		strings.TrimSpace(opts.interruptToolName),
+		strings.TrimSpace(opts.interruptPlanStatus),
+		func() string {
+			if opts.interruptPlanVersion <= 0 {
+				return ""
+			}
+			return fmt.Sprintf("%d", opts.interruptPlanVersion)
+		}(),
 		strings.TrimSpace(opts.interruptDecision),
 		strings.TrimSpace(opts.interruptNote),
 	) != ""
@@ -853,7 +908,18 @@ func waitForPendingInterruptClear(ctx context.Context, entry maestromcp.DaemonEn
 	}
 }
 
-func validatePendingInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, classification, toolName string) error {
+func validatePendingInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, approvalType, classification, toolName, planStatus string, planVersion int) error {
+	switch strings.ToLower(strings.TrimSpace(approvalType)) {
+	case "", "claude_permission_prompt":
+		return validateClaudePermissionInterrupt(interaction, issueIdentifier, classification, toolName)
+	case "plan_approval":
+		return validatePlanApprovalInterrupt(interaction, issueIdentifier, planStatus, planVersion)
+	default:
+		return fmt.Errorf("unsupported interrupt approval type %q", approvalType)
+	}
+}
+
+func validateClaudePermissionInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, classification, toolName string) error {
 	if strings.TrimSpace(interaction.ID) == "" {
 		return errors.New("pending interrupt id missing")
 	}
@@ -911,6 +977,40 @@ func validatePendingInterrupt(interaction agentruntime.PendingInteraction, issue
 		strings.TrimSpace(asString(requestMeta["claude/toolUseId"])),
 	) == "" {
 		return errors.New("expected request_meta toolUseId correlation")
+	}
+	return nil
+}
+
+func validatePlanApprovalInterrupt(interaction agentruntime.PendingInteraction, issueIdentifier, planStatus string, planVersion int) error {
+	if strings.TrimSpace(interaction.ID) == "" {
+		return errors.New("pending interrupt id missing")
+	}
+	if interaction.Kind != agentruntime.PendingInteractionKindApproval {
+		return fmt.Errorf("expected approval interrupt, got %q", interaction.Kind)
+	}
+	if strings.TrimSpace(interaction.IssueIdentifier) != strings.TrimSpace(issueIdentifier) {
+		return fmt.Errorf("expected interrupt issue %q, got %q", issueIdentifier, interaction.IssueIdentifier)
+	}
+	if strings.TrimSpace(interaction.CollaborationMode) != "plan" {
+		return fmt.Errorf("expected plan collaboration mode, got %q", interaction.CollaborationMode)
+	}
+	if interaction.Approval == nil {
+		return errors.New("expected approval payload on pending interrupt")
+	}
+	if strings.TrimSpace(interaction.Approval.Markdown) == "" {
+		return errors.New("expected plan markdown on pending interrupt")
+	}
+	if strings.TrimSpace(interaction.Approval.Reason) != "Review the proposed plan before execution." {
+		return fmt.Errorf("expected plan approval reason, got %q", interaction.Approval.Reason)
+	}
+	if len(interaction.Approval.Decisions) == 0 {
+		return errors.New("expected approval decisions on pending interrupt")
+	}
+	if planStatus != "" && !strings.EqualFold(strings.TrimSpace(interaction.Approval.PlanStatus), planStatus) {
+		return fmt.Errorf("expected plan status %q, got %q", planStatus, interaction.Approval.PlanStatus)
+	}
+	if planVersion > 0 && interaction.Approval.PlanVersionNumber != planVersion {
+		return fmt.Errorf("expected plan version %d, got %d", planVersion, interaction.Approval.PlanVersionNumber)
 	}
 	return nil
 }
@@ -1019,6 +1119,50 @@ func sameDaemonEntry(a, b maestromcp.DaemonEntry) bool {
 		a.Transport == b.Transport
 }
 
+func loadIssuePlanningEvidence(dbPath, issueIdentifier string) (issueObservation, planningObservation, error) {
+	store, err := kanban.NewReadOnlyStore(dbPath)
+	if err != nil {
+		return issueObservation{}, planningObservation{}, fmt.Errorf("open read-only store: %w", err)
+	}
+	defer store.Close()
+
+	issue, err := store.GetIssueByIdentifier(issueIdentifier)
+	if err != nil {
+		return issueObservation{}, planningObservation{}, fmt.Errorf("load issue %s: %w", issueIdentifier, err)
+	}
+
+	issueEvidence := issueObservation{
+		State:                     strings.TrimSpace(string(issue.State)),
+		PermissionProfile:         strings.TrimSpace(string(kanban.NormalizePermissionProfile(string(issue.PermissionProfile)))),
+		CollaborationModeOverride: strings.TrimSpace(string(issue.CollaborationModeOverride)),
+		PlanApprovalPending:       issue.PlanApprovalPending,
+		PendingPlanRevisionNote:   strings.TrimSpace(issue.PendingPlanRevisionMarkdown),
+	}
+
+	planning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		return issueEvidence, planningObservation{}, fmt.Errorf("load planning %s: %w", issueIdentifier, err)
+	}
+	if planning == nil {
+		return issueEvidence, planningObservation{}, nil
+	}
+
+	planningEvidence := planningObservation{
+		Present:              true,
+		SessionID:            strings.TrimSpace(planning.SessionID),
+		Status:               strings.TrimSpace(string(planning.Status)),
+		VersionCount:         len(planning.Versions),
+		CurrentVersionNumber: planning.CurrentVersionNumber,
+		PendingRevisionNote:  strings.TrimSpace(planning.PendingRevisionNote),
+	}
+	if planning.CurrentVersion != nil {
+		planningEvidence.CurrentVersionRevisionNote = strings.TrimSpace(planning.CurrentVersion.RevisionNote)
+		planningEvidence.CurrentVersionThreadID = strings.TrimSpace(planning.CurrentVersion.ThreadID)
+		planningEvidence.CurrentVersionTurnID = strings.TrimSpace(planning.CurrentVersion.TurnID)
+	}
+	return issueEvidence, planningEvidence, nil
+}
+
 func writeEvidence(prefix string, evidence probeEvidence) error {
 	jsonPath := prefix + ".json"
 	summaryPath := prefix + ".summary.txt"
@@ -1058,19 +1202,51 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		"expected_tools_present=true",
 		fmt.Sprintf("interrupt_cleared=%t", evidence.Interrupt.Cleared),
 		"interrupt_classification=" + strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["classification"])),
+		"interrupt_collaboration_mode=" + strings.TrimSpace(evidence.Interrupt.Interaction.CollaborationMode),
 		"interrupt_id=" + strings.TrimSpace(evidence.Interrupt.Interaction.ID),
 		"interrupt_kind=" + string(evidence.Interrupt.Interaction.Kind),
 		fmt.Sprintf("interrupt_pending_count=%d", evidence.Interrupt.PendingCount),
+		"interrupt_plan_status=" + func() string {
+			if evidence.Interrupt.Interaction.Approval == nil {
+				return ""
+			}
+			return strings.TrimSpace(evidence.Interrupt.Interaction.Approval.PlanStatus)
+		}(),
+		"interrupt_plan_version=" + func() string {
+			if evidence.Interrupt.Interaction.Approval == nil || evidence.Interrupt.Interaction.Approval.PlanVersionNumber == 0 {
+				return ""
+			}
+			return fmt.Sprintf("%d", evidence.Interrupt.Interaction.Approval.PlanVersionNumber)
+		}(),
 		fmt.Sprintf("interrupt_requested=%t", evidence.Interrupt.Requested),
 		"interrupt_response_decision=" + evidence.Interrupt.ResponseDecision,
 		"interrupt_response_status=" + evidence.Interrupt.ResponseStatus,
 		"interrupt_source=" + strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["source"])),
 		"interrupt_tool_name=" + strings.TrimSpace(asString(evidence.Interrupt.Interaction.Metadata["tool_name"])),
+		"issue_collaboration_mode_override=" + evidence.Issue.CollaborationModeOverride,
 		"issue_identifier=" + evidence.IssueIdentifier,
+		"issue_permission_profile=" + evidence.Issue.PermissionProfile,
+		fmt.Sprintf("issue_plan_approval_pending=%t", evidence.Issue.PlanApprovalPending),
+		"issue_pending_plan_revision_note=" + summaryValue(evidence.Issue.PendingPlanRevisionNote),
+		"issue_state=" + evidence.Issue.State,
 		fmt.Sprintf("live_claude_session_seen=%t", evidence.LiveSessionSeen),
 		"mode=" + evidence.Mode,
 		"permission_mode=" + evidence.Bridge.PermissionMode,
 		"permission_prompt_tool=" + evidence.Bridge.PermissionPromptTool,
+		fmt.Sprintf("planning_present=%t", evidence.Planning.Present),
+		"planning_current_version_number=" + func() string {
+			if evidence.Planning.CurrentVersionNumber == 0 {
+				return ""
+			}
+			return fmt.Sprintf("%d", evidence.Planning.CurrentVersionNumber)
+		}(),
+		"planning_current_version_revision_note=" + summaryValue(evidence.Planning.CurrentVersionRevisionNote),
+		"planning_current_version_thread_id=" + evidence.Planning.CurrentVersionThreadID,
+		"planning_current_version_turn_id=" + evidence.Planning.CurrentVersionTurnID,
+		"planning_pending_revision_note=" + summaryValue(evidence.Planning.PendingRevisionNote),
+		"planning_session_id=" + evidence.Planning.SessionID,
+		"planning_status=" + evidence.Planning.Status,
+		fmt.Sprintf("planning_version_count=%d", evidence.Planning.VersionCount),
 		fmt.Sprintf("runtime_event_count=%d", len(evidence.RuntimeEvents.Items)),
 		"runtime_event_kinds=" + strings.Join(runtimeEventKinds(evidence.RuntimeEvents.Items), ","),
 		fmt.Sprintf("server_db_path=%s", evidence.ServerInfo.Meta.DBPath),
@@ -1113,6 +1289,10 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func summaryValue(value string) string {
+	return strings.ReplaceAll(strings.TrimSpace(value), "\n", `\n`)
 }
 
 func asString(value interface{}) string {

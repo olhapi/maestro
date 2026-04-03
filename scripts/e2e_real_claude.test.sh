@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/e2e_real_claude.sh"
 APPROVALS_SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/e2e_real_claude_approvals.sh"
 CODEX_OVERRIDE="npx -y @openai/codex@0.118.0 app-server"
+PROFILES_SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/e2e_real_claude_profiles.sh"
 
 fail() {
   printf 'test: %s\n' "$*" >&2
@@ -96,8 +97,11 @@ allowed_tools=""
 permission_prompt_tool="<none>"
 permission_mode=""
 strict_mcp_config="false"
+interrupt_approval_type=""
 interrupt_classification=""
 interrupt_tool_name=""
+interrupt_plan_status=""
+interrupt_plan_version=""
 interrupt_decision=""
 interrupt_note=""
 
@@ -143,12 +147,24 @@ while [[ "$#" -gt 0 ]]; do
       strict_mcp_config="$2"
       shift 2
       ;;
+    --interrupt-approval-type)
+      interrupt_approval_type="$2"
+      shift 2
+      ;;
     --interrupt-classification)
       interrupt_classification="$2"
       shift 2
       ;;
     --interrupt-tool-name)
       interrupt_tool_name="$2"
+      shift 2
+      ;;
+    --interrupt-plan-status)
+      interrupt_plan_status="$2"
+      shift 2
+      ;;
+    --interrupt-plan-version)
+      interrupt_plan_version="$2"
       shift 2
       ;;
     --interrupt-decision)
@@ -179,6 +195,20 @@ read_state() {
   fi
 }
 
+snapshot_path() {
+  printf '%s/%s.snapshot.%s' "$FAKE_STATE_DIR" "$1" "$2"
+}
+
+read_snapshot() {
+  local issue_id="$1"
+  local key="$2"
+  local path
+  path="$(snapshot_path "$issue_id" "$key")"
+  if [[ -f "$path" ]]; then
+    cat "$path"
+  fi
+}
+
 session_id_for_issue() {
   case "$1" in
     CL-1)
@@ -200,21 +230,44 @@ session_id_for_issue() {
 }
 
 infer_issue_identifier() {
-  local issue_three_title
+  local basename candidate issue_three_title state
+  basename="$(basename "$evidence_prefix")"
   issue_three_title="$(read_state CL-3 title)"
-  case "$(basename "$evidence_prefix")" in
+
+  case "$basename" in
     launch-1)
       printf 'CL-1'
+      return 0
       ;;
     launch-2)
       printf 'CL-2'
+      return 0
       ;;
+  esac
+
+  for candidate in CL-1 CL-2 CL-3 CL-4; do
+    state="$(read_state "$candidate" state)"
+    if [[ "$state" == "ready" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  for candidate in CL-1 CL-2 CL-3 CL-4; do
+    state="$(read_state "$candidate" state)"
+    if [[ "$state" == "in_progress" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  case "$basename" in
     launch-3)
       if [[ "$issue_three_title" == "Claude approval edit timeout" ]]; then
         printf 'CL-3'
       else
         printf 'CL-2'
       fi
+      return 0
       ;;
     launch-4)
       if [[ "$issue_three_title" == "Claude approval edit timeout" ]]; then
@@ -222,27 +275,22 @@ infer_issue_identifier() {
       else
         printf 'CL-3'
       fi
+      return 0
       ;;
-    command-final)
+  esac
+
+  case "$basename" in
+    success-final|command-final)
       printf 'CL-1'
       ;;
-    write-final)
+    resume-final|write-final)
       printf 'CL-2'
       ;;
-    edit-final)
+    interrupt-final|edit-final|plan-final|plan-pending-v1|plan-pending-v2|plan-revision-requested|plan-approved)
       printf 'CL-3'
       ;;
     protected-final)
       printf 'CL-4'
-      ;;
-    success-final)
-      printf 'CL-1'
-      ;;
-    resume-final)
-      printf 'CL-2'
-      ;;
-    interrupt-final)
-      printf 'CL-3'
       ;;
     *)
       printf 'CL-1'
@@ -273,6 +321,15 @@ stream_marker_for_issue() {
     "Claude lifecycle interrupt")
       printf 'STREAM:%s:interrupt-live' "$1"
       ;;
+    "Claude profile default")
+      printf 'STREAM:%s:profile-default' "$1"
+      ;;
+    "Claude profile full access")
+      printf 'STREAM:%s:profile-full-access' "$1"
+      ;;
+    "Claude profile plan then full access")
+      printf 'STREAM:%s:profile-plan' "$1"
+      ;;
     *)
       printf 'STREAM:%s:live' "$1"
       ;;
@@ -299,8 +356,40 @@ interrupt_source=""
 interrupt_response_status=""
 interrupt_cleared="false"
 runtime_event_kinds=""
+issue_permission_profile="$(read_state "$issue_identifier" permission_profile)"
+issue_state="$(read_state "$issue_identifier" state)"
+issue_plan_approval_pending="false"
+issue_pending_plan_revision_note=""
+planning_present="false"
+planning_session_id=""
+planning_status=""
+planning_version_count=""
+planning_current_version_number=""
+planning_current_version_revision_note=""
+planning_current_version_thread_id=""
+planning_current_version_turn_id=""
+planning_pending_revision_note=""
 
-if [[ -n "$interrupt_classification" || -n "$interrupt_tool_name" || -n "$interrupt_decision" || -n "$interrupt_note" ]]; then
+if [[ -z "$issue_permission_profile" ]]; then
+  issue_permission_profile="default"
+fi
+if [[ "$(read_state "$issue_identifier" plan.pending)" == "1" ]]; then
+  issue_plan_approval_pending="true"
+fi
+issue_pending_plan_revision_note="$(read_state "$issue_identifier" plan.pending_revision_note)"
+planning_session_id="$(read_state "$issue_identifier" plan.session_id)"
+if [[ -n "$planning_session_id" ]]; then
+  planning_present="true"
+fi
+planning_status="$(read_state "$issue_identifier" plan.status)"
+planning_version_count="$(read_state "$issue_identifier" plan.version_count)"
+planning_current_version_number="$(read_state "$issue_identifier" plan.current_version_number)"
+planning_current_version_revision_note="$(read_state "$issue_identifier" "plan.version.$planning_current_version_number.revision_note")"
+planning_current_version_thread_id="$(read_state "$issue_identifier" "plan.version.$planning_current_version_number.thread_id")"
+planning_current_version_turn_id="$(read_state "$issue_identifier" "plan.version.$planning_current_version_number.turn_id")"
+planning_pending_revision_note="$(read_state "$issue_identifier" plan.pending_revision_note)"
+
+if [[ -n "$interrupt_approval_type" || -n "$interrupt_classification" || -n "$interrupt_tool_name" || -n "$interrupt_plan_status" || -n "$interrupt_plan_version" || -n "$interrupt_decision" || -n "$interrupt_note" ]]; then
   interrupt_requested="true"
   deadline=$((SECONDS + 5))
   while (( SECONDS < deadline )); do
@@ -321,9 +410,16 @@ if [[ -n "$interrupt_classification" || -n "$interrupt_tool_name" || -n "$interr
     sleep 0.05
   done
   interrupt_kind="approval"
-  interrupt_source="claude_permission_prompt"
+  case "${interrupt_approval_type:-}" in
+    plan_approval)
+      interrupt_source=""
+      ;;
+    *)
+      interrupt_source="claude_permission_prompt"
+      ;;
+  esac
   interrupt_pending_count="1"
-  if [[ -n "$interrupt_decision" ]]; then
+  if [[ -n "$interrupt_decision" || -n "$interrupt_note" ]]; then
     printf '%s' "$interrupt_decision" >"$(state_path "$issue_identifier" interrupt.response_decision)"
     printf '%s' "$interrupt_note" >"$(state_path "$issue_identifier" interrupt.response_note)"
     interrupt_response_status="accepted"
@@ -342,22 +438,40 @@ if [[ "$mode" == "final" ]]; then
   dashboard_source="persisted"
   execution_active="false"
   execution_session_source="persisted"
-  case "$(read_state "$issue_identifier" title)" in
-    "Claude approval command allow"|"Claude approval write deny"|"Claude approval protected write allow"|"Claude lifecycle success"|"Claude lifecycle resume")
+  execution_stop_reason="$(read_snapshot "$issue_identifier" stop_reason)"
+  execution_failure_class="$(read_snapshot "$issue_identifier" error)"
+  case "$(read_snapshot "$issue_identifier" run_kind)" in
+    run_completed)
       dashboard_status="completed"
-      dashboard_stop_reason="end_turn"
-      execution_stop_reason="end_turn"
+      dashboard_stop_reason="${execution_stop_reason:-end_turn}"
       ;;
-    "Claude approval edit timeout")
+    retry_paused)
       dashboard_status="paused"
-      dashboard_stop_reason="retry_limit_reached"
-      execution_failure_class="retry_limit_reached"
+      dashboard_stop_reason="${execution_stop_reason}"
       ;;
-    "Claude lifecycle interrupt")
+    run_interrupted)
       dashboard_status="interrupted"
-      dashboard_stop_reason="run_interrupted"
-      execution_failure_class="run_interrupted"
-      execution_stop_reason="run_interrupted"
+      dashboard_stop_reason="${execution_stop_reason}"
+      ;;
+    *)
+      case "$(read_state "$issue_identifier" title)" in
+        "Claude approval command allow"|"Claude approval write deny"|"Claude approval protected write allow"|"Claude lifecycle success"|"Claude lifecycle resume")
+          dashboard_status="completed"
+          dashboard_stop_reason="end_turn"
+          execution_stop_reason="end_turn"
+          ;;
+        "Claude approval edit timeout")
+          dashboard_status="paused"
+          dashboard_stop_reason="retry_limit_reached"
+          execution_failure_class="retry_limit_reached"
+          ;;
+        "Claude lifecycle interrupt")
+          dashboard_status="interrupted"
+          dashboard_stop_reason="run_interrupted"
+          execution_failure_class="run_interrupted"
+          execution_stop_reason="run_interrupted"
+          ;;
+      esac
       ;;
   esac
 fi
@@ -407,20 +521,37 @@ execution_thread_id=$session_id
 execution_provider_session_id=$session_id
 interrupt_cleared=$interrupt_cleared
 interrupt_classification=$interrupt_classification
+interrupt_collaboration_mode=$(read_state "$issue_identifier" interrupt.collaboration_mode)
 interrupt_id=$interrupt_id
 interrupt_kind=$interrupt_kind
 interrupt_pending_count=$interrupt_pending_count
+interrupt_plan_status=$interrupt_plan_status
+interrupt_plan_version=$interrupt_plan_version
 interrupt_requested=$interrupt_requested
 interrupt_response_decision=$interrupt_decision
 interrupt_response_status=$interrupt_response_status
 interrupt_source=$interrupt_source
 interrupt_tool_name=$interrupt_tool_name
+issue_collaboration_mode_override=
 issue_identifier=$issue_identifier
+issue_permission_profile=$issue_permission_profile
+issue_plan_approval_pending=$issue_plan_approval_pending
+issue_pending_plan_revision_note=$issue_pending_plan_revision_note
+issue_state=$issue_state
 mode=$mode
 strict_mcp_config=$strict_mcp_config
 permission_mode=$permission_mode
 allowed_tools=$allowed_tools
 permission_prompt_tool=${permission_prompt_tool:-<none>}
+planning_present=$planning_present
+planning_current_version_number=$planning_current_version_number
+planning_current_version_revision_note=$planning_current_version_revision_note
+planning_current_version_thread_id=$planning_current_version_thread_id
+planning_current_version_turn_id=$planning_current_version_turn_id
+planning_pending_revision_note=$planning_pending_revision_note
+planning_session_id=$planning_session_id
+planning_status=$planning_status
+planning_version_count=${planning_version_count:-0}
 runtime_event_count=$(printf '%s\n' "$runtime_event_kinds" | tr ',' '\n' | sed '/^$/d' | wc -l | tr -d ' ')
 runtime_event_kinds=$runtime_event_kinds
 settings_disable_auto_mode=disable
@@ -567,6 +698,10 @@ issue_state_value() {
   read_state "$1" state
 }
 
+issue_title_value() {
+  read_state "$1" title
+}
+
 wait_for_issue_state() {
   local issue_id="$1"
   local expected="$2"
@@ -701,6 +836,10 @@ approval_workspace_dir() {
   printf '%s/workspaces/real-claude-approval-e2e-project/%s' "$FAKE_HARNESS_ROOT" "$1"
 }
 
+profile_workspace_dir() {
+  printf '%s/workspaces/real-claude-profile-e2e-project/%s' "$FAKE_HARNESS_ROOT" "$1"
+}
+
 ensure_approval_workspace() {
   local issue_id="$1"
   local workspace_dir
@@ -710,13 +849,41 @@ ensure_approval_workspace() {
   printf '%s\n' 'before' >"$workspace_dir/approval-edit-target.txt"
 }
 
+ensure_profile_workspace() {
+  local issue_id="$1"
+  local workspace_dir
+  workspace_dir="$(profile_workspace_dir "$issue_id")"
+  mkdir -p "$workspace_dir/.git"
+  printf '%s\n' '# Maestro E2E Workspace' >"$workspace_dir/README.md"
+}
+
 write_interrupt_state() {
   local issue_id="$1"
   local classification="$2"
   local tool_name="$3"
+  write_state "$issue_id" interrupt.cleared ""
+  write_state "$issue_id" interrupt.response_decision ""
+  write_state "$issue_id" interrupt.response_note ""
+  write_state "$issue_id" interrupt.collaboration_mode ""
+  write_state "$issue_id" interrupt.plan_status ""
+  write_state "$issue_id" interrupt.plan_version ""
   write_state "$issue_id" interrupt.id "$(approval_interrupt_id "$issue_id")"
   write_state "$issue_id" interrupt.classification "$classification"
   write_state "$issue_id" interrupt.tool_name "$tool_name"
+}
+
+write_plan_interrupt_state() {
+  local issue_id="$1"
+  local version_number="$2"
+  write_state "$issue_id" interrupt.cleared ""
+  write_state "$issue_id" interrupt.response_decision ""
+  write_state "$issue_id" interrupt.response_note ""
+  write_state "$issue_id" interrupt.id "plan-approval-$issue_id"
+  write_state "$issue_id" interrupt.classification ""
+  write_state "$issue_id" interrupt.tool_name ""
+  write_state "$issue_id" interrupt.collaboration_mode "plan"
+  write_state "$issue_id" interrupt.plan_status "awaiting_approval"
+  write_state "$issue_id" interrupt.plan_version "$version_number"
 }
 
 clear_interrupt_state() {
@@ -730,15 +897,36 @@ wait_for_interrupt_response() {
   local deadline
   deadline=$((SECONDS + timeout_seconds))
   while (( SECONDS < deadline )); do
-    local decision
+    local decision note
     decision="$(read_state "$issue_id" interrupt.response_decision)"
-    if [[ -n "$decision" ]]; then
-      printf '%s' "$decision"
+    note="$(read_state "$issue_id" interrupt.response_note)"
+    if [[ -n "$decision" || -n "$note" ]]; then
+      printf '%s|%s' "$decision" "$note"
       return 0
     fi
     sleep 0.05
   done
   return 1
+}
+
+set_plan_state() {
+  local issue_id="$1"
+  local status="$2"
+  local version_count="$3"
+  local current_version="$4"
+  local session_id="$5"
+  local thread_id="$6"
+  local turn_id="$7"
+  local revision_note="$8"
+  local pending_revision_note="${9:-}"
+  write_state "$issue_id" plan.session_id "$session_id"
+  write_state "$issue_id" plan.status "$status"
+  write_state "$issue_id" plan.version_count "$version_count"
+  write_state "$issue_id" plan.current_version_number "$current_version"
+  write_state "$issue_id" "plan.version.$current_version.thread_id" "$thread_id"
+  write_state "$issue_id" "plan.version.$current_version.turn_id" "$turn_id"
+  write_state "$issue_id" "plan.version.$current_version.revision_note" "$revision_note"
+  write_state "$issue_id" plan.pending_revision_note "$pending_revision_note"
 }
 
 invoke_workflow() {
@@ -747,21 +935,26 @@ invoke_workflow() {
   local settings_path="$3"
   local mcp_config_path="$4"
   local resume_token="${5:-}"
-  local permission_profile permission_flags
+  local permission_profile permission_flags permission_mode
   if [[ -z "$workflow_command" ]]; then
     return 0
   fi
   permission_profile="$(issue_permission_profile "$issue_id")"
   if [[ "$permission_profile" == "full-access" ]]; then
     permission_flags="--allowed-tools 'Bash,Edit,Write,MultiEdit'"
+    permission_mode="default"
+  elif [[ "$permission_profile" == "plan-then-full-access" ]]; then
+    permission_flags="--permission-prompt-tool 'mcp__maestro__approval_prompt'"
+    permission_mode="plan"
   else
     permission_flags="--permission-prompt-tool 'mcp__maestro__approval_prompt'"
+    permission_mode="default"
   fi
   if [[ -n "$resume_token" ]]; then
-    PATH="$PATH" bash -c "printf 'runtime prompt\n' | $workflow_command -r '$resume_token' -p --verbose --output-format=stream-json --include-partial-messages --permission-mode default --settings '$settings_path' $permission_flags --mcp-config '$mcp_config_path' --strict-mcp-config"
+    PATH="$PATH" bash -c "printf 'runtime prompt\n' | $workflow_command -r '$resume_token' -p --verbose --output-format=stream-json --include-partial-messages --permission-mode $permission_mode --settings '$settings_path' $permission_flags --mcp-config '$mcp_config_path' --strict-mcp-config"
     return 0
   fi
-  PATH="$PATH" bash -c "printf 'runtime prompt\n' | $workflow_command -p --verbose --output-format=stream-json --include-partial-messages --permission-mode default --settings '$settings_path' $permission_flags --mcp-config '$mcp_config_path' --strict-mcp-config"
+  PATH="$PATH" bash -c "printf 'runtime prompt\n' | $workflow_command -p --verbose --output-format=stream-json --include-partial-messages --permission-mode $permission_mode --settings '$settings_path' $permission_flags --mcp-config '$mcp_config_path' --strict-mcp-config"
 }
 
 run_success_scenario() {
@@ -846,7 +1039,7 @@ run_command_approval_scenario() {
   local settings_path="$2"
   local mcp_config_path="$3"
   local issue_id="CL-1"
-  local session_id workspace_dir artifact_path decision
+  local session_id workspace_dir artifact_path response decision
   session_id="$(session_id_for_issue "$issue_id")"
   wait_for_issue_state "$issue_id" ready
   ensure_approval_workspace "$issue_id"
@@ -854,7 +1047,8 @@ run_command_approval_scenario() {
   artifact_path="$workspace_dir/command-approval.txt"
   invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path"
   write_interrupt_state "$issue_id" command Bash
-  decision="$(wait_for_interrupt_response "$issue_id" 5)"
+  response="$(wait_for_interrupt_response "$issue_id" 5)"
+  decision="${response%%|*}"
   if [[ "$decision" == "allow" ]]; then
     printf '%s\n' 'maestro claude command approval ok' >"$artifact_path"
   fi
@@ -869,7 +1063,7 @@ run_write_approval_scenario() {
   local settings_path="$2"
   local mcp_config_path="$3"
   local issue_id="CL-2"
-  local session_id workspace_dir artifact_path decision
+  local session_id workspace_dir artifact_path response decision
   session_id="$(session_id_for_issue "$issue_id")"
   wait_for_issue_state "$issue_id" ready
   ensure_approval_workspace "$issue_id"
@@ -877,7 +1071,8 @@ run_write_approval_scenario() {
   artifact_path="$workspace_dir/write-denied.txt"
   invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path"
   write_interrupt_state "$issue_id" file_write Write
-  decision="$(wait_for_interrupt_response "$issue_id" 5)"
+  response="$(wait_for_interrupt_response "$issue_id" 5)"
+  decision="${response%%|*}"
   if [[ "$decision" == "allow" ]]; then
     printf '%s\n' 'maestro claude write approval ok' >"$artifact_path"
   else
@@ -894,13 +1089,14 @@ run_edit_timeout_scenario() {
   local settings_path="$2"
   local mcp_config_path="$3"
   local issue_id="CL-3"
-  local session_id decision
+  local session_id response decision
   session_id="$(session_id_for_issue "$issue_id")"
   wait_for_issue_state "$issue_id" ready
   ensure_approval_workspace "$issue_id"
   invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path"
   write_interrupt_state "$issue_id" file_edit Edit
-  if decision="$(wait_for_interrupt_response "$issue_id" 1)"; then
+  if response="$(wait_for_interrupt_response "$issue_id" 1)"; then
+    decision="${response%%|*}"
     if [[ "$decision" == "allow" ]]; then
       printf '%s\n' 'after' >"$(approval_workspace_dir "$issue_id")/approval-edit-target.txt"
       clear_interrupt_state "$issue_id"
@@ -921,7 +1117,7 @@ run_protected_write_approval_scenario() {
   local settings_path="$2"
   local mcp_config_path="$3"
   local issue_id="CL-4"
-  local session_id workspace_dir artifact_path decision
+  local session_id workspace_dir artifact_path response decision
   session_id="$(session_id_for_issue "$issue_id")"
   wait_for_issue_state "$issue_id" ready
   ensure_approval_workspace "$issue_id"
@@ -929,7 +1125,8 @@ run_protected_write_approval_scenario() {
   artifact_path="$workspace_dir/.git/maestro-protected.txt"
   invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path"
   write_interrupt_state "$issue_id" protected_directory_write Write
-  decision="$(wait_for_interrupt_response "$issue_id" 5)"
+  response="$(wait_for_interrupt_response "$issue_id" 5)"
+  decision="${response%%|*}"
   if [[ "$decision" == "allow" ]]; then
     printf '%s\n' 'maestro claude protected approval ok' >"$artifact_path"
   fi
@@ -937,6 +1134,97 @@ run_protected_write_approval_scenario() {
   increment_event "$issue_id" run_completed
   set_snapshot "$issue_id" run_completed end_turn "" "$session_id"
   write_state "$issue_id" state done
+}
+
+run_profile_default_scenario() {
+  local workflow_command="$1"
+  local settings_path="$2"
+  local mcp_config_path="$3"
+  local issue_id="CL-1"
+  local session_id workspace_dir artifact_path response decision
+  session_id="$(session_id_for_issue "$issue_id")"
+  wait_for_issue_state "$issue_id" ready
+  ensure_profile_workspace "$issue_id"
+  workspace_dir="$(profile_workspace_dir "$issue_id")"
+  artifact_path="$workspace_dir/default-profile.txt"
+  invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path"
+  write_interrupt_state "$issue_id" command Bash
+  response="$(wait_for_interrupt_response "$issue_id" 5)"
+  decision="${response%%|*}"
+  if [[ "$decision" == "allow" ]]; then
+    printf '%s\n' 'maestro claude default profile ok' >"$artifact_path"
+  fi
+  clear_interrupt_state "$issue_id"
+  increment_event "$issue_id" run_completed
+  set_snapshot "$issue_id" run_completed end_turn "" "$session_id"
+  write_state "$issue_id" state done
+}
+
+run_profile_full_access_scenario() {
+  local workflow_command="$1"
+  local settings_path="$2"
+  local mcp_config_path="$3"
+  local issue_id="CL-2"
+  local session_id workspace_dir artifact_path
+  session_id="$(session_id_for_issue "$issue_id")"
+  wait_for_issue_state "$issue_id" ready
+  ensure_profile_workspace "$issue_id"
+  workspace_dir="$(profile_workspace_dir "$issue_id")"
+  artifact_path="$workspace_dir/full-access-profile.txt"
+  invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path"
+  printf '%s\n' 'maestro claude full access profile ok' >"$artifact_path"
+  increment_event "$issue_id" run_completed
+  set_snapshot "$issue_id" run_completed end_turn "" "$session_id"
+  write_state "$issue_id" state done
+}
+
+run_profile_plan_then_full_access_scenario() {
+  local workflow_command="$1"
+  local settings_path="$2"
+  local mcp_config_path="$3"
+  local issue_id="CL-3"
+  local session_id workspace_dir artifact_path response decision note
+  session_id="$(session_id_for_issue "$issue_id")"
+  wait_for_issue_state "$issue_id" ready
+  ensure_profile_workspace "$issue_id"
+  workspace_dir="$(profile_workspace_dir "$issue_id")"
+  artifact_path="$workspace_dir/plan-profile.txt"
+
+  invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path"
+  write_state "$issue_id" plan.pending 1
+  set_plan_state "$issue_id" awaiting_approval 1 1 "plan-session-1" "$session_id" "turn-plan-1" ""
+  write_plan_interrupt_state "$issue_id" 1
+  increment_event "$issue_id" retry_paused
+  set_snapshot "$issue_id" retry_paused plan_approval_pending plan_approval_pending "$session_id"
+
+  response="$(wait_for_interrupt_response "$issue_id" 5)"
+  decision="${response%%|*}"
+  note="${response#*|}"
+  if [[ -n "$note" && -z "$decision" ]]; then
+    clear_interrupt_state "$issue_id"
+    write_state "$issue_id" plan.pending_revision_note "$note"
+    write_state "$issue_id" plan.status revision_requested
+    invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path" "$session_id"
+    write_state "$issue_id" plan.pending 1
+    set_plan_state "$issue_id" awaiting_approval 2 2 "plan-session-1" "$session_id" "turn-plan-2" "$note"
+    write_plan_interrupt_state "$issue_id" 2
+    set_snapshot "$issue_id" retry_paused plan_approval_pending plan_approval_pending "$session_id"
+
+    response="$(wait_for_interrupt_response "$issue_id" 5)"
+    decision="${response%%|*}"
+  fi
+
+  if [[ "$decision" == "approved" ]]; then
+    clear_interrupt_state "$issue_id"
+    write_state "$issue_id" plan.pending 0
+    write_state "$issue_id" permission_profile full-access
+    write_state "$issue_id" plan.status approved
+    invoke_workflow "$issue_id" "$workflow_command" "$settings_path" "$mcp_config_path" "$session_id"
+    printf '%s\n' 'maestro claude plan profile ok' >"$artifact_path"
+    increment_event "$issue_id" run_completed
+    set_snapshot "$issue_id" run_completed end_turn "" "$session_id"
+    write_state "$issue_id" state done
+  fi
 }
 
 case "$command_name" in
@@ -1129,6 +1417,11 @@ RUNTIME_DAEMON
       run_edit_timeout_scenario "$workflow_command" "$settings_path" "$mcp_config_path"
       run_protected_write_approval_scenario "$workflow_command" "$settings_path" "$mcp_config_path"
       printf 'mock orchestrator completed approval scenarios\n'
+    elif [[ "$(issue_title_value CL-1)" == "Claude profile default" ]]; then
+      run_profile_default_scenario "$workflow_command" "$settings_path" "$mcp_config_path"
+      run_profile_full_access_scenario "$workflow_command" "$settings_path" "$mcp_config_path"
+      run_profile_plan_then_full_access_scenario "$workflow_command" "$settings_path" "$mcp_config_path"
+      printf 'mock orchestrator completed profile scenarios\n'
     else
       run_success_scenario "$workflow_command" "$settings_path" "$mcp_config_path"
       run_resume_scenario "$workflow_command" "$settings_path" "$mcp_config_path"
@@ -1456,16 +1749,120 @@ test_approval_run_covers_each_supported_claude_approval_class() {
   [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected approval run to avoid stderr output"
 }
 
+test_permission_profile_run_covers_default_full_access_and_plan_lineage() {
+  local tmp_dir bin_dir harness_root profile_workspace_root
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-profiles.XXXXXX")"
+  bin_dir="$tmp_dir/bin"
+  harness_root="$tmp_dir/harness"
+  profile_workspace_root="$harness_root/workspaces/real-claude-profile-e2e-project"
+
+  mkdir -p "$tmp_dir/state"
+  : >"$tmp_dir/tool.log"
+  : >"$tmp_dir/maestro.log"
+  : >"$tmp_dir/probe.log"
+  write_mock_toolchain "$bin_dir"
+
+  PATH="$bin_dir:$PATH" \
+  MOCK_TOOL_LOG="$tmp_dir/tool.log" \
+  FAKE_MAESTRO_LOG="$tmp_dir/maestro.log" \
+  FAKE_PROBE_LOG="$tmp_dir/probe.log" \
+  FAKE_STATE_DIR="$tmp_dir/state" \
+  FAKE_HARNESS_ROOT="$harness_root" \
+  E2E_ROOT="$harness_root" \
+  E2E_KEEP_HARNESS=1 \
+  bash "$PROFILES_SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
+
+  assert_exists "$harness_root/claude-support/launch-1.summary.txt"
+  assert_exists "$harness_root/claude-support/launch-2.summary.txt"
+  assert_exists "$harness_root/claude-support/launch-3.summary.txt"
+  assert_exists "$harness_root/claude-support/launch-4.summary.txt"
+  assert_exists "$harness_root/claude-support/launch-5.summary.txt"
+  assert_exists "$harness_root/claude-support/default-live.summary.txt"
+  assert_exists "$harness_root/claude-support/default-final.summary.txt"
+  assert_exists "$harness_root/claude-support/full-access-final.summary.txt"
+  assert_exists "$harness_root/claude-support/plan-pending-v1.summary.txt"
+  assert_exists "$harness_root/claude-support/plan-revision-requested.summary.txt"
+  assert_exists "$harness_root/claude-support/plan-pending-v2.summary.txt"
+  assert_exists "$harness_root/claude-support/plan-approved.summary.txt"
+  assert_exists "$harness_root/claude-support/plan-final.summary.txt"
+
+  assert_contains "$harness_root/claude-support/launch-1.summary.txt" "permission_mode=default"
+  assert_contains "$harness_root/claude-support/launch-1.summary.txt" "permission_prompt_tool=mcp__maestro__approval_prompt"
+  assert_contains "$harness_root/claude-support/launch-1.summary.txt" "allowed_tools="
+  if grep -Fq -- "--allowed-tools" "$harness_root/claude-support/launch-1.args.txt"; then
+    fail "expected default profile launch to avoid --allowed-tools"
+  fi
+  assert_contains "$harness_root/claude-support/default-live.summary.txt" "interrupt_response_decision=allow"
+  assert_contains "$harness_root/claude-support/default-final.summary.txt" "issue_permission_profile=default"
+  assert_contains "$harness_root/claude-support/default-final.summary.txt" "execution_stop_reason=end_turn"
+
+  assert_contains "$harness_root/claude-support/launch-2.summary.txt" "permission_mode=default"
+  assert_contains "$harness_root/claude-support/launch-2.summary.txt" "allowed_tools=Bash,Edit,Write,MultiEdit"
+  assert_contains "$harness_root/claude-support/launch-2.summary.txt" "permission_prompt_tool=<none>"
+  assert_contains "$harness_root/claude-support/full-access-final.summary.txt" "issue_permission_profile=full-access"
+  assert_contains "$harness_root/claude-support/full-access-final.summary.txt" "execution_stop_reason=end_turn"
+
+  assert_contains "$harness_root/claude-support/launch-3.summary.txt" "permission_mode=plan"
+  assert_contains "$harness_root/claude-support/launch-3.summary.txt" "permission_prompt_tool=mcp__maestro__approval_prompt"
+  assert_contains "$harness_root/claude-support/plan-pending-v1.summary.txt" "issue_permission_profile=plan-then-full-access"
+  assert_contains "$harness_root/claude-support/plan-pending-v1.summary.txt" "issue_plan_approval_pending=true"
+  assert_contains "$harness_root/claude-support/plan-pending-v1.summary.txt" "planning_status=awaiting_approval"
+  assert_contains "$harness_root/claude-support/plan-pending-v1.summary.txt" "planning_version_count=1"
+  assert_contains "$harness_root/claude-support/plan-pending-v1.summary.txt" "planning_current_version_number=1"
+  assert_contains "$harness_root/claude-support/plan-pending-v1.summary.txt" "execution_thread_id=claude-session-3"
+  assert_contains "$harness_root/claude-support/plan-pending-v1.summary.txt" "planning_current_version_thread_id=claude-session-3"
+
+  assert_contains "$harness_root/claude-support/plan-revision-requested.summary.txt" "interrupt_response_status=accepted"
+  assert_contains "$harness_root/claude-support/launch-4.args.txt" "-r"
+  assert_contains "$harness_root/claude-support/launch-4.args.txt" "claude-session-3"
+  assert_contains "$harness_root/claude-support/plan-pending-v2.summary.txt" "planning_session_id=plan-session-1"
+  assert_contains "$harness_root/claude-support/plan-pending-v2.summary.txt" "planning_status=awaiting_approval"
+  assert_contains "$harness_root/claude-support/plan-pending-v2.summary.txt" "planning_version_count=2"
+  assert_contains "$harness_root/claude-support/plan-pending-v2.summary.txt" "planning_current_version_number=2"
+  assert_contains "$harness_root/claude-support/plan-pending-v2.summary.txt" "planning_current_version_revision_note=Add an explicit rollback check and keep the rollout incremental."
+  assert_contains "$harness_root/claude-support/plan-pending-v2.summary.txt" "planning_current_version_thread_id=claude-session-3"
+
+  assert_contains "$harness_root/claude-support/plan-approved.summary.txt" "interrupt_response_decision=approved"
+  assert_contains "$harness_root/claude-support/launch-5.summary.txt" "permission_mode=default"
+  assert_contains "$harness_root/claude-support/launch-5.summary.txt" "allowed_tools=Bash,Edit,Write,MultiEdit"
+  assert_contains "$harness_root/claude-support/launch-5.summary.txt" "permission_prompt_tool=<none>"
+  assert_contains "$harness_root/claude-support/launch-5.args.txt" "-r"
+  assert_contains "$harness_root/claude-support/launch-5.args.txt" "claude-session-3"
+  assert_contains "$harness_root/claude-support/plan-final.summary.txt" "issue_permission_profile=full-access"
+  assert_contains "$harness_root/claude-support/plan-final.summary.txt" "issue_plan_approval_pending=false"
+  assert_contains "$harness_root/claude-support/plan-final.summary.txt" "planning_session_id=plan-session-1"
+  assert_contains "$harness_root/claude-support/plan-final.summary.txt" "planning_status=approved"
+  assert_contains "$harness_root/claude-support/plan-final.summary.txt" "planning_version_count=2"
+  assert_contains "$harness_root/claude-support/plan-final.summary.txt" "execution_thread_id=claude-session-3"
+
+  assert_exists "$profile_workspace_root/CL-1/default-profile.txt"
+  [[ "$(cat "$profile_workspace_root/CL-1/default-profile.txt")" == "maestro claude default profile ok" ]] || fail "expected default profile artifact content"
+  assert_exists "$profile_workspace_root/CL-2/full-access-profile.txt"
+  [[ "$(cat "$profile_workspace_root/CL-2/full-access-profile.txt")" == "maestro claude full access profile ok" ]] || fail "expected full-access profile artifact content"
+  assert_exists "$profile_workspace_root/CL-3/plan-profile.txt"
+  [[ "$(cat "$profile_workspace_root/CL-3/plan-profile.txt")" == "maestro claude plan profile ok" ]] || fail "expected plan profile artifact content"
+
+  assert_contains "$tmp_dir/stdout.txt" "Real Claude permission-profile e2e flow completed successfully."
+  assert_contains "$tmp_dir/stdout.txt" "default: CL-1 -> $profile_workspace_root/CL-1/default-profile.txt"
+  assert_contains "$tmp_dir/stdout.txt" "full-access: CL-2 -> $profile_workspace_root/CL-2/full-access-profile.txt"
+  assert_contains "$tmp_dir/stdout.txt" "plan-then-full-access: CL-3 -> $profile_workspace_root/CL-3/plan-profile.txt"
+  assert_contains "$tmp_dir/probe.log" "--interrupt-approval-type plan_approval"
+  assert_contains "$tmp_dir/probe.log" "--interrupt-note Add an explicit rollback check and keep the rollout incremental."
+  assert_contains "$tmp_dir/probe.log" "--interrupt-decision approved"
+  assert_in_order "$tmp_dir/maestro.log" "maestro --json verify" "maestro project create"
+  [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected profile run to avoid stderr output"
+}
+
 test_timeout_failure_prints_issue_and_path_diagnostics() {
   local tmp_dir harness_root
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-timeout.XXXXXX")"
   harness_root="$tmp_dir/harness"
 
-  if run_harness "$tmp_dir" "E2E_CODEX_COMMAND=$CODEX_OVERRIDE" "FAKE_RUN_STICKS=1" "E2E_TIMEOUT_SEC=1" "E2E_POLL_SEC=0.1"; then
+  if run_harness "$tmp_dir" "E2E_CODEX_COMMAND=$CODEX_OVERRIDE" "FAKE_RUN_STICKS=1" "E2E_TIMEOUT_SEC=3" "E2E_POLL_SEC=0.1"; then
     fail "expected the harness to fail when the issue never reaches done"
   fi
 
-  assert_contains "$tmp_dir/stderr.txt" "CL-1 did not reach done within 1s"
+  assert_contains "$tmp_dir/stderr.txt" "CL-1 did not reach done within 3s"
   assert_contains "$tmp_dir/stderr.txt" "Harness root: $harness_root"
   assert_contains "$tmp_dir/stderr.txt" "Daemon registry dir: $harness_root/.maestro-daemons"
   assert_contains "$tmp_dir/stderr.txt" "Claude evidence dir: $harness_root/claude-support"
@@ -1563,6 +1960,7 @@ main() {
   test_successful_run_bootstraps_and_checks_claude_preflight
   test_verify_failures_print_actionable_claude_remediation
   test_approval_run_covers_each_supported_claude_approval_class
+  test_permission_profile_run_covers_default_full_access_and_plan_lineage
   test_timeout_failure_prints_issue_and_path_diagnostics
   test_override_command_is_used_for_preflight_requirement
   test_override_command_with_env_assignment_is_used_for_preflight_requirement

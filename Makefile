@@ -1,4 +1,4 @@
-.PHONY: frontend-build ensure-dashboard-dist build test test-cover test-race start dev e2e-real-codex e2e-real-codex-phases e2e-real-codex-issue-images e2e-real-claude e2e-retry-safety
+.PHONY: frontend-build ensure-dashboard-dist build test test-cover test-race start dev e2e-real-codex e2e-real-codex-phases e2e-real-codex-issue-images e2e-real-claude e2e-real-claude-profiles e2e-retry-safety
 
 GO_TEST_PACKAGES := ./cmd/... ./internal/... ./pkg/...
 START_DB_PATH ?= $(HOME)/.maestro/maestro.db
@@ -62,6 +62,9 @@ e2e-real-codex-issue-images:
 
 e2e-real-claude:
 	./scripts/e2e_real_claude.sh
+
+e2e-real-claude-profiles:
+	./scripts/e2e_real_claude_profiles.sh
 
 e2e-retry-safety:
 	./scripts/e2e_retry_safety.sh

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -289,7 +291,7 @@ func TestValidatePermissionFlags(t *testing.T) {
 				permissionMode:  "auto",
 				strictMCPConfig: "true",
 			},
-			wantErr: `expected Claude permission mode default`,
+			wantErr: `expected Claude permission mode default or plan`,
 		},
 		{
 			name: "allowed_tools",
@@ -299,6 +301,14 @@ func TestValidatePermissionFlags(t *testing.T) {
 				strictMCPConfig: "true",
 			},
 			wantErr: `expected allowed tools Bash,Edit,Write,MultiEdit`,
+		},
+		{
+			name: "plan mode still uses maestro approval prompt",
+			opts: options{
+				permissionMode:       "plan",
+				permissionPromptTool: "mcp__maestro__approval_prompt",
+				strictMCPConfig:      "true",
+			},
 		},
 		{
 			name: "approval_prompt_forbids_allowed_tools",
@@ -380,7 +390,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("accepts_maestro_managed_payload", func(t *testing.T) {
 		t.Parallel()
 
-		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "command", "Bash"); err != nil {
+		if err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "command", "Bash", "", 0); err != nil {
 			t.Fatalf("validatePendingInterrupt() error = %v", err)
 		}
 	})
@@ -391,7 +401,7 @@ func TestValidatePendingInterrupt(t *testing.T) {
 		interaction := validPendingInterrupt()
 		interaction.Metadata["request_meta"] = map[string]interface{}{}
 
-		err := validatePendingInterrupt(interaction, "CL-1", "command", "Bash")
+		err := validatePendingInterrupt(interaction, "CL-1", "", "command", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "toolUseId correlation") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want missing toolUseId correlation", err)
 		}
@@ -400,12 +410,11 @@ func TestValidatePendingInterrupt(t *testing.T) {
 	t.Run("rejects_classification_mismatch", func(t *testing.T) {
 		t.Parallel()
 
-		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "file_write", "Bash")
+		err := validatePendingInterrupt(validPendingInterrupt(), "CL-1", "", "file_write", "Bash", "", 0)
 		if err == nil || !strings.Contains(err.Error(), "expected interrupt classification") {
 			t.Fatalf("validatePendingInterrupt() error = %v, want classification mismatch", err)
 		}
 	})
-
 	tests := []struct {
 		name string
 		edit func(*agentruntime.PendingInteraction)
@@ -540,12 +549,29 @@ func TestValidatePendingInterrupt(t *testing.T) {
 
 			interaction := validPendingInterrupt()
 			tt.edit(&interaction)
-			err := validatePendingInterrupt(interaction, "CL-1", "command", "Bash")
+			err := validatePendingInterrupt(interaction, "CL-1", "", "command", "Bash", "", 0)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("validatePendingInterrupt() error = %v, want substring %q", err, tt.want)
 			}
 		})
 	}
+
+	t.Run("accepts plan approval payload", func(t *testing.T) {
+		t.Parallel()
+
+		if err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 2); err != nil {
+			t.Fatalf("validatePendingInterrupt() error = %v", err)
+		}
+	})
+
+	t.Run("rejects plan approval version mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		err := validatePendingInterrupt(validPlanApprovalInterrupt(), "CL-3", "plan_approval", "", "", "awaiting_approval", 3)
+		if err == nil || !strings.Contains(err.Error(), "expected plan version") {
+			t.Fatalf("validatePendingInterrupt() error = %v, want plan version mismatch", err)
+		}
+	})
 }
 
 func TestFilterRuntimeEventsByIssue(t *testing.T) {
@@ -617,7 +643,6 @@ func validPendingInterrupt() agentruntime.PendingInteraction {
 		},
 	}
 }
-
 func TestLoadDaemonEntriesAndHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -673,6 +698,24 @@ func TestLoadDaemonEntriesAndHelpers(t *testing.T) {
 	}
 	if got := extractDBPathArg([]string{"mcp"}); got != "" {
 		t.Fatalf("extractDBPathArg() = %q, want empty", got)
+	}
+}
+
+func validPlanApprovalInterrupt() agentruntime.PendingInteraction {
+	return agentruntime.PendingInteraction{
+		ID:                "plan-approval-1",
+		Kind:              agentruntime.PendingInteractionKindApproval,
+		IssueIdentifier:   "CL-3",
+		CollaborationMode: "plan",
+		Approval: &agentruntime.PendingApproval{
+			Reason:            "Review the proposed plan before execution.",
+			Markdown:          "Ship the guarded rollout.",
+			PlanStatus:        "awaiting_approval",
+			PlanVersionNumber: 2,
+			Decisions: []agentruntime.PendingApprovalDecision{
+				{Value: "approved", Label: "Approve plan"},
+			},
+		},
 	}
 }
 
@@ -801,6 +844,15 @@ func TestRunHappyPath(t *testing.T) {
 	if got, want := evidence.ServerInfo.Meta.StoreID, fixture.storeID; got != want {
 		t.Fatalf("evidence.ServerInfo.Meta.StoreID = %q, want %q", got, want)
 	}
+	if got, want := evidence.Issue.PermissionProfile, string(kanban.PermissionProfileDefault); got != want {
+		t.Fatalf("evidence.Issue.PermissionProfile = %q, want %q", got, want)
+	}
+	if got, want := evidence.Issue.State, string(kanban.StateReady); got != want {
+		t.Fatalf("evidence.Issue.State = %q, want %q", got, want)
+	}
+	if evidence.Planning.Present {
+		t.Fatalf("evidence.Planning.Present = true, want false")
+	}
 	if got := strings.TrimSpace(asString(evidence.LiveSession.Metadata["provider"])); got != "claude" {
 		t.Fatalf("live session provider = %q, want claude", got)
 	}
@@ -814,7 +866,10 @@ func TestRunHappyPath(t *testing.T) {
 		"bridge_db_path=" + fixture.dbPath,
 		"daemon_entry_stable=true",
 		"issue_identifier=MAES-28",
+		"issue_permission_profile=default",
+		"issue_state=ready",
 		"live_claude_session_seen=true",
+		"planning_present=false",
 		"tool_call_get_issue_execution=ok",
 		"tool_call_list_sessions=ok",
 		"tool_call_server_info=ok",
@@ -1746,6 +1801,52 @@ type probeRunFixture struct {
 	evidencePrefix    string
 }
 
+func seedProbeFixtureStore(t *testing.T, dbPath, issueIdentifier string) {
+	t.Helper()
+
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("create probe store: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close probe store: %v", err)
+		}
+	}()
+
+	projectPrefix := "MAES"
+	targetOrdinal := 28
+	if rawPrefix, rawOrdinal, ok := strings.Cut(issueIdentifier, "-"); ok {
+		if trimmedPrefix := strings.TrimSpace(rawPrefix); trimmedPrefix != "" {
+			projectPrefix = trimmedPrefix
+		}
+		if ordinal, err := strconv.Atoi(strings.TrimSpace(rawOrdinal)); err == nil && ordinal > 0 {
+			targetOrdinal = ordinal
+		}
+	}
+
+	project, err := store.CreateProject(projectPrefix, "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject(%q): %v", projectPrefix, err)
+	}
+	for i := 1; i < targetOrdinal; i++ {
+		if _, err := store.CreateIssue(project.ID, "", fmt.Sprintf("Seed issue %d", i), "", 0, nil); err != nil {
+			t.Fatalf("seed issue %d: %v", i, err)
+		}
+	}
+
+	issue, err := store.CreateIssue(project.ID, "", "Probe issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue probe: %v", err)
+	}
+	if issue.Identifier != issueIdentifier {
+		t.Fatalf("probe issue identifier = %q, want %q", issue.Identifier, issueIdentifier)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState(%s): %v", issueIdentifier, err)
+	}
+}
+
 func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 	t.Helper()
 
@@ -1791,6 +1892,8 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 	}))
 	t.Cleanup(dashboardServer.Close)
 	dashboardBaseURL := dashboardServer.URL + "/mcp"
+
+	seedProbeFixtureStore(t, absDBPath, issueIdentifier)
 
 	writeJSONFile(t, configPath, map[string]any{
 		"mcpServers": map[string]any{
