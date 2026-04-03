@@ -11,6 +11,8 @@ export default mergeConfig(
       globals: true,
       css: true,
       setupFiles: [path.resolve(__dirname, './src/test/setup.ts')],
+      // Keep the route-heavy jsdom suite stable under the full pre-push coverage pass.
+      maxWorkers: 2,
       hookTimeout: 15000,
       testTimeout: 15000,
     },

@@ -575,6 +575,74 @@ func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
 	}
 }
 
+func TestWorkflowInitSupportsPinnedNPXCodexCommandAndClaudeChecks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := t.TempDir()
+	npxCommand := writeFakePinnedNPXCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", npxCommand)
+	if code != 0 {
+		t.Fatalf("workflow init failed: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	for _, want := range []string{
+		"claude_version_status: ok",
+		"claude_auth_source_status: ok",
+		"claude_session_status: ok",
+		"claude_session_bare_mode: ok",
+		"claude_session_additional_directories: ok",
+		"runtime_claude: ok",
+		"runtime_default: ok",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected workflow init output to contain %q, got %q", want, stdout)
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	if !strings.Contains(string(data), "command: "+npxCommand) {
+		t.Fatalf("expected generated workflow to retain pinned npx command, got %q", string(data))
+	}
+}
+
+func TestSpecCheckSupportsClaudeDefaultWorkflow(t *testing.T) {
+	repoPath := t.TempDir()
+	schemaRoot := filepath.Join(repoRootFromCaller(t), "schemas", "codex", codexschema.SupportedVersion, "json")
+	for _, rel := range codexschema.ConsumedSchemaFiles {
+		src := filepath.Join(schemaRoot, rel)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatalf("read schema %s: %v", src, err)
+		}
+		dst := filepath.Join(repoPath, "schemas", "codex", codexschema.SupportedVersion, "json", rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatalf("mkdir schema dir: %v", err)
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			t.Fatalf("write schema %s: %v", dst, err)
+		}
+	}
+	writeClaudeWorkflow(t, repoPath, "claude")
+
+	code, stdout, stderr := runCLI(t, "spec-check", "--repo", repoPath)
+	if code != 0 {
+		t.Fatalf("spec-check failed: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	for _, want := range []string{
+		"Spec Check",
+		"workflow_load: ok",
+		"workflow_version: ok",
+		"workflow_prompt_render: ok",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected spec-check output to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
 func TestWorkflowInitOmitsSandboxFields(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()

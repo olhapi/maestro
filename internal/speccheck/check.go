@@ -48,9 +48,7 @@ func Run(repoRoot string) Report {
 	} else {
 		checks["workflow_load"] = "ok"
 
-		selectedName := strings.TrimSpace(workflow.Config.Runtime.Default)
-		selectedRuntime, found := workflow.Config.Runtime.RuntimeByName(selectedName)
-		if found && selectedRuntime.ExpectedVersion == codexschema.SupportedVersion {
+		if err := validateSelectedRuntimeModel(workflow.Config); err == nil {
 			checks["workflow_version"] = "ok"
 		} else {
 			ok = false
@@ -92,6 +90,36 @@ func Run(repoRoot string) Report {
 func validateWorkflowPromptRender(prompt string) error {
 	_, err := config.RenderLiquidTemplate(prompt, sampleWorkflowPromptContext())
 	return err
+}
+
+func validateSelectedRuntimeModel(cfg config.Config) error {
+	selectedName := strings.TrimSpace(cfg.Runtime.Default)
+	if selectedName == "" {
+		return fmt.Errorf("default runtime is empty")
+	}
+	selectedRuntime, ok := cfg.Runtime.RuntimeByName(selectedName)
+	if !ok {
+		return fmt.Errorf("default runtime %q is missing", selectedName)
+	}
+
+	switch strings.TrimSpace(selectedRuntime.Provider) {
+	case "codex":
+		transport := strings.TrimSpace(selectedRuntime.Transport)
+		if transport != string(agentruntime.TransportAppServer) && transport != string(agentruntime.TransportStdio) {
+			return fmt.Errorf("unsupported codex transport %q", selectedRuntime.Transport)
+		}
+		if selectedRuntime.ExpectedVersion != codexschema.SupportedVersion {
+			return fmt.Errorf("codex expected_version = %q", selectedRuntime.ExpectedVersion)
+		}
+		return nil
+	case "claude":
+		if strings.TrimSpace(selectedRuntime.Transport) != string(agentruntime.TransportStdio) {
+			return fmt.Errorf("unsupported claude transport %q", selectedRuntime.Transport)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported runtime provider %q", selectedRuntime.Provider)
+	}
 }
 
 func sampleWorkflowPromptContext() map[string]interface{} {

@@ -25,16 +25,17 @@ type claudeCommandParts struct {
 }
 
 type claudeCommandOptions struct {
-	CommandEnv           map[string]string
-	Executable           string
-	BareMode             bool
-	BareReason           string
-	PermissionMode       string
-	AllowedTools         []string
-	PermissionPromptTool string
-	SettingSources       []string
-	SettingsValues       []string
-	AdditionalDirFlag    bool
+	CommandEnv            map[string]string
+	Executable            string
+	BareMode              bool
+	BareReason            string
+	PermissionMode        string
+	AllowedTools          []string
+	PermissionPromptTool  string
+	SettingSources        []string
+	SettingsValues        []string
+	AdditionalDirFlag     bool
+	AdditionalDirectories []string
 }
 
 type claudeSettingsState struct {
@@ -95,8 +96,15 @@ func parseClaudeCommandOptions(command string) claudeCommandOptions {
 			if opts.BareReason == "" {
 				opts.BareReason = "--bare"
 			}
-		case token == "--add-dir" || strings.HasPrefix(token, "--add-dir="):
+		case token == "--add-dir":
 			opts.AdditionalDirFlag = true
+			if i+1 < len(tokens) {
+				opts.AdditionalDirectories = append(opts.AdditionalDirectories, tokens[i+1])
+				i++
+			}
+		case strings.HasPrefix(token, "--add-dir="):
+			opts.AdditionalDirFlag = true
+			opts.AdditionalDirectories = append(opts.AdditionalDirectories, strings.TrimPrefix(token, "--add-dir="))
 		case token == "--permission-mode":
 			if i+1 < len(tokens) {
 				opts.PermissionMode = tokens[i+1]
@@ -272,7 +280,9 @@ func detectClaudeSessionIssues(repoPath string, opts claudeCommandOptions, state
 	}
 
 	directories := append([]string(nil), state.AdditionalDirectories...)
-	if opts.AdditionalDirFlag && len(directories) == 0 {
+	if len(opts.AdditionalDirectories) > 0 {
+		directories = append(directories, opts.AdditionalDirectories...)
+	} else if opts.AdditionalDirFlag && len(directories) == 0 {
 		directories = append(directories, "--add-dir")
 	}
 
