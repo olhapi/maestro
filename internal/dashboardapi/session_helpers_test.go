@@ -169,3 +169,54 @@ func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
 		t.Fatalf("expected queued revision to clear waiting errors, got %+v", entry)
 	}
 }
+
+func TestBuildPersistedSessionFeedEntryMarksInterruptedSnapshotsInterrupted(t *testing.T) {
+	store, _ := setupDashboardServerTest(t, testProvider{})
+	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	snapshot := kanban.ExecutionSessionSnapshot{
+		IssueID:    "issue-1",
+		Identifier: "ISS-1",
+		Phase:      "implementation",
+		Attempt:    3,
+		RunKind:    "run_interrupted",
+		Error:      "run_interrupted",
+		StopReason: "run_interrupted",
+		UpdatedAt:  now,
+		AppSession: agentruntime.Session{
+			IssueID:         "issue-1",
+			IssueIdentifier: "ISS-1",
+			SessionID:       "claude-session-1",
+			ThreadID:        "claude-session-1",
+			LastEvent:       "turn.cancelled",
+			LastTimestamp:   now,
+			LastMessage:     "Interrupted while waiting",
+			Metadata: map[string]interface{}{
+				"provider":     "claude",
+				"transport":    "stdio",
+				"stop_reason":  "run_interrupted",
+				"auth_source":  "OAuth",
+				"runtime_name": "claude",
+			},
+		},
+	}
+
+	entry := buildPersistedSessionFeedEntry(
+		store,
+		snapshot,
+		observability.RetryEntry{},
+		observability.PausedEntry{},
+		nil,
+		nil,
+		"Interrupted issue",
+	)
+
+	if entry.Status != "interrupted" {
+		t.Fatalf("expected interrupted status, got %+v", entry)
+	}
+	if entry.FailureClass != "run_interrupted" || entry.Error != "run_interrupted" {
+		t.Fatalf("expected interrupted failure metadata, got %+v", entry)
+	}
+	if entry.StopReason != "run_interrupted" {
+		t.Fatalf("expected interrupted stop reason, got %+v", entry)
+	}
+}

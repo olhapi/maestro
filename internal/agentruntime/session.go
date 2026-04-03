@@ -130,10 +130,13 @@ func (s *Session) ApplyEvent(e Event) {
 	if s.MaxHistory <= 0 {
 		s.MaxHistory = DefaultSessionHistoryLimit
 	}
+	previousLastEvent := s.LastEvent
 	s.LastEvent = e.Type
 	s.LastTimestamp = time.Now().UTC()
 	if message, ok := sessionSummaryMessage(e); ok {
-		s.LastMessage = message
+		if !(e.Type == "item.agentMessage.delta" && strings.EqualFold(strings.TrimSpace(previousLastEvent), "item.completed") && strings.TrimSpace(s.LastMessage) != "") {
+			s.LastMessage = message
+		}
 	}
 	if e.ThreadID != "" {
 		s.ThreadID = e.ThreadID
@@ -433,6 +436,19 @@ func sessionSummaryMessage(e Event) (string, bool) {
 	}
 
 	switch e.Type {
+	case "item.started":
+		if strings.EqualFold(strings.TrimSpace(e.ItemType), "agentMessage") {
+			return message, true
+		}
+		return "", false
+	case "item.agentMessage.delta":
+		if !strings.EqualFold(strings.TrimSpace(e.ItemType), "agentMessage") {
+			return "", false
+		}
+		if message != "" {
+			return message, true
+		}
+		return strings.TrimSpace(e.Chunk), strings.TrimSpace(e.Chunk) != ""
 	case "item.completed":
 		if strings.EqualFold(strings.TrimSpace(e.ItemType), "agentMessage") {
 			return message, true

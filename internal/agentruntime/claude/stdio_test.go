@@ -61,7 +61,7 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 	waitForCondition(t, time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(sessions) >= 2 && len(activities) >= 2
+		return len(sessions) >= 3 && len(activities) >= 3
 	})
 
 	if started.SessionID != "claude-session-1" || started.ThreadID != "claude-session-1" {
@@ -129,11 +129,13 @@ func TestStdioRuntimeAttachesLiveMaestroMCPConfig(t *testing.T) {
 		t.Fatalf("expected settings overlay file to exist before close, got %v", err)
 	}
 
-	if len(activities) != 2 {
-		t.Fatalf("unexpected Claude activity count: %#v", activities)
-	}
-	if !hasActivityType(activities, "item.completed") || !hasActivityType(activities, "turn.completed") {
+	if !hasActivityType(activities, "item.started") ||
+		!hasActivityType(activities, "item.completed") ||
+		!hasActivityType(activities, "turn.completed") {
 		t.Fatalf("unexpected Claude activity stream: %#v", activities)
+	}
+	if !hasSessionEvent(sessions, "item.started") {
+		t.Fatalf("expected live session updates for streaming commentary, got %#v", sessions)
 	}
 
 	if err := client.Close(); err != nil {
@@ -304,7 +306,7 @@ func TestStdioRuntimeInterruptsOnContextCancellation(t *testing.T) {
 
 	waitForCondition(t, time.Second, func() bool {
 		session := client.Session()
-		return session != nil && session.LastEvent == "turn.started"
+		return session != nil && session.TurnsStarted == 1
 	})
 	waitForCondition(t, 5*time.Second, func() bool {
 		_, err := os.Stat(harness.streamMarkPath)
@@ -369,7 +371,7 @@ func TestStdioRuntimeCloseInterruptsActiveTurn(t *testing.T) {
 
 	waitForCondition(t, time.Second, func() bool {
 		session := client.Session()
-		return session != nil && session.LastEvent == "turn.started"
+		return session != nil && session.TurnsStarted == 1
 	})
 	waitForCondition(t, 5*time.Second, func() bool {
 		_, err := os.Stat(harness.streamMarkPath)
@@ -419,6 +421,59 @@ func TestStdioRuntimeCloseInterruptsActiveTurn(t *testing.T) {
 	}
 	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
 		t.Fatalf("expected settings overlay file to be removed on close, got %v", err)
+	}
+}
+
+func TestRecordClaudeStreamDeltaPreservesLeadingWhitespace(t *testing.T) {
+	activityCh := make(chan agentruntime.ActivityEvent, 2)
+	client := &stdioClient{
+		spec: agentruntime.RuntimeSpec{
+			IssueID:         "iss-1",
+			IssueIdentifier: "ISS-1",
+		},
+		session: agentruntime.Session{
+			IssueID:         "iss-1",
+			IssueIdentifier: "ISS-1",
+			Metadata:        runtimeMetadata(""),
+			MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+		},
+		observers: agentruntime.Observers{
+			OnActivityEvent: func(event agentruntime.ActivityEvent) {
+				activityCh <- event.Clone()
+			},
+		},
+	}
+	client.recordClaudeSessionID("claude-session-1")
+
+	state := &claudeTurnState{
+		turnID:    "turn-1",
+		itemPhase: "commentary",
+	}
+	state.streamedOutput.WriteString("Plan")
+	client.recordClaudeStreamDelta(state, "Plan")
+	state.streamedOutput.WriteString(" the fix")
+	client.recordClaudeStreamDelta(state, " the fix")
+
+	var events []agentruntime.ActivityEvent
+	waitForCondition(t, time.Second, func() bool {
+		for len(events) < 2 {
+			select {
+			case event := <-activityCh:
+				events = append(events, event)
+			default:
+				return false
+			}
+		}
+		return true
+	})
+
+	if !hasActivityType(events, "item.started") || !hasActivityType(events, "item.agentMessage.delta") {
+		t.Fatalf("expected started and delta activity events, got %#v", events)
+	}
+	for _, event := range events {
+		if event.Type == "item.agentMessage.delta" && event.Delta != " the fix" {
+			t.Fatalf("expected delta whitespace to be preserved, got %#v", event)
+		}
 	}
 }
 
@@ -644,6 +699,15 @@ func argValueAfter(t *testing.T, args []string, flag string) string {
 func hasActivityType(events []agentruntime.ActivityEvent, want string) bool {
 	for _, event := range events {
 		if event.Type == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSessionEvent(events []agentruntime.Session, want string) bool {
+	for _, event := range events {
+		if event.LastEvent == want {
 			return true
 		}
 	}

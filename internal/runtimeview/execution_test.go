@@ -449,6 +449,61 @@ func TestIssueExecutionPayloadClearsHistoricalFailureForActiveRecoveredRun(t *te
 	}
 }
 
+func TestIssueExecutionPayloadIncludesInterruptedStopReason(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Interrupted issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	now := time.Date(2026, 4, 3, 13, 0, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      "implementation",
+		Attempt:    2,
+		RunKind:    "run_interrupted",
+		Error:      "run_interrupted",
+		StopReason: "run_interrupted",
+		UpdatedAt:  now,
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "claude-session-1",
+			ThreadID:        "claude-session-1",
+			LastEvent:       "turn.cancelled",
+			LastTimestamp:   now,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+	if err := store.AppendRuntimeEvent("run_interrupted", map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"phase":      "implementation",
+		"attempt":    2,
+		"error":      "run_interrupted",
+	}); err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, nil, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["failure_class"] != "run_interrupted" {
+		t.Fatalf("expected run_interrupted failure class, got %#v", payload["failure_class"])
+	}
+	if payload["stop_reason"] != "run_interrupted" {
+		t.Fatalf("expected run_interrupted stop reason, got %#v", payload["stop_reason"])
+	}
+}
+
 func TestIssueExecutionPayloadClearsHistoricalFailureAfterRunCompletedSuccess(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

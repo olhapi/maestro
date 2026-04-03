@@ -712,9 +712,9 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context, syncProvider b
 
 		dispatchable, reason, _ := o.isDispatchable(workflow, issue)
 		errText := "run_interrupted"
-		resumeThreadID, resumeMode := classifyOrphanedResume(workflow, persisted)
+		resumeThreadID, resumeMode := o.classifyOrphanedResume(workflow, issue, persisted)
 		immediateResume := resumeMode != ""
-		o.persistExecutionSession(issue, phase, attempt, "run_interrupted", errText, false, "", session)
+		o.persistExecutionSession(issue, phase, attempt, "run_interrupted", errText, false, errText, session)
 		if err := o.store.CompactIssueActivityAttemptDiagnostic(issue.ID, attempt); err != nil {
 			slog.Warn("Failed to compact interrupted issue activity",
 				issueLogAttrs(issue, attempt, "phase", phase, "error", err)...,
@@ -837,12 +837,16 @@ func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhas
 	return phase, attempt, session, persisted, false, nil
 }
 
-func classifyOrphanedResume(workflow *config.Workflow, persisted *kanban.ExecutionSessionSnapshot) (string, string) {
-	if !isAppServerWorkflow(workflow) || persisted == nil {
+func (o *Orchestrator) classifyOrphanedResume(workflow *config.Workflow, issue *kanban.Issue, persisted *kanban.ExecutionSessionSnapshot) (string, string) {
+	if persisted == nil {
 		return "", ""
 	}
 	threadID := strings.TrimSpace(persisted.AppSession.ThreadID)
 	if threadID == "" {
+		return "", ""
+	}
+	runtimeConfig, ok := o.selectedRuntimeConfig(workflow, issue)
+	if !ok || !runtimeConfigSupportsResume(runtimeConfig) {
 		return "", ""
 	}
 	if persisted.ResumeEligible && strings.TrimSpace(persisted.StopReason) == gracefulShutdownStopReason {
@@ -852,6 +856,45 @@ func classifyOrphanedResume(workflow *config.Workflow, persisted *kanban.Executi
 		return threadID, "opportunistic"
 	}
 	return "", ""
+}
+
+func (o *Orchestrator) selectedRuntimeConfig(workflow *config.Workflow, issue *kanban.Issue) (config.RuntimeConfig, bool) {
+	if workflow == nil {
+		return config.RuntimeConfig{}, false
+	}
+
+	_, selected := workflow.Config.SelectedRuntime()
+	if issue == nil {
+		return selected, true
+	}
+	if runtimeName := strings.TrimSpace(issue.RuntimeName); runtimeName != "" {
+		if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(runtimeName); ok {
+			return runtimeConfig, true
+		}
+	}
+	if o.store != nil && strings.TrimSpace(issue.ProjectID) != "" {
+		if project, err := o.store.GetProject(issue.ProjectID); err == nil && project != nil {
+			if runtimeName := strings.TrimSpace(project.RuntimeName); runtimeName != "" {
+				if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(runtimeName); ok {
+					return runtimeConfig, true
+				}
+			}
+		}
+	}
+	return selected, true
+}
+
+func runtimeConfigSupportsResume(runtime config.RuntimeConfig) bool {
+	provider := strings.TrimSpace(runtime.Provider)
+	transport := strings.TrimSpace(runtime.Transport)
+	switch {
+	case provider == string(agentruntime.ProviderClaude) && transport == string(agentruntime.TransportStdio):
+		return true
+	case provider == string(agentruntime.ProviderCodex) && transport == string(agentruntime.TransportAppServer):
+		return true
+	default:
+		return false
+	}
 }
 
 func isAppServerWorkflow(workflow *config.Workflow) bool {
@@ -1751,7 +1794,7 @@ func (o *Orchestrator) handleInterruptedRunLocked(issue *kanban.Issue, phase kan
 	if o.shouldPauseRunLocked(issue.ID, errText) {
 		o.pauseRetryLocked(issue, next, phase, errText, nil)
 		if session != nil {
-			o.persistExecutionSession(issue, phase, next, "retry_paused", errText, false, "", session)
+			o.persistExecutionSession(issue, phase, next, "retry_paused", errText, false, errText, session)
 		}
 		return next, true
 	}

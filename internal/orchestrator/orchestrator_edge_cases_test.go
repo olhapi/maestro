@@ -21,6 +21,46 @@ func (failingCleanupRunner) RunAttempt(context.Context, *kanban.Issue, int) (*ag
 	return &agent.RunResult{Success: true}, nil
 }
 
+func TestClassifyOrphanedResumeSupportsClaudeStdio(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+
+	issue, err := store.CreateIssue("", "", "Claude orphan", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Runtime.Default = "claude"
+
+	threadID, mode := orch.classifyOrphanedResume(workflow, issue, &kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		RunKind:    "run_started",
+		AppSession: agentruntime.Session{
+			ThreadID:  "claude-session-1",
+			SessionID: "claude-session-1",
+		},
+	})
+	if threadID != "claude-session-1" || mode != "opportunistic" {
+		t.Fatalf("expected claude stdio orphan to resume opportunistically, got thread=%q mode=%q", threadID, mode)
+	}
+
+	workflow.Config.Runtime.Default = "codex-stdio"
+	threadID, mode = orch.classifyOrphanedResume(workflow, issue, &kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		RunKind:    "run_started",
+		AppSession: agentruntime.Session{
+			ThreadID:  "codex-thread-1",
+			SessionID: "codex-thread-1",
+		},
+	})
+	if threadID != "" || mode != "" {
+		t.Fatalf("expected non-resumable codex stdio orphan to skip resume, got thread=%q mode=%q", threadID, mode)
+	}
+}
+
 func TestOrchestratorCoverageRecurringRerunBranches(t *testing.T) {
 	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
 	enablePhaseWorkflow(t, manager, workspaceRoot)

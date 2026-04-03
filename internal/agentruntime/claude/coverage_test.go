@@ -257,15 +257,19 @@ func TestStdioRuntimeEmitsLifecycleAndObservers(t *testing.T) {
 		t.Fatalf("expected turn counters to update, got %+v", session)
 	}
 
-	updates := collectSessions(t, sessionCh, 2)
-	if updates[0].LastEvent != "turn.started" || updates[1].LastEvent != "turn.completed" {
+	updates := collectSessions(t, sessionCh, 3)
+	if updates[0].LastEvent != "turn.started" || updates[1].LastEvent != "item.started" || updates[2].LastEvent != "turn.completed" {
 		t.Fatalf("unexpected session updates: %+v", updates)
 	}
 
-	events := collectActivityEvents(t, activityCh, 2)
+	events := collectActivityEvents(t, activityCh, 3)
+	foundItemStarted := false
 	foundItemCompleted := false
 	foundTurnCompleted := false
 	for _, event := range events {
+		if event.Type == "item.started" {
+			foundItemStarted = true
+		}
 		if event.Type == "item.completed" {
 			foundItemCompleted = true
 		}
@@ -276,7 +280,7 @@ func TestStdioRuntimeEmitsLifecycleAndObservers(t *testing.T) {
 			t.Fatalf("expected activity metadata to identify claude stdio, got %+v", event.Metadata)
 		}
 	}
-	if !foundItemCompleted || !foundTurnCompleted {
+	if !foundItemStarted || !foundItemCompleted || !foundTurnCompleted {
 		t.Fatalf("unexpected activity events: %+v", events)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +22,9 @@ import (
 )
 
 type options struct {
+	mode                 string
+	issueIdentifier      string
+	streamMarker         string
 	mcpConfig            string
 	settings             string
 	dbPath               string
@@ -84,8 +89,29 @@ type listIssuesData struct {
 	Pagination interface{}   `json:"pagination"`
 }
 
+type executionObservation struct {
+	Active           bool                 `json:"active"`
+	SessionSource    string               `json:"session_source,omitempty"`
+	FailureClass     string               `json:"failure_class,omitempty"`
+	StopReason       string               `json:"stop_reason,omitempty"`
+	RuntimeName      string               `json:"runtime_name,omitempty"`
+	RuntimeProvider  string               `json:"runtime_provider,omitempty"`
+	RuntimeTransport string               `json:"runtime_transport,omitempty"`
+	StreamMarker     string               `json:"stream_marker,omitempty"`
+	StreamSeen       bool                 `json:"stream_seen"`
+	Session          agentruntime.Session `json:"session,omitempty"`
+}
+
+type dashboardSessionObservation struct {
+	Status     string `json:"status,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+	Source     string `json:"source,omitempty"`
+}
+
 type probeEvidence struct {
-	Bridge struct {
+	Mode            string `json:"mode,omitempty"`
+	IssueIdentifier string `json:"issue_identifier,omitempty"`
+	Bridge          struct {
 		ServerName           string   `json:"server_name"`
 		Command              string   `json:"command"`
 		Args                 []string `json:"args"`
@@ -111,14 +137,19 @@ type probeEvidence struct {
 	ListIssues struct {
 		Total int `json:"total"`
 	} `json:"list_issues"`
-	RuntimeSnapshot map[string]interface{} `json:"runtime_snapshot"`
-	LiveSessionSeen bool                   `json:"live_session_seen"`
-	LiveSessionKey  string                 `json:"live_session_key,omitempty"`
-	LiveSession     agentruntime.Session   `json:"live_session,omitempty"`
+	RuntimeSnapshot  map[string]interface{}      `json:"runtime_snapshot"`
+	Execution        executionObservation        `json:"execution"`
+	DashboardSession dashboardSessionObservation `json:"dashboard_session"`
+	LiveSessionSeen  bool                        `json:"live_session_seen"`
+	LiveSessionKey   string                      `json:"live_session_key,omitempty"`
+	LiveSession      agentruntime.Session        `json:"live_session,omitempty"`
 }
 
 func main() {
 	var opts options
+	flag.StringVar(&opts.mode, "mode", "live", "Probe mode: live or final")
+	flag.StringVar(&opts.issueIdentifier, "issue-identifier", "", "Issue identifier to inspect")
+	flag.StringVar(&opts.streamMarker, "stream-marker", "", "Expected live stream marker")
 	flag.StringVar(&opts.mcpConfig, "mcp-config", "", "Path to the generated Claude MCP config")
 	flag.StringVar(&opts.settings, "settings", "", "Path to the generated Claude settings overlay")
 	flag.StringVar(&opts.dbPath, "db", "", "Expected Maestro database path")
@@ -197,6 +228,7 @@ func run(opts options) error {
 	}
 
 	evidence := probeEvidence{}
+	evidence.Mode = strings.TrimSpace(opts.mode)
 	evidence.Bridge.ServerName = serverName
 	evidence.Bridge.Command = server.Command
 	evidence.Bridge.Args = append([]string(nil), server.Args...)
@@ -234,7 +266,7 @@ func run(opts options) error {
 	}
 	toolNames := sortedToolNames(tools.Tools)
 	evidence.Bridge.ToolNames = toolNames
-	for _, want := range []string{"server_info", "create_issue", "list_issues", "get_runtime_snapshot", "list_sessions"} {
+	for _, want := range []string{"server_info", "create_issue", "list_issues", "get_issue_execution", "get_runtime_snapshot", "list_sessions"} {
 		if !containsString(toolNames, want) {
 			return fmt.Errorf("expected tool %q in bridge surface, got %s", want, strings.Join(toolNames, ","))
 		}
@@ -269,6 +301,11 @@ func run(opts options) error {
 		return fmt.Errorf("decode list_issues: %w", err)
 	}
 	evidence.ListIssues.Total = listIssues.Total
+	issueIdentifier := resolveIssueIdentifier(strings.TrimSpace(opts.issueIdentifier), listIssues)
+	if issueIdentifier == "" {
+		return errors.New("did not find an issue identifier to inspect from list_issues")
+	}
+	evidence.IssueIdentifier = issueIdentifier
 
 	runtimeSnapshotEnvelope, err := callToolEnvelope(ctx, client, "get_runtime_snapshot", map[string]interface{}{})
 	if err != nil {
@@ -280,13 +317,27 @@ func run(opts options) error {
 	}
 	evidence.RuntimeSnapshot = runtimeSnapshot
 
-	sessionKey, liveSession, err := waitForClaudeSession(ctx, client)
+	execution, err := waitForExecutionObservation(ctx, client, issueIdentifier, strings.TrimSpace(opts.mode), strings.TrimSpace(opts.streamMarker))
 	if err != nil {
 		return err
 	}
-	evidence.LiveSessionSeen = true
-	evidence.LiveSessionKey = sessionKey
-	evidence.LiveSession = liveSession
+	evidence.Execution = execution
+
+	dashboardSession, err := waitForDashboardSessionObservation(ctx, entryBefore, issueIdentifier, strings.TrimSpace(opts.mode))
+	if err != nil {
+		return err
+	}
+	evidence.DashboardSession = dashboardSession
+
+	if strings.EqualFold(strings.TrimSpace(opts.mode), "live") {
+		sessionKey, liveSession, err := waitForClaudeSession(ctx, client)
+		if err != nil {
+			return err
+		}
+		evidence.LiveSessionSeen = true
+		evidence.LiveSessionKey = sessionKey
+		evidence.LiveSession = liveSession
+	}
 
 	entriesAfter, err := loadDaemonEntries(opts.registryDir)
 	if err != nil {
@@ -521,6 +572,182 @@ func waitForClaudeSession(ctx context.Context, client *mcpclient.Client) (string
 	}
 }
 
+func resolveIssueIdentifier(requested string, listIssues listIssuesData) string {
+	if requested = strings.TrimSpace(requested); requested != "" {
+		return requested
+	}
+	for _, raw := range listIssues.Items {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		identifier := strings.TrimSpace(asString(item["identifier"]))
+		if identifier == "" {
+			continue
+		}
+		state := strings.TrimSpace(asString(item["state"]))
+		if state == "ready" || state == "in_progress" {
+			return identifier
+		}
+		if requested == "" {
+			requested = identifier
+		}
+	}
+	return requested
+}
+
+func waitForExecutionObservation(ctx context.Context, client *mcpclient.Client, issueIdentifier, mode, streamMarker string) (executionObservation, error) {
+	deadline := time.Now().Add(12 * time.Second)
+	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
+	marker := strings.TrimSpace(streamMarker)
+	if marker == "" {
+		marker = "STREAM:" + issueIdentifier + ":"
+	}
+	for {
+		envelope, err := callToolEnvelope(ctx, client, "get_issue_execution", map[string]interface{}{
+			"identifier": issueIdentifier,
+		})
+		if err == nil {
+			raw := map[string]interface{}{}
+			if decodeErr := decodeData(envelope, &raw); decodeErr == nil {
+				observation := executionObservation{
+					Active:           boolFromMap(raw, "active"),
+					SessionSource:    strings.TrimSpace(asString(raw["session_source"])),
+					FailureClass:     strings.TrimSpace(asString(raw["failure_class"])),
+					StopReason:       strings.TrimSpace(asString(raw["stop_reason"])),
+					RuntimeName:      strings.TrimSpace(asString(raw["runtime_name"])),
+					RuntimeProvider:  strings.TrimSpace(asString(raw["runtime_provider"])),
+					RuntimeTransport: strings.TrimSpace(asString(raw["runtime_transport"])),
+					StreamMarker:     marker,
+				}
+				if session, ok := agentruntime.SessionFromAny(raw["session"]); ok {
+					observation.Session = session
+				}
+				if marker != "" && strings.Contains(observation.Session.LastMessage, marker) {
+					observation.StreamSeen = true
+				}
+				if liveMode {
+					if observation.Active &&
+						observation.SessionSource == "live" &&
+						strings.TrimSpace(observation.Session.ThreadID) != "" &&
+						strings.TrimSpace(observation.Session.SessionID) != "" &&
+						observation.StreamSeen {
+						return observation, nil
+					}
+				} else {
+					if !observation.Active &&
+						observation.SessionSource == "persisted" &&
+						strings.TrimSpace(observation.Session.ThreadID) != "" &&
+						strings.TrimSpace(observation.Session.SessionID) != "" {
+						return observation, nil
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			if liveMode {
+				return executionObservation{}, fmt.Errorf("did not observe live issue execution for %s", issueIdentifier)
+			}
+			return executionObservation{}, fmt.Errorf("did not observe persisted issue execution for %s", issueIdentifier)
+		}
+		select {
+		case <-ctx.Done():
+			return executionObservation{}, errors.New("did not observe issue execution before context deadline")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func waitForDashboardSessionObservation(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, mode string) (dashboardSessionObservation, error) {
+	deadline := time.Now().Add(12 * time.Second)
+	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
+	for {
+		observation, ok, err := dashboardSessionObservationForIssue(entry, issueIdentifier)
+		if err == nil && ok {
+			if liveMode {
+				if observation.Source == "live" {
+					return observation, nil
+				}
+			} else if observation.Source == "persisted" {
+				return observation, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			if liveMode {
+				return dashboardSessionObservation{}, fmt.Errorf("did not observe live dashboard session for %s", issueIdentifier)
+			}
+			return dashboardSessionObservation{}, fmt.Errorf("did not observe persisted dashboard session for %s", issueIdentifier)
+		}
+		select {
+		case <-ctx.Done():
+			return dashboardSessionObservation{}, errors.New("did not observe dashboard session before context deadline")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIdentifier string) (dashboardSessionObservation, bool, error) {
+	baseURL := strings.TrimSpace(entry.BaseURL)
+	baseURL = strings.TrimSuffix(baseURL, "/mcp")
+	if baseURL == "" {
+		return dashboardSessionObservation{}, false, errors.New("daemon registry base_url missing")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/app/sessions", nil)
+	if err != nil {
+		return dashboardSessionObservation{}, false, err
+	}
+	if token := strings.TrimSpace(entry.BearerToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return dashboardSessionObservation{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return dashboardSessionObservation{}, false, fmt.Errorf("dashboard sessions returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return dashboardSessionObservation{}, false, err
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return dashboardSessionObservation{}, false, err
+	}
+	rawEntries, _ := payload["entries"].([]interface{})
+	for _, raw := range rawEntries {
+		entryMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(asString(entryMap["issue_identifier"])) != issueIdentifier {
+			continue
+		}
+		return dashboardSessionObservation{
+			Status:     strings.TrimSpace(asString(entryMap["status"])),
+			StopReason: strings.TrimSpace(asString(entryMap["stop_reason"])),
+			Source:     strings.TrimSpace(asString(entryMap["source"])),
+		}, true, nil
+	}
+	return dashboardSessionObservation{}, false, nil
+}
+
+func boolFromMap(raw map[string]interface{}, key string) bool {
+	value, ok := raw[key]
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	default:
+		return false
+	}
+}
+
 func sameDaemonEntry(a, b maestromcp.DaemonEntry) bool {
 	return a.StoreID == b.StoreID &&
 		filepath.Clean(a.DBPath) == filepath.Clean(b.DBPath) &&
@@ -551,8 +778,26 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		fmt.Sprintf("daemon_registry_entries_after=%d", evidence.Daemon.EntriesAfter),
 		fmt.Sprintf("daemon_registry_entries_before=%d", evidence.Daemon.EntriesBefore),
 		fmt.Sprintf("daemon_store_id=%s", evidence.Daemon.EntryBefore.StoreID),
+		"dashboard_session_source=" + evidence.DashboardSession.Source,
+		"dashboard_session_status=" + evidence.DashboardSession.Status,
+		"dashboard_session_stop_reason=" + evidence.DashboardSession.StopReason,
+		fmt.Sprintf("execution_active=%t", evidence.Execution.Active),
+		"execution_failure_class=" + evidence.Execution.FailureClass,
+		"execution_runtime_name=" + evidence.Execution.RuntimeName,
+		"execution_runtime_provider=" + evidence.Execution.RuntimeProvider,
+		"execution_runtime_transport=" + evidence.Execution.RuntimeTransport,
+		"execution_session_identifier_strategy=" + strings.TrimSpace(asString(evidence.Execution.Session.Metadata["session_identifier_strategy"])),
+		"execution_session_id=" + strings.TrimSpace(evidence.Execution.Session.SessionID),
+		"execution_session_source=" + evidence.Execution.SessionSource,
+		"execution_stop_reason=" + evidence.Execution.StopReason,
+		"execution_stream_marker=" + evidence.Execution.StreamMarker,
+		fmt.Sprintf("execution_stream_seen=%t", evidence.Execution.StreamSeen),
+		"execution_thread_id=" + strings.TrimSpace(evidence.Execution.Session.ThreadID),
+		"execution_provider_session_id=" + strings.TrimSpace(asString(evidence.Execution.Session.Metadata["provider_session_id"])),
 		"expected_tools_present=true",
+		"issue_identifier=" + evidence.IssueIdentifier,
 		fmt.Sprintf("live_claude_session_seen=%t", evidence.LiveSessionSeen),
+		"mode=" + evidence.Mode,
 		"permission_mode=" + evidence.Bridge.PermissionMode,
 		"permission_prompt_tool=" + evidence.Bridge.PermissionPromptTool,
 		fmt.Sprintf("server_db_path=%s", evidence.ServerInfo.Meta.DBPath),
@@ -563,6 +808,7 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		fmt.Sprintf("settings_include_git_instructions=%t", evidence.Settings.IncludeGitInstructions),
 		fmt.Sprintf("settings_use_auto_mode_during_plan=%t", evidence.Settings.UseAutoModeDuringPlan),
 		fmt.Sprintf("strict_mcp_config=%t", evidence.Bridge.StrictMCPConfig),
+		"tool_call_get_issue_execution=ok",
 		"tool_call_get_runtime_snapshot=ok",
 		"tool_call_list_issues=ok",
 		"tool_call_list_sessions=ok",
