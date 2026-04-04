@@ -228,7 +228,8 @@ func claudeAuthSourceFromEnvironment(env map[string]string, state claudeSettings
 		return "cloud provider", detail, "ok"
 	}
 	if claudeEnvValue(env, "ANTHROPIC_AUTH_TOKEN") != "" {
-		return "ANTHROPIC_AUTH_TOKEN", "", "warn"
+		// Claude stores the first-party login token in ANTHROPIC_AUTH_TOKEN.
+		return "OAuth", "claude.ai", "ok"
 	}
 	if claudeEnvValue(env, "ANTHROPIC_API_KEY") != "" {
 		return "ANTHROPIC_API_KEY", "", "warn"

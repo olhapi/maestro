@@ -1318,6 +1318,9 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 				deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
 			}
 		}); err != nil {
+			if _, refreshed, refreshErr := r.currentWorkflowIssue(activeWorkflow, issue); refreshErr == nil && issueStateIsTerminalDone(refreshed, client.Session()) {
+				return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+			}
 			return &RunResult{
 				Success:    false,
 				Output:     client.Output(),
@@ -1326,6 +1329,9 @@ func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, wo
 			}, nil
 		}
 		if deliverErr != nil {
+			if _, refreshed, refreshErr := r.currentWorkflowIssue(activeWorkflow, issue); refreshErr == nil && issueStateIsTerminalDone(refreshed, client.Session()) {
+				return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+			}
 			return &RunResult{
 				Success:    false,
 				Output:     client.Output(),
@@ -1727,6 +1733,28 @@ func shouldContinueRunPhase(workflow *config.Workflow, runPhase kanban.WorkflowP
 		return false
 	default:
 		return issue.State != kanban.StateInReview && isActiveState(workflow, string(issue.State))
+	}
+}
+
+func issueStateIsTerminalDone(issue *kanban.Issue, session *agentruntime.Session) bool {
+	if issue == nil || issue.State != kanban.StateDone {
+		return false
+	}
+	if session == nil {
+		return true
+	}
+	switch strings.TrimSpace(session.TerminalReason) {
+	case "", "turn.completed", "session.completed":
+		return true
+	case "turn.failed":
+		if session.Metadata != nil {
+			if stopReason, ok := session.Metadata["claude_stop_reason"]; ok && strings.EqualFold(strings.TrimSpace(fmt.Sprint(stopReason)), "end_turn") {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
 }
 
