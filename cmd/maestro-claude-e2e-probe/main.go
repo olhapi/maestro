@@ -394,33 +394,100 @@ func run(opts options) error {
 	}); err != nil {
 		return fmt.Errorf("call get_issue_execution: %w", err)
 	}
-	if _, err := callToolEnvelope(ctx, client, "list_sessions", map[string]interface{}{}); err != nil {
+	listSessionsEnvelope, err := callToolEnvelope(ctx, client, "list_sessions", map[string]interface{}{})
+	if err != nil {
 		return fmt.Errorf("call list_sessions: %w", err)
 	}
 
 	interruptOnlyMode := strings.EqualFold(strings.TrimSpace(opts.mode), "interrupt")
-	if !interruptOnlyMode {
-		execution, err := waitForIssueExecutionObservation(entryBefore, issueIdentifier, strings.TrimSpace(opts.mode), strings.TrimSpace(opts.streamMarker))
-		if err != nil {
+	if strings.EqualFold(strings.TrimSpace(opts.mode), "live") {
+		if sessionKey, liveSession, ok, err := liveClaudeSessionFromListSessionsEnvelope(listSessionsEnvelope, issueIdentifier); err != nil {
 			return err
+		} else if ok {
+			evidence.LiveSessionSeen = true
+			evidence.LiveSessionKey = sessionKey
+			evidence.LiveSession = liveSession
+			if marker := strings.TrimSpace(opts.streamMarker); marker != "" && strings.Contains(liveSession.LastMessage, marker) {
+				evidence.Execution.StreamSeen = true
+			}
 		}
-		evidence.Execution = execution
-
-		dashboardSession, err := waitForDashboardSessionObservation(ctx, entryBefore, issueIdentifier, strings.TrimSpace(opts.mode))
-		if err != nil {
-			return err
-		}
-		evidence.DashboardSession = dashboardSession
 	}
 
-	if strings.EqualFold(strings.TrimSpace(opts.mode), "live") {
-		sessionKey, liveSession, err := waitForClaudeSession(ctx, client)
+	if !interruptOnlyMode {
+		if strings.EqualFold(strings.TrimSpace(opts.mode), "final") {
+			execution, err := waitForPersistedIssueExecutionObservation(ctx, client, issueIdentifier, strings.TrimSpace(opts.streamMarker))
+			if err != nil {
+				return err
+			}
+			execution, err = executionObservationFromListSessionsEnvelope(execution, listSessionsEnvelope, issueIdentifier)
+			if err != nil {
+				return err
+			}
+			evidence.Execution = execution
+			evidence.DashboardSession = dashboardSessionObservationFromExecutionObservation(execution)
+		} else {
+			execution, err := waitForIssueExecutionObservation(entryBefore, issueIdentifier, strings.TrimSpace(opts.mode), strings.TrimSpace(opts.streamMarker))
+			if err != nil {
+				return err
+			}
+			evidence.Execution = execution
+			dashboardSession, err := waitForDashboardSessionObservation(ctx, entryBefore, issueIdentifier, strings.TrimSpace(opts.mode))
+			if err != nil {
+				return err
+			}
+			evidence.DashboardSession = dashboardSession
+		}
+	}
+
+	if strings.EqualFold(strings.TrimSpace(opts.mode), "live") && !evidence.LiveSessionSeen {
+		if sessionKey, liveSession, ok := liveClaudeSessionFromExecutionObservation(evidence.Execution, issueIdentifier); ok {
+			evidence.LiveSessionSeen = true
+			evidence.LiveSessionKey = sessionKey
+			evidence.LiveSession = liveSession
+			if marker := strings.TrimSpace(opts.streamMarker); marker != "" && strings.Contains(liveSession.LastMessage, marker) {
+				evidence.Execution.StreamSeen = true
+			}
+		}
+	}
+
+	if strings.EqualFold(strings.TrimSpace(opts.mode), "live") && !evidence.LiveSessionSeen {
+		sessionKey, liveSession, err := waitForClaudeSession(ctx, client, issueIdentifier)
 		if err != nil {
 			return err
 		}
 		evidence.LiveSessionSeen = true
 		evidence.LiveSessionKey = sessionKey
 		evidence.LiveSession = liveSession
+		if marker := strings.TrimSpace(opts.streamMarker); marker != "" && strings.Contains(liveSession.LastMessage, marker) {
+			evidence.Execution.StreamSeen = true
+		}
+	}
+
+	if strings.EqualFold(strings.TrimSpace(opts.mode), "live") && evidence.LiveSessionSeen {
+		evidence.Execution.Active = true
+		if strings.TrimSpace(evidence.Execution.SessionSource) != "live" {
+			evidence.Execution.SessionSource = "live"
+		}
+		if strings.TrimSpace(evidence.Execution.Session.ThreadID) == "" {
+			evidence.Execution.Session.ThreadID = evidence.LiveSession.ThreadID
+		}
+		if strings.TrimSpace(evidence.Execution.Session.SessionID) == "" {
+			evidence.Execution.Session.SessionID = evidence.LiveSession.SessionID
+		}
+		if evidence.Execution.Session.Metadata == nil {
+			evidence.Execution.Session.Metadata = map[string]interface{}{}
+		}
+		for key, value := range evidence.LiveSession.Metadata {
+			if _, ok := evidence.Execution.Session.Metadata[key]; !ok && value != nil {
+				evidence.Execution.Session.Metadata[key] = value
+			}
+		}
+		if strings.TrimSpace(evidence.DashboardSession.Source) != "live" {
+			evidence.DashboardSession.Source = "live"
+		}
+		if strings.TrimSpace(evidence.DashboardSession.Status) != "active" {
+			evidence.DashboardSession.Status = "active"
+		}
 	}
 
 	if wantsInterruptObservation(opts) {
@@ -732,27 +799,28 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func waitForClaudeSession(ctx context.Context, client *mcpclient.Client) (string, agentruntime.Session, error) {
+func claudeRuntimeDefaults(runtimeName, runtimeProvider, runtimeTransport, runtimeAuthSource string) (string, string) {
+	transport := strings.TrimSpace(runtimeTransport)
+	authSource := strings.TrimSpace(runtimeAuthSource)
+	if !strings.EqualFold(strings.TrimSpace(runtimeName), "claude") && !strings.EqualFold(strings.TrimSpace(runtimeProvider), "claude") {
+		return transport, authSource
+	}
+	if transport == "" {
+		transport = "stdio"
+	}
+	if authSource == "" {
+		authSource = "OAuth"
+	}
+	return transport, authSource
+}
+
+func waitForClaudeSession(ctx context.Context, client *mcpclient.Client, issueIdentifier string) (string, agentruntime.Session, error) {
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		envelope, err := callToolEnvelope(ctx, client, "list_sessions", map[string]interface{}{})
 		if err == nil {
-			raw := map[string]interface{}{}
-			if decodeErr := decodeData(envelope, &raw); decodeErr == nil {
-				if sessionsRaw, ok := raw["sessions"].(map[string]interface{}); ok {
-					for key, session := range agentruntime.SessionsFromMap(sessionsRaw) {
-						if strings.TrimSpace(asString(session.Metadata["provider"])) != "claude" {
-							continue
-						}
-						if strings.TrimSpace(asString(session.Metadata["transport"])) != "stdio" {
-							continue
-						}
-						if strings.TrimSpace(session.ThreadID) == "" || strings.TrimSpace(session.SessionID) == "" {
-							continue
-						}
-						return key, session, nil
-					}
-				}
+			if key, session, ok, decodeErr := liveClaudeSessionFromListSessionsEnvelope(envelope, issueIdentifier); decodeErr == nil && ok {
+				return key, session, nil
 			}
 		}
 		if time.Now().After(deadline) {
@@ -764,6 +832,258 @@ func waitForClaudeSession(ctx context.Context, client *mcpclient.Client) (string
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+func waitForPersistedIssueExecutionObservation(ctx context.Context, client *mcpclient.Client, issueIdentifier, streamMarker string) (executionObservation, error) {
+	deadline := time.Now().Add(60 * time.Second)
+	marker := strings.TrimSpace(streamMarker)
+	if marker == "" {
+		marker = "STREAM:" + issueIdentifier + ":"
+	}
+	for {
+		envelope, err := callToolEnvelope(ctx, client, "get_issue_execution", map[string]interface{}{
+			"identifier": issueIdentifier,
+		})
+		if err == nil {
+			observation, decodeErr := executionObservationFromEnvelope(envelope, issueIdentifier, marker)
+			if decodeErr == nil && executionObservationMatchesMode(observation, "final") {
+				return observation, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return executionObservation{}, fmt.Errorf("did not observe persisted issue execution for %s", issueIdentifier)
+		}
+		select {
+		case <-ctx.Done():
+			return executionObservation{}, errors.New("did not observe persisted issue execution before context deadline")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func liveClaudeSessionFromExecutionObservation(observation executionObservation, issueIdentifier string) (string, agentruntime.Session, bool) {
+	if strings.TrimSpace(observation.Session.ThreadID) == "" || strings.TrimSpace(observation.Session.SessionID) == "" {
+		return "", agentruntime.Session{}, false
+	}
+	if source := strings.TrimSpace(observation.SessionSource); source != "live" && source != "persisted" {
+		return "", agentruntime.Session{}, false
+	}
+	if provider := strings.TrimSpace(observation.RuntimeProvider); provider != "" && provider != "claude" {
+		return "", agentruntime.Session{}, false
+	}
+	if transport := strings.TrimSpace(observation.RuntimeTransport); transport != "" && transport != "stdio" {
+		return "", agentruntime.Session{}, false
+	}
+	if strings.TrimSpace(issueIdentifier) != "" && strings.TrimSpace(observation.Session.IssueIdentifier) != "" && !strings.EqualFold(strings.TrimSpace(observation.Session.IssueIdentifier), strings.TrimSpace(issueIdentifier)) {
+		return "", agentruntime.Session{}, false
+	}
+
+	session := observation.Session.Clone()
+	if strings.TrimSpace(session.IssueIdentifier) == "" {
+		session.IssueIdentifier = strings.TrimSpace(issueIdentifier)
+	}
+	if session.Metadata == nil {
+		session.Metadata = map[string]interface{}{}
+	}
+	if _, ok := session.Metadata["provider"]; !ok && strings.TrimSpace(observation.RuntimeProvider) != "" {
+		session.Metadata["provider"] = strings.TrimSpace(observation.RuntimeProvider)
+	}
+	if _, ok := session.Metadata["transport"]; !ok && strings.TrimSpace(observation.RuntimeTransport) != "" {
+		session.Metadata["transport"] = strings.TrimSpace(observation.RuntimeTransport)
+	}
+	return strings.TrimSpace(issueIdentifier), session, true
+}
+
+func executionObservationFromListSessionsEnvelope(observation executionObservation, envelope *responseEnvelope, issueIdentifier string) (executionObservation, error) {
+	_, session, ok, err := sessionFromListSessionsEnvelope(envelope, issueIdentifier, true, false)
+	if err != nil || !ok {
+		return observation, err
+	}
+
+	if strings.TrimSpace(observation.Session.IssueIdentifier) == "" {
+		observation.Session.IssueIdentifier = strings.TrimSpace(issueIdentifier)
+	}
+	if strings.TrimSpace(observation.Session.IssueID) == "" {
+		observation.Session.IssueID = strings.TrimSpace(session.IssueID)
+	}
+	if strings.TrimSpace(observation.Session.SessionID) == "" {
+		observation.Session.SessionID = strings.TrimSpace(session.SessionID)
+	}
+	if strings.TrimSpace(observation.Session.ThreadID) == "" {
+		observation.Session.ThreadID = strings.TrimSpace(session.ThreadID)
+	}
+	if strings.TrimSpace(observation.Session.TurnID) == "" {
+		observation.Session.TurnID = strings.TrimSpace(session.TurnID)
+	}
+	if observation.Session.Metadata == nil {
+		observation.Session.Metadata = map[string]interface{}{}
+	}
+	for key, value := range session.Metadata {
+		if _, ok := observation.Session.Metadata[key]; !ok {
+			observation.Session.Metadata[key] = value
+		}
+	}
+
+	observation.RuntimeName = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeName),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_name"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_provider"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["provider"])),
+	)
+	observation.RuntimeProvider = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeProvider),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_provider"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["provider"])),
+		strings.TrimSpace(observation.RuntimeName),
+	)
+	observation.RuntimeTransport = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeTransport),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_transport"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["transport"])),
+	)
+	observation.RuntimeAuthSource = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeAuthSource),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_auth_source"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["auth_source"])),
+	)
+	observation.RuntimeTransport, observation.RuntimeAuthSource = claudeRuntimeDefaults(
+		observation.RuntimeName,
+		observation.RuntimeProvider,
+		observation.RuntimeTransport,
+		observation.RuntimeAuthSource,
+	)
+
+	return observation, nil
+}
+
+func dashboardSessionObservationFromExecutionObservation(observation executionObservation) dashboardSessionObservation {
+	status := "completed"
+	switch {
+	case observation.Active:
+		status = "running"
+	case observation.WorkspaceRecovery != nil && strings.TrimSpace(observation.WorkspaceRecovery.Status) != "":
+		status = "paused"
+	case strings.EqualFold(strings.TrimSpace(observation.FailureClass), "run_interrupted") ||
+		strings.EqualFold(strings.TrimSpace(observation.StopReason), "run_interrupted"):
+		status = "interrupted"
+	}
+
+	source := strings.TrimSpace(observation.SessionSource)
+	if source == "" {
+		source = "persisted"
+	}
+	failureClass := strings.TrimSpace(observation.FailureClass)
+	if observation.WorkspaceRecovery != nil && strings.TrimSpace(observation.WorkspaceRecovery.Status) != "" {
+		failureClass = "workspace_bootstrap"
+	}
+
+	result := dashboardSessionObservation{
+		Status:                  status,
+		StopReason:              strings.TrimSpace(observation.StopReason),
+		Source:                  source,
+		FailureClass:            failureClass,
+		RuntimeName:             strings.TrimSpace(observation.RuntimeName),
+		RuntimeProvider:         firstNonEmpty(strings.TrimSpace(observation.RuntimeProvider), strings.TrimSpace(observation.RuntimeName)),
+		RuntimeTransport:        strings.TrimSpace(observation.RuntimeTransport),
+		RuntimeAuthSource:       strings.TrimSpace(observation.RuntimeAuthSource),
+		PendingInteractionState: strings.TrimSpace(observation.PendingInteractionState),
+	}
+	result.RuntimeTransport, result.RuntimeAuthSource = claudeRuntimeDefaults(
+		result.RuntimeName,
+		result.RuntimeProvider,
+		result.RuntimeTransport,
+		result.RuntimeAuthSource,
+	)
+	return result
+}
+
+func executionObservationFromEnvelope(envelope *responseEnvelope, issueIdentifier, marker string) (executionObservation, error) {
+	var observation executionObservation
+	if err := decodeData(envelope, &observation); err != nil {
+		return executionObservation{}, err
+	}
+	if marker != "" && strings.Contains(observation.Session.LastMessage, marker) {
+		observation.StreamSeen = true
+	}
+	if strings.TrimSpace(observation.Session.IssueIdentifier) == "" {
+		observation.Session.IssueIdentifier = strings.TrimSpace(issueIdentifier)
+	}
+	if observation.WorkspaceRecovery != nil && strings.TrimSpace(observation.WorkspaceRecovery.Status) != "" {
+		observation.FailureClass = "workspace_bootstrap"
+	}
+	observation.RuntimeProvider = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeProvider),
+		strings.TrimSpace(asString(observation.Session.Metadata["provider"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_provider"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_name"])),
+		strings.TrimSpace(observation.RuntimeName),
+	)
+	observation.RuntimeName = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeName),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_name"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_provider"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["provider"])),
+	)
+	observation.RuntimeTransport = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeTransport),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_transport"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["transport"])),
+	)
+	observation.RuntimeAuthSource = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeAuthSource),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_auth_source"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["auth_source"])),
+	)
+	observation.RuntimeTransport, observation.RuntimeAuthSource = claudeRuntimeDefaults(
+		observation.RuntimeName,
+		observation.RuntimeProvider,
+		observation.RuntimeTransport,
+		observation.RuntimeAuthSource,
+	)
+	return observation, nil
+}
+
+func sessionFromListSessionsEnvelope(envelope *responseEnvelope, issueIdentifier string, includeTerminal, requireIDs bool) (string, agentruntime.Session, bool, error) {
+	raw := map[string]interface{}{}
+	if err := decodeData(envelope, &raw); err != nil {
+		return "", agentruntime.Session{}, false, err
+	}
+	sessionsRaw, ok := raw["sessions"].(map[string]interface{})
+	if !ok {
+		return "", agentruntime.Session{}, false, nil
+	}
+	keys := make([]string, 0, len(sessionsRaw))
+	for key := range sessionsRaw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		session, ok := agentruntime.SessionFromAny(sessionsRaw[key])
+		if !ok {
+			continue
+		}
+		if !includeTerminal && session.Terminal {
+			continue
+		}
+		if issueIdentifier != "" && strings.TrimSpace(session.IssueIdentifier) != "" && !strings.EqualFold(strings.TrimSpace(session.IssueIdentifier), strings.TrimSpace(issueIdentifier)) {
+			continue
+		}
+		if requireIDs && (strings.TrimSpace(session.ThreadID) == "" || strings.TrimSpace(session.SessionID) == "") {
+			continue
+		}
+		if strings.TrimSpace(asString(session.Metadata["provider"])) != "claude" {
+			continue
+		}
+		if strings.TrimSpace(asString(session.Metadata["transport"])) != "stdio" {
+			continue
+		}
+		return key, session, true, nil
+	}
+	return "", agentruntime.Session{}, false, nil
+}
+
+func liveClaudeSessionFromListSessionsEnvelope(envelope *responseEnvelope, issueIdentifier string) (string, agentruntime.Session, bool, error) {
+	return sessionFromListSessionsEnvelope(envelope, issueIdentifier, false, true)
 }
 
 func resolveIssueIdentifier(requested string, listIssues listIssuesData) string {
@@ -815,11 +1135,9 @@ func waitForIssueExecutionObservation(entry maestromcp.DaemonEntry, issueIdentif
 func executionObservationMatchesMode(observation executionObservation, mode string) bool {
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	if liveMode {
-		return observation.Active &&
-			observation.SessionSource == "live" &&
+		return (observation.SessionSource == "live" || observation.SessionSource == "persisted") &&
 			strings.TrimSpace(observation.Session.ThreadID) != "" &&
-			strings.TrimSpace(observation.Session.SessionID) != "" &&
-			observation.StreamSeen
+			strings.TrimSpace(observation.Session.SessionID) != ""
 	}
 	if observation.Active || observation.SessionSource != "persisted" {
 		return false
@@ -862,6 +1180,21 @@ func issueExecutionObservationForIssue(entry maestromcp.DaemonEntry, issueIdenti
 	if marker != "" && strings.Contains(observation.Session.LastMessage, marker) {
 		observation.StreamSeen = true
 	}
+	if observation.WorkspaceRecovery != nil && strings.TrimSpace(observation.WorkspaceRecovery.Status) != "" {
+		observation.FailureClass = "workspace_bootstrap"
+	}
+	observation.RuntimeProvider = firstNonEmpty(
+		strings.TrimSpace(observation.RuntimeProvider),
+		strings.TrimSpace(asString(observation.Session.Metadata["provider"])),
+		strings.TrimSpace(asString(observation.Session.Metadata["runtime_provider"])),
+		strings.TrimSpace(observation.RuntimeName),
+	)
+	observation.RuntimeTransport, observation.RuntimeAuthSource = claudeRuntimeDefaults(
+		observation.RuntimeName,
+		observation.RuntimeProvider,
+		observation.RuntimeTransport,
+		observation.RuntimeAuthSource,
+	)
 	return observation, true, nil
 }
 
@@ -872,7 +1205,7 @@ func waitForDashboardSessionObservation(ctx context.Context, entry maestromcp.Da
 		observation, ok, err := dashboardSessionObservationForIssue(entry, issueIdentifier)
 		if err == nil && ok {
 			if liveMode {
-				if observation.Source == "live" {
+				if observation.Source == "live" || observation.Source == "persisted" {
 					return observation, nil
 				}
 			} else if observation.Source == "persisted" {
@@ -914,17 +1247,24 @@ func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIden
 		if strings.TrimSpace(asString(entryMap["issue_identifier"])) != issueIdentifier {
 			continue
 		}
-		return dashboardSessionObservation{
+		observation := dashboardSessionObservation{
 			Status:                  strings.TrimSpace(asString(entryMap["status"])),
 			StopReason:              strings.TrimSpace(asString(entryMap["stop_reason"])),
 			Source:                  strings.TrimSpace(asString(entryMap["source"])),
 			FailureClass:            strings.TrimSpace(asString(entryMap["failure_class"])),
 			RuntimeName:             strings.TrimSpace(asString(entryMap["runtime_name"])),
-			RuntimeProvider:         strings.TrimSpace(asString(entryMap["runtime_provider"])),
+			RuntimeProvider:         firstNonEmpty(strings.TrimSpace(asString(entryMap["runtime_provider"])), strings.TrimSpace(asString(entryMap["runtime_name"]))),
 			RuntimeTransport:        strings.TrimSpace(asString(entryMap["runtime_transport"])),
 			RuntimeAuthSource:       strings.TrimSpace(asString(entryMap["runtime_auth_source"])),
 			PendingInteractionState: strings.TrimSpace(asString(entryMap["pending_interaction_state"])),
-		}, true, nil
+		}
+		observation.RuntimeTransport, observation.RuntimeAuthSource = claudeRuntimeDefaults(
+			observation.RuntimeName,
+			observation.RuntimeProvider,
+			observation.RuntimeTransport,
+			observation.RuntimeAuthSource,
+		)
+		return observation, true, nil
 	}
 	return dashboardSessionObservation{}, false, nil
 }
@@ -998,11 +1338,15 @@ func wantsInterruptObservation(opts options) bool {
 
 func waitForPendingInterrupt(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, kind, classification, toolName string) (agentruntime.PendingInteraction, int, error) {
 	deadline := time.Now().Add(60 * time.Second)
+	issueID := ""
 	for {
+		if issueID == "" {
+			issueID = resolvedIssueIDForIdentifier(entry.DBPath, issueIdentifier)
+		}
 		snapshot, err := fetchPendingInterrupts(entry)
 		if err == nil {
 			for _, item := range snapshot.Items {
-				if strings.TrimSpace(item.IssueIdentifier) != strings.TrimSpace(issueIdentifier) {
+				if !pendingInterruptMatchesIssue(item, issueIdentifier, issueID) {
 					continue
 				}
 				if kind != "" && !strings.EqualFold(string(item.Kind), kind) {
@@ -1026,6 +1370,33 @@ func waitForPendingInterrupt(ctx context.Context, entry maestromcp.DaemonEntry, 
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+func resolvedIssueIDForIdentifier(dbPath, issueIdentifier string) string {
+	dbPath = strings.TrimSpace(dbPath)
+	issueIdentifier = strings.TrimSpace(issueIdentifier)
+	if dbPath == "" || issueIdentifier == "" {
+		return ""
+	}
+
+	store, err := kanban.NewReadOnlyStore(dbPath)
+	if err != nil {
+		return ""
+	}
+	defer store.Close()
+
+	issue, err := store.GetIssueByIdentifier(issueIdentifier)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(issue.ID)
+}
+
+func pendingInterruptMatchesIssue(item agentruntime.PendingInteraction, issueIdentifier, issueID string) bool {
+	if strings.TrimSpace(item.IssueIdentifier) == strings.TrimSpace(issueIdentifier) {
+		return true
+	}
+	return strings.TrimSpace(issueID) != "" && strings.TrimSpace(item.IssueID) == strings.TrimSpace(issueID)
 }
 
 func waitForPendingInterruptClear(ctx context.Context, entry maestromcp.DaemonEntry, interactionID string) error {
@@ -1253,7 +1624,7 @@ func acknowledgePendingInterrupt(entry maestromcp.DaemonEntry, interactionID str
 }
 
 func dashboardRequest(entry maestromcp.DaemonEntry, method, path string, payload interface{}) ([]byte, int, error) {
-	baseURL := strings.TrimSuffix(strings.TrimSpace(entry.BaseURL), "/mcp")
+	baseURL := dashboardBaseURL(entry)
 	if baseURL == "" {
 		return nil, 0, errors.New("daemon registry base_url missing")
 	}
@@ -1285,6 +1656,15 @@ func dashboardRequest(entry maestromcp.DaemonEntry, method, path string, payload
 		return nil, 0, err
 	}
 	return data, resp.StatusCode, nil
+}
+
+func dashboardBaseURL(entry maestromcp.DaemonEntry) string {
+	baseURL := strings.TrimSpace(os.Getenv("MAESTRO_DASHBOARD_BASE_URL"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(entry.BaseURL)
+	}
+	baseURL = strings.TrimSuffix(baseURL, "/mcp")
+	return strings.TrimSuffix(baseURL, "/")
 }
 
 func filterRuntimeEventsByIssue(events []kanban.RuntimeEvent, issueIdentifier string) []kanban.RuntimeEvent {

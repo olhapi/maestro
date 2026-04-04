@@ -105,7 +105,7 @@ runtime_event_count() {
 project_runtime_event_count() {
   local project_id="$1"
   local kind="$2"
-  sql_value "SELECT COUNT(*) FROM runtime_events WHERE project_id = '$project_id' AND kind = '$kind';"
+  sql_value "SELECT COUNT(*) FROM runtime_events WHERE kind = '$kind' AND json_extract(payload_json, '$.project_id') = '$project_id';"
 }
 
 wait_for_runtime_event() {
@@ -573,7 +573,7 @@ fi
 assert_claude_runtime_surface "$CLAUDE_EVIDENCE_DIR/launch-4.summary.txt"
 assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-4.summary.txt" "dashboard_session_source" "live"
 assert_evidence_value "$CLAUDE_EVIDENCE_DIR/launch-4.summary.txt" "dashboard_session_status" "active"
-"$MAESTRO_BIN" project stop "$PROJECT_ID" >/dev/null
+"$MAESTRO_BIN" project stop "$PROJECT_ID" --api-url "$(dashboard_api_url)" >/dev/null
 if ! wait_for_runtime_event "$INTERRUPT_ISSUE" "run_stopped"; then
   echo "interrupt scenario never recorded run_stopped" >&2
   exit 1
@@ -644,7 +644,7 @@ assert_evidence_value "$CLAUDE_EVIDENCE_DIR/recovery-required-final.summary.txt"
 
 chmod 0755 "$(project_workspace_root)"
 rm -f "$(issue_workspace_path "$RECOVERY_ISSUE")"
-"$MAESTRO_BIN" issue retry "$RECOVERY_ISSUE" --db "$DB_PATH" --quiet >/dev/null
+"$MAESTRO_BIN" issue retry "$RECOVERY_ISSUE" --db "$DB_PATH" --api-url "$(dashboard_api_url)" --quiet >/dev/null
 if ! wait_for_evidence_line "$CLAUDE_EVIDENCE_DIR/launch-5.summary.txt" "issue_identifier=$RECOVERY_ISSUE"; then
   echo "recovery retry scenario never produced the live summary" >&2
   exit 1

@@ -659,6 +659,38 @@ func TestExecutionObservationMatchesMode(t *testing.T) {
 		}
 	})
 
+	t.Run("accepts live execution without active snapshot or marker", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{
+			Active:        false,
+			SessionSource: "live",
+			Session: agentruntime.Session{
+				SessionID: "session-1",
+				ThreadID:  "thread-1",
+			},
+		}
+		if !executionObservationMatchesMode(observation, "live") {
+			t.Fatalf("expected live observation without active snapshot or marker to match: %+v", observation)
+		}
+	})
+
+	t.Run("accepts persisted live execution snapshot", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{
+			Active:        false,
+			SessionSource: "persisted",
+			Session: agentruntime.Session{
+				SessionID: "session-1",
+				ThreadID:  "thread-1",
+			},
+		}
+		if !executionObservationMatchesMode(observation, "live") {
+			t.Fatalf("expected persisted live observation to match: %+v", observation)
+		}
+	})
+
 	t.Run("accepts persisted recovery payload without session ids", func(t *testing.T) {
 		t.Parallel()
 
@@ -1227,6 +1259,95 @@ func TestRunFinalModeUsesPersistedExecution(t *testing.T) {
 	if evidence.DashboardSession.Source != "persisted" || evidence.DashboardSession.StopReason != "end_turn" {
 		t.Fatalf("unexpected final dashboard evidence: %+v", evidence.DashboardSession)
 	}
+	if evidence.Execution.RuntimeName != "claude" || evidence.Execution.RuntimeProvider != "claude" || evidence.Execution.RuntimeTransport != "stdio" || evidence.Execution.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("unexpected final execution runtime evidence: %+v", evidence.Execution)
+	}
+	if evidence.DashboardSession.RuntimeName != "claude" || evidence.DashboardSession.RuntimeProvider != "claude" || evidence.DashboardSession.RuntimeTransport != "stdio" || evidence.DashboardSession.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("unexpected final runtime provider evidence: execution=%+v dashboard=%+v", evidence.Execution, evidence.DashboardSession)
+	}
+}
+
+func TestRunFinalModeUsesPersistedExecutionWhenDashboardLags(t *testing.T) {
+	fixture := newProbeRunFixture(t, "execution-final-dashboard-lag")
+	fixture.opts.mode = "final"
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run(final lag) error = %v", err)
+	}
+
+	jsonBytes, err := os.ReadFile(fixture.evidencePrefix + ".json")
+	if err != nil {
+		t.Fatalf("read JSON evidence: %v", err)
+	}
+	var evidence probeEvidence
+	if err := json.Unmarshal(jsonBytes, &evidence); err != nil {
+		t.Fatalf("decode JSON evidence: %v", err)
+	}
+	if evidence.LiveSessionSeen {
+		t.Fatal("evidence.LiveSessionSeen = true, want false in final mode")
+	}
+	if evidence.Execution.SessionSource != "persisted" || evidence.Execution.StopReason != "end_turn" {
+		t.Fatalf("unexpected final execution evidence from persisted fallback: %+v", evidence.Execution)
+	}
+	if evidence.DashboardSession.Source != "persisted" || evidence.DashboardSession.StopReason != "end_turn" {
+		t.Fatalf("unexpected final dashboard evidence from persisted fallback: %+v", evidence.DashboardSession)
+	}
+	if evidence.Execution.RuntimeName != "claude" || evidence.Execution.RuntimeProvider != "claude" || evidence.Execution.RuntimeTransport != "stdio" || evidence.Execution.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("unexpected final execution runtime evidence from persisted fallback: %+v", evidence.Execution)
+	}
+	if evidence.DashboardSession.RuntimeName != "claude" || evidence.DashboardSession.RuntimeProvider != "claude" || evidence.DashboardSession.RuntimeTransport != "stdio" || evidence.DashboardSession.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("unexpected final runtime provider evidence from persisted fallback: execution=%+v dashboard=%+v", evidence.Execution, evidence.DashboardSession)
+	}
+}
+
+func TestRunLiveModeFallsBackToCapturedLiveSession(t *testing.T) {
+	fixture := newProbeRunFixture(t, "live-persisted-fallback")
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	summaryBytes, err := os.ReadFile(fixture.evidencePrefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary evidence: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range []string{
+		"dashboard_session_source=live",
+		"dashboard_session_status=active",
+		"execution_session_source=live",
+		"execution_stream_seen=true",
+		"live_claude_session_seen=true",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary evidence missing %q: %s", want, summary)
+		}
+	}
+}
+
+func TestRunLiveModeUsesExecutionSessionFallback(t *testing.T) {
+	fixture := newProbeRunFixture(t, "execution-live-fallback")
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	summaryBytes, err := os.ReadFile(fixture.evidencePrefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary evidence: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range []string{
+		"dashboard_session_source=live",
+		"dashboard_session_status=active",
+		"execution_session_source=live",
+		"execution_stream_seen=true",
+		"live_claude_session_seen=true",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary evidence missing %q: %s", want, summary)
+		}
+	}
 }
 
 func TestRunReportsProbeFailures(t *testing.T) {
@@ -1377,7 +1498,7 @@ func TestWaitForClaudeSessionContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	sessionKey, session, err := waitForClaudeSession(ctx, client)
+	sessionKey, session, err := waitForClaudeSession(ctx, client, "MAES-28")
 	if err == nil || err.Error() != "did not observe a live Claude session before context deadline" {
 		t.Fatalf("waitForClaudeSession() error = %v, want context deadline message", err)
 	}
@@ -1394,7 +1515,7 @@ func TestWaitForClaudeSessionSkipsUnsupportedEntries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	sessionKey, session, err := waitForClaudeSession(ctx, client)
+	sessionKey, session, err := waitForClaudeSession(ctx, client, "MAES-28")
 	if err != nil {
 		t.Fatalf("waitForClaudeSession() error = %v", err)
 	}
@@ -1409,12 +1530,29 @@ func TestWaitForClaudeSessionSkipsUnsupportedEntries(t *testing.T) {
 	}
 }
 
+func TestWaitForClaudeSessionSkipsTerminalSessions(t *testing.T) {
+	client := newProbeTestClient(t, "list-sessions-terminal-then-live")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sessionKey, session, err := waitForClaudeSession(ctx, client, "MAES-28")
+	if err != nil {
+		t.Fatalf("waitForClaudeSession() error = %v", err)
+	}
+	if got, want := sessionKey, "MAES-28"; got != want {
+		t.Fatalf("waitForClaudeSession() sessionKey = %q, want %q", got, want)
+	}
+	if session.Terminal {
+		t.Fatalf("waitForClaudeSession() session = %+v, want non-terminal", session)
+	}
+}
+
 func TestWaitForClaudeSessionIgnoresMalformedPayloads(t *testing.T) {
 	client := newProbeTestClient(t, "list-sessions-bad-data")
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, _, err := waitForClaudeSession(ctx, client)
+	_, _, err := waitForClaudeSession(ctx, client, "MAES-28")
 	if err == nil || err.Error() != "did not observe a live Claude session before context deadline" {
 		t.Fatalf("waitForClaudeSession() error = %v, want context deadline message", err)
 	}
@@ -1503,6 +1641,7 @@ func TestWaitForExecutionObservationModes(t *testing.T) {
 				"active":         false,
 				"session_source": "persisted",
 				"stop_reason":    "end_turn",
+				"runtime_name":   "claude",
 				"session": map[string]any{
 					"session_id": "session-1",
 					"thread_id":  "thread-1",
@@ -1517,6 +1656,12 @@ func TestWaitForExecutionObservationModes(t *testing.T) {
 		}
 		if observation.Active || observation.SessionSource != "persisted" || observation.StopReason != "end_turn" {
 			t.Fatalf("unexpected final observation: %+v", observation)
+		}
+		if observation.RuntimeName != "claude" || observation.RuntimeProvider != "claude" {
+			t.Fatalf("unexpected final runtime observation: %+v", observation)
+		}
+		if observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+			t.Fatalf("unexpected final runtime transport/auth observation: %+v", observation)
 		}
 	})
 
@@ -1570,6 +1715,41 @@ func TestWaitForDashboardSessionObservation(t *testing.T) {
 		}
 	})
 
+	t.Run("accepts persisted live dashboard snapshot", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != "Bearer token-a" {
+				t.Fatalf("Authorization header = %q, want Bearer token-a", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []map[string]any{
+					{
+						"issue_identifier": "MAES-28",
+						"status":           "completed",
+						"stop_reason":      "end_turn",
+						"source":           "persisted",
+						"runtime_name":     "claude",
+					},
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		observation, err := waitForDashboardSessionObservation(ctx, maestromcp.DaemonEntry{
+			BaseURL:     server.URL + "/mcp",
+			BearerToken: "token-a",
+		}, "MAES-28", "live")
+		if err != nil {
+			t.Fatalf("waitForDashboardSessionObservation(live persisted) error = %v", err)
+		}
+		if observation.Source != "persisted" || observation.Status != "completed" {
+			t.Fatalf("unexpected persisted live dashboard observation: %+v", observation)
+		}
+	})
+
 	t.Run("final", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1579,6 +1759,7 @@ func TestWaitForDashboardSessionObservation(t *testing.T) {
 						"status":           "completed",
 						"stop_reason":      "end_turn",
 						"source":           "persisted",
+						"runtime_name":     "claude",
 					},
 				},
 			})
@@ -1595,6 +1776,12 @@ func TestWaitForDashboardSessionObservation(t *testing.T) {
 		}
 		if observation.Source != "persisted" || observation.StopReason != "end_turn" {
 			t.Fatalf("unexpected final dashboard observation: %+v", observation)
+		}
+		if observation.RuntimeName != "claude" || observation.RuntimeProvider != "claude" {
+			t.Fatalf("unexpected final dashboard runtime observation: %+v", observation)
+		}
+		if observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+			t.Fatalf("unexpected final dashboard runtime transport/auth observation: %+v", observation)
 		}
 	})
 
@@ -1614,15 +1801,15 @@ func TestWaitForDashboardSessionObservation(t *testing.T) {
 		}
 	})
 
-	t.Run("ignores_wrong_source", func(t *testing.T) {
+	t.Run("rejects_live_source_in_final_mode", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"entries": []map[string]any{
 					{
 						"issue_identifier": "MAES-28",
-						"status":           "completed",
-						"stop_reason":      "end_turn",
-						"source":           "persisted",
+						"status":           "running",
+						"stop_reason":      "",
+						"source":           "live",
 					},
 				},
 			})
@@ -1633,9 +1820,9 @@ func TestWaitForDashboardSessionObservation(t *testing.T) {
 		defer cancel()
 		_, err := waitForDashboardSessionObservation(ctx, maestromcp.DaemonEntry{
 			BaseURL: server.URL + "/mcp",
-		}, "MAES-28", "live")
+		}, "MAES-28", "final")
 		if err == nil || err.Error() != "did not observe dashboard session before context deadline" {
-			t.Fatalf("waitForDashboardSessionObservation(ignores_wrong_source) error = %v, want context deadline message", err)
+			t.Fatalf("waitForDashboardSessionObservation(rejects_live_source_in_final_mode) error = %v, want context deadline message", err)
 		}
 	})
 }
@@ -1715,6 +1902,67 @@ func TestDashboardSessionObservationForIssueErrors(t *testing.T) {
 			t.Fatalf("dashboardSessionObservationForIssue(invalid_json) = (%v, %v), want JSON decode error", ok, err)
 		}
 	})
+}
+
+func TestDashboardSessionObservationFromExecutionObservationPrefersRecovery(t *testing.T) {
+	t.Parallel()
+
+	observation := dashboardSessionObservationFromExecutionObservation(executionObservation{
+		Active:          false,
+		SessionSource:   "persisted",
+		FailureClass:    "run_interrupted",
+		StopReason:      "run_interrupted",
+		RuntimeName:     "claude",
+		RuntimeProvider: "claude",
+		WorkspaceRecovery: &kanban.WorkspaceRecovery{
+			Status:  "required",
+			Message: "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
+		},
+	})
+	if observation.Status != "paused" {
+		t.Fatalf("dashboardSessionObservationFromExecutionObservation().Status = %q, want paused", observation.Status)
+	}
+	if observation.FailureClass != "workspace_bootstrap" {
+		t.Fatalf("dashboardSessionObservationFromExecutionObservation().FailureClass = %q, want workspace_bootstrap", observation.FailureClass)
+	}
+	if observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("dashboardSessionObservationFromExecutionObservation() runtime transport/auth = %+v, want stdio/OAuth", observation)
+	}
+}
+
+func TestExecutionObservationFromEnvelopePrefersRecovery(t *testing.T) {
+	t.Parallel()
+
+	payload := map[string]any{
+		"active":         false,
+		"session_source": "persisted",
+		"failure_class":  "run_interrupted",
+		"runtime_name":   "claude",
+		"session": map[string]any{
+			"session_id":       "session-1",
+			"thread_id":        "thread-1",
+			"issue_identifier": "REAL-4",
+		},
+		"workspace_recovery": map[string]any{
+			"status":  "required",
+			"message": "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	observation, err := executionObservationFromEnvelope(&responseEnvelope{Data: raw}, "REAL-4", "")
+	if err != nil {
+		t.Fatalf("executionObservationFromEnvelope() error = %v", err)
+	}
+	if observation.FailureClass != "workspace_bootstrap" {
+		t.Fatalf("executionObservationFromEnvelope().FailureClass = %q, want workspace_bootstrap", observation.FailureClass)
+	}
+	if observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("executionObservationFromEnvelope() runtime transport/auth = %+v, want stdio/OAuth", observation)
+	}
 }
 
 func TestWaitForPendingInteractionSurfaceObservation(t *testing.T) {
@@ -2291,6 +2539,55 @@ func TestPendingInterruptHelpers(t *testing.T) {
 		}
 	})
 
+	t.Run("matches_issue_id_fallback", func(t *testing.T) {
+		dir := t.TempDir()
+		dbPath := filepath.Join(dir, "maestro.db")
+		store, err := kanban.NewStore(dbPath)
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer func() {
+			if cerr := store.Close(); cerr != nil {
+				t.Errorf("Close() error = %v", cerr)
+			}
+		}()
+
+		issue, err := store.CreateIssue("", "", "Fallback issue", "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue() error = %v", err)
+		}
+
+		interaction := validPendingInterrupt()
+		interaction.IssueIdentifier = ""
+		interaction.IssueID = issue.ID
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/interrupts":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{Items: []agentruntime.PendingInteraction{interaction}})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		entry := maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp", DBPath: dbPath}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		got, pendingCount, err := waitForPendingInterrupt(ctx, entry, issue.Identifier, "approval", "command", "Bash")
+		if err != nil {
+			t.Fatalf("waitForPendingInterrupt() error = %v", err)
+		}
+		if pendingCount != 1 {
+			t.Fatalf("pendingCount = %d, want 1", pendingCount)
+		}
+		if got.IssueID != issue.ID {
+			t.Fatalf("interaction IssueID = %q, want %q", got.IssueID, issue.ID)
+		}
+	})
+
 	t.Run("matches_alert_kind", func(t *testing.T) {
 		alert := validAlertInterrupt()
 		alert.IssueIdentifier = "CL-1"
@@ -2443,6 +2740,30 @@ func TestPendingInterruptHelpers(t *testing.T) {
 		_, _, err := dashboardRequest(maestromcp.DaemonEntry{}, http.MethodGet, "/api/v1/app/interrupts", nil)
 		if err == nil || err.Error() != "daemon registry base_url missing" {
 			t.Fatalf("dashboardRequest() error = %v, want missing base_url", err)
+		}
+	})
+
+	t.Run("dashboard_request_uses_override_base_url", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/app/interrupts" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		t.Cleanup(server.Close)
+		t.Setenv("MAESTRO_DASHBOARD_BASE_URL", server.URL+"/mcp")
+
+		body, statusCode, err := dashboardRequest(maestromcp.DaemonEntry{}, http.MethodGet, "/api/v1/app/interrupts", nil)
+		if err != nil {
+			t.Fatalf("dashboardRequest() error = %v", err)
+		}
+		if statusCode != http.StatusOK {
+			t.Fatalf("dashboardRequest() status = %d, want %d", statusCode, http.StatusOK)
+		}
+		if !strings.Contains(string(body), `"ok":true`) {
+			t.Fatalf("dashboardRequest() body = %s, want ok response", string(body))
 		}
 	})
 }
@@ -2885,6 +3206,22 @@ func newProbeRunFixture(t *testing.T, scenario string) probeRunFixture {
 		executionSource = "persisted"
 		executionStopReason = "end_turn"
 	}
+	if scenario == "execution-final-dashboard-lag" {
+		dashboardStatus = "completed"
+		dashboardStopReason = "end_turn"
+		dashboardSource = "persisted"
+		executionActive = true
+		executionSource = "live"
+		executionStopReason = ""
+	}
+	if scenario == "live-persisted-fallback" {
+		dashboardStatus = "completed"
+		dashboardStopReason = "end_turn"
+		dashboardSource = "persisted"
+		executionActive = false
+		executionSource = "persisted"
+		executionStopReason = "end_turn"
+	}
 	dashboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/app/sessions":
@@ -3092,6 +3429,15 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 		ServerInstanceID: "probe-helper",
 		ChangeSeq:        1,
 	}
+	issueIdentifier := "MAES-28"
+	executionLastMessage := "STREAM:" + issueIdentifier + ":fixture"
+	liveSessionLastMessage := "Working"
+	if scenario == "execution-final" || scenario == "live-persisted-fallback" {
+		executionLastMessage = "Issue " + issueIdentifier + " marked done. Task complete."
+	}
+	if scenario == "live-persisted-fallback" {
+		liveSessionLastMessage = "STREAM:" + issueIdentifier + ":fixture"
+	}
 
 	switch name {
 	case "server_info":
@@ -3152,6 +3498,49 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 		}
 		if scenario == "execution-final" {
 			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
+				"active":         false,
+				"session_source": "persisted",
+				"failure_class":  "",
+				"stop_reason":    "end_turn",
+				"session": agentruntime.Session{
+					IssueID:         "iss_1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "thread-1",
+					ThreadID:        "thread-1",
+					TurnID:          "turn-1",
+					LastEvent:       "turn.completed",
+					LastMessage:     executionLastMessage,
+					Metadata: map[string]interface{}{
+						"provider_session_id":         "thread-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "execution-final-dashboard-lag" {
+			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
+				"active":         false,
+				"session_source": "persisted",
+				"failure_class":  "",
+				"stop_reason":    "end_turn",
+				"runtime_name":   "claude",
+				"session": agentruntime.Session{
+					IssueID:         "iss_1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "thread-1",
+					ThreadID:        "thread-1",
+					TurnID:          "turn-1",
+					LastEvent:       "turn.completed",
+					LastMessage:     executionLastMessage,
+					Metadata: map[string]interface{}{
+						"provider_session_id":         "thread-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "live-persisted-fallback" {
+			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
 				"active":            false,
 				"session_source":    "persisted",
 				"failure_class":     "",
@@ -3166,7 +3555,7 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 					ThreadID:        "thread-1",
 					TurnID:          "turn-1",
 					LastEvent:       "turn.completed",
-					LastMessage:     "STREAM:MAES-28:success-live",
+					LastMessage:     executionLastMessage,
 					Metadata: map[string]interface{}{
 						"provider":                    "claude",
 						"transport":                   "stdio",
@@ -3191,7 +3580,7 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 				ThreadID:        "thread-1",
 				TurnID:          "turn-1",
 				LastEvent:       "turn.started",
-				LastMessage:     "STREAM:MAES-28:success-live",
+				LastMessage:     executionLastMessage,
 				Metadata: map[string]interface{}{
 					"provider":                    "claude",
 					"transport":                   "stdio",
@@ -3221,6 +3610,114 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 		}
 		if scenario == "list-sessions-bad-data" {
 			return probeEnvelopeResultWithRawData("list_sessions", meta, json.RawMessage(`"bad"`), true, "")
+		}
+		if scenario == "execution-live-fallback" {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{},
+			}, true, "")
+		}
+		if scenario == "execution-final" {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{
+					"MAES-28": agentruntime.Session{
+						IssueID:         "iss_1",
+						IssueIdentifier: "MAES-28",
+						Metadata: map[string]interface{}{
+							"provider":    "claude",
+							"transport":   "stdio",
+							"auth_source": "OAuth",
+						},
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "execution-final-dashboard-lag" {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{},
+			}, true, "")
+		}
+		if scenario == "list-sessions-terminal-then-live" && listSessionCalls != nil && *listSessionCalls == 1 {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{
+					"MAES-28": agentruntime.Session{
+						IssueID:         "iss_1",
+						IssueIdentifier: "MAES-28",
+						SessionID:       "session-1",
+						ThreadID:        "thread-1",
+						TurnID:          "turn-1",
+						LastEvent:       "turn.failed",
+						LastMessage:     "Issue " + issueIdentifier + " marked done. Task complete.",
+						Terminal:        true,
+						TerminalReason:  "turn.failed",
+						Metadata: map[string]interface{}{
+							"provider":    "claude",
+							"transport":   "stdio",
+							"auth_source": "OAuth",
+						},
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "list-sessions-terminal-then-live" && listSessionCalls != nil && *listSessionCalls > 1 {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{
+					"MAES-28": agentruntime.Session{
+						IssueID:         "iss_1",
+						IssueIdentifier: "MAES-28",
+						SessionID:       "session-1",
+						ThreadID:        "thread-1",
+						TurnID:          "turn-1",
+						LastEvent:       "turn.started",
+						LastMessage:     "STREAM:" + issueIdentifier + ":fixture",
+						Metadata: map[string]interface{}{
+							"provider":    "claude",
+							"transport":   "stdio",
+							"auth_source": "OAuth",
+						},
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "live-persisted-fallback" && listSessionCalls != nil && *listSessionCalls == 1 {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{
+					"MAES-28": agentruntime.Session{
+						IssueID:         "iss_1",
+						IssueIdentifier: "MAES-28",
+						SessionID:       "session-1",
+						ThreadID:        "thread-1",
+						TurnID:          "turn-1",
+						LastEvent:       "turn.started",
+						LastMessage:     liveSessionLastMessage,
+						Metadata: map[string]interface{}{
+							"provider":    "claude",
+							"transport":   "stdio",
+							"auth_source": "OAuth",
+						},
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "live-persisted-fallback" && listSessionCalls != nil && *listSessionCalls > 1 {
+			return probeEnvelopeResult("list_sessions", meta, map[string]any{
+				"sessions": map[string]any{
+					"MAES-28": agentruntime.Session{
+						IssueID:         "iss_1",
+						IssueIdentifier: "MAES-28",
+						SessionID:       "session-1",
+						ThreadID:        "thread-1",
+						TurnID:          "turn-1",
+						LastEvent:       "turn.failed",
+						LastMessage:     executionLastMessage,
+						Terminal:        true,
+						TerminalReason:  "turn.failed",
+						Metadata: map[string]interface{}{
+							"provider":  "claude",
+							"transport": "stdio",
+						},
+					},
+				},
+			}, true, "")
 		}
 		if scenario == "list-sessions-mixed" && listSessionCalls != nil && *listSessionCalls == 1 {
 			return probeEnvelopeResult("list_sessions", meta, map[string]any{
@@ -3287,10 +3784,11 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 					ThreadID:        "thread-1",
 					TurnID:          "turn-1",
 					LastEvent:       "turn.started",
-					LastMessage:     "Working",
+					LastMessage:     liveSessionLastMessage,
 					Metadata: map[string]interface{}{
-						"provider":  "claude",
-						"transport": "stdio",
+						"provider":    "claude",
+						"transport":   "stdio",
+						"auth_source": "OAuth",
 					},
 				},
 			},
@@ -3301,6 +3799,8 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 		}
 		switch scenario {
 		case "execution-final":
+			events = append(events, kanban.RuntimeEvent{Identifier: "MAES-28", Kind: "run_completed"})
+		case "live-persisted-fallback":
 			events = append(events, kanban.RuntimeEvent{Identifier: "MAES-28", Kind: "run_completed"})
 		default:
 			events = append(events, kanban.RuntimeEvent{Identifier: "MAES-28", Kind: "run_started"})
