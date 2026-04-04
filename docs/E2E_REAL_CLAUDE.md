@@ -1,6 +1,6 @@
 # Real Claude E2E Harness
 
-These harnesses exercise the full Maestro loop with the real Claude CLI:
+These harnesses exercise the full Maestro loop with the real Claude CLI. The shared harness foundation lives in [`scripts/lib/e2e_real_claude_harness.sh`](../scripts/lib/e2e_real_claude_harness.sh); the matrix runner only composes the existing suites and retains their child harness roots for debugging.
 
 1. build `maestro`
 2. build `maestro-claude-e2e-probe`
@@ -18,15 +18,28 @@ These harnesses exercise the full Maestro loop with the real Claude CLI:
 ## Entry Point
 
 ```bash
-make e2e-real-claude
-make e2e-real-claude-profiles
+make e2e-real-claude-release-gate
+make e2e-real-claude-matrix
 ```
 
-The target runs:
+Suite-level reruns stay available when you need a focused repro:
 
 - [`scripts/e2e_real_claude.sh`](../scripts/e2e_real_claude.sh) for the lifecycle flow (`full-access` success, resume, and interruption)
+- [`scripts/e2e_real_claude_approvals.sh`](../scripts/e2e_real_claude_approvals.sh) for approval-prompt and alert coverage (`command`, `file_write`, `file_edit`, `protected_directory_write`, and `project_dispatch_blocked`)
 - [`scripts/e2e_real_claude_profiles.sh`](../scripts/e2e_real_claude_profiles.sh) for permission-profile coverage (`default`, `full-access`, and `plan-then-full-access`)
-- [`scripts/lib/e2e_real_claude_harness.sh`](../scripts/lib/e2e_real_claude_harness.sh) for the reusable Claude bootstrap, preflight, orchestration, and failure-diagnostics helpers
+- [`scripts/e2e_real_claude_matrix.sh`](../scripts/e2e_real_claude_matrix.sh) for the documented release gate and full-matrix command paths
+
+## Validation Matrix
+
+| Command | When to run | Coverage | Cost / prerequisites | Retained artifacts |
+| --- | --- | --- | --- | --- |
+| `make e2e-real-claude-release-gate` | Required before shipping Claude runtime, bridge, or orchestration changes | lifecycle + permission profiles | 7 issues / 10 Claude launches. Requires active Claude auth plus a working Codex command for `workflow init`. If `codex` is not installed globally, set `E2E_CODEX_COMMAND="npx -y @openai/codex@0.118.0 app-server"`. | Parent matrix root with `lifecycle/`, `profiles/`, and `validation-manifest.txt` |
+| `make e2e-real-claude-matrix` | Optional heavier local run and the preferred nightly/manual full sweep | release gate + approvals/alerts | 12 issues / 15 Claude launches. Same auth/session requirements as the release gate, plus the additional approval/alert scenarios. | Parent matrix root with `lifecycle/`, `profiles/`, `approvals/`, and `validation-manifest.txt` |
+| `make e2e-real-claude` | Focused lifecycle repro | lifecycle only | 4 issues / 5 Claude launches. Includes the `workflow init` bootstrap, so the effective Codex command must be available. | One harness root with `verify.log`, `orchestrator.log`, `claude-support/`, and per-issue workspaces |
+| `make e2e-real-claude-profiles` | Focused permission-profile repro | `default`, `full-access`, `plan-then-full-access` | 3 issues / 5 Claude launches. Claude auth/session required. | One harness root with `verify.log`, `orchestrator.log`, `claude-support/`, and per-issue workspaces |
+| `make e2e-real-claude-approvals` | Focused approval/alert repro after touching approval prompt classification, protected writes, or dispatch alerts | approval prompt + alert flows | 5 issues / 5 Claude launches. Claude auth/session required. | One harness root with `verify.log`, `orchestrator.log`, `claude-support/`, and per-issue workspaces |
+
+The release gate intentionally omits the approval/alert suite to keep the mandatory local path shorter while still covering startup, bridge wiring, recovery, resume, permission-profile transitions, and plan approval lineage. Run the full matrix after changing approval classification, interrupt handling, protected-directory policy, or dispatch-alert behavior.
 
 ## What It Verifies
 
@@ -64,9 +77,19 @@ The permission-profile harness adds explicit verification that:
 - `plan-then-full-access` launches in Claude `plan` mode, pauses in `plan_approval_pending`, preserves planning session/version lineage, supports plan revision requests, and only switches to `--allowed-tools` after approval
 - the same Claude session is resumed from planning through post-approval execution
 
-## Why It Covers Multiple Profiles
+The approval harness adds explicit verification that:
+
+- command approvals can be allowed through the Maestro permission-prompt bridge
+- file writes can be denied without creating the target artifact
+- file edits that never get a response stay paused and persist `retry_paused` / `retry_limit_reached`
+- protected-directory writes stay gated and still succeed only after explicit approval
+- shared `project_dispatch_blocked` alerts can be acknowledged without mutating issue state
+
+## Why The Release Gate Uses Only A Subset
 
 The lifecycle harness uses `full-access` so Claude can complete the deterministic local file-and-shell tasks without stopping on approval prompts. The permission-profile harness then exercises the Maestro-managed differences between `default`, `full-access`, and `plan-then-full-access` explicitly, while still keeping the work inside the temporary harness root and relying only on the operator's existing Claude auth/session.
+
+The approval harness is heavier because it intentionally pauses on multiple interrupt types and inspects negative paths such as denials and timeouts. That makes it valuable for full validation and focused approval-bridge changes, but unnecessary as the default local release gate for every Claude-related patch.
 
 ## Failure Diagnostics
 
@@ -82,12 +105,23 @@ Failures keep the harness directory and print:
 - database path
 - workspaces root
 
-That leaves the generated `WORKFLOW.md`, SQLite store, per-issue workspaces, daemon registry, copied Claude support files, and orchestrator output available for follow-on debugging.
+Matrix runs retain a parent directory plus a `validation-manifest.txt` file that records which child harness roots were run. Use that manifest first, then inspect the failing child harness.
+
+## Failure Runbook
+
+1. Open the retained `validation-manifest.txt` from the matrix root to identify the failing child harness.
+2. Inspect that child harness's `verify.log`, `doctor.log`, `orchestrator.log`, and `claude-support/*.summary.txt` files.
+3. Check the copied `launch-*.args.txt`, `launch-*.mcp.json`, and `launch-*.settings.json` files under `claude-support/` to confirm the exact runtime flags and bridge wiring.
+4. Inspect the retained SQLite database, daemon registry, and per-issue workspaces under the failing child harness before rerunning.
+5. Rerun the focused suite with the same `E2E_ROOT` when you need a deterministic repro of only the failing path.
+
+That leaves the generated `WORKFLOW.md`, SQLite store, per-issue workspaces, daemon registry, copied Claude support files, manifest, and orchestrator output available for follow-on debugging.
 
 ## Requirements
 
 - `go`
 - `claude`
+- the executable referenced by the effective `E2E_CODEX_COMMAND` when you run the lifecycle suite or the release gate
 - `git`
 - `sqlite3`
 - an active supported Claude auth/session that passes the harness preflight
@@ -99,4 +133,5 @@ That leaves the generated `WORKFLOW.md`, SQLite store, per-issue workspaces, dae
 - `E2E_KEEP_HARNESS`: keep the temporary harness directory after success. Default `1`.
 - `E2E_ROOT`: reuse a specific harness directory instead of creating a new temp directory.
 - `E2E_PORT`: override the temporary loopback HTTP port passed to `maestro run`. Default `0` to let the OS choose a free port.
+- `E2E_CODEX_COMMAND`: override the Codex command used by the lifecycle suite's `workflow init` bootstrap. Default: `codex app-server` when `codex` is installed globally, otherwise `npx -y @openai/codex@0.118.0 app-server`.
 - `E2E_CLAUDE_COMMAND`: override the real Claude command that the harness wrapper executes and validates during shell preflight. The generated workflow points at the wrapper, which forwards to this command after it records the support-file and bridge evidence. The preflight parser supports direct command invocations with optional leading `KEY=value` assignments plus normal shell quoting/escaping to keep an executable and literal arguments together. It does not evaluate command substitution, variable expansion, globs, pipes, redirects, or other shell expressions while validating the override.

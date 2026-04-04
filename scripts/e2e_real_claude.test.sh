@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/e2e_real_claude.sh"
 APPROVALS_SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/e2e_real_claude_approvals.sh"
 CODEX_OVERRIDE="npx -y @openai/codex@0.118.0 app-server"
+MATRIX_SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/e2e_real_claude_matrix.sh"
 PROFILES_SCRIPT_UNDER_TEST="$ROOT_DIR/scripts/e2e_real_claude_profiles.sh"
 
 fail() {
@@ -78,6 +79,36 @@ run_harness() {
       shift
     done
     bash "$SCRIPT_UNDER_TEST" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
+  )
+}
+
+run_matrix_harness() {
+  local tmp_dir="$1"
+  local mode="$2"
+  shift 2
+  local bin_dir="$tmp_dir/bin"
+  local matrix_root="$tmp_dir/matrix"
+
+  mkdir -p "$tmp_dir/state"
+  : >"$tmp_dir/tool.log"
+  : >"$tmp_dir/maestro.log"
+  : >"$tmp_dir/probe.log"
+  write_mock_toolchain "$bin_dir"
+
+  (
+    export PATH="$bin_dir:/usr/bin:/bin"
+    export MOCK_TOOL_LOG="$tmp_dir/tool.log"
+    export FAKE_MAESTRO_LOG="$tmp_dir/maestro.log"
+    export FAKE_PROBE_LOG="$tmp_dir/probe.log"
+    export FAKE_STATE_DIR="$tmp_dir/state"
+    export FAKE_HARNESS_ROOT="$matrix_root"
+    export E2E_ROOT="$matrix_root"
+    export E2E_KEEP_HARNESS=1
+    while (($# > 0)); do
+      export "$1"
+      shift
+    done
+    bash "$MATRIX_SCRIPT_UNDER_TEST" "$mode" >"$tmp_dir/stdout.txt" 2>"$tmp_dir/stderr.txt"
   )
 }
 
@@ -2111,6 +2142,57 @@ test_permission_profile_run_covers_default_full_access_and_plan_lineage() {
   [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected profile run to avoid stderr output"
 }
 
+test_release_gate_matrix_runs_lifecycle_and_profiles_under_one_root() {
+  local tmp_dir matrix_root
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-release-gate.XXXXXX")"
+  matrix_root="$tmp_dir/matrix"
+
+  run_matrix_harness "$tmp_dir" release-gate "E2E_CODEX_COMMAND=$CODEX_OVERRIDE" "FAKE_CLAUDE_AUTH_SOURCE=cloud provider"
+
+  assert_exists "$matrix_root/validation-manifest.txt"
+  assert_exists "$matrix_root/lifecycle/WORKFLOW.md"
+  assert_exists "$matrix_root/lifecycle/claude-support/launch-1.summary.txt"
+  assert_exists "$matrix_root/profiles/claude-support/launch-1.summary.txt"
+  [[ ! -e "$matrix_root/approvals" ]] || fail "expected release gate to omit the approvals suite"
+  assert_contains "$matrix_root/validation-manifest.txt" "mode=release-gate"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_count=2"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_1_name=lifecycle"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_1_required_for_release=true"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_1_status=passed"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_2_name=profiles"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_2_required_for_release=true"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_2_status=passed"
+  assert_contains "$tmp_dir/stdout.txt" "Real Claude validation mode: release-gate"
+  assert_contains "$tmp_dir/stdout.txt" "Running lifecycle suite (4 issues / 5 Claude launches)"
+  assert_contains "$tmp_dir/stdout.txt" "Running profiles suite (3 issues / 5 Claude launches)"
+  assert_contains "$tmp_dir/stdout.txt" "Real Claude release-gate validation completed successfully."
+  [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected release-gate matrix run to avoid stderr output"
+}
+
+test_full_matrix_runs_all_claude_suites_and_records_manifest() {
+  local tmp_dir matrix_root
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-matrix.XXXXXX")"
+  matrix_root="$tmp_dir/matrix"
+
+  run_matrix_harness "$tmp_dir" matrix "E2E_CODEX_COMMAND=$CODEX_OVERRIDE" "FAKE_CLAUDE_AUTH_SOURCE=cloud provider"
+
+  assert_exists "$matrix_root/validation-manifest.txt"
+  assert_exists "$matrix_root/lifecycle/claude-support/launch-1.summary.txt"
+  assert_exists "$matrix_root/profiles/claude-support/launch-1.summary.txt"
+  assert_exists "$matrix_root/approvals/claude-support/launch-1.summary.txt"
+  assert_contains "$matrix_root/validation-manifest.txt" "mode=matrix"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_count=3"
+  assert_contains "$matrix_root/validation-manifest.txt" "full_matrix_issues=12"
+  assert_contains "$matrix_root/validation-manifest.txt" "full_matrix_claude_launches=15"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_3_name=approvals"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_3_required_for_release=false"
+  assert_contains "$matrix_root/validation-manifest.txt" "suite_3_status=passed"
+  assert_contains "$tmp_dir/stdout.txt" "Running approvals suite (5 issues / 5 Claude launches)"
+  assert_contains "$tmp_dir/stdout.txt" "Real Claude matrix validation completed successfully."
+  assert_in_order "$tmp_dir/stdout.txt" "Running lifecycle suite (4 issues / 5 Claude launches)" "Running approvals suite (5 issues / 5 Claude launches)"
+  [[ ! -s "$tmp_dir/stderr.txt" ]] || fail "expected full matrix run to avoid stderr output"
+}
+
 test_timeout_failure_prints_issue_and_path_diagnostics() {
   local tmp_dir harness_root
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-timeout.XXXXXX")"
@@ -2219,6 +2301,8 @@ main() {
   test_verify_failures_print_actionable_claude_remediation
   test_approval_run_covers_each_supported_claude_approval_class
   test_permission_profile_run_covers_default_full_access_and_plan_lineage
+  test_release_gate_matrix_runs_lifecycle_and_profiles_under_one_root
+  test_full_matrix_runs_all_claude_suites_and_records_manifest
   test_timeout_failure_prints_issue_and_path_diagnostics
   test_override_command_is_used_for_preflight_requirement
   test_override_command_with_env_assignment_is_used_for_preflight_requirement
