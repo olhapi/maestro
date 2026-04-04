@@ -63,6 +63,14 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	if err != nil {
 		return nil, err
 	}
+	recentIdentifiers := make(map[string]struct{}, len(recent))
+	for _, snapshot := range recent {
+		identifier := strings.TrimSpace(firstNonEmpty(snapshot.Identifier, snapshot.AppSession.IssueIdentifier))
+		if identifier == "" {
+			continue
+		}
+		recentIdentifiers[identifier] = struct{}{}
+	}
 	titleByIdentifier := loadIssueTitlesByIdentifier(store, live, recent)
 	issuesByIdentifier := loadIssuesByIdentifier(store, live, recent)
 	planningByIdentifier := loadPlanningByIdentifier(store, issuesByIdentifier)
@@ -70,21 +78,27 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	out := make([]kanban.SessionFeedEntry, 0, len(live)+recentSessionFeedLimit)
 	seen := make(map[string]struct{}, len(live))
 	for identifier, session := range live {
-		issue := issuesByIdentifier[firstNonEmpty(session.IssueIdentifier, identifier)]
+		resolvedIdentifier := strings.TrimSpace(firstNonEmpty(session.IssueIdentifier, identifier))
+		if session.Terminal {
+			if _, ok := recentIdentifiers[resolvedIdentifier]; ok {
+				continue
+			}
+		}
+		issue := issuesByIdentifier[resolvedIdentifier]
 		pendingInterrupt := pendingInterruptForSession(
 			session.IssueID,
-			firstNonEmpty(session.IssueIdentifier, identifier),
+			resolvedIdentifier,
 			pendingByIssueID,
 			pendingByIdentifier,
 		)
 		entry := buildLiveSessionFeedEntry(
 			store,
-			identifier,
+			resolvedIdentifier,
 			session,
-			runningByIdentifier[identifier],
+			runningByIdentifier[resolvedIdentifier],
 			issue,
-			planningByIdentifier[firstNonEmpty(session.IssueIdentifier, identifier)],
-			titleByIdentifier[identifier],
+			planningByIdentifier[resolvedIdentifier],
+			titleByIdentifier[resolvedIdentifier],
 			pendingInterrupt,
 		)
 		out = append(out, entry)

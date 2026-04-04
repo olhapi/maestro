@@ -1276,6 +1276,112 @@ func TestSessionsEndpointReturnsMergedEntriesAndPrefersLive(t *testing.T) {
 	}
 }
 
+func TestDashboardSessionsEndpointPrefersPersistedEntryForTerminalLiveSession(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Terminal live issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:           issue.ID,
+		Identifier:        issue.Identifier,
+		Phase:             "implementation",
+		Attempt:           1,
+		RunKind:           "run_completed",
+		RuntimeName:       "claude",
+		RuntimeProvider:   "claude",
+		RuntimeTransport:  "stdio",
+		RuntimeAuthSource: "OAuth",
+		StopReason:        "end_turn",
+		UpdatedAt:         now,
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-persisted-turn-persisted",
+			ThreadID:        "thread-persisted",
+			TurnID:          "turn-persisted",
+			LastEvent:       "turn.completed",
+			LastTimestamp:   now,
+			LastMessage:     "Persisted completion",
+			Terminal:        true,
+			TerminalReason:  "turn.completed",
+			Metadata: map[string]interface{}{
+				"provider":           "claude",
+				"transport":          "stdio",
+				"auth_source":        "OAuth",
+				"claude_stop_reason": "end_turn",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession failed: %v", err)
+	}
+
+	provider := testProvider{
+		snapshot: observability.Snapshot{
+			Running: []observability.RunningEntry{{
+				IssueID:     issue.ID,
+				Identifier:  issue.Identifier,
+				Phase:       "implementation",
+				Attempt:     1,
+				SessionID:   "thread-live-turn-live",
+				LastEvent:   "turn.completed",
+				LastMessage: "STREAM:" + issue.Identifier + ":live",
+				StartedAt:   now.Add(-time.Minute),
+			}},
+		},
+		sessions: map[string]interface{}{
+			issue.Identifier: agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				SessionID:       "thread-live-turn-live",
+				ThreadID:        "thread-live",
+				TurnID:          "turn-live",
+				LastEvent:       "turn.completed",
+				LastTimestamp:   now.Add(-time.Second),
+				LastMessage:     "STREAM:" + issue.Identifier + ":live",
+				Terminal:        true,
+				TerminalReason:  "turn.completed",
+				Metadata: map[string]interface{}{
+					"provider":           "claude",
+					"transport":          "stdio",
+					"auth_source":        "OAuth",
+					"claude_stop_reason": "end_turn",
+				},
+			},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/app/sessions", nil)
+	NewServer(store, provider).handleSessions(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode sessions payload: %v", err)
+	}
+
+	entries, ok := payload["entries"].([]interface{})
+	if !ok || len(entries) != 1 {
+		t.Fatalf("expected persisted-only sessions payload, got %#v", payload["entries"])
+	}
+	entry := entries[0].(map[string]interface{})
+	if entry["issue_identifier"] != issue.Identifier || entry["source"] != "persisted" || entry["status"] != "completed" {
+		t.Fatalf("expected persisted completed entry, got %#v", entry)
+	}
+	if entry["stop_reason"] != "end_turn" {
+		t.Fatalf("expected persisted stop reason, got %#v", entry)
+	}
+}
+
 func findSessionFeedEntry(t *testing.T, entries []interface{}, identifier string) map[string]interface{} {
 	t.Helper()
 	for _, raw := range entries {
