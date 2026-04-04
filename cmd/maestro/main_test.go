@@ -84,6 +84,19 @@ printf 'claude-cli {{VERSION}}\n'
 	return path
 }
 
+func isolateClaudeRuntimeEnv(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "")
+	t.Setenv("CLAUDE_CODE_USE_VERTEX", "")
+	t.Setenv("CLAUDE_CODE_USE_FOUNDRY", "")
+	t.Setenv("FAKE_CLAUDE_AUTH_STATUS_JSON", "")
+}
+
 func writeFakePinnedNPXCodexCLI(t *testing.T, version string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "bin")
@@ -919,6 +932,7 @@ func TestBlockerLifecycleCommands(t *testing.T) {
 }
 
 func TestVerifyAndDoctorOutputs(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := setupRepo(t)
 	_ = writeFakeRuntimeCLI(t, "codex", codexschema.SupportedVersion)
@@ -961,6 +975,7 @@ func TestVerifyAndDoctorOutputs(t *testing.T) {
 }
 
 func TestVerifyAndDoctorReportClaudeReadinessFailures(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	type verifyPayload struct {
 		OK          bool              `json:"ok"`
 		Checks      map[string]string `json:"checks"`
