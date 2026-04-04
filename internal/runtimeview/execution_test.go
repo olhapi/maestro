@@ -110,6 +110,103 @@ func TestIssueExecutionPayloadUsesLiveRuntimeWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestIssueExecutionPayloadPrefersPersistedSessionWhenLiveSessionIsTerminal(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Terminal live issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	persistedAt := time.Date(2026, 3, 9, 12, 15, 0, 0, time.UTC)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:           issue.ID,
+		Identifier:        issue.Identifier,
+		Phase:             "implementation",
+		Attempt:           4,
+		RunKind:           "run_completed",
+		RuntimeName:       "claude",
+		RuntimeProvider:   "claude",
+		RuntimeTransport:  "stdio",
+		RuntimeAuthSource: "OAuth",
+		StopReason:        "end_turn",
+		UpdatedAt:         persistedAt,
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-persisted-turn-persisted",
+			ThreadID:        "thread-persisted",
+			TurnID:          "turn-persisted",
+			LastEvent:       "turn.completed",
+			LastTimestamp:   persistedAt,
+			LastMessage:     "Persisted completion",
+			Terminal:        true,
+			TerminalReason:  "turn.completed",
+			Metadata: map[string]interface{}{
+				"provider":           "claude",
+				"transport":          "stdio",
+				"auth_source":        "OAuth",
+				"claude_stop_reason": "end_turn",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	payload, err := IssueExecutionPayload(store, testProvider{
+		snapshot: observability.Snapshot{
+			Running: []observability.RunningEntry{{
+				IssueID:    issue.ID,
+				Identifier: issue.Identifier,
+				Phase:      "implementation",
+				Attempt:    4,
+				SessionID:  "thread-live-turn-live",
+				StartedAt:  persistedAt.Add(-time.Minute),
+			}},
+		},
+		sessions: map[string]interface{}{
+			issue.Identifier: agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				SessionID:       "thread-live-turn-live",
+				ThreadID:        "thread-live",
+				TurnID:          "turn-live",
+				LastEvent:       "turn.completed",
+				LastTimestamp:   persistedAt.Add(-time.Second),
+				LastMessage:     "STREAM:" + issue.Identifier + ":live",
+				Terminal:        true,
+				TerminalReason:  "turn.completed",
+				Metadata: map[string]interface{}{
+					"provider":           "claude",
+					"transport":          "stdio",
+					"auth_source":        "OAuth",
+					"claude_stop_reason": "end_turn",
+				},
+			},
+		},
+	}, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+
+	if payload["active"] != false {
+		t.Fatalf("expected terminal live session to be inactive, got %#v", payload["active"])
+	}
+	if payload["session_source"] != "persisted" {
+		t.Fatalf("expected persisted session source, got %#v", payload["session_source"])
+	}
+	if payload["stop_reason"] != "end_turn" {
+		t.Fatalf("expected persisted stop reason, got %#v", payload["stop_reason"])
+	}
+	if got := payload["session"].(agentruntime.Session); got.SessionID != "thread-persisted-turn-persisted" || !got.Terminal {
+		t.Fatalf("expected persisted session payload, got %#v", payload["session"])
+	}
+}
+
 func TestIssueExecutionPayloadIncludesPendingInterruptMetadata(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

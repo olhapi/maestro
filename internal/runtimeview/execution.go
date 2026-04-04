@@ -62,10 +62,12 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		return nil, err
 	}
 	var runtimeSession *agentruntime.Session
-	if liveSession != nil {
+	if liveSession != nil && !liveSession.Terminal {
 		runtimeSession = liveSession
 	} else if persistedSession != nil {
 		runtimeSession = &persistedSession.AppSession
+	} else if liveSession != nil {
+		runtimeSession = liveSession
 	}
 	runtimeSurface := kanban.ResolveRuntimeSurface(store, issue, persistedSession, runtimeSession, pendingInterrupt, planning)
 	if paused == nil {
@@ -74,7 +76,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 
 	sessionSource := "none"
 	var session interface{}
-	if liveSession != nil {
+	if liveSession != nil && !liveSession.Terminal {
 		sessionSource = "live"
 		summary := liveSession.Summary()
 		session = &summary
@@ -82,6 +84,14 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		sessionSource = "persisted"
 		summary := persistedSession.AppSession.Summary()
 		session = summary
+	} else if liveSession != nil {
+		sessionSource = "live"
+		summary := liveSession.Summary()
+		session = &summary
+	}
+	active := running != nil
+	if liveSession != nil && liveSession.Terminal {
+		active = false
 	}
 
 	attempt := 0
@@ -132,7 +142,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	payload := map[string]interface{}{
 		"issue_id":              issue.ID,
 		"identifier":            issue.Identifier,
-		"active":                running != nil,
+		"active":                active,
 		"phase":                 phase,
 		"attempt_number":        attempt,
 		"failure_class":         failureClass,
