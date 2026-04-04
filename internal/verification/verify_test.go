@@ -130,6 +130,19 @@ func writeFakeClaude(t *testing.T, root, version string) string {
 	return writeFakeCLI(t, filepath.Join(root, "bin"), "claude", version)
 }
 
+func isolateClaudeTestEnv(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "")
+	t.Setenv("CLAUDE_CODE_USE_VERTEX", "")
+	t.Setenv("CLAUDE_CODE_USE_FOUNDRY", "")
+	t.Setenv("FAKE_CLAUDE_AUTH_STATUS_JSON", "")
+}
+
 func writeRuntimeScript(t *testing.T, root, binary, script string) string {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -171,6 +184,7 @@ func TestRunVerification(t *testing.T) {
 }
 
 func TestRunVerificationSucceedsForValidWorkflow(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	tmp := t.TempDir()
 	writeFakeCodex(t, tmp, codexschema.SupportedVersion)
 	writeFakeClaude(t, tmp, "1.2.3")
@@ -245,10 +259,13 @@ func TestRunVerificationUsesHomeDefaultDBPath(t *testing.T) {
 }
 
 func TestRunVerificationSkipsLiteralDbDirCreationForUnresolvedEnvPath(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	tmp := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("TEAM", "")
+	writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+	writeFakeClaude(t, tmp, "1.2.3")
 	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +297,7 @@ func TestRunVerificationSkipsLiteralDbDirCreationForUnresolvedEnvPath(t *testing
 }
 
 func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	tmp := t.TempDir()
 	writeFakeCodex(t, tmp, "9.9.9")
 	writeFakeClaude(t, tmp, "1.2.3")
@@ -302,6 +320,7 @@ func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
 }
 
 func TestRunVerificationReportsClaudeAuthPrecedence(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	cases := []struct {
 		name         string
 		command      string
@@ -381,6 +400,7 @@ func TestRunVerificationReportsClaudeAuthPrecedence(t *testing.T) {
 }
 
 func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	cases := []struct {
 		name            string
 		command         string
@@ -479,6 +499,7 @@ func TestRunVerificationRejectsClaudeWorkspaceExpansion(t *testing.T) {
 }
 
 func TestRunVerificationFailsOnClaudeAuthAndBinaryWithRemediation(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	t.Run("auth", func(t *testing.T) {
 		tmp := t.TempDir()
 		writeFakeCodex(t, tmp, codexschema.SupportedVersion)
@@ -521,6 +542,7 @@ func TestRunVerificationFailsOnClaudeAuthAndBinaryWithRemediation(t *testing.T) 
 }
 
 func TestRunVerificationSupportsPinnedNPXCodexCommand(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	resetRuntimeVersionCache(t)
 	tmp := t.TempDir()
 	npxPath := filepath.Join(tmp, "npx")
@@ -598,6 +620,7 @@ Issue {{ issue.identifier }}
 }
 
 func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	resetRuntimeVersionCache(t)
 	tmp := t.TempDir()
 	npxPath := filepath.Join(tmp, "npx")
@@ -677,7 +700,10 @@ Issue {{ issue.identifier }}
 }
 
 func TestRunVerificationReportsWorkflowLoadFailure(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	tmp := t.TempDir()
+	writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+	writeFakeClaude(t, tmp, "1.2.3")
 	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte("---\n- not-a-map\n---\nIssue {{ issue.identifier }}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -692,11 +718,14 @@ func TestRunVerificationReportsWorkflowLoadFailure(t *testing.T) {
 }
 
 func TestRunVerificationReportsDbDirFailure(t *testing.T) {
+	isolateClaudeTestEnv(t)
 	tmp := t.TempDir()
 	blocked := filepath.Join(tmp, "blocked")
 	if err := os.WriteFile(blocked, []byte("file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeFakeCodex(t, tmp, codexschema.SupportedVersion)
+	writeFakeClaude(t, tmp, "1.2.3")
 	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflowFixture(codexschema.SupportedVersion)), 0o644); err != nil {
 		t.Fatal(err)
 	}
