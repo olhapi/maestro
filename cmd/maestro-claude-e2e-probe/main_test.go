@@ -860,6 +860,25 @@ func TestLoadIssuePlanningEvidence(t *testing.T) {
 	})
 }
 
+func TestLoadIssuePlanningEvidenceErrors(t *testing.T) {
+	t.Run("missing_issue", func(t *testing.T) {
+		fixture := newProbeRunFixture(t, "happy")
+
+		_, _, err := loadIssuePlanningEvidence(fixture.dbPath, "MISSING-1")
+		if err == nil || !strings.Contains(err.Error(), "load issue MISSING-1") {
+			t.Fatalf("loadIssuePlanningEvidence(missing issue) error = %v, want missing issue error", err)
+		}
+	})
+
+	t.Run("missing_db", func(t *testing.T) {
+		missingDB := filepath.Join(t.TempDir(), "missing.db")
+		_, _, err := loadIssuePlanningEvidence(missingDB, "MAES-28")
+		if err == nil || !strings.Contains(err.Error(), "open read-only store") {
+			t.Fatalf("loadIssuePlanningEvidence(missing db) error = %v, want open store error", err)
+		}
+	})
+}
+
 func TestWriteEvidenceIncludesOperatorSurfaceFields(t *testing.T) {
 	t.Parallel()
 
@@ -1350,6 +1369,31 @@ func TestRunLiveModeUsesExecutionSessionFallback(t *testing.T) {
 	}
 }
 
+func TestRunLiveModeWaitsForClaudeSessionFallback(t *testing.T) {
+	fixture := newProbeRunFixture(t, "list-sessions-terminal-then-live")
+
+	if err := run(fixture.opts); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	summaryBytes, err := os.ReadFile(fixture.evidencePrefix + ".summary.txt")
+	if err != nil {
+		t.Fatalf("read summary evidence: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range []string{
+		"dashboard_session_source=live",
+		"dashboard_session_status=active",
+		"execution_session_source=live",
+		"execution_stream_seen=true",
+		"live_claude_session_seen=true",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary evidence missing %q: %s", want, summary)
+		}
+	}
+}
+
 func TestRunReportsProbeFailures(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1596,6 +1640,56 @@ func TestResolveIssueIdentifier(t *testing.T) {
 	}
 }
 
+func TestResolvedIssueIDForIdentifier(t *testing.T) {
+	t.Run("empty_inputs", func(t *testing.T) {
+		if got := resolvedIssueIDForIdentifier("", ""); got != "" {
+			t.Fatalf("resolvedIssueIDForIdentifier(empty_inputs) = %q, want empty", got)
+		}
+	})
+
+	t.Run("missing_db", func(t *testing.T) {
+		if got := resolvedIssueIDForIdentifier(filepath.Join(t.TempDir(), "missing.db"), "MAES-28"); got != "" {
+			t.Fatalf("resolvedIssueIDForIdentifier(missing_db) = %q, want empty", got)
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		fixture := newProbeRunFixture(t, "happy")
+		store, err := kanban.NewReadOnlyStore(fixture.dbPath)
+		if err != nil {
+			t.Fatalf("NewReadOnlyStore() error = %v", err)
+		}
+		issue, err := store.GetIssueByIdentifier(fixture.opts.issueIdentifier)
+		if err != nil {
+			_ = store.Close()
+			t.Fatalf("GetIssueByIdentifier() error = %v", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+
+		if got := resolvedIssueIDForIdentifier(fixture.dbPath, fixture.opts.issueIdentifier); got != strings.TrimSpace(issue.ID) {
+			t.Fatalf("resolvedIssueIDForIdentifier(success) = %q, want %q", got, strings.TrimSpace(issue.ID))
+		}
+	})
+}
+
+func TestPendingInterruptMatchesIssue(t *testing.T) {
+	item := agentruntime.PendingInteraction{IssueIdentifier: "MAES-28", IssueID: "issue-1"}
+	if !pendingInterruptMatchesIssue(item, "MAES-28", "other") {
+		t.Fatal("pendingInterruptMatchesIssue() failed to match issue identifier")
+	}
+
+	item = agentruntime.PendingInteraction{IssueIdentifier: "", IssueID: "issue-1"}
+	if !pendingInterruptMatchesIssue(item, "MISSING-1", "issue-1") {
+		t.Fatal("pendingInterruptMatchesIssue() failed to match issue ID fallback")
+	}
+
+	if pendingInterruptMatchesIssue(agentruntime.PendingInteraction{IssueIdentifier: "", IssueID: ""}, "MISSING-1", "") {
+		t.Fatal("pendingInterruptMatchesIssue() matched empty identifiers")
+	}
+}
+
 func TestWaitForExecutionObservationModes(t *testing.T) {
 	t.Run("live", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1680,6 +1774,26 @@ func TestWaitForExecutionObservationModes(t *testing.T) {
 			t.Fatalf("issueExecutionObservationForIssue(bad_payload) error = %v, ok = %t, want decode error", err, ok)
 		}
 	})
+}
+
+func TestWaitForPersistedIssueExecutionObservation(t *testing.T) {
+	client := newProbeTestClient(t, "execution-persisted-delayed")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	observation, err := waitForPersistedIssueExecutionObservation(ctx, client, "MAES-28", "")
+	if err != nil {
+		t.Fatalf("waitForPersistedIssueExecutionObservation() error = %v", err)
+	}
+	if observation.SessionSource != "persisted" || observation.StopReason != "end_turn" {
+		t.Fatalf("unexpected persisted observation: %+v", observation)
+	}
+	if !observation.StreamSeen {
+		t.Fatalf("waitForPersistedIssueExecutionObservation() StreamSeen = false, want true")
+	}
+	if observation.RuntimeName != "claude" || observation.RuntimeProvider != "claude" {
+		t.Fatalf("unexpected runtime observation: %+v", observation)
+	}
 }
 
 func TestWaitForDashboardSessionObservation(t *testing.T) {
@@ -1963,6 +2077,357 @@ func TestExecutionObservationFromEnvelopePrefersRecovery(t *testing.T) {
 	if observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
 		t.Fatalf("executionObservationFromEnvelope() runtime transport/auth = %+v, want stdio/OAuth", observation)
 	}
+}
+
+func TestClaudeProbeObservationHelperBranches(t *testing.T) {
+	t.Run("execution observation merges list sessions and claude defaults", func(t *testing.T) {
+		t.Parallel()
+
+		payload := map[string]any{
+			"sessions": map[string]any{
+				"MAES-28": agentruntime.Session{
+					IssueID:         "issue-1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "session-1",
+					ThreadID:        "thread-1",
+					TurnID:          "turn-1",
+					Metadata: map[string]any{
+						"provider":    "claude",
+						"transport":   "stdio",
+						"auth_source": "OAuth",
+						"custom":      "value",
+					},
+				},
+			},
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+
+		observation, err := executionObservationFromListSessionsEnvelope(
+			executionObservation{
+				SessionSource: "persisted",
+				RuntimeName:   "",
+				Session:       agentruntime.Session{},
+			},
+			&responseEnvelope{Data: raw},
+			"MAES-28",
+		)
+		if err != nil {
+			t.Fatalf("executionObservationFromListSessionsEnvelope() error = %v", err)
+		}
+		if observation.Session.IssueIdentifier != "MAES-28" || observation.Session.SessionID != "session-1" || observation.Session.ThreadID != "thread-1" {
+			t.Fatalf("execution observation session fields not merged: %+v", observation.Session)
+		}
+		if got := asString(observation.Session.Metadata["custom"]); got != "value" {
+			t.Fatalf("execution observation session metadata = %q, want value", got)
+		}
+		if observation.RuntimeName != "claude" || observation.RuntimeProvider != "claude" || observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+			t.Fatalf("executionObservationFromListSessionsEnvelope() runtime fields = %+v, want claude/stdio/OAuth", observation)
+		}
+	})
+
+	t.Run("session helpers filter terminal and non-claude sessions", func(t *testing.T) {
+		t.Parallel()
+
+		terminalPayload := map[string]any{
+			"sessions": map[string]any{
+				"terminal": agentruntime.Session{
+					IssueID:         "issue-1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "session-1",
+					ThreadID:        "thread-1",
+					Terminal:        true,
+					TerminalReason:  "turn.failed",
+					Metadata: map[string]any{
+						"provider":    "claude",
+						"transport":   "stdio",
+						"auth_source": "OAuth",
+					},
+				},
+			},
+		}
+		terminalRaw, err := json.Marshal(terminalPayload)
+		if err != nil {
+			t.Fatalf("marshal terminal payload: %v", err)
+		}
+		if _, _, ok, err := sessionFromListSessionsEnvelope(&responseEnvelope{Data: terminalRaw}, "MAES-28", false, true); err != nil {
+			t.Fatalf("sessionFromListSessionsEnvelope() error = %v", err)
+		} else if ok {
+			t.Fatal("sessionFromListSessionsEnvelope() accepted terminal session when includeTerminal=false")
+		}
+
+		key, session, ok, err := sessionFromListSessionsEnvelope(&responseEnvelope{Data: terminalRaw}, "MAES-28", true, true)
+		if err != nil {
+			t.Fatalf("sessionFromListSessionsEnvelope(includeTerminal) error = %v", err)
+		}
+		if !ok || key != "terminal" || session.SessionID != "session-1" || !session.Terminal {
+			t.Fatalf("sessionFromListSessionsEnvelope(includeTerminal) = key=%q session=%+v ok=%t", key, session, ok)
+		}
+
+		nonClaudePayload := map[string]any{
+			"sessions": map[string]any{
+				"foreign": agentruntime.Session{
+					IssueID:         "issue-1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "session-2",
+					ThreadID:        "thread-2",
+					Metadata: map[string]any{
+						"provider":    "other",
+						"transport":   "stdio",
+						"auth_source": "OAuth",
+					},
+				},
+			},
+		}
+		nonClaudeRaw, err := json.Marshal(nonClaudePayload)
+		if err != nil {
+			t.Fatalf("marshal non-Claude payload: %v", err)
+		}
+		if _, _, ok, err := sessionFromListSessionsEnvelope(&responseEnvelope{Data: nonClaudeRaw}, "MAES-28", true, true); err != nil {
+			t.Fatalf("sessionFromListSessionsEnvelope(nonClaude) error = %v", err)
+		} else if ok {
+			t.Fatal("sessionFromListSessionsEnvelope() accepted non-Claude session")
+		}
+
+		missingIDsPayload := map[string]any{
+			"sessions": map[string]any{
+				"missing": agentruntime.Session{
+					IssueID: "issue-1",
+					Metadata: map[string]any{
+						"provider":    "claude",
+						"transport":   "stdio",
+						"auth_source": "OAuth",
+					},
+				},
+			},
+		}
+		missingIDsRaw, err := json.Marshal(missingIDsPayload)
+		if err != nil {
+			t.Fatalf("marshal missing IDs payload: %v", err)
+		}
+		if _, _, ok, err := sessionFromListSessionsEnvelope(&responseEnvelope{Data: missingIDsRaw}, "MAES-28", true, true); err != nil {
+			t.Fatalf("sessionFromListSessionsEnvelope(missingIDs) error = %v", err)
+		} else if ok {
+			t.Fatal("sessionFromListSessionsEnvelope() accepted session without identifiers when requireIDs=true")
+		}
+	})
+
+	t.Run("live claude session fallback validates identifiers and metadata", func(t *testing.T) {
+		t.Parallel()
+
+		observation := executionObservation{
+			SessionSource:    "persisted",
+			RuntimeName:      "claude",
+			RuntimeProvider:  "claude",
+			RuntimeTransport: "stdio",
+			Session: agentruntime.Session{
+				SessionID: "session-1",
+				ThreadID:  "thread-1",
+			},
+		}
+		key, session, ok := liveClaudeSessionFromExecutionObservation(observation, "MAES-28")
+		if !ok {
+			t.Fatal("liveClaudeSessionFromExecutionObservation() = false, want true")
+		}
+		if key != "MAES-28" {
+			t.Fatalf("liveClaudeSessionFromExecutionObservation() key = %q, want MAES-28", key)
+		}
+		if session.IssueIdentifier != "MAES-28" {
+			t.Fatalf("liveClaudeSessionFromExecutionObservation() issue identifier = %q, want MAES-28", session.IssueIdentifier)
+		}
+		if got := asString(session.Metadata["provider"]); got != "claude" {
+			t.Fatalf("liveClaudeSessionFromExecutionObservation() provider metadata = %q, want claude", got)
+		}
+		if got := asString(session.Metadata["transport"]); got != "stdio" {
+			t.Fatalf("liveClaudeSessionFromExecutionObservation() transport metadata = %q, want stdio", got)
+		}
+
+		observation.Session.ThreadID = ""
+		if _, _, ok := liveClaudeSessionFromExecutionObservation(observation, "MAES-28"); ok {
+			t.Fatal("liveClaudeSessionFromExecutionObservation() accepted session without thread id")
+		}
+		observation.Session.ThreadID = "thread-1"
+		observation.Session.SessionID = ""
+		if _, _, ok := liveClaudeSessionFromExecutionObservation(observation, "MAES-28"); ok {
+			t.Fatal("liveClaudeSessionFromExecutionObservation() accepted session without session id")
+		}
+		observation.RuntimeProvider = "other"
+		if _, _, ok := liveClaudeSessionFromExecutionObservation(observation, "MAES-28"); ok {
+			t.Fatal("liveClaudeSessionFromExecutionObservation() accepted non-Claude runtime")
+		}
+		observation.RuntimeProvider = "claude"
+		observation.RuntimeTransport = "websocket"
+		if _, _, ok := liveClaudeSessionFromExecutionObservation(observation, "MAES-28"); ok {
+			t.Fatal("liveClaudeSessionFromExecutionObservation() accepted non-stdio transport")
+		}
+	})
+
+	t.Run("dashboard session status selection", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name     string
+			obs      executionObservation
+			wantStat string
+			wantFail string
+		}{
+			{
+				name: "running",
+				obs: executionObservation{
+					Active:          true,
+					SessionSource:   "live",
+					RuntimeName:     "claude",
+					RuntimeProvider: "claude",
+				},
+				wantStat: "running",
+			},
+			{
+				name: "interrupted",
+				obs: executionObservation{
+					SessionSource: "persisted",
+					StopReason:    "run_interrupted",
+					FailureClass:  "run_interrupted",
+					RuntimeName:   "claude",
+				},
+				wantStat: "interrupted",
+				wantFail: "run_interrupted",
+			},
+			{
+				name: "paused_for_recovery",
+				obs: executionObservation{
+					SessionSource: "persisted",
+					StopReason:    "run_interrupted",
+					FailureClass:  "run_interrupted",
+					RuntimeName:   "claude",
+					WorkspaceRecovery: &kanban.WorkspaceRecovery{
+						Status:  "required",
+						Message: "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
+					},
+				},
+				wantStat: "paused",
+				wantFail: "workspace_bootstrap",
+			},
+			{
+				name: "completed",
+				obs: executionObservation{
+					SessionSource: "persisted",
+					RuntimeName:   "claude",
+				},
+				wantStat: "completed",
+			},
+		}
+
+		for _, tt := range cases {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				observation := dashboardSessionObservationFromExecutionObservation(tt.obs)
+				if observation.Status != tt.wantStat {
+					t.Fatalf("dashboardSessionObservationFromExecutionObservation().Status = %q, want %q", observation.Status, tt.wantStat)
+				}
+				if tt.wantFail != "" && observation.FailureClass != tt.wantFail {
+					t.Fatalf("dashboardSessionObservationFromExecutionObservation().FailureClass = %q, want %q", observation.FailureClass, tt.wantFail)
+				}
+				if observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+					t.Fatalf("dashboardSessionObservationFromExecutionObservation() runtime transport/auth = %+v, want stdio/OAuth", observation)
+				}
+			})
+		}
+	})
+
+	t.Run("issue execution observation normalizes recovery", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/app/issues/MAES-28/execution" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active":         false,
+				"session_source": "persisted",
+				"stop_reason":    "run_interrupted",
+				"failure_class":  "run_interrupted",
+				"runtime_name":   "claude",
+				"session": map[string]any{
+					"session_id":       "session-1",
+					"thread_id":        "thread-1",
+					"issue_identifier": "MAES-28",
+					"last_message":     "STREAM:MAES-28:fixture",
+				},
+				"workspace_recovery": map[string]any{
+					"status":  "required",
+					"message": "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		observation, ok, err := issueExecutionObservationForIssue(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "MAES-28", "STREAM:MAES-28:")
+		if err != nil {
+			t.Fatalf("issueExecutionObservationForIssue() error = %v", err)
+		}
+		if !ok {
+			t.Fatal("issueExecutionObservationForIssue() returned ok=false, want true")
+		}
+		if observation.FailureClass != "workspace_bootstrap" {
+			t.Fatalf("issueExecutionObservationForIssue().FailureClass = %q, want workspace_bootstrap", observation.FailureClass)
+		}
+		if !observation.StreamSeen {
+			t.Fatal("issueExecutionObservationForIssue().StreamSeen = false, want true")
+		}
+		if observation.RuntimeName != "claude" || observation.RuntimeProvider != "claude" || observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+			t.Fatalf("issueExecutionObservationForIssue() runtime fields = %+v, want claude/stdio/OAuth", observation)
+		}
+	})
+
+	t.Run("issue execution observation keeps non-recovery failure class", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/app/issues/MAES-28/execution" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active":           false,
+				"session_source":   "persisted",
+				"stop_reason":      "run_interrupted",
+				"failure_class":    "run_interrupted",
+				"runtime_name":     "claude",
+				"runtime_provider": "claude",
+				"session": map[string]any{
+					"session_id":       "session-2",
+					"thread_id":        "thread-2",
+					"issue_identifier": "MAES-28",
+					"last_message":     "done",
+				},
+			})
+		}))
+		t.Cleanup(server.Close)
+
+		observation, ok, err := issueExecutionObservationForIssue(maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "MAES-28", "")
+		if err != nil {
+			t.Fatalf("issueExecutionObservationForIssue() error = %v", err)
+		}
+		if !ok {
+			t.Fatal("issueExecutionObservationForIssue() returned ok=false, want true")
+		}
+		if observation.FailureClass != "run_interrupted" {
+			t.Fatalf("issueExecutionObservationForIssue().FailureClass = %q, want run_interrupted", observation.FailureClass)
+		}
+		if observation.StreamSeen {
+			t.Fatal("issueExecutionObservationForIssue().StreamSeen = true, want false")
+		}
+		if observation.RuntimeName != "claude" || observation.RuntimeProvider != "claude" || observation.RuntimeTransport != "stdio" || observation.RuntimeAuthSource != "OAuth" {
+			t.Fatalf("issueExecutionObservationForIssue() runtime fields without recovery = %+v, want claude/stdio/OAuth", observation)
+		}
+	})
 }
 
 func TestWaitForPendingInteractionSurfaceObservation(t *testing.T) {
@@ -2539,6 +3004,54 @@ func TestPendingInterruptHelpers(t *testing.T) {
 		}
 	})
 
+	t.Run("filters_classification_and_tool_name", func(t *testing.T) {
+		items := []agentruntime.PendingInteraction{
+			{
+				ID:              "skip-classification",
+				IssueIdentifier: "CL-1",
+				Kind:            agentruntime.PendingInteractionKindApproval,
+				Metadata: map[string]interface{}{
+					"classification": "other",
+					"tool_name":      "Bash",
+				},
+			},
+			{
+				ID:              "skip-tool-name",
+				IssueIdentifier: "CL-1",
+				Kind:            agentruntime.PendingInteractionKindApproval,
+				Metadata: map[string]interface{}{
+					"classification": "command",
+					"tool_name":      "Write",
+				},
+			},
+			validPendingInterrupt(),
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/app/interrupts" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(agentruntime.PendingInteractionSnapshot{Items: items})
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		got, pendingCount, err := waitForPendingInterrupt(ctx, maestromcp.DaemonEntry{BaseURL: server.URL + "/mcp"}, "CL-1", "approval", "command", "Bash")
+		if err != nil {
+			t.Fatalf("waitForPendingInterrupt(filters) error = %v", err)
+		}
+		if pendingCount != len(items) {
+			t.Fatalf("pendingCount = %d, want %d", pendingCount, len(items))
+		}
+		if got.ID != "interrupt-1" {
+			t.Fatalf("interaction ID = %q, want interrupt-1", got.ID)
+		}
+	})
+
 	t.Run("matches_issue_id_fallback", func(t *testing.T) {
 		dir := t.TempDir()
 		dbPath := filepath.Join(dir, "maestro.db")
@@ -2764,6 +3277,57 @@ func TestPendingInterruptHelpers(t *testing.T) {
 		}
 		if !strings.Contains(string(body), `"ok":true`) {
 			t.Fatalf("dashboardRequest() body = %s, want ok response", string(body))
+		}
+	})
+
+	t.Run("dashboard_request_uses_payload_and_auth", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.URL.Path != "/api/v1/app/interrupts/interrupt-1/respond" {
+				http.NotFound(w, r)
+				return
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer token-a" {
+				t.Fatalf("Authorization header = %q, want Bearer token-a", got)
+			}
+			if got := r.Header.Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type header = %q, want application/json", got)
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request payload: %v", err)
+			}
+			if got := asString(payload["decision"]); got != "allow" {
+				t.Fatalf("request payload decision = %q, want allow", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted"})
+		}))
+		t.Cleanup(server.Close)
+
+		body, statusCode, err := dashboardRequest(maestromcp.DaemonEntry{
+			BaseURL:     server.URL + "/mcp",
+			BearerToken: "token-a",
+		}, http.MethodPost, "/api/v1/app/interrupts/interrupt-1/respond", map[string]any{"decision": "allow"})
+		if err != nil {
+			t.Fatalf("dashboardRequest() error = %v", err)
+		}
+		if statusCode != http.StatusAccepted {
+			t.Fatalf("dashboardRequest() status = %d, want %d", statusCode, http.StatusAccepted)
+		}
+		if !strings.Contains(string(body), `"status":"accepted"`) {
+			t.Fatalf("dashboardRequest() body = %s, want accepted response", string(body))
+		}
+	})
+
+	t.Run("dashboard_request_rejects_unmarshalable_payload", func(t *testing.T) {
+		_, _, err := dashboardRequest(maestromcp.DaemonEntry{
+			BaseURL: "https://example.invalid",
+		}, http.MethodPost, "/api/v1/app/interrupts/interrupt-1/respond", map[string]any{
+			"decision": make(chan int),
+		})
+		if err == nil || !strings.Contains(err.Error(), "unsupported type: chan int") {
+			t.Fatalf("dashboardRequest() error = %v, want unsupported type error", err)
 		}
 	})
 }
@@ -3386,6 +3950,7 @@ func TestHelperProcessProbeMCPServer(t *testing.T) {
 	registryEntryPath := strings.TrimSpace(os.Getenv("GO_PROBE_REGISTRY_ENTRY"))
 	baseURL := firstNonEmpty(strings.TrimSpace(os.Getenv("GO_PROBE_BASE_URL")), "http://127.0.0.1:8080/mcp")
 	listSessionCalls := 0
+	executionCalls := 0
 
 	mcp := mcpserver.NewMCPServer("probe-helper", "1.0.0")
 	toolNames := []string{"approval_prompt", "create_issue", "get_issue_execution", "get_runtime_snapshot", "list_issues", "list_runtime_events", "list_sessions", "server_info"}
@@ -3395,7 +3960,7 @@ func TestHelperProcessProbeMCPServer(t *testing.T) {
 	for _, name := range toolNames {
 		toolName := name
 		mcp.AddTool(mcpapi.NewTool(toolName), func(context.Context, mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
-			return probeToolResult(toolName, scenario, dbPath, storeID, registryDir, registryEntryPath, baseURL, &listSessionCalls)
+			return probeToolResult(toolName, scenario, dbPath, storeID, registryDir, registryEntryPath, baseURL, &listSessionCalls, &executionCalls)
 		})
 	}
 
@@ -3422,7 +3987,7 @@ func TestHelperProcessProbeMain(t *testing.T) {
 	os.Exit(0)
 }
 
-func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntryPath, baseURL string, listSessionCalls *int) (*mcpapi.CallToolResult, error) {
+func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntryPath, baseURL string, listSessionCalls, executionCalls *int) (*mcpapi.CallToolResult, error) {
 	meta := responseEnvelopeMeta{
 		DBPath:           dbPath,
 		StoreID:          storeID,
@@ -3493,8 +4058,84 @@ func probeToolResult(name, scenario, dbPath, storeID, registryDir, registryEntry
 			"pagination": map[string]any{},
 		}, true, "")
 	case "get_issue_execution":
+		if executionCalls != nil {
+			*executionCalls++
+		}
 		if scenario == "execution-bad-data" {
 			return probeEnvelopeResultWithRawData("get_issue_execution", meta, json.RawMessage(`"bad"`), true, "")
+		}
+		if scenario == "execution-persisted-delayed" && executionCalls != nil && *executionCalls == 1 {
+			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
+				"active":            true,
+				"session_source":    "live",
+				"failure_class":     "",
+				"stop_reason":       "",
+				"runtime_name":      "claude",
+				"runtime_provider":  "claude",
+				"runtime_transport": "stdio",
+				"session": agentruntime.Session{
+					IssueID:         "iss_1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "session-1",
+					ThreadID:        "thread-1",
+					TurnID:          "turn-1",
+					LastEvent:       "turn.started",
+					LastMessage:     "STREAM:" + issueIdentifier + ":live",
+					Metadata: map[string]interface{}{
+						"provider":                    "claude",
+						"transport":                   "stdio",
+						"provider_session_id":         "session-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "execution-persisted-delayed" && executionCalls != nil && *executionCalls > 1 {
+			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
+				"active":            false,
+				"session_source":    "persisted",
+				"failure_class":     "",
+				"stop_reason":       "end_turn",
+				"runtime_name":      "claude",
+				"runtime_provider":  "claude",
+				"runtime_transport": "stdio",
+				"session": agentruntime.Session{
+					IssueID:         "iss_1",
+					IssueIdentifier: "MAES-28",
+					SessionID:       "session-1",
+					ThreadID:        "thread-1",
+					TurnID:          "turn-1",
+					LastEvent:       "turn.completed",
+					LastMessage:     "STREAM:" + issueIdentifier + ":complete",
+					Metadata: map[string]interface{}{
+						"provider":                    "claude",
+						"transport":                   "stdio",
+						"provider_session_id":         "session-1",
+						"session_identifier_strategy": "provider_session_uuid",
+					},
+				},
+			}, true, "")
+		}
+		if scenario == "list-sessions-terminal-then-live" {
+			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
+				"active":            true,
+				"session_source":    "live",
+				"failure_class":     "",
+				"stop_reason":       "",
+				"runtime_name":      "claude",
+				"runtime_provider":  "claude",
+				"runtime_transport": "stdio",
+				"session": agentruntime.Session{
+					IssueID:         "iss_1",
+					IssueIdentifier: "MAES-28",
+					LastMessage:     "STREAM:" + issueIdentifier + ":live",
+					Metadata: map[string]interface{}{
+						"provider":    "claude",
+						"transport":   "stdio",
+						"auth_source": "OAuth",
+					},
+				},
+			}, true, "")
 		}
 		if scenario == "execution-final" {
 			return probeEnvelopeResult("get_issue_execution", meta, map[string]any{
