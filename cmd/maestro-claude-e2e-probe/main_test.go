@@ -749,6 +749,85 @@ func TestRuntimeEventKinds(t *testing.T) {
 	}
 }
 
+func TestLoadIssuePlanningEvidence(t *testing.T) {
+	t.Run("without_planning", func(t *testing.T) {
+		fixture := newProbeRunFixture(t, "happy")
+
+		issueEvidence, planningEvidence, err := loadIssuePlanningEvidence(fixture.dbPath, fixture.opts.issueIdentifier)
+		if err != nil {
+			t.Fatalf("loadIssuePlanningEvidence() error = %v", err)
+		}
+		if issueEvidence.State != string(kanban.StateReady) {
+			t.Fatalf("issueEvidence.State = %q, want ready", issueEvidence.State)
+		}
+		if issueEvidence.PermissionProfile != string(kanban.PermissionProfileDefault) {
+			t.Fatalf("issueEvidence.PermissionProfile = %q, want default", issueEvidence.PermissionProfile)
+		}
+		if planningEvidence.Present {
+			t.Fatalf("planningEvidence.Present = true, want false")
+		}
+		if planningEvidence.Status != "" || planningEvidence.VersionCount != 0 {
+			t.Fatalf("unexpected empty planning evidence: %+v", planningEvidence)
+		}
+	})
+
+	t.Run("with_planning", func(t *testing.T) {
+		fixture := newProbeRunFixture(t, "happy")
+
+		store, err := kanban.NewStore(fixture.dbPath)
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		issue, err := store.GetIssueByIdentifier(fixture.opts.issueIdentifier)
+		if err != nil {
+			_ = store.Close()
+			t.Fatalf("GetIssueByIdentifier() error = %v", err)
+		}
+		requestedAt := time.Date(2026, 4, 3, 20, 0, 0, 0, time.UTC)
+		if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+			_ = store.Close()
+			t.Fatalf("UpdateIssuePermissionProfile() error = %v", err)
+		}
+		if err := store.SetIssuePendingPlanApprovalWithContext(issue, "Ship the guarded rollout.", requestedAt, 2, "thread-plan-1", "turn-plan-1"); err != nil {
+			_ = store.Close()
+			t.Fatalf("SetIssuePendingPlanApprovalWithContext() error = %v", err)
+		}
+		if err := store.SetIssuePendingPlanRevision(issue.ID, "Add an explicit rollback check.", requestedAt.Add(2*time.Minute)); err != nil {
+			_ = store.Close()
+			t.Fatalf("SetIssuePendingPlanRevision() error = %v", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+
+		issueEvidence, planningEvidence, err := loadIssuePlanningEvidence(fixture.dbPath, fixture.opts.issueIdentifier)
+		if err != nil {
+			t.Fatalf("loadIssuePlanningEvidence() error = %v", err)
+		}
+		if !planningEvidence.Present {
+			t.Fatal("planningEvidence.Present = false, want true")
+		}
+		if got, want := issueEvidence.PermissionProfile, string(kanban.PermissionProfilePlanThenFullAccess); got != want {
+			t.Fatalf("issueEvidence.PermissionProfile = %q, want %q", got, want)
+		}
+		if got, want := planningEvidence.Status, string(kanban.IssuePlanningStatusRevisionRequested); got != want {
+			t.Fatalf("planningEvidence.Status = %q, want %q", got, want)
+		}
+		if got, want := planningEvidence.CurrentVersionNumber, 1; got != want {
+			t.Fatalf("planningEvidence.CurrentVersionNumber = %d, want %d", got, want)
+		}
+		if got, want := planningEvidence.CurrentVersionThreadID, "thread-plan-1"; got != want {
+			t.Fatalf("planningEvidence.CurrentVersionThreadID = %q, want %q", got, want)
+		}
+		if got, want := planningEvidence.CurrentVersionTurnID, "turn-plan-1"; got != want {
+			t.Fatalf("planningEvidence.CurrentVersionTurnID = %q, want %q", got, want)
+		}
+		if got, want := planningEvidence.PendingRevisionNote, "Add an explicit rollback check."; got != want {
+			t.Fatalf("planningEvidence.PendingRevisionNote = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestWriteEvidenceIncludesOperatorSurfaceFields(t *testing.T) {
 	t.Parallel()
 
@@ -2366,6 +2445,174 @@ func TestPendingInterruptHelpers(t *testing.T) {
 			t.Fatalf("dashboardRequest() error = %v, want missing base_url", err)
 		}
 	})
+}
+
+func TestValidatePlanApprovalInterrupt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		if err := validatePlanApprovalInterrupt(validPlanApprovalInterrupt(), "CL-3", "awaiting_approval", 2); err != nil {
+			t.Fatalf("validatePlanApprovalInterrupt() error = %v", err)
+		}
+	})
+
+	tests := []struct {
+		name string
+		edit func(*agentruntime.PendingInteraction)
+		want string
+	}{
+		{
+			name: "missing_id",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.ID = ""
+			},
+			want: "pending interrupt id missing",
+		},
+		{
+			name: "wrong_kind",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Kind = agentruntime.PendingInteractionKindAlert
+			},
+			want: "expected approval interrupt",
+		},
+		{
+			name: "wrong_issue_identifier",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.IssueIdentifier = "OTHER-1"
+			},
+			want: `expected interrupt issue "CL-3"`,
+		},
+		{
+			name: "missing_approval_payload",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval = nil
+			},
+			want: "expected approval payload on pending interrupt",
+		},
+		{
+			name: "missing_markdown",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.Markdown = ""
+			},
+			want: "expected plan markdown on pending interrupt",
+		},
+		{
+			name: "missing_reason",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.Reason = ""
+			},
+			want: "expected plan approval reason",
+		},
+		{
+			name: "missing_decisions",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Approval.Decisions = nil
+			},
+			want: "expected approval decisions on pending interrupt",
+		},
+		{
+			name: "wrong_collaboration_mode",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.CollaborationMode = "default"
+			},
+			want: "expected plan collaboration mode",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			interaction := validPlanApprovalInterrupt()
+			tt.edit(&interaction)
+			err := validatePlanApprovalInterrupt(interaction, "CL-3", "awaiting_approval", 2)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validatePlanApprovalInterrupt() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateAlertInterrupt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		if err := validateAlertInterrupt(validAlertInterrupt(), "CL-9", "project_dispatch_blocked"); err != nil {
+			t.Fatalf("validateAlertInterrupt() error = %v", err)
+		}
+	})
+
+	tests := []struct {
+		name string
+		edit func(*agentruntime.PendingInteraction)
+		want string
+	}{
+		{
+			name: "missing_id",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.ID = ""
+			},
+			want: "pending alert id missing",
+		},
+		{
+			name: "wrong_kind",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Kind = agentruntime.PendingInteractionKindApproval
+			},
+			want: "expected alert interrupt",
+		},
+		{
+			name: "wrong_issue_identifier",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.IssueIdentifier = "OTHER-1"
+			},
+			want: `expected alert issue "CL-9"`,
+		},
+		{
+			name: "missing_alert_payload",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Alert = nil
+			},
+			want: "expected alert payload on pending interrupt",
+		},
+		{
+			name: "wrong_alert_code",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Alert.Code = "other"
+			},
+			want: `expected alert code "project_dispatch_blocked"`,
+		},
+		{
+			name: "missing_title_and_message",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Alert.Title = ""
+				interaction.Alert.Message = ""
+			},
+			want: "expected alert title and message",
+		},
+		{
+			name: "missing_acknowledge_action",
+			edit: func(interaction *agentruntime.PendingInteraction) {
+				interaction.Actions = nil
+			},
+			want: "expected acknowledge action on alert interrupt",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			interaction := validAlertInterrupt()
+			tt.edit(&interaction)
+			err := validateAlertInterrupt(interaction, "CL-9", "project_dispatch_blocked")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateAlertInterrupt() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
 }
 
 func TestBoolFromMap(t *testing.T) {
