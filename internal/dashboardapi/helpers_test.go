@@ -16,6 +16,7 @@ func TestNormalizeFailureClass(t *testing.T) {
 		{name: "workspace bootstrap", value: "workspace_bootstrap_failed", want: "workspace_bootstrap"},
 		{name: "approval required", value: "approval_required", want: "approval_required"},
 		{name: "turn input required", value: "turn_input_required", want: "turn_input_required"},
+		{name: "unsupported runtime capability", value: "unsupported_runtime_capability: local_image", want: "unsupported_runtime_capability"},
 		{name: "stall timeout", value: "stall_timeout", want: "stall_timeout"},
 		{name: "run unsuccessful", value: "run_unsuccessful", want: "run_unsuccessful"},
 		{name: "unsuccessful alias", value: "unsuccessful", want: "run_unsuccessful"},

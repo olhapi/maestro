@@ -161,6 +161,57 @@ func TestIssueExecutionPayloadIncludesPersistedSessionAndPlanFields(t *testing.T
 	}
 }
 
+func TestIssueExecutionPayloadNormalizesUnsupportedRuntimeCapabilityFailures(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	issue, err := store.CreateIssue("", "", "Unsupported runtime capability", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	errText := `unsupported_runtime_capability: issue ` + issue.Identifier + ` has image attachments, but runtime "claude" does not support local_image input; remove the issue image or switch to a runtime with local_image support`
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:          issue.ID,
+		Identifier:       issue.Identifier,
+		Phase:            "implementation",
+		Attempt:          1,
+		RunKind:          "retry_paused",
+		RuntimeName:      "claude",
+		RuntimeProvider:  "claude",
+		RuntimeTransport: "stdio",
+		Error:            errText,
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			Metadata: map[string]interface{}{
+				"provider":  "claude",
+				"transport": "stdio",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	provider := executionTestProvider{snapshot: observability.Snapshot{GeneratedAt: time.Now().UTC()}}
+	payload, err := IssueExecutionPayload(store, provider, issue)
+	if err != nil {
+		t.Fatalf("IssueExecutionPayload: %v", err)
+	}
+	if payload["failure_class"] != "unsupported_runtime_capability" {
+		t.Fatalf("expected normalized unsupported runtime capability class, got %#v", payload["failure_class"])
+	}
+	if payload["current_error"] != errText {
+		t.Fatalf("expected full unsupported runtime capability error, got %#v", payload["current_error"])
+	}
+	if payload["runtime_provider"] != "claude" || payload["runtime_transport"] != "stdio" {
+		t.Fatalf("unexpected runtime metadata payload: %#v", payload)
+	}
+}
+
 func TestExecutionHelperBranches(t *testing.T) {
 	session := agentruntime.Session{
 		SessionID: "thread-1-turn-1",
@@ -200,8 +251,14 @@ func TestExecutionHelperBranches(t *testing.T) {
 	if normalizeFailureErrorClass("  ") != "" {
 		t.Fatal("expected blank error class to stay blank")
 	}
+	if normalizeFailureErrorClass("unsupported_runtime_capability: local_image") != "unsupported_runtime_capability" {
+		t.Fatal("expected unsupported runtime capability normalization")
+	}
 	if normalizeFailureKind("workspace_bootstrap_failed") != "workspace_bootstrap" {
 		t.Fatal("expected workspace bootstrap normalization")
+	}
+	if normalizeFailureKind("unsupported_runtime_capability: local_image") != "unsupported_runtime_capability" {
+		t.Fatal("expected unsupported runtime capability kind normalization")
 	}
 	if got := workspaceRecoveryFromEvent(kanban.RuntimeEvent{
 		Kind:    "workspace_bootstrap_recovery",

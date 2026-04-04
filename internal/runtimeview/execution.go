@@ -447,6 +447,8 @@ func normalizeFailureErrorClass(value string) string {
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):
 		return "turn_input_required"
+	case strings.Contains(value, "unsupported_runtime_capability"):
+		return "unsupported_runtime_capability"
 	case strings.Contains(value, "stall_timeout"):
 		return "stall_timeout"
 	case strings.Contains(value, "run_unsuccessful"), strings.Contains(value, "unsuccessful"):
@@ -486,6 +488,8 @@ func normalizeFailureKind(value string) string {
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):
 		return "turn_input_required"
+	case strings.Contains(value, "unsupported_runtime_capability"):
+		return "unsupported_runtime_capability"
 	case strings.Contains(value, "stall_timeout"):
 		return "stall_timeout"
 	case strings.Contains(value, "run_unsuccessful"), strings.Contains(value, "unsuccessful"):

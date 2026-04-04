@@ -115,6 +115,7 @@ func repoRootFromCaller(t *testing.T) string {
 }
 
 func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro db", "maestro.db")
 	repoPath := setupRepo(t)
 	opsRepoPath := setupRepo(t)
@@ -397,6 +398,7 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 }
 
 func TestTextModeRootInitAlias(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro db", "maestro.db")
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
 	_ = writeFakeClaudeCLI(t, "1.2.3")
@@ -492,9 +494,11 @@ func TestRootInitHelpIncludesSetupFlags(t *testing.T) {
 }
 
 func TestWorkflowInitAcceptsExtendedSetupFlagsAndAliases(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 
 	code, stdout, stderr := runCLI(
 		t,
@@ -549,9 +553,12 @@ func TestWorkflowInitRequiresForceToOverwriteExistingFile(t *testing.T) {
 }
 
 func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	missingCodex := filepath.Join(t.TempDir(), "codex")
+	_ = writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", missingCodex+" app-server")
 	if code != 0 {
@@ -576,9 +583,11 @@ func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
 }
 
 func TestWorkflowInitSupportsPinnedNPXCodexCommandAndClaudeChecks(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	npxCommand := writeFakePinnedNPXCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeCodexCLI(t, codexschema.SupportedVersion)
 	_ = writeFakeClaudeCLI(t, "1.2.3")
 
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", npxCommand)
@@ -644,9 +653,11 @@ func TestSpecCheckSupportsClaudeDefaultWorkflow(t *testing.T) {
 }
 
 func TestWorkflowInitOmitsSandboxFields(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", codexPath+" app-server")
 	if code != 0 {

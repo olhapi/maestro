@@ -651,11 +651,7 @@ func discoverBridgeIssueContext(dbPath string) (*bridgeIssueContext, error) {
 	if err != nil {
 		return nil, err
 	}
-	absCwd, err := filepath.Abs(cwd)
-	if err != nil {
-		return nil, err
-	}
-	cwdPath := filepath.Clean(absCwd)
+	cwdPath := canonicalPath(cwd)
 
 	store, err := kanban.NewReadOnlyStore(dbPath)
 	if err != nil {
@@ -682,7 +678,7 @@ func discoverBridgeIssueContext(dbPath string) (*bridgeIssueContext, error) {
 			if err != nil {
 				continue
 			}
-			if filepath.Clean(absWorkspacePath) != cwdPath {
+			if canonicalPath(absWorkspacePath) != cwdPath {
 				continue
 			}
 			return &bridgeIssueContext{
@@ -691,7 +687,7 @@ func discoverBridgeIssueContext(dbPath string) (*bridgeIssueContext, error) {
 				IssueTitle:      strings.TrimSpace(summary.Title),
 				ProjectID:       strings.TrimSpace(summary.ProjectID),
 				ProjectName:     strings.TrimSpace(summary.ProjectName),
-				WorkspacePath:   cwdPath,
+				WorkspacePath:   filepath.Clean(absWorkspacePath),
 			}, nil
 		}
 		if offset+len(summaries) >= total || len(summaries) == 0 {
@@ -699,6 +695,18 @@ func discoverBridgeIssueContext(dbPath string) (*bridgeIssueContext, error) {
 		}
 	}
 	return nil, nil
+}
+
+func canonicalPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(abs)
 }
 
 func jsonObjectFromAny(value any) (map[string]any, error) {

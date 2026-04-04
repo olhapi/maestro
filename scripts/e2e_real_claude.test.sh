@@ -128,6 +128,10 @@ if [[ "${1:-}" == "build" && "${2:-}" == "-o" ]]; then
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'probe %s\n' "$*" >>"$FAKE_PROBE_LOG"
+if [[ -n "${FAKE_PROBE_ERROR:-}" ]]; then
+  printf '%s\n' "$FAKE_PROBE_ERROR" >&2
+  exit 1
+fi
 if [[ "${FAKE_PROBE_FAIL:-0}" == "1" ]]; then
   exit 1
 fi
@@ -2219,6 +2223,31 @@ test_timeout_failure_prints_issue_and_path_diagnostics() {
   assert_contains "$tmp_dir/stderr.txt" "Claude evidence summary:"
 }
 
+test_attach_prerequisite_failure_prints_probe_diagnostics() {
+  local tmp_dir harness_root
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-attach-prereq.XXXXXX")"
+  harness_root="$tmp_dir/harness"
+
+  if run_harness "$tmp_dir" \
+    "E2E_CODEX_COMMAND=$CODEX_OVERRIDE" \
+    "E2E_TIMEOUT_SEC=3" \
+    "E2E_POLL_SEC=0.1" \
+    "FAKE_PROBE_ERROR=did not observe a live Claude session before context deadline"; then
+    fail "expected harness failure for attach prerequisite probe error"
+  fi
+
+  assert_contains "$tmp_dir/stderr.txt" "success scenario never produced launch-1 summary"
+  assert_contains "$tmp_dir/stderr.txt" "did not observe a live Claude session before context deadline"
+  assert_contains "$tmp_dir/stderr.txt" "Harness root: $harness_root"
+  assert_contains "$tmp_dir/stderr.txt" "Claude evidence dir: $harness_root/claude-support"
+  assert_contains "$tmp_dir/stderr.txt" "Orchestrator log: $harness_root/orchestrator.log"
+  assert_contains "$tmp_dir/stderr.txt" "Last orchestrator output:"
+  assert_contains "$tmp_dir/stderr.txt" "Claude evidence files:"
+  assert_contains "$tmp_dir/stderr.txt" "launch-1.args.txt"
+  assert_contains "$tmp_dir/stderr.txt" "launch.counter"
+  [[ ! -e "$harness_root/artifacts/CL-1.success.txt" ]] || fail "expected attach prerequisite failure to avoid success artifact creation"
+}
+
 test_override_command_is_used_for_preflight_requirement() {
   local tmp_dir harness_root
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-real-claude-test-override.XXXXXX")"
@@ -2304,6 +2333,7 @@ main() {
   test_release_gate_matrix_runs_lifecycle_and_profiles_under_one_root
   test_full_matrix_runs_all_claude_suites_and_records_manifest
   test_timeout_failure_prints_issue_and_path_diagnostics
+  test_attach_prerequisite_failure_prints_probe_diagnostics
   test_override_command_is_used_for_preflight_requirement
   test_override_command_with_env_assignment_is_used_for_preflight_requirement
   test_override_command_validation_does_not_execute_command_substitutions

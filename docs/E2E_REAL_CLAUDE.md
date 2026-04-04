@@ -77,6 +77,13 @@ The permission-profile harness adds explicit verification that:
 - `plan-then-full-access` launches in Claude `plan` mode, pauses in `plan_approval_pending`, preserves planning session/version lineage, supports plan revision requests, and only switches to `--allowed-tools` after approval
 - the same Claude session is resumed from planning through post-approval execution
 
+The wider deterministic Claude guardrail matrix also covers unsupported and disallowed paths that should fail before a live Claude turn can degrade:
+
+- readiness and attach prerequisites: the shell harness test matrix asserts `maestro verify` / `doctor` fail loudly for missing Claude, rejected auth, `--bare`, bypass/auto permission modes, and `additionalDirectories`
+- attach/probe prerequisites: the shell harness also fails loudly when the bridge probe cannot observe a live Claude session, and it leaves the copied support files plus orchestrator diagnostics in place for debugging
+- unsupported capability failures: runner/orchestrator coverage asserts first-turn Claude issue images fail with `unsupported_runtime_capability`, pause instead of auto-retrying, preserve Claude runtime metadata, and avoid partial workspace staging
+- recoverable run failures: the approval harness keeps the edit-timeout case distinct as `retry_limit_reached` so operators can tell it apart from readiness and unsupported-capability failures
+
 The approval harness adds explicit verification that:
 
 - command approvals can be allowed through the Maestro permission-prompt bridge
@@ -85,9 +92,11 @@ The approval harness adds explicit verification that:
 - protected-directory writes stay gated and still succeed only after explicit approval
 - shared `project_dispatch_blocked` alerts can be acknowledged without mutating issue state
 
-## Why The Release Gate Uses Only A Subset
+## Why It Covers Multiple Profiles
 
 The lifecycle harness uses `full-access` so Claude can complete the deterministic local file-and-shell tasks without stopping on approval prompts. The permission-profile harness then exercises the Maestro-managed differences between `default`, `full-access`, and `plan-then-full-access` explicitly, while still keeping the work inside the temporary harness root and relying only on the operator's existing Claude auth/session.
+
+## Why The Release Gate Uses Only A Subset
 
 The approval harness is heavier because it intentionally pauses on multiple interrupt types and inspects negative paths such as denials and timeouts. That makes it valuable for full validation and focused approval-bridge changes, but unnecessary as the default local release gate for every Claude-related patch.
 

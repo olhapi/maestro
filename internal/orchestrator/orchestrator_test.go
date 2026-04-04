@@ -119,6 +119,20 @@ func initGitRepoForTest(t *testing.T, repoPath string) {
 	runGitForTest(t, repoPath, "branch", "-M", "main")
 }
 
+func samplePNGBytesForTest() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+		0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
 func (r *blockingRunner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt int) (*agent.RunResult, error) {
 	close(r.started)
 	<-ctx.Done()
@@ -2689,6 +2703,70 @@ func TestTurnInputRequiredPausesAutomaticRetries(t *testing.T) {
 	}
 	if snapshot.RunKind != "retry_paused" || snapshot.Error != "turn_input_required" {
 		t.Fatalf("unexpected execution snapshot: %+v", snapshot)
+	}
+}
+
+func TestClaudeIssueImagesPauseUnsupportedRuntimeCapabilityWithoutRetry(t *testing.T) {
+	orch, store, manager, _ := setupTestOrchestrator(t, "cat")
+
+	workflowData, err := os.ReadFile(manager.Path())
+	if err != nil {
+		t.Fatalf("ReadFile workflow: %v", err)
+	}
+	updated := strings.Replace(string(workflowData), "default: codex-stdio", "default: claude", 1)
+	if updated == string(workflowData) {
+		t.Fatal("expected workflow to contain the codex-stdio default")
+	}
+	if err := os.WriteFile(manager.Path(), []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatalf("Refresh workflow: %v", err)
+	}
+
+	_, issue := createRunningProjectIssue(t, store, "Unsupported Claude image capability", "", 0, []string{"claude"})
+	if _, err := store.CreateIssueAsset(issue.ID, "prompt.png", bytes.NewReader(samplePNGBytesForTest())); err != nil {
+		t.Fatalf("CreateIssueAsset: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+
+	if err := orch.dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForIssuePauseReason(t, store, issue.ID, `unsupported_runtime_capability: issue `+issue.Identifier+` has image attachments, but runtime "claude" does not support local_image input; remove the issue image or switch to a runtime with local_image support`, 6*time.Second)
+	waitForNoRunning(t, orch, 6*time.Second)
+
+	orch.mu.RLock()
+	paused, pausedOK := orch.paused[issue.ID]
+	_, retryScheduled := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !pausedOK {
+		t.Fatal("expected unsupported runtime capability to pause retries")
+	}
+	if retryScheduled {
+		t.Fatal("expected unsupported runtime capability to avoid scheduling retries")
+	}
+	if !strings.Contains(paused.Error, "unsupported_runtime_capability") || !strings.Contains(paused.Error, "local_image") {
+		t.Fatalf("unexpected paused payload: %+v", paused)
+	}
+
+	snapshot, err := store.GetIssueExecutionSession(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssueExecutionSession: %v", err)
+	}
+	if snapshot.RunKind != "retry_paused" {
+		t.Fatalf("expected retry_paused snapshot, got %+v", snapshot)
+	}
+	if snapshot.RuntimeName != "claude" || snapshot.RuntimeProvider != "claude" || snapshot.RuntimeTransport != "stdio" {
+		t.Fatalf("expected persisted Claude runtime metadata, got %+v", snapshot)
+	}
+	if !strings.Contains(snapshot.Error, "unsupported_runtime_capability") || !strings.Contains(snapshot.Error, issue.Identifier) {
+		t.Fatalf("unexpected snapshot error: %+v", snapshot)
+	}
+	if snapshot.AppSession.Metadata["provider"] != "claude" || snapshot.AppSession.Metadata["transport"] != "stdio" {
+		t.Fatalf("expected persisted session metadata to remain Claude-specific, got %+v", snapshot.AppSession.Metadata)
 	}
 }
 

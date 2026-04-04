@@ -20,23 +20,37 @@ func interruptClaudeProcessTree(pid int) error {
 	if pid <= 0 {
 		return nil
 	}
-	if err := signalClaudeProcessGroup(pid, syscall.SIGINT); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalClaudeProcessTree(pid, syscall.SIGINT); err != nil {
 		return err
 	}
 	if waitForClaudeProcessGroupExit(pid, managedProcessTerminateWait) {
 		return nil
 	}
-	if err := signalClaudeProcessGroup(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalClaudeProcessTree(pid, syscall.SIGTERM); err != nil {
 		return err
 	}
 	if waitForClaudeProcessGroupExit(pid, managedProcessKillWait) {
 		return nil
 	}
-	if err := signalClaudeProcessGroup(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalClaudeProcessTree(pid, syscall.SIGKILL); err != nil {
 		return err
 	}
 	_ = waitForClaudeProcessGroupExit(pid, managedProcessKillWait)
 	return nil
+}
+
+func signalClaudeProcessTree(pid int, sig syscall.Signal) error {
+	err := signalClaudeProcessGroup(pid, sig)
+	if err == nil || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	if errors.Is(err, syscall.EPERM) {
+		err = syscall.Kill(pid, sig)
+		if err == nil || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+	}
+	return err
 }
 
 func signalClaudeProcessGroup(pid int, sig syscall.Signal) error {
