@@ -1544,9 +1544,22 @@ workflow_version: fail
 SPEC_FAIL
       exit 1
     fi
+    required_schema_root="$FAKE_HARNESS_ROOT/schemas/codex"
+    for required_schema in \
+      "v1/InitializeParams.json" \
+      "v2/ThreadStartParams.json" \
+      "ExecCommandApprovalParams.json"; do
+      if ! find "$required_schema_root" -path "*/json/$required_schema" -print -quit | grep -q .; then
+        printf 'missing schema %s\n' "$required_schema" >&2
+        exit 1
+      fi
+    done
     cat <<'SPEC_OK'
 Spec Check
 ==========
+config_defaults: ok
+runtime_schema_json: ok
+skill_install: ok
 workflow_load: ok
 workflow_prompt_render: ok
 workflow_version: ok
@@ -1893,6 +1906,9 @@ test_successful_run_bootstraps_and_checks_claude_preflight() {
   assert_contains "$harness_root/workflow-init.log" "claude_version_status: ok"
   assert_contains "$harness_root/workflow-init.log" "claude_auth_source: cloud provider"
   assert_contains "$harness_root/workflow-init.log" "claude_auth_source_status: ok"
+  assert_contains "$harness_root/spec-check.log" "config_defaults: ok"
+  assert_contains "$harness_root/spec-check.log" "runtime_schema_json: ok"
+  assert_contains "$harness_root/spec-check.log" "skill_install: ok"
   assert_contains "$harness_root/spec-check.log" "workflow_version: ok"
   assert_contains "$harness_root/verify.log" '"claude_session_bare_mode":"ok"'
   assert_contains "$harness_root/doctor.log" "claude_session_additional_directories: ok"

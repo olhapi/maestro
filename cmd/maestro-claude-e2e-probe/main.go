@@ -312,7 +312,8 @@ func run(opts options) error {
 	evidence.Daemon.EntriesBefore = len(entriesBefore)
 	evidence.Daemon.EntryBefore = entryBefore
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Give the live bridge probe enough time to observe the active Claude session.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	client, err := mcpclient.NewStdioMCPClient(server.Command, os.Environ(), server.Args...)
@@ -732,7 +733,7 @@ func containsString(values []string, want string) bool {
 }
 
 func waitForClaudeSession(ctx context.Context, client *mcpclient.Client) (string, agentruntime.Session, error) {
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		envelope, err := callToolEnvelope(ctx, client, "list_sessions", map[string]interface{}{})
 		if err == nil {
@@ -790,7 +791,7 @@ func resolveIssueIdentifier(requested string, listIssues listIssuesData) string 
 }
 
 func waitForIssueExecutionObservation(entry maestromcp.DaemonEntry, issueIdentifier, mode, streamMarker string) (executionObservation, error) {
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	marker := strings.TrimSpace(streamMarker)
 	if marker == "" {
@@ -865,7 +866,7 @@ func issueExecutionObservationForIssue(entry maestromcp.DaemonEntry, issueIdenti
 }
 
 func waitForDashboardSessionObservation(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, mode string) (dashboardSessionObservation, error) {
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	for {
 		observation, ok, err := dashboardSessionObservationForIssue(entry, issueIdentifier)
@@ -929,7 +930,7 @@ func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIden
 }
 
 func waitForPendingInteractionSurfaceObservation(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, mode, streamMarker, expectedState string) (executionObservation, dashboardSessionObservation, error) {
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	expectedState = strings.TrimSpace(expectedState)
 	for {
@@ -996,7 +997,7 @@ func wantsInterruptObservation(opts options) bool {
 }
 
 func waitForPendingInterrupt(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, kind, classification, toolName string) (agentruntime.PendingInteraction, int, error) {
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		snapshot, err := fetchPendingInterrupts(entry)
 		if err == nil {

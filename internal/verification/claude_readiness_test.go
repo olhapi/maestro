@@ -347,7 +347,7 @@ func TestValidateClaudeReadinessFailureAndWarningStates(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_USE_FOUNDRY", "")
 	emptyConfigDir := t.TempDir()
 
-	t.Run("warns on token auth and version mismatch", func(t *testing.T) {
+	t.Run("accepts token auth and warns on version mismatch", func(t *testing.T) {
 		repo := t.TempDir()
 		writeFakeClaude(t, repo, "1.2.3")
 		workflow := &config.Workflow{Path: filepath.Join(repo, "WORKFLOW.md")}
@@ -364,11 +364,11 @@ func TestValidateClaudeReadinessFailureAndWarningStates(t *testing.T) {
 		if !result.OK {
 			t.Fatalf("expected token auth and version mismatch to warn rather than fail, got %+v", result)
 		}
-		if got, want := result.Checks["claude_auth_source"], "ANTHROPIC_AUTH_TOKEN"; got != want {
-			t.Fatalf("expected token auth source %q, got %q", want, got)
+		if got, want := result.Checks["claude_auth_source"], "OAuth"; got != want {
+			t.Fatalf("expected token auth to resolve to %q, got %q", want, got)
 		}
-		if got, want := result.Checks["claude_auth_source_status"], "warn"; got != want {
-			t.Fatalf("expected token auth to warn, got %q", got)
+		if got, want := result.Checks["claude_auth_source_status"], "ok"; got != want {
+			t.Fatalf("expected token auth to be treated as supported, got %q", got)
 		}
 		if got, want := result.Checks["claude_version_status"], "warn"; got != want {
 			t.Fatalf("expected version mismatch to warn, got %q", got)

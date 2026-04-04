@@ -69,10 +69,42 @@ init_harness_repo() {
     git init -q
     git config user.name "Maestro E2E"
     git config user.email "e2e@example.com"
+    sync_harness_codex_schemas "$repo_path"
     git add WORKFLOW.md
     git commit -q -m "test init"
     git branch -M main
   )
+}
+
+codex_schema_version() {
+  local metadata_file="$ROOT_DIR/internal/codexschema/metadata.go"
+  local version
+
+  version="$(sed -n 's/^[[:space:]]*SupportedVersion = "\(.*\)"/\1/p' "$metadata_file")"
+  if [[ -z "$version" ]]; then
+    echo "failed to determine supported Codex schema version from $metadata_file" >&2
+    return 1
+  fi
+  printf '%s\n' "$version"
+}
+
+sync_harness_codex_schemas() {
+  local repo_path="$1"
+  local version source_dir dest_parent dest_dir
+
+  version="$(codex_schema_version)" || return 1
+  source_dir="$ROOT_DIR/schemas/codex/$version/json"
+  dest_parent="$repo_path/schemas/codex/$version"
+  dest_dir="$dest_parent/json"
+
+  if [[ ! -d "$source_dir" ]]; then
+    echo "missing Codex schema source directory: $source_dir" >&2
+    return 1
+  fi
+
+  mkdir -p "$dest_parent"
+  rm -rf "$dest_dir"
+  cp -R "$source_dir" "$dest_dir"
 }
 
 yaml_quote() {
@@ -208,6 +240,9 @@ run_claude_spec_check() {
     return 1
   fi
   require_output_contains "spec-check" "$SPEC_CHECK_LOG" "Spec Check"
+  require_output_contains "spec-check" "$SPEC_CHECK_LOG" "config_defaults: ok"
+  require_output_contains "spec-check" "$SPEC_CHECK_LOG" "runtime_schema_json: ok"
+  require_output_contains "spec-check" "$SPEC_CHECK_LOG" "skill_install: ok"
   require_output_contains "spec-check" "$SPEC_CHECK_LOG" "workflow_load: ok"
   require_output_contains "spec-check" "$SPEC_CHECK_LOG" "workflow_prompt_render: ok"
   require_output_contains "spec-check" "$SPEC_CHECK_LOG" "workflow_version: ok"
@@ -289,9 +324,11 @@ CLAUDE_DB_PATH=$(printf '%q' "$DB_PATH")
 CLAUDE_DAEMON_REGISTRY_DIR=$(printf '%q' "$DAEMON_REGISTRY_DIR")
 EOF
     printf 'REAL_COMMAND_ENV=('
-    for token in "${command_env[@]}"; do
-      printf ' %q' "$token"
-    done
+    if [[ "${#command_env[@]}" -gt 0 ]]; then
+      for token in "${command_env[@]}"; do
+        printf ' %q' "$token"
+      done
+    fi
     printf ' )\n'
     printf 'REAL_COMMAND_ARGS=('
     for token in "${command_args[@]}"; do
@@ -372,7 +409,10 @@ main() {
   done
 
   if [[ -z "$mcp_config" || -z "$settings_path" ]]; then
-    exec env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@"
+    if [[ "${#REAL_COMMAND_ENV[@]}" -gt 0 ]]; then
+      exec env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@"
+    fi
+    exec env "${REAL_COMMAND_ARGS[@]}" "$@"
   fi
 
   local evidence_prefix
@@ -380,7 +420,11 @@ main() {
   printf '%s\n' "$@" >"$evidence_prefix.args.txt"
 
   exec 3<&0
-  env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@" <&3 &
+  if [[ "${#REAL_COMMAND_ENV[@]}" -gt 0 ]]; then
+    env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@" <&3 &
+  else
+    env "${REAL_COMMAND_ARGS[@]}" "$@" <&3 &
+  fi
   local child_pid="$!"
   exec 3<&-
 

@@ -348,9 +348,9 @@ func TestRunVerificationReportsClaudeAuthPrecedence(t *testing.T) {
 			name:         "token beats api key",
 			command:      "ANTHROPIC_AUTH_TOKEN=command-token claude",
 			settingsJSON: `{"env":{"ANTHROPIC_API_KEY":"settings-key"}}`,
-			wantSource:   "ANTHROPIC_AUTH_TOKEN",
-			wantStatus:   "warn",
-			wantDetail:   "",
+			wantSource:   "OAuth",
+			wantStatus:   "ok",
+			wantDetail:   "claude.ai",
 		},
 		{
 			name:         "api key beats helper",

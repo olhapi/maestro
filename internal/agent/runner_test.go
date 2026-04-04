@@ -763,6 +763,95 @@ func TestRunAgentFakeRuntimeRequestsPlanApproval(t *testing.T) {
 	}
 }
 
+func TestRunAgentFakeRuntimeTreatsCompletedIssueAsSuccessDespiteRuntimeError(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Runtime exit 1 after done", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	issue, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	starter := fakeruntime.NewStarter(fakeruntime.Scenario{
+		Capabilities: agentruntime.Capabilities{
+			RuntimePermissionUpdates: true,
+		},
+		Turns: []fakeruntime.Turn{{
+			StartedSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-complete",
+				TurnID:          "turn-complete",
+				SessionID:       "thread-complete-turn-complete",
+				MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+			},
+			AfterStarted: func() error {
+				return store.UpdateIssueState(issue.ID, kanban.StateDone)
+			},
+			FinalSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-complete",
+				TurnID:          "turn-complete",
+				SessionID:       "thread-complete-turn-complete",
+				Terminal:        true,
+				TerminalReason:  "turn.failed",
+				History: []agentruntime.Event{{
+					Type:      "item.completed",
+					ThreadID:  "thread-complete",
+					TurnID:    "turn-complete",
+					ItemID:    "final-answer",
+					ItemType:  "agentMessage",
+					ItemPhase: "final_answer",
+					Message:   "Issue completed successfully.",
+				}},
+				Metadata: map[string]interface{}{
+					"claude_stop_reason": "end_turn",
+				},
+				MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+			},
+			Output: "Issue completed successfully.",
+			Error:  fmt.Errorf("exit status 1: Issue completed successfully."),
+		}},
+	})
+	runner.runtimeStarter = starter.Start
+
+	result, runErr := runner.Run(context.Background(), issue)
+	if runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run despite runtime error, got %+v", result)
+	}
+	if result.Error != nil {
+		t.Fatalf("expected nil run result error, got %v", result.Error)
+	}
+	if !strings.Contains(result.Output, "Issue completed successfully.") {
+		t.Fatalf("expected runtime output to be preserved, got %q", result.Output)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue updated: %v", err)
+	}
+	if updated.State != kanban.StateDone {
+		t.Fatalf("expected issue to remain done, got %s", updated.State)
+	}
+
+	clients := starter.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("expected one fake runtime client, got %d", len(clients))
+	}
+	if clients[0].Session().TerminalReason != "turn.failed" {
+		t.Fatalf("expected completed terminal session, got %+v", clients[0].Session())
+	}
+	if got := clients[0].Session().Metadata["claude_stop_reason"]; got != "end_turn" {
+		t.Fatalf("expected claude stop reason to indicate end_turn, got %+v", got)
+	}
+}
+
 func TestRunAgentFakeRuntimeDeliversCommandsInSameThread(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Runtime follow-up command", "", 0, nil)
