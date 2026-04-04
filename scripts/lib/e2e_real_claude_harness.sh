@@ -111,6 +111,10 @@ yaml_quote() {
   printf "%s" "$1" | sed "s/'/''/g"
 }
 
+normalize_path() {
+  printf "%s" "$1" | sed 's#//*#/#g'
+}
+
 issue_state() {
   "$MAESTRO_BIN" issue show "$1" --db "$DB_PATH" 2>/dev/null | awk -F': *' '/^State:/{print $2}' | tr -d '[:space:]'
 }
@@ -163,7 +167,7 @@ assert_file_content() {
 
 start_project() {
   local project_id="$1"
-  sqlite3 "$DB_PATH" "UPDATE projects SET state = 'running', updated_at = datetime('now') WHERE id = '$project_id';"
+  sqlite3 "$DB_PATH" "UPDATE projects SET state = 'running', runtime_name = 'claude', updated_at = datetime('now') WHERE id = '$project_id';"
 }
 
 start_orchestrator() {
@@ -177,6 +181,12 @@ start_orchestrator() {
     --i-understand-that-this-will-be-running-without-the-usual-guardrails \
     >"$ORCH_LOG" 2>&1 &
   ORCH_PID="$!"
+}
+
+dashboard_api_url() {
+  if [[ -f "$ORCH_LOG" ]]; then
+    awk '/^Dashboard: / {url=$2} END {print url}' "$ORCH_LOG"
+  fi
 }
 
 stop_orchestrator() {
@@ -218,12 +228,15 @@ require_output_matches() {
 
 run_claude_workflow_init() {
   local codex_command="$1"
+  local normalized_workflow_path
+
   echo "Running maestro workflow init bootstrap"
   if ! "$MAESTRO_BIN" --db "$DB_PATH" workflow init "$HARNESS_ROOT" --defaults --runtime-command "$codex_command" >"$WORKFLOW_INIT_LOG" 2>&1; then
     echo "maestro workflow init failed for the Claude harness" >&2
     return 1
   fi
-  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "Initialized $WORKFLOW_PATH"
+  normalized_workflow_path="$(normalize_path "$WORKFLOW_PATH")"
+  require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "Initialized $normalized_workflow_path"
   require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "Verification"
   require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "claude_version_status: ok"
   require_output_contains "workflow init" "$WORKFLOW_INIT_LOG" "claude_auth_source_status: ok"
@@ -322,6 +335,7 @@ CLAUDE_EVIDENCE_DIR=$(printf '%q' "$CLAUDE_EVIDENCE_DIR")
 CLAUDE_PROBE_BIN=$(printf '%q' "$CLAUDE_PROBE_BIN")
 CLAUDE_DB_PATH=$(printf '%q' "$DB_PATH")
 CLAUDE_DAEMON_REGISTRY_DIR=$(printf '%q' "$DAEMON_REGISTRY_DIR")
+CLAUDE_ORCH_LOG=$(printf '%q' "$ORCH_LOG")
 EOF
     printf 'REAL_COMMAND_ENV=('
     if [[ "${#command_env[@]}" -gt 0 ]]; then
@@ -419,6 +433,11 @@ main() {
   evidence_prefix="$(next_launch_prefix)"
   printf '%s\n' "$@" >"$evidence_prefix.args.txt"
 
+  local dashboard_base_url=""
+  if [[ -f "$CLAUDE_ORCH_LOG" ]]; then
+    dashboard_base_url="$(awk '/^Dashboard: / {url=$2} END {print url}' "$CLAUDE_ORCH_LOG")"
+  fi
+
   exec 3<&0
   if [[ "${#REAL_COMMAND_ENV[@]}" -gt 0 ]]; then
     env "${REAL_COMMAND_ENV[@]}" "${REAL_COMMAND_ARGS[@]}" "$@" <&3 &
@@ -428,19 +447,36 @@ main() {
   local child_pid="$!"
   exec 3<&-
 
-  if ! "$CLAUDE_PROBE_BIN" \
-    --mcp-config "$mcp_config" \
-    --settings "$settings_path" \
-    --db "$CLAUDE_DB_PATH" \
-    --registry-dir "$CLAUDE_DAEMON_REGISTRY_DIR" \
-    --evidence-prefix "$evidence_prefix" \
-    --allowed-tools "$allowed_tools" \
-    --permission-prompt-tool "$permission_prompt_tool" \
-    --permission-mode "$permission_mode" \
-    --strict-mcp-config "$strict_mcp_config"; then
-    kill "$child_pid" >/dev/null 2>&1 || true
-    wait "$child_pid" >/dev/null 2>&1 || true
-    exit 1
+  if [[ -n "$dashboard_base_url" ]]; then
+    if ! MAESTRO_DASHBOARD_BASE_URL="$dashboard_base_url" "$CLAUDE_PROBE_BIN" \
+      --mcp-config "$mcp_config" \
+      --settings "$settings_path" \
+      --db "$CLAUDE_DB_PATH" \
+      --registry-dir "$CLAUDE_DAEMON_REGISTRY_DIR" \
+      --evidence-prefix "$evidence_prefix" \
+      --allowed-tools "$allowed_tools" \
+      --permission-prompt-tool "$permission_prompt_tool" \
+      --permission-mode "$permission_mode" \
+      --strict-mcp-config "$strict_mcp_config"; then
+      kill "$child_pid" >/dev/null 2>&1 || true
+      wait "$child_pid" >/dev/null 2>&1 || true
+      exit 1
+    fi
+  else
+    if ! "$CLAUDE_PROBE_BIN" \
+      --mcp-config "$mcp_config" \
+      --settings "$settings_path" \
+      --db "$CLAUDE_DB_PATH" \
+      --registry-dir "$CLAUDE_DAEMON_REGISTRY_DIR" \
+      --evidence-prefix "$evidence_prefix" \
+      --allowed-tools "$allowed_tools" \
+      --permission-prompt-tool "$permission_prompt_tool" \
+      --permission-mode "$permission_mode" \
+      --strict-mcp-config "$strict_mcp_config"; then
+      kill "$child_pid" >/dev/null 2>&1 || true
+      wait "$child_pid" >/dev/null 2>&1 || true
+      exit 1
+    fi
   fi
 
   wait "$child_pid"
@@ -477,6 +513,9 @@ assert_claude_runtime_auth_source_line() {
 }
 
 assert_claude_runtime_evidence() {
+  local normalized_db_path
+  normalized_db_path="$(normalize_path "$DB_PATH")"
+
   if [[ ! -f "$CLAUDE_EVIDENCE_SUMMARY" ]]; then
     echo "expected Claude runtime evidence summary missing: $CLAUDE_EVIDENCE_SUMMARY" >&2
     return 1
@@ -491,9 +530,9 @@ assert_claude_runtime_evidence() {
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_registry_entries_before=1"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_registry_entries_after=1"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_entry_stable=true"
-  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "server_db_path=$DB_PATH"
-  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_db_path=$DB_PATH"
-  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "bridge_db_path=$DB_PATH"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "server_db_path=$normalized_db_path"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "daemon_db_path=$normalized_db_path"
+  assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "bridge_db_path=$normalized_db_path"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_name=claude"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_provider=claude"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "dashboard_session_runtime_transport=stdio"

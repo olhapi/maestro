@@ -647,6 +647,8 @@ for path in "$FAKE_STATE_DIR/$issue_identifier.event."*; do
   fi
 done
 
+normalized_db_path="$(printf '%s' "$db_path" | sed 's#//*#/#g')"
+
 mkdir -p "$(dirname "$evidence_prefix")"
 cp "$mcp_config" "$evidence_prefix.mcp.json"
 cp "$settings_path" "$evidence_prefix.settings.json"
@@ -661,9 +663,9 @@ tool_call_list_sessions=ok
 daemon_registry_entries_before=1
 daemon_registry_entries_after=1
 daemon_entry_stable=true
-server_db_path=$db_path
-daemon_db_path=$db_path
-bridge_db_path=$db_path
+server_db_path=$normalized_db_path
+daemon_db_path=$normalized_db_path
+bridge_db_path=$normalized_db_path
 dashboard_session_failure_class=$dashboard_failure_class
 dashboard_session_pending_interaction_state=$dashboard_pending_interaction_state
 dashboard_session_runtime_name=claude
@@ -1887,6 +1889,7 @@ test_successful_run_bootstraps_and_checks_claude_preflight() {
   assert_runtime_auth_source_line "$harness_root/claude-support/launch-1.summary.txt" "dashboard_session_runtime_auth_source"
   assert_runtime_auth_source_line "$harness_root/claude-support/launch-1.summary.txt" "execution_runtime_auth_source"
   assert_contains "$harness_root/claude-support/launch-1.summary.txt" "execution_runtime_name=claude"
+  assert_contains "$tmp_dir/maestro.log" "maestro project stop proj-1 --api-url"
   assert_contains "$harness_root/claude-support/launch-3.args.txt" "-r"
   assert_contains "$harness_root/claude-support/launch-3.args.txt" "claude-session-2"
   assert_contains "$harness_root/claude-support/interrupt-final.summary.txt" "execution_failure_class=run_interrupted"
