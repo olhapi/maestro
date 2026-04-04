@@ -23,6 +23,18 @@ If the tag already exists on `origin`, rerunning the helper will resume that rel
 
 If the fallback path is used, npm may pause for browser-based account confirmation before it can publish the tarballs.
 
+If the release includes Claude runtime, bridge, approval, or orchestration changes, run the local Claude release gate before you tag:
+
+```bash
+make e2e-real-claude-release-gate
+```
+
+Use the heavier full matrix when you changed approval classification, interrupt handling, protected-directory policy, or dispatch alerts:
+
+```bash
+make e2e-real-claude-matrix
+```
+
 ## First public prerelease bootstrap
 
 Leave the GitHub repository variable `NPM_PUBLISH_ENABLED` unset or set to `false`. The release workflow will still build all five native tarballs, build the root package, and run both smoke-test stages, but the `publish-npm` job will stay skipped until trusted publishing is ready.

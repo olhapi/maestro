@@ -401,13 +401,34 @@ func TestClaudeMetadataAndCommandHelpers(t *testing.T) {
 			})
 		}
 
-		if got := runtimeMetadata("  session-9  "); got["provider"] != string(agentruntime.ProviderClaude) || got["transport"] != string(agentruntime.TransportStdio) || got["provider_session_id"] != "session-9" {
+		if got := runtimeMetadata("  session-9  ", "OAuth"); got["provider"] != string(agentruntime.ProviderClaude) || got["transport"] != string(agentruntime.TransportStdio) || got["provider_session_id"] != "session-9" {
 			t.Fatalf("runtimeMetadata with session id: got %+v", got)
+		} else if got["auth_source"] != "OAuth" {
+			t.Fatalf("runtimeMetadata with auth source: got %+v", got)
 		}
 		if got := runtimeMetadata(""); got["provider"] != string(agentruntime.ProviderClaude) || got["transport"] != string(agentruntime.TransportStdio) {
 			t.Fatalf("runtimeMetadata without session id: got %+v", got)
 		} else if _, ok := got["provider_session_id"]; ok {
 			t.Fatalf("runtimeMetadata without session id should omit provider_session_id: got %+v", got)
+		}
+		for _, tc := range []struct {
+			name string
+			env  []string
+			want string
+		}{
+			{name: "default oauth", env: nil, want: "OAuth"},
+			{name: "bedrock", env: []string{"CLAUDE_CODE_USE_BEDROCK=1"}, want: "cloud provider"},
+			{name: "vertex", env: []string{"CLAUDE_CODE_USE_VERTEX=true"}, want: "cloud provider"},
+			{name: "foundry", env: []string{"CLAUDE_CODE_USE_FOUNDRY=yes"}, want: "cloud provider"},
+			{name: "auth token", env: []string{"ANTHROPIC_AUTH_TOKEN=test"}, want: "ANTHROPIC_AUTH_TOKEN"},
+			{name: "api key", env: []string{"ANTHROPIC_API_KEY=test"}, want: "ANTHROPIC_API_KEY"},
+		} {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				if got := claudeRuntimeAuthSource(tc.env); got != tc.want {
+					t.Fatalf("claudeRuntimeAuthSource() = %q, want %q", got, tc.want)
+				}
+			})
 		}
 	})
 }
@@ -775,6 +796,7 @@ func newClaudeCoverageClient() *stdioClient {
 				CollaborationMode: "plan",
 			},
 		},
+		authSource: "OAuth",
 	}
 }
 

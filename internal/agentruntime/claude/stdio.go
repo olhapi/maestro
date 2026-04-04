@@ -24,6 +24,7 @@ type stdioClient struct {
 	observers     agentruntime.Observers
 	mcpConfigPath string
 	settingsPath  string
+	authSource    string
 
 	mu          sync.Mutex
 	session     agentruntime.Session
@@ -69,12 +70,13 @@ func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers)
 	}
 
 	resumeToken := strings.TrimSpace(spec.ResumeToken)
+	authSource := claudeRuntimeAuthSource(spec.Env)
 	session := agentruntime.Session{
 		IssueID:         spec.IssueID,
 		IssueIdentifier: spec.IssueIdentifier,
 		SessionID:       resumeToken,
 		ThreadID:        resumeToken,
-		Metadata:        runtimeMetadataWithExtras(resumeToken, spec.Metadata),
+		Metadata:        runtimeMetadataWithExtras(resumeToken, spec.Metadata, authSource),
 		MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
 	}
 
@@ -83,6 +85,7 @@ func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers)
 		observers:     observers,
 		mcpConfigPath: configPath,
 		settingsPath:  settingsPath,
+		authSource:    authSource,
 		session:       session,
 		cleanup:       cleanup,
 	}, nil
@@ -457,7 +460,7 @@ func (c *stdioClient) finishTurnLocked(state *claudeTurnState, stdoutRaw, stderr
 		}
 	}
 	if c.session.Metadata == nil {
-		c.session.Metadata = runtimeMetadataWithExtras(sessionID, c.spec.Metadata)
+		c.session.Metadata = runtimeMetadataWithExtras(sessionID, c.spec.Metadata, c.authSource)
 	}
 	if sessionID != "" {
 		c.session.Metadata["provider_session_id"] = sessionID
@@ -506,7 +509,7 @@ func (c *stdioClient) finishTurnLocked(state *claudeTurnState, stdoutRaw, stderr
 				"phase": "final_answer",
 				"text":  output,
 			},
-			Metadata: runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
+			Metadata: runtimeMetadataWithExtras(sessionID, c.spec.Metadata, c.authSource),
 		})
 	}
 	c.emitActivity(agentruntime.ActivityEvent{
@@ -518,7 +521,7 @@ func (c *stdioClient) finishTurnLocked(state *claudeTurnState, stdoutRaw, stderr
 		InputTokens:  state.inputTokens,
 		OutputTokens: state.outputTokens,
 		TotalTokens:  state.totalTokens,
-		Metadata:     runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
+		Metadata:     runtimeMetadataWithExtras(sessionID, c.spec.Metadata, c.authSource),
 	})
 	c.emitSessionUpdate(session)
 
@@ -587,7 +590,7 @@ func (c *stdioClient) recordClaudeStreamDelta(state *claudeTurnState, delta stri
 				"phase": phase,
 				"text":  text,
 			},
-			Metadata: runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
+			Metadata: runtimeMetadataWithExtras(sessionID, c.spec.Metadata, c.authSource),
 		})
 	} else {
 		c.emitActivity(agentruntime.ActivityEvent{
@@ -598,7 +601,7 @@ func (c *stdioClient) recordClaudeStreamDelta(state *claudeTurnState, delta stri
 			ItemType:  "agentMessage",
 			ItemPhase: phase,
 			Delta:     delta,
-			Metadata:  runtimeMetadataWithExtras(sessionID, c.spec.Metadata),
+			Metadata:  runtimeMetadataWithExtras(sessionID, c.spec.Metadata, c.authSource),
 		})
 	}
 	c.emitSessionUpdate(session)
@@ -661,7 +664,7 @@ func (c *stdioClient) recordClaudeSessionIDLocked(sessionID string) {
 
 func (c *stdioClient) syncClaudeMetadataLocked(sessionID string) {
 	if c.session.Metadata == nil {
-		c.session.Metadata = runtimeMetadataWithExtras(sessionID, c.spec.Metadata)
+		c.session.Metadata = runtimeMetadataWithExtras(sessionID, c.spec.Metadata, c.authSource)
 	}
 	c.session.Metadata["session_identifier_strategy"] = claudeSessionIdentifierStrategy
 	if sessionID != "" {
@@ -671,10 +674,13 @@ func (c *stdioClient) syncClaudeMetadataLocked(sessionID string) {
 
 func (c *stdioClient) normalizeClaudeSessionIdentityLocked() {
 	if c.session.Metadata == nil {
-		c.session.Metadata = runtimeMetadataWithExtras("", c.spec.Metadata)
+		c.session.Metadata = runtimeMetadataWithExtras("", c.spec.Metadata, c.authSource)
 	}
 	c.session.Metadata["provider"] = string(agentruntime.ProviderClaude)
 	c.session.Metadata["transport"] = string(agentruntime.TransportStdio)
+	if c.authSource != "" {
+		c.session.Metadata["auth_source"] = c.authSource
+	}
 	c.session.Metadata["session_identifier_strategy"] = claudeSessionIdentifierStrategy
 	if sessionID := strings.TrimSpace(c.session.ThreadID); sessionID != "" {
 		c.session.SessionID = sessionID
@@ -1111,21 +1117,71 @@ func combineOutput(stdout, stderr string) string {
 	}
 }
 
-func runtimeMetadata(sessionID string) map[string]interface{} {
-	return runtimeMetadataWithExtras(sessionID, nil)
-}
-
-func runtimeMetadataWithExtras(sessionID string, extra map[string]interface{}) map[string]interface{} {
+func runtimeMetadata(sessionID string, authSource ...string) map[string]interface{} {
 	metadata := map[string]interface{}{
 		"provider":                    string(agentruntime.ProviderClaude),
 		"transport":                   string(agentruntime.TransportStdio),
 		"session_identifier_strategy": claudeSessionIdentifierStrategy,
 	}
-	for key, value := range extra {
-		metadata[key] = value
+	if source := firstNonEmptyString(authSource...); source != "" {
+		metadata["auth_source"] = source
 	}
 	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
 		metadata["provider_session_id"] = sessionID
 	}
 	return metadata
+}
+
+func runtimeMetadataWithExtras(sessionID string, extra map[string]interface{}, authSource ...string) map[string]interface{} {
+	metadata := runtimeMetadata(sessionID, authSource...)
+	for key, value := range extra {
+		metadata[key] = value
+	}
+	return metadata
+}
+
+func claudeRuntimeAuthSource(env []string) string {
+	values := envListToMap(env)
+	switch {
+	case envTruthy(values["CLAUDE_CODE_USE_BEDROCK"]),
+		envTruthy(values["CLAUDE_CODE_USE_VERTEX"]),
+		envTruthy(values["CLAUDE_CODE_USE_FOUNDRY"]):
+		return "cloud provider"
+	case strings.TrimSpace(values["ANTHROPIC_AUTH_TOKEN"]) != "":
+		return "ANTHROPIC_AUTH_TOKEN"
+	case strings.TrimSpace(values["ANTHROPIC_API_KEY"]) != "":
+		return "ANTHROPIC_API_KEY"
+	default:
+		return "OAuth"
+	}
+}
+
+func envListToMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func envTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
