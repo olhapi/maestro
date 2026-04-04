@@ -3034,6 +3034,114 @@ func TestPrepareTurnPromptWithWorkspaceRecoveryError(t *testing.T) {
 	}
 }
 
+func TestDeterministicIssueBranchForPrefixCoverage(t *testing.T) {
+	t.Parallel()
+
+	if got := deterministicIssueBranchForPrefix("   ", nil); got != config.DefaultWorkspaceBranchPrefix+"issue" {
+		t.Fatalf("expected default prefix fallback for nil issue, got %q", got)
+	}
+	if got := deterministicIssueBranchForPrefix("  ", &kanban.Issue{Identifier: "ISSUE-2"}); got != config.DefaultWorkspaceBranchPrefix+"ISSUE-2" {
+		t.Fatalf("expected default prefix fallback for identifier, got %q", got)
+	}
+	if got := deterministicIssueBranchForPrefix("feature/", &kanban.Issue{Identifier: "   "}); got != "feature/issue" {
+		t.Fatalf("expected empty identifier fallback, got %q", got)
+	}
+	if got := deterministicIssueBranchForPrefix("feature/", &kanban.Issue{Identifier: "ISSUE-3", BranchName: "  custom-branch  "}); got != "custom-branch" {
+		t.Fatalf("expected explicit branch name to win, got %q", got)
+	}
+}
+
+func TestIssueStateIsTerminalDoneCoverage(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		issue   *kanban.Issue
+		session *agentruntime.Session
+		want    bool
+	}{
+		{name: "nil issue", issue: nil, session: nil, want: false},
+		{name: "non done issue", issue: &kanban.Issue{State: kanban.StateReady}, session: nil, want: false},
+		{name: "done without session", issue: &kanban.Issue{State: kanban.StateDone}, session: nil, want: true},
+		{
+			name:    "done with completed turn",
+			issue:   &kanban.Issue{State: kanban.StateDone},
+			session: &agentruntime.Session{TerminalReason: "turn.completed"},
+			want:    true,
+		},
+		{
+			name:    "done with completed session",
+			issue:   &kanban.Issue{State: kanban.StateDone},
+			session: &agentruntime.Session{TerminalReason: "session.completed"},
+			want:    true,
+		},
+		{
+			name:    "done with claude end turn metadata",
+			issue:   &kanban.Issue{State: kanban.StateDone},
+			session: &agentruntime.Session{TerminalReason: "turn.failed", Metadata: map[string]interface{}{"claude_stop_reason": "end_turn"}},
+			want:    true,
+		},
+		{
+			name:    "done with failed turn and different metadata",
+			issue:   &kanban.Issue{State: kanban.StateDone},
+			session: &agentruntime.Session{TerminalReason: "turn.failed", Metadata: map[string]interface{}{"claude_stop_reason": "tool_use"}},
+			want:    false,
+		},
+		{
+			name:    "done with failed turn and no metadata",
+			issue:   &kanban.Issue{State: kanban.StateDone},
+			session: &agentruntime.Session{TerminalReason: "turn.failed"},
+			want:    false,
+		},
+		{
+			name:    "done with unrelated terminal reason",
+			issue:   &kanban.Issue{State: kanban.StateDone},
+			session: &agentruntime.Session{TerminalReason: "turn.cancelled"},
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := issueStateIsTerminalDone(tc.issue, tc.session); got != tc.want {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestRunnerIssueHasImageAssetsCoverage(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Image assets", "", 0, nil)
+
+	if got, err := runner.issueHasImageAssets(nil); err != nil || got {
+		t.Fatalf("expected nil issue to report false without error, got %v %v", got, err)
+	}
+	if got, err := runner.issueHasImageAssets(issue); err != nil || got {
+		t.Fatalf("expected issue without assets to report false, got %v %v", got, err)
+	}
+	if _, err := store.CreateIssueAsset(issue.ID, "notes.txt", strings.NewReader("plain text asset")); err != nil {
+		t.Fatalf("CreateIssueAsset text: %v", err)
+	}
+	if got, err := runner.issueHasImageAssets(issue); err != nil || got {
+		t.Fatalf("expected non-image assets to be ignored, got %v %v", got, err)
+	}
+	if _, err := store.CreateIssueAsset(issue.ID, "screen.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
+		t.Fatalf("CreateIssueAsset image: %v", err)
+	}
+	if got, err := runner.issueHasImageAssets(issue); err != nil || !got {
+		t.Fatalf("expected image asset to be detected, got %v %v", got, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+	if got, err := runner.issueHasImageAssets(issue); err == nil || got {
+		t.Fatalf("expected closed store to surface an error, got %v %v", got, err)
+	}
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }
