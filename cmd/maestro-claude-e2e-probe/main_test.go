@@ -1156,6 +1156,12 @@ func TestWriteEvidence(t *testing.T) {
 	evidence.ServerInfo.Meta.DBPath = filepath.Join(dir, "maestro.db")
 	evidence.ServerInfo.Meta.StoreID = "store-a"
 	evidence.LiveSessionSeen = true
+	evidence.Execution.Session.InputTokens = 7
+	evidence.Execution.Session.OutputTokens = 8
+	evidence.Execution.Session.TotalTokens = 15
+	evidence.LiveSession.InputTokens = 3
+	evidence.LiveSession.OutputTokens = 4
+	evidence.LiveSession.TotalTokens = 7
 
 	if err := writeEvidence(prefix, evidence); err != nil {
 		t.Fatalf("writeEvidence() error = %v", err)
@@ -1179,6 +1185,12 @@ func TestWriteEvidence(t *testing.T) {
 		"daemon_entry_stable=true",
 		"permission_mode=default",
 		"permission_prompt_tool=<none>",
+		"execution_input_tokens=7",
+		"execution_output_tokens=8",
+		"execution_total_tokens=15",
+		"live_session_input_tokens=3",
+		"live_session_output_tokens=4",
+		"live_session_total_tokens=7",
 		"tool_call_get_issue_execution=ok",
 		"tool_call_list_runtime_events=ok",
 		"tool_call_server_info=ok",

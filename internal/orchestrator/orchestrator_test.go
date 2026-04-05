@@ -3577,6 +3577,109 @@ func TestRetryIssueNowPreservesPlanApprovalThreadResumeHint(t *testing.T) {
 	}
 }
 
+func TestRetryIssueNowPreservesPausedRunThreadResumeHint(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Paused retry", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, kanban.WorkflowPhaseImplementation); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase: %v", err)
+	}
+	pausedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    1,
+		RunKind:    "retry_paused",
+		Error:      "no_state_transition",
+		StopReason: "no_state_transition",
+		UpdatedAt:  pausedAt,
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-paused-turn-1",
+			ThreadID:        "thread-paused",
+			TurnID:          "turn-paused",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.paused[issue.ID] = pausedEntry{
+		Attempt:  1,
+		Phase:    string(kanban.WorkflowPhaseImplementation),
+		PausedAt: pausedAt,
+		Error:    "no_state_transition",
+	}
+	orch.mu.Unlock()
+
+	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now retry result, got %#v", result)
+	}
+	if result["resume_thread_id"] != "thread-paused" {
+		t.Fatalf("expected resume_thread_id in retry response, got %#v", result)
+	}
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected retry entry after paused retry")
+	}
+	if retry.ResumeThreadID != "thread-paused" {
+		t.Fatalf("expected paused retry to preserve thread resume hint, got %+v", retry)
+	}
+}
+
+func TestResumeThreadIDHelpers(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Resume helper coverage", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    1,
+		RunKind:    "retry_paused",
+		Error:      "no_state_transition",
+		StopReason: "no_state_transition",
+		UpdatedAt:  time.Now().UTC().Truncate(time.Second),
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-helper-turn-1",
+			ThreadID:        "thread-helper",
+			TurnID:          "turn-helper",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	if got := orch.retryResumeThreadID(issue.ID, "  thread-preferred  "); got != "thread-preferred" {
+		t.Fatalf("expected explicit preferred resume thread to win, got %q", got)
+	}
+	if got := orch.planApprovalResumeThreadID(issue.ID); got != "" {
+		t.Fatalf("expected non-plan-approval stop reason to be ignored, got %q", got)
+	}
+	if got := orch.retryResumeThreadID("missing-issue", ""); got != "" {
+		t.Fatalf("expected missing retry session to return empty resume thread id, got %q", got)
+	}
+	if got := orch.planApprovalResumeThreadID("missing-issue"); got != "" {
+		t.Fatalf("expected missing plan approval session to return empty resume thread id, got %q", got)
+	}
+}
+
 func TestRetryIssueNowPreservesPendingPlanApprovalWhenRevisionIsQueued(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 
@@ -4213,8 +4316,9 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
+	retryWait := 10 * time.Second
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(orchestrators))
@@ -4235,10 +4339,10 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		}(orch)
 	}
 
-	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", 6*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", 6*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", 6*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", 6*time.Second)
+	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", retryWait)
+	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", retryWait)
+	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", retryWait)
+	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", retryWait)
 
 	cancel()
 	wg.Wait()

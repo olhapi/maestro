@@ -43,21 +43,24 @@ type runningTurn struct {
 }
 
 type claudeTurnState struct {
-	sessionStarted bool
-	turnStarted    bool
-	streamStarted  bool
-	turnID         string
-	itemPhase      string
-	lastAssistant  string
-	streamedOutput bytes.Buffer
-	resultText     string
-	resultStop     string
-	resultUUID     string
-	resultIsError  bool
-	resultSeen     bool
-	inputTokens    int
-	outputTokens   int
-	totalTokens    int
+	sessionStarted        bool
+	turnStarted           bool
+	streamStarted         bool
+	turnID                string
+	itemPhase             string
+	lastAssistant         string
+	streamedOutput        bytes.Buffer
+	resultText            string
+	resultStop            string
+	resultUUID            string
+	resultIsError         bool
+	resultSeen            bool
+	inputTokens           int
+	outputTokens          int
+	totalTokens           int
+	publishedInputTokens  int
+	publishedOutputTokens int
+	publishedTotalTokens  int
 }
 
 func startStdio(spec agentruntime.RuntimeSpec, observers agentruntime.Observers) (agentruntime.Client, error) {
@@ -285,6 +288,10 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 			state.itemPhase = phase
 		}
 		c.ensureClaudeTurnStarted(state, onStarted)
+		if input, output, total := usageTokens(message["usage"]); input > 0 || output > 0 || total > 0 {
+			applyClaudeUsage(state, input, output, total)
+			c.emitClaudeUsage(state)
+		}
 	case "result":
 		state.resultSeen = true
 		state.resultText = firstNonEmpty(
@@ -307,11 +314,10 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 			state.resultIsError = true
 		}
 		if input, output, total := usageTokens(raw["usage"]); input > 0 || output > 0 || total > 0 {
-			state.inputTokens = input
-			state.outputTokens = output
-			state.totalTokens = total
+			applyClaudeUsage(state, input, output, total)
 		}
 		c.ensureClaudeTurnStarted(state, onStarted)
+		c.emitClaudeUsage(state)
 	default:
 		event := mapValue(raw["event"])
 		if event == nil {
@@ -326,6 +332,11 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 				}
 				if phase := assistantMessagePhase(message); phase != "" {
 					state.itemPhase = phase
+				}
+				if input, output, total := usageTokens(message["usage"]); input > 0 || output > 0 || total > 0 {
+					applyClaudeUsage(state, input, output, total)
+					c.ensureClaudeTurnStarted(state, onStarted)
+					c.emitClaudeUsage(state)
 				}
 			}
 			if id := strings.TrimSpace(stringFromMap(event, "message", "id")); id != "" {
@@ -369,9 +380,9 @@ func (c *stdioClient) handleClaudeLine(line []byte, state *claudeTurnState, onSt
 				state.resultStop = stopReason
 			}
 			if input, output, total := usageTokens(event["usage"]); input > 0 || output > 0 || total > 0 {
-				state.inputTokens = input
-				state.outputTokens = output
-				state.totalTokens = total
+				applyClaudeUsage(state, input, output, total)
+				c.ensureClaudeTurnStarted(state, onStarted)
+				c.emitClaudeUsage(state)
 			}
 		case "message_stop":
 			// result lines can still follow message_stop.
@@ -613,6 +624,47 @@ func (c *stdioClient) emitSessionUpdate(session agentruntime.Session) {
 	}
 	cp := session.Clone()
 	c.observers.OnSessionUpdate(&cp)
+}
+
+func (c *stdioClient) emitClaudeUsage(state *claudeTurnState) {
+	if c == nil || state == nil {
+		return
+	}
+	if state.inputTokens == 0 && state.outputTokens == 0 && state.totalTokens == 0 {
+		return
+	}
+	if state.inputTokens == state.publishedInputTokens &&
+		state.outputTokens == state.publishedOutputTokens &&
+		state.totalTokens == state.publishedTotalTokens {
+		return
+	}
+	state.publishedInputTokens = state.inputTokens
+	state.publishedOutputTokens = state.outputTokens
+	state.publishedTotalTokens = state.totalTokens
+
+	sessionID := c.currentClaudeSessionIDLocked()
+
+	c.mu.Lock()
+	c.session.IssueID = c.spec.IssueID
+	c.session.IssueIdentifier = c.spec.IssueIdentifier
+	if sessionID != "" {
+		c.session.ThreadID = sessionID
+		c.session.SessionID = sessionID
+	}
+	if state.inputTokens > 0 {
+		c.session.InputTokens = state.inputTokens
+	}
+	if state.outputTokens > 0 {
+		c.session.OutputTokens = state.outputTokens
+	}
+	if state.totalTokens > 0 {
+		c.session.TotalTokens = state.totalTokens
+	}
+	c.normalizeClaudeSessionIdentityLocked()
+	session := c.session.Clone()
+	c.mu.Unlock()
+
+	c.emitSessionUpdate(session)
 }
 
 func (c *stdioClient) emitActivity(event agentruntime.ActivityEvent) {
@@ -899,16 +951,63 @@ func usageTokens(raw interface{}) (input, output, total int) {
 	if usage == nil {
 		return 0, 0, 0
 	}
-	if v, ok := intFromAny(usage["input_tokens"]); ok {
-		input = v
+	input = firstIntFromMap(usage, "input_tokens", "prompt_tokens", "inputTokens")
+	input += firstIntFromMap(usage, "cache_creation_input_tokens", "cache_creation_tokens")
+	input += firstIntFromMap(usage, "cache_read_input_tokens", "cache_read_tokens")
+	output = firstIntFromMap(usage, "output_tokens", "completion_tokens", "outputTokens")
+	total = firstIntFromMap(usage, "total_tokens", "totalTokens")
+	if input > 0 || output > 0 || total > 0 {
+		if total == 0 && input > 0 && output > 0 {
+			total = input + output
+		}
+		return input, output, total
 	}
-	if v, ok := intFromAny(usage["output_tokens"]); ok {
-		output = v
+
+	for _, key := range []string{"tokenUsage", "token_usage", "total", "last"} {
+		nested := mapValue(usage[key])
+		if nested == nil {
+			continue
+		}
+		input, output, total = usageTokens(nested)
+		if total > 0 {
+			return input, output, total
+		}
 	}
-	if v, ok := intFromAny(usage["total_tokens"]); ok {
-		total = v
+	return 0, 0, 0
+}
+
+func firstIntFromMap(raw map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		if v, ok := intFromAny(raw[key]); ok {
+			return v
+		}
 	}
-	return input, output, total
+	return 0
+}
+
+func applyClaudeUsage(state *claudeTurnState, input, output, total int) {
+	if state == nil {
+		return
+	}
+	if input > 0 {
+		state.inputTokens = maxInt(state.inputTokens, input)
+	}
+	if output > 0 {
+		state.outputTokens = maxInt(state.outputTokens, output)
+	}
+	if total > 0 {
+		state.totalTokens = maxInt(state.totalTokens, total)
+	}
+	if derived := state.inputTokens + state.outputTokens; derived > state.totalTokens {
+		state.totalTokens = derived
+	}
+}
+
+func maxInt(a, b int) int {
+	if b > a {
+		return b
+	}
+	return a
 }
 
 func fallbackClaudeTurnID(c *stdioClient, state *claudeTurnState) string {

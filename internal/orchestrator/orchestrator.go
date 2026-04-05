@@ -3500,7 +3500,7 @@ func (o *Orchestrator) RetryIssueNow(ctx context.Context, identifier string) map
 
 	if entry, ok := o.paused[issue.ID]; ok {
 		dueAt := time.Now().UTC()
-		resumeThreadID := o.planApprovalResumeThreadID(issue.ID)
+		resumeThreadID := o.retryResumeThreadID(issue.ID, "")
 		o.retries[issue.ID] = retryEntry{
 			Attempt:        entry.Attempt,
 			Phase:          entry.Phase,
@@ -3591,6 +3591,17 @@ func (o *Orchestrator) planApprovalResumeThreadID(issueID string) string {
 		return ""
 	}
 	if strings.TrimSpace(snapshot.StopReason) != planApprovalStopReason {
+		return ""
+	}
+	return strings.TrimSpace(snapshot.AppSession.ThreadID)
+}
+
+func (o *Orchestrator) retryResumeThreadID(issueID, preferred string) string {
+	if threadID := strings.TrimSpace(preferred); threadID != "" {
+		return threadID
+	}
+	snapshot, err := o.store.GetIssueExecutionSession(issueID)
+	if err != nil || snapshot == nil {
 		return ""
 	}
 	return strings.TrimSpace(snapshot.AppSession.ThreadID)

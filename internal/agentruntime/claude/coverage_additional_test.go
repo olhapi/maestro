@@ -136,13 +136,84 @@ func TestClaudeHelperConversions(t *testing.T) {
 	})
 
 	t.Run("token and fallback helpers", func(t *testing.T) {
-		input, output, total := usageTokens(map[string]interface{}{
-			"input_tokens":  float64(1),
-			"output_tokens": int32(2),
-			"total_tokens":  int64(3),
-		})
-		if input != 1 || output != 2 || total != 3 {
-			t.Fatalf("usageTokens: got (%d,%d,%d)", input, output, total)
+		cases := []struct {
+			name       string
+			usage      map[string]interface{}
+			wantInput  int
+			wantOutput int
+			wantTotal  int
+		}{
+			{
+				name: "direct usage",
+				usage: map[string]interface{}{
+					"input_tokens":  float64(1),
+					"output_tokens": int32(2),
+					"total_tokens":  int64(3),
+				},
+				wantInput:  1,
+				wantOutput: 2,
+				wantTotal:  3,
+			},
+			{
+				name: "anthropic aliases",
+				usage: map[string]interface{}{
+					"prompt_tokens":     float64(4),
+					"completion_tokens": int32(5),
+				},
+				wantInput:  4,
+				wantOutput: 5,
+				wantTotal:  9,
+			},
+			{
+				name: "cache token breakdown",
+				usage: map[string]interface{}{
+					"input_tokens":                float64(4),
+					"cache_creation_input_tokens": int32(2),
+					"cache_read_input_tokens":     int64(3),
+					"output_tokens":               int32(5),
+				},
+				wantInput:  9,
+				wantOutput: 5,
+				wantTotal:  14,
+			},
+			{
+				name: "nested token usage",
+				usage: map[string]interface{}{
+					"tokenUsage": map[string]interface{}{
+						"total": map[string]interface{}{
+							"inputTokens":  float64(7),
+							"outputTokens": float64(8),
+							"totalTokens":  float64(15),
+						},
+					},
+				},
+				wantInput:  7,
+				wantOutput: 8,
+				wantTotal:  15,
+			},
+			{
+				name: "nested token usage last fallback",
+				usage: map[string]interface{}{
+					"token_usage": map[string]interface{}{
+						"last": map[string]interface{}{
+							"input_tokens":  6,
+							"output_tokens": 4,
+						},
+					},
+				},
+				wantInput:  6,
+				wantOutput: 4,
+				wantTotal:  10,
+			},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				input, output, total := usageTokens(tc.usage)
+				if input != tc.wantInput || output != tc.wantOutput || total != tc.wantTotal {
+					t.Fatalf("usageTokens(%s): got (%d,%d,%d), want (%d,%d,%d)", tc.name, input, output, total, tc.wantInput, tc.wantOutput, tc.wantTotal)
+				}
+			})
 		}
 		if input, output, total := usageTokens(nil); input != 0 || output != 0 || total != 0 {
 			t.Fatalf("usageTokens nil: got (%d,%d,%d)", input, output, total)
@@ -665,6 +736,52 @@ func TestClaudeHandleClaudeLineBranches(t *testing.T) {
 		}
 		if state.inputTokens != 1 || state.outputTokens != 2 || state.totalTokens != 3 {
 			t.Fatalf("result tokens: %+v", state)
+		}
+	})
+
+	t.Run("usage accumulates across stream events", func(t *testing.T) {
+		client := newClaudeCoverageClient()
+
+		state := &claudeTurnState{}
+		client.handleClaudeLine(mustMarshalJSON(t, map[string]interface{}{
+			"event": map[string]interface{}{
+				"type": "message_start",
+				"message": map[string]interface{}{
+					"id": "message-usage-1",
+					"usage": map[string]interface{}{
+						"input_tokens":  float64(25),
+						"output_tokens": float64(1),
+					},
+				},
+			},
+		}), state, nil)
+		if !state.turnStarted || state.turnID != "message-usage-1" || state.inputTokens != 25 || state.outputTokens != 1 || state.totalTokens != 26 {
+			t.Fatalf("message_start usage state: %+v", state)
+		}
+
+		client.handleClaudeLine(mustMarshalJSON(t, map[string]interface{}{
+			"event": map[string]interface{}{
+				"type":  "message_delta",
+				"delta": map[string]interface{}{"stop_reason": "end_turn"},
+				"usage": map[string]interface{}{
+					"output_tokens": float64(15),
+				},
+			},
+		}), state, nil)
+		if state.inputTokens != 25 || state.outputTokens != 15 || state.totalTokens != 40 {
+			t.Fatalf("message_delta cumulative usage state: %+v", state)
+		}
+
+		client.handleClaudeLine(mustMarshalJSON(t, map[string]interface{}{
+			"type":        "result",
+			"subtype":     "success",
+			"is_error":    false,
+			"result":      "final answer",
+			"stop_reason": "end_turn",
+			"session_id":  "claude-session-usage",
+		}), state, nil)
+		if state.inputTokens != 25 || state.outputTokens != 15 || state.totalTokens != 40 {
+			t.Fatalf("result should preserve accumulated usage: %+v", state)
 		}
 	})
 }

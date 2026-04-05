@@ -27,6 +27,14 @@ func TestClaudeStreamFixtureParsing(t *testing.T) {
 		t.Fatalf("expected fixture to include a final result, got %+v", state)
 	}
 
+	liveSession := client.Session()
+	if liveSession == nil {
+		t.Fatal("expected live session snapshot")
+	}
+	if liveSession.InputTokens != 3 || liveSession.OutputTokens != 4 || liveSession.TotalTokens != 7 {
+		t.Fatalf("expected live usage snapshot before terminalization, got %+v", liveSession)
+	}
+
 	output, terminalType, err := client.finishTurnLocked(state, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("finishTurnLocked: %v", err)
@@ -59,6 +67,70 @@ func TestClaudeStreamFixtureParsing(t *testing.T) {
 	}
 	if session.Metadata["claude_stop_reason"] != "end_turn" {
 		t.Fatalf("expected stop reason metadata from fixture, got %+v", session.Metadata)
+	}
+}
+
+func TestClaudeStreamFixturePublishesLiveUsageBeforeResult(t *testing.T) {
+	client := newClaudeCoverageClient()
+	state := &claudeTurnState{}
+	lines := readClaudeFixtureLines(t, "stream_turn.jsonl")
+
+	for _, line := range lines[:5] {
+		client.handleClaudeLine([]byte(line), state, nil)
+	}
+
+	liveSession := client.Session()
+	if liveSession == nil {
+		t.Fatal("expected live session snapshot")
+	}
+	if liveSession.InputTokens != 3 || liveSession.OutputTokens != 4 || liveSession.TotalTokens != 7 {
+		t.Fatalf("expected live usage snapshot before result line, got %+v", liveSession)
+	}
+	if !state.turnStarted {
+		t.Fatalf("expected stream state to have started, got %+v", state)
+	}
+	if state.resultSeen {
+		t.Fatalf("expected result line to remain unread in partial fixture, got %+v", state)
+	}
+}
+
+func TestClaudeStreamFixtureEmitsLiveUsageObserverUpdate(t *testing.T) {
+	sessions := make([]agentruntime.Session, 0, 4)
+	client := &stdioClient{
+		spec: agentruntime.RuntimeSpec{
+			IssueID:         "iss-1",
+			IssueIdentifier: "ISS-1",
+			Transport:       agentruntime.TransportStdio,
+			Permissions: agentruntime.PermissionConfig{
+				CollaborationMode: "plan",
+			},
+		},
+		authSource: "OAuth",
+		observers: agentruntime.Observers{
+			OnSessionUpdate: func(session *agentruntime.Session) {
+				if session == nil {
+					return
+				}
+				sessions = append(sessions, session.Clone())
+			},
+		},
+	}
+	state := &claudeTurnState{}
+	lines := readClaudeFixtureLines(t, "stream_turn.jsonl")
+
+	for _, line := range lines[:5] {
+		client.handleClaudeLine([]byte(line), state, nil)
+	}
+
+	if len(sessions) < 3 {
+		t.Fatalf("expected live session observer updates, got %#v", sessions)
+	}
+	liveUpdate := sessions[len(sessions)-1]
+	if liveUpdate.InputTokens != 3 || liveUpdate.OutputTokens != 4 || liveUpdate.TotalTokens != 7 {
+		t.Fatalf("expected live usage observer update before result line, got %+v", liveUpdate)
+	}
+	if liveUpdate.LastEvent != "item.started" {
+		t.Fatalf("expected live usage update to preserve the active turn event, got %+v", liveUpdate)
 	}
 }
 

@@ -1596,6 +1596,12 @@ func isPlanApprovalInteraction(interaction *agentruntime.PendingInteraction) boo
 	if interaction == nil || interaction.Kind != agentruntime.PendingInteractionKindApproval || interaction.Approval == nil {
 		return false
 	}
+	if strings.EqualFold(strings.TrimSpace(interaction.Method), "approval_prompt") {
+		return false
+	}
+	if source, _ := interaction.Metadata["source"].(string); strings.EqualFold(strings.TrimSpace(source), "claude_permission_prompt") {
+		return false
+	}
 	return strings.TrimSpace(interaction.Approval.Markdown) != ""
 }
 

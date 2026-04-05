@@ -270,6 +270,7 @@ assert_success_snapshot() {
   assert_evidence_value "$final_summary" "execution_runtime_provider" "claude"
   assert_evidence_value "$final_summary" "execution_runtime_transport" "stdio"
   assert_claude_runtime_auth_source_line "$final_summary" "execution_runtime_auth_source"
+  assert_evidence_line_matches "$final_summary" '^execution_total_tokens=[1-9][0-9]*$'
   assert_evidence_value "$final_summary" "execution_pending_interaction_state" ""
   assert_evidence_value "$final_summary" "execution_stop_reason" "end_turn"
   assert_evidence_value "$final_summary" "execution_workspace_recovery_present" "false"

@@ -144,6 +144,52 @@ func TestInterruptPlanApprovalRejectsOutOfOrderResponses(t *testing.T) {
 	}
 }
 
+func TestInterruptApprovalPromptForwardsAllowDecision(t *testing.T) {
+	provider := &interruptProvider{}
+	store, srv := setupDashboardServerTest(t, provider)
+
+	issue, err := store.CreateIssue("", "", "Claude permission prompt", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	provider.interrupts = agentruntime.PendingInteractionSnapshot{
+		Items: []agentruntime.PendingInteraction{
+			{
+				ID:              "approval-prompt-call_123",
+				Kind:            agentruntime.PendingInteractionKindApproval,
+				Method:          "approval_prompt",
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				RequestedAt:     time.Date(2026, 3, 18, 11, 10, 0, 0, time.UTC),
+				Approval: &agentruntime.PendingApproval{
+					Markdown: "Claude requested command approval: printf '%s\\n' 'maestro claude default profile ok' > default-profile.txt",
+					Decisions: []agentruntime.PendingApprovalDecision{
+						{Value: "allow", Label: "Allow once"},
+						{Value: "deny", Label: "Deny"},
+						{Value: "ask", Label: "Ask for clarification"},
+					},
+				},
+			},
+		},
+	}
+
+	resp := requestJSON(t, srv, http.MethodPost, "/api/v1/app/interrupts/approval-prompt-call_123/respond", map[string]interface{}{
+		"decision": "allow",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if provider.responseID != "approval-prompt-call_123" {
+		t.Fatalf("expected approval prompt response to be forwarded, got %q", provider.responseID)
+	}
+	if provider.response.Decision != "allow" {
+		t.Fatalf("expected allow decision to be preserved, got %+v", provider.response)
+	}
+	if provider.response.Action != "" {
+		t.Fatalf("expected empty action for approval prompt response, got %+v", provider.response)
+	}
+}
+
 func TestInterruptAcknowledgeActionAccepted(t *testing.T) {
 	provider := &interruptProvider{}
 	_, srv := setupDashboardServerTest(t, provider)

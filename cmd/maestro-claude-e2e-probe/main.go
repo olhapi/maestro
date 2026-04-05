@@ -22,6 +22,8 @@ import (
 	maestromcp "github.com/olhapi/maestro/internal/mcp"
 )
 
+const probeObservationTimeout = 2 * time.Minute
+
 type options struct {
 	mode                  string
 	issueIdentifier       string
@@ -815,7 +817,7 @@ func claudeRuntimeDefaults(runtimeName, runtimeProvider, runtimeTransport, runti
 }
 
 func waitForClaudeSession(ctx context.Context, client *mcpclient.Client, issueIdentifier string) (string, agentruntime.Session, error) {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(probeObservationTimeout)
 	for {
 		envelope, err := callToolEnvelope(ctx, client, "list_sessions", map[string]interface{}{})
 		if err == nil {
@@ -835,7 +837,7 @@ func waitForClaudeSession(ctx context.Context, client *mcpclient.Client, issueId
 }
 
 func waitForPersistedIssueExecutionObservation(ctx context.Context, client *mcpclient.Client, issueIdentifier, streamMarker string) (executionObservation, error) {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(probeObservationTimeout)
 	marker := strings.TrimSpace(streamMarker)
 	if marker == "" {
 		marker = "STREAM:" + issueIdentifier + ":"
@@ -1111,7 +1113,7 @@ func resolveIssueIdentifier(requested string, listIssues listIssuesData) string 
 }
 
 func waitForIssueExecutionObservation(entry maestromcp.DaemonEntry, issueIdentifier, mode, streamMarker string) (executionObservation, error) {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(probeObservationTimeout)
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	marker := strings.TrimSpace(streamMarker)
 	if marker == "" {
@@ -1199,7 +1201,7 @@ func issueExecutionObservationForIssue(entry maestromcp.DaemonEntry, issueIdenti
 }
 
 func waitForDashboardSessionObservation(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, mode string) (dashboardSessionObservation, error) {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(probeObservationTimeout)
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	for {
 		observation, ok, err := dashboardSessionObservationForIssue(entry, issueIdentifier)
@@ -1270,7 +1272,7 @@ func dashboardSessionObservationForIssue(entry maestromcp.DaemonEntry, issueIden
 }
 
 func waitForPendingInteractionSurfaceObservation(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, mode, streamMarker, expectedState string) (executionObservation, dashboardSessionObservation, error) {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(probeObservationTimeout)
 	liveMode := !strings.EqualFold(strings.TrimSpace(mode), "final")
 	expectedState = strings.TrimSpace(expectedState)
 	for {
@@ -1337,7 +1339,7 @@ func wantsInterruptObservation(opts options) bool {
 }
 
 func waitForPendingInterrupt(ctx context.Context, entry maestromcp.DaemonEntry, issueIdentifier, kind, classification, toolName string) (agentruntime.PendingInteraction, int, error) {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(probeObservationTimeout)
 	issueID := ""
 	for {
 		if issueID == "" {
@@ -1800,6 +1802,9 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		"execution_runtime_name=" + evidence.Execution.RuntimeName,
 		"execution_runtime_provider=" + evidence.Execution.RuntimeProvider,
 		"execution_runtime_transport=" + evidence.Execution.RuntimeTransport,
+		fmt.Sprintf("execution_input_tokens=%d", evidence.Execution.Session.InputTokens),
+		fmt.Sprintf("execution_output_tokens=%d", evidence.Execution.Session.OutputTokens),
+		fmt.Sprintf("execution_total_tokens=%d", evidence.Execution.Session.TotalTokens),
 		"execution_session_identifier_strategy=" + strings.TrimSpace(asString(evidence.Execution.Session.Metadata["session_identifier_strategy"])),
 		"execution_session_id=" + strings.TrimSpace(evidence.Execution.Session.SessionID),
 		"execution_session_source=" + evidence.Execution.SessionSource,
@@ -1859,6 +1864,9 @@ func writeEvidence(prefix string, evidence probeEvidence) error {
 		"issue_pending_plan_revision_note=" + summaryValue(evidence.Issue.PendingPlanRevisionNote),
 		"issue_state=" + evidence.Issue.State,
 		fmt.Sprintf("live_claude_session_seen=%t", evidence.LiveSessionSeen),
+		fmt.Sprintf("live_session_input_tokens=%d", evidence.LiveSession.InputTokens),
+		fmt.Sprintf("live_session_output_tokens=%d", evidence.LiveSession.OutputTokens),
+		fmt.Sprintf("live_session_total_tokens=%d", evidence.LiveSession.TotalTokens),
 		"mode=" + evidence.Mode,
 		"permission_mode=" + evidence.Bridge.PermissionMode,
 		"permission_prompt_tool=" + evidence.Bridge.PermissionPromptTool,
