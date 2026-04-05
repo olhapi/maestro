@@ -3577,6 +3577,68 @@ func TestRetryIssueNowPreservesPlanApprovalThreadResumeHint(t *testing.T) {
 	}
 }
 
+func TestRetryIssueNowPreservesPausedRunThreadResumeHint(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Paused retry", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpdateIssueState(issue.ID, kanban.StateInProgress); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	if err := store.UpdateIssueWorkflowPhase(issue.ID, kanban.WorkflowPhaseImplementation); err != nil {
+		t.Fatalf("UpdateIssueWorkflowPhase: %v", err)
+	}
+	pausedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    1,
+		RunKind:    "retry_paused",
+		Error:      "no_state_transition",
+		StopReason: "no_state_transition",
+		UpdatedAt:  pausedAt,
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-paused-turn-1",
+			ThreadID:        "thread-paused",
+			TurnID:          "turn-paused",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	orch.mu.Lock()
+	orch.paused[issue.ID] = pausedEntry{
+		Attempt:  1,
+		Phase:    string(kanban.WorkflowPhaseImplementation),
+		PausedAt: pausedAt,
+		Error:    "no_state_transition",
+	}
+	orch.mu.Unlock()
+
+	result := orch.RetryIssueNow(context.Background(), issue.Identifier)
+	if result["status"] != "queued_now" {
+		t.Fatalf("expected queued_now retry result, got %#v", result)
+	}
+	if result["resume_thread_id"] != "thread-paused" {
+		t.Fatalf("expected resume_thread_id in retry response, got %#v", result)
+	}
+
+	orch.mu.RLock()
+	retry, ok := orch.retries[issue.ID]
+	orch.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected retry entry after paused retry")
+	}
+	if retry.ResumeThreadID != "thread-paused" {
+		t.Fatalf("expected paused retry to preserve thread resume hint, got %+v", retry)
+	}
+}
+
 func TestRetryIssueNowPreservesPendingPlanApprovalWhenRevisionIsQueued(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 

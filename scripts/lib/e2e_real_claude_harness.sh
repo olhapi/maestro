@@ -552,6 +552,13 @@ assert_claude_runtime_evidence() {
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "settings_disable_bypass_permissions_mode=disable"
   assert_evidence_line "$CLAUDE_EVIDENCE_SUMMARY" "live_claude_session_seen=true"
 
+  local completed_total_tokens
+  completed_total_tokens="$(issue_execution_session_field "$CURRENT_ISSUE" "total_tokens")"
+  if ! [[ "$completed_total_tokens" =~ ^[1-9][0-9]*$ ]]; then
+    echo "expected completed Claude execution tokens to be positive for $CURRENT_ISSUE, got '$completed_total_tokens'" >&2
+    return 1
+  fi
+
   if ! grep -Eq '^server_store_id=.+$' "$CLAUDE_EVIDENCE_SUMMARY"; then
     echo "expected server_store_id in Claude runtime evidence summary" >&2
     return 1
