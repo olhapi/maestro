@@ -3639,6 +3639,47 @@ func TestRetryIssueNowPreservesPausedRunThreadResumeHint(t *testing.T) {
 	}
 }
 
+func TestResumeThreadIDHelpers(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	issue, err := store.CreateIssue("", "", "Resume helper coverage", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.UpsertIssueExecutionSession(kanban.ExecutionSessionSnapshot{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Phase:      string(kanban.WorkflowPhaseImplementation),
+		Attempt:    1,
+		RunKind:    "retry_paused",
+		Error:      "no_state_transition",
+		StopReason: "no_state_transition",
+		UpdatedAt:  time.Now().UTC().Truncate(time.Second),
+		AppSession: agentruntime.Session{
+			IssueID:         issue.ID,
+			IssueIdentifier: issue.Identifier,
+			SessionID:       "thread-helper-turn-1",
+			ThreadID:        "thread-helper",
+			TurnID:          "turn-helper",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertIssueExecutionSession: %v", err)
+	}
+
+	if got := orch.retryResumeThreadID(issue.ID, "  thread-preferred  "); got != "thread-preferred" {
+		t.Fatalf("expected explicit preferred resume thread to win, got %q", got)
+	}
+	if got := orch.planApprovalResumeThreadID(issue.ID); got != "" {
+		t.Fatalf("expected non-plan-approval stop reason to be ignored, got %q", got)
+	}
+	if got := orch.retryResumeThreadID("missing-issue", ""); got != "" {
+		t.Fatalf("expected missing retry session to return empty resume thread id, got %q", got)
+	}
+	if got := orch.planApprovalResumeThreadID("missing-issue"); got != "" {
+		t.Fatalf("expected missing plan approval session to return empty resume thread id, got %q", got)
+	}
+}
+
 func TestRetryIssueNowPreservesPendingPlanApprovalWhenRevisionIsQueued(t *testing.T) {
 	orch, store, _, _ := setupTestOrchestrator(t, "cat")
 
