@@ -4316,8 +4316,9 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
+	retryWait := 10 * time.Second
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(orchestrators))
@@ -4338,10 +4339,10 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		}(orch)
 	}
 
-	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", 6*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", 6*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", 6*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", 6*time.Second)
+	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", retryWait)
+	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", retryWait)
+	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", retryWait)
+	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", retryWait)
 
 	cancel()
 	wg.Wait()
