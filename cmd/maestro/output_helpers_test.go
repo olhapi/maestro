@@ -75,6 +75,8 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 				WorkflowPhase: kanban.WorkflowPhaseImplementation,
 				Priority:      3,
 				Labels:        []string{"cli", "coverage"},
+				AgentName:     "coverage-bot",
+				AgentPrompt:   "Keep the result concise.",
 				BranchName:    "feat/coverage",
 				PRURL:         "https://example.com/pr/17",
 				BlockedBy:     []string{"ISS-2"},
@@ -152,7 +154,7 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 		var out bytes.Buffer
 		printIssueDetail(&out, detail)
 		text := out.String()
-		for _, want := range []string{"Type:", "Description:", "Labels:", "Branch:", "PR:", "Blocked By:", "Assets:", "Asset:", "Cron:", "Schedule:", "Next Run:", "Last Enqueued:", "Pending Rerun:"} {
+		for _, want := range []string{"Type:", "Description:", "Labels:", "Agent:", "Agent Prompt:", "Branch:", "PR:", "Blocked By:", "Assets:", "Asset:", "Cron:", "Schedule:", "Next Run:", "Last Enqueued:", "Pending Rerun:"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("expected %q in issue detail %q", want, text)
 			}
@@ -176,10 +178,54 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 			}
 		}
 
+		var plainBoard bytes.Buffer
+		printBoard(&plainBoard, columns, counts, outputMode{})
+		if text := plainBoard.String(); !strings.Contains(text, "[ISS-1] Ship CLI coverage") || !strings.Contains(text, "[ISS-2] Review tests") {
+			t.Fatalf("unexpected plain board output %q", text)
+		}
+
 		var quiet bytes.Buffer
 		printBoard(&quiet, columns, counts, outputMode{quiet: true})
 		if lines := strings.Fields(quiet.String()); len(lines) != 2 || lines[0] != "ISS-1" || lines[1] != "ISS-2" {
 			t.Fatalf("unexpected quiet board output: %q", quiet.String())
+		}
+	})
+
+	t.Run("issue comments", func(t *testing.T) {
+		deletedAt := now.Add(time.Minute)
+		comments := []kanban.IssueComment{{
+			ID:        "comment-1",
+			Author:    kanban.IssueCommentAuthor{},
+			Body:      "First line\nSecond line",
+			CreatedAt: now,
+			Attachments: []kanban.IssueCommentAttachment{{
+				ID:          "attachment-1",
+				Filename:    "note.txt",
+				ByteSize:    32,
+				ContentType: "text/plain",
+			}},
+			Replies: []kanban.IssueComment{{
+				ID:        "comment-2",
+				Author:    kanban.IssueCommentAuthor{Name: "Reviewer"},
+				Body:      "",
+				CreatedAt: now.Add(time.Minute),
+				DeletedAt: &deletedAt,
+			}},
+		}}
+
+		var tree bytes.Buffer
+		printIssueComments(&tree, comments, outputMode{})
+		treeText := tree.String()
+		for _, want := range []string{"Comments:\t2", "Unknown", "Attachment: attachment-1 note.txt (32 bytes)", "Reviewer", "First line", "(deleted)", "[deleted]"} {
+			if !strings.Contains(treeText, want) {
+				t.Fatalf("expected %q in comment tree %q", want, treeText)
+			}
+		}
+
+		var quiet bytes.Buffer
+		printIssueComments(&quiet, comments, outputMode{quiet: true})
+		if got := strings.Fields(quiet.String()); len(got) != 2 || got[0] != "comment-1" || got[1] != "comment-2" {
+			t.Fatalf("unexpected quiet comments output %q", quiet.String())
 		}
 	})
 
@@ -269,6 +315,16 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 		printSessions(&sessionsQuiet, sessionsPayload, outputMode{quiet: true})
 		if strings.TrimSpace(sessionsQuiet.String()) != "ISS-1\nISS-2" {
 			t.Fatalf("unexpected quiet sessions output %q", sessionsQuiet.String())
+		}
+
+		var sessionsJSON bytes.Buffer
+		printSessions(&sessionsJSON, sessionsPayload, outputMode{json: true})
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(sessionsJSON.Bytes(), &decoded); err != nil {
+			t.Fatalf("decode sessions json: %v\n%s", err, sessionsJSON.String())
+		}
+		if _, ok := decoded["sessions"].(map[string]interface{}); !ok {
+			t.Fatalf("expected sessions payload, got %#v", decoded)
 		}
 
 		events := []kanban.RuntimeEvent{

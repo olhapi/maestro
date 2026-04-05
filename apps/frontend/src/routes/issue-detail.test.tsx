@@ -666,7 +666,7 @@ describe("IssueDetailPage", () => {
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
   });
 
-  it("shows assigned agent metadata in the issue overview cards", async () => {
+  it("does not show the assigned agent card in the issue overview cards", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({
       agent_name: "marketing",
@@ -691,11 +691,12 @@ describe("IssueDetailPage", () => {
     renderWithQueryClient(<IssueDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Assigned agent")).toBeInTheDocument();
+      expect(screen.getByText("Branch / PR")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("marketing")).toBeInTheDocument();
-    expect(screen.getByText("Review homepage messaging before implementation.")).toBeInTheDocument();
+    expect(screen.queryByText("Assigned agent")).not.toBeInTheDocument();
+    expect(screen.getByText(issue.branch_name!)).toBeInTheDocument();
+    expect(screen.getByText(issue.pr_url!)).toBeInTheDocument();
   });
 
   it("shows recurring schedule details and triggers run-now", async () => {

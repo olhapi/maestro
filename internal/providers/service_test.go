@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -119,6 +120,95 @@ func withProviderProjectSyncTimeout(t *testing.T, timeout time.Duration) {
 	})
 }
 
+func TestServiceReadOnlyStoreSkipsProviderSyncAndRefresh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only database permissions behave differently on Windows")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "readonly.db")
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	project, err := store.CreateProjectWithProvider("Readonly project", "", "", "", "stub", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	issue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		Identifier:       "STUB-1",
+		ProviderKind:     "stub",
+		ProviderIssueRef: "remote-1",
+		Title:            "Read only issue",
+		Description:      "cached",
+		State:            kanban.StateBacklog,
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close writable store: %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Fatalf("Chmod read-only db: %v", err)
+	}
+
+	readOnlyStore, err := kanban.NewReadOnlyStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewReadOnlyStore: %v", err)
+	}
+	defer readOnlyStore.Close()
+	if !readOnlyStore.ReadOnly() {
+		t.Fatal("expected store to report read-only mode")
+	}
+
+	var listCalls atomic.Int32
+	var getCalls atomic.Int32
+	svc := NewService(readOnlyStore)
+	svc.RegisterProvider(&stubProvider{
+		kind: "stub",
+		listFunc: func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+			listCalls.Add(1)
+			return nil, nil
+		},
+		getFunc: func(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
+			getCalls.Add(1)
+			return &kanban.Issue{
+				Identifier:       "STUB-1",
+				ProviderKind:     "stub",
+				ProviderIssueRef: "remote-1",
+				Title:            "Refreshed title",
+				State:            kanban.StateDone,
+				UpdatedAt:        time.Now().UTC(),
+			}, nil
+		},
+	})
+
+	issues, total, err := svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{ProjectID: project.ID})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries: %v", err)
+	}
+	if listCalls.Load() != 0 {
+		t.Fatalf("expected read-only list to skip provider sync, got %d calls", listCalls.Load())
+	}
+	if total != 1 || len(issues) != 1 || issues[0].Identifier != issue.Identifier {
+		t.Fatalf("unexpected issue list payload: total=%d issues=%#v", total, issues)
+	}
+
+	fetched, err := svc.GetIssueByIdentifier(context.Background(), issue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier: %v", err)
+	}
+	if getCalls.Load() != 0 {
+		t.Fatalf("expected read-only issue lookup to skip provider refresh, got %d calls", getCalls.Load())
+	}
+	if fetched.Identifier != issue.Identifier || fetched.Title != issue.Title {
+		t.Fatalf("unexpected fetched issue: %+v", fetched)
+	}
+}
+
 func withProviderListSyncMinInterval(t *testing.T, interval time.Duration) {
 	t.Helper()
 	previous := providerListSyncMinInterval
@@ -147,7 +237,7 @@ func TestServiceCreateProjectDoesNotPersistOnValidationFailure(t *testing.T) {
 		},
 	}
 
-	_, err = svc.CreateProject(context.Background(), "Broken", "", "", "", "", "stub", "stub-ref", map[string]interface{}{"mode": "broken"})
+	_, err = svc.CreateProject(context.Background(), "Broken", "", "", "", "stub", "stub-ref", map[string]interface{}{"mode": "broken"})
 	if !errors.Is(err, validateErr) {
 		t.Fatalf("expected validation failure, got %v", err)
 	}
@@ -188,7 +278,7 @@ func TestServiceUpdateProjectDoesNotPersistOnValidationFailure(t *testing.T) {
 		},
 	}
 
-	err = svc.UpdateProject(context.Background(), project.ID, "Changed", "desc", "", "", "", "stub", "stub-ref", map[string]interface{}{"mode": "broken"})
+	err = svc.UpdateProject(context.Background(), project.ID, "Changed", "desc", "", "", "stub", "stub-ref", map[string]interface{}{"mode": "broken"})
 	if !errors.Is(err, validateErr) {
 		t.Fatalf("expected validation failure, got %v", err)
 	}
@@ -695,6 +785,85 @@ func TestServiceListIssueSummariesServesCachedDataWhenReadSyncTimesOut(t *testin
 	}
 	if items[0].Identifier != "STUB-KEEP" {
 		t.Fatalf("unexpected cached issue payload: %#v", items[0])
+	}
+}
+
+func TestReadOnlyServiceSkipsProviderSyncAndRefresh(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProjectWithProvider(
+		"Stub Project",
+		"",
+		"",
+		"",
+		"stub",
+		"proj-slug",
+		map[string]interface{}{"project_slug": "proj-slug"},
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	cachedIssue, err := store.UpsertProviderIssue(project.ID, &kanban.Issue{
+		ProviderKind:     "stub",
+		ProviderIssueRef: "stub-keep",
+		Identifier:       "STUB-KEEP",
+		Title:            "Cached issue",
+		State:            kanban.StateReady,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderIssue: %v", err)
+	}
+
+	var listCalls, getCalls atomic.Int32
+	svc := NewReadOnlyService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
+		listFunc: func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error) {
+			listCalls.Add(1)
+			return []kanban.Issue{{
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-remote",
+				Identifier:       "STUB-REMOTE",
+				Title:            "Remote issue",
+				State:            kanban.StateDone,
+			}}, nil
+		},
+		getFunc: func(context.Context, *kanban.Project, string) (*kanban.Issue, error) {
+			getCalls.Add(1)
+			return &kanban.Issue{
+				ProviderKind:     "stub",
+				ProviderIssueRef: "stub-remote",
+				Identifier:       "STUB-REMOTE",
+				Title:            "Remote issue",
+				State:            kanban.StateDone,
+			}, nil
+		},
+	}
+
+	items, total, err := svc.ListIssueSummaries(context.Background(), kanban.IssueQuery{ProjectID: project.ID})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries: %v", err)
+	}
+	if got := listCalls.Load(); got != 0 {
+		t.Fatalf("expected read-only service to skip provider sync, got %d calls", got)
+	}
+	if total != 1 || len(items) != 1 || items[0].Identifier != cachedIssue.Identifier {
+		t.Fatalf("unexpected read-only list payload: total=%d items=%#v", total, items)
+	}
+
+	issue, err := svc.GetIssueByIdentifier(context.Background(), cachedIssue.Identifier)
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier: %v", err)
+	}
+	if got := getCalls.Load(); got != 0 {
+		t.Fatalf("expected read-only service to skip provider refresh, got %d calls", got)
+	}
+	if issue.Identifier != cachedIssue.Identifier {
+		t.Fatalf("unexpected cached issue returned: %#v", issue)
 	}
 }
 
@@ -1283,6 +1452,7 @@ func TestServiceUpdateIssueStoresLocalMetadataForProviderBackedIssue(t *testing.
 	store, project, epic, issue := newProviderBackedIssueFixture(t)
 	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
 		"epic_id":      epic.ID,
+		"runtime_name": "runtime-local",
 		"agent_name":   "codex",
 		"agent_prompt": "preserve me",
 		"branch_name":  "codex/STUB-1",
@@ -1316,6 +1486,9 @@ func TestServiceUpdateIssueStoresLocalMetadataForProviderBackedIssue(t *testing.
 			if _, ok := updates["agent_prompt"]; ok {
 				t.Fatalf("expected agent_prompt to be excluded from provider update: %#v", updates)
 			}
+			if _, ok := updates["runtime_name"]; ok {
+				t.Fatalf("expected runtime_name to be excluded from provider update: %#v", updates)
+			}
 			if _, ok := updates["branch_name"]; ok {
 				t.Fatalf("expected branch_name to be excluded from provider update: %#v", updates)
 			}
@@ -1346,6 +1519,9 @@ func TestServiceUpdateIssueStoresLocalMetadataForProviderBackedIssue(t *testing.
 	if detail.AgentName != "marketing" || detail.AgentPrompt != "Review homepage positioning." {
 		t.Fatalf("expected updated agent metadata, got %#v", detail)
 	}
+	if detail.RuntimeName != "runtime-local" {
+		t.Fatalf("expected runtime metadata to persist locally, got %#v", detail)
+	}
 	if detail.EpicID != epic.ID {
 		t.Fatalf("expected epic metadata to persist, got %#v", detail)
 	}
@@ -1361,6 +1537,7 @@ func TestServiceUpdateIssueClearsProviderBackedLocalMetadata(t *testing.T) {
 	store, _, epic, issue := newProviderBackedIssueFixture(t)
 	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
 		"epic_id":      epic.ID,
+		"runtime_name": "",
 		"agent_name":   "codex",
 		"agent_prompt": "preserve me",
 		"branch_name":  "codex/STUB-1",
@@ -1395,6 +1572,86 @@ func TestServiceUpdateIssueClearsProviderBackedLocalMetadata(t *testing.T) {
 	}
 	if detail.EpicID != "" || detail.AgentName != "" || detail.AgentPrompt != "" || detail.BranchName != "" || detail.PRURL != "" {
 		t.Fatalf("expected local metadata to clear, got %#v", detail)
+	}
+	if detail.RuntimeName != "" {
+		t.Fatalf("expected runtime override to clear, got %#v", detail)
+	}
+}
+
+func TestServiceUpdateIssueReappliesPermissionProfileForProviderBackedIssueWithPendingPlanState(t *testing.T) {
+	store, _, _, issue := newProviderBackedIssueFixture(t)
+	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft plan", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval setup: %v", err)
+	}
+
+	updateCalled := false
+	svc := NewService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
+		getIssue: issue,
+		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+			updateCalled = true
+			return nil, nil
+		},
+	}
+
+	detail, err := svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"permission_profile": "full-access",
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if updateCalled {
+		t.Fatal("expected provider update to be skipped for permission profile refresh")
+	}
+	if detail.PermissionProfile != kanban.PermissionProfileFullAccess {
+		t.Fatalf("expected full-access permission profile, got %#v", detail)
+	}
+	if detail.CollaborationModeOverride != kanban.CollaborationModeOverrideNone || detail.PlanApprovalPending || detail.PendingPlanMarkdown != "" || detail.PendingPlanRequestedAt != nil || detail.PendingPlanRevisionMarkdown != "" {
+		t.Fatalf("expected pending plan state to clear, got %#v", detail)
+	}
+}
+
+func TestServiceUpdateIssueReappliesPermissionProfileForProviderBackedIssueWithPendingPlanFields(t *testing.T) {
+	store, _, _, issue := newProviderBackedIssueFixture(t)
+	requestedAt := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"permission_profile":             kanban.PermissionProfileFullAccess,
+		"collaboration_mode_override":    kanban.CollaborationModeOverridePlan,
+		"plan_approval_pending":          true,
+		"pending_plan_markdown":          "Draft plan",
+		"pending_plan_requested_at":      &requestedAt,
+		"pending_plan_revision_markdown": "Revise plan",
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
+	}
+
+	updateCalled := false
+	svc := NewService(store)
+	svc.providers["stub"] = &stubProvider{
+		kind:     "stub",
+		getIssue: issue,
+		updateFunc: func(context.Context, *kanban.Project, *kanban.Issue, map[string]interface{}) (*kanban.Issue, error) {
+			updateCalled = true
+			return nil, nil
+		},
+	}
+
+	detail, err := svc.UpdateIssue(context.Background(), issue.Identifier, map[string]interface{}{
+		"permission_profile": "full-access",
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if updateCalled {
+		t.Fatal("expected provider update to be skipped for permission profile refresh")
+	}
+	if detail.PermissionProfile != kanban.PermissionProfileFullAccess {
+		t.Fatalf("expected full-access permission profile, got %#v", detail)
+	}
+	if detail.CollaborationModeOverride != kanban.CollaborationModeOverrideNone || detail.PlanApprovalPending || detail.PendingPlanMarkdown != "" || detail.PendingPlanRequestedAt != nil || detail.PendingPlanRevisionMarkdown != "" {
+		t.Fatalf("expected pending plan state to clear, got %#v", detail)
 	}
 }
 
@@ -1829,7 +2086,7 @@ func TestServiceCreateProjectValidationFailureDoesNotPersistProject(t *testing.T
 		},
 	}
 
-	_, err = svc.CreateProject(context.Background(), "Stub Project", "", "", "", "", "stub", "proj-slug", map[string]interface{}{"project_slug": "proj-slug"})
+	_, err = svc.CreateProject(context.Background(), "Stub Project", "", "", "", "stub", "proj-slug", map[string]interface{}{"project_slug": "proj-slug"})
 	if !errors.Is(err, validationErr) {
 		t.Fatalf("expected validation failure, got %v", err)
 	}
@@ -1875,7 +2132,7 @@ func TestServiceUpdateProjectValidationFailureLeavesStoredProjectUntouched(t *te
 		},
 	}
 
-	err = svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, "", project.ProviderKind, "bad-slug", map[string]interface{}{"project_slug": "bad-slug"})
+	err = svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, project.ProviderKind, "bad-slug", map[string]interface{}{"project_slug": "bad-slug"})
 	if !errors.Is(err, validationErr) {
 		t.Fatalf("expected validation failure, got %v", err)
 	}
@@ -1921,7 +2178,7 @@ func TestServiceProjectPathOverridesExpandEnvAndHomePaths(t *testing.T) {
 		},
 	}
 
-	project, err := svc.CreateProject(context.Background(), "Path Project", "", "$MAESTRO_REPO_BASE/repo", "~/workflow/WORKFLOW.md", "", "stub", "stub-ref", nil)
+	project, err := svc.CreateProject(context.Background(), "Path Project", "", "$MAESTRO_REPO_BASE/repo", "~/workflow/WORKFLOW.md", "stub", "stub-ref", nil)
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
@@ -1934,7 +2191,7 @@ func TestServiceProjectPathOverridesExpandEnvAndHomePaths(t *testing.T) {
 
 	wantRepo = filepath.Join(homeDir, "updated-repo")
 	wantWorkflow = filepath.Join(workflowBase, "updated", "WORKFLOW.md")
-	if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, "~/updated-repo", "$MAESTRO_WORKFLOW_BASE/updated/WORKFLOW.md", "", project.ProviderKind, project.ProviderProjectRef, nil); err != nil {
+	if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, "~/updated-repo", "$MAESTRO_WORKFLOW_BASE/updated/WORKFLOW.md", project.ProviderKind, project.ProviderProjectRef, nil); err != nil {
 		t.Fatalf("UpdateProject: %v", err)
 	}
 	if validated != 2 {
@@ -1980,7 +2237,7 @@ func TestServiceProjectRuntimeNamePersistsAcrossCreateAndUpdate(t *testing.T) {
 		},
 	}
 
-	project, err := svc.CreateProject(context.Background(), "Runtime Project", "", repoDir, workflowPath, "claude", "stub", "stub-ref", nil)
+	project, err := svc.CreateProject(context.Background(), "Runtime Project", "", repoDir, workflowPath, "stub", "stub-ref", nil, "claude")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
@@ -1988,7 +2245,7 @@ func TestServiceProjectRuntimeNamePersistsAcrossCreateAndUpdate(t *testing.T) {
 		t.Fatalf("expected created project runtime claude, got %q", project.RuntimeName)
 	}
 
-	if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, repoDir, workflowPath, "codex", project.ProviderKind, project.ProviderProjectRef, nil); err != nil {
+	if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, repoDir, workflowPath, project.ProviderKind, project.ProviderProjectRef, nil, "codex"); err != nil {
 		t.Fatalf("UpdateProject: %v", err)
 	}
 	if validated != len(expected) {

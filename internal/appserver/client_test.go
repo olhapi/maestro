@@ -1297,8 +1297,9 @@ func TestRunStopsWaitingIfAppServerExitsDuringInteraction(t *testing.T) {
 			},
 		},
 	)
+	scenario.Steps[3].WaitForRelease = "exit"
 	scenario.Steps[3].ExitCode = fakeappserver.Int(1)
-	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg, release := helperClientConfig(t, workspace, workspaceRoot, scenario)
 	interrupts := make(chan PendingInteraction, 1)
 	doneIDs := make(chan string, 1)
 	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
@@ -1327,6 +1328,7 @@ func TestRunStopsWaitingIfAppServerExitsDuringInteraction(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected pending interaction")
 	}
+	release("exit")
 
 	var runErr *RunError
 	select {
@@ -2042,7 +2044,7 @@ func TestHelperDefaultsAndWorkspaceValidation(t *testing.T) {
 		t.Fatalf("expected default sandbox networkAccess=true, got %#v", sandbox)
 	}
 
-	if !looksLikeCodexCommand("/usr/local/bin/codex") || !looksLikeCodexCommand("C:/tools/codex.exe") {
+	if !looksLikeCodexCommand("/usr/local/bin/codex") || !looksLikeCodexCommand("C:/tools/codex.exe") || !looksLikeCodexCommand("C:/tools/codex.cmd") {
 		t.Fatal("expected codex executable detection")
 	}
 	if looksLikeCodexCommand("/bin/sh") {

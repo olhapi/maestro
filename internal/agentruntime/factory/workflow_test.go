@@ -1,0 +1,345 @@
+package factory
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/olhapi/maestro/internal/agentruntime"
+	"github.com/olhapi/maestro/pkg/config"
+)
+
+func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Command = "codex app-server"
+	selectedRuntime.ExpectedVersion = "1.2.3"
+	selectedRuntime.ReadTimeoutMs = 11
+	selectedRuntime.TurnTimeoutMs = 22
+	selectedRuntime.StallTimeoutMs = 33
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
+
+	request := WorkflowStartRequest{
+		Workflow:        workflow,
+		WorkspacePath:   "/tmp/workspaces/MAES-123",
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+		Env:             []string{"FOO=bar"},
+		Permissions: agentruntime.PermissionConfig{
+			ApprovalPolicy: map[string]interface{}{"mode": "never"},
+			ThreadSandbox:  "workspace-write",
+			TurnSandboxPolicy: map[string]interface{}{
+				"type": "workspaceWrite",
+			},
+			CollaborationMode: "plan",
+			Metadata: map[string]interface{}{
+				"source": "test",
+			},
+		},
+		DynamicTools: []map[string]interface{}{{
+			"name": "tool-1",
+			"config": map[string]interface{}{
+				"mode": "safe",
+			},
+		}},
+		ResumeToken: " thread-123 ",
+		DBPath:      "/tmp/maestro.db",
+		Metadata: map[string]interface{}{
+			"provider_hint": "codex",
+		},
+	}
+
+	spec, err := RuntimeSpecFromWorkflow(request)
+	if err != nil {
+		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
+	}
+
+	if spec.Provider != agentruntime.ProviderCodex {
+		t.Fatalf("expected codex provider, got %q", spec.Provider)
+	}
+	if spec.Transport != agentruntime.TransportAppServer {
+		t.Fatalf("expected app_server transport, got %q", spec.Transport)
+	}
+	if spec.Command != selectedRuntime.Command || spec.ExpectedVersion != selectedRuntime.ExpectedVersion {
+		t.Fatalf("expected codex command/version to be copied, got %+v", spec)
+	}
+	if spec.Workspace != request.WorkspacePath || spec.WorkspaceRoot != workflow.Config.Workspace.Root {
+		t.Fatalf("expected workspace paths to be preserved, got %+v", spec)
+	}
+	if spec.IssueID != request.IssueID || spec.IssueIdentifier != request.IssueIdentifier {
+		t.Fatalf("expected issue identity to be preserved, got %+v", spec)
+	}
+	if spec.ReadTimeout != 11*time.Millisecond || spec.TurnTimeout != 22*time.Millisecond || spec.StallTimeout != 33*time.Millisecond {
+		t.Fatalf("expected workflow timeouts to be converted, got %+v", spec)
+	}
+	if spec.ResumeToken != "thread-123" {
+		t.Fatalf("expected resume token to be trimmed, got %q", spec.ResumeToken)
+	}
+	if spec.DBPath != "/tmp/maestro.db" {
+		t.Fatalf("expected db path to be preserved, got %q", spec.DBPath)
+	}
+	if len(spec.Env) != 1 || spec.Env[0] != "FOO=bar" {
+		t.Fatalf("expected env to be copied, got %#v", spec.Env)
+	}
+	if spec.Permissions.ThreadSandbox != "workspace-write" || spec.Permissions.CollaborationMode != "plan" {
+		t.Fatalf("expected permissions to be copied, got %+v", spec.Permissions)
+	}
+	if spec.Permissions.Metadata["source"] != "test" {
+		t.Fatalf("expected permission metadata to be copied, got %+v", spec.Permissions)
+	}
+	if len(spec.DynamicTools) != 1 || spec.DynamicTools[0]["name"] != "tool-1" {
+		t.Fatalf("expected dynamic tools to be copied, got %#v", spec.DynamicTools)
+	}
+	if spec.Metadata["provider_hint"] != "codex" {
+		t.Fatalf("expected request metadata to be copied, got %#v", spec.Metadata)
+	}
+
+	request.Env[0] = "FOO=changed"
+	request.Permissions.TurnSandboxPolicy["type"] = "dangerFullAccess"
+	request.Permissions.Metadata["source"] = "mutated"
+	request.DynamicTools[0]["name"] = "tool-mutated"
+	request.Metadata["provider_hint"] = "mutated"
+
+	if spec.Env[0] != "FOO=bar" {
+		t.Fatalf("expected env copy to be isolated, got %#v", spec.Env)
+	}
+	if spec.Permissions.TurnSandboxPolicy["type"] != "workspaceWrite" {
+		t.Fatalf("expected sandbox policy clone to be isolated, got %#v", spec.Permissions.TurnSandboxPolicy)
+	}
+	if spec.Permissions.Metadata["source"] != "test" {
+		t.Fatalf("expected permission metadata clone to be isolated, got %#v", spec.Permissions.Metadata)
+	}
+	if spec.DynamicTools[0]["name"] != "tool-1" {
+		t.Fatalf("expected dynamic tool clone to be isolated, got %#v", spec.DynamicTools)
+	}
+	if spec.Metadata["provider_hint"] != "codex" {
+		t.Fatalf("expected metadata clone to be isolated, got %#v", spec.Metadata)
+	}
+}
+
+func TestRuntimeSpecFromWorkflowUsesExplicitRuntimeSelection(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Agent.Mode = config.AgentModeAppServer
+	workflow.Config.Workspace.Root = "/repo/root"
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Command = "codex app-server"
+	selectedRuntime.ExpectedVersion = "1.2.3"
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
+
+	request := WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "codex-stdio",
+		RuntimeConfig:   workflow.Config.Runtime.Entries["codex-stdio"],
+		WorkspacePath:   "/tmp/workspaces/MAES-123",
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+	}
+
+	spec, err := RuntimeSpecFromWorkflow(request)
+	if err != nil {
+		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
+	}
+	if spec.Provider != agentruntime.ProviderCodex {
+		t.Fatalf("expected codex provider, got %q", spec.Provider)
+	}
+	if spec.Transport != agentruntime.TransportStdio {
+		t.Fatalf("expected stdio transport, got %q", spec.Transport)
+	}
+	if spec.Command != workflow.Config.Runtime.Entries["codex-stdio"].Command {
+		t.Fatalf("expected explicit runtime command, got %q", spec.Command)
+	}
+	if spec.ExpectedVersion != workflow.Config.Runtime.Entries["codex-stdio"].ExpectedVersion {
+		t.Fatalf("expected explicit runtime version, got %q", spec.ExpectedVersion)
+	}
+	if got := workflow.Config.SelectedRuntimeConfig().Command; got != "codex app-server" {
+		t.Fatalf("expected workflow default runtime to stay untouched, got %q", got)
+	}
+}
+
+func TestRuntimeSpecFromWorkflowUsesNamedRuntimeDefaultsForClaude(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+
+	spec, err := RuntimeSpecFromWorkflow(WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "claude",
+		RuntimeConfig:   config.RuntimeConfig{Provider: "claude", Transport: config.AgentModeStdio},
+		WorkspacePath:   "/tmp/workspaces/MAES-123",
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+	})
+	if err != nil {
+		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
+	}
+
+	if spec.Provider != agentruntime.ProviderClaude {
+		t.Fatalf("expected claude provider, got %q", spec.Provider)
+	}
+	if spec.Transport != agentruntime.TransportStdio {
+		t.Fatalf("expected stdio transport, got %q", spec.Transport)
+	}
+	if spec.Command != workflow.Config.Runtime.Entries["claude"].Command {
+		t.Fatalf("expected named runtime command, got %q", spec.Command)
+	}
+}
+
+func TestRuntimeSpecFromWorkflowMergesExplicitRuntimeConfigFallbacks(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Provider = "codex"
+	selectedRuntime.Transport = config.AgentModeAppServer
+	selectedRuntime.Command = "codex app-server"
+	selectedRuntime.ExpectedVersion = "1.2.3"
+	selectedRuntime.ReadTimeoutMs = 11
+	selectedRuntime.TurnTimeoutMs = 22
+	selectedRuntime.StallTimeoutMs = 33
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
+
+	spec, err := RuntimeSpecFromWorkflow(WorkflowStartRequest{
+		Workflow:      workflow,
+		RuntimeName:   "codex-custom",
+		RuntimeConfig: config.RuntimeConfig{},
+		WorkspacePath: "/tmp/workspaces/MAES-123",
+	})
+	if err != nil {
+		t.Fatalf("RuntimeSpecFromWorkflow: %v", err)
+	}
+
+	if spec.Provider != agentruntime.ProviderCodex {
+		t.Fatalf("expected fallback provider, got %q", spec.Provider)
+	}
+	if spec.Transport != agentruntime.TransportAppServer {
+		t.Fatalf("expected fallback transport, got %q", spec.Transport)
+	}
+	if spec.Command != "codex app-server" || spec.ExpectedVersion != "1.2.3" {
+		t.Fatalf("expected fallback command and version, got %+v", spec)
+	}
+	if spec.ReadTimeout != 11*time.Millisecond || spec.TurnTimeout != 22*time.Millisecond || spec.StallTimeout != 33*time.Millisecond {
+		t.Fatalf("expected fallback timeouts, got %+v", spec)
+	}
+}
+
+func TestStartWorkflowRejectsUnsupportedProvider(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
+	selectedRuntime.Provider = "mistral"
+	selectedRuntime.Command = "mistral"
+	selectedRuntime.Transport = config.AgentModeStdio
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = selectedRuntime
+
+	_, err := StartWorkflow(context.Background(), WorkflowStartRequest{
+		Workflow:        workflow,
+		IssueID:         "iss_1",
+		IssueIdentifier: "MAES-1",
+	}, agentruntime.Observers{})
+	if err == nil {
+		t.Fatal("expected unsupported provider error")
+	}
+	if !errors.Is(err, agentruntime.ErrUnsupportedCapability) {
+		t.Fatalf("expected unsupported capability error, got %v", err)
+	}
+}
+
+func TestStartWorkflowSelectsClaudeRuntime(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+	workflow.Config.Runtime.Default = "claude"
+	runtimeConfig := workflow.Config.Runtime.Entries["claude"]
+	runtimeConfig.Provider = "claude"
+	runtimeConfig.Transport = config.AgentModeStdio
+	runtimeConfig.Command = writePassThroughClaudeCLI(t)
+	runtimeConfig.ApprovalPolicy = "never"
+	runtimeConfig.InitialCollaborationMode = config.InitialCollaborationModeDefault
+	workflow.Config.Runtime.Entries["claude"] = runtimeConfig
+	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "claude",
+		RuntimeConfig:   runtimeConfig,
+		WorkspacePath:   t.TempDir(),
+		IssueID:         "iss_123",
+		IssueIdentifier: "MAES-123",
+		DBPath:          filepath.Join(t.TempDir(), "maestro.db"),
+	}, agentruntime.Observers{})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	if err := client.RunTurn(context.Background(), agentruntime.TurnRequest{
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: "hello claude"}},
+	}, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	session := client.Session()
+	if session == nil {
+		t.Fatal("expected session snapshot")
+	}
+	if session.Metadata["provider"] != string(agentruntime.ProviderClaude) || session.Metadata["transport"] != string(agentruntime.TransportStdio) {
+		t.Fatalf("expected claude stdio runtime metadata, got %+v", session.Metadata)
+	}
+	if !strings.Contains(client.Output(), "hello claude") {
+		t.Fatalf("expected claude runtime output, got %q", client.Output())
+	}
+}
+
+func TestStartWorkflowSelectsClaudeRuntimeFromNamedDefaults(t *testing.T) {
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Workspace.Root = "/repo/root"
+	workflow.Config.Runtime.Default = "claude"
+	runtimeConfig := workflow.Config.Runtime.Entries["claude"]
+	runtimeConfig.Command = writePassThroughClaudeCLI(t)
+	workflow.Config.Runtime.Entries["claude"] = runtimeConfig
+
+	client, err := StartWorkflow(context.Background(), WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     "claude",
+		RuntimeConfig:   config.RuntimeConfig{Provider: "claude", Transport: config.AgentModeStdio},
+		WorkspacePath:   t.TempDir(),
+		IssueID:         "iss_456",
+		IssueIdentifier: "MAES-456",
+		DBPath:          filepath.Join(t.TempDir(), "maestro.db"),
+	}, agentruntime.Observers{})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	if err := client.RunTurn(context.Background(), agentruntime.TurnRequest{
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: "hello named claude"}},
+	}, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	session := client.Session()
+	if session == nil {
+		t.Fatal("expected session snapshot")
+	}
+	if session.Metadata["provider"] != string(agentruntime.ProviderClaude) || session.Metadata["transport"] != string(agentruntime.TransportStdio) {
+		t.Fatalf("expected claude stdio runtime metadata, got %+v", session.Metadata)
+	}
+	if !strings.Contains(client.Output(), "hello named claude") {
+		t.Fatalf("expected claude runtime output, got %q", client.Output())
+	}
+}
+
+func writePassThroughClaudeCLI(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\ncat\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write pass-through claude cli: %v", err)
+	}
+	return path
+}

@@ -10,6 +10,8 @@ export function renderWithQueryClient(ui: ReactNode) {
     defaultOptions: {
       queries: {
         retry: false,
+        refetchOnWindowFocus: false,
+        staleTime: 5_000,
       },
     },
   })

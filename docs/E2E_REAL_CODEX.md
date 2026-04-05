@@ -72,7 +72,9 @@ The issue-image harness specifically uses app-server mode because the feature un
 ## Requirements
 
 - `go`
-- `codex`
+- `git`
+- `sqlite3`
+- the executable referenced by the effective `E2E_CODEX_COMMAND`
 - an active Codex login/session
 
 ## Environment Overrides
@@ -81,6 +83,6 @@ The issue-image harness specifically uses app-server mode because the feature un
 - `E2E_POLL_SEC`: poll interval while waiting. Default `2`.
 - `E2E_KEEP_HARNESS`: keep the temporary harness directory after success. Default `1`.
 - `E2E_ROOT`: reuse a specific harness directory instead of creating a new temp directory.
-- `E2E_CODEX_COMMAND`: override the Codex command, mainly for local harness validation.
+- `E2E_CODEX_COMMAND`: override the Codex command, mainly for local harness validation. Preflight validates the executable from the effective command, so `npx -y @openai/codex@0.118.0 app-server` works without a globally installed `codex` binary.
 - `E2E_IMAGE_FIXTURE`: override the image fixture used by `e2e_real_codex_issue_images.sh`.
 - `E2E_EXPECTED_TEXT`: override the expected OCR text for the image harness. Default `MAESTRO`.

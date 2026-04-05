@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 )
 
 type IssueStateCounts struct {
@@ -199,6 +199,10 @@ const (
 	IssuePlanningStatusAbandoned         IssuePlanningStatus = "abandoned"
 )
 
+// IssuePlanVersion records one persisted plan checkpoint in the planning lineage.
+// SessionID is the durable provider session key, VersionNumber increments per revision,
+// Markdown stores the canonical <proposed_plan> body, RevisionNote captures the latest
+// requested revision text, and ThreadID/TurnID preserve lineage when the provider exposes it.
 type IssuePlanVersion struct {
 	ID            string    `json:"id"`
 	SessionID     string    `json:"session_id"`
@@ -211,28 +215,32 @@ type IssuePlanVersion struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// IssuePlanning groups all plan versions for one planning session.
+// SessionID is the durable provider session key that ties the lineage together.
 type IssuePlanning struct {
-	SessionID            string              `json:"session_id"`
-	Status               IssuePlanningStatus `json:"status"`
-	CurrentVersionNumber int                 `json:"current_version_number"`
-	CurrentVersion       *IssuePlanVersion   `json:"current_version,omitempty"`
-	Versions             []IssuePlanVersion  `json:"versions,omitempty"`
-	PendingRevisionNote  string              `json:"pending_revision_note,omitempty"`
-	OpenedAt             time.Time           `json:"opened_at"`
-	UpdatedAt            time.Time           `json:"updated_at"`
-	ClosedAt             *time.Time          `json:"closed_at,omitempty"`
-	ClosedReason         string              `json:"closed_reason,omitempty"`
+	SessionID                  string              `json:"session_id"`
+	Status                     IssuePlanningStatus `json:"status"`
+	CurrentVersionNumber       int                 `json:"current_version_number"`
+	CurrentVersion             *IssuePlanVersion   `json:"current_version,omitempty"`
+	Versions                   []IssuePlanVersion  `json:"versions,omitempty"`
+	PendingRevisionNote        string              `json:"pending_revision_note,omitempty"`
+	PendingRevisionRequestedAt *time.Time          `json:"pending_revision_requested_at,omitempty"`
+	OpenedAt                   time.Time           `json:"opened_at"`
+	UpdatedAt                  time.Time           `json:"updated_at"`
+	ClosedAt                   *time.Time          `json:"closed_at,omitempty"`
+	ClosedReason               string              `json:"closed_reason,omitempty"`
 }
 
 type IssuePlanningSummary struct {
-	SessionID            string              `json:"session_id"`
-	Status               IssuePlanningStatus `json:"status"`
-	CurrentVersionNumber int                 `json:"current_version_number"`
-	CurrentVersion       *IssuePlanVersion   `json:"current_version,omitempty"`
-	PendingRevisionNote  string              `json:"pending_revision_note,omitempty"`
-	OpenedAt             time.Time           `json:"opened_at"`
-	UpdatedAt            time.Time           `json:"updated_at"`
-	ClosedAt             *time.Time          `json:"closed_at,omitempty"`
+	SessionID                  string              `json:"session_id"`
+	Status                     IssuePlanningStatus `json:"status"`
+	CurrentVersionNumber       int                 `json:"current_version_number"`
+	CurrentVersion             *IssuePlanVersion   `json:"current_version,omitempty"`
+	PendingRevisionNote        string              `json:"pending_revision_note,omitempty"`
+	PendingRevisionRequestedAt *time.Time          `json:"pending_revision_requested_at,omitempty"`
+	OpenedAt                   time.Time           `json:"opened_at"`
+	UpdatedAt                  time.Time           `json:"updated_at"`
+	ClosedAt                   *time.Time          `json:"closed_at,omitempty"`
 }
 
 type WorkspaceRecovery struct {
@@ -241,16 +249,20 @@ type WorkspaceRecovery struct {
 }
 
 type ExecutionSessionSnapshot struct {
-	IssueID        string            `json:"issue_id"`
-	Identifier     string            `json:"identifier"`
-	Phase          string            `json:"phase,omitempty"`
-	Attempt        int               `json:"attempt"`
-	RunKind        string            `json:"run_kind,omitempty"`
-	Error          string            `json:"error,omitempty"`
-	ResumeEligible bool              `json:"resume_eligible,omitempty"`
-	StopReason     string            `json:"-"`
-	UpdatedAt      time.Time         `json:"updated_at"`
-	AppSession     appserver.Session `json:"session"`
+	IssueID           string               `json:"issue_id"`
+	Identifier        string               `json:"identifier"`
+	Phase             string               `json:"phase,omitempty"`
+	Attempt           int                  `json:"attempt"`
+	RunKind           string               `json:"run_kind,omitempty"`
+	RuntimeName       string               `json:"runtime_name,omitempty"`
+	RuntimeProvider   string               `json:"runtime_provider,omitempty"`
+	RuntimeTransport  string               `json:"runtime_transport,omitempty"`
+	RuntimeAuthSource string               `json:"runtime_auth_source,omitempty"`
+	Error             string               `json:"error,omitempty"`
+	ResumeEligible    bool                 `json:"resume_eligible,omitempty"`
+	StopReason        string               `json:"-"`
+	UpdatedAt         time.Time            `json:"updated_at"`
+	AppSession        agentruntime.Session `json:"session"`
 }
 
 type IssueAgentCommandStatus string
@@ -275,26 +287,27 @@ type IssueAgentCommand struct {
 }
 
 type SessionFeedEntry struct {
-	IssueID          string                        `json:"issue_id"`
-	IssueIdentifier  string                        `json:"issue_identifier"`
-	IssueTitle       string                        `json:"issue_title,omitempty"`
-	Source           string                        `json:"source"`
-	Active           bool                          `json:"active"`
-	Status           string                        `json:"status"`
-	Planning         *IssuePlanningSummary         `json:"planning,omitempty"`
-	PendingInterrupt *appserver.PendingInteraction `json:"pending_interrupt,omitempty"`
-	Phase            string                        `json:"phase,omitempty"`
-	Attempt          int                           `json:"attempt,omitempty"`
-	RunKind          string                        `json:"run_kind,omitempty"`
-	FailureClass     string                        `json:"failure_class,omitempty"`
-	UpdatedAt        time.Time                     `json:"updated_at"`
-	LastEvent        string                        `json:"last_event,omitempty"`
-	LastMessage      string                        `json:"last_message,omitempty"`
-	TotalTokens      int                           `json:"total_tokens,omitempty"`
-	EventsProcessed  int                           `json:"events_processed,omitempty"`
-	TurnsStarted     int                           `json:"turns_started,omitempty"`
-	TurnsCompleted   int                           `json:"turns_completed,omitempty"`
-	Terminal         bool                          `json:"terminal"`
-	TerminalReason   string                        `json:"terminal_reason,omitempty"`
-	Error            string                        `json:"error,omitempty"`
+	IssueID          string                           `json:"issue_id"`
+	IssueIdentifier  string                           `json:"issue_identifier"`
+	IssueTitle       string                           `json:"issue_title,omitempty"`
+	Source           string                           `json:"source"`
+	Active           bool                             `json:"active"`
+	Status           string                           `json:"status"`
+	Planning         *IssuePlanningSummary            `json:"planning,omitempty"`
+	PendingInterrupt *agentruntime.PendingInteraction `json:"pending_interrupt,omitempty"`
+	Phase            string                           `json:"phase,omitempty"`
+	Attempt          int                              `json:"attempt,omitempty"`
+	RunKind          string                           `json:"run_kind,omitempty"`
+	FailureClass     string                           `json:"failure_class,omitempty"`
+	UpdatedAt        time.Time                        `json:"updated_at"`
+	LastEvent        string                           `json:"last_event,omitempty"`
+	LastMessage      string                           `json:"last_message,omitempty"`
+	TotalTokens      int                              `json:"total_tokens,omitempty"`
+	EventsProcessed  int                              `json:"events_processed,omitempty"`
+	TurnsStarted     int                              `json:"turns_started,omitempty"`
+	TurnsCompleted   int                              `json:"turns_completed,omitempty"`
+	Terminal         bool                             `json:"terminal"`
+	TerminalReason   string                           `json:"terminal_reason,omitempty"`
+	Error            string                           `json:"error,omitempty"`
+	RuntimeSurface
 }

@@ -1,5 +1,6 @@
 dist/
 *.tgz
+.DS_Store
 .playwright-cli/
 .maestro/
 /maestro
@@ -8,3 +9,5 @@ node_modules/
 .turbo/
 .astro/
 .husky/_/
+coverage/
+test-results/

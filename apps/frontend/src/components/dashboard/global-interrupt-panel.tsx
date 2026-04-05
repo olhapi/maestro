@@ -7,17 +7,18 @@ import {
   type ApprovalReviewAction,
   type ApprovalReviewOverflowGroup,
 } from '@/components/dashboard/plan-approval-review'
+import { ElicitationForm } from '@/components/dashboard/elicitation-form'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { CompactRelativeTime } from '@/components/ui/compact-relative-time'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/textarea'
 import type {
   PendingAlert,
   PendingApprovalDecision,
   PendingInterrupt,
   PendingUserInputQuestion,
 } from '@/lib/types'
-import { cn, formatRelativeTimeCompact, toTitleCase } from '@/lib/utils'
+import { cn, toTitleCase } from '@/lib/utils'
 
 const EMPTY_QUESTIONS: PendingUserInputQuestion[] = []
 const EMPTY_DRAFT_ANSWERS: Record<string, string> = {}
@@ -324,7 +325,6 @@ export function GlobalInterruptPanel({
     decision: string
     draftNote: string
     draftAnswers: Record<string, string>
-    draftContent: string
     noteVisible: boolean
     noteRequired: boolean
   }>({
@@ -333,7 +333,6 @@ export function GlobalInterruptPanel({
     decision: '',
     draftNote: '',
     draftAnswers: {},
-    draftContent: '',
     noteVisible: false,
     noteRequired: false,
   })
@@ -350,7 +349,6 @@ export function GlobalInterruptPanel({
     interactionState.draftKey === selectedInterruptDraftKey
   const draftNote = selectedDraftMatchesInterrupt ? interactionState.draftNote : ''
   const draftAnswers = selectedDraftMatchesInterrupt ? interactionState.draftAnswers : EMPTY_DRAFT_ANSWERS
-  const draftContent = selectedDraftMatchesInterrupt ? interactionState.draftContent : ''
   const noteVisible = selectedDraftMatchesInterrupt ? interactionState.noteVisible : false
   const noteRequired = selectedDraftMatchesInterrupt ? interactionState.noteRequired : false
   const answers = useMemo(() => buildAnswers(questions, draftAnswers), [draftAnswers, questions])
@@ -362,23 +360,8 @@ export function GlobalInterruptPanel({
   const approvalPlanVersion = selectedInterrupt?.approval?.plan_version_number ?? 0
   const approvalPlanStatus = selectedInterrupt?.approval?.plan_status ?? ''
   const approvalRevisionNote = selectedInterrupt?.approval?.plan_revision_note?.trim() ?? ''
-  const elicitationRequestedSchema = isElicitation ? selectedInterrupt?.elicitation?.requested_schema : undefined
+  const elicitationRequestedSchema = selectedInterrupt?.elicitation?.requested_schema
   const elicitationMode = selectedInterrupt?.elicitation?.mode ?? ''
-  const elicitationContent = draftContent.trim()
-  let elicitationContentValue: unknown = undefined
-  let elicitationContentError = ''
-  if (isElicitation) {
-    if (elicitationContent) {
-      try {
-        elicitationContentValue = JSON.parse(elicitationContent)
-        if (elicitationContentValue === null) {
-          elicitationContentError = 'Content cannot be null.'
-        }
-      } catch {
-        elicitationContentError = 'Content must be valid JSON.'
-      }
-    }
-  }
   const isPlanApproval = isApproval && approvalMarkdown.length > 0
   const requiresExplicitSubmit =
     isUserInput && questions.some((question) => questionHasTextInput(question))
@@ -396,8 +379,6 @@ export function GlobalInterruptPanel({
     !!selectedInterrupt && selectedInterrupt.kind !== 'alert' && selectedInterrupt.id === activeRespondableInterruptId
   const responseLocked = isSubmitting || !canRespondToSelectedInterrupt
   const canSubmitNote = draftNote.trim().length > 0
-  const canAcceptElicitation =
-    isElicitation && elicitationContent.length > 0 && !responseLocked && elicitationContentError === ''
   const formId = 'global-interrupt-form'
 
   if (!selectedInterrupt) {
@@ -440,23 +421,6 @@ export function GlobalInterruptPanel({
     })
   }
 
-  const respondWithElicitationAction = (action: 'accept' | 'decline' | 'cancel') => {
-    if (responseLocked) {
-      return
-    }
-    if (action === 'accept') {
-      if (elicitationContent.length === 0 || elicitationContentError !== '') {
-        return
-      }
-      respondToSelectedInterrupt({
-        action,
-        content: elicitationContentValue,
-      })
-      return
-    }
-    respondToSelectedInterrupt({ action })
-  }
-
   const requestChangesForPlanApproval = () => {
     if (responseLocked) {
       return
@@ -475,7 +439,6 @@ export function GlobalInterruptPanel({
     decision: string
     draftNote: string
     draftAnswers: Record<string, string>
-    draftContent: string
     noteVisible: boolean
     noteRequired: boolean
   }) =>
@@ -488,7 +451,6 @@ export function GlobalInterruptPanel({
       decision: nextDecision,
       draftNote: selectedDraftState(current) ? current.draftNote : '',
       draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
-      draftContent: selectedDraftState(current) ? current.draftContent : '',
       noteVisible: selectedDraftState(current) ? current.noteVisible : false,
       noteRequired: selectedDraftState(current) ? current.noteRequired : false,
     }))
@@ -504,7 +466,6 @@ export function GlobalInterruptPanel({
       decision: selectedDraftState(current) ? current.decision : '',
       draftNote: selectedDraftState(current) ? current.draftNote : '',
       draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
-      draftContent: selectedDraftState(current) ? current.draftContent : '',
       noteVisible: selectedDraftState(current) ? current.noteVisible : false,
       noteRequired: false,
     }))
@@ -518,7 +479,6 @@ export function GlobalInterruptPanel({
       decision: selectedDraftState(current) ? current.decision : '',
       draftNote: value,
       draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
-      draftContent: selectedDraftState(current) ? current.draftContent : '',
       noteVisible: selectedDraftState(current) ? current.noteVisible : false,
       noteRequired:
         selectedDraftState(current) ? current.noteRequired && value.trim().length === 0 : false,
@@ -535,20 +495,6 @@ export function GlobalInterruptPanel({
         ...(selectedDraftState(current) ? current.draftAnswers : {}),
         [questionId]: value,
       },
-      draftContent: selectedDraftState(current) ? current.draftContent : '',
-      noteVisible: selectedDraftState(current) ? current.noteVisible : false,
-      noteRequired: selectedDraftState(current) ? current.noteRequired : false,
-    }))
-  }
-
-  const updateDraftContent = (value: string) => {
-    setInteractionState((current) => ({
-      interruptId: selectedInterrupt.id,
-      draftKey: selectedInterruptDraftKey,
-      decision: selectedDraftState(current) ? current.decision : '',
-      draftNote: selectedDraftState(current) ? current.draftNote : '',
-      draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
-      draftContent: value,
       noteVisible: selectedDraftState(current) ? current.noteVisible : false,
       noteRequired: selectedDraftState(current) ? current.noteRequired : false,
     }))
@@ -561,7 +507,6 @@ export function GlobalInterruptPanel({
       decision: selectedDraftState(current) ? current.decision : '',
       draftNote: selectedDraftState(current) ? current.draftNote : '',
       draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
-      draftContent: selectedDraftState(current) ? current.draftContent : '',
       noteVisible: visible,
       noteRequired: visible && selectedDraftState(current) ? current.noteRequired : false,
     }))
@@ -574,7 +519,6 @@ export function GlobalInterruptPanel({
       decision: selectedDraftState(current) ? current.decision : '',
       draftNote: selectedDraftState(current) ? current.draftNote : '',
       draftAnswers: selectedDraftState(current) ? current.draftAnswers : {},
-      draftContent: selectedDraftState(current) ? current.draftContent : '',
       noteVisible: true,
       noteRequired: true,
     }))
@@ -694,7 +638,7 @@ export function GlobalInterruptPanel({
                 </DialogDescription>
                 <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--muted-foreground)]">
                   <span>{interruptSubject(selectedInterrupt)}</span>
-                  <span>Updated {formatRelativeTimeCompact(selectedInterrupt.last_activity_at || selectedInterrupt.requested_at)}</span>
+                  <span>Updated <CompactRelativeTime value={selectedInterrupt.last_activity_at || selectedInterrupt.requested_at} /></span>
                   {selectedInterrupt.phase ? <span>{toTitleCase(selectedInterrupt.phase)}</span> : null}
                   {selectedInterrupt.attempt ? <span>Attempt {selectedInterrupt.attempt}</span> : null}
                   {queueAvailable ? <span>{items.length} waiting</span> : null}
@@ -768,7 +712,7 @@ export function GlobalInterruptPanel({
                             {interruptSummary(interrupt)}
                           </p>
                           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--muted-foreground)]">
-                            <span>Updated {formatRelativeTimeCompact(interrupt.last_activity_at || interrupt.requested_at)}</span>
+                            <span>Updated <CompactRelativeTime value={interrupt.last_activity_at || interrupt.requested_at} /></span>
                             {locked ? <span>Waiting for earlier response</span> : null}
                           </div>
                         </button>
@@ -826,7 +770,10 @@ export function GlobalInterruptPanel({
               ) : (
                 <form
                   id={formId}
-                  className={cn(detailColumnClassName, 'rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]')}
+                  className={cn(
+                    detailColumnClassName,
+                    isElicitation ? 'grid gap-4' : 'rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]',
+                  )}
                   onSubmit={(event) => {
                     event.preventDefault()
                     if (!valid || responseLocked || !isUserInput) {
@@ -911,112 +858,60 @@ export function GlobalInterruptPanel({
                         <PlanApprovalDocument markdown={approvalMarkdown} />
                       </ApprovalReviewPanel>
                     ) : isElicitation ? (
-                      <div className="grid gap-4 rounded-[var(--panel-radius)] border border-white/8 bg-black/25 p-[var(--panel-padding)]">
+                      <div className="grid gap-4">
                         <div className="grid gap-4">
-                          <div className="grid gap-4 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.03] p-5">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge className="border-white/10 bg-white/5 text-white">
-                                {selectedInterrupt.elicitation?.server_name || 'MCP server'}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge className="border-white/10 bg-white/5 text-white">
+                              {selectedInterrupt.elicitation?.server_name || 'MCP server'}
+                            </Badge>
+                            {elicitationMode ? (
+                              <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">
+                                {elicitationMode === 'url' ? 'URL' : toTitleCase(elicitationMode)}
                               </Badge>
-                              {elicitationMode ? (
-                                <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">
-                                  {elicitationMode === 'url' ? 'URL' : toTitleCase(elicitationMode)}
-                                </Badge>
-                              ) : null}
-                              {selectedInterrupt.elicitation?.elicitation_id ? (
-                                <Badge className="border-white/10 bg-white/5 text-white">
-                                  ID {selectedInterrupt.elicitation.elicitation_id}
-                                </Badge>
-                              ) : null}
-                            </div>
-                            <div>
-                              <p className="text-lg font-semibold text-white">
-                                {selectedInterrupt.elicitation?.message || 'MCP elicitation'}
-                              </p>
-                              <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                                Provide structured JSON content for this request, then accept it to send the payload back to Codex.
-                              </p>
-                            </div>
-                            {selectedInterrupt.elicitation?.url ? (
-                              <a
-                                className="inline-flex h-11 w-fit items-center rounded-2xl border border-white/10 px-4 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/5"
-                                href={selectedInterrupt.elicitation.url}
-                                rel="noreferrer"
-                                target="_blank"
-                              >
-                                Open URL
-                              </a>
                             ) : null}
-                            {elicitationRequestedSchema ? (
-                              <div className="grid gap-3">
-                                <p className="text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-                                  Requested schema
-                                </p>
-                                <pre className="max-h-[18rem] overflow-auto rounded-[calc(var(--panel-radius)-0.45rem)] border border-white/10 bg-black/35 px-4 py-3 font-mono text-xs leading-6 text-white">
-                                  {JSON.stringify(elicitationRequestedSchema, null, 2)}
-                                </pre>
-                              </div>
+                            {selectedInterrupt.elicitation?.elicitation_id ? (
+                              <Badge className="border-white/10 bg-white/5 text-white">
+                                ID {selectedInterrupt.elicitation.elicitation_id}
+                              </Badge>
                             ) : null}
                           </div>
-
-                          <div className="grid gap-3 rounded-[calc(var(--panel-radius)-0.2rem)] border border-white/10 bg-white/[0.03] p-4">
-                            <div className="space-y-1">
-                              <p className="text-sm font-medium text-white">Structured content</p>
-                              <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                                Paste the JSON payload that should be returned to the MCP server.
-                              </p>
-                            </div>
-                            <Textarea
-                              className="min-h-[10rem] border-white/10 bg-black/20 text-white placeholder:text-white/30"
-                              disabled={responseLocked}
-                              placeholder='{"email":"ops@example.com"}'
-                              value={draftContent}
-                              onChange={(event) => {
-                                updateDraftContent(event.target.value)
-                              }}
-                            />
-                            {elicitationContentError ? (
-                              <p className="text-sm leading-6 text-rose-100">
-                                {elicitationContentError}
-                              </p>
-                            ) : null}
+                          <div>
+                            <p className="text-lg font-semibold text-white">
+                              {selectedInterrupt.elicitation?.message || 'MCP elicitation'}
+                            </p>
+                            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                              Review the requested form below, then accept to send the structured response back to the requesting agent.
+                            </p>
                           </div>
-
-                          <div className="flex flex-wrap items-center gap-3">
-                            <Button
-                              className="h-11 rounded-2xl border px-4 text-sm font-medium transition border-[var(--accent)]/45 bg-[linear-gradient(135deg,rgba(196,255,87,.24),rgba(255,255,255,.06))] text-white hover:border-[var(--accent)]/60"
-                              disabled={!canAcceptElicitation}
-                              type="button"
-                              onClick={() => {
-                                respondWithElicitationAction('accept')
-                              }}
+                          {selectedInterrupt.elicitation?.url ? (
+                            <a
+                              className="inline-flex h-11 w-fit items-center rounded-2xl border border-white/10 px-4 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/5"
+                              href={selectedInterrupt.elicitation.url}
+                              rel="noreferrer"
+                              target="_blank"
                             >
-                              {isSubmitting ? 'Submitting...' : 'Accept and continue'}
-                            </Button>
-                            <Button
-                              className="h-11 rounded-2xl border-white/10 bg-white/5 px-4 text-sm font-medium text-white hover:border-white/20 hover:bg-white/8"
-                              disabled={responseLocked}
-                              type="button"
-                              variant="secondary"
-                              onClick={() => {
-                                respondWithElicitationAction('decline')
-                              }}
-                            >
-                              Decline
-                            </Button>
-                            <Button
-                              className="h-11 rounded-2xl border-white/10 bg-white/5 px-4 text-sm font-medium text-white hover:border-white/20 hover:bg-white/8"
-                              disabled={responseLocked}
-                              type="button"
-                              variant="secondary"
-                              onClick={() => {
-                                respondWithElicitationAction('cancel')
-                              }}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
+                              Open URL
+                            </a>
+                          ) : null}
                         </div>
+                        <ElicitationForm
+                          draftKey={selectedInterruptDraftKey}
+                          isSubmitting={isSubmitting}
+                          requestedSchema={elicitationRequestedSchema}
+                          disabled={responseLocked}
+                          onAccept={(content) => {
+                            respondToSelectedInterrupt({
+                              action: 'accept',
+                              content,
+                            })
+                          }}
+                          onCancel={() => {
+                            respondToSelectedInterrupt({ action: 'cancel' })
+                          }}
+                          onDecline={() => {
+                            respondToSelectedInterrupt({ action: 'decline' })
+                          }}
+                        />
                       </div>
                     ) : isApproval ? (
                       <ApprovalReviewPanel

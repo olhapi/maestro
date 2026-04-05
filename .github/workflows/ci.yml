@@ -11,7 +11,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  go-test:
+  verify:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -19,89 +19,18 @@ jobs:
       CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version-file: go.mod
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version: 24
-      - name: Run Go tests
-        run: make test
-
-  go-platform-smoke:
-    needs: go-test
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: darwin-arm64
-            runner: macos-15
-          - target: darwin-x64
-            runner: macos-15-intel
-          - target: linux-x64-gnu
-            runner: ubuntu-24.04
-          - target: linux-arm64-gnu
-            runner: ubuntu-24.04-arm
-          - target: win32-x64
-            runner: windows-2022
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version: 24
-      - name: Build leaf package
-        run: ./scripts/package_npm_release.sh pack-leaf 0.0.0-ci "${{ matrix.target }}"
-      - name: Build root package
-        run: ./scripts/package_npm_release.sh pack-root 0.0.0-ci
-      - name: Smoke test npm install
-        run: ./scripts/smoke_npm_package.sh 0.0.0-ci "${{ matrix.target }}"
-      - name: Upload leaf tarball
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
-        with:
-          name: npm-leaf-${{ matrix.target }}
-          path: dist/npm/olhapi-maestro-${{ matrix.target }}-0.0.0-ci.tgz
-          if-no-files-found: error
-
-  npm-registry-smoke:
-    needs:
-      - go-platform-smoke
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: darwin-arm64
-            runner: macos-15
-          - target: darwin-x64
-            runner: macos-15-intel
-          - target: linux-x64-gnu
-            runner: ubuntu-24.04
-          - target: linux-arm64-gnu
-            runner: ubuntu-24.04-arm
-          - target: win32-x64
-            runner: windows-2022
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version: 24
-      - name: Download npm artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          path: dist/npm
-          pattern: npm-leaf-*
-          merge-multiple: true
-      - name: Build root package
-        run: ./scripts/package_npm_release.sh pack-root 0.0.0-ci
-      - name: Smoke test root-only npm install through local registry
-        run: ./scripts/smoke_npm_registry_install.sh 0.0.0-ci "${{ matrix.target }}"
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare "$(node -p "require('./package.json').packageManager")" --activate
+          pnpm --version
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run lean CI verification
+        run: pnpm verify:ci

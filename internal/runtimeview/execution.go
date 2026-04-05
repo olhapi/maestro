@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -13,7 +13,7 @@ import (
 type ExecutionProvider interface {
 	observability.SnapshotProvider
 	observability.SessionProvider
-	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
+	PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool)
 }
 
 func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issue *kanban.Issue) (map[string]interface{}, error) {
@@ -44,13 +44,13 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	retry := findRetryEntry(snapshot.Retrying, issue.ID, issue.Identifier)
 	paused := findPausedEntry(snapshot.Paused, issue.ID, issue.Identifier)
 
-	var liveSession *appserver.Session
+	var liveSession *agentruntime.Session
 	if runtimeAvailable {
 		if session, ok := findLiveSession(provider.LiveSessions(), issue.Identifier); ok {
 			liveSession = &session
 		}
 	}
-	var pendingInterrupt *appserver.PendingInteraction
+	var pendingInterrupt *agentruntime.PendingInteraction
 	if runtimeAvailable {
 		if interaction, ok := provider.PendingInterruptForIssue(issue.ID, issue.Identifier); ok {
 			pendingInterrupt = interaction
@@ -61,13 +61,22 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
+	var runtimeSession *agentruntime.Session
+	if liveSession != nil && !liveSession.Terminal {
+		runtimeSession = liveSession
+	} else if persistedSession != nil {
+		runtimeSession = &persistedSession.AppSession
+	} else if liveSession != nil {
+		runtimeSession = liveSession
+	}
+	runtimeSurface := kanban.ResolveRuntimeSurface(store, issue, persistedSession, runtimeSession, pendingInterrupt, planning)
 	if paused == nil {
 		paused = findPersistedPausedEntry(events)
 	}
 
 	sessionSource := "none"
 	var session interface{}
-	if liveSession != nil {
+	if liveSession != nil && !liveSession.Terminal {
 		sessionSource = "live"
 		summary := liveSession.Summary()
 		session = &summary
@@ -75,6 +84,14 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		sessionSource = "persisted"
 		summary := persistedSession.AppSession.Summary()
 		session = summary
+	} else if liveSession != nil {
+		sessionSource = "live"
+		summary := liveSession.Summary()
+		session = &summary
+	}
+	active := running != nil
+	if liveSession != nil && liveSession.Terminal {
+		active = false
 	}
 
 	attempt := 0
@@ -125,7 +142,7 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	payload := map[string]interface{}{
 		"issue_id":              issue.ID,
 		"identifier":            issue.Identifier,
-		"active":                running != nil,
+		"active":                active,
 		"phase":                 phase,
 		"attempt_number":        attempt,
 		"failure_class":         failureClass,
@@ -137,6 +154,24 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 		"debug_activity_groups": debugActivityGroups,
 		"runtime_available":     runtimeAvailable,
 		"agent_commands":        commands,
+	}
+	if runtimeSurface.RuntimeName != "" {
+		payload["runtime_name"] = runtimeSurface.RuntimeName
+	}
+	if runtimeSurface.RuntimeProvider != "" {
+		payload["runtime_provider"] = runtimeSurface.RuntimeProvider
+	}
+	if runtimeSurface.RuntimeTransport != "" {
+		payload["runtime_transport"] = runtimeSurface.RuntimeTransport
+	}
+	if runtimeSurface.RuntimeAuthSource != "" {
+		payload["runtime_auth_source"] = runtimeSurface.RuntimeAuthSource
+	}
+	if runtimeSurface.PendingInteractionState != "" {
+		payload["pending_interaction_state"] = runtimeSurface.PendingInteractionState
+	}
+	if runtimeSurface.StopReason != "" {
+		payload["stop_reason"] = runtimeSurface.StopReason
 	}
 	if planning != nil {
 		payload["planning"] = planning
@@ -159,17 +194,21 @@ func IssueExecutionPayload(store *kanban.Store, provider ExecutionProvider, issu
 	if pendingInterrupt != nil {
 		payload["pending_interrupt"] = pendingInterrupt
 	}
-	if issue.PlanApprovalPending && strings.TrimSpace(issue.PendingPlanMarkdown) != "" && issue.PendingPlanRequestedAt != nil {
+	if planning != nil && planning.ClosedAt == nil && planning.CurrentVersion != nil {
 		payload["plan_approval"] = kanban.IssuePlanApproval{
-			Markdown:    issue.PendingPlanMarkdown,
-			RequestedAt: issue.PendingPlanRequestedAt.UTC(),
-			Attempt:     attempt,
+			Markdown:    planning.CurrentVersion.Markdown,
+			RequestedAt: planning.CurrentVersion.CreatedAt.UTC(),
+			Attempt:     planning.CurrentVersion.Attempt,
 		}
 	}
-	if strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil {
+	if planning != nil && strings.TrimSpace(planning.PendingRevisionNote) != "" {
+		requestedAt := planning.UpdatedAt.UTC()
+		if planning.PendingRevisionRequestedAt != nil && !planning.PendingRevisionRequestedAt.IsZero() {
+			requestedAt = planning.PendingRevisionRequestedAt.UTC()
+		}
 		payload["plan_revision"] = kanban.IssuePlanRevision{
-			Markdown:    issue.PendingPlanRevisionMarkdown,
-			RequestedAt: issue.PendingPlanRevisionRequestedAt.UTC(),
+			Markdown:    planning.PendingRevisionNote,
+			RequestedAt: requestedAt,
 			Attempt:     attempt,
 		}
 	}
@@ -244,16 +283,16 @@ func isPersistedPauseResetEvent(kind string) bool {
 	}
 }
 
-func findLiveSession(all map[string]interface{}, identifier string) (appserver.Session, bool) {
+func findLiveSession(all map[string]interface{}, identifier string) (agentruntime.Session, bool) {
 	sessions, ok := all["sessions"].(map[string]interface{})
 	if !ok {
-		return appserver.Session{}, false
+		return agentruntime.Session{}, false
 	}
 	raw, ok := sessions[identifier]
 	if !ok {
-		return appserver.Session{}, false
+		return agentruntime.Session{}, false
 	}
-	return appserver.SessionFromAny(raw)
+	return agentruntime.SessionFromAny(raw)
 }
 
 func deriveFailureClass(active bool, retry *observability.RetryEntry, paused *observability.PausedEntry, persisted *kanban.ExecutionSessionSnapshot, events []kanban.RuntimeEvent) string {
@@ -418,6 +457,8 @@ func normalizeFailureErrorClass(value string) string {
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):
 		return "turn_input_required"
+	case strings.Contains(value, "unsupported_runtime_capability"):
+		return "unsupported_runtime_capability"
 	case strings.Contains(value, "stall_timeout"):
 		return "stall_timeout"
 	case strings.Contains(value, "run_unsuccessful"), strings.Contains(value, "unsuccessful"):
@@ -457,6 +498,8 @@ func normalizeFailureKind(value string) string {
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):
 		return "turn_input_required"
+	case strings.Contains(value, "unsupported_runtime_capability"):
+		return "unsupported_runtime_capability"
 	case strings.Contains(value, "stall_timeout"):
 		return "stall_timeout"
 	case strings.Contains(value, "run_unsuccessful"), strings.Contains(value, "unsuccessful"):

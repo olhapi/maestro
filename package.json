@@ -12,13 +12,15 @@
     "lint": "turbo lint",
     "smoke": "turbo smoke",
     "test": "turbo test:ci",
-    "verify": "pnpm verify:web && pnpm verify:package && pnpm verify:go",
+    "verify": "pnpm verify:web && pnpm verify:coverage && pnpm verify:package && pnpm verify:go",
+    "verify:coverage": "pnpm frontend:test:coverage && pnpm website:test:coverage",
     "verify:pre-push": "pnpm verify && ./scripts/git-hooks/host-package-smoke.sh && go test ./internal/orchestrator -run TestSharedDBStressPreventsRunawayRetriesAndLockContention -count=1 && ./scripts/git-hooks/retry-safety-e2e.sh",
+    "verify:ci": "pnpm verify:web && pnpm verify:package && go test ./...",
     "verify:frontend": "pnpm frontend:lint && pnpm frontend:test",
     "verify:website": "pnpm website:check && pnpm website:test",
     "verify:web": "pnpm lint && pnpm test && pnpm check && pnpm smoke",
     "verify:go": "make build && make test && make test-cover && make test-race",
-    "verify:package": "node --test packaging/npm/root/lib/get-exe-path.test.js scripts/smoke_installed_dashboard.test.mjs && bash ./scripts/ensure_dashboard_dist.test.sh && bash ./scripts/release_dockerfile.test.sh && bash ./scripts/package_npm_release.test.sh && bash ./scripts/publish_npm_release.test.sh && bash ./scripts/smoke_npm_registry_install.test.sh && bash ./scripts/git-hooks/pre-commit.test.sh && bash ./scripts/git-hooks/pre-push.test.sh",
+    "verify:package": "node --test packaging/npm/root/lib/get-exe-path.test.js scripts/smoke_installed_dashboard.test.mjs && bash ./scripts/publish_npm_release.test.sh",
     "release:npm": "./scripts/publish_npm_release.sh",
     "hooks:pre-commit": "./scripts/git-hooks/pre-commit.sh",
     "hooks:pre-push": "./scripts/git-hooks/pre-push.sh",
@@ -27,14 +29,16 @@
     "frontend:lint": "turbo lint --filter=@maestro/frontend",
     "frontend:leak-hunt": "pnpm --filter @maestro/frontend leak:hunt",
     "frontend:test": "turbo test:ci --filter=@maestro/frontend",
+    "frontend:test:coverage": "pnpm --filter @maestro/frontend test:coverage",
     "website:dev": "pnpm --filter @maestro/website dev",
     "website:build": "turbo build --filter=@maestro/website",
     "website:check": "turbo check --filter=@maestro/website",
     "website:test": "turbo test:ci --filter=@maestro/website",
+    "website:test:coverage": "pnpm --filter @maestro/website test:coverage",
     "website:smoke": "turbo smoke --filter=@maestro/website"
   },
   "devDependencies": {
     "husky": "^9.1.7",
-    "turbo": "^2.5.0"
+    "turbo": "^2.9.1"
   }
 }

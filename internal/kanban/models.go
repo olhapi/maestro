@@ -182,8 +182,8 @@ type Project struct {
 	Name               string                 `json:"name"`
 	Description        string                 `json:"description,omitempty"`
 	State              ProjectState           `json:"state"`
-	RuntimeName        string                 `json:"runtime_name,omitempty"`
 	PermissionProfile  PermissionProfile      `json:"permission_profile,omitempty"`
+	RuntimeName        string                 `json:"runtime_name,omitempty"`
 	RepoPath           string                 `json:"repo_path,omitempty"`
 	WorkflowPath       string                 `json:"workflow_path,omitempty"`
 	ProviderKind       string                 `json:"provider_kind,omitempty"`

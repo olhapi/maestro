@@ -286,7 +286,7 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 
 - `tracker.kind: kanban`
 - `polling.interval_ms: 10000`
-- `workspace.root: ./workspaces`
+- `workspace.root: ~/.maestro/worktrees`
 - `agent.max_concurrent_agents: 3`
 - `agent.max_turns: 4`
 - `agent.max_retry_backoff_ms: 60000`
@@ -294,16 +294,26 @@ Fresh `maestro workflow init --defaults` output currently defaults to:
 - `agent.mode: app_server`
 - `agent.dispatch_mode: parallel`
 - `codex.command: codex app-server`
-- `codex.expected_version: 0.117.0`
+- `codex.expected_version: 0.118.0`
 - `codex.approval_policy: never`
 - `codex.initial_collaboration_mode: default` for fresh `app_server` threads
 - `phases.review.enabled: true`
 - `phases.done.enabled: true`
 - runtime permission profiles now live in the DB per project/issue instead of `WORKFLOW.md`
 
+If you do not want to preinstall Codex, Maestro also supports pinning the runtime command to `npx -y @openai/codex@0.118.0 app-server`. `maestro verify` understands that form when checking `codex.expected_version`.
+
 `initial_collaboration_mode: default` keeps unattended runs execution-first for a fresh `app_server` thread. Use `plan` only when you explicitly want a plan-gated startup mode. Interactive approvals and `requestUserInput` prompts still depend on using a non-`never` approval policy, and those prompts are queued through the dashboard's global interrupt panel. Resumed threads and `stdio` runs do not use that startup-mode path.
 
-Interactive `maestro workflow init` now walks through `workspace.root`, `codex.command`, `agent.mode`, `agent.dispatch_mode`, `agent.max_concurrent_agents`, `agent.max_turns`, and `agent.max_automatic_retries`, then asks for `codex.approval_policy` and `codex.initial_collaboration_mode` only for `app_server`. Those extra tuning knobs remain interactive-only; `--defaults` stays the stable scripted path, and the existing flags still override only the workspace root, Codex command, and agent mode.
+`codex.approval_policy: never` applies to Maestro-managed app-server turns. It does not automatically suppress Codex's separate trust prompts for attached external MCP servers such as `maestro mcp`; those prompts still depend on the MCP client's local trust settings and the tool annotations advertised by the server.
+
+Claude runtime setup, ambient auth interpretation, and the shared preflight checklist are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+Interactive `maestro workflow init` now walks through `workspace.root`, `codex.command`, `agent.mode`, `agent.dispatch_mode`, `agent.max_concurrent_agents`, `agent.max_turns`, and `agent.max_automatic_retries`, then asks for `codex.approval_policy` and `codex.initial_collaboration_mode` only for `app_server`.
+
+Enum prompts now render numbered menus. You can press Enter to keep the default, or enter the number, an alias, a unique prefix, or the full value. Examples: `server` for `app_server`, `serial` or `pps` for `per_project_serial`, `req` for `on-request`, and `def` for `default`. Ambiguous prefixes such as `on` are rejected and reprompted.
+
+`--defaults` remains the stable scripted path, and the same setup knobs are available as flags: `--workspace-root`, `--codex-command`, `--agent-mode`, `--dispatch-mode`, `--max-concurrent-agents`, `--max-turns`, `--max-automatic-retries`, `--approval-policy`, and `--initial-collaboration-mode`.
 
 Supported prompt-template variables are:
 
@@ -335,6 +345,7 @@ Missing-file behavior differs by command:
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md): runtime surfaces, HTTP endpoints, extension tools, logs, and operational details
 - [`docs/NPM_RELEASE.md`](docs/NPM_RELEASE.md): first npm prerelease bootstrap and the trusted-publishing release flow
 - [`docs/E2E_REAL_CODEX.md`](docs/E2E_REAL_CODEX.md): end-to-end harness that runs the real Codex CLI against deterministic issues
+- [`docs/E2E_REAL_CLAUDE.md`](docs/E2E_REAL_CLAUDE.md): end-to-end harnesses and validation matrix for the real Claude CLI with shared preflight and failure diagnostics
 - [`WORKFLOW.md`](WORKFLOW.md): the workflow configuration used by this repository
 
 ## Contributor Setup

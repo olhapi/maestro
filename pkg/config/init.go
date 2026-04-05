@@ -14,6 +14,7 @@ import (
 var (
 	ErrWorkflowExists               = errors.New("workflow file already exists")
 	ErrWorkflowInitCancelled        = errors.New("workflow initialization cancelled")
+	ErrInvalidInitAgentMode         = errors.New("invalid workflow init agent mode")
 	ErrInvalidInitDispatchMode      = errors.New("invalid workflow init dispatch mode")
 	ErrInvalidInitApprovalPolicy    = errors.New("invalid workflow init approval policy")
 	ErrInvalidInitCollaborationMode = errors.New("invalid workflow init collaboration mode")
@@ -21,7 +22,8 @@ var (
 
 type InitOptions struct {
 	WorkspaceRoot            string
-	CodexCommand             string
+	RuntimeCommand           string
+	AgentMode                string
 	DispatchMode             string
 	MaxConcurrentAgents      int
 	MaxTurns                 int
@@ -33,6 +35,50 @@ type InitOptions struct {
 	Stdin                    io.Reader
 	Stdout                   io.Writer
 }
+
+type initChoice struct {
+	Value       string
+	Description string
+	Aliases     []string
+}
+
+type initChoiceSet struct {
+	Err     error
+	Choices []initChoice
+}
+
+var (
+	initAgentModeChoices = initChoiceSet{
+		Err: ErrInvalidInitAgentMode,
+		Choices: []initChoice{
+			{Value: AgentModeAppServer, Description: "Use the app-server protocol.", Aliases: []string{"app", "server", "app-server"}},
+			{Value: AgentModeStdio, Description: "Use a stdio-style runner.", Aliases: []string{"std", "exec"}},
+		},
+	}
+	initDispatchModeChoices = initChoiceSet{
+		Err: ErrInvalidInitDispatchMode,
+		Choices: []initChoice{
+			{Value: DispatchModeParallel, Description: "Run multiple issues per project up to max_concurrent_agents.", Aliases: []string{"par"}},
+			{Value: DispatchModePerProjectSerial, Description: "Run one issue at a time per project.", Aliases: []string{"serial", "per", "pps", "per-project-serial"}},
+		},
+	}
+	initApprovalPolicyChoices = initChoiceSet{
+		Err: ErrInvalidInitApprovalPolicy,
+		Choices: []initChoice{
+			{Value: "never", Description: "Keep unattended runs non-interactive."},
+			{Value: "on-request", Description: "Allow approvals and questions during the run.", Aliases: []string{"req", "request", "on_request"}},
+			{Value: "on-failure", Description: "Ask only when a step fails and needs recovery.", Aliases: []string{"fail", "failure", "on_failure"}},
+			{Value: "untrusted", Description: "Use untrusted approval mode."},
+		},
+	}
+	initCollaborationModeChoices = initChoiceSet{
+		Err: ErrInvalidInitCollaborationMode,
+		Choices: []initChoice{
+			{Value: InitialCollaborationModeDefault, Description: "Start fresh runtime sessions in default mode.", Aliases: []string{"def"}},
+			{Value: InitialCollaborationModePlan, Description: "Start fresh runtime sessions in plan mode."},
+		},
+	}
+)
 
 func EnsureWorkflow(repoPath string, opts InitOptions) (string, bool, error) {
 	path := WorkflowPath(repoPath)
@@ -94,15 +140,17 @@ func InitWorkflowAtPath(path string, opts InitOptions) error {
 
 func defaultInitOptions() InitOptions {
 	cfg := DefaultInitConfig()
+	selectedRuntime := cfg.SelectedRuntimeConfig()
 	return InitOptions{
 		WorkspaceRoot:            cfg.Workspace.Root,
-		CodexCommand:             cfg.Codex.Command,
+		RuntimeCommand:           selectedRuntime.Command,
+		AgentMode:                cfg.Agent.Mode,
 		DispatchMode:             cfg.Agent.DispatchMode,
 		MaxConcurrentAgents:      cfg.Agent.MaxConcurrentAgents,
 		MaxTurns:                 cfg.Agent.MaxTurns,
 		MaxAutomaticRetries:      cfg.Agent.MaxAutomaticRetries,
-		ApprovalPolicy:           strings.TrimSpace(fmt.Sprintf("%v", cfg.Codex.ApprovalPolicy)),
-		InitialCollaborationMode: cfg.Codex.InitialCollaborationMode,
+		ApprovalPolicy:           strings.TrimSpace(fmt.Sprintf("%v", selectedRuntime.ApprovalPolicy)),
+		InitialCollaborationMode: selectedRuntime.InitialCollaborationMode,
 	}
 }
 
@@ -111,8 +159,15 @@ func resolveInitOptions(path string, opts InitOptions) (InitOptions, error) {
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
 		answers.WorkspaceRoot = strings.TrimSpace(opts.WorkspaceRoot)
 	}
-	if strings.TrimSpace(opts.CodexCommand) != "" {
-		answers.CodexCommand = strings.TrimSpace(opts.CodexCommand)
+	if strings.TrimSpace(opts.RuntimeCommand) != "" {
+		answers.RuntimeCommand = strings.TrimSpace(opts.RuntimeCommand)
+	}
+	if strings.TrimSpace(opts.AgentMode) != "" {
+		mode, err := validateInitAgentMode(opts.AgentMode)
+		if err != nil {
+			return InitOptions{}, err
+		}
+		answers.AgentMode = mode
 	}
 	if strings.TrimSpace(opts.DispatchMode) != "" {
 		dispatchMode, err := validateInitDispatchMode(opts.DispatchMode)
@@ -161,8 +216,11 @@ func promptInitOptions(path string, opts InitOptions, defaults InitOptions) Init
 	if strings.TrimSpace(opts.WorkspaceRoot) == "" {
 		defaults.WorkspaceRoot = promptLine(reader, writer, "Workspace root", defaults.WorkspaceRoot)
 	}
-	if strings.TrimSpace(opts.CodexCommand) == "" {
-		defaults.CodexCommand = promptLine(reader, writer, "Codex command", defaults.CodexCommand)
+	if strings.TrimSpace(opts.RuntimeCommand) == "" {
+		defaults.RuntimeCommand = promptLine(reader, writer, "Runtime command", defaults.RuntimeCommand)
+	}
+	if strings.TrimSpace(opts.AgentMode) == "" {
+		defaults.AgentMode = promptAgentMode(reader, writer, defaults.AgentMode)
 	}
 	if strings.TrimSpace(opts.DispatchMode) == "" {
 		defaults.DispatchMode = promptDispatchMode(reader, writer, defaults.DispatchMode)
@@ -176,11 +234,13 @@ func promptInitOptions(path string, opts InitOptions, defaults InitOptions) Init
 	if opts.MaxAutomaticRetries <= 0 {
 		defaults.MaxAutomaticRetries = promptPositiveInt(reader, writer, "Max automatic retries", defaults.MaxAutomaticRetries)
 	}
-	if strings.TrimSpace(opts.ApprovalPolicy) == "" {
-		defaults.ApprovalPolicy = promptApprovalPolicy(reader, writer, defaults.ApprovalPolicy)
-	}
-	if strings.TrimSpace(opts.InitialCollaborationMode) == "" {
-		defaults.InitialCollaborationMode = promptInitialCollaborationMode(reader, writer, defaults.InitialCollaborationMode)
+	if defaults.AgentMode == AgentModeAppServer {
+		if strings.TrimSpace(opts.ApprovalPolicy) == "" {
+			defaults.ApprovalPolicy = promptApprovalPolicy(reader, writer, defaults.ApprovalPolicy)
+		}
+		if strings.TrimSpace(opts.InitialCollaborationMode) == "" {
+			defaults.InitialCollaborationMode = promptInitialCollaborationMode(reader, writer, defaults.InitialCollaborationMode)
+		}
 	}
 	return defaults
 }
@@ -202,22 +262,44 @@ func newInitReader(r io.Reader) *bufio.Reader {
 	return bufio.NewReader(r)
 }
 
+func promptAgentMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
+	return promptChoice(reader, writer, "Agent mode", fallback, initAgentModeChoices)
+}
+
 func promptDispatchMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
-	return promptValidatedString(reader, writer, "Dispatch mode (parallel|per_project_serial)", fallback, validateInitDispatchMode)
+	return promptChoice(reader, writer, "Dispatch mode", fallback, initDispatchModeChoices)
 }
 
 func promptApprovalPolicy(reader *bufio.Reader, writer io.Writer, fallback string) string {
-	return promptValidatedString(reader, writer, "Approval policy (never|on-request|on-failure|untrusted)", fallback, validateInitApprovalPolicy)
+	return promptChoice(reader, writer, "Approval policy", fallback, initApprovalPolicyChoices)
 }
 
 func promptInitialCollaborationMode(reader *bufio.Reader, writer io.Writer, fallback string) string {
-	return promptValidatedString(reader, writer, "Initial collaboration mode (default|plan)", fallback, validateInitCollaborationMode)
+	return promptChoice(reader, writer, "Initial collaboration mode", fallback, initCollaborationModeChoices)
 }
 
-func promptValidatedString(reader *bufio.Reader, writer io.Writer, label, fallback string, validate func(string) (string, error)) string {
+func promptChoice(reader *bufio.Reader, writer io.Writer, label, fallback string, choices initChoiceSet) string {
 	for {
-		value := promptLine(reader, writer, label, fallback)
-		validated, err := validate(value)
+		fmt.Fprintf(writer, "%s:\n", label)
+		fmt.Fprintf(writer, "  Press Enter to keep the default: %s\n", fallback)
+		fmt.Fprintln(writer, "  Enter a number, alias, unique prefix, or full value.")
+		for i, choice := range choices.Choices {
+			defaultSuffix := ""
+			if choice.Value == fallback {
+				defaultSuffix = " (default)"
+			}
+			fmt.Fprintf(writer, "  %d. %s%s: %s\n", i+1, choice.Value, defaultSuffix, choice.Description)
+		}
+		fmt.Fprint(writer, "Selection: ")
+		value, err := reader.ReadString('\n')
+		if err != nil {
+			return fallback
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return fallback
+		}
+		validated, err := choices.resolve(value)
 		if err == nil {
 			return validated
 		}
@@ -266,70 +348,79 @@ func promptLine(reader *bufio.Reader, writer io.Writer, label, fallback string) 
 	return line
 }
 
+func validateInitAgentMode(raw string) (string, error) {
+	return initAgentModeChoices.resolve(raw)
+}
+
 func validateInitDispatchMode(raw string) (string, error) {
-	mode := strings.TrimSpace(strings.ToLower(raw))
-	switch mode {
-	case DispatchModeParallel, DispatchModePerProjectSerial:
-		return mode, nil
-	case "":
-		return "", fmt.Errorf("%w: expected %s or %s", ErrInvalidInitDispatchMode, DispatchModeParallel, DispatchModePerProjectSerial)
-	default:
-		return "", fmt.Errorf("%w: %q (expected %s or %s)", ErrInvalidInitDispatchMode, raw, DispatchModeParallel, DispatchModePerProjectSerial)
-	}
+	return initDispatchModeChoices.resolve(raw)
 }
 
 func validateInitApprovalPolicy(raw string) (string, error) {
-	policy := strings.TrimSpace(strings.ToLower(raw))
-	switch policy {
-	case "never", "on-request", "on-failure", "untrusted":
-		return policy, nil
-	case "":
-		return "", fmt.Errorf("%w: expected never, on-request, on-failure, or untrusted", ErrInvalidInitApprovalPolicy)
-	default:
-		return "", fmt.Errorf("%w: %q (expected never, on-request, on-failure, or untrusted)", ErrInvalidInitApprovalPolicy, raw)
+	if canonical, ok := canonicalApprovalPolicyString(raw); ok {
+		return canonical, nil
 	}
+	return initApprovalPolicyChoices.resolve(raw)
 }
 
 func validateInitCollaborationMode(raw string) (string, error) {
-	mode := normalizeInitialCollaborationMode(raw)
-	switch mode {
-	case InitialCollaborationModeDefault, InitialCollaborationModePlan:
-		return mode, nil
-	case "":
-		return "", fmt.Errorf("%w: expected %s or %s", ErrInvalidInitCollaborationMode, InitialCollaborationModeDefault, InitialCollaborationModePlan)
-	default:
-		return "", fmt.Errorf("%w: %q (expected %s or %s)", ErrInvalidInitCollaborationMode, raw, InitialCollaborationModeDefault, InitialCollaborationModePlan)
-	}
+	return initCollaborationModeChoices.resolve(raw)
 }
 
 func buildWorkflowFile(opts InitOptions) string {
 	cfg := DefaultInitConfig()
+	initDefaults := DefaultInitConfig()
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
 		cfg.Workspace.Root = strings.TrimSpace(opts.WorkspaceRoot)
 	}
-	if strings.TrimSpace(opts.CodexCommand) != "" {
-		cfg.Codex.Command = strings.TrimSpace(opts.CodexCommand)
+	if strings.TrimSpace(opts.AgentMode) != "" {
+		cfg.Agent.Mode = strings.TrimSpace(opts.AgentMode)
 	}
 	if strings.TrimSpace(opts.DispatchMode) != "" {
-		cfg.Agent.DispatchMode = strings.TrimSpace(opts.DispatchMode)
+		cfg.Orchestrator.DispatchMode = strings.TrimSpace(opts.DispatchMode)
 	}
 	if opts.MaxConcurrentAgents > 0 {
-		cfg.Agent.MaxConcurrentAgents = opts.MaxConcurrentAgents
+		cfg.Orchestrator.MaxConcurrentAgents = opts.MaxConcurrentAgents
 	}
 	if opts.MaxTurns > 0 {
-		cfg.Agent.MaxTurns = opts.MaxTurns
+		cfg.Orchestrator.MaxTurns = opts.MaxTurns
 	}
 	if opts.MaxAutomaticRetries > 0 {
-		cfg.Agent.MaxAutomaticRetries = opts.MaxAutomaticRetries
+		cfg.Orchestrator.MaxAutomaticRetries = opts.MaxAutomaticRetries
 	}
-	if strings.TrimSpace(opts.ApprovalPolicy) != "" {
-		cfg.Codex.ApprovalPolicy = strings.TrimSpace(opts.ApprovalPolicy)
+	selectedRuntimeName := "codex-appserver"
+	if cfg.Agent.Mode == AgentModeStdio {
+		selectedRuntimeName = "codex-stdio"
 	}
-	if strings.TrimSpace(opts.InitialCollaborationMode) != "" {
-		cfg.Codex.InitialCollaborationMode = strings.TrimSpace(opts.InitialCollaborationMode)
+	if runtimeCfg, ok := cfg.Runtime.Entries[selectedRuntimeName]; ok {
+		if strings.TrimSpace(opts.RuntimeCommand) != "" {
+			runtimeCfg.Command = strings.TrimSpace(opts.RuntimeCommand)
+		}
+		if selectedRuntimeName == "codex-appserver" {
+			if strings.TrimSpace(opts.ApprovalPolicy) != "" {
+				runtimeCfg.ApprovalPolicy = strings.TrimSpace(opts.ApprovalPolicy)
+			}
+			if strings.TrimSpace(opts.InitialCollaborationMode) != "" {
+				runtimeCfg.InitialCollaborationMode = strings.TrimSpace(opts.InitialCollaborationMode)
+			}
+		}
+		cfg.Runtime.Entries[selectedRuntimeName] = runtimeCfg
 	}
+	cfg.Runtime.Default = selectedRuntimeName
+	cfg.applyDerivedRuntimeFields()
+
 	reviewPrompt := indentBlock(DefaultInitReviewPromptTemplate(), "      ")
 	donePrompt := indentBlock(DefaultInitDonePromptTemplate(), "      ")
+	reviewEnabledComment := formatInitBoolComment(initDefaults.Phases.Review.Enabled)
+	doneEnabledComment := formatInitBoolComment(initDefaults.Phases.Done.Enabled)
+	dispatchModeComment := formatInitChoiceComment(initDispatchModeChoices, initDefaults.Orchestrator.DispatchMode)
+
+	var runtimeBlock strings.Builder
+	runtimeBlock.WriteString(fmt.Sprintf("runtime:\n  default: %s\n", cfg.Runtime.Default))
+	runtimeBlock.WriteString(renderRuntimeEntry("codex-appserver", cfg.Runtime.Entries["codex-appserver"]))
+	runtimeBlock.WriteString(renderRuntimeEntry("codex-stdio", cfg.Runtime.Entries["codex-stdio"]))
+	runtimeBlock.WriteString(renderRuntimeEntry("claude", cfg.Runtime.Entries["claude"]))
+
 	return strings.TrimSpace(fmt.Sprintf(`
 ---
 # Tracker configuration. Supported tracker kind today: %s.
@@ -354,6 +445,8 @@ polling:
 # absolute paths, $ENV_VAR paths, and ~/ paths are also supported.
 workspace:
   root: %s
+  # Prefix used when Maestro prepares issue branches.
+  branch_prefix: %s
 
 # Optional shell hooks that run inside the issue workspace.
 hooks:
@@ -371,63 +464,58 @@ hooks:
 # Optional extra prompts for later workflow phases.
 phases:
   review:
-    # Enable a dedicated review pass after implementation. Other option: false.
+    # Enable a dedicated review pass after implementation. %s
     enabled: %t
     # Prompt rendered when the issue enters review. Uses the same template variables
     # as the main prompt, such as issue.*, project.*, phase, and attempt.
     prompt: |
 %s
   done:
-    # Enable a dedicated finalization pass after implementation is otherwise complete.
+    # Enable a dedicated finalization pass after implementation is otherwise complete. %s
     enabled: %t
     # Prompt rendered when the issue enters done for project-specific wrap-up steps.
     prompt: |
 %s
 
-# Agent runtime settings.
-agent:
+# Runtime scheduling settings.
+orchestrator:
   # Maximum concurrent issues per project when dispatch_mode is parallel.
+  # dispatch_mode=per_project_serial forces effective per-project concurrency to 1.
   max_concurrent_agents: %d
-  # Maximum turns Maestro gives Codex before ending an attempt.
+  # Maximum turns Maestro gives the runtime before ending an attempt.
   max_turns: %d
   # Maximum delay between automatic retries after failed attempts.
   max_retry_backoff_ms: %d
   # Maximum automatic retry attempts for the same issue before Maestro stops retrying.
   max_automatic_retries: %d
-  # Scheduling behavior. Other options: parallel, per_project_serial.
+  # Scheduling behavior. %s
   dispatch_mode: %s
 
-# Runtime backend used for this workflow.
-runtime: %s
-
-# Codex CLI launch and collaboration settings.
-codex:
-  # Exact command Maestro launches for the agent.
-  command: %s
-  # Expected codex --version. Mismatches warn but do not hard-fail.
-  expected_version: %s
-  # Approval mode for Codex. Other string options: on-request, on-failure, untrusted.
-  # "never" keeps unattended runs non-interactive, so permission recovery must come
-  # from the project or issue permission profile rather than live approval prompts.
-  # Use on-request when initial_collaboration_mode is plan so the agent can ask
-  # questions and recover through approvals before Maestro promotes the run.
-  # A structured granular object is also supported for per-category approval policies.
-  approval_policy: %v
-  # Initial collaboration mode for fresh app_server threads. Other option: plan.
-  # Use plan for a planning pass before implementation. Pair it with on-request
-  # when you want the agent to ask questions and pause for approval.
-  # Ignored for resumed threads.
-  initial_collaboration_mode: %s
-  # Maximum total runtime for one turn before Maestro cancels it.
-  turn_timeout_ms: %d
-  # Maximum time to wait for streamed output before considering the stream stalled.
-  read_timeout_ms: %d
-  # Maximum idle time without Codex activity before Maestro aborts the turn.
-  stall_timeout_ms: %d
+# Named runtime entries. The default entry selects the runtime used for this repo.
+%s
 ---
 
 %s
-`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, cfg.Phases.Review.Enabled, reviewPrompt, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, cfg.Agent.DispatchMode, cfg.Runtime, cfg.Codex.Command, cfg.Codex.ExpectedVersion, cfg.Codex.ApprovalPolicy, cfg.Codex.InitialCollaborationMode, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
+`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Workspace.BranchPrefix, cfg.Hooks.TimeoutMs, reviewEnabledComment, cfg.Phases.Review.Enabled, reviewPrompt, doneEnabledComment, cfg.Phases.Done.Enabled, donePrompt, cfg.Orchestrator.MaxConcurrentAgents, cfg.Orchestrator.MaxTurns, cfg.Orchestrator.MaxRetryBackoffMs, cfg.Orchestrator.MaxAutomaticRetries, dispatchModeComment, cfg.Orchestrator.DispatchMode, runtimeBlock.String(), DefaultPromptTemplate()))
+}
+
+func renderRuntimeEntry(name string, runtime RuntimeConfig) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s:\n", name)
+	fmt.Fprintf(&b, "    provider: %s\n", runtime.Provider)
+	fmt.Fprintf(&b, "    transport: %s\n", runtime.Transport)
+	fmt.Fprintf(&b, "    command: %s\n", runtime.Command)
+	if strings.TrimSpace(runtime.ExpectedVersion) != "" {
+		fmt.Fprintf(&b, "    expected_version: %s\n", runtime.ExpectedVersion)
+	}
+	fmt.Fprintf(&b, "    approval_policy: %v\n", runtime.ApprovalPolicy)
+	if strings.TrimSpace(runtime.InitialCollaborationMode) != "" {
+		fmt.Fprintf(&b, "    initial_collaboration_mode: %s\n", runtime.InitialCollaborationMode)
+	}
+	fmt.Fprintf(&b, "    turn_timeout_ms: %d\n", runtime.TurnTimeoutMs)
+	fmt.Fprintf(&b, "    read_timeout_ms: %d\n", runtime.ReadTimeoutMs)
+	fmt.Fprintf(&b, "    stall_timeout_ms: %d\n", runtime.StallTimeoutMs)
+	return b.String()
 }
 
 func indentBlock(text, prefix string) string {
@@ -436,4 +524,105 @@ func indentBlock(text, prefix string) string {
 		lines[i] = prefix + line
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (s initChoiceSet) resolve(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("%w: expected %s", s.Err, joinReadableList(s.values()))
+	}
+
+	if selection, err := strconv.Atoi(trimmed); err == nil {
+		if selection >= 1 && selection <= len(s.Choices) {
+			return s.Choices[selection-1].Value, nil
+		}
+		return "", fmt.Errorf("%w: %q (expected %s)", s.Err, raw, joinReadableList(s.values()))
+	}
+
+	key := normalizeInitChoiceKey(trimmed)
+	if key == "" {
+		return "", fmt.Errorf("%w: expected %s", s.Err, joinReadableList(s.values()))
+	}
+
+	if matches := s.findMatches(key, true); len(matches) == 1 {
+		return matches[0], nil
+	}
+
+	matches := s.findMatches(key, false)
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("%w: %q (expected %s)", s.Err, raw, joinReadableList(s.values()))
+	default:
+		return "", fmt.Errorf("%w: %q is ambiguous (matches %s)", s.Err, raw, joinReadableList(matches))
+	}
+}
+
+func (s initChoiceSet) findMatches(input string, exact bool) []string {
+	seen := make(map[string]struct{}, len(s.Choices))
+	matches := make([]string, 0, len(s.Choices))
+	for _, choice := range s.Choices {
+		for _, candidate := range s.candidateKeys(choice) {
+			if exact && candidate != input {
+				continue
+			}
+			if !exact && !strings.HasPrefix(candidate, input) {
+				continue
+			}
+			if _, ok := seen[choice.Value]; ok {
+				break
+			}
+			seen[choice.Value] = struct{}{}
+			matches = append(matches, choice.Value)
+			break
+		}
+	}
+	return matches
+}
+
+func (s initChoiceSet) candidateKeys(choice initChoice) []string {
+	keys := []string{normalizeInitChoiceKey(choice.Value)}
+	for _, alias := range choice.Aliases {
+		keys = append(keys, normalizeInitChoiceKey(alias))
+	}
+	return keys
+}
+
+func (s initChoiceSet) values() []string {
+	values := make([]string, 0, len(s.Choices))
+	for _, choice := range s.Choices {
+		values = append(values, choice.Value)
+	}
+	return values
+}
+
+func normalizeInitChoiceKey(raw string) string {
+	replacer := strings.NewReplacer("_", "-", " ", "-")
+	value := replacer.Replace(strings.ToLower(strings.TrimSpace(raw)))
+	for strings.Contains(value, "--") {
+		value = strings.ReplaceAll(value, "--", "-")
+	}
+	return strings.Trim(value, "-")
+}
+
+func joinReadableList(values []string) string {
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	case 2:
+		return values[0] + " or " + values[1]
+	default:
+		return strings.Join(values[:len(values)-1], ", ") + ", or " + values[len(values)-1]
+	}
+}
+
+func formatInitChoiceComment(choices initChoiceSet, defaultValue string) string {
+	return fmt.Sprintf("Available values: %s. Fresh maestro init default: %s.", strings.Join(choices.values(), ", "), defaultValue)
+}
+
+func formatInitBoolComment(defaultValue bool) string {
+	return fmt.Sprintf("Available values: true, false. Fresh maestro init default: %t.", defaultValue)
 }

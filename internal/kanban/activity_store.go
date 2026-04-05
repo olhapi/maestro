@@ -10,7 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 )
 
 var activityANSIPattern = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
@@ -24,7 +24,7 @@ const (
 
 const activityTruncationMarker = "\n...[truncated]"
 
-func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int, event appserver.ActivityEvent) error {
+func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int, event agentruntime.ActivityEvent) error {
 	if strings.TrimSpace(issueID) == "" {
 		return fmt.Errorf("missing issue_id")
 	}
@@ -49,7 +49,7 @@ func (s *Store) ApplyIssueActivityEvent(issueID, identifier string, attempt int,
 	return nil
 }
 
-func (s *Store) applyIssueActivityEventTx(tx *sql.Tx, issueID, identifier string, attempt int, event appserver.ActivityEvent) error {
+func (s *Store) applyIssueActivityEventTx(tx *sql.Tx, issueID, identifier string, attempt int, event agentruntime.ActivityEvent) error {
 	logicalID, ok := issueActivityLogicalID(attempt, event)
 	if !ok {
 		return nil
@@ -473,7 +473,7 @@ func (s *Store) getIssueActivityEntryTx(tx *sql.Tx, logicalID string) (*IssueAct
 	return &entry, nil
 }
 
-func (s *Store) appendIssueActivityUpdateTx(tx *sql.Tx, issueID, logicalID string, now time.Time, event appserver.ActivityEvent) error {
+func (s *Store) appendIssueActivityUpdateTx(tx *sql.Tx, issueID, logicalID string, now time.Time, event agentruntime.ActivityEvent) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -615,7 +615,7 @@ func (s *Store) ListIssueActivityEntries(issueID string) ([]IssueActivityEntry, 
 	return out, nil
 }
 
-func projectIssueActivityEntry(issueID, identifier, logicalID string, attempt int, now time.Time, event appserver.ActivityEvent, existing *IssueActivityEntry) (IssueActivityEntry, bool) {
+func projectIssueActivityEntry(issueID, identifier, logicalID string, attempt int, now time.Time, event agentruntime.ActivityEvent, existing *IssueActivityEntry) (IssueActivityEntry, bool) {
 	entry := IssueActivityEntry{
 		ID:         logicalID,
 		IssueID:    issueID,
@@ -683,7 +683,7 @@ func projectIssueActivityEntry(issueID, identifier, logicalID string, attempt in
 	}
 }
 
-func projectStartedItem(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) (IssueActivityEntry, bool) {
+func projectStartedItem(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) (IssueActivityEntry, bool) {
 	itemType := strings.TrimSpace(event.ItemType)
 	switch itemType {
 	case "agentMessage":
@@ -724,7 +724,7 @@ func projectStartedItem(entry IssueActivityEntry, now time.Time, event appserver
 	}
 }
 
-func projectCompletedItem(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) (IssueActivityEntry, bool) {
+func projectCompletedItem(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) (IssueActivityEntry, bool) {
 	itemType := strings.TrimSpace(event.ItemType)
 	switch itemType {
 	case "agentMessage":
@@ -768,7 +768,7 @@ func projectCompletedItem(entry IssueActivityEntry, now time.Time, event appserv
 	}
 }
 
-func projectAgentDelta(entry IssueActivityEntry, event appserver.ActivityEvent) IssueActivityEntry {
+func projectAgentDelta(entry IssueActivityEntry, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "agent"
 	entry.Tier = "primary"
 	entry.ItemType = "agentMessage"
@@ -782,7 +782,7 @@ func projectAgentDelta(entry IssueActivityEntry, event appserver.ActivityEvent) 
 	return entry
 }
 
-func projectPlanDelta(entry IssueActivityEntry, event appserver.ActivityEvent) IssueActivityEntry {
+func projectPlanDelta(entry IssueActivityEntry, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "secondary"
 	entry.Tier = "secondary"
 	entry.ItemType = "plan"
@@ -797,7 +797,7 @@ func projectPlanDelta(entry IssueActivityEntry, event appserver.ActivityEvent) I
 	return entry
 }
 
-func projectCommandDelta(entry IssueActivityEntry, event appserver.ActivityEvent) IssueActivityEntry {
+func projectCommandDelta(entry IssueActivityEntry, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "command"
 	entry.Tier = "primary"
 	entry.ItemType = "commandExecution"
@@ -819,7 +819,7 @@ func projectCommandDelta(entry IssueActivityEntry, event appserver.ActivityEvent
 	return entry
 }
 
-func projectTerminalInteraction(entry IssueActivityEntry, event appserver.ActivityEvent) IssueActivityEntry {
+func projectTerminalInteraction(entry IssueActivityEntry, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "command"
 	entry.Tier = "primary"
 	entry.ItemType = "commandExecution"
@@ -847,7 +847,7 @@ func projectTerminalInteraction(entry IssueActivityEntry, event appserver.Activi
 	return entry
 }
 
-func projectTurnStatus(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectTurnStatus(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "status"
 	entry.Tier = "primary"
 	entry.ItemType = ""
@@ -868,7 +868,7 @@ func projectTurnStatus(entry IssueActivityEntry, now time.Time, event appserver.
 	return entry
 }
 
-func projectApprovalStatus(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectApprovalStatus(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "status"
 	entry.Tier = "primary"
 	entry.Status = "approval_required"
@@ -883,7 +883,7 @@ func projectApprovalStatus(entry IssueActivityEntry, now time.Time, event appser
 	return entry
 }
 
-func projectInputStatus(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectInputStatus(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "status"
 	entry.Tier = "primary"
 	entry.Status = "input_required"
@@ -897,7 +897,7 @@ func projectInputStatus(entry IssueActivityEntry, now time.Time, event appserver
 	return entry
 }
 
-func projectApprovalResolved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectApprovalResolved(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "status"
 	entry.Tier = "primary"
 	decision := strings.TrimSpace(event.Status)
@@ -915,7 +915,7 @@ func projectApprovalResolved(entry IssueActivityEntry, now time.Time, event apps
 	return entry
 }
 
-func projectInputResolved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectInputResolved(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "status"
 	entry.Tier = "primary"
 	entry.Status = "input_submitted"
@@ -932,7 +932,7 @@ func projectInputResolved(entry IssueActivityEntry, now time.Time, event appserv
 	return entry
 }
 
-func projectElicitationStatus(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectElicitationStatus(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "status"
 	entry.Tier = "primary"
 	entry.Status = "elicitation_required"
@@ -946,7 +946,7 @@ func projectElicitationStatus(entry IssueActivityEntry, now time.Time, event app
 	return entry
 }
 
-func projectElicitationResolved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectElicitationResolved(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "status"
 	entry.Tier = "primary"
 	action := strings.TrimSpace(event.Status)
@@ -964,7 +964,7 @@ func projectElicitationResolved(entry IssueActivityEntry, now time.Time, event a
 	return entry
 }
 
-func projectPlanSessionStarted(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectPlanSessionStarted(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "plan_session_started"
 	entry.Tier = "primary"
 	entry.Status = "drafting"
@@ -979,7 +979,7 @@ func projectPlanSessionStarted(entry IssueActivityEntry, now time.Time, event ap
 	return entry
 }
 
-func projectPlanApprovalRequested(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectPlanApprovalRequested(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "plan_version_published"
 	entry.Tier = "primary"
 	entry.Status = "plan_approval_pending"
@@ -998,7 +998,7 @@ func projectPlanApprovalRequested(entry IssueActivityEntry, now time.Time, event
 	return entry
 }
 
-func projectPlanRevisionRequested(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectPlanRevisionRequested(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "plan_revision_requested"
 	entry.Tier = "primary"
 	entry.Status = "revision_requested"
@@ -1013,7 +1013,7 @@ func projectPlanRevisionRequested(entry IssueActivityEntry, now time.Time, event
 	return entry
 }
 
-func projectPlanRevisionApplied(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectPlanRevisionApplied(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "plan_revision_applied"
 	entry.Tier = "primary"
 	entry.Status = "drafting"
@@ -1028,7 +1028,7 @@ func projectPlanRevisionApplied(entry IssueActivityEntry, now time.Time, event a
 	return entry
 }
 
-func projectPlanApproved(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectPlanApproved(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "plan_approved"
 	entry.Tier = "primary"
 	entry.Status = "plan_approved"
@@ -1045,7 +1045,7 @@ func projectPlanApproved(entry IssueActivityEntry, now time.Time, event appserve
 	return entry
 }
 
-func projectPlanAbandoned(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent) IssueActivityEntry {
+func projectPlanAbandoned(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent) IssueActivityEntry {
 	entry.Kind = "plan_session_abandoned"
 	entry.Tier = "primary"
 	entry.Status = "abandoned"
@@ -1062,7 +1062,7 @@ func projectPlanAbandoned(entry IssueActivityEntry, now time.Time, event appserv
 	return entry
 }
 
-func projectSecondaryItem(entry IssueActivityEntry, now time.Time, event appserver.ActivityEvent, status string) IssueActivityEntry {
+func projectSecondaryItem(entry IssueActivityEntry, now time.Time, event agentruntime.ActivityEvent, status string) IssueActivityEntry {
 	entry.Kind = "secondary"
 	entry.Tier = "secondary"
 	entry.ItemType = strings.TrimSpace(event.ItemType)
@@ -1084,7 +1084,7 @@ func projectSecondaryItem(entry IssueActivityEntry, now time.Time, event appserv
 	return entry
 }
 
-func issueActivityLogicalID(attempt int, event appserver.ActivityEvent) (string, bool) {
+func issueActivityLogicalID(attempt int, event agentruntime.ActivityEvent) (string, bool) {
 	threadID := strings.TrimSpace(event.ThreadID)
 	turnID := strings.TrimSpace(event.TurnID)
 	itemID := strings.TrimSpace(event.ItemID)
@@ -1137,7 +1137,7 @@ func issueActivityLogicalID(attempt int, event appserver.ActivityEvent) (string,
 	}
 }
 
-func activityRawPayload(event appserver.ActivityEvent) map[string]interface{} {
+func activityRawPayload(event agentruntime.ActivityEvent) map[string]interface{} {
 	payload := map[string]interface{}{
 		"type":      event.Type,
 		"thread_id": event.ThreadID,
@@ -1199,7 +1199,7 @@ func activityRawPayload(event appserver.ActivityEvent) map[string]interface{} {
 	return payload
 }
 
-func isFinalAnswerActivityEvent(event appserver.ActivityEvent) bool {
+func isFinalAnswerActivityEvent(event agentruntime.ActivityEvent) bool {
 	return strings.EqualFold(strings.TrimSpace(event.ItemType), "agentMessage") &&
 		strings.EqualFold(strings.TrimSpace(event.ItemPhase), "final_answer")
 }

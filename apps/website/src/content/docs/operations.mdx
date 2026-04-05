@@ -29,7 +29,7 @@ These endpoints power the CLI helpers that talk to a running daemon over `--api-
 | `GET /health` | Process health and timestamp |
 | `GET /api/v1/state` | Live orchestrator status payload |
 | `GET /api/v1/<issue_identifier>` | Single issue status payload |
-| `GET /api/v1/sessions` | All live app-server sessions |
+| `GET /api/v1/sessions` | All live sessions |
 | `GET /api/v1/sessions?issue=ISS-1` | Single session lookup by issue identifier |
 | `GET /api/v1/events?since=0&limit=100` | In-memory event feed |
 | `POST /api/v1/refresh` | Request a refresh event |
@@ -218,7 +218,7 @@ Important behavior:
 
 - the main log file is `maestro.log`
 - rotation is size-based
-- `debug` includes raw app-server stream output
+- `debug` includes raw runtime stream output
 - `info` keeps logs focused on lifecycle and status transitions
 
 ## Docker

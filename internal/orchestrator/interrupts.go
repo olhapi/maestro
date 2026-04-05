@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -37,10 +37,10 @@ func (o *Orchestrator) AcknowledgeInterrupt(ctx context.Context, interactionID s
 		return err
 	}
 	if !found {
-		return appserver.ErrPendingInteractionNotFound
+		return agentruntime.ErrPendingInteractionNotFound
 	}
-	if !interaction.HasAction(appserver.PendingInteractionActionAcknowledge) {
-		return appserver.ErrInvalidInteractionResponse
+	if !interaction.HasAction(agentruntime.PendingInteractionActionAcknowledge) {
+		return agentruntime.ErrInvalidInteractionResponse
 	}
 	if err := o.store.AcknowledgeInterrupt(strings.TrimSpace(interactionID)); err != nil {
 		return err
@@ -49,11 +49,11 @@ func (o *Orchestrator) AcknowledgeInterrupt(ctx context.Context, interactionID s
 	return nil
 }
 
-func (o *Orchestrator) queuedPendingInteractionItems() []appserver.PendingInteraction {
+func (o *Orchestrator) queuedPendingInteractionItems() []agentruntime.PendingInteraction {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	items := make([]appserver.PendingInteraction, 0, len(o.pendingInteractionOrder))
+	items := make([]agentruntime.PendingInteraction, 0, len(o.pendingInteractionOrder))
 	for _, interactionID := range o.pendingInteractionOrder {
 		entry, ok := o.pendingInteractions[interactionID]
 		if !ok {
@@ -64,7 +64,7 @@ func (o *Orchestrator) queuedPendingInteractionItems() []appserver.PendingIntera
 	return items
 }
 
-func (o *Orchestrator) sharedPendingInteractionItems() ([]appserver.PendingInteraction, error) {
+func (o *Orchestrator) sharedPendingInteractionItems() ([]agentruntime.PendingInteraction, error) {
 	items := o.queuedPendingInteractionItems()
 	planApprovals, err := o.pendingPlanApprovalItems()
 	if err != nil {
@@ -74,7 +74,7 @@ func (o *Orchestrator) sharedPendingInteractionItems() ([]appserver.PendingInter
 	if err != nil {
 		return items, err
 	}
-	derived := make([]appserver.PendingInteraction, 0, len(planApprovals)+len(alerts))
+	derived := make([]agentruntime.PendingInteraction, 0, len(planApprovals)+len(alerts))
 	derived = append(derived, planApprovals...)
 	derived = append(derived, alerts...)
 	sortPendingInteractionsByRequestedAt(derived)
@@ -82,7 +82,7 @@ func (o *Orchestrator) sharedPendingInteractionItems() ([]appserver.PendingInter
 	return items, nil
 }
 
-func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteraction, error) {
+func (o *Orchestrator) pendingPlanApprovalItems() ([]agentruntime.PendingInteraction, error) {
 	issues, err := o.store.ListIssues(map[string]interface{}{
 		"plan_approval_pending": true,
 	})
@@ -94,15 +94,9 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteractio
 	}
 
 	projectCache := make(map[string]*kanban.Project, len(issues))
-	items := make([]appserver.PendingInteraction, 0, len(issues))
+	items := make([]agentruntime.PendingInteraction, 0, len(issues))
 	for i := range issues {
 		issue := issues[i]
-		if strings.TrimSpace(issue.PendingPlanMarkdown) == "" {
-			continue
-		}
-		if strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil {
-			continue
-		}
 		var project *kanban.Project
 		if projectID := strings.TrimSpace(issue.ProjectID); projectID != "" {
 			if cached, ok := projectCache[projectID]; ok {
@@ -114,6 +108,12 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteractio
 		}
 		snapshot, _ := o.store.GetIssueExecutionSession(issue.ID)
 		planning, _ := o.store.GetIssuePlanning(&issue)
+		if planning == nil || planning.CurrentVersion == nil || strings.TrimSpace(planning.CurrentVersion.Markdown) == "" {
+			continue
+		}
+		if strings.TrimSpace(planning.PendingRevisionNote) != "" && planning.PendingRevisionRequestedAt != nil {
+			continue
+		}
 		items = append(items, buildPlanApprovalPendingInterrupt(issue, project, snapshot, planning))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -127,9 +127,11 @@ func (o *Orchestrator) pendingPlanApprovalItems() ([]appserver.PendingInteractio
 	return items, nil
 }
 
-func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Project, snapshot *kanban.ExecutionSessionSnapshot, planning *kanban.IssuePlanning) appserver.PendingInteraction {
+func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Project, snapshot *kanban.ExecutionSessionSnapshot, planning *kanban.IssuePlanning) agentruntime.PendingInteraction {
 	requestedAt := time.Now().UTC()
-	if issue.PendingPlanRequestedAt != nil && !issue.PendingPlanRequestedAt.IsZero() {
+	if planning != nil && planning.CurrentVersion != nil && !planning.CurrentVersion.CreatedAt.IsZero() {
+		requestedAt = planning.CurrentVersion.CreatedAt.UTC()
+	} else if issue.PendingPlanRequestedAt != nil && !issue.PendingPlanRequestedAt.IsZero() {
 		requestedAt = issue.PendingPlanRequestedAt.UTC()
 	}
 	lastActivityAt := requestedAt
@@ -156,7 +158,7 @@ func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Proje
 		projectID = strings.TrimSpace(project.ID)
 		projectName = strings.TrimSpace(project.Name)
 	}
-	planMarkdown := strings.TrimSpace(issue.PendingPlanMarkdown)
+	planMarkdown := ""
 	planStatus := ""
 	planVersionNumber := 0
 	planRevisionNote := ""
@@ -176,9 +178,9 @@ func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Proje
 		lastActivity = fmt.Sprintf("Plan v%d ready for approval.", planVersionNumber)
 	}
 
-	return appserver.PendingInteraction{
+	return agentruntime.PendingInteraction{
 		ID:                issuePlanApprovalInteractionID(issue.ID),
-		Kind:              appserver.PendingInteractionKindApproval,
+		Kind:              agentruntime.PendingInteractionKindApproval,
 		IssueID:           strings.TrimSpace(issue.ID),
 		IssueIdentifier:   strings.TrimSpace(issue.Identifier),
 		IssueTitle:        strings.TrimSpace(issue.Title),
@@ -193,13 +195,13 @@ func buildPlanApprovalPendingInterrupt(issue kanban.Issue, project *kanban.Proje
 		CollaborationMode: "plan",
 		ProjectID:         projectID,
 		ProjectName:       projectName,
-		Approval: &appserver.PendingApproval{
+		Approval: &agentruntime.PendingApproval{
 			Reason:            "Review the proposed plan before execution.",
 			Markdown:          planMarkdown,
 			PlanStatus:        planStatus,
 			PlanVersionNumber: planVersionNumber,
 			PlanRevisionNote:  planRevisionNote,
-			Decisions: []appserver.PendingApprovalDecision{{
+			Decisions: []agentruntime.PendingApprovalDecision{{
 				Value:       "approved",
 				Label:       "Approve plan",
 				Description: "Approve this plan and continue with the next execution phase.",
@@ -212,7 +214,7 @@ func issuePlanApprovalInteractionID(issueID string) string {
 	return "plan-approval-" + strings.TrimSpace(issueID)
 }
 
-func sortPendingInteractionsByRequestedAt(items []appserver.PendingInteraction) {
+func sortPendingInteractionsByRequestedAt(items []agentruntime.PendingInteraction) {
 	sort.SliceStable(items, func(i, j int) bool {
 		left := items[i].RequestedAt.UTC()
 		right := items[j].RequestedAt.UTC()
@@ -223,7 +225,7 @@ func sortPendingInteractionsByRequestedAt(items []appserver.PendingInteraction) 
 	})
 }
 
-func (o *Orchestrator) pendingInteractionByID(interactionID string) (*appserver.PendingInteraction, bool, error) {
+func (o *Orchestrator) pendingInteractionByID(interactionID string) (*agentruntime.PendingInteraction, bool, error) {
 	interactionID = strings.TrimSpace(interactionID)
 	if interactionID == "" {
 		return nil, false, nil
@@ -242,7 +244,7 @@ func (o *Orchestrator) pendingInteractionByID(interactionID string) (*appserver.
 	return nil, false, nil
 }
 
-func (o *Orchestrator) derivedAlertItems() ([]appserver.PendingInteraction, error) {
+func (o *Orchestrator) derivedAlertItems() ([]agentruntime.PendingInteraction, error) {
 	if !o.isSharedMode() || strings.TrimSpace(o.scopedRepoPath) == "" {
 		return nil, nil
 	}
@@ -259,7 +261,7 @@ func (o *Orchestrator) derivedAlertItems() ([]appserver.PendingInteraction, erro
 	}
 
 	projects := make(map[string]*kanban.Project)
-	alerts := make([]appserver.PendingInteraction, 0, len(dispatchIssues))
+	alerts := make([]agentruntime.PendingInteraction, 0, len(dispatchIssues))
 	alertIDs := make([]string, 0, len(dispatchIssues))
 	for i := range dispatchIssues {
 		dispatchIssue := dispatchIssues[i]
@@ -357,7 +359,7 @@ func projectScopeDispatchError(projectRepoPath, scopedRepoPath string) string {
 	return "Project repo is outside the current server scope (" + scopedRepoPath + ")"
 }
 
-func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.Project, scopeError string) appserver.PendingInteraction {
+func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.Project, scopeError string) agentruntime.PendingInteraction {
 	requestedAt := issue.UpdatedAt.UTC()
 	if requestedAt.IsZero() {
 		requestedAt = time.Now().UTC()
@@ -381,9 +383,9 @@ func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.P
 		issueLabel,
 		projectName,
 	)
-	return appserver.PendingInteraction{
+	return agentruntime.PendingInteraction{
 		ID:              issueProjectDispatchBlockedAlertIDPrefix + strings.TrimSpace(issue.ID) + "-" + fingerprint,
-		Kind:            appserver.PendingInteractionKindAlert,
+		Kind:            agentruntime.PendingInteractionKindAlert,
 		Method:          issueProjectDispatchBlockedAlertMethod,
 		IssueID:         strings.TrimSpace(issue.ID),
 		IssueIdentifier: strings.TrimSpace(issue.Identifier),
@@ -393,13 +395,13 @@ func buildIssueProjectDispatchBlockedAlert(issue kanban.Issue, project *kanban.P
 		LastActivity:    strings.TrimSpace(scopeError),
 		ProjectID:       projectID,
 		ProjectName:     projectName,
-		Actions: []appserver.PendingInteractionAction{{
-			Kind:  appserver.PendingInteractionActionAcknowledge,
+		Actions: []agentruntime.PendingInteractionAction{{
+			Kind:  agentruntime.PendingInteractionActionAcknowledge,
 			Label: "Acknowledge",
 		}},
-		Alert: &appserver.PendingAlert{
+		Alert: &agentruntime.PendingAlert{
 			Code:     issueProjectDispatchBlockedAlertCode,
-			Severity: appserver.PendingAlertSeverityError,
+			Severity: agentruntime.PendingAlertSeverityError,
 			Title:    "Project dispatch blocked",
 			Message:  strings.TrimSpace(scopeError),
 			Detail:   detail,

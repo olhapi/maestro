@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -63,6 +63,14 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	if err != nil {
 		return nil, err
 	}
+	recentIdentifiers := make(map[string]struct{}, len(recent))
+	for _, snapshot := range recent {
+		identifier := strings.TrimSpace(firstNonEmpty(snapshot.Identifier, snapshot.AppSession.IssueIdentifier))
+		if identifier == "" {
+			continue
+		}
+		recentIdentifiers[identifier] = struct{}{}
+	}
 	titleByIdentifier := loadIssueTitlesByIdentifier(store, live, recent)
 	issuesByIdentifier := loadIssuesByIdentifier(store, live, recent)
 	planningByIdentifier := loadPlanningByIdentifier(store, issuesByIdentifier)
@@ -70,20 +78,27 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	out := make([]kanban.SessionFeedEntry, 0, len(live)+recentSessionFeedLimit)
 	seen := make(map[string]struct{}, len(live))
 	for identifier, session := range live {
-		issue := issuesByIdentifier[firstNonEmpty(session.IssueIdentifier, identifier)]
+		resolvedIdentifier := strings.TrimSpace(firstNonEmpty(session.IssueIdentifier, identifier))
+		if session.Terminal {
+			if _, ok := recentIdentifiers[resolvedIdentifier]; ok {
+				continue
+			}
+		}
+		issue := issuesByIdentifier[resolvedIdentifier]
 		pendingInterrupt := pendingInterruptForSession(
 			session.IssueID,
-			firstNonEmpty(session.IssueIdentifier, identifier),
+			resolvedIdentifier,
 			pendingByIssueID,
 			pendingByIdentifier,
 		)
 		entry := buildLiveSessionFeedEntry(
-			identifier,
+			store,
+			resolvedIdentifier,
 			session,
-			runningByIdentifier[identifier],
+			runningByIdentifier[resolvedIdentifier],
 			issue,
-			planningByIdentifier[firstNonEmpty(session.IssueIdentifier, identifier)],
-			titleByIdentifier[identifier],
+			planningByIdentifier[resolvedIdentifier],
+			titleByIdentifier[resolvedIdentifier],
 			pendingInterrupt,
 		)
 		out = append(out, entry)
@@ -105,6 +120,7 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 		out = append(
 			out,
 			buildPersistedSessionFeedEntry(
+				store,
 				snapshot,
 				retryByIdentifier[identifier],
 				pausedByIdentifier[identifier],
@@ -131,9 +147,9 @@ func buildSessionFeedEntries(store *kanban.Store, provider Provider, liveSession
 	return out, nil
 }
 
-func indexPendingInterrupts(items []appserver.PendingInteraction) (map[string]appserver.PendingInteraction, map[string]appserver.PendingInteraction) {
-	byIssueID := make(map[string]appserver.PendingInteraction, len(items))
-	byIdentifier := make(map[string]appserver.PendingInteraction, len(items))
+func indexPendingInterrupts(items []agentruntime.PendingInteraction) (map[string]agentruntime.PendingInteraction, map[string]agentruntime.PendingInteraction) {
+	byIssueID := make(map[string]agentruntime.PendingInteraction, len(items))
+	byIdentifier := make(map[string]agentruntime.PendingInteraction, len(items))
 	for i := range items {
 		interaction := items[i].Clone()
 		if issueID := strings.TrimSpace(interaction.IssueID); issueID != "" {
@@ -152,8 +168,8 @@ func indexPendingInterrupts(items []appserver.PendingInteraction) (map[string]ap
 
 func pendingInterruptForSession(
 	issueID, identifier string,
-	byIssueID, byIdentifier map[string]appserver.PendingInteraction,
-) *appserver.PendingInteraction {
+	byIssueID, byIdentifier map[string]agentruntime.PendingInteraction,
+) *agentruntime.PendingInteraction {
 	if interaction, ok := byIssueID[strings.TrimSpace(issueID)]; ok {
 		cloned := interaction.Clone()
 		return &cloned
@@ -165,7 +181,7 @@ func pendingInterruptForSession(
 	return nil
 }
 
-func loadIssueTitlesByIdentifier(store *kanban.Store, live map[string]appserver.Session, recent []kanban.ExecutionSessionSnapshot) map[string]string {
+func loadIssueTitlesByIdentifier(store *kanban.Store, live map[string]agentruntime.Session, recent []kanban.ExecutionSessionSnapshot) map[string]string {
 	type issueRef struct {
 		issueID    string
 		identifier string
@@ -224,7 +240,7 @@ func loadIssueTitlesByIdentifier(store *kanban.Store, live map[string]appserver.
 	return out
 }
 
-func loadIssuesByIdentifier(store *kanban.Store, live map[string]appserver.Session, recent []kanban.ExecutionSessionSnapshot) map[string]*kanban.Issue {
+func loadIssuesByIdentifier(store *kanban.Store, live map[string]agentruntime.Session, recent []kanban.ExecutionSessionSnapshot) map[string]*kanban.Issue {
 	identifiers := make(map[string]struct{}, len(live)+len(recent))
 	for identifier, session := range live {
 		resolvedIdentifier := strings.TrimSpace(firstNonEmpty(session.IssueIdentifier, identifier))
@@ -273,25 +289,23 @@ func sessionFeedSortKey(title, identifier string) string {
 	return strings.ToLower(key)
 }
 
-func decodeLiveSessions(raw map[string]interface{}) map[string]appserver.Session {
-	return appserver.SessionsFromMap(raw)
+func decodeLiveSessions(raw map[string]interface{}) map[string]agentruntime.Session {
+	return agentruntime.SessionsFromMap(raw)
 }
 
-func issueHasPendingPlanRevision(issue *kanban.Issue) bool {
-	if issue == nil {
-		return false
-	}
-	return strings.TrimSpace(issue.PendingPlanRevisionMarkdown) != "" && issue.PendingPlanRevisionRequestedAt != nil
+func planningHasPendingRevision(planning *kanban.IssuePlanning) bool {
+	return planning != nil && strings.TrimSpace(planning.PendingRevisionNote) != ""
 }
 
 func buildLiveSessionFeedEntry(
+	store *kanban.Store,
 	identifier string,
-	session appserver.Session,
+	session agentruntime.Session,
 	running observability.RunningEntry,
 	issue *kanban.Issue,
 	planning *kanban.IssuePlanning,
 	issueTitle string,
-	pendingInterrupt *appserver.PendingInteraction,
+	pendingInterrupt *agentruntime.PendingInteraction,
 ) kanban.SessionFeedEntry {
 	updatedAt := session.LastTimestamp
 	if updatedAt.IsZero() {
@@ -311,11 +325,11 @@ func buildLiveSessionFeedEntry(
 		totalTokens = running.Tokens.TotalTokens
 	}
 	status := "active"
-	var pending *appserver.PendingInteraction
+	var pending *agentruntime.PendingInteraction
 	if pendingInterrupt != nil {
 		cloned := pendingInterrupt.Clone()
 		pending = &cloned
-		if pending.Kind == appserver.PendingInteractionKindAlert {
+		if pending.Kind == agentruntime.PendingInteractionKindAlert {
 			status = "blocked"
 		} else {
 			status = "waiting"
@@ -327,15 +341,17 @@ func buildLiveSessionFeedEntry(
 			lastMessage = pending.LastActivity
 		}
 	}
-	if issueHasPendingPlanRevision(issue) && (pending == nil || pending.Kind != appserver.PendingInteractionKindAlert) {
+	if planningHasPendingRevision(planning) && (pending == nil || pending.Kind != agentruntime.PendingInteractionKindAlert) {
 		status = "revision_queued"
 		lastMessage = queuedPlanRevisionText
-		if issue.PendingPlanRevisionRequestedAt != nil && !issue.PendingPlanRevisionRequestedAt.IsZero() {
-			updatedAt = issue.PendingPlanRevisionRequestedAt.UTC()
+		if planning.PendingRevisionRequestedAt != nil && !planning.PendingRevisionRequestedAt.IsZero() {
+			updatedAt = planning.PendingRevisionRequestedAt.UTC()
+		} else if !planning.UpdatedAt.IsZero() {
+			updatedAt = planning.UpdatedAt.UTC()
 		}
 	}
 	planSummary := planningSummary(planning)
-	if pending == nil || pending.Kind != appserver.PendingInteractionKindAlert {
+	if pending == nil || pending.Kind != agentruntime.PendingInteractionKindAlert {
 		if planningStatus, planningMessage, planningUpdatedAt, ok := openPlanningFeedState(planning); ok {
 			status = planningStatus
 			if planningMessage != "" {
@@ -346,6 +362,7 @@ func buildLiveSessionFeedEntry(
 			}
 		}
 	}
+	runtimeSurface := kanban.ResolveRuntimeSurface(store, issue, nil, &session, pendingInterrupt, planning)
 
 	return kanban.SessionFeedEntry{
 		IssueID:          firstNonEmpty(session.IssueID, running.IssueID),
@@ -368,10 +385,12 @@ func buildLiveSessionFeedEntry(
 		TurnsCompleted:   session.TurnsCompleted,
 		Terminal:         session.Terminal,
 		TerminalReason:   session.TerminalReason,
+		RuntimeSurface:   runtimeSurface,
 	}
 }
 
 func buildPersistedSessionFeedEntry(
+	store *kanban.Store,
 	snapshot kanban.ExecutionSessionSnapshot,
 	retry observability.RetryEntry,
 	paused observability.PausedEntry,
@@ -386,7 +405,7 @@ func buildPersistedSessionFeedEntry(
 	}
 	errorText := firstNonEmpty(paused.Error, retry.Error, snapshot.Error)
 	planApprovalWaiting := isPlanApprovalPendingError(errorText) || isPlanApprovalPendingError(snapshot.RunKind) || isPlanApprovalPendingError(snapshot.StopReason)
-	planRevisionQueued := issueHasPendingPlanRevision(issue)
+	planRevisionQueued := planningHasPendingRevision(planning)
 	failureClass := normalizeFailureClass(errorText)
 	if failureClass == "" {
 		failureClass = normalizeFailureClass(snapshot.RunKind)
@@ -406,6 +425,8 @@ func buildPersistedSessionFeedEntry(
 		status = "paused"
 	case strings.EqualFold(snapshot.RunKind, "run_completed"):
 		status = "completed"
+	case strings.EqualFold(snapshot.RunKind, "run_interrupted"):
+		status = "interrupted"
 	case strings.EqualFold(snapshot.RunKind, "run_started"):
 		status = "interrupted"
 	case failureClass != "":
@@ -435,8 +456,10 @@ func buildPersistedSessionFeedEntry(
 	lastMessage := session.LastMessage
 	if planRevisionQueued {
 		lastMessage = queuedPlanRevisionText
-		if issue != nil && issue.PendingPlanRevisionRequestedAt != nil && !issue.PendingPlanRevisionRequestedAt.IsZero() {
-			updatedAt = issue.PendingPlanRevisionRequestedAt.UTC()
+		if planning != nil && planning.PendingRevisionRequestedAt != nil && !planning.PendingRevisionRequestedAt.IsZero() {
+			updatedAt = planning.PendingRevisionRequestedAt.UTC()
+		} else if planning != nil && !planning.UpdatedAt.IsZero() {
+			updatedAt = planning.UpdatedAt.UTC()
 		}
 	}
 	planSummary := planningSummary(planning)
@@ -451,6 +474,7 @@ func buildPersistedSessionFeedEntry(
 		failureClass = ""
 		errorText = ""
 	}
+	runtimeSurface := kanban.ResolveRuntimeSurface(store, issue, &snapshot, &session, nil, planning)
 
 	return kanban.SessionFeedEntry{
 		IssueID:         snapshot.IssueID,
@@ -474,6 +498,7 @@ func buildPersistedSessionFeedEntry(
 		Terminal:        session.Terminal,
 		TerminalReason:  session.TerminalReason,
 		Error:           errorText,
+		RuntimeSurface:  runtimeSurface,
 	}
 }
 
@@ -482,14 +507,15 @@ func planningSummary(planning *kanban.IssuePlanning) *kanban.IssuePlanningSummar
 		return nil
 	}
 	summary := &kanban.IssuePlanningSummary{
-		SessionID:            planning.SessionID,
-		Status:               planning.Status,
-		CurrentVersionNumber: planning.CurrentVersionNumber,
-		CurrentVersion:       planning.CurrentVersion,
-		PendingRevisionNote:  planning.PendingRevisionNote,
-		OpenedAt:             planning.OpenedAt,
-		UpdatedAt:            planning.UpdatedAt,
-		ClosedAt:             planning.ClosedAt,
+		SessionID:                  planning.SessionID,
+		Status:                     planning.Status,
+		CurrentVersionNumber:       planning.CurrentVersionNumber,
+		CurrentVersion:             planning.CurrentVersion,
+		PendingRevisionNote:        planning.PendingRevisionNote,
+		PendingRevisionRequestedAt: planning.PendingRevisionRequestedAt,
+		OpenedAt:                   planning.OpenedAt,
+		UpdatedAt:                  planning.UpdatedAt,
+		ClosedAt:                   planning.ClosedAt,
 	}
 	return summary
 }
@@ -523,6 +549,8 @@ func normalizeFailureClass(value string) string {
 		return "approval_required"
 	case strings.Contains(value, "turn_input_required"):
 		return "turn_input_required"
+	case strings.Contains(value, "unsupported_runtime_capability"):
+		return "unsupported_runtime_capability"
 	case strings.Contains(value, "stall_timeout"):
 		return "stall_timeout"
 	case strings.Contains(value, "run_unsuccessful"), strings.Contains(value, "unsuccessful"):

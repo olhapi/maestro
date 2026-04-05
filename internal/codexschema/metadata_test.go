@@ -43,6 +43,12 @@ func TestUpdateScriptUsesSharedSupportedVersion(t *testing.T) {
 	if !strings.Contains(text, "internal/codexschema/metadata.go") {
 		t.Fatalf("expected %s to reference the shared metadata file", scriptPath)
 	}
+	if !strings.Contains(text, `@openai/codex@$VERSION`) {
+		t.Fatalf("expected %s to generate schemas through a pinned npx package", scriptPath)
+	}
+	if strings.Contains(text, "command -v codex") {
+		t.Fatalf("expected %s to avoid requiring a preinstalled codex binary", scriptPath)
+	}
 	if regexp.MustCompile(`VERSION="\$\{CODEX_SCHEMA_VERSION:-0\.[0-9]+\.[0-9]+\}"`).MatchString(text) {
 		t.Fatalf("expected %s to avoid hardcoding a fallback schema version", scriptPath)
 	}

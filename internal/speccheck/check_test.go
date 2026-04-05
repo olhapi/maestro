@@ -27,9 +27,8 @@ func TestRunAgainstRepoRoot(t *testing.T) {
 		"workflow_load",
 		"workflow_version",
 		"workflow_prompt_render",
-		"workflow_advisories",
 		"config_defaults",
-		"codex_schema_json",
+		"runtime_schema_json",
 		"skill_install",
 	} {
 		if report.Checks[key] != "ok" {
@@ -77,11 +76,8 @@ Issue {{ issue.identifier }}
 	if report.Checks["workflow_prompt_render"] != "skipped" {
 		t.Fatalf("expected workflow_prompt_render to be skipped, got %+v", report.Checks)
 	}
-	if report.Checks["workflow_advisories"] != "skipped" {
-		t.Fatalf("expected workflow_advisories to be skipped, got %+v", report.Checks)
-	}
-	if report.Checks["codex_schema_json"] != "fail" {
-		t.Fatalf("expected codex_schema_json to fail, got %+v", report.Checks)
+	if report.Checks["runtime_schema_json"] != "fail" {
+		t.Fatalf("expected runtime_schema_json to fail, got %+v", report.Checks)
 	}
 	if report.Checks["config_defaults"] != "ok" {
 		t.Fatalf("expected config_defaults to remain ok, got %+v", report.Checks)
@@ -91,38 +87,30 @@ Issue {{ issue.identifier }}
 	}
 }
 
-func TestRunRejectsWorkflowAdvisories(t *testing.T) {
-	tmp := t.TempDir()
+func TestRunRejectsLegacyWorkflowFields(t *testing.T) {
+	tmp := tempRepoRoot(t)
 	workflow := `---
 tracker:
   kind: kanban
-phases:
-  done:
-    prompt: |
-      Sync origin/main first.
-      Merge the issue branch into local main.
-      Push main to origin.
+agent:
+  mode: app_server
+codex:
+  command: codex app-server
 ---
-## Instructions
-5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+Issue {{ issue.identifier }}
 `
 	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	schemaPath := filepath.Join(tmp, "schemas", "codex", codexschema.SupportedVersion, "json", "v1", "InitializeParams.json")
-	if err := os.MkdirAll(filepath.Dir(schemaPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(schemaPath, []byte(`{}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	report := Run(tmp)
 	if report.OK {
-		t.Fatalf("expected spec check to fail on workflow advisories, got %+v", report)
+		t.Fatalf("expected legacy workflow fields to fail spec check, got %+v", report)
 	}
-	if report.Checks["workflow_advisories"] != "fail" {
-		t.Fatalf("expected workflow_advisories to fail, got %+v", report.Checks)
+	if report.Checks["workflow_load"] != "fail" {
+		t.Fatalf("expected workflow_load to fail, got %+v", report.Checks)
+	}
+	if report.Checks["runtime_schema_json"] != "ok" {
+		t.Fatalf("expected runtime schema validation to remain ok, got %+v", report.Checks)
 	}
 }

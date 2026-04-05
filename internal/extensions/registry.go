@@ -1,6 +1,7 @@
 package extensions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,11 +17,20 @@ type Tool struct {
 	Description        string                 `json:"description"`
 	Command            string                 `json:"command"`
 	InputSchema        map[string]interface{} `json:"input_schema,omitempty"`
+	Annotations        ToolAnnotations        `json:"annotations,omitempty"`
 	TimeoutSec         int                    `json:"timeout_sec,omitempty"`
 	Allowed            *bool                  `json:"allowed,omitempty"`
 	WorkingDir         string                 `json:"working_dir,omitempty"`
 	RequireArgs        bool                   `json:"require_args,omitempty"`
 	DenyEnvPassthrough bool                   `json:"deny_env_passthrough,omitempty"`
+}
+
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"read_only_hint,omitempty"`
+	DestructiveHint *bool  `json:"destructive_hint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotent_hint,omitempty"`
+	OpenWorldHint   *bool  `json:"open_world_hint,omitempty"`
 }
 
 type Registry struct {
@@ -38,6 +48,9 @@ func LoadFile(path string) (*Registry, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateAnnotationsPayload(data); err != nil {
 		return nil, err
 	}
 	var defs []Tool
@@ -91,6 +104,7 @@ func (r *Registry) Specs() []map[string]interface{} {
 			"name":        tool.Name,
 			"description": tool.Description,
 			"inputSchema": inputSchemaForTool(tool),
+			"annotations": annotationSpecForTool(tool),
 		})
 	}
 	return specs
@@ -176,6 +190,35 @@ func validateInputSchema(tool Tool) error {
 	return nil
 }
 
+func validateAnnotationsPayload(data []byte) error {
+	var defs []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &defs); err != nil {
+		return nil
+	}
+	for _, raw := range defs {
+		annotationBody, ok := raw["annotations"]
+		if !ok || len(bytes.TrimSpace(annotationBody)) == 0 || bytes.Equal(bytes.TrimSpace(annotationBody), []byte("null")) {
+			continue
+		}
+		name := annotationToolName(raw["name"])
+		decoder := json.NewDecoder(bytes.NewReader(annotationBody))
+		decoder.DisallowUnknownFields()
+		var annotations ToolAnnotations
+		if err := decoder.Decode(&annotations); err != nil {
+			return fmt.Errorf("extension tool %q has invalid annotations: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func annotationToolName(raw json.RawMessage) string {
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
+
 func inputSchemaForTool(tool Tool) map[string]interface{} {
 	if len(tool.InputSchema) != 0 {
 		return cloneMap(tool.InputSchema)
@@ -189,6 +232,23 @@ func inputSchemaForTool(tool Tool) map[string]interface{} {
 			},
 		},
 	}
+}
+
+func annotationSpecForTool(tool Tool) map[string]interface{} {
+	return map[string]interface{}{
+		"title":           strings.TrimSpace(tool.Annotations.Title),
+		"readOnlyHint":    boolValueOrDefault(tool.Annotations.ReadOnlyHint, false),
+		"destructiveHint": boolValueOrDefault(tool.Annotations.DestructiveHint, true),
+		"idempotentHint":  boolValueOrDefault(tool.Annotations.IdempotentHint, false),
+		"openWorldHint":   boolValueOrDefault(tool.Annotations.OpenWorldHint, true),
+	}
+}
+
+func boolValueOrDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func cloneMap(src map[string]interface{}) map[string]interface{} {

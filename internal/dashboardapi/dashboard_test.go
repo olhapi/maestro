@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
 
 func TestDashboardWorkEpicsAndRuntimeEndpointsExposeCurrentData(t *testing.T) {
-	srv, project, epic := setupDashboardCoverageFixture(t)
+	_, srv, project, epic := setupDashboardCoverageFixture(t)
 
 	workResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/work", nil)
 	if workResp.StatusCode != http.StatusOK {
@@ -166,7 +166,7 @@ func TestDashboardHelperAndDecoderCoverage(t *testing.T) {
 		t.Fatalf("expected identifier fallback for sort key, got %q", got)
 	}
 
-	items := []appserver.PendingInteraction{
+	items := []agentruntime.PendingInteraction{
 		{
 			ID:              "interrupt-1",
 			IssueID:         "issue-1",
@@ -272,7 +272,7 @@ func TestDashboardHelperAndDecoderCoverage(t *testing.T) {
 	})
 }
 
-func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanban.Project, *kanban.Epic) {
+func setupDashboardCoverageFixture(t *testing.T) (*kanban.Store, *inprocessserver.Server, *kanban.Project, *kanban.Epic) {
 	t.Helper()
 
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
@@ -356,7 +356,7 @@ func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanb
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.Identifier: appserver.Session{
+			issue.Identifier: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-dashboard-turn-1",
@@ -379,5 +379,175 @@ func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanb
 	}
 	t.Cleanup(srv.Close)
 
-	return srv, project, epic
+	return store, srv, project, epic
+}
+
+func TestDashboardScopeAndFeedHelpers(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if got := projectScopeError("/repo", "/repo"); got != "" {
+		t.Fatalf("expected matching scopes to be allowed, got %q", got)
+	}
+	if got := projectScopeError("/repo", "/scope"); got == "" {
+		t.Fatal("expected scope mismatch to report an error")
+	}
+
+	project := &kanban.Project{
+		RepoPath:           "/repo",
+		OrchestrationReady: true,
+	}
+	decorateProject(project, "/repo")
+	if !project.DispatchReady || project.DispatchError != "" {
+		t.Fatalf("expected matching project scope to remain ready, got %#v", project)
+	}
+	decorateProject(project, "/scope")
+	if project.DispatchReady || project.DispatchError == "" {
+		t.Fatalf("expected mismatched project scope to be decorated, got %#v", project)
+	}
+	decorateProject(nil, "/scope")
+
+	if err := validateScopedRepoPath("\x00", "/scope"); err == nil {
+		t.Fatal("expected invalid repo path to fail validation")
+	}
+
+	for _, tc := range []struct {
+		contentType string
+		want        bool
+	}{
+		{contentType: "image/png", want: true},
+		{contentType: "image/png; charset=utf-8", want: true},
+		{contentType: "text/plain", want: false},
+		{contentType: "text/plain; charset=\"broken", want: false},
+	} {
+		if got := isInlineRenderableContentType(tc.contentType); got != tc.want {
+			t.Fatalf("isInlineRenderableContentType(%q) = %v, want %v", tc.contentType, got, tc.want)
+		}
+	}
+
+	if got := firstRespondableInterruptID(agentruntime.PendingInteractionSnapshot{
+		Items: []agentruntime.PendingInteraction{
+			{
+				ID:   "alert-1",
+				Kind: agentruntime.PendingInteractionKindAlert,
+			},
+			{
+				ID:   " ",
+				Kind: agentruntime.PendingInteractionKindApproval,
+			},
+		},
+	}); got != "" {
+		t.Fatalf("expected alerts and blank IDs to be skipped, got %q", got)
+	}
+
+	now := time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC)
+	if status, message, updatedAt, ok := openPlanningFeedState(nil); ok || status != "" || message != "" || updatedAt != nil {
+		t.Fatalf("expected nil planning state to be inactive, got %q %q %#v %v", status, message, updatedAt, ok)
+	}
+	if status, message, updatedAt, ok := openPlanningFeedState(&kanban.IssuePlanning{Status: kanban.IssuePlanningStatusDrafting, UpdatedAt: now}); !ok || status != "active" || message != "Revising the plan." || updatedAt == nil || !updatedAt.Equal(now) {
+		t.Fatalf("unexpected drafting planning state: %q %q %#v %v", status, message, updatedAt, ok)
+	}
+	if status, message, updatedAt, ok := openPlanningFeedState(&kanban.IssuePlanning{Status: kanban.IssuePlanningStatusRevisionRequested, UpdatedAt: now}); !ok || status != "revision_queued" || message != queuedPlanRevisionText || updatedAt == nil || !updatedAt.Equal(now) {
+		t.Fatalf("unexpected revision planning state: %q %q %#v %v", status, message, updatedAt, ok)
+	}
+
+	requestedAt := now.Add(-time.Hour)
+	alertAt := now.Add(-30 * time.Minute)
+	planning := &kanban.IssuePlanning{
+		SessionID:            "plan-session",
+		Status:               kanban.IssuePlanningStatusAwaitingApproval,
+		CurrentVersionNumber: 2,
+		CurrentVersion: &kanban.IssuePlanVersion{
+			Markdown: "Plan markdown",
+		},
+		UpdatedAt: now,
+	}
+	blocked := buildLiveSessionFeedEntry(
+		store,
+		"ISS-1",
+		agentruntime.Session{
+			IssueID:         "issue-1",
+			IssueIdentifier: "ISS-1",
+			LastTimestamp:   time.Time{},
+			LastMessage:     "",
+			TotalTokens:     0,
+		},
+		observability.RunningEntry{
+			IssueID:    "issue-1",
+			Identifier: "ISS-1",
+			Phase:      "implementation",
+			Attempt:    3,
+			StartedAt:  now.Add(-2 * time.Hour),
+			LastEventAt: func() *time.Time {
+				t := now.Add(-90 * time.Minute)
+				return &t
+			}(),
+			LastMessage: "running",
+			TurnCount:   4,
+			Tokens: observability.TokenTotals{
+				TotalTokens: 11,
+			},
+		},
+		&kanban.Issue{
+			ID:                             "issue-1",
+			Identifier:                     "ISS-1",
+			Title:                          "Blocked issue",
+			PendingPlanRevisionMarkdown:    "draft",
+			PendingPlanRevisionRequestedAt: &requestedAt,
+		},
+		planning,
+		"Blocked issue",
+		&agentruntime.PendingInteraction{
+			ID:              "alert-1",
+			Kind:            agentruntime.PendingInteractionKindAlert,
+			LastActivity:    "Blocked by policy",
+			LastActivityAt:  &alertAt,
+			RequestedAt:     now,
+			IssueIdentifier: "ISS-1",
+		},
+	)
+	if blocked.Status != "blocked" || blocked.LastMessage != "Blocked by policy" || !blocked.UpdatedAt.Equal(alertAt) || blocked.TotalTokens != 11 {
+		t.Fatalf("unexpected blocked live session entry: %#v", blocked)
+	}
+	if blocked.Planning == nil || blocked.Planning.CurrentVersionNumber != 2 {
+		t.Fatalf("expected planning summary to be preserved, got %#v", blocked.Planning)
+	}
+
+	revisionQueued := buildLiveSessionFeedEntry(
+		store,
+		"ISS-2",
+		agentruntime.Session{
+			IssueIdentifier: "ISS-2",
+			LastMessage:     "running",
+			TotalTokens:     4,
+		},
+		observability.RunningEntry{
+			IssueID:    "issue-2",
+			Identifier: "ISS-2",
+			StartedAt:  now.Add(-time.Hour),
+			TurnCount:  2,
+		},
+		&kanban.Issue{
+			ID:         "issue-2",
+			Identifier: "ISS-2",
+			Title:      "Revision queued issue",
+		},
+		&kanban.IssuePlanning{
+			Status:                     kanban.IssuePlanningStatusRevisionRequested,
+			PendingRevisionNote:        "draft",
+			PendingRevisionRequestedAt: &requestedAt,
+			UpdatedAt:                  requestedAt,
+		},
+		"Revision queued issue",
+		nil,
+	)
+	if revisionQueued.Status != "revision_queued" || revisionQueued.LastMessage != queuedPlanRevisionText || !revisionQueued.UpdatedAt.Equal(requestedAt) {
+		t.Fatalf("unexpected revision queued entry: %#v", revisionQueued)
+	}
+	if revisionQueued.TotalTokens != 4 {
+		t.Fatalf("expected running tokens to be used, got %#v", revisionQueued)
+	}
 }

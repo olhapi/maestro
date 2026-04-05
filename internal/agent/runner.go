@@ -15,10 +15,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
+	runtimefactory "github.com/olhapi/maestro/internal/agentruntime/factory"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/providers"
-	"github.com/olhapi/maestro/internal/runtime"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -31,9 +32,10 @@ type Runner struct {
 	store                   *kanban.Store
 	service                 *providers.Service
 	extensions              *extensions.Registry
-	sessionObserver         func(issueID string, session *runtime.Session)
-	activityObserver        func(issueID string, event runtime.ActivityEvent)
-	interactionObserver     func(issueID string, interaction *runtime.PendingInteraction, responder runtime.InteractionResponder)
+	runtimeStarter          runtimefactory.WorkflowStarter
+	sessionObserver         func(issueID string, session *agentruntime.Session)
+	activityObserver        func(issueID string, event agentruntime.ActivityEvent)
+	interactionObserver     func(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder)
 	interactionDoneObserver func(issueID string, interactionID string)
 }
 
@@ -42,7 +44,7 @@ type RunResult struct {
 	Output     string
 	Error      error
 	StopReason string
-	AppSession *runtime.Session
+	AppSession *agentruntime.Session
 }
 
 type preparedTurnPrompt struct {
@@ -82,6 +84,7 @@ Continuation guidance:
 
 const activeThreadCommandPollWindow = 250 * time.Millisecond
 const appServerIssueAssetStageDir = ".maestro/issue-assets"
+const planApprovalStopReason = "plan_approval_pending"
 const workspaceBootstrapRefreshAttempts = 3
 const workspaceBootstrapRefreshRetryDelay = 100 * time.Millisecond
 
@@ -177,18 +180,24 @@ func NewRunnerWithExtensions(provider WorkflowProvider, store *kanban.Store, reg
 	if registry == nil {
 		registry = extensions.EmptyRegistry()
 	}
-	return &Runner{workflowProvider: provider, store: store, service: providers.NewService(store), extensions: registry}
+	return &Runner{
+		workflowProvider: provider,
+		store:            store,
+		service:          providers.NewService(store),
+		extensions:       registry,
+		runtimeStarter:   runtimefactory.StartWorkflow,
+	}
 }
 
-func (r *Runner) SetSessionObserver(observer func(issueID string, session *runtime.Session)) {
+func (r *Runner) SetSessionObserver(observer func(issueID string, session *agentruntime.Session)) {
 	r.sessionObserver = observer
 }
 
-func (r *Runner) SetActivityObserver(observer func(issueID string, event runtime.ActivityEvent)) {
+func (r *Runner) SetActivityObserver(observer func(issueID string, event agentruntime.ActivityEvent)) {
 	r.activityObserver = observer
 }
 
-func (r *Runner) SetInteractionObserver(observer func(issueID string, interaction *runtime.PendingInteraction, responder runtime.InteractionResponder)) {
+func (r *Runner) SetInteractionObserver(observer func(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder)) {
 	r.interactionObserver = observer
 }
 
@@ -205,7 +214,6 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	if err != nil {
 		return nil, err
 	}
-	workflow = r.applyIssuePermissionProfile(workflow, issue)
 
 	workspace, err := r.getOrCreateWorkspace(ctx, workflow, issue)
 	if err != nil {
@@ -238,17 +246,9 @@ func (r *Runner) RunAttempt(ctx context.Context, issue *kanban.Issue, attempt in
 	return result, nil
 }
 
-func (r *Runner) applyIssuePermissionProfile(workflow *config.Workflow, issue *kanban.Issue) *config.Workflow {
-	if workflow == nil {
-		return nil
-	}
-	cloned := *workflow
-	cloned.Config = workflow.Config
-	cloned.Config.Codex = workflow.Config.Codex
-	permissionConfig := r.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
-	cloned.Config.Codex.ApprovalPolicy = permissionConfig.ApprovalPolicy
-	cloned.Config.Codex.InitialCollaborationMode = permissionConfig.InitialCollaborationMode
-	return &cloned
+type runtimeSelection struct {
+	Name   string
+	Config config.RuntimeConfig
 }
 
 type permissionConfig struct {
@@ -258,11 +258,54 @@ type permissionConfig struct {
 	InitialCollaborationMode string
 }
 
-func (r *Runner) permissionConfigForIssue(workflow *config.Workflow, issue *kanban.Issue, approvalPolicy interface{}) permissionConfig {
-	initialCollaborationMode := config.InitialCollaborationModeDefault
-	if workflow != nil {
-		initialCollaborationMode = strings.TrimSpace(workflow.Config.Codex.InitialCollaborationMode)
+func (r *Runner) resolveExecutionPolicy(workflow *config.Workflow, issue *kanban.Issue) (runtimeSelection, permissionConfig) {
+	selectedRuntime := r.runtimeSelectionForIssue(workflow, issue)
+	permissions := r.permissionConfigForIssue(issue, selectedRuntime.Config.ApprovalPolicy, selectedRuntime.Config.InitialCollaborationMode)
+	return selectedRuntime, permissions
+}
+
+func (r *Runner) runtimeSelectionForIssue(workflow *config.Workflow, issue *kanban.Issue) runtimeSelection {
+	if workflow == nil {
+		return runtimeSelection{}
 	}
+
+	selectedName, selectedRuntime := workflow.Config.SelectedRuntime()
+
+	if projectRuntimeName := r.projectRuntimeName(issue); projectRuntimeName != "" {
+		if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(projectRuntimeName); ok {
+			selectedName = projectRuntimeName
+			selectedRuntime = runtimeConfig
+		}
+	}
+
+	if issue != nil {
+		if issueRuntimeName := strings.TrimSpace(issue.RuntimeName); issueRuntimeName != "" {
+			if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(issueRuntimeName); ok {
+				selectedName = issueRuntimeName
+				selectedRuntime = runtimeConfig
+			}
+		}
+	}
+
+	return runtimeSelection{
+		Name:   selectedName,
+		Config: selectedRuntime,
+	}
+}
+
+func (r *Runner) projectRuntimeName(issue *kanban.Issue) string {
+	if issue == nil || r.store == nil || strings.TrimSpace(issue.ProjectID) == "" {
+		return ""
+	}
+	project, err := r.store.GetProject(issue.ProjectID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(project.RuntimeName)
+}
+
+func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy interface{}, initialCollaborationMode string) permissionConfig {
+	initialCollaborationMode = strings.TrimSpace(initialCollaborationMode)
 	if initialCollaborationMode == "" {
 		initialCollaborationMode = config.InitialCollaborationModeDefault
 	}
@@ -285,7 +328,7 @@ func (r *Runner) permissionConfigForIssue(workflow *config.Workflow, issue *kanb
 			ApprovalPolicy:           approvalPolicy,
 			ThreadSandbox:            "workspace-write",
 			TurnSandboxPolicy:        nil,
-			InitialCollaborationMode: initialCollaborationMode,
+			InitialCollaborationMode: config.InitialCollaborationModePlan,
 		}
 	default:
 		return permissionConfig{
@@ -347,18 +390,62 @@ func sanitizeWorkspaceKey(identifier string) string {
 	return out
 }
 
+func projectWorkspaceSlug(project *kanban.Project) string {
+	if project == nil {
+		return ""
+	}
+	candidate := strings.TrimSpace(project.ProviderProjectRef)
+	if candidate == "" {
+		candidate = strings.TrimSpace(project.Name)
+	}
+	candidate = strings.ToLower(candidate)
+	candidate = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(candidate, "-")
+	candidate = strings.Trim(candidate, "-")
+	if candidate == "" {
+		return "project"
+	}
+	return candidate
+}
+
+func workspaceRootAllowsRehome(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	if strings.HasPrefix(root, "~") || strings.Contains(root, "$") {
+		return false
+	}
+	return filepath.IsAbs(root)
+}
+
+func workspacePathForIssue(rootAbs string, project *kanban.Project, issue *kanban.Issue) string {
+	issueKey := "issue"
+	if issue != nil {
+		issueKey = sanitizeWorkspaceKey(issue.Identifier)
+	}
+	return filepath.Join(rootAbs, projectWorkspaceSlug(project), issueKey)
+}
+
 func deterministicIssueBranch(issue *kanban.Issue) string {
+	return deterministicIssueBranchForPrefix(config.DefaultConfig().Workspace.BranchPrefix, issue)
+}
+
+func deterministicIssueBranchForPrefix(prefix string, issue *kanban.Issue) string {
+	branchPrefix := strings.TrimSpace(prefix)
+	if branchPrefix == "" {
+		branchPrefix = config.DefaultWorkspaceBranchPrefix
+	}
 	if issue == nil {
-		return "codex/issue"
+		return branchPrefix + "issue"
 	}
 	if branch := strings.TrimSpace(issue.BranchName); branch != "" {
 		return branch
 	}
 	identifier := strings.TrimSpace(issue.Identifier)
 	if identifier == "" {
-		return "codex/issue"
+		return branchPrefix + "issue"
 	}
-	return "codex/" + identifier
+	return branchPrefix + identifier
 }
 
 func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
@@ -791,7 +878,108 @@ func (r *Runner) recordWorkspaceBootstrapRecovery(issue *kanban.Issue, preparedP
 	r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_recovery", fields)
 }
 
-func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, workspacePath, rootAbs string) (bool, string, error) {
+func workspaceProjectForIssue(store *kanban.Store, issue *kanban.Issue) (*kanban.Project, error) {
+	if issue == nil || strings.TrimSpace(issue.ProjectID) == "" || store == nil {
+		return nil, nil
+	}
+	project, err := store.GetProject(strings.TrimSpace(issue.ProjectID))
+	if err != nil {
+		if kanban.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load project for workspace bootstrap: %w", err)
+	}
+	return project, nil
+}
+
+func workspaceCanMoveToRoot(ctx context.Context, workspacePath, repoPath string) (bool, error) {
+	info, err := os.Stat(workspacePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, nil
+	}
+	linkedWorktree, err := isLinkedWorktree(ctx, workspacePath)
+	if err != nil {
+		return false, err
+	}
+	if !linkedWorktree {
+		return false, nil
+	}
+	return workspaceMatchesRepo(ctx, workspacePath, repoPath)
+}
+
+func moveWorkspaceToRoot(ctx context.Context, repoPath, workspacePath, targetPath, rootAbs string) error {
+	targetPath, err := validateWorkspacePath(targetPath, rootAbs)
+	if err != nil {
+		return err
+	}
+	workspacePath, err = filepath.Abs(workspacePath)
+	if err != nil {
+		return fmt.Errorf("resolve workspace path: %w", err)
+	}
+	if filepath.Clean(workspacePath) == filepath.Clean(targetPath) {
+		return nil
+	}
+	unlock, err := repoBootstrapLock(ctx, repoPath)
+	if err != nil {
+		return fmt.Errorf("lock workspace bootstrap: %w", err)
+	}
+	defer unlock()
+
+	if _, err := runGitCommand(ctx, repoPath, "rev-parse", "--show-toplevel"); err != nil {
+		return fmt.Errorf("repo validation failed: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create target workspace parent: %w", err)
+	}
+	if _, err := os.Lstat(targetPath); err == nil {
+		if err := removeManagedWorkspace(ctx, targetPath); err != nil {
+			return fmt.Errorf("remove target workspace %s: %w", targetPath, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := runGitCommand(ctx, repoPath, "worktree", "move", workspacePath, targetPath); err != nil {
+		return fmt.Errorf("move git worktree %s to %s: %w", workspacePath, targetPath, err)
+	}
+	return nil
+}
+
+func (r *Runner) recoverWorkspaceToCurrentRoot(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, existingPath, targetPath, rootAbs string) error {
+	repoPath, err := r.resolveRepoPathForIssue(workflow, issue)
+	if err != nil {
+		return err
+	}
+	existingPath, err = filepath.Abs(existingPath)
+	if err != nil {
+		return fmt.Errorf("resolve workspace path: %w", err)
+	}
+	targetPath, err = validateWorkspacePath(targetPath, rootAbs)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(existingPath) == filepath.Clean(targetPath) {
+		return nil
+	}
+	canMove, err := workspaceCanMoveToRoot(ctx, existingPath, repoPath)
+	if err != nil {
+		return err
+	}
+	if !canMove {
+		return nil
+	}
+	if err := moveWorkspaceToRoot(ctx, repoPath, existingPath, targetPath, rootAbs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Workflow, issue *kanban.Issue, workspacePath, rootAbs string, legacyPath bool) (bool, string, error) {
 	repoPath, err := r.resolveRepoPathForIssue(workflow, issue)
 	if err != nil {
 		return false, "", err
@@ -799,7 +987,7 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 	if _, err := runGitCommand(ctx, repoPath, "rev-parse", "--show-toplevel"); err != nil {
 		return false, "", fmt.Errorf("repo validation failed: %w", err)
 	}
-	branchName := deterministicIssueBranch(issue)
+	branchName := deterministicIssueBranchForPrefix(workflow.Config.Workspace.BranchPrefix, issue)
 	if issue != nil && strings.TrimSpace(issue.BranchName) != branchName && r.store != nil {
 		if err := r.store.UpdateIssue(issue.ID, map[string]interface{}{"branch_name": branchName}); err == nil {
 			issue.BranchName = branchName
@@ -812,9 +1000,18 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 	}
 	defer unlock()
 
-	normalizedPath, err := validateWorkspacePath(workspacePath, rootAbs)
-	if err != nil {
-		return false, "", err
+	normalizedPath := workspacePath
+	// Only preserve content when we are explicitly recovering an old legacy path.
+	if legacyPath {
+		normalizedPath, err = filepath.Abs(workspacePath)
+		if err != nil {
+			return false, "", fmt.Errorf("resolve workspace path: %w", err)
+		}
+	} else {
+		normalizedPath, err = validateWorkspacePath(workspacePath, rootAbs)
+		if err != nil {
+			return false, "", err
+		}
 	}
 	if matched, err := workspaceMatchesRepo(ctx, normalizedPath, repoPath); err != nil {
 		return false, "", err
@@ -881,20 +1078,22 @@ func (r *Runner) ensureIssueWorkspace(ctx context.Context, workflow *config.Work
 		}
 	}
 
-	preparedPath, _, err := prepareWorkspaceDir(normalizedPath, rootAbs)
+	preparedPath, _, err := prepareWorkspaceDir(normalizedPath, rootAbs, !legacyPath)
 	if err != nil {
 		return false, "", err
 	}
 
-	preservedPath, preserved, err := preserveWorkspaceContents(ctx, preparedPath)
-	if err != nil {
-		return false, "", fmt.Errorf("preserve workspace contents %s: %w", preparedPath, err)
-	}
-	if preserved {
-		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_preserved", map[string]interface{}{
-			"path":           preparedPath,
-			"preserved_path": preservedPath,
-		})
+	if legacyPath {
+		preservedPath, preserved, err := preserveWorkspaceContents(ctx, preparedPath)
+		if err != nil {
+			return false, "", fmt.Errorf("preserve workspace contents %s: %w", preparedPath, err)
+		}
+		if preserved {
+			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_preserved", map[string]interface{}{
+				"path":           preparedPath,
+				"preserved_path": preservedPath,
+			})
+		}
 	}
 	if err := removeManagedWorkspace(ctx, preparedPath); err != nil {
 		return false, "", fmt.Errorf("remove stale workspace %s: %w", preparedPath, err)
@@ -930,9 +1129,39 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 		return nil, fmt.Errorf("create workspace root: %w", err)
 	}
 
-	workspacePath := filepath.Join(rootAbs, sanitizeWorkspaceKey(issue.Identifier))
+	project, err := workspaceProjectForIssue(r.store, issue)
+	if err != nil {
+		return nil, err
+	}
+	targetPath := workspacePathForIssue(rootAbs, project, issue)
+
 	if existing, err := r.store.GetWorkspace(issue.ID); err == nil {
-		createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, existing.Path, rootAbs)
+		existingPath, pathErr := filepath.Abs(existing.Path)
+		if pathErr != nil {
+			return nil, fmt.Errorf("resolve workspace path: %w", pathErr)
+		}
+		legacyPath := false
+		if !pathWithinRoot(existingPath, rootAbs) {
+			if workspaceRootAllowsRehome(workflow.Config.Workspace.Root) {
+				if err := r.recoverWorkspaceToCurrentRoot(ctx, workflow, issue, existingPath, targetPath, rootAbs); err != nil {
+					r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
+						"path":        existing.Path,
+						"target_path": targetPath,
+						"error":       err.Error(),
+						"status":      "required",
+						"message":     "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
+					})
+					return nil, fmt.Errorf("workspace_bootstrap: %w", err)
+				}
+				existing, err = r.store.UpdateWorkspacePath(issue.ID, targetPath)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				legacyPath = true
+			}
+		}
+		createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, existing.Path, rootAbs, legacyPath)
 		if err != nil {
 			r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
 				"path":    existing.Path,
@@ -956,10 +1185,10 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 		return existing, nil
 	}
 
-	createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, workspacePath, rootAbs)
+	createdNow, preparedPath, err := r.ensureIssueWorkspace(ctx, workflow, issue, targetPath, rootAbs, false)
 	if err != nil {
 		r.recordWorkspaceRuntimeEvent(issue, "workspace_bootstrap_failed", map[string]interface{}{
-			"path":    workspacePath,
+			"path":    targetPath,
 			"error":   err.Error(),
 			"status":  "required",
 			"message": "Workspace bootstrap failed. Review the workspace blocker and retry once it is resolved.",
@@ -983,10 +1212,19 @@ func (r *Runner) getOrCreateWorkspace(ctx context.Context, workflow *config.Work
 	return workspace, nil
 }
 
-func prepareWorkspaceDir(path, rootAbs string) (string, bool, error) {
-	workspacePath, err := validateWorkspacePath(path, rootAbs)
-	if err != nil {
-		return "", false, err
+func prepareWorkspaceDir(path, rootAbs string, enforceRoot bool) (string, bool, error) {
+	workspacePath := path
+	var err error
+	if enforceRoot {
+		workspacePath, err = validateWorkspacePath(path, rootAbs)
+		if err != nil {
+			return "", false, err
+		}
+	} else {
+		workspacePath, err = filepath.Abs(path)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve workspace path: %w", err)
+		}
 	}
 	if fi, err := os.Lstat(workspacePath); err == nil {
 		if !fi.IsDir() {
@@ -1020,10 +1258,6 @@ func pathWithinRoot(path, rootAbs string) bool {
 }
 
 func (r *Runner) executeTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int) (*RunResult, error) {
-	return r.executeCodexTurns(ctx, workflow, workspacePath, issue, attempt)
-}
-
-func (r *Runner) executeCodexTurns(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, attempt int) (*RunResult, error) {
 	runPhase := issue.WorkflowPhase
 	if !runPhase.IsValid() {
 		runPhase = kanban.DefaultWorkflowPhaseForState(issue.State)
@@ -1033,45 +1267,178 @@ func (r *Runner) executeCodexTurns(ctx context.Context, workflow *config.Workflo
 		return nil, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(activeWorkflow, issue, activeWorkflow.Config.Codex.ApprovalPolicy)
+	runtimeSelection, permissions := r.resolveExecutionPolicy(activeWorkflow, issue)
 	planMode := strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
-	var backend runtime.AppServerBackend
-	backend, err = runtime.NewCodexBackend(ctx, runtime.CodexBackendConfig{
-		Command:                  activeWorkflow.Config.Codex.Command,
-		Env:                      os.Environ(),
-		Workspace:                workspacePath,
-		WorkspaceRoot:            activeWorkflow.Config.Workspace.Root,
-		IssueID:                  issue.ID,
-		IssueIdentifier:          issue.Identifier,
-		ExpectedVersion:          activeWorkflow.Config.Codex.ExpectedVersion,
-		ApprovalPolicy:           permissions.ApprovalPolicy,
-		InitialCollaborationMode: permissions.InitialCollaborationMode,
-		ThreadSandbox:            permissions.ThreadSandbox,
-		TurnSandboxPolicy:        permissions.TurnSandboxPolicy,
-		ReadTimeout:              time.Duration(activeWorkflow.Config.Codex.ReadTimeoutMs) * time.Millisecond,
-		TurnTimeout:              time.Duration(activeWorkflow.Config.Codex.TurnTimeoutMs) * time.Millisecond,
-		StallTimeout:             time.Duration(activeWorkflow.Config.Codex.StallTimeoutMs) * time.Millisecond,
-		DynamicTools:             r.extensions.Specs(),
-		ToolExecutor:             r.extensionToolExecutor(),
-		ResumeThreadID:           strings.TrimSpace(issue.ResumeThreadID),
-		ResumeSource:             "orphaned_run_recovery",
-		OnSessionUpdate: func(session *runtime.Session) {
+	client, err := r.startRuntimeClient(ctx, activeWorkflow, workspacePath, issue, runtimeSelection, permissions)
+	if err != nil {
+		return &RunResult{Success: false, Error: err}, nil
+	}
+	defer client.Close()
+
+	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
+		activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
+		if err != nil {
+			return nil, err
+		}
+		issue = refreshedIssue
+		permissions = r.permissionConfigForIssue(issue, runtimeSelection.Config.ApprovalPolicy, runtimeSelection.Config.InitialCollaborationMode)
+		agentruntime.ApplyPermissionConfig(client, runtimePermissionConfig(permissions))
+		prepared, err := r.prepareTurnPromptWithWorkspace(activeWorkflow, issue, attempt, turn, workspacePath)
+		if err != nil {
+			return nil, err
+		}
+		planMode = strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
+		consumePlanRevision := turn == 1 && planMode && issueHasPendingPlanRevision(issue)
+		input, err := r.prepareRuntimeTurnInput(client.Capabilities(), runtimeSelection.Name, workspacePath, issue, prepared.Prompt, turn == 1)
+		if err != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+		title := strings.TrimSpace(fmt.Sprintf("%s: %s", issue.Identifier, issue.Title))
+		if title == ":" {
+			title = "Maestro turn"
+		}
+		if consumePlanRevision {
+			if err := r.clearPendingPlanRevision(issue, attempt); err != nil {
+				return &RunResult{
+					Success:    false,
+					Output:     client.Output(),
+					Error:      err,
+					AppSession: client.Session(),
+				}, nil
+			}
+		}
+		var deliverErr error
+		if err := client.RunTurn(ctx, agentruntime.TurnRequest{Title: title, Input: input}, func(session *agentruntime.Session) {
+			if client.Capabilities().SupportsResume() {
+				deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
+			}
+		}); err != nil {
+			if _, refreshed, refreshErr := r.currentWorkflowIssue(activeWorkflow, issue); refreshErr == nil && issueStateIsTerminalDone(refreshed, client.Session()) {
+				return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+			}
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+		if deliverErr != nil {
+			if _, refreshed, refreshErr := r.currentWorkflowIssue(activeWorkflow, issue); refreshErr == nil && issueStateIsTerminalDone(refreshed, client.Session()) {
+				return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+			}
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      deliverErr,
+				AppSession: client.Session(),
+			}, nil
+		}
+		if !client.Capabilities().SupportsResume() {
+			if err := r.markDeliveredCommands(issue, prepared.Commands, "next_run", "", attempt); err != nil {
+				return &RunResult{
+					Success:    false,
+					Output:     client.Output(),
+					Error:      err,
+					AppSession: client.Session(),
+				}, nil
+			}
+		}
+		requestedPlanApproval, err := r.capturePendingPlanApproval(issue, attempt, client.Session(), planMode && client.Capabilities().SupportsPlanGating())
+		if err != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+		if requestedPlanApproval {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				StopReason: planApprovalStopReason,
+				AppSession: client.Session(),
+			}, nil
+		}
+		deliveredManualCommands, err := r.runPendingCommandsInActiveRuntime(ctx, client, workflow, issue, attempt, title, runtimeSelection)
+		if err != nil {
+			return &RunResult{
+				Success:    false,
+				Output:     client.Output(),
+				Error:      err,
+				AppSession: client.Session(),
+			}, nil
+		}
+		if deliveredManualCommands {
+			return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+		}
+
+		refreshed, continueRun := r.refreshForContinuation(workflow, runPhase, issue.ID)
+		if !continueRun {
+			return &RunResult{
+				Success:    true,
+				Output:     client.Output(),
+				AppSession: client.Session(),
+			}, nil
+		}
+		issue = refreshed
+	}
+	return &RunResult{Success: true, Output: client.Output(), AppSession: client.Session()}, nil
+}
+
+func (r *Runner) startRuntimeClient(ctx context.Context, workflow *config.Workflow, workspacePath string, issue *kanban.Issue, runtime runtimeSelection, permissions permissionConfig) (agentruntime.Client, error) {
+	if workflow == nil || issue == nil {
+		return nil, fmt.Errorf("workflow and issue are required")
+	}
+	startRuntime := r.runtimeStarter
+	if startRuntime == nil {
+		startRuntime = runtimefactory.StartWorkflow
+	}
+	return startRuntime(ctx, runtimefactory.WorkflowStartRequest{
+		Workflow:        workflow,
+		RuntimeName:     runtime.Name,
+		RuntimeConfig:   runtime.Config,
+		WorkspacePath:   workspacePath,
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		Env:             os.Environ(),
+		Permissions:     runtimePermissionConfig(permissions),
+		DynamicTools:    r.extensions.Specs(),
+		ToolExecutor:    r.extensionToolExecutor(),
+		ResumeToken:     strings.TrimSpace(issue.ResumeThreadID),
+		DBPath: func() string {
+			if r.store == nil {
+				return ""
+			}
+			return r.store.DBPath()
+		}(),
+		Metadata: map[string]interface{}{
+			"runtime_name": runtime.Name,
+		},
+	}, agentruntime.Observers{
+		OnSessionUpdate: func(session *agentruntime.Session) {
 			if r.sessionObserver == nil || issue == nil || session == nil {
 				return
 			}
 			r.sessionObserver(issue.ID, session)
 		},
-		OnActivityEvent: func(event runtime.ActivityEvent) {
+		OnActivityEvent: func(event agentruntime.ActivityEvent) {
 			if r.activityObserver == nil || issue == nil {
 				return
 			}
 			r.activityObserver(issue.ID, event)
 		},
-		OnPendingInteraction: func(interaction *runtime.PendingInteraction) {
-			if r.interactionObserver == nil || issue == nil || interaction == nil || backend == nil {
+		OnPendingInteraction: func(interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) {
+			if r.interactionObserver == nil || issue == nil || interaction == nil {
 				return
 			}
-			r.interactionObserver(issue.ID, interaction, backend.RespondToInteraction)
+			r.interactionObserver(issue.ID, interaction, responder)
 		},
 		OnPendingInteractionDone: func(interactionID string) {
 			if r.interactionDoneObserver == nil || issue == nil {
@@ -1080,114 +1447,18 @@ func (r *Runner) executeCodexTurns(ctx context.Context, workflow *config.Workflo
 			r.interactionDoneObserver(issue.ID, interactionID)
 		},
 	})
-	if err != nil {
-		return &RunResult{Success: false, Error: err}, nil
-	}
-	defer backend.Close()
-
-	for turn := 1; turn <= workflow.Config.Agent.MaxTurns; turn++ {
-		activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
-		if err != nil {
-			return nil, err
-		}
-		issue = refreshedIssue
-		permissions = r.permissionConfigForIssue(activeWorkflow, issue, activeWorkflow.Config.Codex.ApprovalPolicy)
-		backend.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
-		prepared, err := r.prepareTurnPromptWithWorkspace(activeWorkflow, issue, attempt, turn, workspacePath)
-		if err != nil {
-			return nil, err
-		}
-		consumePlanRevision := turn == 1 && r.planModeForIssue(activeWorkflow, issue) && issueHasPendingPlanRevision(issue)
-		input, err := r.prepareAppServerTurnInput(workspacePath, issue, prepared.Prompt, turn == 1)
-		if err != nil {
-			return &RunResult{
-				Success:    false,
-				Output:     backend.Output(),
-				Error:      err,
-				AppSession: backend.Session(),
-			}, nil
-		}
-		title := strings.TrimSpace(fmt.Sprintf("%s: %s", issue.Identifier, issue.Title))
-		if title == ":" {
-			title = "Maestro turn"
-		}
-		var deliverErr error
-		var consumeErr error
-		if err := backend.RunTurnWithInputsAndStartCallback(ctx, input, title, func(session *runtime.Session) {
-			if consumePlanRevision && consumeErr == nil {
-				consumeErr = r.clearPendingPlanRevision(issue)
-			}
-			if consumeErr == nil {
-				deliverErr = r.markDeliveredCommands(issue, prepared.Commands, "next_run", session.ThreadID, attempt)
-			}
-		}); err != nil {
-			return &RunResult{
-				Success:    false,
-				Output:     backend.Output(),
-				Error:      err,
-				AppSession: backend.Session(),
-			}, nil
-		}
-		if consumeErr != nil {
-			return &RunResult{
-				Success:    false,
-				Output:     backend.Output(),
-				Error:      consumeErr,
-				AppSession: backend.Session(),
-			}, nil
-		}
-		if deliverErr != nil {
-			return &RunResult{
-				Success:    false,
-				Output:     backend.Output(),
-				Error:      deliverErr,
-				AppSession: backend.Session(),
-			}, nil
-		}
-		requestedPlanApproval, err := r.capturePendingPlanApproval(issue, attempt, backend.Session(), planMode)
-		if err != nil {
-			return &RunResult{
-				Success:    false,
-				Output:     backend.Output(),
-				Error:      err,
-				AppSession: backend.Session(),
-			}, nil
-		}
-		if requestedPlanApproval {
-			return &RunResult{
-				Success:    false,
-				Output:     backend.Output(),
-				StopReason: runtime.PlanApprovalStopReason,
-				AppSession: backend.Session(),
-			}, nil
-		}
-		deliveredManualCommands, err := r.runPendingCommandsInActiveThread(ctx, backend, workflow, issue, attempt, title)
-		if err != nil {
-			return &RunResult{
-				Success:    false,
-				Output:     backend.Output(),
-				Error:      err,
-				AppSession: backend.Session(),
-			}, nil
-		}
-		if deliveredManualCommands {
-			return &RunResult{Success: true, Output: backend.Output(), AppSession: backend.Session()}, nil
-		}
-
-		refreshed, continueRun := r.refreshForContinuation(workflow, runPhase, issue.ID)
-		if !continueRun {
-			return &RunResult{
-				Success:    true,
-				Output:     backend.Output(),
-				AppSession: backend.Session(),
-			}, nil
-		}
-		issue = refreshed
-	}
-	return &RunResult{Success: true, Output: backend.Output(), AppSession: backend.Session()}, nil
 }
 
-func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, session *runtime.Session, planMode bool) (bool, error) {
+func runtimePermissionConfig(config permissionConfig) agentruntime.PermissionConfig {
+	return agentruntime.PermissionConfig{
+		ApprovalPolicy:    config.ApprovalPolicy,
+		ThreadSandbox:     config.ThreadSandbox,
+		TurnSandboxPolicy: config.TurnSandboxPolicy,
+		CollaborationMode: config.InitialCollaborationMode,
+	}
+}
+
+func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, session *agentruntime.Session, planMode bool) (bool, error) {
 	if issue == nil || !planMode {
 		return false, nil
 	}
@@ -1196,7 +1467,13 @@ func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, se
 		return false, nil
 	}
 	requestedAt := time.Now().UTC()
-	if err := r.store.SetIssuePendingPlanApproval(issue.ID, planMarkdown, requestedAt); err != nil {
+	threadID := ""
+	turnID := ""
+	if session != nil {
+		threadID = strings.TrimSpace(session.ThreadID)
+		turnID = strings.TrimSpace(session.TurnID)
+	}
+	if err := r.store.SetIssuePendingPlanApprovalWithContext(issue, planMarkdown, requestedAt, attempt, threadID, turnID); err != nil {
 		return false, err
 	}
 	if err := r.store.AppendRuntimeEvent("plan_approval_requested", map[string]interface{}{
@@ -1209,45 +1486,45 @@ func (r *Runner) capturePendingPlanApproval(issue *kanban.Issue, attempt int, se
 	}); err != nil {
 		return false, err
 	}
-	return true, r.store.ApplyIssueActivityEvent(issue.ID, issue.Identifier, attempt, runtime.ActivityEvent{
-		Type: "plan.approvalRequested",
-		Raw: map[string]interface{}{
-			"markdown":     planMarkdown,
-			"requested_at": requestedAt.Format(time.RFC3339),
-		},
-	})
+	return true, nil
 }
 
-func (r *Runner) clearPendingPlanRevision(issue *kanban.Issue) error {
+func (r *Runner) clearPendingPlanRevision(issue *kanban.Issue, attempt int) error {
 	if r.store == nil || !issueHasPendingPlanRevision(issue) {
 		return nil
 	}
-	requestedAt := ""
-	if issue.PendingPlanRevisionRequestedAt != nil {
-		requestedAt = issue.PendingPlanRevisionRequestedAt.UTC().Format(time.RFC3339)
-	}
-	clearedAt := time.Now().UTC()
+	revisionMarkdown := strings.TrimSpace(issue.PendingPlanRevisionMarkdown)
+	requestedAt := issue.PendingPlanRevisionRequestedAt
 	if err := r.store.ClearIssuePendingPlanRevision(issue.ID, "turn_started"); err != nil {
-		return err
-	}
-	if err := r.store.AppendRuntimeEvent("plan_revision_cleared", map[string]interface{}{
-		"issue_id":     issue.ID,
-		"identifier":   issue.Identifier,
-		"title":        issue.Title,
-		"phase":        string(issue.WorkflowPhase),
-		"markdown":     strings.TrimSpace(issue.PendingPlanRevisionMarkdown),
-		"reason":       "turn_started",
-		"requested_at": requestedAt,
-		"cleared_at":   clearedAt.Format(time.RFC3339),
-	}); err != nil {
 		return err
 	}
 	issue.PendingPlanRevisionMarkdown = ""
 	issue.PendingPlanRevisionRequestedAt = nil
+	r.recordPlanRevisionRuntimeEvent(issue, "plan_revision_cleared", attempt, requestedAt, revisionMarkdown, "turn_started")
 	return nil
 }
 
-func finalAnswerFromSession(session *runtime.Session) string {
+func (r *Runner) recordPlanRevisionRuntimeEvent(issue *kanban.Issue, kind string, attempt int, requestedAt *time.Time, markdown, reason string) {
+	if r.store == nil || issue == nil {
+		return
+	}
+	payload := map[string]interface{}{
+		"issue_id":   issue.ID,
+		"identifier": issue.Identifier,
+		"title":      issue.Title,
+		"phase":      string(issue.WorkflowPhase),
+		"attempt":    attempt,
+		"markdown":   markdown,
+		"reason":     reason,
+		"cleared_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if requestedAt != nil && !requestedAt.IsZero() {
+		payload["requested_at"] = requestedAt.UTC().Format(time.RFC3339)
+	}
+	_ = r.store.AppendRuntimeEventOnly(kind, payload)
+}
+
+func finalAnswerFromSession(session *agentruntime.Session) string {
 	if session == nil {
 		return ""
 	}
@@ -1272,6 +1549,8 @@ func finalAnswerFromSession(session *runtime.Session) string {
 	return ""
 }
 
+// Maestro treats a single explicit <proposed_plan> block as the authoritative plan payload.
+// Stream-json is useful for debugging, but this parser only relies on the final message body.
 func extractProposedPlanMarkdown(message string) string {
 	matches := proposedPlanBlockPattern.FindStringSubmatch(message)
 	if len(matches) != 2 {
@@ -1294,20 +1573,50 @@ func (r *Runner) currentWorkflowIssue(workflow *config.Workflow, issue *kanban.I
 	return workflow, refreshed, nil
 }
 
-func (r *Runner) prepareAppServerTurnInput(workspacePath string, issue *kanban.Issue, prompt string, includeImages bool) ([]runtime.UserInputElement, error) {
-	input := []runtime.UserInputElement{runtime.TextInput(prompt)}
+func (r *Runner) prepareRuntimeTurnInput(capabilities agentruntime.Capabilities, runtimeName, workspacePath string, issue *kanban.Issue, prompt string, includeImages bool) ([]agentruntime.InputItem, error) {
+	input := []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: prompt}}
 	if !includeImages || issue == nil {
 		return input, nil
 	}
+	if !capabilities.SupportsLocalImageInput() {
+		hasImages, err := r.issueHasImageAssets(issue)
+		if err != nil {
+			return nil, err
+		}
+		if hasImages {
+			name := strings.TrimSpace(runtimeName)
+			if name == "" {
+				name = "selected runtime"
+			}
+			return nil, fmt.Errorf("%w: issue %s has image attachments, but runtime %q does not support local_image input; remove the issue image or switch to a runtime with local_image support", agentruntime.ErrUnsupportedCapability, issue.Identifier, name)
+		}
+		return input, nil
+	}
 
-	imageInput, err := r.stageIssueAssetsForAppServer(workspacePath, issue)
+	imageInput, err := r.stageIssueAssetsForRuntime(workspacePath, issue)
 	if err != nil {
 		return nil, err
 	}
 	return append(input, imageInput...), nil
 }
 
-func (r *Runner) stageIssueAssetsForAppServer(workspacePath string, issue *kanban.Issue) ([]runtime.UserInputElement, error) {
+func (r *Runner) issueHasImageAssets(issue *kanban.Issue) (bool, error) {
+	if issue == nil {
+		return false, nil
+	}
+	assets, err := r.store.ListIssueAssets(issue.ID)
+	if err != nil {
+		return false, fmt.Errorf("load issue assets for %s: %w", issue.Identifier, err)
+	}
+	for _, asset := range assets {
+		if strings.HasPrefix(strings.TrimSpace(asset.ContentType), "image/") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *Runner) stageIssueAssetsForRuntime(workspacePath string, issue *kanban.Issue) ([]agentruntime.InputItem, error) {
 	assets, err := r.store.ListIssueAssets(issue.ID)
 	if err != nil {
 		return nil, fmt.Errorf("load issue assets for %s: %w", issue.Identifier, err)
@@ -1328,7 +1637,7 @@ func (r *Runner) stageIssueAssetsForAppServer(workspacePath string, issue *kanba
 		}
 		imageAssets = append(imageAssets, asset)
 	}
-	input := make([]runtime.UserInputElement, 0, len(imageAssets))
+	input := make([]agentruntime.InputItem, 0, len(imageAssets))
 	for _, asset := range imageAssets {
 		_, srcPath, err := r.store.GetIssueAssetContent(issue.ID, asset.ID)
 		if err != nil {
@@ -1348,7 +1657,11 @@ func (r *Runner) stageIssueAssetsForAppServer(workspacePath string, issue *kanba
 		if relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
 			return nil, fmt.Errorf("stage issue asset %s for %s: staged path escaped workspace", asset.ID, issue.Identifier)
 		}
-		input = append(input, runtime.LocalImageInput(filepath.ToSlash(relPath), asset.Filename))
+		input = append(input, agentruntime.InputItem{
+			Kind: agentruntime.InputItemLocalImage,
+			Path: filepath.ToSlash(relPath),
+			Name: asset.Filename,
+		})
 	}
 	return input, nil
 }
@@ -1420,6 +1733,28 @@ func shouldContinueRunPhase(workflow *config.Workflow, runPhase kanban.WorkflowP
 		return false
 	default:
 		return issue.State != kanban.StateInReview && isActiveState(workflow, string(issue.State))
+	}
+}
+
+func issueStateIsTerminalDone(issue *kanban.Issue, session *agentruntime.Session) bool {
+	if issue == nil || issue.State != kanban.StateDone {
+		return false
+	}
+	if session == nil {
+		return true
+	}
+	switch strings.TrimSpace(session.TerminalReason) {
+	case "", "turn.completed", "session.completed":
+		return true
+	case "turn.failed":
+		if session.Metadata != nil {
+			if stopReason, ok := session.Metadata["claude_stop_reason"]; ok && strings.EqualFold(strings.TrimSpace(fmt.Sprint(stopReason)), "end_turn") {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
 }
 
@@ -1640,7 +1975,7 @@ func (r *Runner) planModeForIssue(workflow *config.Workflow, issue *kanban.Issue
 	if workflow == nil {
 		return false
 	}
-	permissions := r.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
+	_, permissions := r.resolveExecutionPolicy(workflow, issue)
 	return strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
 }
 
@@ -1718,12 +2053,12 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 	if issue == nil || len(commands) == 0 {
 		return nil
 	}
-	if err := r.store.MarkIssueAgentCommandsDeliveredIfUnchanged(issue.ID, commands, mode, threadID, attempt); err != nil {
-		return err
-	}
 	ids := make([]string, 0, len(commands))
 	for _, command := range commands {
 		ids = append(ids, command.ID)
+	}
+	if err := r.store.MarkIssueAgentCommandsDeliveredIfUnchanged(issue.ID, commands, mode, threadID, attempt); err != nil {
+		return err
 	}
 	return r.store.AppendRuntimeEvent("manual_command_delivered", map[string]interface{}{
 		"issue_id":           issue.ID,
@@ -1736,7 +2071,10 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 	})
 }
 
-func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, backend runtime.AppServerBackend, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string) (bool, error) {
+func (r *Runner) runPendingCommandsInActiveRuntime(ctx context.Context, client agentruntime.Client, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string, runtime runtimeSelection) (bool, error) {
+	if client == nil || !client.Capabilities().SupportsResume() {
+		return false, nil
+	}
 	deadline := time.Now().Add(activeThreadCommandPollWindow)
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
@@ -1759,15 +2097,18 @@ func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, backend r
 	if len(commands) == 0 {
 		return false, nil
 	}
-	activeWorkflow, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
+	_, refreshedIssue, err := r.currentWorkflowIssue(workflow, issue)
 	if err != nil {
 		return false, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(activeWorkflow, issue, activeWorkflow.Config.Codex.ApprovalPolicy)
-	backend.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
+	permissions := r.permissionConfigForIssue(issue, runtime.Config.ApprovalPolicy, runtime.Config.InitialCollaborationMode)
+	agentruntime.ApplyPermissionConfig(client, runtimePermissionConfig(permissions))
 	var deliverErr error
-	if err := backend.RunTurnWithStartCallback(ctx, buildOperatorFollowUpPrompt(commands), title, func(session *runtime.Session) {
+	if err := client.RunTurn(ctx, agentruntime.TurnRequest{
+		Title: title,
+		Input: []agentruntime.InputItem{{Kind: agentruntime.InputItemText, Text: buildOperatorFollowUpPrompt(commands)}},
+	}, func(session *agentruntime.Session) {
 		deliverErr = r.markDeliveredCommands(issue, commands, "same_thread", session.ThreadID, attempt)
 	}); err != nil {
 		return false, err
@@ -1823,7 +2164,7 @@ func normalizeState(state string) string {
 	return strings.ToLower(strings.TrimSpace(state))
 }
 
-func (r *Runner) extensionToolExecutor() runtime.ToolExecutor {
+func (r *Runner) extensionToolExecutor() agentruntime.ToolExecutor {
 	if r.extensions == nil || !r.extensions.HasTools() {
 		return nil
 	}

@@ -475,3 +475,167 @@ func TestCodexBackendMatchesDirectClientResumeMode(t *testing.T) {
 		t.Fatalf("expected resume mode not to fall back to thread/start, direct=%v runtime=%v", traceMethods(directPayloads), traceMethods(runtimePayloads))
 	}
 }
+
+func startWrappedBackend(t *testing.T, scenario fakeappserver.Scenario) (*runtimepkg.CodexBackend, string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-1")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	runtimeScenario := fakeappserver.NewConfig(t, scenario)
+	runtimeTrace := filepath.Join(tmpDir, "runtime-trace.log")
+	runtimeCfg := runtimepkg.CodexBackendConfig{
+		Command:                  runtimeScenario.Command,
+		Env:                      setEnvValue(runtimeScenario.Env, "TRACE_FILE", runtimeTrace),
+		Workspace:                workspace,
+		WorkspaceRoot:            workspaceRoot,
+		IssueID:                  "ISS-1",
+		IssueIdentifier:          "ISS-1",
+		ExpectedVersion:          codexschema.SupportedVersion,
+		ApprovalPolicy:           defaultApprovalPolicyMap(),
+		InitialCollaborationMode: "default",
+		ThreadSandbox:            "workspace-write",
+		ReadTimeout:              2 * time.Second,
+		TurnTimeout:              10 * time.Second,
+		StallTimeout:             5 * time.Second,
+		Logger:                   discardLogger(),
+	}
+
+	backend, err := runtimepkg.NewCodexBackend(context.Background(), runtimeCfg)
+	if err != nil {
+		t.Fatalf("start runtime backend: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = backend.Close()
+	})
+	return backend, runtimeTrace
+}
+
+func TestNewCodexBackendRequiresCommand(t *testing.T) {
+	_, err := runtimepkg.NewCodexBackend(context.Background(), runtimepkg.CodexBackendConfig{})
+	if err == nil {
+		t.Fatal("expected missing command to fail")
+	}
+	if !strings.Contains(err.Error(), "missing codex command") {
+		t.Fatalf("expected missing command error, got %v", err)
+	}
+}
+
+func TestCodexBackendRunTurnVariantsPreserveInputs(t *testing.T) {
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-wrapper"}}}}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-1"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-wrapper", "turn": map[string]interface{}{"id": "turn-1"}}}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-2"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-wrapper", "turn": map[string]interface{}{"id": "turn-2"}}}},
+				},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{
+					{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-3"}}}},
+					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-wrapper", "turn": map[string]interface{}{"id": "turn-3"}}}},
+				},
+			},
+		},
+	}
+
+	backend, runtimeTrace := startWrappedBackend(t, scenario)
+
+	var started []map[string]string
+	onStarted := func(session *runtimepkg.Session) {
+		started = append(started, sessionSummary(session))
+	}
+
+	if err := backend.RunTurnWithStartCallback(context.Background(), "First prompt", "First title", onStarted); err != nil {
+		t.Fatalf("RunTurnWithStartCallback: %v", err)
+	}
+	if err := backend.RunTurnWithInputs(context.Background(), []runtimepkg.UserInputElement{runtimepkg.TextInput("Second prompt")}, "Second title"); err != nil {
+		t.Fatalf("RunTurnWithInputs: %v", err)
+	}
+	if err := backend.RunTurnWithInputsAndStartCallback(
+		context.Background(),
+		[]runtimepkg.UserInputElement{
+			runtimepkg.TextInput("Third prompt"),
+			runtimepkg.LocalImageInput(".maestro/issue-assets/img-1-screen.png", "screen.png"),
+		},
+		"Third title",
+		onStarted,
+	); err != nil {
+		t.Fatalf("RunTurnWithInputsAndStartCallback: %v", err)
+	}
+
+	if len(started) != 2 {
+		t.Fatalf("expected two start callbacks, got %d", len(started))
+	}
+	for i, summary := range started {
+		if summary["thread_id"] != "thread-wrapper" {
+			t.Fatalf("callback %d thread id mismatch: %+v", i, summary)
+		}
+		if summary["turn_id"] == "" {
+			t.Fatalf("callback %d missing turn id: %+v", i, summary)
+		}
+	}
+
+	payloads := readTraceLines(t, runtimeTrace)
+	methods := traceMethods(payloads)
+	wantMethods := []string{"initialize", "initialized", "thread/start", "turn/start", "turn/start", "turn/start"}
+	if len(methods) != len(wantMethods) {
+		t.Fatalf("unexpected method count: got %v want %v", methods, wantMethods)
+	}
+	for i := range wantMethods {
+		if methods[i] != wantMethods[i] {
+			t.Fatalf("unexpected trace methods: got %v want %v", methods, wantMethods)
+		}
+	}
+
+	turnStarts := payloadsByMethod(payloads, "turn/start")
+	if len(turnStarts) != 3 {
+		t.Fatalf("expected three turn/start requests, got %d", len(turnStarts))
+	}
+
+	firstInput := turnStarts[0]["params"].(map[string]interface{})["input"].([]interface{})[0].(map[string]interface{})
+	if firstInput["type"] != "text" || firstInput["text"] != "First prompt" {
+		t.Fatalf("unexpected first input: %+v", firstInput)
+	}
+
+	secondInput := turnStarts[1]["params"].(map[string]interface{})["input"].([]interface{})[0].(map[string]interface{})
+	if secondInput["type"] != "text" || secondInput["text"] != "Second prompt" {
+		t.Fatalf("unexpected second input: %+v", secondInput)
+	}
+
+	thirdInputs := turnStarts[2]["params"].(map[string]interface{})["input"].([]interface{})
+	if len(thirdInputs) != 2 {
+		t.Fatalf("unexpected third input count: %+v", thirdInputs)
+	}
+	thirdText := thirdInputs[0].(map[string]interface{})
+	if thirdText["type"] != "text" || thirdText["text"] != "Third prompt" {
+		t.Fatalf("unexpected third text input: %+v", thirdText)
+	}
+	thirdImage := thirdInputs[1].(map[string]interface{})
+	if thirdImage["type"] != "localImage" || thirdImage["path"] != ".maestro/issue-assets/img-1-screen.png" || thirdImage["name"] != "screen.png" {
+		t.Fatalf("unexpected third image input: %+v", thirdImage)
+	}
+}

@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=./lib/e2e_real_codex_preflight.sh
+source "$ROOT_DIR/scripts/lib/e2e_real_codex_preflight.sh"
 HARNESS_ROOT="${E2E_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/maestro-real-codex-e2e.XXXXXX")}"
 BIN_DIR="$HARNESS_ROOT/bin"
 ARTIFACTS_DIR="$HARNESS_ROOT/artifacts"
@@ -18,13 +20,6 @@ KEEP_HARNESS="${E2E_KEEP_HARNESS:-1}"
 ORCH_PID=""
 
 cd "$ROOT_DIR"
-
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "missing required command: $1" >&2
-    exit 1
-  fi
-}
 
 cleanup() {
   local exit_code="$?"
@@ -89,8 +84,10 @@ start_project() {
   sqlite3 "$DB_PATH" "UPDATE projects SET state = 'running', updated_at = datetime('now') WHERE id = '$project_id';"
 }
 
+CODEX_COMMAND="${E2E_CODEX_COMMAND:-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd . --add-dir $(printf '%q' "$HARNESS_ROOT") -}"
+
 require_cmd go
-require_cmd codex
+require_command_from_shell_command "E2E_CODEX_COMMAND" "$CODEX_COMMAND"
 require_cmd git
 require_cmd sqlite3
 
@@ -99,7 +96,6 @@ mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$
 echo "Building Maestro binary into $MAESTRO_BIN"
 go build -o "$MAESTRO_BIN" ./cmd/maestro
 
-CODEX_COMMAND="${E2E_CODEX_COMMAND:-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd . --add-dir $(printf '%q' "$HARNESS_ROOT") -}"
 CODEX_COMMAND_YAML="$(yaml_quote "$CODEX_COMMAND")"
 
 cat >"$WORKFLOW_PATH" <<EOF
@@ -123,19 +119,20 @@ hooks:
     git config user.email "e2e@example.com"
     printf '%s\n' '# Maestro E2E Workspace' > README.md
   timeout_ms: 10000
-agent:
+orchestrator:
   max_concurrent_agents: 2
   max_turns: 1
   max_retry_backoff_ms: 5000
-  mode: stdio
-codex:
-  command: '$CODEX_COMMAND_YAML'
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-  read_timeout_ms: 5000
-  turn_timeout_ms: 300000
+  dispatch_mode: parallel
+runtime:
+  default: codex-stdio
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: '$CODEX_COMMAND_YAML'
+    approval_policy: never
+    read_timeout_ms: 5000
+    turn_timeout_ms: 300000
 ---
 You are running the Maestro real-Codex end-to-end harness.
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -19,7 +19,7 @@ func TestIssueForInterruptResolvesByIdentifierAndID(t *testing.T) {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 
-	byIdentifier, err := server.issueForInterrupt(context.Background(), &appserver.PendingInteraction{
+	byIdentifier, err := server.issueForInterrupt(context.Background(), &agentruntime.PendingInteraction{
 		IssueIdentifier: issue.Identifier,
 	})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestIssueForInterruptResolvesByIdentifierAndID(t *testing.T) {
 		t.Fatalf("unexpected issue resolved by identifier: %+v", byIdentifier)
 	}
 
-	byID, err := server.issueForInterrupt(context.Background(), &appserver.PendingInteraction{
+	byID, err := server.issueForInterrupt(context.Background(), &agentruntime.PendingInteraction{
 		IssueID: issue.ID,
 	})
 	if err != nil {
@@ -42,23 +42,28 @@ func TestIssueForInterruptResolvesByIdentifierAndID(t *testing.T) {
 	if _, err := server.issueForInterrupt(context.Background(), nil); err == nil {
 		t.Fatal("expected nil interaction to fail")
 	}
-	if _, err := server.issueForInterrupt(context.Background(), &appserver.PendingInteraction{}); err == nil {
+	if _, err := server.issueForInterrupt(context.Background(), &agentruntime.PendingInteraction{}); err == nil {
 		t.Fatal("expected missing issue reference to fail")
 	}
 }
 
 func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
+	store, _ := setupDashboardServerTest(t, testProvider{})
 	now := time.Date(2026, 3, 18, 13, 30, 0, 0, time.UTC)
 	snapshot := kanban.ExecutionSessionSnapshot{
-		IssueID:    "issue-1",
-		Identifier: "ISS-1",
-		Phase:      "implementation",
-		Attempt:    2,
-		RunKind:    "retry_paused",
-		Error:      "plan_approval_pending",
-		StopReason: "plan_approval_pending",
-		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		IssueID:           "issue-1",
+		Identifier:        "ISS-1",
+		Phase:             "implementation",
+		Attempt:           2,
+		RunKind:           "retry_paused",
+		RuntimeName:       "claude",
+		RuntimeProvider:   "claude",
+		RuntimeTransport:  "stdio",
+		RuntimeAuthSource: "OAuth",
+		Error:             "plan_approval_pending",
+		StopReason:        "plan_approval_pending",
+		UpdatedAt:         now,
+		AppSession: agentruntime.Session{
 			IssueID:         "issue-1",
 			IssueIdentifier: "ISS-1",
 			LastTimestamp:   now.Add(-30 * time.Second),
@@ -67,10 +72,17 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 			TotalTokens:     42,
 			TurnsStarted:    3,
 			TurnsCompleted:  1,
+			Metadata: map[string]interface{}{
+				"provider":           "claude",
+				"transport":          "stdio",
+				"auth_source":        "OAuth",
+				"claude_stop_reason": "plan_approval_pending",
+			},
 		},
 	}
 
 	entry := buildPersistedSessionFeedEntry(
+		store,
 		snapshot,
 		observability.RetryEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
 		observability.PausedEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
@@ -91,9 +103,16 @@ func TestBuildPersistedSessionFeedEntryMarksPlanApprovalWaiting(t *testing.T) {
 	if entry.TotalTokens != 42 || entry.TurnsStarted != 3 || entry.TurnsCompleted != 1 {
 		t.Fatalf("unexpected session counters: %+v", entry)
 	}
+	if entry.RuntimeName != "claude" || entry.RuntimeProvider != "claude" || entry.RuntimeTransport != "stdio" || entry.RuntimeAuthSource != "OAuth" {
+		t.Fatalf("unexpected runtime surface metadata: %+v", entry)
+	}
+	if entry.StopReason != "plan_approval_pending" {
+		t.Fatalf("unexpected stop reason: %+v", entry)
+	}
 }
 
 func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
+	store, _ := setupDashboardServerTest(t, testProvider{})
 	now := time.Date(2026, 3, 18, 13, 30, 0, 0, time.UTC)
 	revisionRequestedAt := now.Add(2 * time.Minute)
 	snapshot := kanban.ExecutionSessionSnapshot{
@@ -105,7 +124,7 @@ func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         "issue-1",
 			IssueIdentifier: "ISS-1",
 			LastTimestamp:   now.Add(-30 * time.Second),
@@ -118,6 +137,7 @@ func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
 	}
 
 	entry := buildPersistedSessionFeedEntry(
+		store,
 		snapshot,
 		observability.RetryEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
 		observability.PausedEntry{Attempt: 2, Phase: "implementation", Error: "plan_approval_pending"},
@@ -147,5 +167,56 @@ func TestBuildPersistedSessionFeedEntryMarksQueuedPlanRevision(t *testing.T) {
 	}
 	if entry.Error != "" || entry.FailureClass != "" {
 		t.Fatalf("expected queued revision to clear waiting errors, got %+v", entry)
+	}
+}
+
+func TestBuildPersistedSessionFeedEntryMarksInterruptedSnapshotsInterrupted(t *testing.T) {
+	store, _ := setupDashboardServerTest(t, testProvider{})
+	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	snapshot := kanban.ExecutionSessionSnapshot{
+		IssueID:    "issue-1",
+		Identifier: "ISS-1",
+		Phase:      "implementation",
+		Attempt:    3,
+		RunKind:    "run_interrupted",
+		Error:      "run_interrupted",
+		StopReason: "run_interrupted",
+		UpdatedAt:  now,
+		AppSession: agentruntime.Session{
+			IssueID:         "issue-1",
+			IssueIdentifier: "ISS-1",
+			SessionID:       "claude-session-1",
+			ThreadID:        "claude-session-1",
+			LastEvent:       "turn.cancelled",
+			LastTimestamp:   now,
+			LastMessage:     "Interrupted while waiting",
+			Metadata: map[string]interface{}{
+				"provider":     "claude",
+				"transport":    "stdio",
+				"stop_reason":  "run_interrupted",
+				"auth_source":  "OAuth",
+				"runtime_name": "claude",
+			},
+		},
+	}
+
+	entry := buildPersistedSessionFeedEntry(
+		store,
+		snapshot,
+		observability.RetryEntry{},
+		observability.PausedEntry{},
+		nil,
+		nil,
+		"Interrupted issue",
+	)
+
+	if entry.Status != "interrupted" {
+		t.Fatalf("expected interrupted status, got %+v", entry)
+	}
+	if entry.FailureClass != "run_interrupted" || entry.Error != "run_interrupted" {
+		t.Fatalf("expected interrupted failure metadata, got %+v", entry)
+	}
+	if entry.StopReason != "run_interrupted" {
+		t.Fatalf("expected interrupted stop reason, got %+v", entry)
 	}
 }

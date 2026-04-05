@@ -115,6 +115,29 @@ describe('SessionExecutionCard', () => {
     expect(debugDetail).not.toHaveClass('overflow-x-auto')
   })
 
+  it('renders runtime surface metadata badges', () => {
+    render(
+      <SessionExecutionCard
+        execution={makeExecutionDetail({
+          runtime_name: 'claude-stdio',
+          runtime_provider: 'claude',
+          runtime_transport: 'stdio',
+          runtime_auth_source: 'OAuth',
+          pending_interaction_state: 'approval',
+          stop_reason: 'end_turn',
+        })}
+        issueTotalTokens={120}
+      />,
+    )
+
+    expect(screen.getByText('Runtime claude-stdio')).toBeInTheDocument()
+    expect(screen.getByText('Provider Claude')).toBeInTheDocument()
+    expect(screen.getByText('Transport stdio')).toBeInTheDocument()
+    expect(screen.getByText('Auth OAuth')).toBeInTheDocument()
+    expect(screen.getByText('State Approval')).toBeInTheDocument()
+    expect(screen.getByText('Stop End Turn')).toBeInTheDocument()
+  })
+
   it('renders the pending plan approval card and triggers approval', () => {
     const onApprovePlan = vi.fn()
 

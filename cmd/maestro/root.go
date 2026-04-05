@@ -233,7 +233,14 @@ func (a *cliApp) newWorkflowCmd() *cobra.Command {
 
 func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 	var workspaceRoot string
-	var codexCommand string
+	var runtimeCommand string
+	var agentMode string
+	var dispatchMode string
+	var maxConcurrentAgents int
+	var maxTurns int
+	var maxAutomaticRetries int
+	var approvalPolicy string
+	var initialCollaborationMode string
 	var force bool
 	var defaults bool
 
@@ -247,17 +254,38 @@ func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 				repoPath = args[0]
 			}
 			repoPath = resolveCLIRepoPath(repoPath)
+			if cmd.Flags().Changed("max-concurrent-agents") && maxConcurrentAgents <= 0 {
+				return usageErrorf("--max-concurrent-agents must be a positive integer")
+			}
+			if cmd.Flags().Changed("max-turns") && maxTurns <= 0 {
+				return usageErrorf("--max-turns must be a positive integer")
+			}
+			if cmd.Flags().Changed("max-automatic-retries") && maxAutomaticRetries <= 0 {
+				return usageErrorf("--max-automatic-retries must be a positive integer")
+			}
 			interactive := !defaults && isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 			if err := config.InitWorkflow(repoPath, config.InitOptions{
-				WorkspaceRoot: workspaceRoot,
-				CodexCommand:  codexCommand,
-				Interactive:   interactive,
-				Force:         force,
-				Stdin:         os.Stdin,
-				Stdout:        a.stdout,
+				WorkspaceRoot:            workspaceRoot,
+				RuntimeCommand:           runtimeCommand,
+				AgentMode:                agentMode,
+				DispatchMode:             dispatchMode,
+				MaxConcurrentAgents:      maxConcurrentAgents,
+				MaxTurns:                 maxTurns,
+				MaxAutomaticRetries:      maxAutomaticRetries,
+				ApprovalPolicy:           approvalPolicy,
+				InitialCollaborationMode: initialCollaborationMode,
+				Interactive:              interactive,
+				Force:                    force,
+				Stdin:                    os.Stdin,
+				Stdout:                   a.stdout,
 			}); err != nil {
 				switch {
-				case errors.Is(err, config.ErrWorkflowExists), errors.Is(err, config.ErrWorkflowInitCancelled):
+				case errors.Is(err, config.ErrWorkflowExists),
+					errors.Is(err, config.ErrWorkflowInitCancelled),
+					errors.Is(err, config.ErrInvalidInitAgentMode),
+					errors.Is(err, config.ErrInvalidInitDispatchMode),
+					errors.Is(err, config.ErrInvalidInitApprovalPolicy),
+					errors.Is(err, config.ErrInvalidInitCollaborationMode):
 					return usageErrorf("%v", err)
 				}
 				return wrapRuntime(err, "failed to initialize workflow")
@@ -273,7 +301,16 @@ func (a *cliApp) newWorkflowInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "Workspace root to write into WORKFLOW.md")
-	cmd.Flags().StringVar(&codexCommand, "codex-command", "", "Codex command to write into WORKFLOW.md")
+	cmd.Flags().StringVar(&runtimeCommand, "runtime-command", "", "Runtime command to write into WORKFLOW.md")
+	cmd.Flags().StringVar(&runtimeCommand, "codex-command", "", "Deprecated alias for --runtime-command")
+	_ = cmd.Flags().MarkHidden("codex-command")
+	cmd.Flags().StringVar(&agentMode, "agent-mode", "", "Agent mode to write into WORKFLOW.md (app_server or stdio)")
+	cmd.Flags().StringVar(&dispatchMode, "dispatch-mode", "", "Dispatch mode to write into WORKFLOW.md (parallel or per_project_serial)")
+	cmd.Flags().IntVar(&maxConcurrentAgents, "max-concurrent-agents", 0, "Max concurrent agents to write into WORKFLOW.md")
+	cmd.Flags().IntVar(&maxTurns, "max-turns", 0, "Max turns to write into WORKFLOW.md")
+	cmd.Flags().IntVar(&maxAutomaticRetries, "max-automatic-retries", 0, "Max automatic retries to write into WORKFLOW.md")
+	cmd.Flags().StringVar(&approvalPolicy, "approval-policy", "", "Approval policy to write into WORKFLOW.md (never, on-request, on-failure, or untrusted)")
+	cmd.Flags().StringVar(&initialCollaborationMode, "initial-collaboration-mode", "", "Initial collaboration mode to write into WORKFLOW.md (default or plan)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing WORKFLOW.md")
 	cmd.Flags().BoolVar(&defaults, "defaults", false, "Use defaults without prompting")
 	return cmd
@@ -285,7 +322,7 @@ func (a *cliApp) newBoardCmd() *cobra.Command {
 		Use:   "board",
 		Short: "Show the kanban board",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, svc, err := openProviderService(a.opts.dbPath)
+			store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -487,7 +524,7 @@ func (a *cliApp) newIssueListCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List issues",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, svc, err := openProviderService(a.opts.dbPath)
+			store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -542,7 +579,7 @@ func (a *cliApp) newIssueShowCmd() *cobra.Command {
 		Short: "Show a single issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, svc, err := openProviderService(a.opts.dbPath)
+			store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -607,6 +644,7 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	var projectID string
 	var epicID string
 	var issueType string
+	var permissionProfile string
 	var cronSpec string
 	var enabled bool
 	var labels string
@@ -641,6 +679,9 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("desc") {
 				updates["description"] = description
+			}
+			if cmd.Flags().Changed("permission-profile") {
+				updates["permission_profile"] = permissionProfile
 			}
 			if cmd.Flags().Changed("type") {
 				updates["issue_type"] = strings.TrimSpace(issueType)
@@ -719,6 +760,7 @@ func (a *cliApp) newIssueUpdateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&description, "desc", "", "New description")
+	cmd.Flags().StringVar(&permissionProfile, "permission-profile", "", "Issue permission profile: default, full-access, plan-then-full-access")
 	cmd.Flags().StringVar(&issueType, "type", "", "Issue type: standard or recurring")
 	cmd.Flags().StringVar(&cronSpec, "cron", "", "Cron schedule for recurring issues")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Enable recurring scheduling")
@@ -974,7 +1016,7 @@ func (a *cliApp) newIssueAssetsCmd() *cobra.Command {
 			Short: "List assets attached to an issue",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				store, svc, err := openProviderService(a.opts.dbPath)
+				store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 				if err != nil {
 					return wrapRuntime(err, "failed to open database")
 				}
@@ -1032,7 +1074,7 @@ func (a *cliApp) newIssueCommentsCmd() *cobra.Command {
 			Short: "List comments for an issue",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				store, svc, err := openProviderService(a.opts.dbPath)
+				store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 				if err != nil {
 					return wrapRuntime(err, "failed to open database")
 				}
@@ -1246,7 +1288,7 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 				return wrapRuntime(err, "failed to open database")
 			}
 			defer store.Close()
-			project, err := svc.CreateProject(context.Background(), args[0], description, repoPath, workflowPath, runtimeName, kanban.ProviderKindKanban, "", nil)
+			project, err := svc.CreateProject(context.Background(), args[0], description, repoPath, workflowPath, kanban.ProviderKindKanban, "", nil, runtimeName)
 			if err != nil {
 				return err
 			}
@@ -1264,7 +1306,7 @@ func (a *cliApp) newProjectCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "Project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute path to the repo")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Optional workflow path override")
-	cmd.Flags().StringVar(&runtimeName, "runtime", "", "Optional runtime override")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "Project runtime name")
 	return cmd
 }
 
@@ -1274,7 +1316,7 @@ func (a *cliApp) newProjectListCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List projects",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, svc, err := openProviderService(a.opts.dbPath)
+			store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -1299,7 +1341,7 @@ func (a *cliApp) newProjectShowCmd() *cobra.Command {
 		Short: "Show a project and its related data",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, svc, err := openProviderService(a.opts.dbPath)
+			store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -1423,10 +1465,11 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("workflow") {
 				project.WorkflowPath = workflowPath
 			}
+			runtimeArgs := []string{}
 			if cmd.Flags().Changed("runtime") {
-				project.RuntimeName = runtimeName
+				runtimeArgs = append(runtimeArgs, runtimeName)
 			}
-			if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, project.RuntimeName, kanban.ProviderKindKanban, "", nil); err != nil {
+			if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, project.RepoPath, project.WorkflowPath, kanban.ProviderKindKanban, "", nil, runtimeArgs...); err != nil {
 				return err
 			}
 			updated, err := store.GetProject(project.ID)
@@ -1448,7 +1491,7 @@ func (a *cliApp) newProjectUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "desc", "", "New project description")
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Absolute repo path")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Workflow path override")
-	cmd.Flags().StringVar(&runtimeName, "runtime", "", "Optional runtime override")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "Project runtime name")
 	return cmd
 }
 
@@ -1542,7 +1585,7 @@ func (a *cliApp) newEpicListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List epics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, svc, err := openProviderService(a.opts.dbPath)
+			store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -1568,7 +1611,7 @@ func (a *cliApp) newEpicShowCmd() *cobra.Command {
 		Short: "Show an epic and its related data",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, svc, err := openProviderService(a.opts.dbPath)
+			store, svc, err := openReadOnlyProviderService(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}
@@ -1695,7 +1738,7 @@ func (a *cliApp) newStatusCmd() *cobra.Command {
 				return nil
 			}
 
-			store, err := openStore(a.opts.dbPath)
+			store, err := openStoreForReadCommands(a.opts.dbPath)
 			if err != nil {
 				return wrapRuntime(err, "failed to open database")
 			}

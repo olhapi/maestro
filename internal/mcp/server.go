@@ -15,7 +15,7 @@ import (
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
@@ -31,7 +31,7 @@ type RuntimeProvider interface {
 	StopProjectRuns(projectID string) map[string]interface{}
 	RetryIssueNow(ctx context.Context, identifier string) map[string]interface{}
 	RunRecurringIssueNow(ctx context.Context, identifier string) map[string]interface{}
-	PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool)
+	PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool)
 }
 
 // Server implements the MCP server for the kanban board
@@ -50,6 +50,30 @@ const (
 	mcpPaginationDefaultLimit = 200
 	mcpPaginationMaxLimit     = 500
 )
+
+// These tools are intentionally annotated as non-blocking for Codex so
+// unattended issue execution can manage local Maestro metadata without
+// tripping external MCP approval prompts.
+var nonBlockingBuiltInTools = map[string]struct{}{
+	"server_info":              {},
+	"list_projects":            {},
+	"list_epics":               {},
+	"get_issue":                {},
+	"list_issue_comments":      {},
+	"list_issues":              {},
+	"update_issue":             {},
+	"attach_issue_asset":       {},
+	"create_issue_comment":     {},
+	"update_issue_comment":     {},
+	"set_issue_state":          {},
+	"set_issue_workflow_phase": {},
+	"get_issue_execution":      {},
+	"board_overview":           {},
+	"set_blockers":             {},
+	"list_runtime_events":      {},
+	"get_runtime_snapshot":     {},
+	"list_sessions":            {},
+}
 
 // NewServer creates a new MCP server.
 func NewServer(store *kanban.Store) *Server {
@@ -93,7 +117,6 @@ func (s *Server) registerTools() {
 		objectTool("create_project", "Create a new project", map[string]interface{}{
 			"name":          stringProperty("Project name"),
 			"description":   stringProperty("Project description"),
-			"runtime_name":  stringProperty("Runtime name"),
 			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
 			"workflow_path": stringProperty("Optional workflow path override"),
 		}),
@@ -101,7 +124,6 @@ func (s *Server) registerTools() {
 			"id":            stringProperty("Project ID"),
 			"name":          stringProperty("Project name"),
 			"description":   stringProperty("Project description"),
-			"runtime_name":  stringProperty("Runtime name"),
 			"repo_path":     stringProperty("Absolute path to the repo this project orchestrates"),
 			"workflow_path": stringProperty("Optional workflow path override"),
 		}),
@@ -132,20 +154,19 @@ func (s *Server) registerTools() {
 			"id": stringProperty("Epic ID"),
 		}),
 		objectTool("create_issue", "Create a new issue", map[string]interface{}{
-			"title":        stringProperty("Issue title"),
-			"description":  stringProperty("Issue description"),
-			"project_id":   stringProperty("Project ID"),
-			"epic_id":      stringProperty("Epic ID"),
-			"issue_type":   stringProperty("Issue type: standard or recurring"),
-			"cron":         stringProperty("Cron schedule for recurring issues"),
-			"enabled":      booleanProperty("Enable recurring scheduling"),
-			"priority":     numberProperty("Priority (lower = higher)"),
-			"labels":       stringArrayProperty("Issue labels"),
-			"runtime_name": stringProperty("Runtime name"),
-			"state":        stringProperty("Initial state: backlog, ready, in_progress, in_review, done, cancelled"),
-			"blocked_by":   stringArrayProperty("Issue identifiers that block this issue"),
-			"branch_name":  stringProperty("Branch name"),
-			"pr_url":       stringProperty("Pull request URL"),
+			"title":       stringProperty("Issue title"),
+			"description": stringProperty("Issue description"),
+			"project_id":  stringProperty("Project ID"),
+			"epic_id":     stringProperty("Epic ID"),
+			"issue_type":  stringProperty("Issue type: standard or recurring"),
+			"cron":        stringProperty("Cron schedule for recurring issues"),
+			"enabled":     booleanProperty("Enable recurring scheduling"),
+			"priority":    numberProperty("Priority (lower = higher)"),
+			"labels":      stringArrayProperty("Issue labels"),
+			"state":       stringProperty("Initial state: backlog, ready, in_progress, in_review, done, cancelled"),
+			"blocked_by":  stringArrayProperty("Issue identifiers that block this issue"),
+			"branch_name": stringProperty("Branch name"),
+			"pr_url":      stringProperty("Pull request URL"),
 		}),
 		objectTool("get_issue", "Get an issue by ID or identifier (for example PROJ-123)", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
@@ -166,20 +187,20 @@ func (s *Server) registerTools() {
 			"offset":     numberProperty("Number of issues to skip"),
 		}),
 		objectTool("update_issue", "Update an issue", map[string]interface{}{
-			"identifier":   stringProperty("Issue ID or identifier"),
-			"project_id":   stringProperty("Project ID"),
-			"epic_id":      stringProperty("Epic ID"),
-			"title":        stringProperty("New title"),
-			"description":  stringProperty("New description"),
-			"issue_type":   stringProperty("Issue type: standard or recurring"),
-			"cron":         stringProperty("Cron schedule for recurring issues"),
-			"enabled":      booleanProperty("Enable recurring scheduling"),
-			"priority":     numberProperty("New priority"),
-			"labels":       stringArrayProperty("New labels"),
-			"runtime_name": stringProperty("Runtime name"),
-			"blocked_by":   stringArrayProperty("Issue identifiers that block this issue"),
-			"branch_name":  stringProperty("Branch name"),
-			"pr_url":       stringProperty("Pull request URL"),
+			"identifier":         stringProperty("Issue ID or identifier"),
+			"project_id":         stringProperty("Project ID"),
+			"epic_id":            stringProperty("Epic ID"),
+			"title":              stringProperty("New title"),
+			"description":        stringProperty("New description"),
+			"permission_profile": stringProperty("Issue permission profile: default, full-access, plan-then-full-access"),
+			"issue_type":         stringProperty("Issue type: standard or recurring"),
+			"cron":               stringProperty("Cron schedule for recurring issues"),
+			"enabled":            booleanProperty("Enable recurring scheduling"),
+			"priority":           numberProperty("New priority"),
+			"labels":             stringArrayProperty("New labels"),
+			"blocked_by":         stringArrayProperty("Issue identifiers that block this issue"),
+			"branch_name":        stringProperty("Branch name"),
+			"pr_url":             stringProperty("Pull request URL"),
 		}),
 		objectTool("attach_issue_asset", "Attach a local asset to an issue from a file path", map[string]interface{}{
 			"identifier": stringProperty("Issue ID or identifier"),
@@ -244,6 +265,19 @@ func (s *Server) registerTools() {
 			"limit": numberProperty("Maximum events to return"),
 		}),
 		objectTool("get_runtime_snapshot", "Get the live Maestro runtime snapshot", nil),
+		{
+			Name:        "approval_prompt",
+			Description: "Resolve Claude permission prompts as Maestro-managed pending interactions",
+			InputSchema: mcpapi.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"tool_name":   stringProperty("Claude tool name being approved"),
+					"input":       objectProperty("Raw permission prompt payload from Claude"),
+					"tool_use_id": stringProperty("Claude tool-use identifier"),
+				},
+				Required: []string{"tool_name", "input"},
+			},
+		},
 		objectTool("list_sessions", "List live Maestro sessions or fetch one issue session", map[string]interface{}{
 			"identifier": stringProperty("Issue identifier to fetch a single live session"),
 		}),
@@ -254,25 +288,33 @@ func (s *Server) registerTools() {
 			Name:        asString(spec["name"]),
 			Description: asString(spec["description"]),
 			InputSchema: extensionToolInputSchema(spec),
+			Annotations: extensionToolAnnotations(spec),
 		})
 	}
 
 	for _, tool := range s.tools {
-		tool := tool
 		s.server.AddTool(tool, func(ctx context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
-			args := map[string]interface{}{}
-			if request.Params.Arguments != nil {
-				if typed, ok := request.Params.Arguments.(map[string]interface{}); ok {
-					args = typed
-				}
-			}
-			return s.handleCallTool(ctx, tool.Name, args)
+			return s.handleCallToolRequest(ctx, request)
 		})
 	}
 }
 
+// handleCallToolRequest routes tool calls to appropriate handlers.
+func (s *Server) handleCallToolRequest(ctx context.Context, request mcpapi.CallToolRequest) (result *mcpapi.CallToolResult, err error) {
+	args := request.GetArguments()
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	request.Params.Arguments = args
+	return s.handleCallToolWithMeta(ctx, request.Params.Name, args, request.Params.Meta)
+}
+
 // handleCallTool routes tool calls to appropriate handlers.
 func (s *Server) handleCallTool(ctx context.Context, name string, args map[string]interface{}) (result *mcpapi.CallToolResult, err error) {
+	return s.handleCallToolWithMeta(ctx, name, args, nil)
+}
+
+func (s *Server) handleCallToolWithMeta(ctx context.Context, name string, args map[string]interface{}, meta *mcpapi.Meta) (result *mcpapi.CallToolResult, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result = s.toolError(name, fmt.Sprintf("panic recovered: %v", recovered))
@@ -343,6 +385,14 @@ func (s *Server) handleCallTool(ctx context.Context, name string, args map[strin
 		return s.handleListRuntimeEvents(ctx, args)
 	case "get_runtime_snapshot":
 		return s.handleGetRuntimeSnapshot(ctx, args)
+	case "approval_prompt":
+		return s.handleApprovalPrompt(ctx, mcpapi.CallToolRequest{
+			Params: mcpapi.CallToolParams{
+				Name:      name,
+				Arguments: args,
+				Meta:      meta,
+			},
+		})
 	case "list_sessions":
 		return s.handleListSessions(ctx, args)
 	default:
@@ -403,16 +453,21 @@ func (s *Server) handleCreateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("create_project", err.Error()), nil
 	}
+	runtimeName := strings.TrimSpace(asString(args["runtime_name"]))
+	createArgs := []string{}
+	if runtimeName != "" {
+		createArgs = append(createArgs, runtimeName)
+	}
 	project, err := s.service.CreateProject(
 		ctx,
 		asString(args["name"]),
 		asString(args["description"]),
 		repoPath,
 		asString(args["workflow_path"]),
-		asString(args["runtime_name"]),
 		kanban.ProviderKindKanban,
 		"",
 		nil,
+		createArgs...,
 	)
 	if err != nil {
 		return s.toolError("create_project", fmt.Sprintf("Failed to create project: %v", err)), nil
@@ -430,7 +485,12 @@ func (s *Server) handleUpdateProject(ctx context.Context, args map[string]interf
 	if err := s.validateScopedRepoPath(repoPath); err != nil {
 		return s.toolError("update_project", err.Error()), nil
 	}
-	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), asString(args["runtime_name"]), kanban.ProviderKindKanban, "", nil); err != nil {
+	runtimeName := strings.TrimSpace(asString(args["runtime_name"]))
+	updateArgs := []string{}
+	if runtimeName != "" {
+		updateArgs = append(updateArgs, runtimeName)
+	}
+	if err := s.service.UpdateProject(ctx, id, asString(args["name"]), asString(args["description"]), repoPath, asString(args["workflow_path"]), kanban.ProviderKindKanban, "", nil, updateArgs...); err != nil {
 		return s.toolError("update_project", fmt.Sprintf("Failed to update project: %v", err)), nil
 	}
 	project, err := s.store.GetProject(id)
@@ -527,7 +587,7 @@ func (s *Server) handleCreateIssue(ctx context.Context, args map[string]interfac
 		Enabled:     enabled,
 		Priority:    intArg(args, "priority", 0),
 		Labels:      stringListArg(args, "labels"),
-		RuntimeName: asString(args["runtime_name"]),
+		RuntimeName: strings.TrimSpace(asString(args["runtime_name"])),
 		State:       asString(args["state"]),
 		BlockedBy:   stringListArg(args, "blocked_by"),
 		BranchName:  asString(args["branch_name"]),
@@ -1140,6 +1200,9 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	if value, ok := args["description"]; ok {
 		updates["description"] = asString(value)
 	}
+	if value, ok := args["permission_profile"]; ok {
+		updates["permission_profile"] = asString(value)
+	}
 	if value, ok := args["issue_type"]; ok {
 		updates["issue_type"] = asString(value)
 	}
@@ -1155,9 +1218,6 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	if _, ok := args["labels"]; ok {
 		updates["labels"] = stringListArg(args, "labels")
 	}
-	if value, ok := args["runtime_name"]; ok {
-		updates["runtime_name"] = asString(value)
-	}
 	if _, ok := args["blocked_by"]; ok {
 		updates["blocked_by"] = stringListArg(args, "blocked_by")
 	}
@@ -1166,6 +1226,9 @@ func issueMutationArgs(args map[string]interface{}, includeProjectFields bool) m
 	}
 	if value, ok := args["pr_url"]; ok {
 		updates["pr_url"] = asString(value)
+	}
+	if value, ok := args["runtime_name"]; ok {
+		updates["runtime_name"] = asString(value)
 	}
 	return updates
 }
@@ -1198,6 +1261,10 @@ func extensionToolInputSchema(spec map[string]interface{}) mcpapi.ToolInputSchem
 	}
 }
 
+func extensionToolAnnotations(spec map[string]interface{}) mcpapi.ToolAnnotation {
+	return toolAnnotationFromMap(mapStringInterface(spec["annotations"]), defaultExtensionToolAnnotations())
+}
+
 func objectTool(name, description string, properties map[string]interface{}) mcpapi.Tool {
 	return mcpapi.Tool{
 		Name:        name,
@@ -1206,7 +1273,69 @@ func objectTool(name, description string, properties map[string]interface{}) mcp
 			Type:       "object",
 			Properties: properties,
 		},
+		Annotations: builtInToolAnnotations(name),
 	}
+}
+
+func builtInToolAnnotations(name string) mcpapi.ToolAnnotation {
+	if _, ok := nonBlockingBuiltInTools[name]; ok {
+		return localReadOnlyToolAnnotations()
+	}
+	return localMutatingToolAnnotations()
+}
+
+func localReadOnlyToolAnnotations() mcpapi.ToolAnnotation {
+	return newToolAnnotations("", true, false, true, false)
+}
+
+func localMutatingToolAnnotations() mcpapi.ToolAnnotation {
+	return newToolAnnotations("", false, true, false, false)
+}
+
+func defaultExtensionToolAnnotations() mcpapi.ToolAnnotation {
+	return newToolAnnotations("", false, true, false, true)
+}
+
+func newToolAnnotations(title string, readOnly, destructive, idempotent, openWorld bool) mcpapi.ToolAnnotation {
+	return mcpapi.ToolAnnotation{
+		Title:           strings.TrimSpace(title),
+		ReadOnlyHint:    boolPtr(readOnly),
+		DestructiveHint: boolPtr(destructive),
+		IdempotentHint:  boolPtr(idempotent),
+		OpenWorldHint:   boolPtr(openWorld),
+	}
+}
+
+func toolAnnotationFromMap(raw map[string]interface{}, fallback mcpapi.ToolAnnotation) mcpapi.ToolAnnotation {
+	annotation := fallback
+	if raw == nil {
+		return annotation
+	}
+	if title, ok := raw["title"].(string); ok {
+		annotation.Title = strings.TrimSpace(title)
+	}
+	if v, ok := raw["readOnlyHint"].(bool); ok {
+		annotation.ReadOnlyHint = boolPtr(v)
+	}
+	if v, ok := raw["destructiveHint"].(bool); ok {
+		annotation.DestructiveHint = boolPtr(v)
+	}
+	if v, ok := raw["idempotentHint"].(bool); ok {
+		annotation.IdempotentHint = boolPtr(v)
+	}
+	if v, ok := raw["openWorldHint"].(bool); ok {
+		annotation.OpenWorldHint = boolPtr(v)
+	}
+	return annotation
+}
+
+func mapStringInterface(value interface{}) map[string]interface{} {
+	out, _ := value.(map[string]interface{})
+	return out
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func stringProperty(description string) map[string]interface{} {

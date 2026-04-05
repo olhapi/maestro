@@ -437,11 +437,15 @@ func TestInputAnswerAndVersionHelpers(t *testing.T) {
 	if _, ok := decodeJSONObject(`{"id":1,"result":{}}`); !ok {
 		t.Fatal("expected decodeJSONObject to accept protocol JSON")
 	}
-	if codexExecutableFromCommand("") != "" || codexExecutableFromCommand("/bin/sh -lc echo") != "" {
+	if _, ok := codexVersionInvocationFromCommand(""); ok {
 		t.Fatal("expected non-codex commands to be ignored")
 	}
-	if codexExecutableFromCommand("codex app-server") != "codex" {
-		t.Fatal("expected codex executable extraction")
+	if _, ok := codexVersionInvocationFromCommand("/bin/sh -lc echo"); ok {
+		t.Fatal("expected shell command to be ignored")
+	}
+	invocation, ok := codexVersionInvocationFromCommand("codex app-server")
+	if !ok || invocation.Executable != "codex" {
+		t.Fatalf("expected codex invocation extraction, got %+v ok=%v", invocation, ok)
 	}
 	if parseCodexVersion([]byte("codex-cli version unknown")) != "" {
 		t.Fatal("expected parseCodexVersion to reject invalid output")

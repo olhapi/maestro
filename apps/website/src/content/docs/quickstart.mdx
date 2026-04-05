@@ -17,13 +17,13 @@ Start in the repo you want Maestro to orchestrate:
 
 <DocsCommandField command={`maestro workflow init .`} />
 
-This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template. It is the contract Maestro will keep following while you are elsewhere.
+This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, runtime command, and prompt template. It is the contract Maestro will keep following while you are elsewhere.
 
 When you create a project later, treat its description as durable agent guidance rather than a short label. Maestro passes that project description into every issue prompt by default.
 
 ## 2. Expose the tracker to MCP clients
 
-If `maestro` is already on your `PATH`, save it through the MCP flow your coding agent supports. Use the direct commands for Codex or Claude Code when they fit, or the generic server entry for other MCP-capable agents.
+If `maestro` is already on your `PATH`, save it through the MCP flow your coding agent supports. Use the direct commands when they fit, or the generic server entry for other MCP-capable agents.
 
 <DocsMcpSetupAccordion />
 
@@ -81,7 +81,7 @@ maestro project start PRJ-1 --api-url http://127.0.0.1:8787
 maestro project stop PRJ-1 --api-url http://127.0.0.1:8787`}
 />
 
-The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended Codex execution is actually what you want.
+The preview warning on `run` is intentional. Pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails` only when unattended runtime execution is actually what you want.
 
 ## Next step
 

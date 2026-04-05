@@ -105,14 +105,26 @@ func initGitRepoForStoreTest(t *testing.T, repoPath string) {
 }
 
 func TestDefaultDBPathUsesHomeDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Run("uses home dir", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
 
-	got := DefaultDBPath()
-	want := filepath.Join(home, ".maestro", "maestro.db")
-	if got != want {
-		t.Fatalf("DefaultDBPath() = %q, want %q", got, want)
-	}
+		got := DefaultDBPath()
+		want := filepath.Join(home, ".maestro", "maestro.db")
+		if got != want {
+			t.Fatalf("DefaultDBPath() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("falls back when home is unset", func(t *testing.T) {
+		t.Setenv("HOME", "")
+
+		got := DefaultDBPath()
+		want := filepath.Join(".", ".maestro", "maestro.db")
+		if got != want {
+			t.Fatalf("DefaultDBPath() = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestResolveDBPathUsesDefaultWhenEmpty(t *testing.T) {
@@ -189,6 +201,55 @@ func TestNewStoreRejectsUnresolvedEnvironmentDatabasePaths(t *testing.T) {
 	_, err := NewStore("$MAESTRO_DB_DIR/maestro.db")
 	if err == nil || !strings.Contains(err.Error(), "unresolved environment variable") {
 		t.Fatalf("expected unresolved environment variable error, got %v", err)
+	}
+}
+
+func TestNewReadOnlyStoreOpensExistingDatabaseWithoutMigrations(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only database permissions behave differently on Windows")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "readonly.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	project, err := store.CreateProject("Readonly Project", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Readonly issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close writable store: %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Fatalf("Chmod read-only db: %v", err)
+	}
+	readOnlyStore, err := NewReadOnlyStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewReadOnlyStore: %v", err)
+	}
+	defer readOnlyStore.Close()
+	if !readOnlyStore.ReadOnly() {
+		t.Fatal("expected store to report read-only mode")
+	}
+
+	loadedProject, err := readOnlyStore.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if loadedProject.Name != project.Name {
+		t.Fatalf("unexpected project: %+v", loadedProject)
+	}
+	issues, err := readOnlyStore.ListIssues(nil)
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Identifier != issue.Identifier {
+		t.Fatalf("unexpected issues: %+v", issues)
 	}
 }
 
@@ -551,6 +612,206 @@ func TestIssuePlanRevisionLifecyclePersistsAndClears(t *testing.T) {
 	}
 }
 
+func TestIssuePlanRevisionReopensClosedSession(t *testing.T) {
+	store := setupTestStore(t)
+	issue, err := store.CreateIssue("", "", "Plan revision reopen", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 10, 45, 0, 0, time.UTC)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft the rollout.", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
+	}
+	initialPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning initial: %v", err)
+	}
+	if initialPlanning == nil || initialPlanning.SessionID == "" || initialPlanning.ClosedAt != nil {
+		t.Fatalf("expected open planning session, got %#v", initialPlanning)
+	}
+	sessionID := initialPlanning.SessionID
+	if initialPlanning.CurrentVersion == nil || initialPlanning.CurrentVersion.Markdown != "Draft the rollout." {
+		t.Fatalf("expected initial version to persist, got %#v", initialPlanning)
+	}
+
+	if err := store.ClearIssuePendingPlanApproval(issue.ID, "manual_retry"); err != nil {
+		t.Fatalf("ClearIssuePendingPlanApproval: %v", err)
+	}
+	closedPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning closed: %v", err)
+	}
+	if closedPlanning == nil || closedPlanning.SessionID != sessionID || closedPlanning.ClosedAt == nil || closedPlanning.Status != IssuePlanningStatusAbandoned {
+		t.Fatalf("expected closed planning session, got %#v", closedPlanning)
+	}
+
+	reopenedAt := requestedAt.Add(10 * time.Minute)
+	if err := store.SetIssuePendingPlanRevision(issue.ID, "Re-open the session with a tighter rollback step.", reopenedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
+	}
+	reopenedPlanning, err := store.GetIssuePlanning(issue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning reopened: %v", err)
+	}
+	if reopenedPlanning == nil {
+		t.Fatal("expected reopened planning session")
+	}
+	if reopenedPlanning.SessionID != sessionID {
+		t.Fatalf("expected reopened session to reuse the original session id, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.ClosedAt != nil || reopenedPlanning.Status != IssuePlanningStatusRevisionRequested {
+		t.Fatalf("expected reopened revision-requested session, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.CurrentVersion == nil || reopenedPlanning.CurrentVersion.Markdown != "Draft the rollout." {
+		t.Fatalf("expected reopened session to preserve the original version, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.PendingRevisionNote != "Re-open the session with a tighter rollback step." {
+		t.Fatalf("expected reopened session to record the revision note, got %#v", reopenedPlanning)
+	}
+	reloaded, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue reopened: %v", err)
+	}
+	if !reloaded.PlanApprovalPending || reloaded.PendingPlanMarkdown != "Draft the rollout." || reloaded.PendingPlanRevisionMarkdown != "Re-open the session with a tighter rollback step." {
+		t.Fatalf("expected reopened issue state to reflect canonical planning, got %#v", reloaded)
+	}
+}
+
+func TestLegacyPlanSessionReopenAndPermissionCascade(t *testing.T) {
+	store := setupTestStore(t)
+
+	var counts IssueStateCounts
+	counts.AddCount(StateBacklog, 0)
+	if counts.Total() != 0 || counts.Active() != 0 {
+		t.Fatalf("expected zero-count state bucket helper to stay empty, got %#v", counts)
+	}
+
+	if planning, err := store.GetIssuePlanning(nil); err != nil || planning != nil {
+		t.Fatalf("expected nil planning lookup to return nil, got planning=%#v err=%v", planning, err)
+	}
+	if planning := sessionPlanningRecord(nil, nil, nil); planning != nil {
+		t.Fatalf("expected nil session planning record to return nil, got %#v", planning)
+	}
+
+	project, err := store.CreateProject("Legacy plan cascade", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	primaryIssue, err := store.CreateIssue(project.ID, "", "Legacy plan issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue primary: %v", err)
+	}
+	siblingIssue, err := store.CreateIssue(project.ID, "", "Sibling issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue sibling: %v", err)
+	}
+
+	legacyOpenedAt := time.Date(2026, 3, 19, 8, 15, 0, 0, time.UTC)
+	legacyClosedAt := legacyOpenedAt.Add(12 * time.Minute)
+	legacyRevisionRequestedAt := legacyOpenedAt.Add(7 * time.Minute)
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatalf("Begin legacy session tx: %v", err)
+	}
+	legacySession := issuePlanSessionRecord{
+		ID:                         generateID("pls"),
+		IssueID:                    primaryIssue.ID,
+		Status:                     IssuePlanningStatusRevisionRequested,
+		CurrentVersionNumber:       0,
+		PendingRevisionNote:        "Legacy revision note",
+		PendingRevisionRequestedAt: &legacyRevisionRequestedAt,
+		OpenedAt:                   legacyOpenedAt,
+		UpdatedAt:                  legacyClosedAt,
+		ClosedAt:                   &legacyClosedAt,
+		ClosedReason:               "legacy closed",
+	}
+	if err := store.insertIssuePlanSessionTx(tx, legacySession); err != nil {
+		t.Fatalf("insertIssuePlanSessionTx legacy: %v", err)
+	}
+	if err := store.insertIssuePlanVersionTx(tx, IssuePlanVersion{
+		ID:            generateID("plv"),
+		SessionID:     legacySession.ID,
+		VersionNumber: 0,
+		Markdown:      "Legacy draft rollout",
+		CreatedAt:     legacyOpenedAt,
+	}); err != nil {
+		t.Fatalf("insertIssuePlanVersionTx legacy: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit legacy session tx: %v", err)
+	}
+
+	planning, err := store.GetIssuePlanning(primaryIssue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning legacy: %v", err)
+	}
+	if planning == nil || planning.SessionID != legacySession.ID {
+		t.Fatalf("expected legacy planning session, got %#v", planning)
+	}
+	if planning.CurrentVersionNumber != 0 || planning.CurrentVersion == nil {
+		t.Fatalf("expected derived current version metadata, got %#v", planning)
+	}
+	if planning.CurrentVersion.Markdown != "Legacy draft rollout" || planning.ClosedAt == nil || planning.ClosedReason != "legacy closed" {
+		t.Fatalf("unexpected legacy planning projection: %#v", planning)
+	}
+	if planning.PendingRevisionNote != "Legacy revision note" || planning.PendingRevisionRequestedAt == nil || !planning.PendingRevisionRequestedAt.Equal(legacyRevisionRequestedAt) {
+		t.Fatalf("unexpected legacy revision metadata: %#v", planning)
+	}
+
+	reopenedAt := legacyClosedAt.Add(5 * time.Minute)
+	if err := store.SetIssuePendingPlanApprovalWithContext(primaryIssue, "Publish the legacy rollout", reopenedAt, 4, "thread-legacy", "turn-legacy"); err != nil {
+		t.Fatalf("SetIssuePendingPlanApprovalWithContext legacy reopen: %v", err)
+	}
+
+	reopenedPlanning, err := store.GetIssuePlanning(primaryIssue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning reopened: %v", err)
+	}
+	if reopenedPlanning == nil || reopenedPlanning.SessionID != legacySession.ID {
+		t.Fatalf("expected reopened planning session to reuse the legacy session id, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.CurrentVersionNumber != 1 || reopenedPlanning.CurrentVersion == nil {
+		t.Fatalf("expected reopened planning to keep a single version, got %#v", reopenedPlanning)
+	}
+	if reopenedPlanning.CurrentVersion.Markdown != "Publish the legacy rollout" || reopenedPlanning.CurrentVersion.RevisionNote != "Legacy revision note" {
+		t.Fatalf("unexpected reopened plan projection: %#v", reopenedPlanning.CurrentVersion)
+	}
+	if reopenedPlanning.ClosedAt != nil || reopenedPlanning.PendingRevisionNote != "" {
+		t.Fatalf("expected reopened session to be open with no pending revision, got %#v", reopenedPlanning)
+	}
+
+	if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateProjectPermissionProfile full-access: %v", err)
+	}
+
+	updatedPrimary, err := store.GetIssue(primaryIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue primary after project update: %v", err)
+	}
+	if updatedPrimary.PlanApprovalPending || updatedPrimary.PendingPlanMarkdown != "" || updatedPrimary.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected project permission change to clear the open plan state, got %#v", updatedPrimary)
+	}
+	updatedSibling, err := store.GetIssue(siblingIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue sibling after project update: %v", err)
+	}
+	if updatedSibling.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected sibling issue to remain on the canonical override path, got %#v", updatedSibling)
+	}
+
+	if err := store.UpdateIssuePermissionProfile(primaryIssue.ID, PermissionProfileFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile full-access: %v", err)
+	}
+	closedPlanning, err := store.GetIssuePlanning(primaryIssue)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning closed after issue update: %v", err)
+	}
+	if closedPlanning == nil || closedPlanning.ClosedAt == nil || closedPlanning.ClosedReason != "project_permission_profile_updated" {
+		t.Fatalf("expected closed legacy planning session to stay closed, got %#v", closedPlanning)
+	}
+}
+
 func TestAppendRuntimeEventOnlyPersistsStandaloneEvent(t *testing.T) {
 	store := setupTestStore(t)
 	issue, err := store.CreateIssue("", "", "Standalone runtime event", "", 0, nil)
@@ -612,13 +873,8 @@ func TestUpdateProjectPermissionProfileClearsInheritedPendingPlanApproval(t *tes
 		t.Fatalf("UpdateProjectPermissionProfile plan-first: %v", err)
 	}
 	requestedAt := time.Date(2026, 3, 18, 10, 0, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override": CollaborationModeOverridePlan,
-		"plan_approval_pending":       true,
-		"pending_plan_markdown":       "Approve me",
-		"pending_plan_requested_at":   &requestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue pending plan state: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Approve me", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval pending plan state: %v", err)
 	}
 
 	if err := store.UpdateProjectPermissionProfile(project.ID, PermissionProfileFullAccess); err != nil {
@@ -661,13 +917,8 @@ func TestIssuePlanApprovalHelpersValidateAndClearOverrideState(t *testing.T) {
 	}
 
 	requestedAt := time.Date(2026, 3, 18, 13, 0, 0, 0, time.UTC)
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override": CollaborationModeOverridePlan,
-		"plan_approval_pending":       true,
-		"pending_plan_markdown":       "Draft plan",
-		"pending_plan_requested_at":   &requestedAt,
-	}); err != nil {
-		t.Fatalf("UpdateIssue: %v", err)
+	if err := store.SetIssuePendingPlanApproval(issue.ID, "Draft plan", requestedAt); err != nil {
+		t.Fatalf("SetIssuePendingPlanApproval: %v", err)
 	}
 
 	if err := store.UpdateIssuePermissionProfile(issue.ID, PermissionProfileDefault); err != nil {
@@ -954,6 +1205,41 @@ func TestIssueAssetContentMissingFileReturnsNotFoundAndCleanupHelpersAreSafe(t *
 	removeIfEmpty(nonEmptyDir)
 	if _, err := os.Stat(nonEmptyDir); err != nil {
 		t.Fatalf("expected non-empty dir to remain, got %v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		t.Run("cleanup helpers tolerate permission failures", func(t *testing.T) {
+			readonlyDir := filepath.Join(t.TempDir(), "readonly")
+			if err := os.MkdirAll(readonlyDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll readonly dir: %v", err)
+			}
+			blockedPath := filepath.Join(readonlyDir, "blocked.txt")
+			if err := os.WriteFile(blockedPath, []byte("blocked"), 0o644); err != nil {
+				t.Fatalf("WriteFile blocked.txt: %v", err)
+			}
+			emptyDir := filepath.Join(readonlyDir, "empty-dir")
+			if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll empty dir: %v", err)
+			}
+			if err := os.Chmod(readonlyDir, 0o555); err != nil {
+				t.Fatalf("Chmod readonly dir: %v", err)
+			}
+			t.Cleanup(func() {
+				_ = os.Chmod(readonlyDir, 0o755)
+				_ = os.Remove(blockedPath)
+				_ = os.Remove(emptyDir)
+			})
+
+			removeIssueAssetFile(blockedPath)
+			if _, err := os.Stat(blockedPath); err != nil {
+				t.Fatalf("expected blocked file to remain after failed removal, got %v", err)
+			}
+
+			removeIfEmpty(emptyDir)
+			if _, err := os.Stat(emptyDir); err != nil {
+				t.Fatalf("expected empty dir to remain after failed removal, got %v", err)
+			}
+		})
 	}
 }
 
@@ -2748,6 +3034,50 @@ func TestUpdateIssueRecurringFields(t *testing.T) {
 	}
 }
 
+func TestUpdateIssuePermissionProfileViaGenericUpdateClearsPendingPlanApproval(t *testing.T) {
+	store := setupTestStore(t)
+
+	issue, err := store.CreateIssue("", "", "Permission profile", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	requestedAt := time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC)
+	revisionRequestedAt := time.Date(2026, 3, 18, 11, 30, 0, 0, time.UTC)
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
+		"collaboration_mode_override":        CollaborationModeOverridePlan,
+		"plan_approval_pending":              true,
+		"pending_plan_markdown":              "Draft plan",
+		"pending_plan_requested_at":          &requestedAt,
+		"pending_plan_revision_markdown":     "Revised plan",
+		"pending_plan_revision_requested_at": &revisionRequestedAt,
+	}); err != nil {
+		t.Fatalf("UpdateIssue setup: %v", err)
+	}
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"permission_profile": "full-access"}); err != nil {
+		t.Fatalf("UpdateIssue permission profile: %v", err)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.PermissionProfile != PermissionProfileFullAccess {
+		t.Fatalf("expected full-access permission profile, got %q", updated.PermissionProfile)
+	}
+	if updated.CollaborationModeOverride != CollaborationModeOverrideNone {
+		t.Fatalf("expected collaboration override cleared, got %q", updated.CollaborationModeOverride)
+	}
+	if updated.PlanApprovalPending || updated.PendingPlanMarkdown != "" || updated.PendingPlanRequestedAt != nil || updated.PendingPlanRevisionMarkdown != "" || updated.PendingPlanRevisionRequestedAt != nil {
+		t.Fatalf("expected pending plan state cleared, got %+v", updated)
+	}
+
+	if err := store.UpdateIssue(issue.ID, map[string]interface{}{"permission_profile": "admin-mode"}); err == nil || !IsValidation(err) {
+		t.Fatalf("expected invalid permission profile to fail validation, got %v", err)
+	}
+}
+
 func TestUpdateIssueRecurringConversionDefaultsEnabled(t *testing.T) {
 	store := setupTestStore(t)
 
@@ -3662,7 +3992,7 @@ func makeReadOnlyWorkspaceTree(t *testing.T, root string) {
 	if err := os.Chmod(testFile, 0o444); err != nil {
 		t.Fatalf("Chmod decode_test.go: %v", err)
 	}
-	if err := os.Chmod(moduleDir, 0o555); err != nil {
+	if err := os.Chmod(moduleDir, 0o000); err != nil {
 		t.Fatalf("Chmod module dir: %v", err)
 	}
 }
@@ -3834,6 +4164,138 @@ func TestListIssueSummariesSupportsBlockedAndProjectNameFilters(t *testing.T) {
 	}
 	if len(items[0].BlockedBy) != 1 || items[0].BlockedBy[0] != resolvedBlocker.Identifier {
 		t.Fatalf("expected %s blockers [%s], got %v", resolved.Identifier, resolvedBlocker.Identifier, items[0].BlockedBy)
+	}
+}
+
+func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
+	store := setupTestStore(t)
+
+	project, err := store.CreateProject("Matrix", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	epic, err := store.CreateEpic(project.ID, "Matrix epic", "")
+	if err != nil {
+		t.Fatalf("CreateEpic: %v", err)
+	}
+
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "blocker", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	if err := store.UpdateIssueState(blocker.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState blocker: %v", err)
+	}
+
+	ready, err := store.CreateIssue(project.ID, epic.ID, "Ready alpha", "alpha search token", 3, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue ready: %v", err)
+	}
+	if err := store.UpdateIssueState(ready.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState ready: %v", err)
+	}
+
+	recurring, err := store.CreateIssueWithOptions(project.ID, epic.ID, "Recurring beta", "beta search token", 5, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	if err := store.UpdateIssueState(recurring.ID, StateInReview); err != nil {
+		t.Fatalf("UpdateIssueState recurring: %v", err)
+	}
+
+	done, err := store.CreateIssue(project.ID, "", "Done gamma", "gamma search token", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue done: %v", err)
+	}
+	if err := store.UpdateIssueState(done.ID, StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+
+	blocked, err := store.CreateIssue(project.ID, "", "Blocked delta", "delta search token", 2, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
+	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
+		t.Fatalf("SetIssueBlockers blocked: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		query     IssueQuery
+		wantTotal int
+	}{
+		{
+			name:      "project id sort created",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 20},
+			wantTotal: 5,
+		},
+		{
+			name:      "project id sort identifier",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "identifier_asc", Limit: 20},
+			wantTotal: 5,
+		},
+		{
+			name:      "project id sort state",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "state_asc", Limit: 20},
+			wantTotal: 5,
+		},
+		{
+			name:      "epic id and issue type",
+			query:     IssueQuery{ProjectID: project.ID, EpicID: epic.ID, IssueType: string(IssueTypeRecurring), Sort: "updated_desc", Limit: 20},
+			wantTotal: 1,
+		},
+		{
+			name:      "search and blocked filter",
+			query:     IssueQuery{ProjectName: "matrix", Search: "search token", Blocked: func() *bool { v := true; return &v }(), Limit: 20},
+			wantTotal: 1,
+		},
+		{
+			name:      "offset pagination",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 1, Offset: 1},
+			wantTotal: 5,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := store.ListIssueSummaries(tc.query)
+			if err != nil {
+				t.Fatalf("ListIssueSummaries: %v", err)
+			}
+			if total != tc.wantTotal {
+				t.Fatalf("expected total %d, got %d", tc.wantTotal, total)
+			}
+			if len(items) == 0 {
+				t.Fatal("expected at least one issue summary")
+			}
+		})
+	}
+
+	items, _, err := store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries created_asc: %v", err)
+	}
+	if len(items) != 5 || items[0].Identifier != blocker.Identifier || items[4].Identifier != blocked.Identifier {
+		t.Fatalf("unexpected created_asc order: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "identifier_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries identifier_asc: %v", err)
+	}
+	if len(items) != 5 || items[0].Identifier != blocker.Identifier {
+		t.Fatalf("unexpected identifier_asc order: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "state_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries state_asc: %v", err)
+	}
+	if len(items) != 5 || items[0].State == "" {
+		t.Fatalf("unexpected state_asc results: %#v", items)
 	}
 }
 
@@ -4995,221 +5457,6 @@ func TestReconcileProviderIssuesRemovesDeletedBlockersAndReactivatesCommands(t *
 	}
 	if pending[0].ID != firstCommand.ID || pending[1].ID != secondCommand.ID {
 		t.Fatalf("expected pending commands in creation order, got %#v", pending)
-	}
-}
-
-func TestCreateProjectPersistsLegacyWorkflowFullAccessProfile(t *testing.T) {
-	store := setupTestStore(t)
-
-	repoPath := t.TempDir()
-	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(`---
-tracker:
-  kind: kanban
-codex:
-  thread_sandbox: danger-full-access
-  turn_sandbox_policy:
-    type: dangerFullAccess
----
-`), 0o644); err != nil {
-		t.Fatalf("write workflow: %v", err)
-	}
-
-	project, err := store.CreateProject("Project", "", repoPath, workflowPath)
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	if project.PermissionProfile != PermissionProfileFullAccess {
-		t.Fatalf("expected persisted full-access permission profile, got %q", project.PermissionProfile)
-	}
-
-	var stored string
-	if err := store.db.QueryRow(`SELECT permission_profile FROM projects WHERE id = ?`, project.ID).Scan(&stored); err != nil {
-		t.Fatalf("query permission_profile: %v", err)
-	}
-	if stored != string(PermissionProfileFullAccess) {
-		t.Fatalf("expected persisted full-access permission profile, got %q", stored)
-	}
-}
-
-func TestNewStoreBackfillsLegacyWorkflowFullAccessProfile(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "legacy.db")
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := os.MkdirAll(repoPath, 0o755); err != nil {
-		t.Fatalf("MkdirAll repo: %v", err)
-	}
-	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(`---
-tracker:
-  kind: kanban
-codex:
-  thread_sandbox: danger-full-access
-  turn_sandbox_policy:
-    type: dangerFullAccess
----
-`), 0o644); err != nil {
-		t.Fatalf("write workflow: %v", err)
-	}
-
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	if _, err := db.Exec(`
-		CREATE TABLE projects (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			description TEXT,
-			state TEXT NOT NULL DEFAULT 'stopped',
-			permission_profile TEXT NOT NULL DEFAULT 'default',
-			repo_path TEXT NOT NULL DEFAULT '',
-			workflow_path TEXT NOT NULL DEFAULT '',
-			provider_kind TEXT NOT NULL DEFAULT 'kanban',
-			provider_project_ref TEXT NOT NULL DEFAULT '',
-			provider_config_json TEXT NOT NULL DEFAULT '{}',
-			created_at DATETIME NOT NULL,
-			updated_at DATETIME NOT NULL
-		)`,
-	); err != nil {
-		t.Fatalf("create projects table: %v", err)
-	}
-	now := time.Now().UTC()
-	if _, err := db.Exec(`
-		INSERT INTO projects (id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"proj-legacy", "Legacy", "", ProjectStateStopped, PermissionProfileDefault, repoPath, workflowPath, ProviderKindKanban, "", "{}", now, now,
-	); err != nil {
-		t.Fatalf("insert legacy project: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close legacy db: %v", err)
-	}
-
-	store, err := NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	var stored string
-	if err := store.db.QueryRow(`SELECT permission_profile FROM projects WHERE id = ?`, "proj-legacy").Scan(&stored); err != nil {
-		t.Fatalf("query permission_profile: %v", err)
-	}
-	if stored != string(PermissionProfileFullAccess) {
-		t.Fatalf("expected startup backfill to persist full-access, got %q", stored)
-	}
-}
-
-func TestGetProjectDoesNotBackfillLegacyProfileDuringRead(t *testing.T) {
-	store := setupTestStore(t)
-
-	repoPath := t.TempDir()
-	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(`---
-tracker:
-  kind: kanban
-codex:
-  thread_sandbox: danger-full-access
-  turn_sandbox_policy:
-    type: dangerFullAccess
----
-`), 0o644); err != nil {
-		t.Fatalf("write workflow: %v", err)
-	}
-
-	now := time.Now().UTC()
-	if _, err := store.db.Exec(`
-		INSERT INTO projects (id, name, description, state, permission_profile, repo_path, workflow_path, provider_kind, provider_project_ref, provider_config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"proj-manual", "Manual", "", ProjectStateStopped, PermissionProfileDefault, repoPath, workflowPath, ProviderKindKanban, "", "{}", now, now,
-	); err != nil {
-		t.Fatalf("insert project: %v", err)
-	}
-
-	before, err := store.LatestChangeSeq()
-	if err != nil {
-		t.Fatalf("LatestChangeSeq before read: %v", err)
-	}
-	project, err := store.GetProject("proj-manual")
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if project.PermissionProfile != PermissionProfileDefault {
-		t.Fatalf("expected read path to preserve stored profile, got %q", project.PermissionProfile)
-	}
-	after, err := store.LatestChangeSeq()
-	if err != nil {
-		t.Fatalf("LatestChangeSeq after read: %v", err)
-	}
-	if after != before {
-		t.Fatalf("expected project reads to avoid mutating change state, before=%d after=%d", before, after)
-	}
-}
-
-func TestGetProjectSkipsLegacyBackfillWithoutRepoPath(t *testing.T) {
-	store := setupTestStore(t)
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	tmpDir := t.TempDir()
-	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(`---
-tracker:
-  kind: kanban
-codex:
-  thread_sandbox: danger-full-access
-  turn_sandbox_policy:
-    type: dangerFullAccess
----
-`), 0o644); err != nil {
-		t.Fatalf("write workflow: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(cwd); err != nil {
-			t.Fatalf("restore cwd: %v", err)
-		}
-	})
-
-	project, err := store.CreateProject("Project", "", "", "")
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-
-	project, err = store.GetProject(project.ID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if project.PermissionProfile != PermissionProfileDefault {
-		t.Fatalf("expected unbound project to remain on default permission profile, got %q", project.PermissionProfile)
-	}
-}
-
-func TestCreateProjectIgnoresLegacyWorkflowParseErrorsDuringPermissionDetection(t *testing.T) {
-	store := setupTestStore(t)
-
-	repoPath := t.TempDir()
-	workflowPath := filepath.Join(repoPath, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(`---
-codex:
-  thread_sandbox: [danger-full-access
----
-`), 0o644); err != nil {
-		t.Fatalf("write workflow: %v", err)
-	}
-
-	project, err := store.CreateProject("Project", "", repoPath, workflowPath)
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-
-	if project.PermissionProfile != PermissionProfileDefault {
-		t.Fatalf("expected malformed legacy workflow to leave permission profile unchanged, got %q", project.PermissionProfile)
 	}
 }
 

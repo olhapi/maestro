@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -278,6 +279,211 @@ func TestWaitForPendingInteractionSupportsMCPServerElicitationRequests(t *testin
 	}
 }
 
+func TestWaitForPendingInteractionPreservesRichElicitationSchemas(t *testing.T) {
+	stdin := &bufferWriteCloser{}
+	interactionIDs := make(chan *PendingInteraction, 1)
+	responseErrs := make(chan error, 1)
+	client := &Client{
+		cfg: ClientConfig{
+			IssueID:         "issue-1",
+			IssueIdentifier: "ISS-1",
+			Workspace:       t.TempDir(),
+			ReadTimeout:     100 * time.Millisecond,
+		},
+		stdin:               stdin,
+		lines:               make(chan string),
+		lineErr:             make(chan error, 1),
+		waitCh:              make(chan error, 1),
+		session:             &Session{SessionID: "session-1", ThreadID: "thread-1", TurnID: "turn-1", MaxHistory: 4},
+		logger:              discardLogger(),
+		pendingInteractions: make(map[string]*interactionWaiter),
+	}
+	client.cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction == nil {
+			responseErrs <- fmt.Errorf("nil interaction")
+			return
+		}
+		cloned := interaction.Clone()
+		interactionIDs <- &cloned
+		responseErrs <- client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+			Action: "accept",
+			Content: map[string]interface{}{
+				"profile": map[string]interface{}{
+					"name": "Ada",
+				},
+			},
+		})
+	}
+
+	rawMessage, err := json.Marshal(map[string]interface{}{
+		"id":     99,
+		"method": "mcpServer/elicitation/request",
+		"params": map[string]interface{}{
+			"serverName": "support-bot",
+			"threadId":   "thread-1",
+			"turnId":     "turn-1",
+			"message":    "Need operator preferences",
+			"mode":       "form",
+			"requestedSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"profile": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"name": map[string]interface{}{
+								"type":    "string",
+								"default": "Ada",
+							},
+							"contact": map[string]interface{}{
+								"oneOf": []interface{}{
+									map[string]interface{}{
+										"title": "Email",
+										"type":  "object",
+										"properties": map[string]interface{}{
+											"address": map[string]interface{}{
+												"type":   "string",
+												"format": "email",
+											},
+										},
+										"required": []string{"address"},
+									},
+									map[string]interface{}{
+										"title": "Webhook",
+										"type":  "object",
+										"properties": map[string]interface{}{
+											"endpoint": map[string]interface{}{
+												"type":   "string",
+												"format": "uri",
+											},
+										},
+										"required": []string{"endpoint"},
+									},
+								},
+							},
+						},
+						"required": []string{"name"},
+					},
+					"tags": map[string]interface{}{
+						"type": "array",
+						"items": map[string]interface{}{
+							"type":      "string",
+							"enum":      []string{"alpha", "beta"},
+							"enumNames": []string{"Alpha", "Beta"},
+						},
+						"default": []string{"alpha"},
+					},
+				},
+				"required": []string{"profile"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal elicitation request: %v", err)
+	}
+	msg, ok := protocol.DecodeMessage(string(rawMessage))
+	if !ok {
+		t.Fatal("expected test payload to decode")
+	}
+
+	resultCh := make(chan error, 1)
+	go func() {
+		handled, err := client.waitForPendingInteraction(context.Background(), msg)
+		if err != nil {
+			resultCh <- err
+			return
+		}
+		if !handled {
+			resultCh <- fmt.Errorf("expected request to be handled")
+			return
+		}
+		resultCh <- nil
+	}()
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("waitForPendingInteraction failed: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for synchronous elicitation response")
+	}
+
+	select {
+	case err := <-responseErrs:
+		if err != nil {
+			t.Fatalf("synchronous response failed: %v", err)
+		}
+	default:
+		t.Fatal("expected callback to respond synchronously")
+	}
+
+	var interaction *PendingInteraction
+	select {
+	case interaction = <-interactionIDs:
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected callback to observe pending interaction")
+	}
+	if interaction.Elicitation == nil {
+		t.Fatalf("expected elicitation payload, got %+v", interaction)
+	}
+
+	properties, ok := interaction.Elicitation.RequestedSchema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected requested schema properties to survive round trip, got %#v", interaction.Elicitation.RequestedSchema["properties"])
+	}
+	profile, ok := properties["profile"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested object property to survive, got %#v", properties["profile"])
+	}
+	profileProperties, ok := profile["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested object properties to survive, got %#v", profile["properties"])
+	}
+	name, ok := profileProperties["name"].(map[string]interface{})
+	if !ok || name["default"] != "Ada" {
+		t.Fatalf("expected nested string default to survive, got %#v", profileProperties["name"])
+	}
+	contact, ok := profileProperties["contact"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected nested union property to survive, got %#v", profileProperties["contact"])
+	}
+	branches, ok := contact["oneOf"].([]interface{})
+	if !ok || len(branches) != 2 {
+		t.Fatalf("expected oneOf branches to survive, got %#v", contact["oneOf"])
+	}
+	firstBranch, ok := branches[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected first oneOf branch map, got %#v", branches[0])
+	}
+	firstBranchProperties, ok := firstBranch["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected oneOf branch properties to survive, got %#v", firstBranch["properties"])
+	}
+	address, ok := firstBranchProperties["address"].(map[string]interface{})
+	if !ok || address["format"] != "email" {
+		t.Fatalf("expected oneOf branch field metadata to survive, got %#v", firstBranchProperties["address"])
+	}
+	tags, ok := properties["tags"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected array property to survive, got %#v", properties["tags"])
+	}
+	if got := tags["default"]; fmt.Sprintf("%v", got) != "[alpha]" {
+		t.Fatalf("expected array default to survive, got %#v", tags["default"])
+	}
+	items, ok := tags["items"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected array items to survive, got %#v", tags["items"])
+	}
+	enumValues, ok := items["enum"].([]interface{})
+	if !ok || len(enumValues) != 2 || enumValues[0] != "alpha" || enumValues[1] != "beta" {
+		t.Fatalf("expected array enum values to survive, got %#v", items["enum"])
+	}
+
+	if !strings.Contains(stdin.String(), `"action":"accept"`) || !strings.Contains(stdin.String(), `"profile":{"name":"Ada"}`) {
+		t.Fatalf("expected elicitation response in output, got %q", stdin.String())
+	}
+}
+
 func TestAwaitTurnCompletionFailsFastOnUnsupportedIdBearingRequest(t *testing.T) {
 	client := &Client{
 		cfg: ClientConfig{
@@ -346,7 +552,7 @@ for raw in sys.stdin:
 		WorkspaceRoot: workspaceRoot,
 		Prompt:        "prompt",
 		Title:         "close failure",
-		ReadTimeout:   200 * time.Millisecond,
+		ReadTimeout:   1 * time.Second,
 		TurnTimeout:   2 * time.Second,
 	})
 	if err == nil {

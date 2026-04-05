@@ -6,6 +6,14 @@ import { MarkdownText, wrappedOutputClassName } from '@/components/ui/markdown'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { SessionActivityTranscript } from '@/components/dashboard/session-activity-transcript'
+import {
+  formatRuntimeAuthSource,
+  formatRuntimeName,
+  formatRuntimeProvider,
+  formatRuntimeState,
+  formatRuntimeStopReason,
+  formatRuntimeTransport,
+} from '@/lib/runtime'
 import { describeFailureRuns, failureStatusLabel } from '@/lib/execution'
 import type { IssueExecutionDetail } from '@/lib/types'
 import { formatCompactNumber, formatDateTime, formatNumber, formatRelativeTime, toTitleCase } from '@/lib/utils'
@@ -231,15 +239,17 @@ export function SessionExecutionCard({
             <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Plan turn</Badge>
           ) : null}
           {planningBadgeLabel ? (
-            <Badge className={
-              effectivePlanningStatus === 'approved'
-                ? 'border-lime-400/20 bg-lime-400/10 text-lime-100'
-                : effectivePlanningStatus === 'abandoned'
-                  ? 'border-rose-400/20 bg-rose-400/10 text-rose-100'
-                  : effectivePlanningStatus === 'drafting' || effectivePlanningStatus === 'revision_requested'
-                    ? 'border-amber-400/20 bg-amber-400/10 text-amber-100'
-                    : 'border-sky-400/20 bg-sky-400/10 text-sky-100'
-            }>
+            <Badge
+              className={
+                effectivePlanningStatus === 'approved'
+                  ? 'border-lime-400/20 bg-lime-400/10 text-lime-100'
+                  : effectivePlanningStatus === 'abandoned'
+                    ? 'border-rose-400/20 bg-rose-400/10 text-rose-100'
+                    : effectivePlanningStatus === 'drafting' || effectivePlanningStatus === 'revision_requested'
+                      ? 'border-amber-400/20 bg-amber-400/10 text-amber-100'
+                      : 'border-sky-400/20 bg-sky-400/10 text-sky-100'
+              }
+            >
               {planningBadgeLabel}
             </Badge>
           ) : null}
@@ -250,6 +260,29 @@ export function SessionExecutionCard({
             <Badge className="border-amber-400/20 bg-amber-400/10 text-amber-100">
               Retry {formatRelativeTime(execution.next_retry_at)}
             </Badge>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {execution.runtime_name ? (
+            <Badge className="border-white/10 bg-white/5 text-white">Runtime {formatRuntimeName(execution.runtime_name)}</Badge>
+          ) : null}
+          {execution.runtime_provider ? (
+            <Badge className="border-white/10 bg-white/5 text-white">Provider {formatRuntimeProvider(execution.runtime_provider)}</Badge>
+          ) : null}
+          {execution.runtime_transport ? (
+            <Badge className="border-white/10 bg-white/5 text-white">Transport {formatRuntimeTransport(execution.runtime_transport)}</Badge>
+          ) : null}
+          {execution.runtime_auth_source ? (
+            <Badge className="border-white/10 bg-white/5 text-white">Auth {formatRuntimeAuthSource(execution.runtime_auth_source)}</Badge>
+          ) : null}
+          {execution.pending_interaction_state ? (
+            <Badge className="border-white/10 bg-white/5 text-white">
+              State {formatRuntimeState(execution.pending_interaction_state)}
+            </Badge>
+          ) : null}
+          {execution.stop_reason ? (
+            <Badge className="border-white/10 bg-white/5 text-white">Stop {formatRuntimeStopReason(execution.stop_reason)}</Badge>
           ) : null}
         </div>
 
@@ -511,7 +544,7 @@ export function SessionExecutionCard({
                 {debugActivityGroups.length > 0 ? (
                   <div className="space-y-2.5">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      Secondary Codex items
+                      Secondary execution items
                     </p>
                     {debugActivityGroups.map((group) => (
                       <div key={`debug-attempt-${group.attempt}`} className="space-y-2.5">

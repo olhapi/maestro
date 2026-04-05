@@ -10,6 +10,10 @@ type SnapshotProvider interface {
 	Snapshot() Snapshot
 }
 
+type WorkspacePathProvider interface {
+	IssueWorkspacePath(issueIdentifier string) string
+}
+
 type RefreshProvider interface {
 	RequestRefresh() map[string]interface{}
 }
@@ -58,10 +62,7 @@ func IssuePayload(provider SnapshotProvider, issueIdentifier string) (map[string
 		return nil, false
 	}
 
-	workspacePath := ""
-	if snapshot.WorkspaceRoot != "" {
-		workspacePath = filepath.Join(snapshot.WorkspaceRoot, issueIdentifier)
-	}
+	workspacePath := issueWorkspacePath(provider, snapshot, issueIdentifier, running, retry, paused)
 	payload := map[string]interface{}{
 		"issue_identifier": issueIdentifier,
 		"workspace": map[string]interface{}{
@@ -107,6 +108,27 @@ func IssuePayload(provider SnapshotProvider, issueIdentifier string) (map[string
 	}
 	payload["tracked"] = map[string]interface{}{}
 	return payload, true
+}
+
+func issueWorkspacePath(provider SnapshotProvider, snapshot Snapshot, issueIdentifier string, running *RunningEntry, retry *RetryEntry, paused *PausedEntry) string {
+	if running != nil && strings.TrimSpace(running.WorkspacePath) != "" {
+		return strings.TrimSpace(running.WorkspacePath)
+	}
+	if retry != nil && strings.TrimSpace(retry.WorkspacePath) != "" {
+		return strings.TrimSpace(retry.WorkspacePath)
+	}
+	if paused != nil && strings.TrimSpace(paused.WorkspacePath) != "" {
+		return strings.TrimSpace(paused.WorkspacePath)
+	}
+	if lookup, ok := provider.(WorkspacePathProvider); ok {
+		if path := strings.TrimSpace(lookup.IssueWorkspacePath(issueIdentifier)); path != "" {
+			return path
+		}
+	}
+	if snapshot.WorkspaceRoot != "" {
+		return filepath.Join(snapshot.WorkspaceRoot, issueIdentifier)
+	}
+	return ""
 }
 
 func RefreshPayload(provider RefreshProvider) map[string]interface{} {
@@ -157,11 +179,14 @@ func runningEntryPayload(entry RunningEntry) map[string]interface{} {
 	if entry.LastEventAt != nil {
 		payload["last_event_at"] = entry.LastEventAt.UTC().Format(time.RFC3339)
 	}
+	if strings.TrimSpace(entry.WorkspacePath) != "" {
+		payload["workspace_path"] = entry.WorkspacePath
+	}
 	return payload
 }
 
 func retryEntryPayload(entry RetryEntry) map[string]interface{} {
-	return map[string]interface{}{
+	payload := map[string]interface{}{
 		"issue_id":         entry.IssueID,
 		"issue_identifier": entry.Identifier,
 		"phase":            entry.Phase,
@@ -169,10 +194,14 @@ func retryEntryPayload(entry RetryEntry) map[string]interface{} {
 		"due_at":           entry.DueAt.UTC().Format(time.RFC3339),
 		"error":            sanitizeMessage(entry.Error),
 	}
+	if strings.TrimSpace(entry.WorkspacePath) != "" {
+		payload["workspace_path"] = entry.WorkspacePath
+	}
+	return payload
 }
 
 func pausedEntryPayload(entry PausedEntry) map[string]interface{} {
-	return map[string]interface{}{
+	payload := map[string]interface{}{
 		"issue_id":             entry.IssueID,
 		"issue_identifier":     entry.Identifier,
 		"phase":                entry.Phase,
@@ -182,6 +211,10 @@ func pausedEntryPayload(entry PausedEntry) map[string]interface{} {
 		"consecutive_failures": entry.ConsecutiveFailures,
 		"pause_threshold":      entry.PauseThreshold,
 	}
+	if strings.TrimSpace(entry.WorkspacePath) != "" {
+		payload["workspace_path"] = entry.WorkspacePath
+	}
+	return payload
 }
 
 func recentEventsPayload(entry RunningEntry) []map[string]interface{} {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
+	fakeruntime "github.com/olhapi/maestro/internal/agentruntime/fake"
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/testutil/fakeappserver"
@@ -125,19 +128,6 @@ func setupTestRunner(t *testing.T, command string, mode string) (*Runner, *kanba
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")
-	workflowCommand := command
-	if strings.TrimSpace(workflowCommand) == "cat" {
-		scenario := baseRunnerAppServerScenario("thread-default", "turn-default", fakeappserver.Output{
-			JSON: map[string]interface{}{
-				"method": "turn/completed",
-				"params": map[string]interface{}{
-					"threadId": "thread-default",
-					"turn":     map[string]interface{}{"id": "turn-default"},
-				},
-			},
-		})
-		workflowCommand, _ = fakeappserver.CommandString(t, scenario)
-	}
 
 	store, err := kanban.NewStore(dbPath)
 	if err != nil {
@@ -145,13 +135,22 @@ func setupTestRunner(t *testing.T, command string, mode string) (*Runner, *kanba
 	}
 
 	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
-	workflowContent := `---
+	runtimeDefault := "codex-appserver"
+	appServerCommand := command
+	stdioCommand := "codex exec"
+	if strings.TrimSpace(mode) == config.AgentModeStdio {
+		runtimeDefault = "codex-stdio"
+		appServerCommand = "codex app-server"
+		stdioCommand = command
+	}
+	workflowContent := fmt.Sprintf(`---
 tracker:
   kind: kanban
 polling:
   interval_ms: 1000
 workspace:
-  root: ` + workspaceRoot + `
+  root: %s
+  branch_prefix: maestro/
 hooks:
   timeout_ms: 1000
 phases:
@@ -159,18 +158,44 @@ phases:
     enabled: false
   done:
     enabled: false
-agent:
+orchestrator:
   max_concurrent_agents: 2
   max_turns: 3
   max_retry_backoff_ms: 10000
-codex:
-  command: ` + workflowCommand + `
-  approval_policy: never
-  read_timeout_ms: 5000
-  turn_timeout_ms: 20000
+  max_automatic_retries: 8
+  dispatch_mode: parallel
+runtime:
+  default: %s
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: %s
+    expected_version: %s
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: %s
+    expected_version: %s
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
 ---
-Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt }}{% endif %}
-`
+Issue {{ issue.identifier }} {{ issue.title }}{%% if attempt %%} retry {{ attempt }}{%% endif %%}
+`, workspaceRoot, runtimeDefault, appServerCommand, codexschema.SupportedVersion, stdioCommand, codexschema.SupportedVersion)
 	if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o644); err != nil {
 		t.Fatalf("Failed to write workflow: %v", err)
 	}
@@ -187,6 +212,34 @@ Issue {{ issue.identifier }} {{ issue.title }}{% if attempt %} retry {{ attempt 
 	})
 
 	return runner, store, manager, workspaceRoot, tmpDir
+}
+
+func createWorkspaceProject(t *testing.T, store *kanban.Store, name, repoPath string) *kanban.Project {
+	t.Helper()
+	project, err := store.CreateProject(name, "", repoPath, "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	return project
+}
+
+func createWorkspaceProjectIssue(t *testing.T, store *kanban.Store, name, repoPath, title, body string, priority int, labels []string) (*kanban.Project, *kanban.Issue) {
+	t.Helper()
+	project := createWorkspaceProject(t, store, name, repoPath)
+	issue, err := store.CreateIssue(project.ID, "", title, body, priority, labels)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	return project, issue
+}
+
+func createWorkspaceProjectWithRef(t *testing.T, store *kanban.Store, name, repoPath, providerRef string) *kanban.Project {
+	t.Helper()
+	project, err := store.CreateProjectWithProvider(name, "", repoPath, "", kanban.ProviderKindKanban, providerRef, nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider: %v", err)
+	}
+	return project
 }
 
 func blockIssueUpdatesForTest(t *testing.T, dbPath, issueID string) {
@@ -280,7 +333,7 @@ func TestFakeAppServerHelperProcess(t *testing.T) {
 
 func TestGetOrCreateWorkspace(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Test Issue", "", 0, nil)
+	project, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Test Issue", "", 0, nil)
 
 	workflow, err := runner.workflowProvider.Current()
 	if err != nil {
@@ -291,21 +344,21 @@ func TestGetOrCreateWorkspace(t *testing.T) {
 		t.Fatalf("Failed to create workspace: %v", err)
 	}
 
-	expectedPath := filepath.Join(workspaceRoot, issue.Identifier)
+	expectedPath := workspacePathForIssue(workspaceRoot, project, issue)
 	if workspace.Path != expectedPath {
 		t.Errorf("Expected path %s, got %s", expectedPath, workspace.Path)
 	}
 	if _, err := os.Stat(filepath.Join(workspace.Path, ".git")); err != nil {
 		t.Fatalf("expected git worktree metadata in workspace: %v", err)
 	}
-	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 	reloaded, err := store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
-	if reloaded.BranchName != "codex/"+issue.Identifier {
+	if reloaded.BranchName != "maestro/"+issue.Identifier {
 		t.Fatalf("expected branch name to persist on issue, got %q", reloaded.BranchName)
 	}
 }
@@ -387,23 +440,21 @@ func TestPermissionConfigForIssueUsesFullAccessForIssueOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
 	if permissions.TurnSandboxPolicy["type"] != "dangerFullAccess" {
 		t.Fatalf("expected dangerFullAccess turn policy, got %#v", permissions.TurnSandboxPolicy)
 	}
-	if permissions.InitialCollaborationMode != config.InitialCollaborationModeDefault {
-		t.Fatalf("expected default collaboration mode, got %q", permissions.InitialCollaborationMode)
-	}
-	if workflow.Config.Codex.Command == "" {
+	if selectedRuntime.Command == "" {
 		t.Fatal("expected workflow to remain available")
 	}
 }
 
-func TestPermissionConfigForIssueUsesPlanThenFullAccessWithoutForcingPlanMode(t *testing.T) {
+func TestPermissionConfigForIssueUsesPlanThenFullAccessForIssueOverride(t *testing.T) {
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	project, err := store.CreateProject("Platform", "", repoPath, "")
 	if err != nil {
@@ -424,9 +475,10 @@ func TestPermissionConfigForIssueUsesPlanThenFullAccessWithoutForcingPlanMode(t 
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
-	if !reflect.DeepEqual(permissions.ApprovalPolicy, workflow.Config.Codex.ApprovalPolicy) {
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
+	if !reflect.DeepEqual(permissions.ApprovalPolicy, selectedRuntime.ApprovalPolicy) {
 		t.Fatalf("expected inherited approval policy, got %#v", permissions.ApprovalPolicy)
 	}
 	if permissions.ThreadSandbox != "workspace-write" {
@@ -435,8 +487,8 @@ func TestPermissionConfigForIssueUsesPlanThenFullAccessWithoutForcingPlanMode(t 
 	if permissions.TurnSandboxPolicy != nil {
 		t.Fatalf("expected nil turn sandbox policy, got %#v", permissions.TurnSandboxPolicy)
 	}
-	if permissions.InitialCollaborationMode != config.InitialCollaborationModeDefault {
-		t.Fatalf("expected default collaboration mode, got %q", permissions.InitialCollaborationMode)
+	if permissions.InitialCollaborationMode != config.InitialCollaborationModePlan {
+		t.Fatalf("expected plan collaboration mode, got %q", permissions.InitialCollaborationMode)
 	}
 }
 
@@ -501,8 +553,9 @@ func TestPermissionConfigForIssueFallsBackToProjectProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "danger-full-access" {
 		t.Fatalf("expected inherited danger-full-access thread sandbox, got %q", permissions.ThreadSandbox)
 	}
@@ -526,8 +579,9 @@ func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
+	selectedRuntime := workflow.Config.SelectedRuntimeConfig()
 
-	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
+	permissions := runner.permissionConfigForIssue(issue, selectedRuntime.ApprovalPolicy, selectedRuntime.InitialCollaborationMode)
 	if permissions.ThreadSandbox != "workspace-write" {
 		t.Fatalf("expected workspace-write thread sandbox, got %q", permissions.ThreadSandbox)
 	}
@@ -536,43 +590,12 @@ func TestPermissionConfigForIssueDefaultsToSafeBaseline(t *testing.T) {
 	}
 }
 
-func TestPermissionConfigForIssueUsesIssueStartupOverride(t *testing.T) {
-	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	project, err := store.CreateProject("Platform", "", repoPath, "")
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	issue, err := store.CreateIssue(project.ID, "", "Plan override", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
-	}); err != nil {
-		t.Fatalf("UpdateIssue: %v", err)
-	}
-	issue, err = store.GetIssue(issue.ID)
-	if err != nil {
-		t.Fatalf("GetIssue: %v", err)
-	}
-	workflow, err := manager.Current()
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-
-	permissions := runner.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
-	if permissions.InitialCollaborationMode != config.InitialCollaborationModePlan {
-		t.Fatalf("expected plan collaboration mode override, got %q", permissions.InitialCollaborationMode)
-	}
-	if permissions.ThreadSandbox != "workspace-write" {
-		t.Fatalf("expected workspace-write thread sandbox for plan override, got %q", permissions.ThreadSandbox)
-	}
-}
-
 func TestBuildTurnPromptUsesPlanningGuidanceWhenPlanModeEnabled(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	workflow := defaultPromptWorkflowForTest()
-	workflow.Config.Codex.InitialCollaborationMode = config.InitialCollaborationModePlan
+	runtime := workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default]
+	runtime.InitialCollaborationMode = config.InitialCollaborationModePlan
+	workflow.Config.Runtime.Entries[workflow.Config.Runtime.Default] = runtime
 
 	issue, err := store.CreateIssue("", "", "Plan the change", "Need clarification", 0, nil)
 	if err != nil {
@@ -620,8 +643,8 @@ func TestCapturePendingPlanApprovalPersistsPlanRequestForPlanMode(t *testing.T) 
 		t.Fatalf("GetIssue: %v", err)
 	}
 
-	session := &appserver.Session{
-		History: []appserver.Event{{
+	session := &agentruntime.Session{
+		History: []agentruntime.Event{{
 			Type:      "item.completed",
 			ItemType:  "agentMessage",
 			ItemPhase: "final_answer",
@@ -663,6 +686,291 @@ func TestCapturePendingPlanApprovalPersistsPlanRequestForPlanMode(t *testing.T) 
 		t.Fatalf("unexpected runtime event: %+v", latest)
 	}
 }
+
+func TestRunAgentFakeRuntimeRequestsPlanApproval(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Runtime plan approval", "", 0, nil)
+	var err error
+	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
+		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	starter := fakeruntime.NewStarter(fakeruntime.Scenario{
+		Capabilities: agentruntime.Capabilities{
+			PlanGating:               true,
+			RuntimePermissionUpdates: true,
+		},
+		Turns: []fakeruntime.Turn{{
+			StartedSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-plan",
+				TurnID:          "turn-plan",
+				SessionID:       "thread-plan-turn-plan",
+				MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+			},
+			FinalSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-plan",
+				TurnID:          "turn-plan",
+				SessionID:       "thread-plan-turn-plan",
+				History: []agentruntime.Event{{
+					Type:      "item.completed",
+					ThreadID:  "thread-plan",
+					TurnID:    "turn-plan",
+					ItemID:    "final-answer",
+					ItemType:  "agentMessage",
+					ItemPhase: "final_answer",
+					Message:   "<proposed_plan>\nKeep the rollout explicit.\n</proposed_plan>",
+				}},
+				MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+			},
+			Output: "<proposed_plan>\nKeep the rollout explicit.\n</proposed_plan>",
+		}},
+	})
+	runner.runtimeStarter = starter.Start
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected stop-result for plan approval, got %+v", result)
+	}
+	if result.StopReason != planApprovalStopReason {
+		t.Fatalf("expected stop reason %q, got %+v", planApprovalStopReason, result)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue updated: %v", err)
+	}
+	if !updated.PlanApprovalPending || updated.PendingPlanMarkdown != "Keep the rollout explicit." {
+		t.Fatalf("expected persisted pending plan approval, got %+v", updated)
+	}
+
+	clients := starter.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("expected one fake runtime client, got %d", len(clients))
+	}
+	if len(clients[0].PermissionUpdates()) == 0 {
+		t.Fatal("expected permission updates to reach the fake runtime")
+	}
+}
+
+func TestRunAgentFakeRuntimeTreatsCompletedIssueAsSuccessDespiteRuntimeError(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Runtime exit 1 after done", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	issue, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	starter := fakeruntime.NewStarter(fakeruntime.Scenario{
+		Capabilities: agentruntime.Capabilities{
+			RuntimePermissionUpdates: true,
+		},
+		Turns: []fakeruntime.Turn{{
+			StartedSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-complete",
+				TurnID:          "turn-complete",
+				SessionID:       "thread-complete-turn-complete",
+				MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+			},
+			AfterStarted: func() error {
+				return store.UpdateIssueState(issue.ID, kanban.StateDone)
+			},
+			FinalSession: &agentruntime.Session{
+				IssueID:         issue.ID,
+				IssueIdentifier: issue.Identifier,
+				ThreadID:        "thread-complete",
+				TurnID:          "turn-complete",
+				SessionID:       "thread-complete-turn-complete",
+				Terminal:        true,
+				TerminalReason:  "turn.failed",
+				History: []agentruntime.Event{{
+					Type:      "item.completed",
+					ThreadID:  "thread-complete",
+					TurnID:    "turn-complete",
+					ItemID:    "final-answer",
+					ItemType:  "agentMessage",
+					ItemPhase: "final_answer",
+					Message:   "Issue completed successfully.",
+				}},
+				Metadata: map[string]interface{}{
+					"claude_stop_reason": "end_turn",
+				},
+				MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+			},
+			Output: "Issue completed successfully.",
+			Error:  fmt.Errorf("exit status 1: Issue completed successfully."),
+		}},
+	})
+	runner.runtimeStarter = starter.Start
+
+	result, runErr := runner.Run(context.Background(), issue)
+	if runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run despite runtime error, got %+v", result)
+	}
+	if result.Error != nil {
+		t.Fatalf("expected nil run result error, got %v", result.Error)
+	}
+	if !strings.Contains(result.Output, "Issue completed successfully.") {
+		t.Fatalf("expected runtime output to be preserved, got %q", result.Output)
+	}
+
+	updated, err := store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue updated: %v", err)
+	}
+	if updated.State != kanban.StateDone {
+		t.Fatalf("expected issue to remain done, got %s", updated.State)
+	}
+
+	clients := starter.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("expected one fake runtime client, got %d", len(clients))
+	}
+	if clients[0].Session().TerminalReason != "turn.failed" {
+		t.Fatalf("expected completed terminal session, got %+v", clients[0].Session())
+	}
+	if got := clients[0].Session().Metadata["claude_stop_reason"]; got != "end_turn" {
+		t.Fatalf("expected claude stop reason to indicate end_turn, got %+v", got)
+	}
+}
+
+func TestRunAgentFakeRuntimeDeliversCommandsInSameThread(t *testing.T) {
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Runtime follow-up command", "", 0, nil)
+	var err error
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState: %v", err)
+	}
+	issue, err = store.GetIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	starter := fakeruntime.NewStarter(fakeruntime.Scenario{
+		Capabilities: agentruntime.Capabilities{
+			Resume:                   true,
+			RuntimePermissionUpdates: true,
+		},
+		Turns: []fakeruntime.Turn{
+			{
+				StartedSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-one",
+					SessionID:       "thread-live-turn-one",
+					MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+				},
+				AfterStarted: func() error {
+					_, err := store.CreateIssueAgentCommand(issue.ID, "Follow the queued instruction.", kanban.IssueAgentCommandPending)
+					return err
+				},
+				FinalSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-one",
+					SessionID:       "thread-live-turn-one",
+					History: []agentruntime.Event{{
+						Type:      "item.completed",
+						ThreadID:  "thread-live",
+						TurnID:    "turn-one",
+						ItemID:    "final-answer",
+						ItemType:  "agentMessage",
+						ItemPhase: "final_answer",
+						Message:   "Initial answer",
+					}},
+					MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+				},
+				Output: "Initial answer",
+			},
+			{
+				Match: func(request agentruntime.TurnRequest) error {
+					if len(request.Input) == 0 || !strings.Contains(request.Input[0].Text, "Follow the queued instruction.") {
+						return fmt.Errorf("expected same-thread follow-up prompt, got %+v", request.Input)
+					}
+					return nil
+				},
+				StartedSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-two",
+					SessionID:       "thread-live-turn-two",
+					MaxHistory:      agentruntime.DefaultSessionHistoryLimit,
+				},
+				FinalSession: &agentruntime.Session{
+					IssueID:         issue.ID,
+					IssueIdentifier: issue.Identifier,
+					ThreadID:        "thread-live",
+					TurnID:          "turn-two",
+					SessionID:       "thread-live-turn-two",
+					History: []agentruntime.Event{{
+						Type:      "item.completed",
+						ThreadID:  "thread-live",
+						TurnID:    "turn-two",
+						ItemID:    "final-answer",
+						ItemType:  "agentMessage",
+						ItemPhase: "final_answer",
+						Message:   "Follow-up answer",
+					}},
+					MaxHistory: agentruntime.DefaultSessionHistoryLimit,
+				},
+				Output: "Follow-up answer",
+			},
+		},
+	})
+	runner.runtimeStarter = starter.Start
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful run, got %+v", result)
+	}
+	if !strings.Contains(result.Output, "Initial answer") || !strings.Contains(result.Output, "Follow-up answer") {
+		t.Fatalf("expected accumulated fake runtime output, got %q", result.Output)
+	}
+
+	commands, err := store.ListIssueAgentCommands(issue.ID)
+	if err != nil {
+		t.Fatalf("ListIssueAgentCommands: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one delivered command, got %+v", commands)
+	}
+	if commands[0].Status != kanban.IssueAgentCommandDelivered || commands[0].DeliveryMode != "same_thread" || commands[0].DeliveryThreadID != "thread-live" {
+		t.Fatalf("expected same-thread command delivery, got %+v", commands[0])
+	}
+
+	clients := starter.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("expected one fake runtime client, got %d", len(clients))
+	}
+	if len(clients[0].Requests()) != 2 {
+		t.Fatalf("expected two runtime turns, got %+v", clients[0].Requests())
+	}
+}
+
 func TestBuildTurnPromptIncludesProjectContextInDefaultPhasePrompts(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
 	workflow := defaultPromptWorkflowForTest()
@@ -884,17 +1192,44 @@ tracker:
   kind: kanban
 workspace:
   root: ./workspaces
+  branch_prefix: maestro/
 hooks:
   timeout_ms: 1000
-agent:
+orchestrator:
   max_concurrent_agents: 2
   max_turns: 3
   max_retry_backoff_ms: 10000
-codex:
-  command: cat
-  approval_policy: never
-  read_timeout_ms: 1000
-  turn_timeout_ms: 10000
+  max_automatic_retries: 8
+  dispatch_mode: parallel
+runtime:
+  default: codex-stdio
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: cat
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
 phases:
   review:
     enabled: true
@@ -983,10 +1318,8 @@ func TestContinuationPrompt(t *testing.T) {
 }
 
 func TestRunAgentStdio(t *testing.T) {
-	traceFile := filepath.Join(t.TempDir(), "trace.log")
-	t.Setenv("TRACE_FILE", traceFile)
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Test", "Description", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Test", "Description", 0, nil)
 
 	result, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -995,38 +1328,38 @@ func TestRunAgentStdio(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("Expected successful run, got %+v", result)
 	}
-	prompt := turnStartPromptAt(t, traceFile, 0)
-	if !strings.Contains(prompt, issue.Identifier) {
-		t.Fatalf("expected prompt to contain issue identifier, got %q", prompt)
+	if !strings.Contains(result.Output, issue.Identifier) {
+		t.Fatalf("expected output to contain rendered prompt, got %q", result.Output)
 	}
-	if !strings.Contains(prompt, "Prefer deterministic local verification first") {
-		t.Fatalf("expected execution guidance in prompt, got %q", prompt)
+	if !strings.Contains(result.Output, "Prefer deterministic local verification first") {
+		t.Fatalf("expected execution guidance in output, got %q", result.Output)
 	}
 }
 
 func TestRunAttemptIncludesAttempt(t *testing.T) {
-	traceFile := filepath.Join(t.TempDir(), "trace.log")
-	t.Setenv("TRACE_FILE", traceFile)
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Retry", "Body", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Retry", "Body", 0, nil)
 
 	result, err := runner.RunAttempt(context.Background(), issue, 3)
 	if err != nil {
 		t.Fatalf("RunAttempt failed: %v", err)
 	}
-	if result == nil || !result.Success {
-		t.Fatalf("expected successful run attempt, got %+v", result)
-	}
-	prompt := turnStartPromptAt(t, traceFile, 0)
-	if !strings.Contains(prompt, "retry 3") {
-		t.Fatalf("expected retry attempt in prompt, got %q", prompt)
+	if !strings.Contains(result.Output, "retry 3") {
+		t.Fatalf("expected retry attempt in output, got %q", result.Output)
 	}
 }
 
 func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
-	blocked, _ := store.CreateIssue("", "", "Blocked", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", "")
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	blocked, err := store.CreateIssue(project.ID, "", "Blocked", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocked: %v", err)
+	}
 
 	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState blocker: %v", err)
@@ -1037,7 +1370,7 @@ func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 	if _, err := store.SetIssueBlockers(blocked.ID, []string{blocker.Identifier}); err != nil {
 		t.Fatalf("SetIssueBlockers: %v", err)
 	}
-	blocked, err := store.GetIssue(blocked.ID)
+	blocked, err = store.GetIssue(blocked.ID)
 	if err != nil {
 		t.Fatalf("GetIssue blocked: %v", err)
 	}
@@ -1066,50 +1399,8 @@ func TestRunAttemptStopsWhenReadyIssueIsBlocked(t *testing.T) {
 }
 
 func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
-	traceFile := filepath.Join(t.TempDir(), "trace.log")
-	t.Setenv("TRACE_FILE", traceFile)
-	scenario := fakeappserver.Scenario{
-		Steps: []fakeappserver.Step{
-			{
-				Match: fakeappserver.Match{Method: "initialize"},
-				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
-			},
-			{Match: fakeappserver.Match{Method: "initialized"}},
-			{
-				Match: fakeappserver.Match{Method: "thread/start"},
-				Emit: []fakeappserver.Output{{
-					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-commands"}}},
-				}},
-			},
-			{
-				Match: fakeappserver.Match{Method: "turn/start"},
-				Emit: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-commands-one"}}}},
-					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-commands", "turn": map[string]interface{}{"id": "turn-commands-one"}}}},
-				},
-			},
-			{
-				Match:          fakeappserver.Match{Method: "turn/start"},
-				WaitForRelease: "finish-second-turn",
-				Emit: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-commands-two"}}}},
-				},
-				EmitAfterRelease: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-commands", "turn": map[string]interface{}{"id": "turn-commands-two"}}}},
-				},
-			},
-			{
-				Match: fakeappserver.Match{Method: "turn/start"},
-				Emit: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-commands-three"}}}},
-					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-commands", "turn": map[string]interface{}{"id": "turn-commands-three"}}}},
-				},
-			},
-		},
-	}
-	command, release := fakeappserver.CommandString(t, scenario)
-	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Prompt command", "", 0, nil)
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Prompt command", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
 	}
@@ -1122,33 +1413,17 @@ func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done := make(chan struct{})
-	resultCh := make(chan *RunResult, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		defer close(done)
-		result, runErr := runner.Run(context.Background(), issue)
-		resultCh <- result
-		errCh <- runErr
-	}()
-	waitForTurnStartCount(t, traceFile, 2)
-	release("finish-second-turn")
-	<-done
-	result := <-resultCh
-	if err := <-errCh; err != nil {
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
-	if result == nil || !result.Success {
-		t.Fatalf("expected successful run, got %+v", result)
+	if !strings.Contains(result.Output, "Merge the branch to master.") {
+		t.Fatalf("expected output to contain command, got %q", result.Output)
 	}
-	prompt := turnStartPromptAt(t, traceFile, 0)
-	if !strings.Contains(prompt, "Merge the branch to master.") {
-		t.Fatalf("expected prompt to contain command, got %q", prompt)
-	}
-	firstIndex := strings.Index(prompt, "1. Merge the branch to master.")
-	secondIndex := strings.Index(prompt, "2. Close the follow-up checklist.")
+	firstIndex := strings.Index(result.Output, "1. Merge the branch to master.")
+	secondIndex := strings.Index(result.Output, "2. Close the follow-up checklist.")
 	if firstIndex == -1 || secondIndex == -1 || firstIndex > secondIndex {
-		t.Fatalf("expected ordered command prompt, got %q", prompt)
+		t.Fatalf("expected ordered command output, got %q", result.Output)
 	}
 
 	commands, err := store.ListIssueAgentCommands(issue.ID)
@@ -1167,7 +1442,7 @@ func TestRunAgentStdioMarksPendingCommandsDelivered(t *testing.T) {
 
 func TestRunAgentStdioKeepsCommandsPendingWhenTurnFails(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "command-that-does-not-exist", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Broken stdio command", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Broken stdio command", "", 0, nil)
 
 	command, err := store.CreateIssueAgentCommand(issue.ID, "Retry after the command is fixed.", kanban.IssueAgentCommandPending)
 	if err != nil {
@@ -1192,21 +1467,46 @@ func TestRunAgentStdioKeepsCommandsPendingWhenTurnFails(t *testing.T) {
 }
 
 func TestRunAgentStdioRejectsStaleCommandDeliveryAfterEdit(t *testing.T) {
-	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Edited queued command", "", 0, nil)
+	startedFile := filepath.Join(t.TempDir(), "started")
+	releaseFile := filepath.Join(t.TempDir(), "release")
+	command := "cat >/dev/null; touch " + shellQuote(startedFile) + "; while [ ! -f " + shellQuote(releaseFile) + " ]; do sleep 0.05; done"
+	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Edited queued command", "", 0, nil)
+	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
+		t.Fatal(err)
+	}
+	issue, _ = store.GetIssue(issue.ID)
 
 	queued, err := store.CreateIssueAgentCommand(issue.ID, "Ship the original rollout.", kanban.IssueAgentCommandPending)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	resultCh := make(chan *RunResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := runner.Run(context.Background(), issue)
+		resultCh <- result
+		errCh <- err
+	}()
+
+	waitForFile(t, startedFile, 3*time.Second)
 	if _, err := store.UpdateIssueAgentCommand(issue.ID, queued.ID, "Ship the revised rollout."); err != nil {
 		t.Fatalf("UpdateIssueAgentCommand: %v", err)
 	}
+	if err := os.WriteFile(releaseFile, []byte("go"), 0o644); err != nil {
+		t.Fatalf("WriteFile release: %v", err)
+	}
 
-	err = runner.markDeliveredCommands(issue, []kanban.IssueAgentCommand{*queued}, "next_run", "thread-default", 1)
-	if err == nil || !strings.Contains(err.Error(), "changed before delivery") {
-		t.Fatalf("expected stale delivery error, got %v", err)
+	result := <-resultCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected unsuccessful run, got %+v", result)
+	}
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "changed before delivery") {
+		t.Fatalf("expected stale delivery error, got %+v", result)
 	}
 
 	commands, err := store.ListIssueAgentCommands(issue.ID)
@@ -1222,51 +1522,19 @@ func TestRunAgentStdioRejectsStaleCommandDeliveryAfterEdit(t *testing.T) {
 }
 
 func TestRunAgentStdioPromotesWaitingCommandsOnceDispatchable(t *testing.T) {
-	traceFile := filepath.Join(t.TempDir(), "trace.log")
-	t.Setenv("TRACE_FILE", traceFile)
-	scenario := fakeappserver.Scenario{
-		Steps: []fakeappserver.Step{
-			{
-				Match: fakeappserver.Match{Method: "initialize"},
-				Emit:  []fakeappserver.Output{{JSON: map[string]interface{}{"id": 1, "result": map[string]interface{}{}}}},
-			},
-			{Match: fakeappserver.Match{Method: "initialized"}},
-			{
-				Match: fakeappserver.Match{Method: "thread/start"},
-				Emit: []fakeappserver.Output{{
-					JSON: map[string]interface{}{"id": 2, "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-unblock"}}},
-				}},
-			},
-			{
-				Match: fakeappserver.Match{Method: "turn/start"},
-				Emit: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"id": 3, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-unblock-one"}}}},
-					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-unblock", "turn": map[string]interface{}{"id": "turn-unblock-one"}}}},
-				},
-			},
-			{
-				Match:          fakeappserver.Match{Method: "turn/start"},
-				WaitForRelease: "finish-second-turn",
-				Emit: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"id": 4, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-unblock-two"}}}},
-				},
-				EmitAfterRelease: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-unblock", "turn": map[string]interface{}{"id": "turn-unblock-two"}}}},
-				},
-			},
-			{
-				Match: fakeappserver.Match{Method: "turn/start"},
-				Emit: []fakeappserver.Output{
-					{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-unblock-three"}}}},
-					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-unblock", "turn": map[string]interface{}{"id": "turn-unblock-three"}}}},
-				},
-			},
-		},
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project := createWorkspaceProject(t, store, "Platform", "")
+	if err := store.UpdateProjectState(project.ID, kanban.ProjectStateRunning); err != nil {
+		t.Fatalf("UpdateProjectState: %v", err)
 	}
-	command, release := fakeappserver.CommandString(t, scenario)
-	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	blocker, _ := store.CreateIssue("", "", "Blocker", "", 0, nil)
-	issue, _ := store.CreateIssue("", "", "Blocked follow-up", "", 0, nil)
+	blocker, err := store.CreateIssue(project.ID, "", "Blocker", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue blocker: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Blocked follow-up", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue issue: %v", err)
+	}
 
 	if err := store.UpdateIssueState(blocker.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
@@ -1286,28 +1554,12 @@ func TestRunAgentStdioPromotesWaitingCommandsOnceDispatchable(t *testing.T) {
 	}
 	issue, _ = store.GetIssue(issue.ID)
 
-	done := make(chan struct{})
-	resultCh := make(chan *RunResult, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		defer close(done)
-		result, runErr := runner.RunAttempt(context.Background(), issue, 0)
-		resultCh <- result
-		errCh <- runErr
-	}()
-	waitForTurnStartCount(t, traceFile, 2)
-	release("finish-second-turn")
-	<-done
-	result := <-resultCh
-	if err := <-errCh; err != nil {
+	result, err := runner.RunAttempt(context.Background(), issue, 0)
+	if err != nil {
 		t.Fatalf("RunAttempt failed: %v", err)
 	}
-	if result == nil || !result.Success {
-		t.Fatalf("expected successful run attempt, got %+v", result)
-	}
-	prompt := turnStartPromptAt(t, traceFile, 0)
-	if !strings.Contains(prompt, "Wait for unblock then merge.") {
-		t.Fatalf("expected promoted command in prompt, got %q", prompt)
+	if !strings.Contains(result.Output, "Wait for unblock then merge.") {
+		t.Fatalf("expected promoted command in output, got %q", result.Output)
 	}
 
 	commands, err := store.ListIssueAgentCommands(issue.ID)
@@ -1384,7 +1636,7 @@ done
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	runner, store, _, _, _ := setupTestRunner(t, "sh "+scriptPath, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Live follow-up", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Live follow-up", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatal(err)
 	}
@@ -1442,7 +1694,8 @@ done
 
 func TestWorkspaceDeterministic(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Test", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", "")
+	issue, _ := store.CreateIssue(project.ID, "", "Test", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
 	ws1, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
@@ -1456,9 +1709,57 @@ func TestWorkspaceDeterministic(t *testing.T) {
 	if ws1.Path != ws2.Path {
 		t.Error("Expected deterministic workspace path")
 	}
-	expected := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	expected := workspacePathForIssue(workspaceRoot, project, issue)
 	if ws1.Path != expected {
 		t.Errorf("Expected path %s, got %s", expected, ws1.Path)
+	}
+}
+
+func TestWorkspaceBootstrapUsesProviderProjectRefSlug(t *testing.T) {
+	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	project := createWorkspaceProjectWithRef(t, store, "Ignored Project Name", "", "Team Alpha")
+	issue, err := store.CreateIssue(project.ID, "", "Slug precedence", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	expected := workspacePathForIssue(workspaceRoot, project, issue)
+	if ws.Path != expected {
+		t.Fatalf("expected workspace path %s, got %s", expected, ws.Path)
+	}
+	if got := projectWorkspaceSlug(project); got != "team-alpha" {
+		t.Fatalf("expected provider ref slug team-alpha, got %s", got)
+	}
+}
+
+func TestWorkspaceBootstrapSupportsProjectlessIssues(t *testing.T) {
+	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
+	issue, err := store.CreateIssue("", "", "Projectless", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("Current workflow: %v", err)
+	}
+
+	ws, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspace: %v", err)
+	}
+
+	expected := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	if ws.Path != expected {
+		t.Fatalf("expected projectless workspace path %s, got %s", expected, ws.Path)
 	}
 }
 
@@ -1472,7 +1773,8 @@ func TestWorkspaceBootstrapUsesFreshRemoteDefaultBranch(t *testing.T) {
 	localMainHead := runGitForTest(t, repoPath, "rev-parse", "main")
 	remoteHead := advanceRemoteDevelopForTest(t, remotePath)
 
-	issue, err := store.CreateIssue("", "", "Fresh remote workspace", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, err := store.CreateIssue(project.ID, "", "Fresh remote workspace", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
@@ -1502,8 +1804,8 @@ func TestWorkspaceBootstrapUsesFreshRemoteDefaultBranch(t *testing.T) {
 	if got := runGitForTest(t, workspace.Path, "rev-parse", "HEAD"); got != remoteHead {
 		t.Fatalf("expected workspace HEAD to start from %s, got %s", remoteHead, got)
 	}
-	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1518,7 +1820,8 @@ func TestWorkspaceBootstrapFallsBackWhenRemoteTrackingBranchIsUnavailable(t *tes
 	localMainHead := runGitForTest(t, repoPath, "rev-parse", "main")
 	advanceRemoteDevelopForTest(t, remotePath)
 
-	issue, err := store.CreateIssue("", "", "Fallback remote workspace", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, err := store.CreateIssue(project.ID, "", "Fallback remote workspace", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
@@ -1539,8 +1842,8 @@ func TestWorkspaceBootstrapFallsBackWhenRemoteTrackingBranchIsUnavailable(t *tes
 	if got := runGitForTest(t, workspace.Path, "rev-parse", "HEAD"); got != localMainHead {
 		t.Fatalf("expected workspace HEAD to fall back to %s, got %s", localMainHead, got)
 	}
-	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, workspace.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1595,14 +1898,15 @@ func TestWorkspaceBootstrapLeavesStalePathUntouchedWhenRefreshFails(t *testing.T
 	runGitForTest(t, repoPath, "remote", "add", "origin", remotePath)
 	runGitForTest(t, repoPath, "push", "-u", "origin", "main")
 
-	issue, err := store.CreateIssue("", "", "Refresh failure", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, err := store.CreateIssue(project.ID, "", "Refresh failure", "", 0, nil)
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 
-	stalePath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
-	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
-		t.Fatalf("MkdirAll workspace root: %v", err)
+	stalePath := workspacePathForIssue(workspaceRoot, project, issue)
+	if err := os.MkdirAll(filepath.Dir(stalePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll stale workspace parent: %v", err)
 	}
 	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
 		t.Fatalf("WriteFile stale workspace: %v", err)
@@ -1683,10 +1987,11 @@ func TestSanitizeWorkspaceKey(t *testing.T) {
 
 func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Stale", "", 0, nil)
-	path := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+	project := createWorkspaceProject(t, store, "Platform", "")
+	issue, _ := store.CreateIssue(project.ID, "", "Stale", "", 0, nil)
+	path := workspacePathForIssue(workspaceRoot, project, issue)
 
-	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
@@ -1702,8 +2007,8 @@ func TestWorkspaceReplacesStaleFilePath(t *testing.T) {
 	if err != nil || !fi.IsDir() {
 		t.Fatalf("expected workspace dir at %s", ws.Path)
 	}
-	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1734,14 +2039,15 @@ func TestWorkspaceRecreatesMissingStoredDirectory(t *testing.T) {
 	if err != nil || !fi.IsDir() {
 		t.Fatalf("expected recreated workspace dir at %s", ws.Path)
 	}
-	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
 func TestWorkspaceBootstrapDetachedHeadUsesHEADBase(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Detached head workspace", "", 0, nil)
+	project := createWorkspaceProject(t, store, "Platform", repoPath)
+	issue, _ := store.CreateIssue(project.ID, "", "Detached head workspace", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
 	head := runGitForTest(t, repoPath, "rev-parse", "HEAD")
@@ -1751,8 +2057,8 @@ func TestWorkspaceBootstrapDetachedHeadUsesHEADBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected detached-head workspace bootstrap to succeed, got: %v", err)
 	}
-	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "codex/"+issue.Identifier {
-		t.Fatalf("expected workspace branch codex/%s, got %q", issue.Identifier, got)
+	if got := runGitForTest(t, ws.Path, "branch", "--show-current"); got != "maestro/"+issue.Identifier {
+		t.Fatalf("expected workspace branch maestro/%s, got %q", issue.Identifier, got)
 	}
 }
 
@@ -1783,7 +2089,7 @@ func TestResolveRepoDefaultBranchFallsBackToCurrentCustomBranch(t *testing.T) {
 	}
 }
 
-func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
+func TestWorkspaceReinitializesManagedDirectoryWithoutLegacyBackup(t *testing.T) {
 	runner, store, _, workspaceRoot, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Legacy workspace", "", 0, nil)
 	legacyPath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
@@ -1813,8 +2119,49 @@ func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Glob preserved workspace: %v", err)
 	}
+	if len(preserved) != 0 {
+		t.Fatalf("expected no preserved workspace backup, got %v", preserved)
+	}
+}
+
+func TestWorkspaceReinitializesExplicitLegacyPathWithBackup(t *testing.T) {
+	runner, store, _, workspaceRoot, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Legacy workspace", "", 0, nil)
+	legacyPath := filepath.Join(workspaceRoot, sanitizeWorkspaceKey(issue.Identifier))
+
+	if err := os.MkdirAll(legacyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyPath, "legacy.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWorkspace(issue.ID, legacyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := runner.workflowProvider.Current()
+	if err != nil {
+		t.Fatalf("workflowProvider.Current: %v", err)
+	}
+	created, preparedPath, err := runner.ensureIssueWorkspace(context.Background(), workflow, issue, legacyPath, workspaceRoot, true)
+	if err != nil {
+		t.Fatalf("expected explicit legacy workspace recovery, got err: %v", err)
+	}
+	if !created {
+		t.Fatal("expected legacy workspace recovery to create a fresh git worktree")
+	}
+	if _, err := os.Stat(filepath.Join(preparedPath, ".git")); err != nil {
+		t.Fatalf("expected recovered git worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(preparedPath, "legacy.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected stale legacy content to be removed, got err=%v", err)
+	}
+	preserved, err := filepath.Glob(legacyPath + ".legacy-*")
+	if err != nil {
+		t.Fatalf("Glob preserved workspace: %v", err)
+	}
 	if len(preserved) != 1 {
-		t.Fatalf("expected one preserved workspace, got %v", preserved)
+		t.Fatalf("expected one preserved workspace backup, got %v", preserved)
 	}
 	if data, err := os.ReadFile(filepath.Join(preserved[0], "legacy.txt")); err != nil || string(data) != "stale" {
 		t.Fatalf("expected preserved legacy content, got data=%q err=%v", string(data), err)
@@ -1822,13 +2169,8 @@ func TestWorkspaceReinitializesLegacyDirectoryIntoGitWorktree(t *testing.T) {
 }
 
 func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T) {
-	traceFile := filepath.Join(t.TempDir(), "trace.log")
-	t.Setenv("TRACE_FILE", traceFile)
 	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Rebase recovery", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Rebase recovery", "", 0, nil)
 
 	workflow, err := manager.Current()
 	if err != nil {
@@ -1874,12 +2216,11 @@ func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T)
 	if result == nil || !result.Success {
 		t.Fatalf("expected successful recovery run, got %+v", result)
 	}
-	prompt := turnStartPromptAt(t, traceFile, 0)
-	if !strings.Contains(prompt, "Workspace recovery note:") {
-		t.Fatalf("expected recovery note in prompt, got %q", prompt)
+	if !strings.Contains(result.Output, "Workspace recovery note:") {
+		t.Fatalf("expected recovery note in prompt output, got %q", result.Output)
 	}
-	if !strings.Contains(prompt, "Finish or quit the rebase") {
-		t.Fatalf("expected rebase guidance in prompt, got %q", prompt)
+	if !strings.Contains(result.Output, "Finish or quit the rebase") {
+		t.Fatalf("expected rebase guidance in prompt output, got %q", result.Output)
 	}
 
 	events, err := store.ListIssueRuntimeEvents(issue.ID, 20)
@@ -1900,10 +2241,7 @@ func TestRunAttemptSkipsBeforeRunHookDuringWorkspaceRebaseRecovery(t *testing.T)
 
 func TestPrepareTurnPromptWithWorkspaceAddsRecoveryNoteOnlyWhileRebaseActive(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Prompt recovery", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Prompt recovery", "", 0, nil)
 	workflow, err := runner.workflowProvider.Current()
 	if err != nil {
 		t.Fatalf("Current: %v", err)
@@ -1976,10 +2314,7 @@ func TestPrepareTurnPromptWithWorkspaceAddsRecoveryNoteOnlyWhileRebaseActive(t *
 
 func TestGetOrCreateWorkspaceTreatsRepoLevelRebaseAsRecoverable(t *testing.T) {
 	runner, store, _, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Repo rebase recovery", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Repo rebase recovery", "", 0, nil)
 	workflow, err := runner.workflowProvider.Current()
 	if err != nil {
 		t.Fatalf("Current: %v", err)
@@ -2055,10 +2390,7 @@ func TestCleanupWorkspaceRemovesGitWorktree(t *testing.T) {
 
 func TestWorkspaceReusedBranchRenameCreatesMissingBranch(t *testing.T) {
 	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
-	issue, err := store.CreateIssue("", "", "Renamed branch workspace", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Renamed branch workspace", "", 0, nil)
 	workflow, _ := runner.workflowProvider.Current()
 
 	workspace, err := runner.getOrCreateWorkspace(context.Background(), workflow, issue)
@@ -2119,7 +2451,7 @@ func TestRunAgentAppServerModeTracksSession(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "AppServer", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "AppServer", "", 0, nil)
 
 	res, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -2149,10 +2481,8 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, err := store.CreateIssue("", "", "Plan revision prompt", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Plan revision prompt", "", 0, nil)
+	var err error
 	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
 		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
 	}
@@ -2163,11 +2493,6 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 	revisionNote := "Tighten the rollout and add a rollback check."
 	if err := store.SetIssuePendingPlanRevision(issue.ID, revisionNote, requestedAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
-	}
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
-	}); err != nil {
-		t.Fatalf("UpdateIssue collaboration override: %v", err)
 	}
 	issue, err = store.GetIssue(issue.ID)
 	if err != nil {
@@ -2227,8 +2552,15 @@ func TestRunAgentAppServerPrependsAndClearsPendingPlanRevision(t *testing.T) {
 	if !updated.PlanApprovalPending {
 		t.Fatalf("expected pending plan approval to remain queued, got %+v", updated)
 	}
-	if updated.PendingPlanRevisionMarkdown != "" || updated.PendingPlanRevisionRequestedAt != nil {
-		t.Fatalf("expected pending plan revision to be cleared after turn start, got %+v", updated)
+	if updated.PendingPlanRevisionMarkdown != revisionNote || updated.PendingPlanRevisionRequestedAt == nil {
+		t.Fatalf("expected pending plan revision to remain attached during drafting, got %+v", updated)
+	}
+	planning, err := store.GetIssuePlanning(updated)
+	if err != nil {
+		t.Fatalf("GetIssuePlanning after run: %v", err)
+	}
+	if planning == nil || planning.Status != kanban.IssuePlanningStatusDrafting {
+		t.Fatalf("expected drafting planning state after turn start, got %#v", planning)
 	}
 }
 
@@ -2248,10 +2580,8 @@ func TestRunAgentAppServerSkipsCommandDeliveryWhenPlanRevisionClearFails(t *test
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, err := store.CreateIssue("", "", "Plan revision prompt", "", 0, nil)
-	if err != nil {
-		t.Fatalf("CreateIssue: %v", err)
-	}
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Plan revision prompt", "", 0, nil)
+	var err error
 	if err := store.UpdateIssuePermissionProfile(issue.ID, kanban.PermissionProfilePlanThenFullAccess); err != nil {
 		t.Fatalf("UpdateIssuePermissionProfile: %v", err)
 	}
@@ -2261,11 +2591,6 @@ func TestRunAgentAppServerSkipsCommandDeliveryWhenPlanRevisionClearFails(t *test
 	}
 	if err := store.SetIssuePendingPlanRevision(issue.ID, "Tighten the rollout and add a rollback check.", requestedAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("SetIssuePendingPlanRevision: %v", err)
-	}
-	if err := store.UpdateIssue(issue.ID, map[string]interface{}{
-		"collaboration_mode_override": kanban.CollaborationModeOverridePlan,
-	}); err != nil {
-		t.Fatalf("UpdateIssue collaboration override: %v", err)
 	}
 	commandRecord, err := store.CreateIssueAgentCommand(issue.ID, "Review the rollout checklist before continuing.", kanban.IssueAgentCommandPending)
 	if err != nil {
@@ -2324,7 +2649,7 @@ func TestRunAgentAppServerStagesImageAssetsOnFirstFreshTurn(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Issue assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Issue assets", "", 0, nil)
 
 	imageOne, err := store.CreateIssueAsset(issue.ID, "screen-one.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
@@ -2411,7 +2736,7 @@ func TestRunAgentAppServerWithoutImageAssetsSendsTextOnly(t *testing.T) {
 		},
 	))
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "No assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "No assets", "", 0, nil)
 
 	result, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -2456,7 +2781,7 @@ func TestRunAgentAppServerFailsWhenIssueAssetStagingFails(t *testing.T) {
 		},
 	})
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Missing image asset", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Missing image asset", "", 0, nil)
 
 	image, err := store.CreateIssueAsset(issue.ID, "broken.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
@@ -2482,6 +2807,63 @@ func TestRunAgentAppServerFailsWhenIssueAssetStagingFails(t *testing.T) {
 	}
 	if turns := turnStartPayloads(readTraceLines(t, traceFile)); len(turns) != 0 {
 		t.Fatalf("expected staging failure before turn/start, got %#v", turns)
+	}
+}
+
+func TestRunAgentClaudeFailsWhenIssueImagesRequireUnsupportedLocalImageInput(t *testing.T) {
+	runner, store, manager, _, repoPath := setupTestRunner(t, "cat", config.AgentModeStdio)
+
+	workflowData, err := os.ReadFile(manager.Path())
+	if err != nil {
+		t.Fatalf("ReadFile workflow: %v", err)
+	}
+	updated := strings.Replace(string(workflowData), "default: codex-stdio", "default: claude", 1)
+	if updated == string(workflowData) {
+		t.Fatal("expected workflow to contain the codex-stdio default")
+	}
+	if err := os.WriteFile(manager.Path(), []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	if _, err := manager.Refresh(); err != nil {
+		t.Fatalf("Refresh workflow: %v", err)
+	}
+
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", repoPath, "Unsupported Claude image input", "", 0, nil)
+	if _, err := store.CreateIssueAsset(issue.ID, "prompt.png", bytes.NewReader(sampleRunnerPNGBytes())); err != nil {
+		t.Fatalf("CreateIssueAsset: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Success || result.Error == nil {
+		t.Fatalf("expected unsupported local_image failure, got %+v", result)
+	}
+	for _, want := range []string{
+		"unsupported_runtime_capability",
+		issue.Identifier,
+		`runtime "claude"`,
+		"local_image",
+	} {
+		if !strings.Contains(result.Error.Error(), want) {
+			t.Fatalf("expected error to mention %q, got %v", want, result.Error)
+		}
+	}
+	if result.AppSession == nil {
+		t.Fatalf("expected Claude session snapshot on failure, got %+v", result)
+	}
+	if got := result.AppSession.Metadata["provider"]; got != "claude" {
+		t.Fatalf("expected Claude provider metadata, got %+v", result.AppSession.Metadata)
+	}
+
+	workspace, err := store.GetWorkspace(issue.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	stagedDir := filepath.Join(workspace.Path, filepath.FromSlash(appServerIssueAssetStageDir))
+	if _, err := os.Stat(stagedDir); !os.IsNotExist(err) {
+		t.Fatalf("expected unsupported image failure to avoid staging issue assets, got %v", err)
 	}
 }
 
@@ -2524,7 +2906,7 @@ func TestRunAgentAppServerDoesNotResendImageAssetsOnContinuationTurn(t *testing.
 	}
 	command, release := fakeappserver.CommandString(t, scenario)
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Continuation assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Continuation assets", "", 0, nil)
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
@@ -2605,7 +2987,7 @@ func TestRunAgentAppServerResumedThreadIncludesIssueAssetInputsOnFirstTurn(t *te
 	}
 	command, _ := fakeappserver.CommandString(t, scenario)
 	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeAppServer)
-	issue, _ := store.CreateIssue("", "", "Resumed assets", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Resumed assets", "", 0, nil)
 	image, err := store.CreateIssueAsset(issue.ID, "resume.png", bytes.NewReader(sampleRunnerPNGBytes()))
 	if err != nil {
 		t.Fatalf("CreateIssueAsset: %v", err)
@@ -2683,7 +3065,7 @@ done
 	runner = NewRunnerWithExtensions(manager, store, extensions.NewRegistry([]extensions.Tool{
 		{Name: "ext_echo", Description: "echo tool", Command: "echo $MAESTRO_ARGS_JSON"},
 	}))
-	issue, _ := store.CreateIssue("", "", "Dynamic Tools", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Dynamic Tools", "", 0, nil)
 
 	res, err := runner.Run(context.Background(), issue)
 	if err != nil {
@@ -2760,7 +3142,7 @@ done
 	runner = NewRunnerWithExtensions(manager, store, extensions.NewRegistry([]extensions.Tool{
 		{Name: "ext_fail", Description: "fail tool", Command: "echo nope && exit 1"},
 	}))
-	issue, _ := store.CreateIssue("", "", "Dynamic Tool Failures", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Dynamic Tool Failures", "", 0, nil)
 
 	if _, err := runner.Run(context.Background(), issue); err != nil {
 		t.Fatalf("run: %v", err)
@@ -2792,18 +3174,52 @@ func TestCleanupWorkspaceRunsBeforeRemoveHook(t *testing.T) {
 	traceFile := filepath.Join(traceFileDir, "cleanup.log")
 	command := "cat"
 	runner, store, manager, workspaceRoot, repoDir := setupTestRunner(t, command, config.AgentModeStdio)
-	issue, _ := store.CreateIssue("", "", "Cleanup", "", 0, nil)
+	_, issue := createWorkspaceProjectIssue(t, store, "Platform", "", "Cleanup", "", 0, nil)
 
 	workflowText := `---
 tracker:
   kind: kanban
 workspace:
   root: ` + workspaceRoot + `
+  branch_prefix: maestro/
 hooks:
   before_remove: echo cleaned >> ` + traceFile + `
   timeout_ms: 1000
-codex:
-  command: cat
+orchestrator:
+  max_concurrent_agents: 2
+  max_turns: 3
+  max_retry_backoff_ms: 10000
+  max_automatic_retries: 8
+  dispatch_mode: parallel
+runtime:
+  default: codex-stdio
+  codex-appserver:
+    provider: codex
+    transport: app_server
+    command: codex app-server
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    initial_collaboration_mode: default
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  codex-stdio:
+    provider: codex
+    transport: stdio
+    command: cat
+    expected_version: ` + codexschema.SupportedVersion + `
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  claude:
+    provider: claude
+    transport: stdio
+    command: claude
+    approval_policy: never
+    turn_timeout_ms: 10000
+    read_timeout_ms: 1000
+    stall_timeout_ms: 300000
 ---
 {{ issue.identifier }}
 `
@@ -2877,22 +3293,6 @@ func threadStartPayloads(payloads []map[string]interface{}) []map[string]interfa
 		}
 	}
 	return out
-}
-
-func turnStartPromptAt(t *testing.T, tracePath string, index int) string {
-	t.Helper()
-	payloads := turnStartPayloads(readTraceLinesIfPresent(t, tracePath))
-	if index < 0 || index >= len(payloads) {
-		t.Fatalf("expected at least %d turn/start payloads, got %#v", index+1, payloads)
-	}
-	params, _ := payloads[index]["params"].(map[string]interface{})
-	input, _ := params["input"].([]interface{})
-	if len(input) == 0 {
-		t.Fatalf("expected prompt input in turn/start payload, got %#v", params)
-	}
-	firstInput, _ := input[0].(map[string]interface{})
-	text, _ := firstInput["text"].(string)
-	return text
 }
 
 func waitForTurnStartCount(t *testing.T, tracePath string, want int) []map[string]interface{} {

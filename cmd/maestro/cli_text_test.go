@@ -45,15 +45,64 @@ func TestShellQuoteArg(t *testing.T) {
 	}
 }
 
+func writeFakeCLI(t *testing.T, binary, version string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake cli dir: %v", err)
+	}
+	path := filepath.Join(dir, binary)
+	script := "#!/bin/sh\nprintf '" + binary + "-cli " + version + "\\n'\n"
+	if binary == "claude" {
+		script = strings.NewReplacer("{{VERSION}}", version).Replace(`#!/bin/sh
+set -eu
+if [ -n "${FAKE_CLAUDE_AUTH_STATUS_JSON:-}" ]; then
+  printf '%s\n' "$FAKE_CLAUDE_AUTH_STATUS_JSON"
+  exit 0
+fi
+case "$1" in
+  --version)
+    printf 'claude-cli {{VERSION}}\n'
+    exit 0
+    ;;
+  auth)
+    if [ "${2:-}" = "status" ] && [ "${3:-}" = "--json" ]; then
+      if [ -n "${CLAUDE_CODE_USE_BEDROCK:-}" ] && [ "${CLAUDE_CODE_USE_BEDROCK}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_VERTEX:-}" ] && [ "${CLAUDE_CODE_USE_VERTEX}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"vertex"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_FOUNDRY:-}" ] && [ "${CLAUDE_CODE_USE_FOUNDRY}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"foundry"}\n'
+      elif [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}\n'
+      elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}\n'
+      else
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"o@olhapi.com"}\n'
+      fi
+      exit 0
+    fi
+    ;;
+esac
+printf 'claude-cli {{VERSION}}\n'
+`)
+	}
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", binary, err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	return path
+}
+
 func writeFakeCodexCLI(t *testing.T, version string) string {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "codex")
-	script := "#!/bin/sh\nprintf 'codex-cli " + version + "\\n'\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-	return path
+	return writeFakeCLI(t, "codex", version)
+}
+
+func writeFakeClaudeCLI(t *testing.T, version string) string {
+	t.Helper()
+	return writeFakeCLI(t, "claude", version)
 }
 
 func repoRootFromCaller(t *testing.T) string {
@@ -66,13 +115,15 @@ func repoRootFromCaller(t *testing.T) string {
 }
 
 func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro db", "maestro.db")
 	repoPath := setupRepo(t)
 	opsRepoPath := setupRepo(t)
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 
 	initRepo := filepath.Join(t.TempDir(), "workflow init repo")
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", initRepo, "--defaults", "--runtime-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init failed: %d stderr=%s", code, stderr)
 	}
@@ -91,7 +142,10 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 	for _, want := range []string{
 		"Initialized " + workflowPath,
 		"Verification",
-		"codex_version: ok",
+		"claude_auth_source: OAuth",
+		"runtime_default: ok",
+		"runtime_codex_appserver: ok",
+		"runtime_claude: ok",
 		"Next steps",
 		"Register the repo:",
 		"Start the orchestrator:",
@@ -344,11 +398,13 @@ func TestTextModeCRUDCommandsAndWorkflowInit(t *testing.T) {
 }
 
 func TestTextModeRootInitAlias(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro db", "maestro.db")
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 	initRepo := filepath.Join(t.TempDir(), "root init repo")
 
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "init", initRepo, "--defaults", "--codex-command", codexPath+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "init", initRepo, "--defaults", "--runtime-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("root init failed: %d stderr=%s", code, stderr)
 	}
@@ -360,7 +416,10 @@ func TestTextModeRootInitAlias(t *testing.T) {
 	for _, want := range []string{
 		"Initialized " + workflowPath,
 		"Verification",
-		"codex_version: ok",
+		"claude_auth_source: OAuth",
+		"runtime_default: ok",
+		"runtime_codex_appserver: ok",
+		"runtime_claude: ok",
 		"Next steps",
 		"Register the repo:",
 		"Start the orchestrator:",
@@ -385,9 +444,19 @@ func TestWorkflowInitHelpIncludesSetupFlags(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("workflow init help failed: %d stderr=%s", code, stderr)
 	}
+	if strings.Contains(stdout, "--codex-command") {
+		t.Fatalf("expected hidden legacy flag to stay out of help, got %q", stdout)
+	}
 	for _, want := range []string{
 		"--workspace-root",
-		"--codex-command",
+		"--runtime-command",
+		"--agent-mode",
+		"--dispatch-mode",
+		"--max-concurrent-agents",
+		"--max-turns",
+		"--max-automatic-retries",
+		"--approval-policy",
+		"--initial-collaboration-mode",
 		"--force",
 		"--defaults",
 	} {
@@ -402,14 +471,72 @@ func TestRootInitHelpIncludesSetupFlags(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("root init help failed: %d stderr=%s", code, stderr)
 	}
+	if strings.Contains(stdout, "--codex-command") {
+		t.Fatalf("expected hidden legacy flag to stay out of help, got %q", stdout)
+	}
 	for _, want := range []string{
 		"--workspace-root",
-		"--codex-command",
+		"--runtime-command",
+		"--agent-mode",
+		"--dispatch-mode",
+		"--max-concurrent-agents",
+		"--max-turns",
+		"--max-automatic-retries",
+		"--approval-policy",
+		"--initial-collaboration-mode",
 		"--force",
 		"--defaults",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected root init help to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestWorkflowInitAcceptsExtendedSetupFlagsAndAliases(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := t.TempDir()
+	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
+
+	code, stdout, stderr := runCLI(
+		t,
+		"--db", dbPath,
+		"workflow", "init", repoPath,
+		"--defaults",
+		"--workspace-root", "./tmp/workspaces",
+		"--runtime-command", codexPath+" app-server",
+		"--agent-mode", "server",
+		"--dispatch-mode", "pps",
+		"--max-concurrent-agents", "4",
+		"--max-turns", "5",
+		"--max-automatic-retries", "6",
+		"--approval-policy", "on_request",
+		"--initial-collaboration-mode", "plan",
+	)
+	if code != 0 {
+		t.Fatalf("workflow init with extended flags failed: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"root: ./tmp/workspaces",
+		"command: " + codexPath + " app-server",
+		"transport: app_server",
+		"dispatch_mode: per_project_serial",
+		"max_concurrent_agents: 4",
+		"max_turns: 5",
+		"max_automatic_retries: 6",
+		"approval_policy: on-request",
+		"initial_collaboration_mode: plan",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected generated workflow to contain %q, got %q", want, text)
 		}
 	}
 }
@@ -426,18 +553,22 @@ func TestWorkflowInitRequiresForceToOverwriteExistingFile(t *testing.T) {
 }
 
 func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	missingCodex := filepath.Join(t.TempDir(), "codex")
+	_ = writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", missingCodex+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", missingCodex+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init should succeed with warnings: %d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	for _, want := range []string{
 		"Verification",
 		"Warnings:",
-		"codex_version:",
+		"runtime_default: warn",
+		"runtime_codex_appserver_binary: warn",
 		"Next steps",
 		"Review the warnings and remediation above",
 		"Re-run readiness checks:",
@@ -451,12 +582,84 @@ func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
 	}
 }
 
+func TestWorkflowInitSupportsPinnedNPXCodexCommandAndClaudeChecks(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := t.TempDir()
+	npxCommand := writeFakePinnedNPXCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", npxCommand)
+	if code != 0 {
+		t.Fatalf("workflow init failed: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	for _, want := range []string{
+		"claude_version_status: ok",
+		"claude_auth_source_status: ok",
+		"claude_session_status: ok",
+		"claude_session_bare_mode: ok",
+		"claude_session_additional_directories: ok",
+		"runtime_claude: ok",
+		"runtime_default: ok",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected workflow init output to contain %q, got %q", want, stdout)
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	if !strings.Contains(string(data), "command: "+npxCommand) {
+		t.Fatalf("expected generated workflow to retain pinned npx command, got %q", string(data))
+	}
+}
+
+func TestSpecCheckSupportsClaudeDefaultWorkflow(t *testing.T) {
+	repoPath := t.TempDir()
+	schemaRoot := filepath.Join(repoRootFromCaller(t), "schemas", "codex", codexschema.SupportedVersion, "json")
+	for _, rel := range codexschema.ConsumedSchemaFiles {
+		src := filepath.Join(schemaRoot, rel)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatalf("read schema %s: %v", src, err)
+		}
+		dst := filepath.Join(repoPath, "schemas", "codex", codexschema.SupportedVersion, "json", rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatalf("mkdir schema dir: %v", err)
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			t.Fatalf("write schema %s: %v", dst, err)
+		}
+	}
+	writeClaudeWorkflow(t, repoPath, "claude")
+
+	code, stdout, stderr := runCLI(t, "spec-check", "--repo", repoPath)
+	if code != 0 {
+		t.Fatalf("spec-check failed: %d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	for _, want := range []string{
+		"Spec Check",
+		"workflow_load: ok",
+		"workflow_version: ok",
+		"workflow_prompt_render: ok",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected spec-check output to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
 func TestWorkflowInitOmitsSandboxFields(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	codexPath := writeFakeCodexCLI(t, codexschema.SupportedVersion)
+	_ = writeFakeClaudeCLI(t, "1.2.3")
 
-	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", codexPath+" app-server")
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--runtime-command", codexPath+" app-server")
 	if code != 0 {
 		t.Fatalf("workflow init failed: %d stderr=%s stdout=%s", code, stderr, stdout)
 	}

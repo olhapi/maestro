@@ -78,6 +78,12 @@ function makeSessionsResponse() {
         source: 'live',
         active: true,
         status: 'waiting',
+        runtime_name: 'claude-stdio',
+        runtime_provider: 'claude',
+        runtime_transport: 'stdio',
+        runtime_auth_source: 'OAuth',
+        pending_interaction_state: 'approval',
+        stop_reason: 'end_turn',
         pending_interrupt: {
           id: 'interrupt-1',
           kind: 'approval',
@@ -109,6 +115,11 @@ function makeSessionsResponse() {
         source: 'live',
         active: true,
         status: 'active',
+        runtime_name: 'codex-appserver',
+        runtime_provider: 'codex',
+        runtime_transport: 'app_server',
+        runtime_auth_source: 'ANTHROPIC_AUTH_TOKEN',
+        pending_interaction_state: 'planning',
         phase: 'implementation',
         attempt: 1,
         run_kind: 'run_started',
@@ -129,6 +140,12 @@ function makeSessionsResponse() {
         source: 'persisted',
         active: false,
         status: 'paused',
+        runtime_name: 'claude',
+        runtime_provider: 'claude',
+        runtime_transport: 'stdio',
+        runtime_auth_source: 'cloud provider',
+        pending_interaction_state: 'revision_requested',
+        stop_reason: 'turn.completed',
         phase: 'review',
         attempt: 3,
         run_kind: 'retry_paused',
@@ -167,6 +184,8 @@ describe('SessionsPage', () => {
     expect(screen.getByText('Zulu issue')).toBeInTheDocument()
     expect(screen.getByText('Bravo issue')).toBeInTheDocument()
     expect(screen.getByText('Plan turn')).toBeInTheDocument()
+    expect(screen.getByText('Runtime claude-stdio')).toBeInTheDocument()
+    expect(screen.getByText('Runtime codex-appserver')).toBeInTheDocument()
     expect(screen.queryByText('Show details')).not.toBeInTheDocument()
     expect(screen.queryByText('Recent session history')).not.toBeInTheDocument()
 
@@ -187,6 +206,28 @@ describe('SessionsPage', () => {
     })
 
     expect(screen.getByTestId('session-summary-RUN-LIVE-A')).toHaveClass('line-clamp-2')
+  })
+
+  it('wraps long session titles on narrow screens', async () => {
+    vi.mocked(api.listSessions).mockResolvedValue({
+      ...makeSessionsResponse(),
+      entries: [
+        {
+          ...makeSessionsResponse().entries[0],
+          issue_title:
+            'AR-01 — ADR: freeze runtime vocabulary and session trace names so the feed stays readable on mobile',
+        },
+      ],
+    })
+    vi.mocked(api.listRuntimeEvents).mockResolvedValue({ events: [] })
+
+    renderWithQueryClient(<SessionsPage />)
+
+    const title = await screen.findByText(
+      'AR-01 — ADR: freeze runtime vocabulary and session trace names so the feed stays readable on mobile',
+    )
+
+    expect(title).toHaveClass('break-words', '[overflow-wrap:anywhere]')
   })
 
   it('marks stale live sessions as quiet', async () => {

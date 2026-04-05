@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +62,18 @@ type stdioBridge struct {
 
 	pendingMu        sync.Mutex
 	pendingResponses map[string]chan *transport.JSONRPCResponse
+
+	issueContextMu sync.Mutex
+	issueContext   *bridgeIssueContext
+}
+
+type bridgeIssueContext struct {
+	IssueID         string
+	IssueIdentifier string
+	IssueTitle      string
+	ProjectID       string
+	ProjectName     string
+	WorkspacePath   string
 }
 
 type rawJSONRPCMessage struct {
@@ -190,6 +204,12 @@ func (b *stdioBridge) forwardClientRequest(ctx context.Context, message rawJSONR
 	request, err := bridgeRequestFromMessage(message)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(message.Method) == string(mcpapi.MethodToolsCall) {
+		request, err = b.annotateToolsCallRequest(request)
+		if err != nil {
+			return err
+		}
 	}
 
 	response, err := b.sendRequest(ctx, request, replayModeForMethod(message.Method))
@@ -354,7 +374,7 @@ func (b *stdioBridge) reconnect(ctx context.Context, failed transport.Bidirectio
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if time.Now().After(deadline) {
+		if !time.Now().Before(deadline) {
 			if lastErr != nil {
 				return lastErr
 			}
@@ -540,6 +560,51 @@ func bridgeRequestFromMessage(message rawJSONRPCMessage) (transport.JSONRPCReque
 	}, nil
 }
 
+func (b *stdioBridge) annotateToolsCallRequest(request transport.JSONRPCRequest) (transport.JSONRPCRequest, error) {
+	params, err := jsonObjectFromAny(request.Params)
+	if err != nil {
+		return request, err
+	}
+
+	meta := map[string]any{}
+	if existing, ok := params["_meta"].(map[string]any); ok {
+		meta = cloneJSONMap(existing)
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	}
+
+	if args, ok := params["arguments"].(map[string]any); ok {
+		toolUseID := strings.TrimSpace(asString(args["tool_use_id"]))
+		if toolUseID == "" {
+			toolUseID = strings.TrimSpace(fmt.Sprint(request.ID.Value()))
+		}
+		if toolUseID != "" {
+			if _, exists := meta["claudecode/toolUseId"]; !exists {
+				meta["claudecode/toolUseId"] = toolUseID
+			}
+			if _, exists := meta["claude/toolUseId"]; !exists {
+				meta["claude/toolUseId"] = toolUseID
+			}
+		}
+	}
+
+	if issueContext, ok := b.issueContextForCurrentWorkspace(); ok && issueContext != nil {
+		meta["maestro/issue_id"] = issueContext.IssueID
+		meta["maestro/issue_identifier"] = issueContext.IssueIdentifier
+		meta["maestro/issue_title"] = issueContext.IssueTitle
+		meta["maestro/project_id"] = issueContext.ProjectID
+		meta["maestro/project_name"] = issueContext.ProjectName
+		meta["maestro/workspace_path"] = issueContext.WorkspacePath
+	}
+
+	if len(meta) > 0 {
+		params["_meta"] = meta
+		request.Params = params
+	}
+	return request, nil
+}
+
 func bridgeNotificationFromMessage(message rawJSONRPCMessage) (mcpapi.JSONRPCNotification, error) {
 	params, err := notificationParams(message.Params)
 	if err != nil {
@@ -552,6 +617,114 @@ func bridgeNotificationFromMessage(message rawJSONRPCMessage) (mcpapi.JSONRPCNot
 			Params: params,
 		},
 	}, nil
+}
+
+func (b *stdioBridge) issueContextForCurrentWorkspace() (*bridgeIssueContext, bool) {
+	if b == nil {
+		return nil, false
+	}
+
+	b.issueContextMu.Lock()
+	if b.issueContext != nil {
+		cached := *b.issueContext
+		b.issueContextMu.Unlock()
+		return &cached, true
+	}
+	b.issueContextMu.Unlock()
+
+	ctx, err := discoverBridgeIssueContext(b.dbPath)
+	if err != nil || ctx == nil {
+		return nil, false
+	}
+
+	b.issueContextMu.Lock()
+	if b.issueContext == nil {
+		b.issueContext = ctx
+	}
+	cached := *b.issueContext
+	b.issueContextMu.Unlock()
+	return &cached, true
+}
+
+func discoverBridgeIssueContext(dbPath string) (*bridgeIssueContext, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	cwdPath := canonicalPath(cwd)
+
+	store, err := kanban.NewReadOnlyStore(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = store.Close() }()
+
+	const pageSize = 500
+	for offset := 0; ; offset += pageSize {
+		summaries, total, err := store.ListIssueSummaries(kanban.IssueQuery{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for i := range summaries {
+			summary := summaries[i]
+			workspacePath := strings.TrimSpace(summary.WorkspacePath)
+			if workspacePath == "" {
+				continue
+			}
+			absWorkspacePath, err := filepath.Abs(workspacePath)
+			if err != nil {
+				continue
+			}
+			if canonicalPath(absWorkspacePath) != cwdPath {
+				continue
+			}
+			return &bridgeIssueContext{
+				IssueID:         strings.TrimSpace(summary.ID),
+				IssueIdentifier: strings.TrimSpace(summary.Identifier),
+				IssueTitle:      strings.TrimSpace(summary.Title),
+				ProjectID:       strings.TrimSpace(summary.ProjectID),
+				ProjectName:     strings.TrimSpace(summary.ProjectName),
+				WorkspacePath:   filepath.Clean(absWorkspacePath),
+			}, nil
+		}
+		if offset+len(summaries) >= total || len(summaries) == 0 {
+			break
+		}
+	}
+	return nil, nil
+}
+
+func canonicalPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(abs)
+}
+
+func jsonObjectFromAny(value any) (map[string]any, error) {
+	if value == nil {
+		return map[string]any{}, nil
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, nil
 }
 
 func rawParams(raw json.RawMessage) any {

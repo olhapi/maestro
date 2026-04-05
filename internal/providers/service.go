@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 )
 
@@ -36,16 +37,30 @@ type Service struct {
 	providers map[string]Provider
 	syncMu    sync.Mutex
 	lastSync  map[string]time.Time
+	readOnly  bool
 }
 
 func NewService(store *kanban.Store) *Service {
+	return newService(store, false)
+}
+
+func NewReadOnlyService(store *kanban.Store) *Service {
+	return newService(store, true)
+}
+
+func newService(store *kanban.Store, readOnly bool) *Service {
 	return &Service{
 		store: store,
 		providers: map[string]Provider{
 			kanban.ProviderKindKanban: NewKanbanProvider(store),
 		},
 		lastSync: make(map[string]time.Time),
+		readOnly: readOnly,
 	}
+}
+
+func (s *Service) isReadOnlyStore() bool {
+	return s != nil && (s.readOnly || (s.store != nil && s.store.ReadOnly()))
 }
 
 func (s *Service) RegisterProvider(provider Provider) {
@@ -160,18 +175,27 @@ func cloneProjectProviderConfig(providerConfig map[string]interface{}) map[strin
 	return out
 }
 
-func buildProjectValidationCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
+func buildProjectValidationCandidate(existing *kanban.Project, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}, runtimeName string) (*kanban.Project, error) {
 	repoPath, workflowPath, err := normalizeProjectPaths(repoPath, workflowPath)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
+	runtimeName = strings.TrimSpace(runtimeName)
+	if runtimeName == "" {
+		if existing != nil {
+			runtimeName = strings.TrimSpace(existing.RuntimeName)
+		}
+		if runtimeName == "" {
+			runtimeName = string(agentruntime.ProviderCodex)
+		}
+	}
 	project := &kanban.Project{
 		Name:               name,
 		Description:        description,
 		State:              kanban.ProjectStateStopped,
-		RuntimeName:        strings.TrimSpace(runtimeName),
 		PermissionProfile:  kanban.PermissionProfileDefault,
+		RuntimeName:        runtimeName,
 		RepoPath:           repoPath,
 		WorkflowPath:       workflowPath,
 		ProviderKind:       normalizeKind(providerKind),
@@ -184,14 +208,21 @@ func buildProjectValidationCandidate(existing *kanban.Project, name, description
 		project.ID = existing.ID
 		project.State = existing.State
 		project.PermissionProfile = existing.PermissionProfile
+		project.RuntimeName = runtimeName
 		project.CreatedAt = existing.CreatedAt
 		project.UpdatedAt = existing.UpdatedAt
 	}
 	return project, nil
 }
 
-func (s *Service) CreateProject(ctx context.Context, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef string, providerConfig map[string]interface{}) (*kanban.Project, error) {
-	candidate, err := buildProjectValidationCandidate(nil, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef, providerConfig)
+func (s *Service) CreateProject(ctx context.Context, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}, runtimeName ...string) (*kanban.Project, error) {
+	selectedRuntimeName := string(agentruntime.ProviderCodex)
+	if len(runtimeName) > 0 {
+		if trimmed := strings.TrimSpace(runtimeName[0]); trimmed != "" {
+			selectedRuntimeName = trimmed
+		}
+	}
+	candidate, err := buildProjectValidationCandidate(nil, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName)
 	if err != nil {
 		return nil, err
 	}
@@ -202,24 +233,30 @@ func (s *Service) CreateProject(ctx context.Context, name, description, repoPath
 	if err := provider.ValidateProject(ctx, candidate); err != nil {
 		return nil, err
 	}
-	project, err := s.store.CreateProjectWithProvider(name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig)
+	project, err := s.store.CreateProjectWithProvider(name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName)
 	if err != nil {
 		return nil, err
-	}
-	if strings.TrimSpace(runtimeName) != "" {
-		if err := s.store.SetProjectRuntimeName(project.ID, runtimeName); err != nil {
-			return nil, err
-		}
 	}
 	return s.store.GetProject(project.ID)
 }
 
-func (s *Service) UpdateProject(ctx context.Context, id, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef string, providerConfig map[string]interface{}) error {
+func (s *Service) UpdateProject(ctx context.Context, id, name, description, repoPath, workflowPath, providerKind, providerProjectRef string, providerConfig map[string]interface{}, runtimeName ...string) error {
 	current, err := s.store.GetProject(id)
 	if err != nil {
 		return err
 	}
-	candidate, err := buildProjectValidationCandidate(current, name, description, repoPath, workflowPath, runtimeName, providerKind, providerProjectRef, providerConfig)
+	selectedRuntimeName := strings.TrimSpace(current.RuntimeName)
+	if len(runtimeName) > 0 {
+		if trimmed := strings.TrimSpace(runtimeName[0]); trimmed != "" {
+			selectedRuntimeName = trimmed
+		} else {
+			selectedRuntimeName = string(agentruntime.ProviderCodex)
+		}
+	}
+	if selectedRuntimeName == "" {
+		selectedRuntimeName = string(agentruntime.ProviderCodex)
+	}
+	candidate, err := buildProjectValidationCandidate(current, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName)
 	if err != nil {
 		return err
 	}
@@ -230,10 +267,7 @@ func (s *Service) UpdateProject(ctx context.Context, id, name, description, repo
 	if err := provider.ValidateProject(ctx, candidate); err != nil {
 		return err
 	}
-	if err := s.store.UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig); err != nil {
-		return err
-	}
-	if err := s.store.SetProjectRuntimeName(id, runtimeName); err != nil {
+	if err := s.store.UpdateProjectWithProvider(id, name, description, repoPath, workflowPath, providerKind, providerProjectRef, providerConfig, selectedRuntimeName); err != nil {
 		return err
 	}
 	return nil
@@ -318,6 +352,9 @@ func (s *Service) ListEpicSummaries(projectID string) ([]kanban.EpicSummary, err
 }
 
 func (s *Service) SyncIssues(ctx context.Context, query kanban.IssueQuery) error {
+	if s.isReadOnlyStore() {
+		return nil
+	}
 	return s.syncIssuesWithMode(ctx, query, syncModeBlocking)
 }
 
@@ -463,6 +500,9 @@ func (s *Service) RefreshIssue(ctx context.Context, issue *kanban.Issue) (*kanba
 	if err != nil {
 		return nil, err
 	}
+	if s.isReadOnlyStore() {
+		return issue, nil
+	}
 	if provider.Kind() == kanban.ProviderKindKanban {
 		return s.store.GetIssue(issue.ID)
 	}
@@ -493,6 +533,9 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 			return nil, providerErr
 		}
 		if provider != nil && provider.Kind() != kanban.ProviderKindKanban {
+			if s.isReadOnlyStore() {
+				return issue, nil
+			}
 			readCtx, cancel, propagateParentContext := s.newReadSyncContext(ctx)
 			defer cancel()
 			refreshed, refreshErr := s.RefreshIssue(readCtx, issue)
@@ -516,6 +559,9 @@ func (s *Service) GetIssueByIdentifier(ctx context.Context, identifier string) (
 		return issue, nil
 	}
 	if err != sql.ErrNoRows {
+		return nil, err
+	}
+	if s.isReadOnlyStore() {
 		return nil, err
 	}
 	projects, listErr := s.store.ListProjects()
@@ -961,6 +1007,9 @@ func (s *Service) SyncForRepoPath(ctx context.Context, repoPath string) error {
 }
 
 func (s *Service) syncIssueListIfNeeded(ctx context.Context, query kanban.IssueQuery) error {
+	if s.isReadOnlyStore() {
+		return nil
+	}
 	syncQuery := authoritativeProviderSyncQuery(query)
 	if !s.shouldSyncListQuery(syncQuery) {
 		return nil
@@ -1065,9 +1114,9 @@ func providerIssueCreateLocalUpdates(providerIssue *kanban.Issue, input IssueCre
 	updates := make(map[string]interface{})
 	for key, value := range map[string]string{
 		"epic_id":      providerIssue.EpicID,
-		"runtime_name": providerIssue.RuntimeName,
 		"agent_name":   providerIssue.AgentName,
 		"agent_prompt": providerIssue.AgentPrompt,
+		"runtime_name": providerIssue.RuntimeName,
 		"branch_name":  providerIssue.BranchName,
 		"pr_url":       providerIssue.PRURL,
 	} {
@@ -1098,11 +1147,16 @@ func providerIssueLocalUpdatePayload(issue *kanban.Issue, updates map[string]int
 		}
 	}
 	addString("epic_id", issue.EpicID)
-	addString("runtime_name", issue.RuntimeName)
 	addString("agent_name", issue.AgentName)
 	addString("agent_prompt", issue.AgentPrompt)
+	addString("runtime_name", issue.RuntimeName)
 	addString("branch_name", issue.BranchName)
 	addString("pr_url", issue.PRURL)
+	if raw, ok := updates["permission_profile"]; ok {
+		if value, ok := stringUpdateValue(raw); ok {
+			localUpdates["permission_profile"] = value
+		}
+	}
 	return localUpdates
 }
 
@@ -1110,12 +1164,12 @@ func inputValueForKey(input IssueCreateInput, key string) string {
 	switch key {
 	case "epic_id":
 		return input.EpicID
-	case "runtime_name":
-		return input.RuntimeName
 	case "agent_name":
 		return input.AgentName
 	case "agent_prompt":
 		return input.AgentPrompt
+	case "runtime_name":
+		return input.RuntimeName
 	case "branch_name":
 		return input.BranchName
 	case "pr_url":

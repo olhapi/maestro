@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
 
 import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
 import type { PendingInterrupt } from '@/lib/types'
@@ -84,6 +84,73 @@ function makeElicitationInterrupt(overrides: {
   }
 }
 
+function makeNestedElicitationSchema() {
+  return {
+    type: 'object',
+    properties: {
+      profile: {
+        type: 'object',
+        title: 'Profile',
+        properties: {
+          name: {
+            type: 'string',
+            title: 'Name',
+          },
+          contact: {
+            type: 'object',
+            title: 'Contact',
+            properties: {
+              email: {
+                type: 'string',
+                title: 'Email',
+                format: 'email',
+              },
+            },
+            required: ['email'],
+          },
+          role: {
+            type: 'string',
+            title: 'Role',
+            enum: ['engineer', 'manager'],
+            enumNames: ['Engineer', 'Manager'],
+            default: 'engineer',
+          },
+        },
+        required: ['name', 'contact'],
+      },
+      delivery: {
+        oneOf: [
+          {
+            title: 'Email',
+            type: 'object',
+            properties: {
+              address: {
+                type: 'string',
+                title: 'Address',
+                format: 'email',
+              },
+            },
+            required: ['address'],
+          },
+          {
+            title: 'Webhook',
+            type: 'object',
+            properties: {
+              endpoint: {
+                type: 'string',
+                title: 'Endpoint',
+                format: 'uri',
+              },
+            },
+            required: ['endpoint'],
+          },
+        ],
+      },
+    },
+    required: ['profile', 'delivery'],
+  }
+}
+
 type GlobalInterruptPanelProps = ComponentProps<typeof GlobalInterruptPanel>
 
 function renderInterruptPanel(
@@ -116,6 +183,10 @@ function renderInterruptPanel(
   return { onOpenChange }
 }
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 describe('GlobalInterruptPanel', () => {
   it('renders a fullscreen dialog with in-body plan review actions', () => {
     renderInterruptPanel([makePlanApprovalInterrupt()])
@@ -137,6 +208,38 @@ describe('GlobalInterruptPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /hide waiting input dialog/i }))
 
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('keeps selected and queued interrupt ages ticking from activity or request time', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-16T10:00:00Z'))
+
+    renderInterruptPanel([
+      {
+        ...makeApprovalInterrupt(),
+        last_activity_at: '2026-03-16T10:00:00Z',
+      },
+      {
+        ...makeApprovalInterrupt({ command: 'deploy production' }),
+        id: 'interrupt-approval-2',
+        issue_identifier: 'ISS-2',
+        issue_title: 'Approve deployment',
+        requested_at: '2026-03-16T09:59:58Z',
+        last_activity_at: undefined,
+      },
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: /queue \(2\)/i }))
+
+    expect(screen.getAllByText('Updated 0s ago')).toHaveLength(2)
+    expect(screen.getByText('Updated 2s ago')).toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(screen.getAllByText('Updated 2s ago')).toHaveLength(2)
+    expect(screen.getByText('Updated 4s ago')).toBeInTheDocument()
   })
 
   it('renders the richer approval structure and auto-submits plain approval decisions', () => {
@@ -412,28 +515,83 @@ describe('GlobalInterruptPanel', () => {
     })
   })
 
-  it('renders elicitation prompts and forwards accepted structured content', () => {
+  it('renders elicitation prompts and accepts an empty confirmation', () => {
     const onRespond = vi.fn()
 
-    renderInterruptPanel([makeElicitationInterrupt()], { onRespond })
+    renderInterruptPanel([
+      makeElicitationInterrupt({
+        requestedSchema: {
+          type: 'object',
+          properties: {},
+        },
+      }),
+    ], { onRespond })
 
     expect(screen.getByText('MCP elicitation')).toBeInTheDocument()
     expect(screen.getAllByText('Form')).toHaveLength(2)
-    expect(screen.getByText('Requested schema')).toBeInTheDocument()
+    const acceptButton = screen.getByRole('button', { name: /accept and continue/i })
+    const elicitationForm = acceptButton.closest('form')
+    expect(elicitationForm).not.toBeNull()
+    expect(elicitationForm).not.toHaveClass('border')
+    expect(acceptButton).toBeEnabled()
 
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '{"email":"ops@example.com"}' },
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: /accept and continue/i }))
+    fireEvent.click(acceptButton)
 
     expect(onRespond).toHaveBeenCalledWith({
       interruptId: 'interrupt-elicitation',
       action: 'accept',
-      content: {
-        email: 'ops@example.com',
+      content: {},
+    })
+  })
+
+  it('renders nested elicitation schemas without falling back to manual JSON', () => {
+    renderInterruptPanel([
+      makeElicitationInterrupt({
+        requestedSchema: makeNestedElicitationSchema(),
+      }),
+    ])
+
+    expect(screen.getByText('Profile')).toBeInTheDocument()
+    expect(screen.getByText('Contact')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /engineer/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /webhook/i })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText(/manual json payload/i)).not.toBeInTheDocument()
+  })
+
+  it('preserves elicitation drafts when switching between queued interrupts', () => {
+    renderInterruptPanel([
+      makeElicitationInterrupt({
+        message: 'Need billing contact email',
+      }),
+      {
+        ...makeElicitationInterrupt({
+          message: 'Need shipping contact email',
+        }),
+        id: 'interrupt-elicitation-2',
+        issue_identifier: 'ISS-9',
+        issue_title: 'Fill shipping contact',
+        requested_at: '2026-03-16T10:05:00Z',
+      },
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: /queue \(2\)/i }))
+
+    const queue = screen.getByText('Waiting queue').closest('aside')
+    expect(queue).not.toBeNull()
+
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: {
+        value: 'billing@example.com',
       },
     })
+
+    fireEvent.click(within(queue!).getByText('Need shipping contact email').closest('button')!)
+
+    expect(screen.getByLabelText(/email/i)).toHaveValue('')
+
+    fireEvent.click(within(queue!).getByText('Need billing contact email').closest('button')!)
+
+    expect(screen.getByLabelText(/email/i)).toHaveValue('billing@example.com')
   })
 
   it('renders url-mode elicitation links', () => {

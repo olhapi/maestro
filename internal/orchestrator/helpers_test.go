@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/olhapi/maestro/internal/agent"
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/pkg/config"
@@ -60,7 +60,7 @@ func (r *interruptedFailureRunner) RunAttempt(ctx context.Context, issue *kanban
 	return &agent.RunResult{
 		Success: false,
 		Error:   errors.New("stall_timeout"),
-		AppSession: &appserver.Session{
+		AppSession: &agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-stall-turn-stall",
@@ -242,7 +242,7 @@ func TestUpdateLiveSessionPersistsWhileRunIsActive(t *testing.T) {
 	waitForRunCall(t, runner.runCalls, time.Second)
 
 	now := time.Now().UTC().Truncate(time.Second)
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		SessionID:     "thread-live-turn-live",
 		ThreadID:      "thread-live",
 		TurnID:        "turn-live",
@@ -285,7 +285,7 @@ func TestReconcileRecoversOrphanedRunWithBackoffRetry(t *testing.T) {
 		Attempt:    2,
 		RunKind:    "run_started",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-stale-turn-stale",
@@ -323,7 +323,7 @@ func TestReconcileRecoversOrphanedRunWithBackoffRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" {
+	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" || snapshot.StopReason != "run_interrupted" {
 		t.Fatalf("expected interrupted snapshot, got %#v", snapshot)
 	}
 
@@ -428,7 +428,7 @@ func TestReconcileRestoresPausedRunStateFromPersistedEvents(t *testing.T) {
 		RunKind:    "retry_paused",
 		Error:      "stall_timeout",
 		UpdatedAt:  pausedAt,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-stall-turn-stall",
@@ -484,7 +484,7 @@ func TestUpdateLiveSessionCoalescesPersistenceWhileRunIsActive(t *testing.T) {
 	waitForRunCall(t, runner.runCalls, time.Second)
 
 	now := time.Now().UTC().Truncate(time.Second)
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		SessionID:     "thread-live-turn-live",
 		ThreadID:      "thread-live",
 		TurnID:        "turn-live",
@@ -500,7 +500,7 @@ func TestUpdateLiveSessionCoalescesPersistenceWhileRunIsActive(t *testing.T) {
 		t.Fatalf("expected first live message to persist, got %#v", snapshot.AppSession)
 	}
 
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		SessionID:     "thread-live-turn-live",
 		ThreadID:      "thread-live",
 		TurnID:        "turn-live",
@@ -522,7 +522,7 @@ func TestUpdateLiveSessionCoalescesPersistenceWhileRunIsActive(t *testing.T) {
 	orch.sessionWrites[issue.ID] = state
 	orch.sessionWriteMu.Unlock()
 
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		SessionID:     "thread-live-turn-live",
 		ThreadID:      "thread-live",
 		TurnID:        "turn-live",
@@ -572,7 +572,7 @@ func TestReconcileRecoversBlockedOrphanWithoutRetry(t *testing.T) {
 		Attempt:    1,
 		RunKind:    "run_started",
 		UpdatedAt:  now,
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-blocked-turn-stale",
@@ -604,7 +604,7 @@ func TestReconcileRecoversBlockedOrphanWithoutRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssueExecutionSession: %v", err)
 	}
-	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" {
+	if snapshot.RunKind != "run_interrupted" || snapshot.Error != "run_interrupted" || snapshot.StopReason != "run_interrupted" {
 		t.Fatalf("expected interrupted snapshot without retry, got %#v", snapshot)
 	}
 }
@@ -703,6 +703,125 @@ func TestAdvanceIssueAfterSuccessWithoutReviewOrDoneKeepsImplementationOpen(t *t
 		}
 		if current.WorkflowPhase != kanban.WorkflowPhaseImplementation || current.State != state {
 			t.Fatalf("%s: got state=%s phase=%s, want state=%s phase=%s", state, current.State, current.WorkflowPhase, state, kanban.WorkflowPhaseImplementation)
+		}
+	}
+}
+
+func TestAdvanceIssueAfterSuccessUnknownStateDefaultsToComplete(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("manager.Current: %v", err)
+	}
+
+	makeIssue := func(state kanban.State, phase kanban.WorkflowPhase) *kanban.Issue {
+		t.Helper()
+		issue, err := store.CreateIssue("", "", string(state)+"-"+string(phase), "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if err := store.UpdateIssueStateAndPhase(issue.ID, state, phase); err != nil {
+			t.Fatalf("UpdateIssueStateAndPhase: %v", err)
+		}
+		current, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		return current
+	}
+
+	tests := []struct {
+		name       string
+		phase      kanban.WorkflowPhase
+		setupState kanban.State
+	}{
+		{name: "implementation", phase: kanban.WorkflowPhaseImplementation, setupState: kanban.StateReady},
+		{name: "review", phase: kanban.WorkflowPhaseReview, setupState: kanban.StateInReview},
+		{name: "done", phase: kanban.WorkflowPhaseDone, setupState: kanban.StateDone},
+	}
+
+	for _, tc := range tests {
+		issue := makeIssue(tc.setupState, tc.phase)
+		issue.State = kanban.State("mystery")
+		nextPhase, cont := orch.advanceIssueAfterSuccess(workflow, issue, tc.phase)
+		if nextPhase != kanban.WorkflowPhaseComplete || cont {
+			t.Fatalf("%s: got (%s,%v), want (%s,%v)", tc.name, nextPhase, cont, kanban.WorkflowPhaseComplete, false)
+		}
+		current, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("%s: GetIssue: %v", tc.name, err)
+		}
+		if current.WorkflowPhase != tc.phase {
+			t.Fatalf("%s: got phase=%s, want phase=%s", tc.name, current.WorkflowPhase, tc.phase)
+		}
+	}
+}
+
+func TestAdvanceIssueAfterSuccessCoversRemainingBranches(t *testing.T) {
+	orch, store, _, _ := setupTestOrchestrator(t, "cat")
+
+	makeIssue := func(state kanban.State, phase kanban.WorkflowPhase) *kanban.Issue {
+		t.Helper()
+		issue, err := store.CreateIssue("", "", string(state)+"-"+string(phase), "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+		if err := store.UpdateIssueStateAndPhase(issue.ID, state, phase); err != nil {
+			t.Fatalf("UpdateIssueStateAndPhase: %v", err)
+		}
+		current, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		return current
+	}
+
+	makeWorkflow := func(reviewEnabled, doneEnabled bool) *config.Workflow {
+		workflow := &config.Workflow{Config: config.DefaultConfig()}
+		workflow.Config.Phases.Review.Enabled = reviewEnabled
+		workflow.Config.Phases.Review.Prompt = ""
+		workflow.Config.Phases.Done.Enabled = doneEnabled
+		workflow.Config.Phases.Done.Prompt = ""
+		return workflow
+	}
+
+	tests := []struct {
+		name      string
+		phase     kanban.WorkflowPhase
+		state     kanban.State
+		reviewOn  bool
+		doneOn    bool
+		wantPhase kanban.WorkflowPhase
+		wantState kanban.State
+		wantCont  bool
+	}{
+		{name: "review in progress continues implementation", phase: kanban.WorkflowPhaseReview, state: kanban.StateInProgress, reviewOn: true, doneOn: true, wantPhase: kanban.WorkflowPhaseImplementation, wantState: kanban.StateInProgress, wantCont: true},
+		{name: "review in review without done completes", phase: kanban.WorkflowPhaseReview, state: kanban.StateInReview, reviewOn: true, doneOn: false, wantPhase: kanban.WorkflowPhaseComplete, wantState: kanban.StateDone, wantCont: false},
+		{name: "review done without done completes", phase: kanban.WorkflowPhaseReview, state: kanban.StateDone, reviewOn: true, doneOn: false, wantPhase: kanban.WorkflowPhaseComplete, wantState: kanban.StateDone, wantCont: false},
+		{name: "review cancelled completes", phase: kanban.WorkflowPhaseReview, state: kanban.StateCancelled, reviewOn: true, doneOn: true, wantPhase: kanban.WorkflowPhaseComplete, wantState: kanban.StateCancelled, wantCont: false},
+		{name: "done cancelled completes", phase: kanban.WorkflowPhaseDone, state: kanban.StateCancelled, reviewOn: true, doneOn: true, wantPhase: kanban.WorkflowPhaseComplete, wantState: kanban.StateCancelled, wantCont: false},
+		{name: "done in review without review falls back to implementation", phase: kanban.WorkflowPhaseDone, state: kanban.StateInReview, reviewOn: false, doneOn: true, wantPhase: kanban.WorkflowPhaseImplementation, wantState: kanban.StateInProgress, wantCont: true},
+		{name: "done ready continues implementation", phase: kanban.WorkflowPhaseDone, state: kanban.StateReady, reviewOn: true, doneOn: true, wantPhase: kanban.WorkflowPhaseImplementation, wantState: kanban.StateReady, wantCont: true},
+		{name: "default done without done completes", phase: kanban.WorkflowPhaseImplementation, state: kanban.StateDone, reviewOn: true, doneOn: false, wantPhase: kanban.WorkflowPhaseComplete, wantState: kanban.StateDone, wantCont: false},
+		{name: "default cancelled completes", phase: kanban.WorkflowPhaseImplementation, state: kanban.StateCancelled, reviewOn: true, doneOn: true, wantPhase: kanban.WorkflowPhaseComplete, wantState: kanban.StateCancelled, wantCont: false},
+		{name: "default in review without review falls back to implementation", phase: kanban.WorkflowPhaseImplementation, state: kanban.StateInReview, reviewOn: false, doneOn: true, wantPhase: kanban.WorkflowPhaseImplementation, wantState: kanban.StateInProgress, wantCont: true},
+		{name: "default in review with review enabled switches to review", phase: kanban.WorkflowPhaseImplementation, state: kanban.StateInReview, reviewOn: true, doneOn: false, wantPhase: kanban.WorkflowPhaseReview, wantState: kanban.StateInReview, wantCont: true},
+	}
+
+	for _, tc := range tests {
+		issue := makeIssue(tc.state, tc.phase)
+		workflow := makeWorkflow(tc.reviewOn, tc.doneOn)
+		nextPhase, cont := orch.advanceIssueAfterSuccess(workflow, issue, tc.phase)
+		if nextPhase != tc.wantPhase || cont != tc.wantCont {
+			t.Fatalf("%s: got (%s,%v), want (%s,%v)", tc.name, nextPhase, cont, tc.wantPhase, tc.wantCont)
+		}
+		current, err := store.GetIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("%s: GetIssue: %v", tc.name, err)
+		}
+		if current.WorkflowPhase != tc.wantPhase || current.State != tc.wantState {
+			t.Fatalf("%s: got state=%s phase=%s, want state=%s phase=%s", tc.name, current.State, current.WorkflowPhase, tc.wantState, tc.wantPhase)
 		}
 	}
 }
@@ -831,7 +950,7 @@ func TestUpdateLiveSessionFlushesTokenSpendAfterDebounceAndBroadcasts(t *testing
 	defer unsubscribe()
 
 	now := time.Now().UTC().Truncate(time.Second)
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		ThreadID:      "thread-token",
 		SessionID:     "thread-token-turn-1",
 		TurnID:        "turn-1",
@@ -847,7 +966,7 @@ func TestUpdateLiveSessionFlushesTokenSpendAfterDebounceAndBroadcasts(t *testing
 		t.Fatalf("TotalTokensSpent after first update = %d, want 0", current.TotalTokensSpent)
 	}
 
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		ThreadID:      "thread-token",
 		SessionID:     "thread-token-turn-1",
 		TurnID:        "turn-1",
@@ -869,7 +988,7 @@ func TestUpdateLiveSessionFlushesTokenSpendAfterDebounceAndBroadcasts(t *testing
 	orch.tokenSpends[issue.ID] = state
 	orch.tokenSpendMu.Unlock()
 
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		ThreadID:      "thread-token",
 		SessionID:     "thread-token-turn-2",
 		TurnID:        "turn-2",
@@ -892,7 +1011,7 @@ func TestUpdateLiveSessionFlushesTokenSpendAfterDebounceAndBroadcasts(t *testing
 		t.Fatalf("TotalTokensSpent after flushed token update = %d, want 18", current.TotalTokensSpent)
 	}
 
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		ThreadID:      "thread-token",
 		SessionID:     "thread-token-turn-3",
 		TurnID:        "turn-3",
@@ -908,7 +1027,7 @@ func TestUpdateLiveSessionFlushesTokenSpendAfterDebounceAndBroadcasts(t *testing
 		t.Fatalf("TotalTokensSpent after pending token update = %d, want 18", current.TotalTokensSpent)
 	}
 
-	orch.persistFinalIssueTokenSpend(issue.ID, &appserver.Session{
+	orch.persistFinalIssueTokenSpend(issue.ID, &agentruntime.Session{
 		ThreadID:      "thread-token",
 		SessionID:     "thread-token-turn-3",
 		TurnID:        "turn-3",
@@ -955,7 +1074,7 @@ func TestStopAllRunsFlushesPendingTokenSpendOnCancellation(t *testing.T) {
 		t.Fatal("timed out waiting for run start")
 	}
 
-	orch.updateLiveSession(issue.ID, &appserver.Session{
+	orch.updateLiveSession(issue.ID, &agentruntime.Session{
 		ThreadID:      "thread-cancel",
 		SessionID:     "thread-cancel-turn-1",
 		TurnID:        "turn-1",
@@ -997,22 +1116,22 @@ func TestPersistFinalIssueTokenSpendDeduplicatesAcrossLiveThreadSwitches(t *test
 		t.Fatalf("CreateIssue: %v", err)
 	}
 
-	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+	orch.observeIssueTokenSpend(issue.ID, &agentruntime.Session{
 		ThreadID:    "thread-a",
 		SessionID:   "thread-a-turn-1",
 		TotalTokens: 10,
 	})
-	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+	orch.observeIssueTokenSpend(issue.ID, &agentruntime.Session{
 		ThreadID:    "thread-b",
 		SessionID:   "thread-b-turn-1",
 		TotalTokens: 4,
 	})
-	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+	orch.observeIssueTokenSpend(issue.ID, &agentruntime.Session{
 		ThreadID:    "thread-a",
 		SessionID:   "thread-a-turn-2",
 		TotalTokens: 12,
 	})
-	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{
+	orch.observeIssueTokenSpend(issue.ID, &agentruntime.Session{
 		ThreadID:    "thread-b",
 		SessionID:   "thread-b-turn-2",
 		TotalTokens: 7,
@@ -1026,7 +1145,7 @@ func TestPersistFinalIssueTokenSpendDeduplicatesAcrossLiveThreadSwitches(t *test
 		t.Fatalf("TotalTokensSpent before final flush = %d, want 0", current.TotalTokensSpent)
 	}
 
-	orch.persistFinalIssueTokenSpend(issue.ID, &appserver.Session{
+	orch.persistFinalIssueTokenSpend(issue.ID, &agentruntime.Session{
 		ThreadID:    "thread-a",
 		SessionID:   "thread-a-turn-2",
 		TotalTokens: 12,
@@ -1047,7 +1166,7 @@ func TestPersistFinalIssueTokenSpendUsesFinalizedRunTotals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	orch.persistFinalIssueTokenSpend(issue.ID, &appserver.Session{ThreadID: "thread-a", TotalTokens: 18})
+	orch.persistFinalIssueTokenSpend(issue.ID, &agentruntime.Session{ThreadID: "thread-a", TotalTokens: 18})
 
 	current, err := store.GetIssue(issue.ID)
 	if err != nil {
@@ -1057,7 +1176,7 @@ func TestPersistFinalIssueTokenSpendUsesFinalizedRunTotals(t *testing.T) {
 		t.Fatalf("TotalTokensSpent after first finalized total = %d, want 18", current.TotalTokensSpent)
 	}
 
-	orch.persistFinalIssueTokenSpend(issue.ID, &appserver.Session{ThreadID: "thread-a", TotalTokens: 45})
+	orch.persistFinalIssueTokenSpend(issue.ID, &agentruntime.Session{ThreadID: "thread-a", TotalTokens: 45})
 	current, err = store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue after second finalized total: %v", err)
@@ -1066,7 +1185,7 @@ func TestPersistFinalIssueTokenSpendUsesFinalizedRunTotals(t *testing.T) {
 		t.Fatalf("TotalTokensSpent after second finalized total = %d, want 45", current.TotalTokensSpent)
 	}
 
-	orch.persistFinalIssueTokenSpend(issue.ID, &appserver.Session{ThreadID: "thread-b", TotalTokens: 6})
+	orch.persistFinalIssueTokenSpend(issue.ID, &agentruntime.Session{ThreadID: "thread-b", TotalTokens: 6})
 	current, err = store.GetIssue(issue.ID)
 	if err != nil {
 		t.Fatalf("GetIssue after third finalized total: %v", err)
@@ -1086,16 +1205,16 @@ func TestIssueTokenSpendHelpersTrackRunKeysAndResetState(t *testing.T) {
 	if got := issueTokenSpendRunKey(nil); got != "" {
 		t.Fatalf("issueTokenSpendRunKey(nil) = %q, want empty", got)
 	}
-	if got := issueTokenSpendRunKey(&appserver.Session{ThreadID: " thread-a ", SessionID: "session-a"}); got != "thread:thread-a" {
+	if got := issueTokenSpendRunKey(&agentruntime.Session{ThreadID: " thread-a ", SessionID: "session-a"}); got != "thread:thread-a" {
 		t.Fatalf("issueTokenSpendRunKey(thread) = %q, want thread:thread-a", got)
 	}
-	if got := issueTokenSpendRunKey(&appserver.Session{SessionID: " session-b "}); got != "session:session-b" {
+	if got := issueTokenSpendRunKey(&agentruntime.Session{SessionID: " session-b "}); got != "session:session-b" {
 		t.Fatalf("issueTokenSpendRunKey(session) = %q, want session:session-b", got)
 	}
 
-	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{TotalTokens: 2})
-	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{TotalTokens: 7})
-	orch.observeIssueTokenSpend(issue.ID, &appserver.Session{TotalTokens: 5})
+	orch.observeIssueTokenSpend(issue.ID, &agentruntime.Session{TotalTokens: 2})
+	orch.observeIssueTokenSpend(issue.ID, &agentruntime.Session{TotalTokens: 7})
+	orch.observeIssueTokenSpend(issue.ID, &agentruntime.Session{TotalTokens: 5})
 	orch.restoreIssueTokenSpend(issue.ID, 4)
 
 	orch.tokenSpendMu.Lock()
@@ -1122,7 +1241,284 @@ func TestIssueTokenSpendHelpersTrackRunKeysAndResetState(t *testing.T) {
 		t.Fatal("expected clearIssueTokenSpendState to remove the tracked issue")
 	}
 
-	if got := issueTokenSpendRunKey(&appserver.Session{}); got != "" {
+	if got := issueTokenSpendRunKey(&agentruntime.Session{}); got != "" {
 		t.Fatalf("issueTokenSpendRunKey(empty session) = %q, want empty", got)
+	}
+}
+
+func TestOrchestratorCoverageSharedStatusAndHelperBranches(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "shared.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	issue, err := store.CreateIssue("", "", "Shared helper issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	shared := NewSharedWithExtensions(store, nil, t.TempDir(), "")
+	shared.mu.Lock()
+	shared.running[issue.ID] = runningEntry{
+		issue:     *issue,
+		phase:     kanban.WorkflowPhaseImplementation,
+		attempt:   1,
+		startedAt: time.Now().UTC(),
+	}
+	shared.liveSessions[issue.ID] = &agentruntime.Session{
+		SessionID:       "shared-session",
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		LastTimestamp:   time.Now().UTC(),
+	}
+	shared.mu.Unlock()
+
+	status := shared.Status()
+	if status["mode"] != "shared" {
+		t.Fatalf("expected shared mode status, got %#v", status["mode"])
+	}
+	if _, ok := status["scoped_repo_path"]; !ok {
+		t.Fatalf("expected shared status to include scoped repo path, got %#v", status)
+	}
+
+	snapshot := shared.Snapshot()
+	if len(snapshot.Running) != 1 {
+		t.Fatalf("expected one running entry in shared snapshot, got %#v", snapshot)
+	}
+	if snapshot.Running[0].Identifier != issue.Identifier {
+		t.Fatalf("expected snapshot to preserve issue identifier, got %#v", snapshot.Running[0])
+	}
+
+	if got := automaticRetryLimit(nil); got != config.DefaultConfig().Agent.MaxAutomaticRetries {
+		t.Fatalf("automaticRetryLimit(nil) = %d, want default", got)
+	}
+	workflow := &config.Workflow{Config: config.DefaultConfig()}
+	workflow.Config.Agent.MaxAutomaticRetries = 0
+	if got := automaticRetryLimit(workflow); got != config.DefaultConfig().Agent.MaxAutomaticRetries {
+		t.Fatalf("automaticRetryLimit(zero) = %d, want default", got)
+	}
+	workflow.Config.Agent.MaxAutomaticRetries = 5
+	if got := automaticRetryLimit(workflow); got != 5 {
+		t.Fatalf("automaticRetryLimit(custom) = %d, want 5", got)
+	}
+
+	if got := shouldScheduleSuccessfulContinuation(kanban.WorkflowPhaseImplementation, kanban.WorkflowPhaseReview, kanban.StateReady, kanban.StateReady); !got {
+		t.Fatal("expected phase change to schedule continuation")
+	}
+	if got := shouldScheduleSuccessfulContinuation(kanban.WorkflowPhaseImplementation, kanban.WorkflowPhaseImplementation, kanban.StateReady, kanban.StateDone); !got {
+		t.Fatal("expected state change to schedule continuation")
+	}
+	if got := shouldScheduleSuccessfulContinuation(kanban.WorkflowPhaseImplementation, kanban.WorkflowPhaseImplementation, kanban.StateReady, kanban.StateReady); got {
+		t.Fatal("expected unchanged phase/state to skip continuation")
+	}
+
+	if blocked, err := (&Orchestrator{store: store}).isBlocked(nil, nil); err != nil || blocked {
+		t.Fatalf("expected nil issue to be unblocked without error, got blocked=%v err=%v", blocked, err)
+	}
+	if blocked, err := (&Orchestrator{store: store}).isBlocked(&kanban.Issue{ID: "missing"}, nil); err == nil || blocked {
+		t.Fatalf("expected missing issue to surface an error, got blocked=%v err=%v", blocked, err)
+	}
+}
+
+func TestOrchestratorCoverageRecurringOccupancyAndSnapshotBranches(t *testing.T) {
+	orch, store, manager, workspaceRoot := setupTestOrchestrator(t, "cat")
+	enablePhaseWorkflow(t, manager, workspaceRoot)
+
+	workflow, err := manager.Current()
+	if err != nil {
+		t.Fatalf("manager.Current: %v", err)
+	}
+
+	if got := orch.recurringIssueOccupiedIgnoringRunning(workflow, nil, ""); got {
+		t.Fatal("expected nil recurring issue to be unoccupied")
+	}
+
+	runningIssue, err := store.CreateIssue("", "", "Running recurring issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue running: %v", err)
+	}
+	if err := store.UpdateIssueState(runningIssue.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState running: %v", err)
+	}
+	runningIssue.State = kanban.StateReady
+	orch.mu.Lock()
+	orch.running[runningIssue.ID] = runningEntry{cancel: func() {}, issue: *runningIssue}
+	orch.mu.Unlock()
+	if got := orch.recurringIssueOccupiedIgnoringRunning(workflow, runningIssue, ""); !got {
+		t.Fatal("expected running recurring issue to be occupied")
+	}
+	if got := orch.recurringIssueOccupiedIgnoringRunning(workflow, runningIssue, runningIssue.ID); !got {
+		t.Fatal("expected ignored running issue to remain occupied by state")
+	}
+
+	retryingIssue, err := store.CreateIssue("", "", "Retrying recurring issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue retrying: %v", err)
+	}
+	orch.mu.Lock()
+	orch.retries[retryingIssue.ID] = retryEntry{
+		Attempt:   1,
+		Phase:     string(kanban.WorkflowPhaseImplementation),
+		DueAt:     time.Now().UTC().Add(time.Minute),
+		Error:     "retry",
+		DelayType: "failure",
+	}
+	orch.mu.Unlock()
+	if got := orch.recurringIssueOccupiedIgnoringRunning(workflow, retryingIssue, ""); !got {
+		t.Fatal("expected retrying recurring issue to be occupied")
+	}
+
+	pausedIssue, err := store.CreateIssue("", "", "Paused recurring issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue paused: %v", err)
+	}
+	orch.mu.Lock()
+	orch.paused[pausedIssue.ID] = pausedEntry{
+		Attempt:             2,
+		Phase:               string(kanban.WorkflowPhaseImplementation),
+		PausedAt:            time.Now().UTC(),
+		Error:               "paused",
+		ConsecutiveFailures: 1,
+		PauseThreshold:      3,
+	}
+	orch.mu.Unlock()
+	if got := orch.recurringIssueOccupiedIgnoringRunning(workflow, pausedIssue, ""); !got {
+		t.Fatal("expected paused recurring issue to be occupied")
+	}
+
+	doneIssue, err := store.CreateIssue("", "", "Done recurring issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue done: %v", err)
+	}
+	if err := store.UpdateIssueState(doneIssue.ID, kanban.StateDone); err != nil {
+		t.Fatalf("UpdateIssueState done: %v", err)
+	}
+	doneLoaded, err := store.GetIssue(doneIssue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue done: %v", err)
+	}
+	doneLoaded.WorkflowPhase = kanban.WorkflowPhaseDone
+	if got := orch.recurringIssueOccupiedIgnoringRunning(workflow, doneLoaded, doneLoaded.ID); !got {
+		t.Fatal("expected done recurring issue to be occupied")
+	}
+
+	backlogIssue, err := store.CreateIssue("", "", "Backlog recurring issue", "", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue backlog: %v", err)
+	}
+	if got := orch.recurringIssueOccupiedIgnoringRunning(workflow, backlogIssue, ""); got {
+		t.Fatal("expected backlog recurring issue to be unoccupied")
+	}
+
+	now := time.Now().UTC()
+	orch.mu.Lock()
+	orch.running = map[string]runningEntry{
+		runningIssue.ID: {
+			cancel:    func() {},
+			issue:     kanban.Issue{ID: runningIssue.ID, Identifier: runningIssue.Identifier, ProjectID: "proj-1", State: kanban.StateReady, WorkflowPhase: kanban.WorkflowPhaseImplementation},
+			phase:     kanban.WorkflowPhaseImplementation,
+			attempt:   1,
+			startedAt: now.Add(-time.Minute),
+		},
+		backlogIssue.ID: {
+			cancel:    func() {},
+			issue:     kanban.Issue{ID: backlogIssue.ID, Identifier: backlogIssue.Identifier, ProjectID: "proj-1", State: kanban.StateBacklog, WorkflowPhase: kanban.WorkflowPhaseImplementation},
+			phase:     kanban.WorkflowPhaseImplementation,
+			attempt:   2,
+			startedAt: now.Add(-2 * time.Minute),
+		},
+	}
+	orch.retries = map[string]retryEntry{
+		retryingIssue.ID: {
+			Attempt:   3,
+			Phase:     string(kanban.WorkflowPhaseImplementation),
+			DueAt:     now.Add(time.Minute),
+			Error:     "retry",
+			DelayType: "failure",
+		},
+	}
+	orch.paused = map[string]pausedEntry{
+		pausedIssue.ID: {
+			Attempt:             4,
+			Phase:               string(kanban.WorkflowPhaseImplementation),
+			PausedAt:            now.Add(-time.Minute),
+			Error:               "paused",
+			ConsecutiveFailures: 2,
+			PauseThreshold:      3,
+		},
+	}
+	orch.liveSessions = map[string]*agentruntime.Session{
+		runningIssue.ID: {
+			IssueID:         runningIssue.ID,
+			IssueIdentifier: runningIssue.Identifier,
+			SessionID:       "session-running",
+			ThreadID:        "thread-running",
+			ProcessID:       4321,
+			TurnsStarted:    3,
+			LastEvent:       "turn.started",
+			LastMessage:     "still running",
+			InputTokens:     1,
+			OutputTokens:    2,
+			TotalTokens:     3,
+			LastTimestamp:   now,
+		},
+	}
+	orch.totalRuns = 10
+	orch.successfulRuns = 7
+	orch.failedRuns = 3
+	orch.eventSeq = 42
+	orch.startedAt = now.Add(-time.Hour)
+	orch.lastTickAt = now.Add(-time.Second)
+	orch.lastMaintenanceAt = now.Add(-2 * time.Hour)
+	orch.lastCheckpointAt = now.Add(-time.Hour)
+	orch.lastCheckpointResult = "busy=0 log=1 checkpointed=1"
+	orch.mu.Unlock()
+
+	status := orch.Status()
+	if status["workflow_path"] != workflow.Path {
+		t.Fatalf("expected workflow path in status, got %#v", status["workflow_path"])
+	}
+	if status["max_concurrent"] != workflow.Config.Agent.MaxConcurrentAgents {
+		t.Fatalf("unexpected max_concurrent in status: %#v", status["max_concurrent"])
+	}
+	if status["active_runs"] != 2 || status["retry_queue_count"] != 1 || status["paused_count"] != 1 {
+		t.Fatalf("unexpected queue counts in status: %#v", status)
+	}
+	if status["last_checkpoint_result"] != "busy=0 log=1 checkpointed=1" {
+		t.Fatalf("unexpected checkpoint result in status: %#v", status["last_checkpoint_result"])
+	}
+	if metrics, ok := status["run_metrics"].(map[string]int); !ok || metrics["total"] != 10 || metrics["successful"] != 7 || metrics["failed"] != 3 {
+		t.Fatalf("unexpected run metrics in status: %#v", status["run_metrics"])
+	}
+
+	snapshot := orch.Snapshot()
+	if snapshot.WorkspaceRoot != workflow.Config.Workspace.Root {
+		t.Fatalf("expected workflow root in snapshot, got %q", snapshot.WorkspaceRoot)
+	}
+	if len(snapshot.Running) != 2 || len(snapshot.Retrying) != 1 || len(snapshot.Paused) != 1 {
+		t.Fatalf("unexpected snapshot queue sizes: %#v", snapshot)
+	}
+	if snapshot.CodexTotals.InputTokens != 1 || snapshot.CodexTotals.OutputTokens != 2 || snapshot.CodexTotals.TotalTokens != 3 {
+		t.Fatalf("unexpected token totals in snapshot: %#v", snapshot.CodexTotals)
+	}
+
+	var liveRunning, fallbackRunning *observability.RunningEntry
+	for i := range snapshot.Running {
+		entry := &snapshot.Running[i]
+		switch entry.Identifier {
+		case runningIssue.Identifier:
+			liveRunning = entry
+		case backlogIssue.Identifier:
+			fallbackRunning = entry
+		}
+	}
+	if liveRunning == nil || liveRunning.SessionID != "session-running" || liveRunning.CodexAppServerPID != 4321 {
+		t.Fatalf("expected live session to be reflected in snapshot, got %#v", liveRunning)
+	}
+	if fallbackRunning == nil || fallbackRunning.SessionID != "" || fallbackRunning.CodexAppServerPID != 0 {
+		t.Fatalf("expected missing live session to use fallback snapshot data, got %#v", fallbackRunning)
 	}
 }

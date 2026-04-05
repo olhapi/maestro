@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/testutil/inprocessserver"
 )
@@ -31,6 +32,134 @@ func setupRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return repo
+}
+
+func writeFakeRuntimeCLI(t *testing.T, binary, version string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake runtime dir: %v", err)
+	}
+	path := filepath.Join(dir, binary)
+	script := "#!/bin/sh\nprintf '" + binary + "-cli " + version + "\\n'\n"
+	if binary == "claude" {
+		script = strings.NewReplacer("{{VERSION}}", version).Replace(`#!/bin/sh
+set -eu
+if [ -n "${FAKE_CLAUDE_AUTH_STATUS_JSON:-}" ]; then
+  printf '%s\n' "$FAKE_CLAUDE_AUTH_STATUS_JSON"
+  exit 0
+fi
+case "$1" in
+  --version)
+    printf 'claude-cli {{VERSION}}\n'
+    exit 0
+    ;;
+  auth)
+    if [ "${2:-}" = "status" ] && [ "${3:-}" = "--json" ]; then
+      if [ -n "${CLAUDE_CODE_USE_BEDROCK:-}" ] && [ "${CLAUDE_CODE_USE_BEDROCK}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_VERTEX:-}" ] && [ "${CLAUDE_CODE_USE_VERTEX}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"vertex"}\n'
+      elif [ -n "${CLAUDE_CODE_USE_FOUNDRY:-}" ] && [ "${CLAUDE_CODE_USE_FOUNDRY}" != "0" ]; then
+        printf '{"loggedIn":true,"authMethod":"third_party","apiProvider":"foundry"}\n'
+      elif [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}\n'
+      elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}\n'
+      else
+        printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"o@olhapi.com"}\n'
+      fi
+      exit 0
+    fi
+    ;;
+esac
+printf 'claude-cli {{VERSION}}\n'
+`)
+	}
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", binary, err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	return path
+}
+
+func isolateClaudeRuntimeEnv(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "")
+	t.Setenv("CLAUDE_CODE_USE_VERTEX", "")
+	t.Setenv("CLAUDE_CODE_USE_FOUNDRY", "")
+	t.Setenv("FAKE_CLAUDE_AUTH_STATUS_JSON", "")
+}
+
+func writeFakePinnedNPXCodexCLI(t *testing.T, version string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake npx dir: %v", err)
+	}
+	path := filepath.Join(dir, "npx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"-y\" ]; then\n" +
+		"  echo \"unexpected npx args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"@openai/codex@" + version + "\" ]; then\n" +
+		"  echo \"unexpected package: $1\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" != \"--version\" ]; then\n" +
+		"  echo \"unexpected version probe args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"printf 'codex-cli " + version + "\\n'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake npx: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	return "npx -y @openai/codex@" + version + " app-server"
+}
+
+func writeClaudeWorkflow(t *testing.T, repoPath, command string) {
+	t.Helper()
+	workflow := `---
+tracker:
+  kind: kanban
+runtime:
+  default: claude
+  claude:
+    provider: claude
+    transport: stdio
+    command: '` + command + `'
+    approval_policy: never
+    turn_timeout_ms: 1800000
+    read_timeout_ms: 10000
+    stall_timeout_ms: 300000
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(repoPath, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+}
+
+func writeClaudeSettingsFile(t *testing.T, repoPath, body string) {
+	t.Helper()
+	dir := filepath.Join(repoPath, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
 }
 
 func sampleMainPNGBytes() []byte {
@@ -183,6 +312,51 @@ func TestOpenStoreAllowsLiteralDollarSignInPathSegment(t *testing.T) {
 	dbPath := filepath.Join(home, ".maestro", "price$5", "maestro.db")
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("expected db at %s: %v", dbPath, err)
+	}
+}
+
+func TestIssueListWorksWithReadOnlyDatabase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only file permissions behave differently on Windows")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := setupRepo(t)
+	store, err := kanban.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	project, err := store.CreateProject("Platform", "", repoPath, filepath.Join(repoPath, "WORKFLOW.md"))
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	issue, err := store.CreateIssue(project.ID, "", "Ship tests", "", 1, []string{"smoke"})
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Fatalf("Chmod failed: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "issue", "list", "--project-name", project.Name, "--json", "--limit", "1", "--sort", "identifier_asc")
+	if code != 0 {
+		t.Fatalf("issue list failed: %d stderr=%s", code, stderr)
+	}
+
+	var issueList struct {
+		Items []struct {
+			Identifier string `json:"identifier"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &issueList); err != nil {
+		t.Fatalf("decode issue list: %v\n%s", err, stdout)
+	}
+	if issueList.Total != 1 || len(issueList.Items) != 1 || issueList.Items[0].Identifier != issue.Identifier {
+		t.Fatalf("unexpected issue list payload: %+v", issueList)
 	}
 }
 
@@ -399,7 +573,7 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 		t.Fatalf("decode issue create: %v\n%s", err, stdout)
 	}
 
-	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", created.Identifier, "--labels", "go,cli", "--priority", "5", "--branch", "feat/cli", "--pr-url", "https://example.com/pr/17", "--json")
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "issue", "update", created.Identifier, "--labels", "go,cli", "--priority", "5", "--permission-profile", "full-access", "--branch", "feat/cli", "--pr-url", "https://example.com/pr/17", "--json")
 	if code != 0 {
 		t.Fatalf("issue update failed: %d stderr=%s", code, stderr)
 	}
@@ -407,7 +581,7 @@ func TestIssueProjectEpicBoardJSONFlows(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
 		t.Fatalf("decode issue update: %v\n%s", err, stdout)
 	}
-	if updated.Priority != 5 || updated.BranchName != "feat/cli" || updated.PRURL != "https://example.com/pr/17" {
+	if updated.Priority != 5 || updated.BranchName != "feat/cli" || updated.PRURL != "https://example.com/pr/17" || updated.PermissionProfile != kanban.PermissionProfileFullAccess {
 		t.Fatalf("unexpected issue update payload: %+v", updated)
 	}
 
@@ -758,23 +932,174 @@ func TestBlockerLifecycleCommands(t *testing.T) {
 }
 
 func TestVerifyAndDoctorOutputs(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := setupRepo(t)
+	_ = writeFakeRuntimeCLI(t, "codex", codexschema.SupportedVersion)
+	_ = writeFakeRuntimeCLI(t, "claude", "1.2.3")
 
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "verify", "--repo", repoPath, "--json")
 	if code != 0 {
 		t.Fatalf("verify json failed: %d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "\"checks\"") || !strings.Contains(stdout, "\"remediation\"") {
-		t.Fatalf("unexpected verify json: %s", stdout)
+	for _, want := range []string{
+		"\"checks\"",
+		"\"remediation\"",
+		"\"claude_auth_source\":\"OAuth\"",
+		"\"claude_auth_source_status\":\"ok\"",
+		"\"runtime_default\":\"ok\"",
+		"\"runtime_codex_appserver\":\"ok\"",
+		"\"runtime_claude\":\"ok\"",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("unexpected verify json: %s", stdout)
+		}
 	}
 
 	code, stdout, stderr = runCLI(t, "--db", dbPath, "doctor", "--repo", repoPath)
 	if code != 0 {
 		t.Fatalf("doctor failed: %d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "Doctor") {
-		t.Fatalf("unexpected doctor output: %s", stdout)
+	for _, want := range []string{
+		"Doctor",
+		"claude_auth_source: OAuth",
+		"claude_auth_source_status: ok",
+		"runtime_default: ok",
+		"runtime_codex_appserver: ok",
+		"runtime_claude: ok",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("unexpected doctor output: %s", stdout)
+		}
+	}
+}
+
+func TestVerifyAndDoctorReportClaudeReadinessFailures(t *testing.T) {
+	isolateClaudeRuntimeEnv(t)
+	type verifyPayload struct {
+		OK          bool              `json:"ok"`
+		Checks      map[string]string `json:"checks"`
+		Errors      []string          `json:"errors"`
+		Remediation map[string]string `json:"remediation"`
+	}
+
+	_ = writeFakeRuntimeCLI(t, "claude", "1.2.3")
+
+	cases := []struct {
+		name               string
+		command            string
+		settingsJSON       string
+		authStatusJSON     string
+		wantCheck          string
+		wantReason         string
+		wantRemediationKey string
+		wantRemediation    string
+	}{
+		{
+			name:               "missing claude",
+			command:            "missing-claude",
+			wantCheck:          "claude_version_status",
+			wantReason:         "claude: unable to locate executable",
+			wantRemediationKey: "claude",
+			wantRemediation:    "Install Claude Code or update `runtime.claude.command` in WORKFLOW.md, then re-run `maestro verify`.",
+		},
+		{
+			name:               "auth failure",
+			command:            "claude",
+			authStatusJSON:     `{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstParty"}`,
+			wantCheck:          "claude_auth_source_status",
+			wantReason:         "claude_auth_source: OAuth",
+			wantRemediationKey: "claude_auth_source",
+			wantRemediation:    "Log in with Claude Code or configure a supported auth source, then re-run `maestro verify`.",
+		},
+		{
+			name:               "bare mode",
+			command:            "claude --bare",
+			wantCheck:          "claude_session_bare_mode",
+			wantReason:         "runtime command includes `--bare`",
+			wantRemediationKey: "claude_session_bare_mode",
+			wantRemediation:    "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
+		},
+		{
+			name:               "permission auto",
+			command:            "claude --permission-mode auto",
+			wantCheck:          "claude_session_bare_mode",
+			wantReason:         "runtime command sets `--permission-mode auto`",
+			wantRemediationKey: "claude_session_bare_mode",
+			wantRemediation:    "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
+		},
+		{
+			name:               "permission bypass",
+			command:            "claude --permission-mode bypassPermissions",
+			wantCheck:          "claude_session_bare_mode",
+			wantReason:         "runtime command sets `--permission-mode bypassPermissions`",
+			wantRemediationKey: "claude_session_bare_mode",
+			wantRemediation:    "Remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, `permissions.defaultMode: auto`, or `permissions.defaultMode: bypassPermissions` from the Claude configuration.",
+		},
+		{
+			name:               "additional directories",
+			command:            "claude --add-dir=../docs",
+			wantCheck:          "claude_session_additional_directories",
+			wantReason:         "claude_session_additional_directories: ../docs",
+			wantRemediationKey: "claude_session_additional_directories",
+			wantRemediation:    "Remove `additionalDirectories` or `--add-dir` from Claude configuration so the session stays scoped to the Maestro workspace.",
+		},
+		{
+			name:               "settings additional directories",
+			command:            "claude",
+			settingsJSON:       `{"permissions":{"additionalDirectories":["../docs"]}}`,
+			wantCheck:          "claude_session_additional_directories",
+			wantReason:         "claude_session_additional_directories: ../docs",
+			wantRemediationKey: "claude_session_additional_directories",
+			wantRemediation:    "Remove `additionalDirectories` or `--add-dir` from Claude configuration so the session stays scoped to the Maestro workspace.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "maestro.db")
+			repoPath := t.TempDir()
+			writeClaudeWorkflow(t, repoPath, tc.command)
+			if tc.settingsJSON != "" {
+				writeClaudeSettingsFile(t, repoPath, tc.settingsJSON)
+			}
+			t.Setenv("FAKE_CLAUDE_AUTH_STATUS_JSON", tc.authStatusJSON)
+
+			code, stdout, stderr := runCLI(t, "--db", dbPath, "verify", "--repo", repoPath, "--json")
+			if code != 0 {
+				t.Fatalf("verify json failed: %d stderr=%s", code, stderr)
+			}
+			var payload verifyPayload
+			if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+				t.Fatalf("unmarshal verify json: %v stdout=%s", err, stdout)
+			}
+			if payload.OK {
+				t.Fatalf("expected failing readiness payload, got %+v", payload)
+			}
+			if got := payload.Checks[tc.wantCheck]; got != "fail" {
+				t.Fatalf("expected %s to fail, got %q payload=%+v", tc.wantCheck, got, payload)
+			}
+			if !strings.Contains(strings.Join(payload.Errors, "\n"), tc.wantReason) {
+				t.Fatalf("expected verify errors to mention %q, got %+v", tc.wantReason, payload.Errors)
+			}
+			if got := payload.Remediation[tc.wantRemediationKey]; got != tc.wantRemediation {
+				t.Fatalf("expected remediation %q, got %q", tc.wantRemediation, got)
+			}
+
+			code, stdout, stderr = runCLI(t, "--db", dbPath, "doctor", "--repo", repoPath)
+			if code == 0 {
+				t.Fatalf("expected doctor to fail for %s, stdout=%s stderr=%s", tc.name, stdout, stderr)
+			}
+			if !strings.Contains(stdout, tc.wantCheck+": fail") {
+				t.Fatalf("expected doctor output to contain failed check %q, got %q", tc.wantCheck, stdout)
+			}
+			if !strings.Contains(stdout, tc.wantReason) {
+				t.Fatalf("expected doctor output to mention %q, got %q", tc.wantReason, stdout)
+			}
+			if !strings.Contains(stdout, tc.wantRemediationKey+": "+tc.wantRemediation) {
+				t.Fatalf("expected doctor remediation %q, got %q", tc.wantRemediation, stdout)
+			}
+		})
 	}
 }
 

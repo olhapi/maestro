@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 )
@@ -51,7 +51,7 @@ func TestInterruptEndpointRejectsInvalidRoutesAndMapsProviderErrors(t *testing.T
 			method:     http.MethodPost,
 			path:       "/api/v1/app/interrupts/interrupt-1/respond",
 			body:       map[string]interface{}{"decision": "approved"},
-			respondErr: appserver.ErrPendingInteractionNotFound,
+			respondErr: agentruntime.ErrPendingInteractionNotFound,
 			wantStatus: http.StatusNotFound,
 		},
 		{
@@ -59,7 +59,7 @@ func TestInterruptEndpointRejectsInvalidRoutesAndMapsProviderErrors(t *testing.T
 			method:     http.MethodPost,
 			path:       "/api/v1/app/interrupts/interrupt-1/respond",
 			body:       map[string]interface{}{"decision": "approved"},
-			respondErr: appserver.ErrPendingInteractionConflict,
+			respondErr: agentruntime.ErrPendingInteractionConflict,
 			wantStatus: http.StatusConflict,
 		},
 		{
@@ -67,7 +67,7 @@ func TestInterruptEndpointRejectsInvalidRoutesAndMapsProviderErrors(t *testing.T
 			method:     http.MethodPost,
 			path:       "/api/v1/app/interrupts/interrupt-1/respond",
 			body:       map[string]interface{}{"decision": "approved"},
-			respondErr: appserver.ErrInvalidInteractionResponse,
+			respondErr: agentruntime.ErrInvalidInteractionResponse,
 			wantStatus: http.StatusBadRequest,
 		},
 		{
@@ -82,7 +82,7 @@ func TestInterruptEndpointRejectsInvalidRoutesAndMapsProviderErrors(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			provider.respondErr = tc.respondErr
 			provider.responseID = ""
-			provider.response = appserver.PendingInteractionResponse{}
+			provider.response = agentruntime.PendingInteractionResponse{}
 
 			resp := requestJSON(t, srv, tc.method, tc.path, tc.body)
 			if resp.StatusCode != tc.wantStatus {
@@ -100,16 +100,16 @@ func TestInterruptPlanApprovalRejectsOutOfOrderResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue failed: %v", err)
 	}
-	provider.interrupts = appserver.PendingInteractionSnapshot{
-		Items: []appserver.PendingInteraction{
+	provider.interrupts = agentruntime.PendingInteractionSnapshot{
+		Items: []agentruntime.PendingInteraction{
 			{
 				ID:              "interrupt-older",
-				Kind:            appserver.PendingInteractionKindUserInput,
+				Kind:            agentruntime.PendingInteractionKindUserInput,
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				RequestedAt:     time.Date(2026, 3, 18, 11, 0, 0, 0, time.UTC),
-				UserInput: &appserver.PendingUserInput{
-					Questions: []appserver.PendingUserInputQuestion{
+				UserInput: &agentruntime.PendingUserInput{
+					Questions: []agentruntime.PendingUserInputQuestion{
 						{
 							ID:       "earlier-interrupt",
 							Question: "Resolve the earlier interrupt first.",
@@ -119,13 +119,13 @@ func TestInterruptPlanApprovalRejectsOutOfOrderResponses(t *testing.T) {
 			},
 			{
 				ID:              "plan-approval-1",
-				Kind:            appserver.PendingInteractionKindApproval,
+				Kind:            agentruntime.PendingInteractionKindApproval,
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				RequestedAt:     time.Date(2026, 3, 18, 11, 5, 0, 0, time.UTC),
-				Approval: &appserver.PendingApproval{
+				Approval: &agentruntime.PendingApproval{
 					Markdown: "Review the proposed plan before execution.",
-					Decisions: []appserver.PendingApprovalDecision{
+					Decisions: []agentruntime.PendingApprovalDecision{
 						{Value: "approved", Label: "Approve plan"},
 					},
 				},
@@ -187,7 +187,7 @@ func TestSessionsEndpointMarksPendingInterruptsAsWaiting(t *testing.T) {
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.Identifier: appserver.Session{
+			issue.Identifier: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-waiting-turn-waiting",
@@ -200,18 +200,18 @@ func TestSessionsEndpointMarksPendingInterruptsAsWaiting(t *testing.T) {
 				TurnsStarted:    3,
 			},
 		},
-		pendingInterruptsByIssue: map[string]appserver.PendingInteraction{
+		pendingInterruptsByIssue: map[string]agentruntime.PendingInteraction{
 			issue.ID: {
 				ID:                "interrupt-1",
-				Kind:              appserver.PendingInteractionKindApproval,
+				Kind:              agentruntime.PendingInteractionKindApproval,
 				IssueID:           issue.ID,
 				IssueIdentifier:   issue.Identifier,
 				RequestedAt:       now.Add(-15 * time.Second),
 				LastActivityAt:    &lastActivityAt,
 				LastActivity:      "Approve the repo scope change",
 				CollaborationMode: "plan",
-				Approval: &appserver.PendingApproval{
-					Decisions: []appserver.PendingApprovalDecision{
+				Approval: &agentruntime.PendingApproval{
+					Decisions: []agentruntime.PendingApprovalDecision{
 						{Value: "approved", Label: "Approve once"},
 					},
 				},
@@ -278,7 +278,7 @@ func TestSessionsEndpointMarksQueuedPlanRevisionsAsRevisionQueued(t *testing.T) 
 		Error:      "plan_approval_pending",
 		StopReason: "plan_approval_pending",
 		UpdatedAt:  now.Add(-10 * time.Second),
-		AppSession: appserver.Session{
+		AppSession: agentruntime.Session{
 			IssueID:         issue.ID,
 			IssueIdentifier: issue.Identifier,
 			SessionID:       "thread-waiting-turn-waiting",
@@ -364,7 +364,7 @@ func TestSessionsEndpointMarksAlertInterruptsAsBlocked(t *testing.T) {
 			}},
 		},
 		sessions: map[string]interface{}{
-			issue.Identifier: appserver.Session{
+			issue.Identifier: agentruntime.Session{
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				SessionID:       "thread-blocked-turn-blocked",
@@ -377,18 +377,18 @@ func TestSessionsEndpointMarksAlertInterruptsAsBlocked(t *testing.T) {
 				TurnsStarted:    3,
 			},
 		},
-		pendingInterruptsByIssue: map[string]appserver.PendingInteraction{
+		pendingInterruptsByIssue: map[string]agentruntime.PendingInteraction{
 			issue.ID: {
 				ID:              "alert-1",
-				Kind:            appserver.PendingInteractionKindAlert,
+				Kind:            agentruntime.PendingInteractionKindAlert,
 				IssueID:         issue.ID,
 				IssueIdentifier: issue.Identifier,
 				RequestedAt:     now.Add(-15 * time.Second),
 				LastActivityAt:  &lastActivityAt,
 				LastActivity:    "Project repo is outside the current server scope (/repo/current)",
-				Alert: &appserver.PendingAlert{
+				Alert: &agentruntime.PendingAlert{
 					Code:     "project_dispatch_blocked",
-					Severity: appserver.PendingAlertSeverityError,
+					Severity: agentruntime.PendingAlertSeverityError,
 					Title:    "Project dispatch blocked",
 					Message:  "Project repo is outside the current server scope (/repo/current)",
 				},
@@ -422,15 +422,15 @@ func TestSessionsEndpointMarksAlertInterruptsAsBlocked(t *testing.T) {
 
 type snapshotBackedSessionsProvider struct {
 	testProvider
-	pendingInterrupts       appserver.PendingInteractionSnapshot
+	pendingInterrupts       agentruntime.PendingInteractionSnapshot
 	pendingInterruptLookups int
 }
 
-func (p *snapshotBackedSessionsProvider) PendingInterrupts() appserver.PendingInteractionSnapshot {
+func (p *snapshotBackedSessionsProvider) PendingInterrupts() agentruntime.PendingInteractionSnapshot {
 	return p.pendingInterrupts
 }
 
-func (p *snapshotBackedSessionsProvider) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+func (p *snapshotBackedSessionsProvider) PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool) {
 	p.pendingInterruptLookups++
 	return p.testProvider.PendingInterruptForIssue(issueID, identifier)
 }
@@ -475,7 +475,7 @@ func TestSessionsEndpointUsesSharedInterruptSnapshotInsteadOfPerIssueLookups(t *
 				},
 			},
 			sessions: map[string]interface{}{
-				first.Identifier: appserver.Session{
+				first.Identifier: agentruntime.Session{
 					IssueID:         first.ID,
 					IssueIdentifier: first.Identifier,
 					SessionID:       "session-1",
@@ -483,7 +483,7 @@ func TestSessionsEndpointUsesSharedInterruptSnapshotInsteadOfPerIssueLookups(t *
 					TurnID:          "turn-1",
 					LastTimestamp:   now.Add(-10 * time.Second),
 				},
-				second.Identifier: appserver.Session{
+				second.Identifier: agentruntime.Session{
 					IssueID:         second.ID,
 					IssueIdentifier: second.Identifier,
 					SessionID:       "session-2",
@@ -493,26 +493,26 @@ func TestSessionsEndpointUsesSharedInterruptSnapshotInsteadOfPerIssueLookups(t *
 				},
 			},
 		},
-		pendingInterrupts: appserver.PendingInteractionSnapshot{
-			Items: []appserver.PendingInteraction{
+		pendingInterrupts: agentruntime.PendingInteractionSnapshot{
+			Items: []agentruntime.PendingInteraction{
 				{
 					ID:              "interrupt-1",
-					Kind:            appserver.PendingInteractionKindApproval,
+					Kind:            agentruntime.PendingInteractionKindApproval,
 					IssueID:         first.ID,
 					IssueIdentifier: first.Identifier,
 					RequestedAt:     now.Add(-20 * time.Second),
-					Approval: &appserver.PendingApproval{
-						Decisions: []appserver.PendingApprovalDecision{{Value: "approved", Label: "Approve once"}},
+					Approval: &agentruntime.PendingApproval{
+						Decisions: []agentruntime.PendingApprovalDecision{{Value: "approved", Label: "Approve once"}},
 					},
 				},
 				{
 					ID:              "interrupt-2",
-					Kind:            appserver.PendingInteractionKindApproval,
+					Kind:            agentruntime.PendingInteractionKindApproval,
 					IssueID:         second.ID,
 					IssueIdentifier: second.Identifier,
 					RequestedAt:     now.Add(-18 * time.Second),
-					Approval: &appserver.PendingApproval{
-						Decisions: []appserver.PendingApprovalDecision{{Value: "approved", Label: "Approve once"}},
+					Approval: &agentruntime.PendingApproval{
+						Decisions: []agentruntime.PendingApprovalDecision{{Value: "approved", Label: "Approve once"}},
 					},
 				},
 			},

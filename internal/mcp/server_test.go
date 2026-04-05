@@ -16,6 +16,7 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/appserver"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
@@ -42,6 +43,13 @@ type testLookupProvider struct {
 	kind     string
 	listFunc func(context.Context, *kanban.Project, kanban.IssueQuery) ([]kanban.Issue, error)
 	getFunc  func(context.Context, *kanban.Project, string) (*kanban.Issue, error)
+}
+
+type approvalPromptTestProvider struct {
+	testRuntimeProvider
+	pendingCh   chan *agentruntime.PendingInteraction
+	responderCh chan agentruntime.InteractionResponder
+	clearedCh   chan string
 }
 
 func (p *testLookupProvider) Kind() string {
@@ -104,6 +112,36 @@ func (p *testLookupProvider) DeleteIssueComment(context.Context, *kanban.Project
 
 func (p *testLookupProvider) GetIssueCommentAttachmentContent(context.Context, *kanban.Project, *kanban.Issue, string, string) (*providers.IssueCommentAttachmentContent, error) {
 	return nil, providers.ErrUnsupportedCapability
+}
+
+func (p *approvalPromptTestProvider) RegisterPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
+	if interaction == nil {
+		return false
+	}
+	if p.pendingCh != nil {
+		cloned := interaction.Clone()
+		select {
+		case p.pendingCh <- &cloned:
+		default:
+		}
+	}
+	if p.responderCh != nil {
+		select {
+		case p.responderCh <- responder:
+		default:
+		}
+	}
+	return true
+}
+
+func (p *approvalPromptTestProvider) ClearPendingInteraction(issueID string, interactionID string) {
+	if p.clearedCh == nil {
+		return
+	}
+	select {
+	case p.clearedCh <- interactionID:
+	default:
+	}
 }
 
 func (c *testMCPClient) CallTool(ctx context.Context, name string, args map[string]interface{}) (*mcpapi.CallToolResult, error) {
@@ -407,6 +445,13 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
     "name":"ext_schema",
     "description":"schema-aware extension",
     "command":"echo ok",
+    "annotations":{
+      "title":"Schema Tool",
+      "read_only_hint":true,
+      "destructive_hint":false,
+      "idempotent_hint":true,
+      "open_world_hint":false
+    },
     "input_schema":{
       "type":"object",
       "properties":{
@@ -469,6 +514,7 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 		"set_blockers",
 		"list_runtime_events",
 		"get_runtime_snapshot",
+		"approval_prompt",
 		"list_sessions",
 		"ext_schema",
 		"ext_fallback",
@@ -483,13 +529,13 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	if !strings.Contains(serverInfo.Description, "Maestro") || strings.Contains(strings.ToLower(serverInfo.Description), "symphony") {
 		t.Fatalf("unexpected server_info description: %q", serverInfo.Description)
 	}
-	assertToolProperties(t, findTool(t, tools.Tools, "create_project"), "description", "name", "repo_path", "runtime_name", "workflow_path")
-	assertToolProperties(t, findTool(t, tools.Tools, "update_project"), "description", "id", "name", "repo_path", "runtime_name", "workflow_path")
+	assertToolProperties(t, findTool(t, tools.Tools, "create_project"), "description", "name", "repo_path", "workflow_path")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_project"), "description", "id", "name", "repo_path", "workflow_path")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_projects"), "limit", "offset")
-	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "runtime_name", "state", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "create_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "issue_type", "labels", "pr_url", "priority", "project_id", "state", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_epics"), "limit", "offset", "project_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issues"), "epic_id", "issue_type", "limit", "offset", "project_id", "search", "sort", "state")
-	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "pr_url", "priority", "project_id", "runtime_name", "title")
+	assertToolProperties(t, findTool(t, tools.Tools, "update_issue"), "blocked_by", "branch_name", "cron", "description", "enabled", "epic_id", "identifier", "issue_type", "labels", "permission_profile", "pr_url", "priority", "project_id", "title")
 	assertToolProperties(t, findTool(t, tools.Tools, "attach_issue_asset"), "identifier", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "create_issue_comment"), "attachment_paths", "body", "identifier", "parent_comment_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_issue_comments"), "identifier", "limit", "offset")
@@ -500,11 +546,23 @@ func TestStdioListToolsSnapshotAndSchemas(t *testing.T) {
 	assertToolProperties(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "identifier", "workflow_phase")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_issue_execution"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "get_runtime_snapshot"))
+	assertToolProperties(t, findTool(t, tools.Tools, "approval_prompt"), "input", "tool_name", "tool_use_id")
 	assertToolProperties(t, findTool(t, tools.Tools, "list_sessions"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "retry_issue"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "run_issue_now"), "identifier")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_schema"), "mode", "path")
 	assertToolProperties(t, findTool(t, tools.Tools, "ext_fallback"), "args")
+	assertToolAnnotations(t, findTool(t, tools.Tools, "get_issue_execution"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "update_issue"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "attach_issue_asset"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "create_issue_comment"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "update_issue_comment"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "set_issue_state"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "set_issue_workflow_phase"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "set_blockers"), "", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "run_project"), "", false, true, false, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "ext_schema"), "Schema Tool", true, false, true, false)
+	assertToolAnnotations(t, findTool(t, tools.Tools, "ext_fallback"), "", false, true, false, true)
 }
 
 func TestStdioBuiltInToolCoverage(t *testing.T) {
@@ -527,24 +585,19 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	}
 
 	projectRes, err := client.CallTool(context.Background(), "create_project", map[string]interface{}{
-		"name":         "Demo",
-		"runtime_name": "claude",
-		"repo_path":    repoPath,
+		"name":      "Demo",
+		"repo_path": repoPath,
 	})
 	if err != nil {
 		t.Fatalf("create_project failed: %v", err)
 	}
 	project := decodeEnvelope(t, projectRes)["data"].(map[string]interface{})
 	projectID := asString(project["id"])
-	if project["runtime_name"] != "claude" {
-		t.Fatalf("unexpected create_project payload: %#v", project)
-	}
 
 	updateProjectRes, err := client.CallTool(context.Background(), "update_project", map[string]interface{}{
 		"id":            projectID,
 		"name":          "Demo Updated",
 		"description":   "Updated project",
-		"runtime_name":  "codex",
 		"repo_path":     repoPath,
 		"workflow_path": filepath.Join(repoPath, "WORKFLOW.md"),
 	})
@@ -553,9 +606,6 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	}
 	if got := decodeEnvelope(t, updateProjectRes)["data"].(map[string]interface{})["name"]; got != "Demo Updated" {
 		t.Fatalf("unexpected update_project payload: %#v", got)
-	}
-	if got := decodeEnvelope(t, updateProjectRes)["data"].(map[string]interface{})["runtime_name"]; got != "codex" {
-		t.Fatalf("unexpected update_project runtime payload: %#v", got)
 	}
 
 	listProjectsRes, err := client.CallTool(context.Background(), "list_projects", map[string]interface{}{})
@@ -616,18 +666,14 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	tempEpicID := asString(decodeEnvelope(t, tempEpicRes)["data"].(map[string]interface{})["id"])
 
 	issueARes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
-		"title":        "Issue A",
-		"project_id":   projectID,
-		"priority":     1,
-		"runtime_name": "claude",
+		"title":      "Issue A",
+		"project_id": projectID,
+		"priority":   1,
 	})
 	if err != nil {
 		t.Fatalf("create_issue A failed: %v", err)
 	}
 	issueA := decodeEnvelope(t, issueARes)["data"].(map[string]interface{})
-	if issueA["runtime_name"] != "claude" {
-		t.Fatalf("unexpected create_issue payload: %#v", issueA)
-	}
 
 	issueBRes, err := client.CallTool(context.Background(), "create_issue", map[string]interface{}{
 		"title":       "Issue B",
@@ -695,17 +741,17 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	secondEpicID := asString(decodeEnvelope(t, secondEpicRes)["data"].(map[string]interface{})["id"])
 
 	updateIssueRes, err := client.CallTool(context.Background(), "update_issue", map[string]interface{}{
-		"identifier":   issueBIdentifier,
-		"project_id":   secondProjectID,
-		"epic_id":      secondEpicID,
-		"title":        "Issue B Updated",
-		"description":  "Moved issue",
-		"priority":     5,
-		"labels":       []interface{}{"go", "mcp"},
-		"runtime_name": "codex",
-		"blocked_by":   []interface{}{},
-		"branch_name":  "feat/mcp-v2",
-		"pr_url":       "https://example.com/pr/23",
+		"identifier":         issueBIdentifier,
+		"project_id":         secondProjectID,
+		"epic_id":            secondEpicID,
+		"title":              "Issue B Updated",
+		"description":        "Moved issue",
+		"permission_profile": string(kanban.PermissionProfileFullAccess),
+		"priority":           5,
+		"labels":             []interface{}{"go", "mcp"},
+		"blocked_by":         []interface{}{},
+		"branch_name":        "feat/mcp-v2",
+		"pr_url":             "https://example.com/pr/23",
 	})
 	if err != nil {
 		t.Fatalf("update_issue failed: %v", err)
@@ -714,8 +760,8 @@ func TestStdioBuiltInToolCoverage(t *testing.T) {
 	if updateIssue["project_id"] != secondProjectID || updateIssue["epic_id"] != secondEpicID {
 		t.Fatalf("unexpected update_issue payload: %#v", updateIssue)
 	}
-	if updateIssue["runtime_name"] != "codex" {
-		t.Fatalf("unexpected update_issue runtime payload: %#v", updateIssue)
+	if updateIssue["permission_profile"] != string(kanban.PermissionProfileFullAccess) {
+		t.Fatalf("unexpected permission profile payload: %#v", updateIssue)
 	}
 
 	createCommentRes, err := client.CallTool(context.Background(), "create_issue_comment", map[string]interface{}{
@@ -1940,6 +1986,25 @@ func assertToolProperties(t *testing.T, tool mcpapi.Tool, want ...string) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s properties mismatch:\n got %v\nwant %v", tool.Name, got, want)
+	}
+}
+
+func assertToolAnnotations(t *testing.T, tool mcpapi.Tool, wantTitle string, readOnly, destructive, idempotent, openWorld bool) {
+	t.Helper()
+	if got := tool.Annotations.Title; got != wantTitle {
+		t.Fatalf("%s title annotation mismatch: got %q want %q", tool.Name, got, wantTitle)
+	}
+	if tool.Annotations.ReadOnlyHint == nil || *tool.Annotations.ReadOnlyHint != readOnly {
+		t.Fatalf("%s readOnlyHint mismatch: got %#v want %v", tool.Name, tool.Annotations.ReadOnlyHint, readOnly)
+	}
+	if tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint != destructive {
+		t.Fatalf("%s destructiveHint mismatch: got %#v want %v", tool.Name, tool.Annotations.DestructiveHint, destructive)
+	}
+	if tool.Annotations.IdempotentHint == nil || *tool.Annotations.IdempotentHint != idempotent {
+		t.Fatalf("%s idempotentHint mismatch: got %#v want %v", tool.Name, tool.Annotations.IdempotentHint, idempotent)
+	}
+	if tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint != openWorld {
+		t.Fatalf("%s openWorldHint mismatch: got %#v want %v", tool.Name, tool.Annotations.OpenWorldHint, openWorld)
 	}
 }
 

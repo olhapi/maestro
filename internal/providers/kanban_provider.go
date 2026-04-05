@@ -54,10 +54,12 @@ func (p *KanbanProvider) CreateIssue(_ context.Context, project *kanban.Project,
 		projectID = project.ID
 	}
 	issue, err := p.store.CreateIssueWithOptions(projectID, input.EpicID, input.Title, input.Description, input.Priority, input.Labels, kanban.IssueCreateOptions{
-		IssueType: input.IssueType,
-		Cron:      input.Cron,
-		Enabled:   input.Enabled,
+		IssueType:   input.IssueType,
+		Cron:        input.Cron,
+		Enabled:     input.Enabled,
 		RuntimeName: input.RuntimeName,
+		AgentName:   input.AgentName,
+		AgentPrompt: input.AgentPrompt,
 	})
 	if err != nil {
 		return nil, err

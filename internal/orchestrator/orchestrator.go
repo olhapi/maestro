@@ -9,19 +9,19 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/olhapi/maestro/internal/agent"
-	"github.com/olhapi/maestro/internal/appserver"
+	"github.com/olhapi/maestro/internal/agentruntime"
+	codexruntime "github.com/olhapi/maestro/internal/agentruntime/codex"
 	"github.com/olhapi/maestro/internal/extensions"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/internal/observability"
 	"github.com/olhapi/maestro/internal/providers"
-	runtimelib "github.com/olhapi/maestro/internal/runtime"
 	"github.com/olhapi/maestro/pkg/config"
 )
 
@@ -34,7 +34,7 @@ const (
 	runtimeMaintenanceInterval   = 15 * time.Minute
 	providerSyncMinInterval      = time.Second
 	gracefulShutdownStopReason   = "graceful_shutdown"
-	planApprovalStopReason       = runtimelib.PlanApprovalStopReason
+	planApprovalStopReason       = "plan_approval_pending"
 	gracefulShutdownWaitTimeout  = 5 * time.Second
 	reviewPreviewPublishTimeout  = 15 * time.Second
 	reviewPreviewDir             = ".maestro/review-preview"
@@ -50,8 +50,8 @@ type runningEntry struct {
 }
 
 type pendingInteractionEntry struct {
-	interaction appserver.PendingInteraction
-	respond     appserver.InteractionResponder
+	interaction agentruntime.PendingInteraction
+	respond     agentruntime.InteractionResponder
 }
 
 type retryEntry struct {
@@ -138,7 +138,7 @@ type Orchestrator struct {
 	totalRuns               int
 	successfulRuns          int
 	failedRuns              int
-	liveSessions            map[string]*appserver.Session
+	liveSessions            map[string]*agentruntime.Session
 	retiredAppServerMu      sync.RWMutex
 	retiredAppServerIssues  map[string]struct{}
 	sessionWriteMu          sync.Mutex
@@ -175,7 +175,7 @@ func NewWithExtensions(store *kanban.Store, workflows *config.Manager, registry 
 		paused:                 make(map[string]pausedEntry),
 		pendingInteractions:    make(map[string]pendingInteractionEntry),
 		startedAt:              time.Now().UTC(),
-		liveSessions:           make(map[string]*appserver.Session),
+		liveSessions:           make(map[string]*agentruntime.Session),
 		retiredAppServerIssues: make(map[string]struct{}),
 		sessionWrites:          make(map[string]sessionPersistenceState),
 		tokenSpends:            make(map[string]issueTokenSpendState),
@@ -221,7 +221,7 @@ func NewSharedWithExtensions(store *kanban.Store, registry *extensions.Registry,
 		paused:                 make(map[string]pausedEntry),
 		pendingInteractions:    make(map[string]pendingInteractionEntry),
 		startedAt:              time.Now().UTC(),
-		liveSessions:           make(map[string]*appserver.Session),
+		liveSessions:           make(map[string]*agentruntime.Session),
 		retiredAppServerIssues: make(map[string]struct{}),
 		sessionWrites:          make(map[string]sessionPersistenceState),
 		tokenSpends:            make(map[string]issueTokenSpendState),
@@ -280,6 +280,28 @@ func (o *Orchestrator) recurrenceScopeRepoPath() string {
 		return ""
 	}
 	return filepath.Dir(o.workflows.Path())
+}
+
+func (o *Orchestrator) workspacePathForIssue(issueID string) string {
+	if o.store == nil || strings.TrimSpace(issueID) == "" {
+		return ""
+	}
+	workspace, err := o.store.GetWorkspace(issueID)
+	if err != nil || workspace == nil {
+		return ""
+	}
+	return workspace.Path
+}
+
+func (o *Orchestrator) IssueWorkspacePath(issueIdentifier string) string {
+	if o == nil || o.store == nil || strings.TrimSpace(issueIdentifier) == "" {
+		return ""
+	}
+	issue, err := o.store.GetIssueByIdentifier(issueIdentifier)
+	if err != nil || issue == nil {
+		return ""
+	}
+	return o.workspacePathForIssue(issue.ID)
 }
 
 func (o *Orchestrator) nextWakeDelay(base time.Duration) time.Duration {
@@ -690,9 +712,9 @@ func (o *Orchestrator) reconcileOrphanedRuns(ctx context.Context, syncProvider b
 
 		dispatchable, reason, _ := o.isDispatchable(workflow, issue)
 		errText := "run_interrupted"
-		resumeThreadID, resumeMode := classifyOrphanedResume(workflow, persisted)
+		resumeThreadID, resumeMode := o.classifyOrphanedResume(workflow, issue, persisted)
 		immediateResume := resumeMode != ""
-		o.persistExecutionSession(issue, phase, attempt, "run_interrupted", errText, false, "", session)
+		o.persistExecutionSession(issue, phase, attempt, "run_interrupted", errText, false, errText, session)
 		if err := o.store.CompactIssueActivityAttemptDiagnostic(issue.ID, attempt); err != nil {
 			slog.Warn("Failed to compact interrupted issue activity",
 				issueLogAttrs(issue, attempt, "phase", phase, "error", err)...,
@@ -766,7 +788,7 @@ func (o *Orchestrator) findPausedRun(issue *kanban.Issue) (pausedEntry, bool, er
 	return pausedEntryFromRuntimeEvent(latest), true, nil
 }
 
-func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhase, int, *appserver.Session, *kanban.ExecutionSessionSnapshot, bool, error) {
+func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhase, int, *agentruntime.Session, *kanban.ExecutionSessionSnapshot, bool, error) {
 	if issue == nil {
 		return "", 0, nil, nil, false, nil
 	}
@@ -785,7 +807,7 @@ func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhas
 		phase = kanban.DefaultWorkflowPhaseForState(issue.State)
 	}
 	attempt := 0
-	var session *appserver.Session
+	var session *agentruntime.Session
 	if persisted != nil {
 		if parsed := kanban.WorkflowPhase(strings.TrimSpace(persisted.Phase)); parsed.IsValid() {
 			phase = parsed
@@ -815,12 +837,16 @@ func (o *Orchestrator) findOrphanedRun(issue *kanban.Issue) (kanban.WorkflowPhas
 	return phase, attempt, session, persisted, false, nil
 }
 
-func classifyOrphanedResume(workflow *config.Workflow, persisted *kanban.ExecutionSessionSnapshot) (string, string) {
-	if workflow == nil || persisted == nil {
+func (o *Orchestrator) classifyOrphanedResume(workflow *config.Workflow, issue *kanban.Issue, persisted *kanban.ExecutionSessionSnapshot) (string, string) {
+	if persisted == nil {
 		return "", ""
 	}
 	threadID := strings.TrimSpace(persisted.AppSession.ThreadID)
 	if threadID == "" {
+		return "", ""
+	}
+	runtimeConfig, ok := o.selectedRuntimeConfig(workflow, issue)
+	if !ok || !runtimeConfigSupportsResume(runtimeConfig) {
 		return "", ""
 	}
 	if persisted.ResumeEligible && strings.TrimSpace(persisted.StopReason) == gracefulShutdownStopReason {
@@ -830,6 +856,49 @@ func classifyOrphanedResume(workflow *config.Workflow, persisted *kanban.Executi
 		return threadID, "opportunistic"
 	}
 	return "", ""
+}
+
+func (o *Orchestrator) selectedRuntimeConfig(workflow *config.Workflow, issue *kanban.Issue) (config.RuntimeConfig, bool) {
+	if workflow == nil {
+		return config.RuntimeConfig{}, false
+	}
+
+	_, selected := workflow.Config.SelectedRuntime()
+	if issue == nil {
+		return selected, true
+	}
+	if runtimeName := strings.TrimSpace(issue.RuntimeName); runtimeName != "" {
+		if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(runtimeName); ok {
+			return runtimeConfig, true
+		}
+	}
+	if o.store != nil && strings.TrimSpace(issue.ProjectID) != "" {
+		if project, err := o.store.GetProject(issue.ProjectID); err == nil && project != nil {
+			if runtimeName := strings.TrimSpace(project.RuntimeName); runtimeName != "" {
+				if runtimeConfig, ok := workflow.Config.Runtime.RuntimeByName(runtimeName); ok {
+					return runtimeConfig, true
+				}
+			}
+		}
+	}
+	return selected, true
+}
+
+func runtimeConfigSupportsResume(runtime config.RuntimeConfig) bool {
+	provider := strings.TrimSpace(runtime.Provider)
+	transport := strings.TrimSpace(runtime.Transport)
+	switch {
+	case provider == string(agentruntime.ProviderClaude) && transport == string(agentruntime.TransportStdio):
+		return true
+	case provider == string(agentruntime.ProviderCodex) && transport == string(agentruntime.TransportAppServer):
+		return true
+	default:
+		return false
+	}
+}
+
+func isAppServerWorkflow(workflow *config.Workflow) bool {
+	return workflow != nil && strings.TrimSpace(workflow.Config.Agent.Mode) == config.AgentModeAppServer
 }
 
 func (o *Orchestrator) shouldAllowRunningTerminalTransition(workflow *config.Workflow, issue *kanban.Issue, runningPhase kanban.WorkflowPhase) bool {
@@ -1309,7 +1378,7 @@ func (o *Orchestrator) startRun(ctx context.Context, workflow *config.Workflow, 
 	o.mu.Unlock()
 	o.clearSessionWriteState(runIssue.ID)
 	slog.Info("Agent run started", issueLogAttrs(&runIssue, attempt, "phase", phase)...)
-	o.persistExecutionSession(&runIssue, phase, attempt, "run_started", "", false, "", &appserver.Session{
+	o.persistExecutionSession(&runIssue, phase, attempt, "run_started", "", false, "", &agentruntime.Session{
 		IssueID:         runIssue.ID,
 		IssueIdentifier: runIssue.Identifier,
 	})
@@ -1720,12 +1789,12 @@ func (o *Orchestrator) handleSuccessfulRun(workflow *config.Workflow, issue *kan
 	return 0, false
 }
 
-func (o *Orchestrator) handleInterruptedRunLocked(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, session *appserver.Session, errText, resumeThreadID string, immediate bool) (int, bool) {
+func (o *Orchestrator) handleInterruptedRunLocked(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, session *agentruntime.Session, errText, resumeThreadID string, immediate bool) (int, bool) {
 	next := nextAttempt(attempt)
 	if o.shouldPauseRunLocked(issue.ID, errText) {
 		o.pauseRetryLocked(issue, next, phase, errText, nil)
 		if session != nil {
-			o.persistExecutionSession(issue, phase, next, "retry_paused", errText, false, "", session)
+			o.persistExecutionSession(issue, phase, next, "retry_paused", errText, false, errText, session)
 		}
 		return next, true
 	}
@@ -2144,6 +2213,8 @@ func pausesWithoutStateReset(errText string) bool {
 		return true
 	case strings.Contains(value, "workspace_bootstrap"):
 		return true
+	case strings.Contains(value, "unsupported_runtime_capability"):
+		return true
 	default:
 		return false
 	}
@@ -2361,13 +2432,13 @@ func (o *Orchestrator) cleanupTerminalAppServerProcess(issue *kanban.Issue) {
 		return
 	}
 	pid, hasLivePID := o.liveAppServerPID(issue.ID)
-	shouldRetire := hasLivePID || snapshot.AppSession.AppServerPID > 0 || snapshot.ResumeEligible
+	shouldRetire := hasLivePID || snapshot.AppSession.ProcessID > 0 || snapshot.ResumeEligible
 	if !shouldRetire {
 		return
 	}
 	o.markAppServerRetired(issue.ID)
 	if hasLivePID {
-		cleanupLingering := appserver.CleanupLingeringAppServerProcess
+		cleanupLingering := codexruntime.CleanupLingeringProcess
 		if hook := o.testHooks.cleanupLingeringAppServerProcess; hook != nil {
 			cleanupLingering = hook
 		}
@@ -2380,7 +2451,7 @@ func (o *Orchestrator) cleanupTerminalAppServerProcess(issue *kanban.Issue) {
 		}
 	}
 	snapshot.ResumeEligible = false
-	snapshot.AppSession.AppServerPID = 0
+	snapshot.AppSession.ProcessID = 0
 	snapshot.UpdatedAt = time.Now().UTC()
 	if err := o.store.UpsertIssueExecutionSession(*snapshot); err != nil {
 		slog.Warn("Failed to retire app-server process metadata after terminal cleanup",
@@ -2397,10 +2468,10 @@ func (o *Orchestrator) liveAppServerPID(issueID string) (int, bool) {
 	o.mu.RLock()
 	session := o.liveSessions[issueID]
 	o.mu.RUnlock()
-	if session == nil || session.AppServerPID <= 0 {
+	if session == nil || session.ProcessID <= 0 {
 		return 0, false
 	}
-	return session.AppServerPID, true
+	return session.ProcessID, true
 }
 
 func (o *Orchestrator) stopRun(issueID string) {
@@ -2446,11 +2517,11 @@ func (o *Orchestrator) stopAllRunsGracefully() {
 	o.mu.RLock()
 	type runningSnapshot struct {
 		entry   runningEntry
-		session *appserver.Session
+		session *agentruntime.Session
 	}
 	runs := make([]runningSnapshot, 0, len(o.running))
 	for issueID, entry := range o.running {
-		var sessionCopy *appserver.Session
+		var sessionCopy *agentruntime.Session
 		if session := o.liveSessions[issueID]; session != nil {
 			cp := cloneSessionWithIssue(session, issueID, entry.issue.Identifier)
 			sessionCopy = &cp
@@ -2464,11 +2535,14 @@ func (o *Orchestrator) stopAllRunsGracefully() {
 
 	for _, run := range runs {
 		issue := run.entry.issue
-		_, _, err := o.runtimeForIssue(&issue)
+		_, workflow, err := o.runtimeForIssue(&issue)
 		if err != nil {
 			slog.Warn("Skipping graceful run marker because runtime resolution failed",
 				issueLogAttrs(&issue, run.entry.attempt, "error", err)...,
 			)
+			continue
+		}
+		if !isAppServerWorkflow(workflow) {
 			continue
 		}
 		resumeEligible := false
@@ -2624,8 +2698,8 @@ func (o *Orchestrator) Events(since int64, limit int) map[string]interface{} {
 }
 
 func (o *Orchestrator) Status() map[string]interface{} {
-	var memStats goruntime.MemStats
-	goruntime.ReadMemStats(&memStats)
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
 	dbStats, err := o.store.DBStats()
 	if err != nil {
 		slog.Warn("Failed to collect database stats", "error", err)
@@ -2735,7 +2809,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 	runningEntries := make(map[string]runningEntry, len(o.running))
 	retryEntries := make(map[string]retryEntry, len(o.retries))
 	pausedEntries := make(map[string]pausedEntry, len(o.paused))
-	liveSessions := make(map[string]*appserver.Session, len(o.liveSessions))
+	liveSessions := make(map[string]*agentruntime.Session, len(o.liveSessions))
 	for issueID, entry := range o.running {
 		runningEntries[issueID] = entry
 	}
@@ -2768,16 +2842,17 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 	for issueID, entry := range runningEntries {
 		session := liveSessions[issueID]
 		running := observability.RunningEntry{
-			IssueID:    issueID,
-			Identifier: entry.issue.Identifier,
-			State:      string(entry.issue.State),
-			Phase:      string(entry.phase),
-			Attempt:    entry.attempt,
-			StartedAt:  entry.startedAt,
+			IssueID:       issueID,
+			Identifier:    entry.issue.Identifier,
+			WorkspacePath: o.workspacePathForIssue(issueID),
+			State:         string(entry.issue.State),
+			Phase:         string(entry.phase),
+			Attempt:       entry.attempt,
+			StartedAt:     entry.startedAt,
 		}
 		if session != nil {
 			running.SessionID = session.SessionID
-			running.CodexAppServerPID = session.AppServerPID
+			running.CodexAppServerPID = session.ProcessID
 			running.TurnCount = session.TurnsStarted
 			running.LastEvent = session.LastEvent
 			running.LastMessage = session.LastMessage
@@ -2809,14 +2884,15 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 			identifier = issue.Identifier
 		}
 		retry := observability.RetryEntry{
-			IssueID:    issueID,
-			Identifier: identifier,
-			Phase:      entry.Phase,
-			Attempt:    entry.Attempt,
-			DueAt:      entry.DueAt,
-			DueInMs:    time.Until(entry.DueAt).Milliseconds(),
-			Error:      entry.Error,
-			DelayType:  entry.DelayType,
+			IssueID:       issueID,
+			Identifier:    identifier,
+			WorkspacePath: o.workspacePathForIssue(issueID),
+			Phase:         entry.Phase,
+			Attempt:       entry.Attempt,
+			DueAt:         entry.DueAt,
+			DueInMs:       time.Until(entry.DueAt).Milliseconds(),
+			Error:         entry.Error,
+			DelayType:     entry.DelayType,
 		}
 		snapshot.Retrying = append(snapshot.Retrying, retry)
 	}
@@ -2831,6 +2907,7 @@ func (o *Orchestrator) Snapshot() observability.Snapshot {
 		snapshot.Paused = append(snapshot.Paused, observability.PausedEntry{
 			IssueID:             issueID,
 			Identifier:          identifier,
+			WorkspacePath:       o.workspacePathForIssue(issueID),
 			Phase:               entry.Phase,
 			Attempt:             entry.Attempt,
 			PausedAt:            entry.PausedAt,
@@ -2871,15 +2948,15 @@ func (o *Orchestrator) LiveSessions() map[string]interface{} {
 	return map[string]interface{}{"sessions": out}
 }
 
-func (o *Orchestrator) PendingInterrupts() appserver.PendingInteractionSnapshot {
+func (o *Orchestrator) PendingInterrupts() agentruntime.PendingInteractionSnapshot {
 	items, err := o.sharedPendingInteractionItems()
 	if err != nil {
 		slog.Warn("Failed to build pending interaction snapshot", "error", err)
 	}
-	return appserver.PendingInteractionSnapshot{Items: items}
+	return agentruntime.PendingInteractionSnapshot{Items: items}
 }
 
-func (o *Orchestrator) PendingInterruptForIssue(issueID, identifier string) (*appserver.PendingInteraction, bool) {
+func (o *Orchestrator) PendingInterruptForIssue(issueID, identifier string) (*agentruntime.PendingInteraction, bool) {
 	issueID = strings.TrimSpace(issueID)
 	identifier = strings.TrimSpace(identifier)
 	items, err := o.sharedPendingInteractionItems()
@@ -2896,7 +2973,7 @@ func (o *Orchestrator) PendingInterruptForIssue(issueID, identifier string) (*ap
 	return nil, false
 }
 
-func (o *Orchestrator) RespondToInterrupt(ctx context.Context, interactionID string, response appserver.PendingInteractionResponse) error {
+func (o *Orchestrator) RespondToInterrupt(ctx context.Context, interactionID string, response agentruntime.PendingInteractionResponse) error {
 	interactionID = strings.TrimSpace(interactionID)
 	o.mu.RLock()
 	entry, ok := o.pendingInteractions[interactionID]
@@ -2906,22 +2983,34 @@ func (o *Orchestrator) RespondToInterrupt(ctx context.Context, interactionID str
 		if _, found, err := o.pendingInteractionByID(interactionID); err != nil {
 			return err
 		} else if found {
-			return appserver.ErrInvalidInteractionResponse
+			return agentruntime.ErrInvalidInteractionResponse
 		}
-		return appserver.ErrPendingInteractionNotFound
+		return agentruntime.ErrPendingInteractionNotFound
 	}
 	if current == nil || current.ID != interactionID {
-		return appserver.ErrPendingInteractionConflict
+		return agentruntime.ErrPendingInteractionConflict
 	}
 	if entry.respond == nil {
-		return appserver.ErrPendingInteractionConflict
+		return agentruntime.ErrPendingInteractionConflict
 	}
 	return entry.respond(ctx, interactionID, response)
 }
 
-func (o *Orchestrator) registerPendingInteraction(issueID string, interaction *appserver.PendingInteraction, responder appserver.InteractionResponder) {
+func (o *Orchestrator) RegisterPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
+	return o.registerPendingInteractionLocked(issueID, interaction, responder)
+}
+
+func (o *Orchestrator) ClearPendingInteraction(issueID string, interactionID string) {
+	o.clearPendingInteraction(issueID, interactionID)
+}
+
+func (o *Orchestrator) registerPendingInteraction(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) {
+	_ = o.registerPendingInteractionLocked(issueID, interaction, responder)
+}
+
+func (o *Orchestrator) registerPendingInteractionLocked(issueID string, interaction *agentruntime.PendingInteraction, responder agentruntime.InteractionResponder) bool {
 	if interaction == nil || strings.TrimSpace(issueID) == "" {
-		return
+		return false
 	}
 
 	shouldBroadcast := false
@@ -2956,7 +3045,9 @@ func (o *Orchestrator) registerPendingInteraction(issueID string, interaction *a
 
 	if shouldBroadcast {
 		observability.BroadcastUpdate()
+		return true
 	}
+	return false
 }
 
 func (o *Orchestrator) clearPendingInteraction(issueID string, interactionID string) {
@@ -3017,7 +3108,7 @@ func (o *Orchestrator) clearPendingInteractionsForIssueLocked(issueID string) bo
 	return removed
 }
 
-func (o *Orchestrator) currentPendingInteractionLocked() *appserver.PendingInteraction {
+func (o *Orchestrator) currentPendingInteractionLocked() *agentruntime.PendingInteraction {
 	for _, interactionID := range o.pendingInteractionOrder {
 		entry, ok := o.pendingInteractions[interactionID]
 		if !ok {
@@ -3043,7 +3134,7 @@ func filterPendingInteractionOrder(order []string, removeID string) []string {
 	return out
 }
 
-func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Session) {
+func (o *Orchestrator) updateLiveSession(issueID string, session *agentruntime.Session) {
 	if session == nil {
 		return
 	}
@@ -3071,7 +3162,7 @@ func (o *Orchestrator) updateLiveSession(issueID string, session *appserver.Sess
 	}
 }
 
-func (o *Orchestrator) updateIssueActivity(issueID string, event appserver.ActivityEvent) {
+func (o *Orchestrator) updateIssueActivity(issueID string, event agentruntime.ActivityEvent) {
 	o.mu.RLock()
 	entry, ok := o.running[issueID]
 	o.mu.RUnlock()
@@ -3089,7 +3180,7 @@ func (o *Orchestrator) updateIssueActivity(issueID string, event appserver.Activ
 	}
 }
 
-func (o *Orchestrator) shouldPersistLiveSessionLocked(issueID string, session *appserver.Session) bool {
+func (o *Orchestrator) shouldPersistLiveSessionLocked(issueID string, session *agentruntime.Session) bool {
 	o.sessionWriteMu.Lock()
 	defer o.sessionWriteMu.Unlock()
 	now := time.Now().UTC()
@@ -3121,7 +3212,7 @@ func (o *Orchestrator) clearSessionWriteState(issueID string) {
 	delete(o.sessionWrites, issueID)
 }
 
-func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *appserver.Session) {
+func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *agentruntime.Session) {
 	if session == nil || session.TotalTokens <= 0 {
 		return
 	}
@@ -3156,7 +3247,7 @@ func (o *Orchestrator) observeIssueTokenSpend(issueID string, session *appserver
 	o.tokenSpends[issueID] = state
 }
 
-func issueTokenSpendRunKey(session *appserver.Session) string {
+func issueTokenSpendRunKey(session *agentruntime.Session) string {
 	if session == nil {
 		return ""
 	}
@@ -3169,7 +3260,7 @@ func issueTokenSpendRunKey(session *appserver.Session) string {
 	return ""
 }
 
-func (o *Orchestrator) persistFinalIssueTokenSpend(issueID string, session *appserver.Session) {
+func (o *Orchestrator) persistFinalIssueTokenSpend(issueID string, session *agentruntime.Session) {
 	if session == nil || session.TotalTokens <= 0 {
 		return
 	}
@@ -3222,8 +3313,8 @@ func (o *Orchestrator) clearIssueTokenSpendState(issueID string) {
 	delete(o.tokenSpends, issueID)
 }
 
-func (o *Orchestrator) copyLiveSessionsLocked() map[string]*appserver.Session {
-	out := make(map[string]*appserver.Session, len(o.running))
+func (o *Orchestrator) copyLiveSessionsLocked() map[string]*agentruntime.Session {
+	out := make(map[string]*agentruntime.Session, len(o.running))
 	for issueID := range o.running {
 		entry, ok := o.running[issueID]
 		if !ok {
@@ -3639,7 +3730,7 @@ func attachResultMetrics(fields map[string]interface{}, result *agent.RunResult)
 	}
 }
 
-func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, resumeEligible bool, stopReason string, session *appserver.Session) {
+func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, resumeEligible bool, stopReason string, session *agentruntime.Session) {
 	if issue == nil {
 		return
 	}
@@ -3655,17 +3746,20 @@ func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban
 		StopReason:     stopReason,
 		UpdatedAt:      now,
 	}
+	var existing *kanban.ExecutionSessionSnapshot
 	if session != nil {
 		snapshot.AppSession = summarizeSessionWithIssue(session, issue.ID, issue.Identifier)
 	} else {
-		if existing, err := o.store.GetIssueExecutionSession(issue.ID); err == nil && existing != nil {
-			snapshot.AppSession = existing.AppSession
+		if loaded, err := o.store.GetIssueExecutionSession(issue.ID); err == nil && loaded != nil {
+			existing = loaded
+			snapshot.AppSession = loaded.AppSession
 		}
 		snapshot.AppSession.IssueID = issue.ID
 		snapshot.AppSession.IssueIdentifier = issue.Identifier
 	}
+	snapshot.RuntimeName, snapshot.RuntimeProvider, snapshot.RuntimeTransport, snapshot.RuntimeAuthSource = o.executionSessionRuntimeIdentity(issue, session, existing)
 	if o.appServerRetired(issue.ID) {
-		snapshot.AppSession.AppServerPID = 0
+		snapshot.AppSession.ProcessID = 0
 		snapshot.ResumeEligible = false
 	}
 	if err := o.store.UpsertIssueExecutionSession(snapshot); err != nil {
@@ -3682,6 +3776,45 @@ func (o *Orchestrator) persistExecutionSession(issue *kanban.Issue, phase kanban
 		Terminal:        snapshot.AppSession.Terminal,
 	}
 	o.sessionWriteMu.Unlock()
+}
+
+func (o *Orchestrator) executionSessionRuntimeIdentity(issue *kanban.Issue, session *agentruntime.Session, existing *kanban.ExecutionSessionSnapshot) (string, string, string, string) {
+	name := ""
+	provider := ""
+	transport := ""
+	authSource := ""
+	if existing != nil {
+		name = strings.TrimSpace(existing.RuntimeName)
+		provider = strings.TrimSpace(existing.RuntimeProvider)
+		transport = strings.TrimSpace(existing.RuntimeTransport)
+		authSource = strings.TrimSpace(existing.RuntimeAuthSource)
+	}
+	if issue != nil {
+		if runtimeName := strings.TrimSpace(issue.RuntimeName); runtimeName != "" {
+			name = runtimeName
+		} else if name == "" && strings.TrimSpace(issue.ProjectID) != "" && o.store != nil {
+			if project, err := o.store.GetProject(issue.ProjectID); err == nil && project != nil {
+				if runtimeName := strings.TrimSpace(project.RuntimeName); runtimeName != "" {
+					name = runtimeName
+				}
+			}
+		}
+	}
+	if session != nil && session.Metadata != nil {
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["runtime_name"])); value != "" {
+			name = value
+		}
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["provider"])); value != "" {
+			provider = value
+		}
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["transport"])); value != "" {
+			transport = value
+		}
+		if value := strings.TrimSpace(fmt.Sprint(session.Metadata["auth_source"])); value != "" {
+			authSource = value
+		}
+	}
+	return name, provider, transport, authSource
 }
 
 func (o *Orchestrator) persistExecutionSessionSnapshot(issue *kanban.Issue, phase kanban.WorkflowPhase, attempt int, runKind, errText string, result *agent.RunResult) {
@@ -3710,14 +3843,14 @@ func issueLogAttrs(issue *kanban.Issue, attempt int, extra ...interface{}) []int
 	return attrs
 }
 
-func cloneSessionWithIssue(session *appserver.Session, issueID, identifier string) appserver.Session {
+func cloneSessionWithIssue(session *agentruntime.Session, issueID, identifier string) agentruntime.Session {
 	cp := session.Clone()
 	cp.IssueID = issueID
 	cp.IssueIdentifier = identifier
 	return cp
 }
 
-func summarizeSessionWithIssue(session *appserver.Session, issueID, identifier string) appserver.Session {
+func summarizeSessionWithIssue(session *agentruntime.Session, issueID, identifier string) agentruntime.Session {
 	cp := session.Summary()
 	cp.IssueID = issueID
 	cp.IssueIdentifier = identifier

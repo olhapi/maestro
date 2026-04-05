@@ -8,7 +8,7 @@ This document collects the durable operational details for Maestro: runtime surf
 
 - the SQLite-backed local store and runtime persistence
 - the local project and issue service that keeps Maestro data in the SQLite store
-- the orchestrator and agent runner that turn queued issues into per-issue workspaces and Codex runs
+- the orchestrator and agent runner that turn queued issues into per-issue workspaces and runtime sessions
 - a private loopback-only MCP daemon used by `maestro mcp`
 - an optional public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs
 
@@ -37,7 +37,7 @@ These endpoints power CLI helpers such as `status --dashboard`, `sessions`, and 
 - `GET /health`: process health and timestamp
 - `GET /api/v1/state`: live orchestrator status payload
 - `GET /api/v1/<issue_identifier>`: single issue status payload from the live runtime view
-- `GET /api/v1/sessions`: all live app-server sessions
+- `GET /api/v1/sessions`: all live sessions
 - `GET /api/v1/sessions?issue=ISS-1`: single session lookup by issue identifier
 - `GET /api/v1/events?since=0&limit=100`: live in-memory event feed
 - `POST /api/v1/refresh`: request a refresh event
@@ -124,6 +124,8 @@ Operational behavior:
 
 `maestro mcp` does not start a separate server. It discovers the live daemon for the same `--db`, authenticates to the private MCP endpoint, and bridges that session over stdio for MCP clients.
 
+`codex.approval_policy: never` only disables Maestro-managed app-server approvals. It does not override a client's own trust gate for external MCP tools, so Codex can still prompt on `maestro mcp` calls when the local MCP configuration or advertised tool metadata requires review.
+
 Operationally:
 
 - start `maestro run` first
@@ -139,6 +141,66 @@ Projects use the local tracker only:
 - MCP prompts, CLI commands, or dashboard actions can translate external work into local Maestro records before execution
 
 If you are importing another tracker, create local Maestro projects and issues first, then let the orchestrator supervise those local records.
+
+## Claude Runtime Runbook
+
+The supported Claude runtime entry in `WORKFLOW.md` is:
+
+- `provider: claude`
+- `transport: stdio`
+- `command: claude`
+- `approval_policy: never`
+
+The dashboard and API surface the runtime identity as `runtime_name`, `runtime_provider`, `runtime_transport`, `runtime_auth_source`, `pending_interaction_state`, and `stop_reason`. Use those fields to distinguish Claude and Codex runs. `session_source` only tells you whether the row came from a live snapshot or a persisted snapshot.
+
+For failures, use `failure_class` plus `current_error` together. Claude guardrail failures that are out of contract, such as unsupported `local_image` delivery, surface as `failure_class=unsupported_runtime_capability` while `current_error` keeps the specific remediation text.
+
+### Ambient Auth
+
+`maestro verify` reports Claude auth readiness through three checks:
+
+- `claude_auth_source`: the effective auth source
+- `claude_auth_source_detail`: provider-specific detail when available
+- `claude_auth_source_status`: `ok`, `warn`, or `fail`
+
+Common values mean:
+
+- `OAuth` means Claude Code is logged in with an interactive session.
+- `cloud provider` means Claude is using a managed cloud provider such as Bedrock, Vertex, or Foundry. The specific provider appears in `claude_auth_source_detail` when available.
+- `ANTHROPIC_AUTH_TOKEN` means the runtime is using a token-based environment credential.
+- `warn` means Maestro found a usable source but wants an operator to confirm it.
+- `fail` means the runtime is not ready for execution.
+
+### Preflight
+
+Before starting or resuming Claude work, run `maestro verify` in the repo root and confirm:
+
+- `claude_version_status`
+- `claude_auth_source_status`
+- `claude_session_status`
+- `claude_session_bare_mode`
+- `claude_session_additional_directories`
+- `runtime_claude`
+
+If `claude_session_bare_mode` fails, remove `--bare`, `--permission-mode auto`, `--permission-mode bypassPermissions`, or the corresponding config entries before retrying.
+
+If `claude_session_additional_directories` fails, remove `additionalDirectories` or `--add-dir` so the session stays scoped to the Maestro workspace.
+
+### Stale Workspace Cleanup
+
+If the dashboard or API reports `workspace_recovery.status = required`, treat the workspace as dirty rather than retrying blindly. Check the worktree for in-progress Git operations, clear stale build artifacts only after confirming nothing is still running, and retry once the workspace is clean. `git status` and the recovery message should be the source of truth.
+
+### Supported Session Invariants
+
+Supported session records should always let operators answer:
+
+- which issue and issue identifier the run belongs to
+- which runtime executed it
+- which transport and auth source were effective
+- whether the run is waiting on approval, user input, elicitation, or an alert
+- why the session stopped
+
+The dashboard exposes that information through `runtime_name`, `runtime_provider`, `runtime_transport`, `runtime_auth_source`, `pending_interaction_state`, and `stop_reason`.
 
 ## Workflow bootstrap and checks
 
@@ -165,6 +227,12 @@ Each extension entry supports:
 - `name`: required unique tool name
 - `description`: required tool description
 - `command`: required shell command to execute
+- `annotations`: optional MCP tool metadata object
+- `annotations.title`: optional human-readable title
+- `annotations.read_only_hint`: optional boolean read-only hint
+- `annotations.destructive_hint`: optional boolean destructive hint
+- `annotations.idempotent_hint`: optional boolean idempotent hint
+- `annotations.open_world_hint`: optional boolean open-world hint
 - `timeout_sec`: optional command timeout, default `15`
 - `allowed`: optional boolean policy gate
 - `working_dir`: optional working directory for the command
@@ -179,6 +247,12 @@ Example:
     "name": "echo_issue",
     "description": "Print the args object for debugging",
     "command": "jq -r . <<< \"$MAESTRO_ARGS_JSON\"",
+    "annotations": {
+      "read_only_hint": true,
+      "destructive_hint": false,
+      "idempotent_hint": true,
+      "open_world_hint": false
+    },
     "timeout_sec": 10,
     "require_args": true
   }
@@ -206,7 +280,7 @@ Behavior:
 - the main log file is `maestro.log`
 - rotation is size-based
 - `--log-level` is global and applies to every CLI command
-- `debug` includes raw app-server stream output
+- `debug` includes raw runtime stream output
 - `info` keeps logs focused on lifecycle and status transitions
 - `--log-max-bytes` controls the rotation threshold
 - `--log-max-files` controls how many rotated files are retained

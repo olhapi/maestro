@@ -7,6 +7,7 @@ import { CommandPalette } from '@/components/command-palette'
 import { GlobalInterruptPanel } from '@/components/dashboard/global-interrupt-panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { CompactRelativeTime } from '@/components/ui/compact-relative-time'
 import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobileLayout } from '@/hooks/use-is-mobile-layout'
@@ -16,7 +17,7 @@ import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
 import { dashboardRefreshCoalesceMs, refreshDashboardQueries } from '@/lib/query-refresh'
 import type { PendingInterrupt } from '@/lib/types'
-import { cn, formatRelativeTimeCompact } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 
 const nav = [
   { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard, match: (pathname: string) => pathname === appRoutes.overview },
@@ -407,7 +408,7 @@ export function AppShell() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[var(--muted-foreground)]">Last signal</span>
-                <span className="text-white">{formatRelativeTimeCompact(lastRefresh)}</span>
+                <span className="text-white"><CompactRelativeTime value={lastRefresh} /></span>
               </div>
             </div>
           </div>
@@ -450,7 +451,7 @@ export function AppShell() {
                   onClick={() => handleInterruptDialogOpenChange(!interruptDialogOpen)}
                 />
               ) : null}
-              <Badge className="border-white/10 bg-white/5 text-white">Updated {formatRelativeTimeCompact(lastRefresh)}</Badge>
+              <Badge className="border-white/10 bg-white/5 text-white">Updated <CompactRelativeTime value={lastRefresh} /></Badge>
             </div>
           </header>
 

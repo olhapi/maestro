@@ -112,3 +112,13 @@ func TestInstallHelpIncludesSkillsFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallRequiresSkillsFlag(t *testing.T) {
+	code, stdout, stderr := runCLI(t, "install")
+	if code == 0 {
+		t.Fatalf("expected install without --skills to fail, stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "specify --skills to install the Maestro skill bundle") {
+		t.Fatalf("expected missing-skills error, got stdout=%s stderr=%s", stdout, stderr)
+	}
+}

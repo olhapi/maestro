@@ -205,6 +205,7 @@ export interface TokenTotals {
 export interface RunningEntry {
   issue_id: string;
   identifier: string;
+  workspace_path?: string;
   state: string;
   phase?: string;
   session_id?: string;
@@ -219,6 +220,7 @@ export interface RunningEntry {
 export interface RetryEntry {
   issue_id: string;
   identifier: string;
+  workspace_path?: string;
   phase?: string;
   attempt: number;
   due_at: string;
@@ -230,6 +232,7 @@ export interface RetryEntry {
 export interface PausedEntry {
   issue_id: string;
   identifier: string;
+  workspace_path?: string;
   phase?: string;
   attempt: number;
   paused_at: string;
@@ -301,6 +304,7 @@ export interface Session {
   turns_completed: number;
   terminal: boolean;
   terminal_reason?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface PendingApprovalDecision {
@@ -470,6 +474,12 @@ export interface SessionFeedEntry {
   terminal: boolean;
   terminal_reason?: string;
   error?: string;
+  runtime_name?: string;
+  runtime_provider?: string;
+  runtime_transport?: string;
+  runtime_auth_source?: string;
+  pending_interaction_state?: string;
+  stop_reason?: string;
 }
 
 export interface SessionsResponse {
@@ -571,6 +581,12 @@ export interface IssueExecutionDetail {
   plan_approval?: PlanApproval;
   plan_revision?: PlanRevision;
   workspace_recovery?: WorkspaceRecovery;
+  runtime_name?: string;
+  runtime_provider?: string;
+  runtime_transport?: string;
+  runtime_auth_source?: string;
+  pending_interaction_state?: string;
+  stop_reason?: string;
 }
 
 export interface BootstrapResponse {

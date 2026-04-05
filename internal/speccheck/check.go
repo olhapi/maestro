@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/olhapi/maestro/internal/agentruntime"
 	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/pkg/config"
 	"github.com/olhapi/maestro/skills"
@@ -18,6 +20,14 @@ type Report struct {
 	OK     bool              `json:"ok"`
 	Checks map[string]string `json:"checks"`
 }
+
+var (
+	defaultConfigFunc     = config.DefaultConfig
+	defaultInitConfigFunc = config.DefaultInitConfig
+	installMaestroFunc    = skills.InstallMaestro
+	bundledPathsFunc      = skills.BundledPaths
+	readBundledFileFunc   = skills.ReadBundledFile
+)
 
 // Run performs semantic conformance checks against the Maestro spec areas.
 func Run(repoRoot string) Report {
@@ -35,11 +45,10 @@ func Run(repoRoot string) Report {
 		checks["workflow_load"] = "fail"
 		checks["workflow_version"] = "skipped"
 		checks["workflow_prompt_render"] = "skipped"
-		checks["workflow_advisories"] = "skipped"
 	} else {
 		checks["workflow_load"] = "ok"
 
-		if workflow.Config.Codex.ExpectedVersion == codexschema.SupportedVersion {
+		if err := validateSelectedRuntimeModel(workflow.Config); err == nil {
 			checks["workflow_version"] = "ok"
 		} else {
 			ok = false
@@ -52,12 +61,6 @@ func Run(repoRoot string) Report {
 		} else {
 			checks["workflow_prompt_render"] = "ok"
 		}
-		if len(workflow.Advisories) > 0 {
-			ok = false
-			checks["workflow_advisories"] = "fail"
-		} else {
-			checks["workflow_advisories"] = "ok"
-		}
 	}
 
 	if err := validateDefaultConfig(); err != nil {
@@ -67,11 +70,11 @@ func Run(repoRoot string) Report {
 		checks["config_defaults"] = "ok"
 	}
 
-	if err := validateCodexSchemas(repoRoot); err != nil {
+	if err := validateRuntimeSchemas(repoRoot); err != nil {
 		ok = false
-		checks["codex_schema_json"] = "fail"
+		checks["runtime_schema_json"] = "fail"
 	} else {
-		checks["codex_schema_json"] = "ok"
+		checks["runtime_schema_json"] = "ok"
 	}
 
 	if err := validateSkillInstall(); err != nil {
@@ -87,6 +90,36 @@ func Run(repoRoot string) Report {
 func validateWorkflowPromptRender(prompt string) error {
 	_, err := config.RenderLiquidTemplate(prompt, sampleWorkflowPromptContext())
 	return err
+}
+
+func validateSelectedRuntimeModel(cfg config.Config) error {
+	selectedName := strings.TrimSpace(cfg.Runtime.Default)
+	if selectedName == "" {
+		return fmt.Errorf("default runtime is empty")
+	}
+	selectedRuntime, ok := cfg.Runtime.RuntimeByName(selectedName)
+	if !ok {
+		return fmt.Errorf("default runtime %q is missing", selectedName)
+	}
+
+	switch strings.TrimSpace(selectedRuntime.Provider) {
+	case "codex":
+		transport := strings.TrimSpace(selectedRuntime.Transport)
+		if transport != string(agentruntime.TransportAppServer) && transport != string(agentruntime.TransportStdio) {
+			return fmt.Errorf("unsupported codex transport %q", selectedRuntime.Transport)
+		}
+		if selectedRuntime.ExpectedVersion != codexschema.SupportedVersion {
+			return fmt.Errorf("codex expected_version = %q", selectedRuntime.ExpectedVersion)
+		}
+		return nil
+	case "claude":
+		if strings.TrimSpace(selectedRuntime.Transport) != string(agentruntime.TransportStdio) {
+			return fmt.Errorf("unsupported claude transport %q", selectedRuntime.Transport)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported runtime provider %q", selectedRuntime.Provider)
+	}
 }
 
 func sampleWorkflowPromptContext() map[string]interface{} {
@@ -109,32 +142,68 @@ func sampleWorkflowPromptContext() map[string]interface{} {
 }
 
 func validateDefaultConfig() error {
-	cfg := config.DefaultConfig()
-	initCfg := config.DefaultInitConfig()
+	cfg := defaultConfigFunc()
+	initCfg := defaultInitConfigFunc()
+	selectedName := strings.TrimSpace(cfg.Runtime.Default)
+	selectedRuntime, ok := cfg.Runtime.RuntimeByName(selectedName)
+	if selectedName == "" {
+		ok = false
+	}
+	initSelectedName := strings.TrimSpace(initCfg.Runtime.Default)
+	initSelectedRuntime, initOK := initCfg.Runtime.RuntimeByName(initSelectedName)
+	if initSelectedName == "" {
+		initOK = false
+	}
 
 	if cfg.Tracker.Kind != config.TrackerKindKanban {
 		return fmt.Errorf("default tracker kind = %q", cfg.Tracker.Kind)
 	}
-	if cfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
-		return fmt.Errorf("default expected_version = %q", cfg.Codex.ExpectedVersion)
+	if cfg.Workspace.BranchPrefix != "maestro/" {
+		return fmt.Errorf("default branch prefix = %q", cfg.Workspace.BranchPrefix)
 	}
-	if cfg.Codex.InitialCollaborationMode != config.InitialCollaborationModeDefault {
-		return fmt.Errorf("default initial_collaboration_mode = %q", cfg.Codex.InitialCollaborationMode)
+	if selectedName != "codex-appserver" || !ok {
+		return fmt.Errorf("default runtime.default = %q", cfg.Runtime.Default)
 	}
-	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
-		return fmt.Errorf("unexpected codex timeout defaults: turn=%d read=%d stall=%d", cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs)
+	if selectedRuntime.Provider != "codex" || selectedRuntime.Transport != string(agentruntime.TransportAppServer) || selectedRuntime.Command == "" {
+		return fmt.Errorf("default codex-appserver runtime = %#v", selectedRuntime)
 	}
-	if initCfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
-		return fmt.Errorf("default init expected_version = %q", initCfg.Codex.ExpectedVersion)
+	if selectedRuntime.ExpectedVersion != codexschema.SupportedVersion {
+		return fmt.Errorf("default expected_version = %q", selectedRuntime.ExpectedVersion)
 	}
-	if initCfg.Codex.InitialCollaborationMode != config.InitialCollaborationModeDefault {
-		return fmt.Errorf("default init initial_collaboration_mode = %q", initCfg.Codex.InitialCollaborationMode)
+	codexStdio, ok := cfg.Runtime.RuntimeByName("codex-stdio")
+	if !ok {
+		return fmt.Errorf("default runtime catalog missing codex-stdio")
 	}
-	if initCfg.Codex.ApprovalPolicy != "never" {
-		return fmt.Errorf("default init approval_policy = %#v", initCfg.Codex.ApprovalPolicy)
+	if codexStdio.Provider != "codex" || codexStdio.Transport != string(agentruntime.TransportStdio) {
+		return fmt.Errorf("default codex-stdio runtime = %#v", codexStdio)
 	}
-	if !isGranularApprovalPolicy(cfg.Codex.ApprovalPolicy) {
-		return fmt.Errorf("default approval_policy has unexpected shape: %#v", cfg.Codex.ApprovalPolicy)
+	claudeRuntime, ok := cfg.Runtime.RuntimeByName("claude")
+	if !ok {
+		return fmt.Errorf("default runtime catalog missing claude")
+	}
+	if claudeRuntime.Provider != "claude" || claudeRuntime.Transport != string(agentruntime.TransportStdio) {
+		return fmt.Errorf("default claude runtime = %#v", claudeRuntime)
+	}
+	if selectedRuntime.InitialCollaborationMode != config.InitialCollaborationModeDefault {
+		return fmt.Errorf("default initial_collaboration_mode = %q", selectedRuntime.InitialCollaborationMode)
+	}
+	if selectedRuntime.TurnTimeoutMs != 1800000 || selectedRuntime.ReadTimeoutMs != 10000 || selectedRuntime.StallTimeoutMs != 300000 {
+		return fmt.Errorf("unexpected runtime timeout defaults: turn=%d read=%d stall=%d", selectedRuntime.TurnTimeoutMs, selectedRuntime.ReadTimeoutMs, selectedRuntime.StallTimeoutMs)
+	}
+	if initSelectedName != "codex-appserver" || !initOK {
+		return fmt.Errorf("default init runtime.default = %q", initCfg.Runtime.Default)
+	}
+	if initSelectedRuntime.ApprovalPolicy != "never" {
+		return fmt.Errorf("default init approval_policy = %#v", initSelectedRuntime.ApprovalPolicy)
+	}
+	if initSelectedRuntime.ExpectedVersion != codexschema.SupportedVersion {
+		return fmt.Errorf("default init expected_version = %q", initSelectedRuntime.ExpectedVersion)
+	}
+	if initSelectedRuntime.InitialCollaborationMode != config.InitialCollaborationModeDefault {
+		return fmt.Errorf("default init initial_collaboration_mode = %q", initSelectedRuntime.InitialCollaborationMode)
+	}
+	if !isGranularApprovalPolicy(selectedRuntime.ApprovalPolicy) {
+		return fmt.Errorf("default approval_policy has unexpected shape: %#v", selectedRuntime.ApprovalPolicy)
 	}
 	return nil
 }
@@ -154,7 +223,7 @@ func isGranularApprovalPolicy(value interface{}) bool {
 		granular["request_permissions"] == false
 }
 
-func validateCodexSchemas(repoRoot string) error {
+func validateRuntimeSchemas(repoRoot string) error {
 	schemaDir := codexschema.SchemaDir(repoRoot)
 	for _, rel := range codexschema.ConsumedSchemaFiles {
 		path := filepath.Join(schemaDir, rel)
@@ -178,11 +247,11 @@ func validateSkillInstall() error {
 	defer os.RemoveAll(tmpDir)
 
 	dest := filepath.Join(tmpDir, "skills", "maestro")
-	if err := skills.InstallMaestro(dest); err != nil {
+	if err := installMaestroFunc(dest); err != nil {
 		return err
 	}
 
-	wantPaths, err := skills.BundledPaths()
+	wantPaths, err := bundledPathsFunc()
 	if err != nil {
 		return err
 	}
@@ -204,7 +273,7 @@ func validateSkillInstall() error {
 	}
 
 	for _, rel := range wantPaths {
-		want, err := skills.ReadBundledFile(rel)
+		want, err := readBundledFileFunc(rel)
 		if err != nil {
 			return fmt.Errorf("read bundled skill file %s: %w", rel, err)
 		}

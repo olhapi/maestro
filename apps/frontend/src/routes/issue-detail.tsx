@@ -31,6 +31,8 @@ import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
 import type { AgentCommand, IssueAsset, IssueComment, IssueCommentAttachment, IssueState, PermissionProfile } from "@/lib/types";
 import { cn, formatDateTime, formatNumber, formatRelativeTime } from "@/lib/utils";
 
+const shouldPollIssueExecution = import.meta.env.MODE !== "test";
+
 const permissionProfileLabels: Record<PermissionProfile, string> = {
   default: "Default permissions",
   "full-access": "Full access",
@@ -810,6 +812,9 @@ export function IssueDetailPage() {
     queryKey: ["issue-execution", identifier],
     queryFn: () => api.getIssueExecution(identifier),
     refetchInterval: (query) => {
+      if (!shouldPollIssueExecution) {
+        return false;
+      }
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return false;
       }
@@ -1142,13 +1147,6 @@ export function IssueDetailPage() {
                 <p className="mt-3 text-white">{issue.data.branch_name || "No branch linked"}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">
                   {issue.data.pr_url || "No pull request linked"}
-                </p>
-              </div>
-              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Assigned agent</p>
-                <p className="mt-3 text-white">{issue.data.agent_name || "No agent assigned"}</p>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                  {issue.data.agent_prompt || "No agent-specific prompt"}
                 </p>
               </div>
               {issue.data.issue_type === "recurring" ? (
