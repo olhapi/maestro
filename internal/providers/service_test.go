@@ -2206,3 +2206,57 @@ func TestServiceProjectPathOverridesExpandEnvAndHomePaths(t *testing.T) {
 		t.Fatalf("expected update to persist expanded paths, got %#v", updated)
 	}
 }
+
+func TestServiceProjectRuntimeNamePersistsAcrossCreateAndUpdate(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repoDir := t.TempDir()
+	workflowPath := filepath.Join(repoDir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: kanban\n---\n"), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	svc := NewService(store)
+	validated := 0
+	expected := []string{"claude", "codex"}
+	svc.providers["stub"] = &stubProvider{
+		kind: "stub",
+		validateFunc: func(_ context.Context, candidate *kanban.Project) error {
+			if validated >= len(expected) {
+				t.Fatalf("unexpected extra validation: %#v", candidate)
+			}
+			if candidate.RuntimeName != expected[validated] {
+				t.Fatalf("expected runtime %q, got %q", expected[validated], candidate.RuntimeName)
+			}
+			validated++
+			return nil
+		},
+	}
+
+	project, err := svc.CreateProject(context.Background(), "Runtime Project", "", repoDir, workflowPath, "stub", "stub-ref", nil, "claude")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if project.RuntimeName != "claude" {
+		t.Fatalf("expected created project runtime claude, got %q", project.RuntimeName)
+	}
+
+	if err := svc.UpdateProject(context.Background(), project.ID, project.Name, project.Description, repoDir, workflowPath, project.ProviderKind, project.ProviderProjectRef, nil, "codex"); err != nil {
+		t.Fatalf("UpdateProject: %v", err)
+	}
+	if validated != len(expected) {
+		t.Fatalf("expected %d validations, got %d", len(expected), validated)
+	}
+
+	updated, err := store.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if updated.RuntimeName != "codex" {
+		t.Fatalf("expected updated project runtime codex, got %q", updated.RuntimeName)
+	}
+}

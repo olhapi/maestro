@@ -1115,6 +1115,49 @@ func TestCompletionCommand(t *testing.T) {
 	}
 }
 
+func TestProjectRuntimeFlagPersistsAcrossCreateAndUpdate(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "maestro.db")
+	repoPath := setupRepo(t)
+
+	code, stdout, stderr := runCLI(t, "--db", dbPath, "project", "create", "Platform", "--repo", repoPath, "--runtime", "claude", "--json")
+	if code != 0 {
+		t.Fatalf("project create failed: %d stderr=%s", code, stderr)
+	}
+	var project kanban.Project
+	if err := json.Unmarshal([]byte(stdout), &project); err != nil {
+		t.Fatalf("decode project create: %v\n%s", err, stdout)
+	}
+	if project.RuntimeName != "claude" {
+		t.Fatalf("expected created project runtime claude, got %q", project.RuntimeName)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "update", project.ID, "--name", "Platform Updated", "--json")
+	if code != 0 {
+		t.Fatalf("project update without runtime failed: %d stderr=%s", code, stderr)
+	}
+	var updated kanban.Project
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode project update: %v\n%s", err, stdout)
+	}
+	if updated.RuntimeName != "claude" {
+		t.Fatalf("expected runtime to persist across update, got %q", updated.RuntimeName)
+	}
+	if updated.Name != "Platform Updated" {
+		t.Fatalf("expected updated project name, got %q", updated.Name)
+	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "project", "update", project.ID, "--runtime", "codex", "--json")
+	if code != 0 {
+		t.Fatalf("project update with runtime failed: %d stderr=%s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &updated); err != nil {
+		t.Fatalf("decode project runtime update: %v\n%s", err, stdout)
+	}
+	if updated.RuntimeName != "codex" {
+		t.Fatalf("expected updated project runtime codex, got %q", updated.RuntimeName)
+	}
+}
+
 func TestTextModeRecurringIssueCommands(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := setupRepo(t)

@@ -221,9 +221,9 @@ type Issue struct {
 	Description                    string                    `json:"description,omitempty"`
 	State                          State                     `json:"state"`
 	WorkflowPhase                  WorkflowPhase             `json:"workflow_phase"`
+	RuntimeName                    string                    `json:"runtime_name,omitempty"`
 	PermissionProfile              PermissionProfile         `json:"permission_profile,omitempty"`
 	Priority                       int                       `json:"priority,omitempty"` // Lower = higher priority
-	RuntimeName                    string                    `json:"runtime_name,omitempty"`
 	Labels                         []string                  `json:"labels,omitempty"`
 	AgentName                      string                    `json:"agent_name,omitempty"`
 	AgentPrompt                    string                    `json:"agent_prompt,omitempty"`

@@ -36,4 +36,3 @@ func TestValidateWorkspacePathBranches(t *testing.T) {
 		t.Fatal("expected symlink escape to fail")
 	}
 }
-
