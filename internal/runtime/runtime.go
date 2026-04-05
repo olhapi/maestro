@@ -332,10 +332,10 @@ var interactionRequestKindValues = map[string]string{
 	"approve_file_edit":        string(InteractionRequestKindApproveFileEdit),
 	"approve_file_change":      string(InteractionRequestKindApproveFileEdit),
 	"file_edit_approval":       string(InteractionRequestKindApproveFileEdit),
-	"approve_protected_write":   string(InteractionRequestKindApproveProtectedWrite),
-	"protected_write_approval":  string(InteractionRequestKindApproveProtectedWrite),
-	"request_user_input":        string(InteractionRequestKindRequestUserInput),
-	"user_input_request":        string(InteractionRequestKindRequestUserInput),
+	"approve_protected_write":  string(InteractionRequestKindApproveProtectedWrite),
+	"protected_write_approval": string(InteractionRequestKindApproveProtectedWrite),
+	"request_user_input":       string(InteractionRequestKindRequestUserInput),
+	"user_input_request":       string(InteractionRequestKindRequestUserInput),
 	"plan_checkpoint":          string(InteractionRequestKindPlanCheckpoint),
 }
 
@@ -458,18 +458,18 @@ func (p EffectivePolicy) Normalize() EffectivePolicy {
 }
 
 type SessionInfo struct {
-	Backend    Backend         `json:"backend"`
-	SessionID  string          `json:"session_id,omitempty"`
-	ThreadID   string          `json:"thread_id,omitempty"`
-	TurnID     string          `json:"turn_id,omitempty"`
-	Command    string          `json:"command,omitempty"`
-	WorkingDir string          `json:"working_dir,omitempty"`
+	Backend    Backend          `json:"backend"`
+	SessionID  string           `json:"session_id,omitempty"`
+	ThreadID   string           `json:"thread_id,omitempty"`
+	TurnID     string           `json:"turn_id,omitempty"`
+	Command    string           `json:"command,omitempty"`
+	WorkingDir string           `json:"working_dir,omitempty"`
 	Policy     *EffectivePolicy `json:"policy,omitempty"`
-	StartedAt  time.Time       `json:"started_at,omitempty"`
-	UpdatedAt  time.Time       `json:"updated_at,omitempty"`
+	StartedAt  time.Time        `json:"started_at,omitempty"`
+	UpdatedAt  time.Time        `json:"updated_at,omitempty"`
 }
 
-type Session struct {
+type RuntimeSession struct {
 	Info            SessionInfo `json:"info"`
 	LastEvent       *Event      `json:"last_event,omitempty"`
 	LastMessage     string      `json:"last_message,omitempty"`
@@ -506,5 +506,5 @@ type BackendSpec struct {
 	DefaultPolicy           EffectivePolicy
 	SupportedAccessProfiles map[AccessProfile]struct{}
 	SupportedStartupModes   map[StartupMode]struct{}
-	Capabilities           Capabilities
+	Capabilities            Capabilities
 }

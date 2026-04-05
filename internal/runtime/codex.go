@@ -25,7 +25,7 @@ type UserInputElement = gen.UserInputElement
 
 const PlanApprovalStopReason = "plan_approval_pending"
 
-type Backend interface {
+type AppServerBackend interface {
 	RunTurn(ctx context.Context, prompt, title string) error
 	RunTurnWithStartCallback(ctx context.Context, prompt, title string, onStarted func(*Session)) error
 	RunTurnWithInputs(ctx context.Context, input []UserInputElement, title string) error

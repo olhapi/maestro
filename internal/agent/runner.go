@@ -245,7 +245,7 @@ func (r *Runner) applyIssuePermissionProfile(workflow *config.Workflow, issue *k
 	cloned := *workflow
 	cloned.Config = workflow.Config
 	cloned.Config.Codex = workflow.Config.Codex
-	permissionConfig := r.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissionConfig := r.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
 	cloned.Config.Codex.ApprovalPolicy = permissionConfig.ApprovalPolicy
 	cloned.Config.Codex.InitialCollaborationMode = permissionConfig.InitialCollaborationMode
 	return &cloned
@@ -258,8 +258,11 @@ type permissionConfig struct {
 	InitialCollaborationMode string
 }
 
-func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy interface{}, initialCollaborationMode string) permissionConfig {
-	initialCollaborationMode = strings.TrimSpace(initialCollaborationMode)
+func (r *Runner) permissionConfigForIssue(workflow *config.Workflow, issue *kanban.Issue, approvalPolicy interface{}) permissionConfig {
+	initialCollaborationMode := config.InitialCollaborationModeDefault
+	if workflow != nil {
+		initialCollaborationMode = strings.TrimSpace(workflow.Config.Codex.InitialCollaborationMode)
+	}
 	if initialCollaborationMode == "" {
 		initialCollaborationMode = config.InitialCollaborationModeDefault
 	}
@@ -282,7 +285,7 @@ func (r *Runner) permissionConfigForIssue(issue *kanban.Issue, approvalPolicy in
 			ApprovalPolicy:           approvalPolicy,
 			ThreadSandbox:            "workspace-write",
 			TurnSandboxPolicy:        nil,
-			InitialCollaborationMode: config.InitialCollaborationModePlan,
+			InitialCollaborationMode: initialCollaborationMode,
 		}
 	default:
 		return permissionConfig{
@@ -1030,9 +1033,9 @@ func (r *Runner) executeCodexTurns(ctx context.Context, workflow *config.Workflo
 		return nil, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
+	permissions := r.permissionConfigForIssue(activeWorkflow, issue, activeWorkflow.Config.Codex.ApprovalPolicy)
 	planMode := strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
-	var backend runtime.Backend
+	var backend runtime.AppServerBackend
 	backend, err = runtime.NewCodexBackend(ctx, runtime.CodexBackendConfig{
 		Command:                  activeWorkflow.Config.Codex.Command,
 		Env:                      os.Environ(),
@@ -1088,7 +1091,7 @@ func (r *Runner) executeCodexTurns(ctx context.Context, workflow *config.Workflo
 			return nil, err
 		}
 		issue = refreshedIssue
-		permissions = r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
+		permissions = r.permissionConfigForIssue(activeWorkflow, issue, activeWorkflow.Config.Codex.ApprovalPolicy)
 		backend.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
 		prepared, err := r.prepareTurnPromptWithWorkspace(activeWorkflow, issue, attempt, turn, workspacePath)
 		if err != nil {
@@ -1219,7 +1222,24 @@ func (r *Runner) clearPendingPlanRevision(issue *kanban.Issue) error {
 	if r.store == nil || !issueHasPendingPlanRevision(issue) {
 		return nil
 	}
+	requestedAt := ""
+	if issue.PendingPlanRevisionRequestedAt != nil {
+		requestedAt = issue.PendingPlanRevisionRequestedAt.UTC().Format(time.RFC3339)
+	}
+	clearedAt := time.Now().UTC()
 	if err := r.store.ClearIssuePendingPlanRevision(issue.ID, "turn_started"); err != nil {
+		return err
+	}
+	if err := r.store.AppendRuntimeEvent("plan_revision_cleared", map[string]interface{}{
+		"issue_id":     issue.ID,
+		"identifier":   issue.Identifier,
+		"title":        issue.Title,
+		"phase":        string(issue.WorkflowPhase),
+		"markdown":     strings.TrimSpace(issue.PendingPlanRevisionMarkdown),
+		"reason":       "turn_started",
+		"requested_at": requestedAt,
+		"cleared_at":   clearedAt.Format(time.RFC3339),
+	}); err != nil {
 		return err
 	}
 	issue.PendingPlanRevisionMarkdown = ""
@@ -1620,7 +1640,7 @@ func (r *Runner) planModeForIssue(workflow *config.Workflow, issue *kanban.Issue
 	if workflow == nil {
 		return false
 	}
-	permissions := r.permissionConfigForIssue(issue, workflow.Config.Codex.ApprovalPolicy, workflow.Config.Codex.InitialCollaborationMode)
+	permissions := r.permissionConfigForIssue(workflow, issue, workflow.Config.Codex.ApprovalPolicy)
 	return strings.EqualFold(strings.TrimSpace(permissions.InitialCollaborationMode), config.InitialCollaborationModePlan)
 }
 
@@ -1698,12 +1718,12 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 	if issue == nil || len(commands) == 0 {
 		return nil
 	}
+	if err := r.store.MarkIssueAgentCommandsDeliveredIfUnchanged(issue.ID, commands, mode, threadID, attempt); err != nil {
+		return err
+	}
 	ids := make([]string, 0, len(commands))
 	for _, command := range commands {
 		ids = append(ids, command.ID)
-	}
-	if err := r.store.MarkIssueAgentCommandsDelivered(issue.ID, ids, mode, threadID, attempt); err != nil {
-		return err
 	}
 	return r.store.AppendRuntimeEvent("manual_command_delivered", map[string]interface{}{
 		"issue_id":           issue.ID,
@@ -1716,7 +1736,7 @@ func (r *Runner) markDeliveredCommands(issue *kanban.Issue, commands []kanban.Is
 	})
 }
 
-func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, backend runtime.Backend, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string) (bool, error) {
+func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, backend runtime.AppServerBackend, workflow *config.Workflow, issue *kanban.Issue, attempt int, title string) (bool, error) {
 	deadline := time.Now().Add(activeThreadCommandPollWindow)
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
@@ -1744,7 +1764,7 @@ func (r *Runner) runPendingCommandsInActiveThread(ctx context.Context, backend r
 		return false, err
 	}
 	issue = refreshedIssue
-	permissions := r.permissionConfigForIssue(issue, activeWorkflow.Config.Codex.ApprovalPolicy, activeWorkflow.Config.Codex.InitialCollaborationMode)
+	permissions := r.permissionConfigForIssue(activeWorkflow, issue, activeWorkflow.Config.Codex.ApprovalPolicy)
 	backend.UpdatePermissionConfig(permissions.ApprovalPolicy, permissions.ThreadSandbox, permissions.TurnSandboxPolicy)
 	var deliverErr error
 	if err := backend.RunTurnWithStartCallback(ctx, buildOperatorFollowUpPrompt(commands), title, func(session *runtime.Session) {

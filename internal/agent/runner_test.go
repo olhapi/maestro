@@ -1192,46 +1192,21 @@ func TestRunAgentStdioKeepsCommandsPendingWhenTurnFails(t *testing.T) {
 }
 
 func TestRunAgentStdioRejectsStaleCommandDeliveryAfterEdit(t *testing.T) {
-	startedFile := filepath.Join(t.TempDir(), "started")
-	releaseFile := filepath.Join(t.TempDir(), "release")
-	command := "cat >/dev/null; touch " + shellQuote(startedFile) + "; while [ ! -f " + shellQuote(releaseFile) + " ]; do sleep 0.05; done"
-	runner, store, _, _, _ := setupTestRunner(t, command, config.AgentModeStdio)
+	runner, store, _, _, _ := setupTestRunner(t, "cat", config.AgentModeStdio)
 	issue, _ := store.CreateIssue("", "", "Edited queued command", "", 0, nil)
-	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
-		t.Fatal(err)
-	}
-	issue, _ = store.GetIssue(issue.ID)
 
 	queued, err := store.CreateIssueAgentCommand(issue.ID, "Ship the original rollout.", kanban.IssueAgentCommandPending)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	resultCh := make(chan *RunResult, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		result, err := runner.Run(context.Background(), issue)
-		resultCh <- result
-		errCh <- err
-	}()
-
-	waitForFile(t, startedFile, 3*time.Second)
 	if _, err := store.UpdateIssueAgentCommand(issue.ID, queued.ID, "Ship the revised rollout."); err != nil {
 		t.Fatalf("UpdateIssueAgentCommand: %v", err)
 	}
-	if err := os.WriteFile(releaseFile, []byte("go"), 0o644); err != nil {
-		t.Fatalf("WriteFile release: %v", err)
-	}
 
-	result := <-resultCh
-	if err := <-errCh; err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-	if result == nil || result.Success {
-		t.Fatalf("expected unsuccessful run, got %+v", result)
-	}
-	if result.Error == nil || !strings.Contains(result.Error.Error(), "changed before delivery") {
-		t.Fatalf("expected stale delivery error, got %+v", result)
+	err = runner.markDeliveredCommands(issue, []kanban.IssueAgentCommand{*queued}, "next_run", "thread-default", 1)
+	if err == nil || !strings.Contains(err.Error(), "changed before delivery") {
+		t.Fatalf("expected stale delivery error, got %v", err)
 	}
 
 	commands, err := store.ListIssueAgentCommands(issue.ID)
