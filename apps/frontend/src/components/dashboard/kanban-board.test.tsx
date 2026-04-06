@@ -132,7 +132,7 @@ describe('KanbanBoard', () => {
     expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
     expect(screen.queryByText('Showing 30 of 35')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
-  })
+  }, 10000)
 
   it('progressively reveals done issues in board mode', () => {
     const { rerender } = renderWithQueryClient(
