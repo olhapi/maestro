@@ -1,6 +1,6 @@
 ---
 title: Control center
-description: Use the embedded dashboard to see whether the loop should keep running or whether a developer needs to step back in.
+description: Use the embedded dashboard to see whether Codex should keep running or whether a developer needs to step back in.
 section: concepts
 order: 1
 navLabel: Control center
@@ -20,9 +20,9 @@ Three questions should be easy to answer from the dashboard:
 
 ### Overview
 
-Use the overview page before you open a specific issue. It tells you whether the loop is healthy enough to leave alone or whether it needs attention:
+Use the overview page before you open a specific issue. It tells you whether Codex is healthy enough to leave alone or whether it needs attention:
 
-- running agents
+- running Codex sessions
 - retry queue pressure
 - total issue count
 - live token load
@@ -40,7 +40,7 @@ The work board is where you reroute work without losing the rest of the queue:
 
 ### Issue detail
 
-Issue pages are intentionally dense because this is the main re-entry surface. They keep the execution transcript, live state, blockers, branch and PR state, token usage, image attachments, and agent controls close together so you do not have to context-switch during supervision.
+Issue pages are intentionally dense because this is the main re-entry surface. They keep the execution transcript, live state, blockers, branch and PR state, token usage, image attachments, and run controls close together so you do not have to context-switch during supervision.
 
 The image card on the issue page is where screenshots and bug captures live:
 
@@ -50,7 +50,7 @@ The image card on the issue page is where screenshots and bug captures live:
 
 ### Sessions
 
-The sessions surface is for active orchestration periods when multiple workspaces are moving at once. Use it to read live session identifiers, last activity, and retry context without opening each issue individually.
+The sessions surface is for active Codex orchestration periods when multiple workspaces are moving at once. Use it to read live session identifiers, last activity, and retry context without opening each issue individually.
 
 ## Embedded server behavior
 

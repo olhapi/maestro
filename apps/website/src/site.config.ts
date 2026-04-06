@@ -8,12 +8,12 @@ export const durableSurfaces = [
   {
     title: "Shared local state",
     description:
-      "Keep projects, blockers, screenshots, and run history in one local tracker so you can leave the loop and return without rebuilding context.",
+      "Keep projects, blockers, screenshots, and run history in one local tracker so you can leave Codex running and return without rebuilding context.",
   },
   {
     title: "Live MCP handoff",
     description:
-      "Expose that same queue through `maestro mcp` so your agent sees the work and state the daemon is actually supervising.",
+      "Expose that same queue through `maestro mcp` so Codex sees the work and state the daemon is actually supervising.",
   },
   {
     title: "Visible runtime",
@@ -33,10 +33,10 @@ export const quickstartSteps = [
     title: "Bootstrap workflow",
     command: "maestro workflow init .",
     detail:
-      "Setup repo contract once so Maestro can keep making the same handoff decisions while you are elsewhere.",
+      "Set up the repo contract once so Maestro can keep making the same handoff decisions while you are elsewhere.",
   },
   {
-    title: "Start orchestration",
+    title: "Start Codex orchestration",
     command: "maestro run",
     detail:
       "Start the daemon and embedded control center so the queue keeps moving while status, retries, and sessions stay visible.",
@@ -48,13 +48,13 @@ export const docsPreview = [
     title: "Install and quickstart",
     href: "/docs/quickstart",
     description:
-      "Get from install to a live local loop, then learn what keeps running after the initial handoff.",
+      "Get from install to a live Codex loop, then learn what keeps running after the initial handoff.",
   },
   {
     title: "Workflow configuration",
     href: "/docs/workflow-config",
     description:
-      "Tune how much autonomy Maestro gets, how it retries, and which guardrails stay in place.",
+      "Tune how much autonomy Maestro gives Codex, how it retries, and which guardrails stay in place.",
   },
   {
     title: "Operations and observability",
@@ -69,7 +69,7 @@ export const tourChapters = [
     id: "overview",
     title: "See whether the loop is healthy before you interrupt it",
     description:
-      "Overview keeps running agents, retries, live token load, execution health, and token burn visible so you can decide whether to step in or let the queue keep moving.",
+      "Overview keeps running Codex sessions, retries, live token load, execution health, and token burn visible so you can decide whether to step in or let the queue keep moving.",
     bullets: [
       "Retry trends tell you whether the loop is drifting.",
       "State totals make backlog pressure obvious.",
@@ -95,10 +95,10 @@ export const tourChapters = [
     id: "issue-detail",
     title: "Step back into one issue with the full trail intact",
     description:
-      "When one run needs attention, the issue page keeps transcript, blockers, screenshots, branch state, and commands in one dense control panel.",
+      "When one Codex run needs attention, the issue page keeps transcript, blockers, screenshots, branch state, and commands in one dense control panel.",
     bullets: [
       "Execution state, screenshots, blockers, and follow-up commands stay adjacent.",
-      "The transcript shows command progress and agent messages together.",
+      "The transcript shows command progress and Codex messages together.",
       "Attach or remove local images without leaving the issue.",
     ],
     image: "/images/screens/issue-detail.webp",
@@ -107,11 +107,11 @@ export const tourChapters = [
     id: "sessions",
     title: "Watch parallel work without opening every issue",
     description:
-      "Sessions is the fast path when multiple repos or issues are moving and you only want to intervene where the loop is actually stuck.",
+      "Sessions is the fast path when multiple repos or issues are moving and you only want to intervene where the Codex loop is actually stuck.",
     bullets: [
       "See session identifiers, runtime churn, and last activity.",
       "Track retries and investigate stalled runs quickly.",
-      "Keep the control-plane view even when agents are mid-flight.",
+      "Keep the control-plane view even when Codex sessions are mid-flight.",
     ],
     image: "/images/screens/sessions.svg",
   },
@@ -121,13 +121,13 @@ export const staticSearchEntries = [
   {
     title: "Home",
     href: "/",
-    description: "Product overview for handing work off and checking back in.",
+    description: "Product overview for keeping Codex moving and checking back in.",
     section: "site",
   },
   {
     title: "Docs",
     href: "/docs",
-    description: "Docs for starting, supervising, and tuning the loop.",
+    description: "Docs for starting, supervising, and tuning Codex.",
     section: "site",
   },
 ] as const;

@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Understand how the local store, MCP bridge, and daemon stay aligned so you can hand work off and still trust the loop.
+description: Understand how the local store, MCP bridge, and daemon stay aligned so Codex can keep moving and you can still trust the loop.
 section: concepts
 order: 0
 navLabel: Architecture
@@ -14,13 +14,13 @@ The current codebase is organized around five connected runtime layers:
 
 - a SQLite-backed local store that persists projects, issues, workspaces, sessions, commands, and runtime events
 - a local project service that keeps every project and issue in the SQLite store
-- an orchestrator plus agent runner that turn queued issues into workspaces and Codex sessions
+- an orchestrator plus Codex runner that turns queued issues into workspaces and Codex sessions
 - a private MCP daemon that `maestro mcp` bridges over stdio
 - a public HTTP server that serves the embedded dashboard UI plus JSON and WebSocket APIs on the default port unless you override `--port`
 
 ## How work moves through the live loop
 
-The shortest operational view of the system: attach path, optional HTTP surface, local store, local project management, and agent execution.
+The shortest operational view of the system: attach path, optional HTTP surface, local store, local project management, and Codex execution.
 
 This diagram is derived from the current runtime shape in `cmd/maestro` and the internal runtime packages, then captured as a static asset for the docs site.
 
@@ -56,12 +56,12 @@ Operationally, that means:
 - tracker settings
 - workspace root
 - hook commands and timeout
-- agent concurrency, mode, and dispatch behavior
+- Codex concurrency, mode, and dispatch behavior
 - optional review and done phase prompts
 - Codex command and sandbox settings
 - the prompt template rendered for each issue
 
-The orchestrator does not guess its way around missing repo context. It reads the workflow file, then turns local queue state into per-issue workspaces and agent runs.
+The orchestrator does not guess its way around missing repo context. It reads the workflow file, then turns local queue state into per-issue workspaces and Codex runs.
 
 If you need to import work from another system, use MCP prompts or scripts to create matching local Maestro projects and issues first. The runtime itself does not sync a remote system into the store.
 
