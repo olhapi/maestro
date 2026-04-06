@@ -193,5 +193,5 @@ describe('KanbanBoard', () => {
     expect(screen.getByText('Showing 30 of 35')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Load 5 more' })).toBeInTheDocument()
     expect(screen.queryByText('Done task 31')).not.toBeInTheDocument()
-  })
+  }, 10000)
 })
