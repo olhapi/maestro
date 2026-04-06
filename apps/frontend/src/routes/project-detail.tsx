@@ -27,6 +27,7 @@ import {
   summaryActiveCount,
   summaryDoneCount,
   summaryStateSegments,
+  summaryTotalCount,
   summaryTokenSpend,
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
@@ -186,7 +187,7 @@ export function ProjectDetailPage() {
     return <Card className="h-[420px] animate-pulse bg-white/5" />;
   }
 
-  const totalIssues = project.data.issues.items.length;
+  const totalIssues = summaryTotalCount(project.data.project);
   const dispatchReady = isProjectDispatchReady(project.data.project);
   const isRunning = isProjectRunning(project.data.project);
   const togglePending = runProject.isPending || stopProject.isPending;
@@ -369,6 +370,7 @@ export function ProjectDetailPage() {
         description="Sort this project's issues, switch between board and list views, and inspect issues in place."
         items={project.data.issues.items}
         bootstrap={bootstrap.data}
+        stateCounts={project.data.issues.counts}
         sort={sort}
         view={view}
         onSortChange={setSort}

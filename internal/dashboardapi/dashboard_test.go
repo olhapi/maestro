@@ -198,6 +198,22 @@ func TestDashboardBoardCountsUseFullIssueSet(t *testing.T) {
 			t.Fatalf("%s expected issues page length 100, got %#v", path, issues["items"])
 		}
 	}
+
+	listResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues?limit=100", nil)
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("/api/v1/app/issues expected 200, got %d", listResp.StatusCode)
+	}
+	listPayload := decodeResponse(t, listResp)
+	if listPayload["total"].(float64) != 200 {
+		t.Fatalf("expected issues total 200, got %#v", listPayload)
+	}
+	if len(listPayload["items"].([]interface{})) != 100 {
+		t.Fatalf("expected issues page length 100, got %#v", listPayload["items"])
+	}
+	counts := listPayload["counts"].(map[string]interface{})
+	if counts["backlog"].(float64) != 85 || counts["ready"].(float64) != 1 || counts["in_progress"].(float64) != 0 || counts["in_review"].(float64) != 0 || counts["done"].(float64) != 114 || counts["cancelled"].(float64) != 0 {
+		t.Fatalf("expected full issue state counts, got %#v", counts)
+	}
 }
 
 func TestDashboardHelperAndDecoderCoverage(t *testing.T) {

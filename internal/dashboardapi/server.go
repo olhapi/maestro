@@ -441,7 +441,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
+		issues, total, counts, err := s.service.ListIssueSummariesWithCounts(r.Context(), kanban.IssueQuery{
 			ProjectID: id,
 			Sort:      "updated_desc",
 			Limit:     200,
@@ -459,6 +459,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 				"total":  total,
 				"limit":  200,
 				"offset": 0,
+				"counts": counts,
 			},
 		})
 	case http.MethodPatch:
@@ -578,7 +579,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
+		issues, total, counts, err := s.service.ListIssueSummariesWithCounts(r.Context(), kanban.IssueQuery{
 			EpicID: id,
 			Sort:   "updated_desc",
 			Limit:  200,
@@ -597,6 +598,7 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 				"total":  total,
 				"limit":  200,
 				"offset": 0,
+				"counts": counts,
 			},
 		})
 	case http.MethodPatch:
@@ -642,7 +644,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			Limit:     queryInt(r, "limit", 200),
 			Offset:    queryInt(r, "offset", 0),
 		}
-		issues, total, err := s.service.ListIssueSummaries(r.Context(), query)
+		issues, total, counts, err := s.service.ListIssueSummariesWithCounts(r.Context(), query)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -652,6 +654,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			"total":  total,
 			"limit":  query.Limit,
 			"offset": query.Offset,
+			"counts": counts,
 		})
 	case http.MethodPost:
 		var body struct {

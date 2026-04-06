@@ -60,15 +60,18 @@ export interface ProjectSummary extends Project {
   terminal_count?: number;
 }
 
+export interface IssueListResponse {
+  items: IssueSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  counts?: IssueStateCounts;
+}
+
 export interface ProjectDetailResponse {
   project: ProjectSummary;
   epics: EpicSummary[];
-  issues: {
-    items: IssueSummary[];
-    total: number;
-    limit: number;
-    offset: number;
-  };
+  issues: IssueListResponse;
 }
 
 export interface Epic {
@@ -93,12 +96,7 @@ export interface EpicDetailResponse {
   epic: EpicSummary;
   project?: Project;
   sibling_epics: EpicSummary[];
-  issues: {
-    items: IssueSummary[];
-    total: number;
-    limit: number;
-    offset: number;
-  };
+  issues: IssueListResponse;
 }
 
 export interface Issue {
@@ -495,12 +493,7 @@ export interface DashboardWorkSource extends DashboardRuntimeSource {
   };
   projects: ProjectSummary[];
   epics: EpicSummary[];
-  issues: {
-    items: IssueSummary[];
-    total: number;
-    limit: number;
-    offset: number;
-  };
+  issues: IssueListResponse;
   sessions: SessionsResponse;
 }
 
@@ -591,12 +584,7 @@ export interface BootstrapResponse {
   };
   projects: ProjectSummary[];
   epics: EpicSummary[];
-  issues: {
-    items: IssueSummary[];
-    total: number;
-    limit: number;
-    offset: number;
-  };
+  issues: IssueListResponse;
   sessions: SessionsResponse;
 }
 

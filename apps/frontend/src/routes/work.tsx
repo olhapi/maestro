@@ -131,24 +131,26 @@ export function WorkPage() {
         }
         descriptionClassName="max-w-none"
         stats={
-          <>
-            <StatCard
-              label="Active work"
-              value={String(metrics.active)}
-              detail="Ready, in progress, and in review across the portfolio."
-            />
-            <StatCard
-              label="Backlog"
-              value={String(metrics.backlog)}
-              detail="Planned work not yet routed into execution."
-            />
-            <StatCard label="Completed" value={String(metrics.done)} detail="Issues already closed out successfully." />
-            <StatCard
-              label="Live sessions"
-              value={String(metrics.live)}
-              detail="Issues currently attached to a running workspace."
-            />
-          </>
+          !isMobileLayout ? (
+            <>
+              <StatCard
+                label="Active work"
+                value={String(metrics.active)}
+                detail="Ready, in progress, and in review across the portfolio."
+              />
+              <StatCard
+                label="Backlog"
+                value={String(metrics.backlog)}
+                detail="Planned work not yet routed into execution."
+              />
+              <StatCard label="Completed" value={String(metrics.done)} detail="Issues already closed out successfully." />
+              <StatCard
+                label="Live sessions"
+                value={String(metrics.live)}
+                detail="Issues currently attached to a running workspace."
+              />
+            </>
+          ) : undefined
         }
       />
 
@@ -213,6 +215,7 @@ export function WorkPage() {
         title={isMobileLayout ? "Review work state by state" : "Triage, route, and monitor work in one surface"}
         items={issues.data.items}
         bootstrap={bootstrap.data}
+        stateCounts={issues.data.counts}
         sort={sort}
         view={view}
         onSortChange={(value) => updateWorkOverviewFilters({ sort: value })}

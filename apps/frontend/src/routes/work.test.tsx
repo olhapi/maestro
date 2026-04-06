@@ -133,9 +133,17 @@ describe('WorkPage', () => {
       },
       issues: {
         items: doneIssues,
-        total: doneIssues.length,
+        total: 114,
         limit: 200,
         offset: 0,
+        counts: {
+          backlog: 0,
+          ready: 0,
+          in_progress: 0,
+          in_review: 0,
+          done: 114,
+          cancelled: 0,
+        },
       },
     }
 
@@ -143,9 +151,17 @@ describe('WorkPage', () => {
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
     vi.mocked(api.listIssues).mockResolvedValue({
       items: doneIssues,
-      total: doneIssues.length,
+      total: 114,
       limit: 200,
       offset: 0,
+      counts: {
+        backlog: 0,
+        ready: 0,
+        in_progress: 0,
+        in_review: 0,
+        done: 114,
+        cancelled: 0,
+      },
     })
 
     renderWithQueryClient(<WorkPage />)
@@ -154,6 +170,7 @@ describe('WorkPage', () => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
+    expect(screen.getByText('114')).toBeInTheDocument()
     expect(screen.getAllByText(/Done task \d+/)).toHaveLength(30)
     expect(screen.getByText('Showing 30 of 35')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Load 5 more' })).toBeInTheDocument()
@@ -364,6 +381,12 @@ describe('WorkPage', () => {
         expect(screen.getByText('Review work state by state')).toBeInTheDocument()
       })
 
+      expect(
+        screen.queryByText('Ready, in progress, and in review across the portfolio.'),
+      ).not.toBeInTheDocument()
+      expect(screen.queryByText('Planned work not yet routed into execution.')).not.toBeInTheDocument()
+      expect(screen.queryByText('Issues already closed out successfully.')).not.toBeInTheDocument()
+      expect(screen.queryByText('Issues currently attached to a running workspace.')).not.toBeInTheDocument()
       expect(screen.queryByRole('radio', { name: 'Board view' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: /collapse backlog status row/i })).toHaveAttribute(
         'aria-expanded',

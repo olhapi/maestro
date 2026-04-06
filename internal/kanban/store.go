@@ -3591,6 +3591,68 @@ func (s *Store) CountIssuesByState(projectID string) (map[State]int, error) {
 	return counts, nil
 }
 
+func issueSummaryFilters(query IssueQuery) (string, []interface{}) {
+	where := []string{"1=1"}
+	args := []interface{}{}
+	if query.ProjectID != "" {
+		where = append(where, "i.project_id = ?")
+		args = append(args, query.ProjectID)
+	}
+	if query.ProjectName != "" {
+		where = append(where, "p.name = ? COLLATE NOCASE")
+		args = append(args, query.ProjectName)
+	}
+	if query.EpicID != "" {
+		where = append(where, "i.epic_id = ?")
+		args = append(args, query.EpicID)
+	}
+	if query.State != "" {
+		where = append(where, "i.state = ?")
+		args = append(args, query.State)
+	}
+	if strings.TrimSpace(query.IssueType) != "" {
+		where = append(where, "i.issue_type = ?")
+		args = append(args, NormalizeIssueType(query.IssueType))
+	}
+	if query.Search != "" {
+		where = append(where, "(i.identifier LIKE ? OR i.title LIKE ? OR i.description LIKE ?)")
+		needle := "%" + query.Search + "%"
+		args = append(args, needle, needle, needle)
+	}
+	if query.Blocked != nil {
+		if *query.Blocked {
+			where = append(where, unresolvedBlockerExistsClause("i"))
+		} else {
+			where = append(where, "NOT "+unresolvedBlockerExistsClause("i"))
+		}
+	}
+
+	return strings.Join(where, " AND "), args
+}
+
+func (s *Store) CountIssueSummariesByState(query IssueQuery) (IssueStateCounts, error) {
+	where, args := issueSummaryFilters(query)
+	rows, err := s.db.Query(`SELECT i.state, COUNT(*) FROM issues i LEFT JOIN projects p ON p.id = i.project_id WHERE `+where+` GROUP BY i.state`, args...)
+	if err != nil {
+		return IssueStateCounts{}, err
+	}
+	defer rows.Close()
+
+	var counts IssueStateCounts
+	for rows.Next() {
+		var state string
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return IssueStateCounts{}, err
+		}
+		counts.AddCount(State(state), count)
+	}
+	if err := rows.Err(); err != nil {
+		return IssueStateCounts{}, err
+	}
+	return counts, nil
+}
+
 func (s *Store) UpdateIssueState(id string, state State) error {
 	return s.UpdateIssueStateAndPhase(id, state, DefaultWorkflowPhaseForState(state))
 }
@@ -4479,7 +4541,7 @@ func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 	return out, nil
 }
 
-func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error) {
+func (s *Store) ListIssueSummariesWithCounts(query IssueQuery) ([]IssueSummary, int, IssueStateCounts, error) {
 	if query.Limit <= 0 || query.Limit > 500 {
 		query.Limit = 200
 	}
@@ -4487,45 +4549,14 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		query.Offset = 0
 	}
 
-	where := []string{"1=1"}
-	args := []interface{}{}
-	if query.ProjectID != "" {
-		where = append(where, "i.project_id = ?")
-		args = append(args, query.ProjectID)
+	baseWhere, args := issueSummaryFilters(query)
+	counts, err := s.CountIssueSummariesByState(query)
+	if err != nil {
+		return nil, 0, IssueStateCounts{}, err
 	}
-	if query.ProjectName != "" {
-		where = append(where, "p.name = ? COLLATE NOCASE")
-		args = append(args, query.ProjectName)
-	}
-	if query.EpicID != "" {
-		where = append(where, "i.epic_id = ?")
-		args = append(args, query.EpicID)
-	}
-	if query.State != "" {
-		where = append(where, "i.state = ?")
-		args = append(args, query.State)
-	}
-	if strings.TrimSpace(query.IssueType) != "" {
-		where = append(where, "i.issue_type = ?")
-		args = append(args, NormalizeIssueType(query.IssueType))
-	}
-	if query.Search != "" {
-		where = append(where, "(i.identifier LIKE ? OR i.title LIKE ? OR i.description LIKE ?)")
-		needle := "%" + query.Search + "%"
-		args = append(args, needle, needle, needle)
-	}
-	if query.Blocked != nil {
-		if *query.Blocked {
-			where = append(where, unresolvedBlockerExistsClause("i"))
-		} else {
-			where = append(where, "NOT "+unresolvedBlockerExistsClause("i"))
-		}
-	}
-
-	baseWhere := strings.Join(where, " AND ")
 	var total int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM issues i LEFT JOIN projects p ON p.id = i.project_id WHERE `+baseWhere, args...).Scan(&total); err != nil {
-		return nil, 0, err
+		return nil, 0, IssueStateCounts{}, err
 	}
 
 	orderBy := "i.updated_at DESC, i.created_at DESC"
@@ -4553,7 +4584,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 		ORDER BY `+orderBy+`
 		LIMIT ? OFFSET ?`, append(args, query.Limit, query.Offset)...)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, IssueStateCounts{}, err
 	}
 	defer rows.Close()
 
@@ -4571,7 +4602,7 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 			&item.AgentName, &item.AgentPrompt, &branchName, &prURL, &item.CreatedAt, &item.UpdatedAt, &item.TotalTokensSpent, &startedAt, &completedAt, &lastSyncedAt,
 			&item.ProjectName, &projectDesc, &item.EpicName, &epicDesc, &item.WorkspacePath, &item.WorkspaceRunCount, &lastRun,
 		); err != nil {
-			return nil, 0, err
+			return nil, 0, IssueStateCounts{}, err
 		}
 		item.IssueType = NormalizeIssueType(string(item.IssueType))
 		item.PermissionProfile = NormalizePermissionProfile(permissionProfile)
@@ -4621,11 +4652,11 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 
 	labelMap, blockerMap, unresolvedBlockerMap, err := s.issueRelations(issueIDs)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, IssueStateCounts{}, err
 	}
 	recurrenceMap, err := s.issueRecurrenceMap(issueIDs)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, IssueStateCounts{}, err
 	}
 	for i := range out {
 		out[i].Labels = labelMap[out[i].ID]
@@ -4635,7 +4666,12 @@ func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error
 			applyRecurrenceToIssue(&out[i].Issue, &recurrence)
 		}
 	}
-	return out, total, nil
+	return out, total, counts, nil
+}
+
+func (s *Store) ListIssueSummaries(query IssueQuery) ([]IssueSummary, int, error) {
+	items, total, _, err := s.ListIssueSummariesWithCounts(query)
+	return items, total, err
 }
 
 func (s *Store) GetIssueDetailByIdentifier(identifier string) (*IssueDetail, error) {

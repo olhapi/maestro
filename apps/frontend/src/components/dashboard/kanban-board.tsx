@@ -4,7 +4,7 @@ import { ChevronDown, ChevronUp, Plus } from 'lucide-react'
 import { IssueCard } from '@/components/dashboard/issue-card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { DashboardWorkSource, IssueState, IssueSummary } from '@/lib/types'
+import type { DashboardWorkSource, IssueState, IssueStateCounts, IssueSummary } from '@/lib/types'
 import { getSessionForIssue, getStateMeta, issueStatesFor } from '@/lib/dashboard'
 import { cn } from '@/lib/utils'
 
@@ -12,6 +12,7 @@ type KanbanBoardMode = 'board' | 'grouped'
 
 type KanbanLane = {
   blocked: number
+  count: number
   items: IssueSummary[]
   live: number
   state: IssueState
@@ -21,6 +22,94 @@ const DONE_LANE_BATCH_SIZE = 30
 
 function stateRowBodyId(boardId: string, state: string) {
   return `${boardId}-${state.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+}
+
+function LaneEmptyState({
+  hasAggregateItems,
+  onCreateIssue,
+  state,
+}: {
+  hasAggregateItems: boolean
+  onCreateIssue?: (state?: IssueState) => void
+  state: IssueState
+}) {
+  if (!hasAggregateItems && onCreateIssue) {
+    return (
+      <button
+        type="button"
+        className="flex min-h-28 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
+        onClick={() => onCreateIssue(state)}
+      >
+        Add the next issue
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex min-h-28 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)]">
+      No loaded issues on this page.
+    </div>
+  )
+}
+
+function buildKanbanLanes(
+  items: IssueSummary[],
+  bootstrap?: DashboardWorkSource,
+  stateCounts?: Partial<IssueStateCounts>,
+) {
+  const orderedStates = issueStatesFor(items)
+  const lanesByState = new Map<IssueState, KanbanLane>()
+
+  for (const state of orderedStates) {
+    lanesByState.set(state, {
+      state,
+      items: [],
+      blocked: 0,
+      live: 0,
+      count: stateCounts?.[state as keyof IssueStateCounts] ?? 0,
+    })
+  }
+
+  for (const item of items) {
+    const state = item.state as IssueState
+    let lane = lanesByState.get(state)
+    if (!lane) {
+      lane = {
+        state,
+        items: [],
+        blocked: 0,
+        live: 0,
+        count: stateCounts?.[state as keyof IssueStateCounts] ?? 0,
+      }
+      lanesByState.set(state, lane)
+      orderedStates.push(state)
+    }
+    lane.items.push(item)
+    if (item.is_blocked) {
+      lane.blocked += 1
+    }
+    if (getSessionForIssue(bootstrap, item.id, item.identifier)) {
+      lane.live += 1
+    }
+  }
+
+  return orderedStates.map((state) => {
+    const lane = lanesByState.get(state)
+    if (!lane) {
+      return {
+        state,
+        items: [],
+        blocked: 0,
+        live: 0,
+        count: 0,
+      }
+    }
+
+    return {
+      ...lane,
+      count: stateCounts?.[state as keyof IssueStateCounts] ?? lane.items.length,
+    }
+  })
 }
 
 function DoneLaneFooter({
@@ -56,13 +145,19 @@ function DoneLaneFooter({
 
 function DoneLaneProgress({
   items,
+  visible = true,
   children,
 }: {
   items: IssueSummary[]
+  visible?: boolean
   children: (visibleItems: IssueSummary[], onLoadMore: () => void) => ReactNode
 }) {
   const [visibleCount, setVisibleCount] = useState(DONE_LANE_BATCH_SIZE)
   const visibleItems = items.slice(0, visibleCount)
+
+  if (!visible) {
+    return null
+  }
 
   return children(visibleItems, () => {
     setVisibleCount((current) => current + DONE_LANE_BATCH_SIZE)
@@ -104,7 +199,7 @@ function GroupedKanbanBoard({
                 <div className="min-w-0">
                   <p className={cn('text-xs uppercase tracking-[0.22em]', meta.accent)}>{meta.label}</p>
                   <div className="mt-2 flex flex-wrap items-end gap-3">
-                    <p className="text-2xl font-semibold leading-none text-white">{lane.items.length}</p>
+                    <p className="text-2xl font-semibold leading-none text-white">{lane.count}</p>
                     <div className="flex flex-wrap gap-2 text-xs text-[var(--muted-foreground)]">
                       <span>{lane.blocked} blocked</span>
                       <span>{lane.live} live</span>
@@ -145,10 +240,7 @@ function GroupedKanbanBoard({
             <div hidden={collapsed} id={bodyId} className="grid gap-2.5 p-[var(--panel-padding)]">
               {lane.items.length > 0 ? (
                 lane.state === 'done' ? (
-                  <DoneLaneProgress
-                    key={doneLaneKey}
-                    items={lane.items}
-                  >
+                  <DoneLaneProgress key={doneLaneKey} items={lane.items} visible={!collapsed}>
                     {(visibleItems, onLoadMore) => (
                       <>
                         {visibleItems.map((issue) => (
@@ -182,12 +274,11 @@ function GroupedKanbanBoard({
                   ))
                 ) : null
               ) : !collapsed ? (
-                <button
-                  className="flex min-h-28 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
-                  onClick={() => onCreateIssue?.(lane.state)}
-                >
-                  Add the next issue
-                </button>
+                <LaneEmptyState
+                  hasAggregateItems={lane.count > 0}
+                  onCreateIssue={onCreateIssue}
+                  state={lane.state}
+                />
               ) : null}
             </div>
           </div>
@@ -200,6 +291,7 @@ function GroupedKanbanBoard({
 export function KanbanBoard({
   items,
   bootstrap,
+  stateCounts,
   onOpenIssue,
   onMoveIssue,
   onCreateIssue,
@@ -207,6 +299,7 @@ export function KanbanBoard({
 }: {
   items: IssueSummary[]
   bootstrap?: DashboardWorkSource
+  stateCounts?: Partial<IssueStateCounts>
   onOpenIssue: (issue: IssueSummary) => void
   onMoveIssue: (issue: IssueSummary, nextState: IssueState) => void
   onCreateIssue?: (state?: IssueState) => void
@@ -215,16 +308,7 @@ export function KanbanBoard({
   const [dragged, setDragged] = useState<IssueSummary | null>(null)
   const [dropState, setDropState] = useState<IssueState | null>(null)
   const doneLaneKey = items.map((item) => item.id).join('|')
-
-  const lanes = issueStatesFor(items).map((state) => {
-    const laneItems = items.filter((item) => item.state === state)
-    return {
-      state,
-      items: laneItems,
-      blocked: laneItems.filter((item) => item.is_blocked).length,
-      live: laneItems.filter((item) => getSessionForIssue(bootstrap, item.id, item.identifier)).length,
-    }
-  })
+  const lanes = buildKanbanLanes(items, bootstrap, stateCounts)
 
   if (mode === 'grouped') {
     return (
@@ -276,7 +360,7 @@ export function KanbanBoard({
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className={cn('text-xs uppercase tracking-[0.22em]', meta.accent)}>{meta.label}</p>
-                      <p className="mt-1.5 text-[1.65rem] font-semibold leading-none text-white">{lane.items.length}</p>
+                      <p className="mt-1.5 text-[1.65rem] font-semibold leading-none text-white">{lane.count}</p>
                     </div>
                     <Button
                       variant="secondary"
@@ -355,12 +439,11 @@ export function KanbanBoard({
                     ))
                   )}
                   {lane.items.length === 0 ? (
-                    <button
-                      className="flex flex-1 items-center justify-center rounded-[calc(var(--panel-radius)-0.125rem)] border border-dashed border-white/10 bg-transparent px-4 py-5 text-sm text-[var(--muted-foreground)] transition hover:border-white/20 hover:text-white"
-                      onClick={() => onCreateIssue?.(lane.state)}
-                    >
-                      Add the next issue
-                    </button>
+                    <LaneEmptyState
+                      hasAggregateItems={lane.count > 0}
+                      onCreateIssue={onCreateIssue}
+                      state={lane.state}
+                    />
                   ) : null}
                 </div>
               </div>

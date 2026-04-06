@@ -155,7 +155,10 @@ describe("ProjectDetailPage", () => {
 
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
     vi.mocked(api.getProject).mockResolvedValue({
-      project: bootstrap.projects[0],
+      project: {
+        ...bootstrap.projects[0],
+        total_count: 37,
+      },
       epics: bootstrap.epics,
       issues: projectIssues,
     })
@@ -165,6 +168,10 @@ describe("ProjectDetailPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Project work")).toBeInTheDocument()
     })
+
+    const issuesStat = screen.getByText("Issues").closest("div")
+    expect(issuesStat).not.toBeNull()
+    expect(within(issuesStat as HTMLElement).getByText("37")).toBeInTheDocument()
 
     expect(screen.getByRole("combobox", { name: /sort issues/i })).toHaveTextContent("Highest priority")
     expect(screen.getByRole("radio", { name: "Board view" })).toHaveAttribute("data-state", "on")

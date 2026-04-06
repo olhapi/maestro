@@ -141,8 +141,17 @@ export function getPausedForIssue(
 }
 
 export function groupIssuesByState(items: IssueSummary[], states: IssueState[] = issueStatesFor(items)) {
-  return states.reduce<Record<IssueState, IssueSummary[]>>((groups, state) => {
-    groups[state] = items.filter((item) => item.state === state)
-    return groups
+  const groups = states.reduce<Record<IssueState, IssueSummary[]>>((acc, state) => {
+    acc[state] = []
+    return acc
   }, {} as Record<IssueState, IssueSummary[]>)
+
+  for (const item of items) {
+    const state = item.state as IssueState
+    if (!state) continue
+    const group = groups[state] ?? (groups[state] = [])
+    group.push(item)
+  }
+
+  return groups
 }
