@@ -13,6 +13,7 @@ const invalidateSocket = vi.fn()
 let pathname = '/work'
 const initialInnerWidth = window.innerWidth
 const audioContextInstances: MockAudioContext[] = []
+const dashboardRefreshCoalesceMs = vi.hoisted(() => vi.fn(() => 0))
 
 class MockAudioParam {
   setValueAtTime = vi.fn()
@@ -85,7 +86,7 @@ vi.mock('@/lib/query-refresh', async () => {
   const actual = await vi.importActual<typeof import('@/lib/query-refresh')>('@/lib/query-refresh')
   return {
     ...actual,
-    dashboardRefreshCoalesceMs: () => 0,
+    dashboardRefreshCoalesceMs,
   }
 })
 
@@ -235,6 +236,8 @@ describe('AppShell', () => {
   beforeEach(() => {
     pathname = '/work'
     invalidateSocket.mockReset()
+    dashboardRefreshCoalesceMs.mockReset()
+    dashboardRefreshCoalesceMs.mockReturnValue(0)
     audioContextInstances.length = 0
     MockAudioContext.nextResumeError = null
     window.localStorage.clear()
@@ -316,6 +319,74 @@ describe('AppShell', () => {
     })
     expect(screen.getByText('Updated 0s ago')).toBeInTheDocument()
     expect(screen.getByText('Last signal').nextElementSibling).toHaveTextContent('0s ago')
+  })
+
+  it('refreshes immediately when the mobile freshness chip is clicked', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-11T10:00:00Z'))
+    dashboardRefreshCoalesceMs.mockReturnValue(750)
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: 390,
+    })
+    window.dispatchEvent(new Event('resize'))
+
+    const bootstrap = makeBootstrapResponse()
+    const workBootstrap = makeWorkBootstrapResponse({
+      generated_at: bootstrap.generated_at,
+      overview: {
+        board: bootstrap.overview.board,
+        snapshot: {
+          running: bootstrap.overview.snapshot.running,
+          retrying: bootstrap.overview.snapshot.retrying,
+          paused: bootstrap.overview.snapshot.paused,
+        },
+      },
+      projects: bootstrap.projects,
+      epics: bootstrap.epics,
+      issues: bootstrap.issues,
+      sessions: bootstrap.sessions,
+    })
+
+    mockDashboardData(bootstrap)
+    vi.mocked(api.listInterrupts).mockResolvedValue({ items: [] })
+
+    const { queryClient } = renderAppShellWithSeededData([
+      [['work-bootstrap'], workBootstrap] as const,
+      [['interrupts'], { items: [] }] as const,
+    ])
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(screen.getByText('Updated 2s ago')).toBeInTheDocument()
+
+    await act(async () => {
+      await invalidateSocket()
+    })
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(0)
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: /refresh dashboard now/i,
+        }),
+      )
+    })
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(3)
+    expect(screen.getByText('Updated 0s ago')).toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750)
+    })
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(3)
+    expect(screen.getByText('Updated 0s ago')).toBeInTheDocument()
   })
 
   it('keeps the sessions nav state and title on nested session routes', async () => {
