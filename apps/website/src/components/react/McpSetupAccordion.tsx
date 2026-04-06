@@ -1,7 +1,7 @@
 import * as Accordion from "@radix-ui/react-accordion";
 import CopyCodeField from "./CopyCodeField";
 
-const otherAgentConfig = `{
+const manualMcpConfig = `{
   "mcpServers": {
     "maestro": {
       "command": "maestro",
@@ -17,14 +17,9 @@ const sections = [
     blocks: ["codex mcp add maestro -- maestro mcp"],
   },
   {
-    value: "claude",
-    title: "Claude Code",
-    blocks: ["claude mcp add maestro -- maestro mcp"],
-  },
-  {
-    value: "other",
-    title: "Other coding agents",
-    blocks: [otherAgentConfig],
+    value: "manual",
+    title: "Manual MCP client",
+    blocks: [manualMcpConfig],
   },
 ] as const;
 
@@ -85,8 +80,8 @@ export default function McpSetupAccordion() {
       <p className="mt-2.5 text-sm leading-6 text-[var(--muted)]">
         If you built Maestro from source and did not add it to your{" "}
         <code>PATH</code>, replace <code>maestro</code> with the absolute path
-        to the binary. Start <code>maestro run</code> first, then let your
-        coding agent invoke <code>maestro mcp</code> against the same database.
+        to the binary. Start <code>maestro run</code> first, then let your MCP
+        client invoke <code>maestro mcp</code> against the same database.
       </p>
     </div>
   );

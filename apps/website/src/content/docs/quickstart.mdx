@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Start a repo-local loop, hand work off to Maestro, and learn how to step back in through MCP and the control center.
+description: Start a repo-local loop, hand work off to Codex, and learn how to step back in through MCP and the control center.
 section: getting-started
 order: 1
 navLabel: Quickstart
@@ -9,25 +9,25 @@ navLabel: Quickstart
 import DocsCommandField from "./_components/DocsCommandField.astro";
 import DocsMcpSetupAccordion from "./_components/DocsMcpSetupAccordion.astro";
 
-Quickstart is the shortest path to a safe handoff. You will write the repo contract, expose the live queue to a coding agent, start the daemon, and see where to check back in once the loop is running.
+Quickstart is the shortest path to a safe Codex handoff. You will write the repo contract, expose the live queue to Codex, start the daemon, and see where to check back in once the loop is running.
 
 ## 1. Initialize a workflow file
 
-Start in the repo you want Maestro to orchestrate:
+Start in the repo you want Maestro to hand to Codex:
 
 <DocsCommandField command={`maestro workflow init .`} />
 
 This writes a repo-local `WORKFLOW.md` with the default Kanban tracker settings, Codex command, and prompt template. It is the contract Maestro will keep following while you are elsewhere.
 
-When you create a project later, treat its description as durable agent guidance rather than a short label. Maestro passes that project description into every issue prompt by default.
+When you create a project later, treat its description as durable Codex guidance rather than a short label. Maestro passes that project description into every issue prompt by default.
 
-## 2. Expose the tracker to MCP clients
+## 2. Connect Codex to MCP
 
-If `maestro` is already on your `PATH`, save it through the MCP flow your coding agent supports. Use the direct commands for Codex or Claude Code when they fit, or the generic server entry for other MCP-capable agents.
+If `maestro` is already on your `PATH`, use the Codex flow first. Use the manual MCP entry only when your client cannot run the direct command.
 
 <DocsMcpSetupAccordion />
 
-## 3. Start the loop
+## 3. Start Codex orchestration
 
 Start the daemon:
 
@@ -42,7 +42,7 @@ This is the handoff point. Once the daemon is running, Maestro keeps doing the r
 1. Maestro loads `WORKFLOW.md`.
 2. It polls for issues in the `ready` state.
 3. It creates per-issue workspaces.
-4. It dispatches work to the configured agent command.
+4. It dispatches work to the configured Codex command.
 5. It tracks retries, logs, runtime status, and the MCP transport used by `maestro mcp`.
 
 When you want to check progress, use the control center or the live CLI helpers instead of reconstructing state from scratch.
@@ -51,14 +51,14 @@ When you want to check progress, use the control center or the live CLI helpers 
 
 This seeds the same queue you will supervise from the dashboard once real work is in flight.
 
-With the daemon running, ask your coding agent to translate source work into local Maestro records through the saved `maestro` MCP server. For example:
+With the daemon running, ask Codex to translate source work into local Maestro records through the saved `maestro` MCP server. For example:
 
 <DocsCommandField
   command={`Take my Jira issues from the "make a react todo app" epic and create the corresponding Maestro project, epics, and issues.
 Use the current repo as the project repo path, keep the imported work local, and mark the new issues ready for execution.`}
 />
 
-The same prompt works in any connected coding agent once the `maestro` MCP server is saved there.
+The same prompt works once the `maestro` MCP server is saved in your Codex setup.
 
 Project descriptions are the right place for repo-wide instructions such as required test commands, package-manager expectations, or rules about keeping public APIs stable. That text becomes `{{ project.description }}` in the workflow template and is included in Maestro's default prompts automatically.
 
@@ -85,4 +85,4 @@ The preview warning on `run` is intentional. Pass `--i-understand-that-this-will
 
 ## Next step
 
-Read [architecture](/docs/architecture) if you want the runtime model first, or skip straight to [workflow config](/docs/workflow-config) if you are ready to tune the loop.
+Read [architecture](/docs/architecture) if you want the runtime model first, or skip straight to [workflow config](/docs/workflow-config) if you are ready to tune Codex.
