@@ -564,7 +564,7 @@ func (a *cliApp) newIssueListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&projectName, "project-name", "", "Filter by exact project name")
 	cmd.Flags().StringVar(&epicID, "epic", "", "Filter by epic ID")
 	cmd.Flags().StringVar(&search, "search", "", "Search identifier, title, or description")
-	cmd.Flags().StringVar(&sortBy, "sort", sortBy, "Sort: updated_desc, created_asc, priority_asc, identifier_asc, state_asc")
+	cmd.Flags().StringVar(&sortBy, "sort", sortBy, "Sort: updated_desc, created_asc, priority_asc, identifier_asc, state_asc, project_asc, epic_asc")
 	cmd.Flags().IntVar(&limit, "limit", limit, "Maximum issues to return")
 	cmd.Flags().IntVar(&offset, "offset", 0, "Number of issues to skip")
 	cmd.Flags().BoolVar(&blocked, "blocked", false, "Only show blocked issues")

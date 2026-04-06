@@ -128,8 +128,8 @@ export function ProjectDetailPage() {
     queryFn: api.bootstrap,
   });
   const project = useQuery({
-    queryKey: ["project", projectId],
-    queryFn: () => api.getProject(projectId),
+    queryKey: ["project", projectId, sort],
+    queryFn: () => api.getProject(projectId, sort),
   });
 
   const invalidate = async () => {

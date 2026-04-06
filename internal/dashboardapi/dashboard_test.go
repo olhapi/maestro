@@ -216,6 +216,48 @@ func TestDashboardBoardCountsUseFullIssueSet(t *testing.T) {
 	}
 }
 
+func TestDashboardProjectEndpointHonorsSortQuery(t *testing.T) {
+	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	project, err := store.CreateProject("Sort Project", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	if _, err := store.CreateIssue(project.ID, "", "Low priority", "", 1, nil); err != nil {
+		t.Fatalf("CreateIssue low priority failed: %v", err)
+	}
+	if _, err := store.CreateIssue(project.ID, "", "High priority", "", 5, nil); err != nil {
+		t.Fatalf("CreateIssue high priority failed: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewServer(store, testProvider{}).Register(mux)
+	srv, err := inprocessserver.New(mux)
+	if err != nil {
+		t.Fatalf("in-process server failed: %v", err)
+	}
+	t.Cleanup(srv.Close)
+
+	resp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/projects/"+project.ID+"?sort=updated_desc", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected project endpoint to return 200, got %d", resp.StatusCode)
+	}
+	payload := decodeResponse(t, resp)
+	issues := payload["issues"].(map[string]interface{})["items"].([]interface{})
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 project issues, got %#v", issues)
+	}
+	first := issues[0].(map[string]interface{})
+	second := issues[1].(map[string]interface{})
+	if int(first["priority"].(float64)) != 5 || int(second["priority"].(float64)) != 1 {
+		t.Fatalf("expected updated_desc order to place the later issue first, got %#v", issues)
+	}
+}
+
 func TestDashboardHelperAndDecoderCoverage(t *testing.T) {
 	scoped := "/repo/current"
 	if got := scopedRepoPathFromStatus(nil); got != "" {

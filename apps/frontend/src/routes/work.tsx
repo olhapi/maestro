@@ -1,6 +1,6 @@
 import { useDeferredValue, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { List, Pencil, Trash2 } from "lucide-react";
+import { Eye, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -232,10 +232,20 @@ export function WorkPage() {
         }}
         renderListActions={(issue) => (
           <>
-            <Button variant="ghost" size="icon" onClick={() => setPreviewIssue(issue)}>
-              <List className="size-4" />
+            <Button
+              aria-label="Open issue preview"
+              title="Open issue preview"
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setPreviewIssue(issue)}
+            >
+              <Eye className="size-4" />
             </Button>
             <Button
+              aria-label="Edit issue"
+              title="Edit issue"
+              type="button"
               variant="ghost"
               size="icon"
               onClick={async () => {
@@ -249,6 +259,7 @@ export function WorkPage() {
             <Button
               variant="ghost"
               size="icon"
+              type="button"
               aria-label="Delete issue"
               title="Delete issue"
               disabled={deleteMutation.isPending}

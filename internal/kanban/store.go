@@ -4569,6 +4569,10 @@ func (s *Store) ListIssueSummariesWithCounts(query IssueQuery) ([]IssueSummary, 
 		orderBy = "i.identifier ASC"
 	case "state_asc":
 		orderBy = "i.state ASC, CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
+	case "project_asc":
+		orderBy = "CASE WHEN COALESCE(p.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(p.name, '') ASC, i.updated_at DESC, i.identifier ASC"
+	case "epic_asc":
+		orderBy = "CASE WHEN COALESCE(e.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(e.name, '') ASC, i.updated_at DESC, i.identifier ASC"
 	}
 
 	rows, err := s.db.Query(`

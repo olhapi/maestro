@@ -419,6 +419,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		status := s.provider.Status()
 		scopedRepoPath := scopedRepoPathFromStatus(status)
+		sort := strings.TrimSpace(r.URL.Query().Get("sort"))
+		if sort == "" {
+			sort = "priority_asc"
+		}
 		projectSummaries, err := s.service.ListProjectSummaries()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -443,7 +447,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		}
 		issues, total, counts, err := s.service.ListIssueSummariesWithCounts(r.Context(), kanban.IssueQuery{
 			ProjectID: id,
-			Sort:      "updated_desc",
+			Sort:      sort,
 			Limit:     200,
 			Offset:    0,
 		})

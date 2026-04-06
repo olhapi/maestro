@@ -182,7 +182,7 @@ func (s *Server) registerTools() {
 			"state":      stringProperty("Filter by state: backlog, ready, in_progress, in_review, done, cancelled"),
 			"issue_type": stringProperty("Filter by issue type: standard or recurring"),
 			"search":     stringProperty("Search identifier, title, or description"),
-			"sort":       stringProperty("Sort order: updated_desc, created_asc, priority_asc, identifier_asc, state_asc"),
+			"sort":       stringProperty("Sort order: updated_desc, created_asc, priority_asc, identifier_asc, state_asc, project_asc, epic_asc"),
 			"limit":      numberProperty("Maximum issues to return"),
 			"offset":     numberProperty("Number of issues to skip"),
 		}),
