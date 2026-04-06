@@ -354,10 +354,9 @@ export function OverviewPage() {
         </OverviewTrendCard>
 
         <OverviewTrendCard
-          badge="24h burn"
+          badge={`24h\u00a0burn\u00a0·\u00a0${formatCompactNumber(burnTotal)}\u00a0total`}
           title="Token burn"
           description="Hourly burn from final run totals, not live snapshot totals."
-          action={<Badge className="border-white/10 bg-white/5 text-white/90">{formatCompactNumber(burnTotal)} total</Badge>}
           boundaryLabel="overview token burn chart"
           minHeight="min-h-[260px]"
           chartClassName="h-[220px] lg:h-full"

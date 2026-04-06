@@ -205,15 +205,16 @@ describe('IssuePreviewSheet', () => {
     expect(deleteButton.querySelector('svg')).not.toBeNull()
   })
 
-  it('shows branch and pull request metadata without the assigned agent block', async () => {
+  it('keeps issue metadata scrollable inside the preview sheet', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary()
     vi.mocked(api.getIssue).mockResolvedValue(
       makeIssueDetail({
         agent_name: 'marketing',
         agent_prompt: 'Review the hero messaging before implementation.',
-        branch_name: 'codex/ISS-1',
-        pr_url: 'https://example.com/pr/99',
+        workspace_path: '/home/olhapi/projects/mvphotography/workspaces/issues/2026/03/29/a-very-long-workspace-path-that-should-scroll',
+        branch_name: 'codex/ISS-1-with-an-exceptionally-long-branch-name-that-should-scroll',
+        pr_url: 'https://example.com/pr/99/with/an/exceptionally/long/path/that/should/scroll',
       }),
     )
 
@@ -231,9 +232,22 @@ describe('IssuePreviewSheet', () => {
       expect(screen.getByText('Branch / PR')).toBeInTheDocument()
     })
 
+    const workspaceCard = screen.getByText('Workspace').closest('div')
+    expect(workspaceCard).toHaveClass('min-w-0')
+    expect(within(workspaceCard!).getByText(
+      '/home/olhapi/projects/mvphotography/workspaces/issues/2026/03/29/a-very-long-workspace-path-that-should-scroll',
+    )).toHaveClass('max-w-full', 'overflow-x-auto', 'whitespace-nowrap')
+
+    const branchCard = screen.getByText('Branch / PR').closest('div')
+    expect(branchCard).toHaveClass('min-w-0')
+    expect(within(branchCard!).getByText(
+      'codex/ISS-1-with-an-exceptionally-long-branch-name-that-should-scroll',
+    )).toHaveClass('max-w-full', 'overflow-x-auto', 'whitespace-nowrap')
+    expect(within(branchCard!).getByText(
+      'https://example.com/pr/99/with/an/exceptionally/long/path/that/should/scroll',
+    )).toHaveClass('max-w-full', 'overflow-x-auto', 'whitespace-nowrap')
+
     expect(screen.queryByText('Assigned agent')).not.toBeInTheDocument()
-    expect(screen.getByText('codex/ISS-1')).toBeInTheDocument()
-    expect(screen.getByText('https://example.com/pr/99')).toBeInTheDocument()
   })
 
   it('keeps the workspace path on a single scrollable line', async () => {

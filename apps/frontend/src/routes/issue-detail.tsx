@@ -1127,27 +1127,31 @@ export function IssueDetailPage() {
         <div className="grid min-w-0 gap-[var(--section-gap)]" data-testid="issue-main-column">
           <Card>
             <CardContent className="grid gap-3 pt-[var(--panel-padding)] sm:grid-cols-2 xl:grid-cols-3">
-              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
+              <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Updated</p>
                 <p className="mt-3 text-white">{formatRelativeTime(issue.data.updated_at)}</p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">{formatDateTime(issue.data.updated_at)}</p>
               </div>
-              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
+              <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Workspace</p>
-                <p className="mt-3 break-all text-white">{issue.data.workspace_path || "Not created yet"}</p>
+                <p className="mt-3 max-w-full overflow-x-auto whitespace-nowrap text-white">
+                  {issue.data.workspace_path || "Not created yet"}
+                </p>
                 <p className="mt-2 text-sm text-[var(--muted-foreground)]">
                   Runs: {formatNumber(issue.data.workspace_run_count)}
                 </p>
               </div>
-              <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
+              <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-black/20 px-3.5 py-3">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Branch / PR</p>
-                <p className="mt-3 text-white">{issue.data.branch_name || "No branch linked"}</p>
-                <p className="mt-2 text-sm text-[var(--muted-foreground)]">
+                <p className="mt-3 max-w-full overflow-x-auto whitespace-nowrap text-white">
+                  {issue.data.branch_name || "No branch linked"}
+                </p>
+                <p className="mt-2 max-w-full overflow-x-auto whitespace-nowrap text-[var(--muted-foreground)]">
                   {issue.data.pr_url || "No pull request linked"}
                 </p>
               </div>
               {issue.data.issue_type === "recurring" ? (
-                <div className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-cyan-400/10 bg-cyan-400/[0.04] px-3.5 py-3">
+                <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-cyan-400/10 bg-cyan-400/[0.04] px-3.5 py-3">
                   <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Schedule</p>
                   <p className="mt-3 text-white">
                     {issue.data.enabled === false ? "Disabled" : issue.data.cron || "Recurring"}

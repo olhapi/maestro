@@ -8,6 +8,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { OverviewPage } from '@/routes/overview'
 import { makeBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
+import { formatCompactNumber } from '@/lib/utils'
 
 const { ResponsiveContainer } = vi.hoisted(() => ({
   ResponsiveContainer: vi.fn(({ children }: { children: ReactNode }) => {
@@ -129,6 +130,7 @@ describe('OverviewPage', () => {
     const bootstrap = makeBootstrapResponse()
     bootstrap.generated_at = refreshedAt
     bootstrap.overview.snapshot.generated_at = refreshedAt
+    const burnTotal = bootstrap.overview.series.reduce((total, point) => total + (point.tokens ?? 0), 0)
 
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
 
@@ -139,6 +141,8 @@ describe('OverviewPage', () => {
     expect(screen.getByText('Live token load')).toBeInTheDocument()
     expect(screen.getByText(/runs started, completions, failures, and retries across the last 24 hours/i)).toBeInTheDocument()
     expect(screen.getByText(/hourly burn from final run totals, not live snapshot totals/i)).toBeInTheDocument()
+    expect(screen.getByText(new RegExp(`24h burn\\s+·\\s+${formatCompactNumber(burnTotal)}\\s+total`, 'i'))).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(`^${formatCompactNumber(burnTotal)}\\s+total$`, 'i'))).not.toBeInTheDocument()
     expect(screen.getByText('Runs started')).toBeInTheDocument()
     expect(screen.getByText('Runs completed')).toBeInTheDocument()
     expect(screen.getByText('Runs failed')).toBeInTheDocument()
