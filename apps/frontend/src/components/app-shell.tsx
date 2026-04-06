@@ -113,6 +113,7 @@ function getPageTitle(pathname: string) {
   if (pathname === appRoutes.overview) return 'Overview'
   if (pathname === appRoutes.work) return 'Work'
   if (pathname === appRoutes.projects) return 'Projects'
+  if (pathname.startsWith('/projects/') && pathname.includes('/automations')) return 'Automations'
   if (pathname.startsWith('/projects/')) return 'Project'
   if (pathname.startsWith('/epics/')) return 'Epic'
   if (pathname.startsWith('/issues/')) return 'Issue'

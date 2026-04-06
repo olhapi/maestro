@@ -110,7 +110,7 @@ describe('IssueCard', () => {
     expect(onOpen).toHaveBeenCalledWith(issue)
   })
 
-  it('renders recurring metadata when the issue is scheduled', () => {
+  it('renders automation metadata when the issue is scheduled', () => {
     renderWithQueryClient(
       <IssueCard
         issue={makeIssueSummary({
@@ -121,7 +121,7 @@ describe('IssueCard', () => {
       />,
     )
 
-    expect(screen.getByText('Recurring')).toBeInTheDocument()
+    expect(screen.getByText('Automation')).toBeInTheDocument()
     expect(screen.getByText(/next/i)).toBeInTheDocument()
   })
 

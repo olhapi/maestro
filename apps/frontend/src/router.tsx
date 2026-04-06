@@ -45,6 +45,7 @@ const OverviewPage = lazyPage(() => import('@/routes/overview'), 'OverviewPage',
 const WorkPage = lazyPage(() => import('@/routes/work'), 'WorkPage', 'work page')
 const ProjectsPage = lazyPage(() => import('@/routes/projects'), 'ProjectsPage', 'projects page')
 const ProjectDetailPage = lazyPage(() => import('@/routes/project-detail'), 'ProjectDetailPage', 'project page')
+const ProjectAutomationsPage = lazyPage(() => import('@/routes/project-automations'), 'ProjectAutomationsPage', 'project automations page')
 const EpicDetailPage = lazyPage(() => import('@/routes/epic-detail'), 'EpicDetailPage', 'epic page')
 const IssueDetailPage = lazyPage(() => import('@/routes/issue-detail'), 'IssueDetailPage', 'issue page')
 const SessionsPage = lazyPage(() => import('@/routes/sessions'), 'SessionsPage', 'sessions page')
@@ -78,6 +79,12 @@ const projectDetailRoute = createRoute({
   component: ProjectDetailPage,
 })
 
+const projectAutomationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects/$projectId/automations',
+  component: ProjectAutomationsPage,
+})
+
 const epicDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/epics/$epicId',
@@ -107,6 +114,7 @@ const routeTree = rootRoute.addChildren([
   workRoute,
   projectsRoute,
   projectDetailRoute,
+  projectAutomationsRoute,
   epicDetailRoute,
   issueDetailRoute,
   sessionsRoute,

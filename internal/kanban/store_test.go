@@ -2576,6 +2576,33 @@ func TestCountIssuesByState(t *testing.T) {
 		t.Fatalf("unexpected project counts: %#v", projectCounts)
 	}
 
+	recurring, err := store.CreateIssueWithOptions(projectA.ID, "", "Recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	if err := store.UpdateIssueState(recurring.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState recurring: %v", err)
+	}
+
+	countsAfterRecurring, err := store.CountIssuesByState("")
+	if err != nil {
+		t.Fatalf("CountIssuesByState recurring all: %v", err)
+	}
+	if countsAfterRecurring[StateBacklog] != 1 || countsAfterRecurring[StateReady] != 1 || countsAfterRecurring[StateDone] != 1 {
+		t.Fatalf("unexpected global counts after recurring issue: %#v", countsAfterRecurring)
+	}
+
+	projectCountsAfterRecurring, err := store.CountIssuesByState(projectA.ID)
+	if err != nil {
+		t.Fatalf("CountIssuesByState recurring project: %v", err)
+	}
+	if projectCountsAfterRecurring[StateBacklog] != 1 || projectCountsAfterRecurring[StateReady] != 1 || projectCountsAfterRecurring[StateDone] != 0 {
+		t.Fatalf("unexpected project counts after recurring issue: %#v", projectCountsAfterRecurring)
+	}
+
 	backlogIssue, err := store.GetIssue(backlog.ID)
 	if err != nil {
 		t.Fatalf("GetIssue backlog: %v", err)

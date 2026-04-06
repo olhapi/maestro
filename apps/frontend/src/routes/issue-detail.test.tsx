@@ -724,7 +724,7 @@ describe("IssueDetailPage", () => {
     expect(screen.queryByText("Assigned agent")).not.toBeInTheDocument();
   });
 
-  it("shows recurring schedule details and triggers run-now", async () => {
+  it("shows automation schedule details and triggers run-now", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({
       issue_type: "recurring",
@@ -752,10 +752,11 @@ describe("IssueDetailPage", () => {
     renderWithQueryClient(<IssueDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Recurring")).toBeInTheDocument();
+      expect(screen.getByText("Automation")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("Schedule")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /open project automations/i })).toBeInTheDocument();
+    expect(screen.getByText("Automation schedule")).toBeInTheDocument();
     expect(screen.getByText("*/15 * * * *")).toBeInTheDocument();
     expect(screen.getByText(formatDateTime("2026-03-10T12:30:00Z"))).toBeInTheDocument();
 

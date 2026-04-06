@@ -146,6 +146,7 @@ describe("ProjectDetailPage", () => {
     expect(
       screen.getByRole("button", { name: /run project/i }).nextElementSibling,
     ).toBe(accessButton);
+    expect(screen.getByRole("button", { name: /automations/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /run project/i }));
     await waitFor(() => {

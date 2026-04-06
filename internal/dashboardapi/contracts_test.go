@@ -1246,32 +1246,34 @@ func TestRecurringIssueContractsExposeRecurringFieldsAndRunNow(t *testing.T) {
 	}
 
 	createIssue := requestJSON(t, srv, http.MethodPost, "/api/v1/app/issues", map[string]interface{}{
-		"project_id":  project.ID,
-		"title":       "Scan GitHub ready-to-work",
-		"description": "Mirror ready-to-work GitHub issues into Maestro.",
-		"issue_type":  "recurring",
-		"cron":        "*/15 * * * *",
-		"enabled":     false,
+		"project_id":         project.ID,
+		"title":              "Scan GitHub ready-to-work",
+		"description":        "Mirror ready-to-work GitHub issues into Maestro.",
+		"issue_type":         "recurring",
+		"cron":               "*/15 * * * *",
+		"enabled":            false,
+		"permission_profile": "full-access",
 	})
 	if createIssue.StatusCode != http.StatusCreated {
 		t.Fatalf("create recurring issue expected 201, got %d", createIssue.StatusCode)
 	}
 	created := decodeResponse(t, createIssue)
 	identifier := created["identifier"].(string)
-	if created["issue_type"] != "recurring" || created["cron"] != "*/15 * * * *" || created["enabled"] != false {
+	if created["issue_type"] != "recurring" || created["cron"] != "*/15 * * * *" || created["enabled"] != false || created["permission_profile"] != "full-access" {
 		t.Fatalf("unexpected recurring create payload: %#v", created)
 	}
 
 	patchIssue := requestJSON(t, srv, http.MethodPatch, "/api/v1/app/issues/"+identifier, map[string]interface{}{
-		"project_id": project.ID,
-		"cron":       "0 * * * *",
-		"enabled":    true,
+		"project_id":         project.ID,
+		"cron":               "0 * * * *",
+		"enabled":            true,
+		"permission_profile": "plan-then-full-access",
 	})
 	if patchIssue.StatusCode != http.StatusOK {
 		t.Fatalf("patch recurring issue expected 200, got %d", patchIssue.StatusCode)
 	}
 	patched := decodeResponse(t, patchIssue)
-	if patched["cron"] != "0 * * * *" || patched["enabled"] != true {
+	if patched["cron"] != "0 * * * *" || patched["enabled"] != true || patched["permission_profile"] != "plan-then-full-access" {
 		t.Fatalf("unexpected recurring patch payload: %#v", patched)
 	}
 

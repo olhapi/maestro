@@ -98,7 +98,7 @@ export function IssueCard({
             ) : null}
             {issue.issue_type === "recurring" ? (
               <Badge className={cn(cardBadgeClass, "border-cyan-400/20 bg-cyan-400/10 text-cyan-100")}>
-                Recurring
+                Automation
               </Badge>
             ) : null}
             {session ? (
@@ -168,7 +168,7 @@ export function IssueCard({
         {issue.issue_type === "recurring" && issue.next_run_at ? (
           <span className="inline-flex items-center gap-1.5">
             <RotateCcw className="size-3.5" />
-            Next {formatRelativeTime(issue.next_run_at)}
+            Next automation run {formatRelativeTime(issue.next_run_at)}
           </span>
         ) : null}
         <span className="inline-flex items-center gap-1.5">
@@ -265,7 +265,7 @@ export function IssueCard({
         {issue.issue_type === "recurring" && !issue.next_run_at ? (
           <div className="inline-flex items-center gap-2">
             <RotateCcw className="size-3.5 text-cyan-300" />
-            {issue.enabled === false ? "Recurring schedule disabled" : "Recurring schedule ready"}
+            {issue.enabled === false ? "Automation schedule disabled" : "Automation schedule ready"}
           </div>
         ) : null}
         {issue.pr_url ? (

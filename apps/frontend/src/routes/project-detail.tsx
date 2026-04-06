@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Plus, Square } from "lucide-react";
+import { Play, Plus, Square, Workflow } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -232,6 +232,18 @@ export function ProjectDetailPage() {
             />
             <Button
               variant="secondary"
+              onClick={() =>
+                void navigate({
+                  to: appRoutes.projectAutomations,
+                  params: { projectId },
+                })
+              }
+            >
+              <Workflow className="size-4" />
+              Automations
+            </Button>
+            <Button
+              variant="secondary"
               onClick={() => {
                 setIssueDialogInitial({
                   project_id: projectId,
@@ -253,7 +265,7 @@ export function ProjectDetailPage() {
             <ProjectStat
               label="Issues"
               value={String(totalIssues)}
-              detail="All work currently attached to this project."
+              detail="All standard work currently attached to this project."
             />
             <ProjectStat
               label="Active"

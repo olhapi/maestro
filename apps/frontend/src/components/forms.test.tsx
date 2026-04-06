@@ -2,7 +2,7 @@ import * as React from 'react'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
-import { EpicDialog, IssueDialog, ProjectDialog } from '@/components/forms'
+import { AutomationDialog, EpicDialog, IssueDialog, ProjectDialog } from '@/components/forms'
 import { MockSpeechRecognition } from '@/test/mock-speech-recognition'
 import {
   makeBootstrapResponse,
@@ -10,7 +10,7 @@ import {
   makeIssueAsset,
   makeIssueSummary,
 } from '@/test/fixtures'
-import { renderWithQueryClient } from '@/test/test-utils'
+import { renderWithQueryClient, selectOption } from '@/test/test-utils'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -27,7 +27,7 @@ describe('IssueDialog', () => {
     vi.unstubAllGlobals()
   })
 
-  it('serializes recurring issue fields on submit', async () => {
+  it('serializes standard issue fields on submit', async () => {
     const bootstrap = makeBootstrapResponse()
     const availableIssues = [
       makeIssueSummary({
@@ -56,10 +56,6 @@ describe('IssueDialog', () => {
     )
 
     fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Scan GitHub ready-to-work' } })
-    fireEvent.click(screen.getByRole('radio', { name: /recurring/i }))
-    fireEvent.change(screen.getByLabelText(/cron/i), { target: { value: '*/15 * * * *' } })
-    fireEvent.click(screen.getByRole('switch', { name: /schedule/i }))
-
     const labelsInput = screen.getByLabelText(/labels/i)
     fireEvent.focus(labelsInput)
     fireEvent.change(labelsInput, { target: { value: 'api' } })
@@ -79,9 +75,7 @@ describe('IssueDialog', () => {
           project_id: 'project-1',
           epic_id: '',
           title: 'Scan GitHub ready-to-work',
-          issue_type: 'recurring',
-          cron: '*/15 * * * *',
-          enabled: false,
+          state: 'backlog',
           labels: ['api', 'github'],
           agent_name: '',
           agent_prompt: '',
@@ -91,6 +85,79 @@ describe('IssueDialog', () => {
           newAssets: [],
           removeAssetIDs: [],
         },
+      )
+    })
+  })
+
+  it('serializes automation fields on submit', async () => {
+    const bootstrap = makeBootstrapResponse()
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const initial = makeIssueDetail({
+      identifier: 'ISS-9',
+      issue_type: 'recurring',
+      project_id: 'project-1',
+      epic_id: '',
+      labels: [],
+      blocked_by: ['ISS-2'],
+      branch_name: 'feature/nightly-sync',
+      pr_url: 'https://example.com/pr/9',
+      cron: '0 0 * * *',
+      enabled: true,
+      title: 'Nightly sync',
+      description: 'Sync nightly exports.',
+      permission_profile: 'full-access',
+      agent_name: 'planner',
+      agent_prompt: 'Review the recurring task template.',
+    })
+
+    renderWithQueryClient(
+      <AutomationDialog
+        open
+        onOpenChange={vi.fn()}
+        initial={initial}
+        projectID="project-1"
+        epics={bootstrap.epics}
+        availableIssues={bootstrap.issues.items}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/automation name/i), { target: { value: 'Nightly sync' } })
+    fireEvent.change(screen.getByRole('textbox', { name: /automation schedule/i }), {
+      target: { value: '*/15 * * * *' },
+    })
+    fireEvent.click(screen.getByRole('switch', { name: /automation schedule/i }))
+    fireEvent.change(screen.getByLabelText(/priority/i), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText(/assigned agent/i), { target: { value: 'marketing' } })
+    fireEvent.change(screen.getByLabelText(/agent prompt/i), {
+      target: { value: 'Review the recurring task template.' },
+    })
+    fireEvent.change(screen.getByLabelText(/template/i), {
+      target: { value: 'Do the thing every night.' },
+    })
+
+    await selectOption(/permission profile/i, /^full access$/i)
+
+    fireEvent.click(screen.getByRole('button', { name: /update automation/i }))
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          project_id: 'project-1',
+          epic_id: '',
+          title: 'Nightly sync',
+          description: 'Do the thing every night.',
+          issue_type: 'recurring',
+          cron: '*/15 * * * *',
+          enabled: false,
+          priority: 3,
+          permission_profile: 'full-access',
+          agent_name: 'marketing',
+          agent_prompt: 'Review the recurring task template.',
+          blocked_by: ['ISS-2'],
+          branch_name: 'feature/nightly-sync',
+          pr_url: 'https://example.com/pr/9',
+        }),
       )
     })
   })
@@ -245,6 +312,7 @@ describe('IssueDialog', () => {
       expect(api.listIssues).toHaveBeenCalledWith(
         {
           project_id: 'project-1',
+          issue_type: 'standard',
           search: 'ISS',
           limit: 25,
           sort: 'updated_desc',

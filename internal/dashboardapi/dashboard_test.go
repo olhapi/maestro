@@ -44,8 +44,16 @@ func TestDashboardWorkEpicsAndRuntimeEndpointsExposeCurrentData(t *testing.T) {
 	if len(workPayload["projects"].([]interface{})) != 1 {
 		t.Fatalf("expected one project in work payload, got %#v", workPayload["projects"])
 	}
+	projectSummary := workPayload["projects"].([]interface{})[0].(map[string]interface{})
+	if projectSummary["total_count"].(float64) != 1 || projectSummary["total_tokens_spent"].(float64) != 33 {
+		t.Fatalf("expected standard-only project summary with recurring token spend included, got %#v", projectSummary)
+	}
 	if len(workPayload["epics"].([]interface{})) != 1 {
 		t.Fatalf("expected one epic in work payload, got %#v", workPayload["epics"])
+	}
+	epicSummary := workPayload["epics"].([]interface{})[0].(map[string]interface{})
+	if epicSummary["total_count"].(float64) != 1 {
+		t.Fatalf("expected standard-only epic summary, got %#v", epicSummary)
 	}
 	issues := workPayload["issues"].(map[string]interface{})
 	if issues["total"].(float64) != 1 {
@@ -140,7 +148,7 @@ func TestDashboardOverviewEndpointsSurfaceStoreErrors(t *testing.T) {
 	}
 }
 
-func TestDashboardBoardCountsUseFullIssueSet(t *testing.T) {
+func TestDashboardBoardCountsExcludeRecurringIssues(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
@@ -167,6 +175,16 @@ func TestDashboardBoardCountsUseFullIssueSet(t *testing.T) {
 	}
 	if err := store.UpdateIssueState(ready.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState ready: %v", err)
+	}
+	recurring, err := store.CreateIssueWithOptions("", "", "Recurring 000", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	if err := store.UpdateIssueState(recurring.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState recurring: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -199,7 +217,7 @@ func TestDashboardBoardCountsUseFullIssueSet(t *testing.T) {
 		}
 	}
 
-	listResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues?limit=100", nil)
+	listResp := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues?issue_type=standard&limit=100", nil)
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("/api/v1/app/issues expected 200, got %d", listResp.StatusCode)
 	}
@@ -415,6 +433,19 @@ func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanb
 	if err := store.UpdateIssueState(issue.ID, kanban.StateReady); err != nil {
 		t.Fatalf("UpdateIssueState: %v", err)
 	}
+	recurring, err := store.CreateIssueWithOptions(project.ID, epic.ID, "Recurring dashboard", "", 0, nil, kanban.IssueCreateOptions{
+		IssueType: kanban.IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	if err := store.UpdateIssueState(recurring.ID, kanban.StateReady); err != nil {
+		t.Fatalf("UpdateIssueState recurring: %v", err)
+	}
+	if err := store.AddIssueTokenSpend(recurring.ID, 5); err != nil {
+		t.Fatalf("AddIssueTokenSpend recurring: %v", err)
+	}
 
 	now := time.Now().UTC().Truncate(time.Second)
 	if err := store.AppendRuntimeEvent("run_started", map[string]interface{}{
@@ -436,6 +467,9 @@ func setupDashboardCoverageFixture(t *testing.T) (*inprocessserver.Server, *kanb
 		"total_tokens": 17,
 	}); err != nil {
 		t.Fatalf("AppendRuntimeEvent(run_completed): %v", err)
+	}
+	if err := store.AddIssueTokenSpend(issue.ID, 28); err != nil {
+		t.Fatalf("AddIssueTokenSpend issue: %v", err)
 	}
 
 	provider := testProvider{
