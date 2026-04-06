@@ -1386,6 +1386,186 @@ func TestRunStopsWaitingIfAppServerExitsDuringInteraction(t *testing.T) {
 	}
 }
 
+func TestRunResumesAfterLateMCPServerElicitationResponse(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-LATE-ELICIT")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace.log")
+	scenario := fakeappserver.Scenario{
+		Steps: []fakeappserver.Step{
+			{
+				Match: fakeappserver.Match{Method: "initialize"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id":     1,
+						"result": map[string]interface{}{},
+					},
+				}},
+			},
+			{Match: fakeappserver.Match{Method: "initialized"}},
+			{
+				Match: fakeappserver.Match{Method: "thread/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id": 2,
+						"result": map[string]interface{}{
+							"thread": map[string]interface{}{"id": "thread-late-elicitation"},
+						},
+					},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{Method: "turn/start"},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"id": 3,
+						"result": map[string]interface{}{
+							"turn": map[string]interface{}{"id": "turn-late-elicitation"},
+						},
+					},
+				}, {
+					JSON: map[string]interface{}{
+						"id":     140,
+						"method": "mcpServer/elicitation/request",
+						"params": map[string]interface{}{
+							"serverName": "support-bot",
+							"threadId":   "thread-late-elicitation",
+							"turnId":     "turn-late-elicitation",
+							"message":    "Need contact details",
+							"mode":       "form",
+							"requestedSchema": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"email": map[string]interface{}{
+										"type":    "string",
+										"default": "ops@example.com",
+									},
+								},
+								"required": []string{"email"},
+							},
+						},
+					},
+				}},
+			},
+			{
+				Match: fakeappserver.Match{ID: fakeappserver.Int(140)},
+				Emit: []fakeappserver.Output{{
+					JSON: map[string]interface{}{
+						"method": "turn/completed",
+						"params": map[string]interface{}{
+							"threadId": "thread-late-elicitation",
+							"turn":     map[string]interface{}{"id": "turn-late-elicitation"},
+						},
+					},
+				}},
+				ExitCode: fakeappserver.Int(0),
+			},
+		},
+	}
+	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg.Title = "ISS-LATE-ELICIT: Resume after elicitation"
+	cfg.ReadTimeout = 50 * time.Millisecond
+	cfg.TurnTimeout = 150 * time.Millisecond
+	cfg.StallTimeout = 2 * time.Second
+	cfg = withTrace(cfg, traceFile)
+
+	client, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer client.Close()
+
+	interactionIDs := make(chan PendingInteraction, 1)
+	responseErrs := make(chan error, 1)
+	resolvedSeen := make(chan struct{}, 1)
+	client.cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
+		if interaction == nil {
+			responseErrs <- fmt.Errorf("nil interaction")
+			return
+		}
+		cloned := interaction.Clone()
+		interactionIDs <- cloned
+		time.Sleep(225 * time.Millisecond)
+		responseErrs <- client.RespondToInteraction(context.Background(), interaction.ID, PendingInteractionResponse{
+			Action: "accept",
+			Content: map[string]interface{}{
+				"email": "ops@example.com",
+			},
+		})
+	}
+	client.cfg.OnActivityEvent = func(event ActivityEvent) {
+		if event.Type != "mcpServer.elicitation.resolved" {
+			return
+		}
+		select {
+		case resolvedSeen <- struct{}{}:
+		default:
+		}
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.RunTurn(context.Background(), cfg.Prompt, cfg.Title)
+	}()
+
+	var interaction PendingInteraction
+	select {
+	case interaction = <-interactionIDs:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected pending elicitation")
+	}
+	if interaction.Kind != PendingInteractionKindElicitation {
+		t.Fatalf("expected elicitation interaction, got %+v", interaction)
+	}
+	if interaction.Elicitation == nil || interaction.Elicitation.ServerName != "support-bot" || interaction.Elicitation.Message != "Need contact details" {
+		t.Fatalf("unexpected elicitation payload: %+v", interaction)
+	}
+
+	select {
+	case err := <-responseErrs:
+		if err != nil {
+			t.Fatalf("elicitation response failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for elicitation response")
+	}
+
+	select {
+	case <-resolvedSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for elicitation response to reach the app-server")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("run turn failed: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for turn completion after late elicitation")
+	}
+
+	lines := readTraceLines(t, traceFile)
+	foundResponse := false
+	for _, payload := range lines {
+		if id, ok := asInt(payload["id"]); ok && id == 140 {
+			if result, ok := nestedMap(payload, "result"); ok {
+				if action, _ := result["action"].(string); action == "accept" {
+					if content, ok := result["content"].(map[string]interface{}); ok && content["email"] == "ops@example.com" {
+						foundResponse = true
+					}
+				}
+			}
+		}
+	}
+	if !foundResponse {
+		t.Fatalf("expected elicitation response in trace, got %#v", lines)
+	}
+}
+
 func TestRunAutoApprovesApprovalStyleToolInput(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspaceRoot := filepath.Join(tmpDir, "workspaces")

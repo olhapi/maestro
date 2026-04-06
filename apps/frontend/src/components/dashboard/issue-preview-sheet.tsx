@@ -470,14 +470,18 @@ export function IssuePreviewSheet({
               </div>
             </div>
 
-            <div className="grid gap-3 rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4 text-sm">
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Branch / PR</div>
-              <div className="flex items-center gap-2 text-white">
+            <div className="grid min-w-0 gap-3 rounded-[1.5rem] border border-white/8 bg-white/[0.04] p-4 text-sm">
+              <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Branch / PR</p>
+              <div className="flex min-w-0 items-center gap-2 text-white">
                 <GitBranch className="size-4 text-[var(--accent)]" />
-                {activeIssue.branch_name || "No branch linked"}
+                <p className="max-w-full overflow-x-auto whitespace-nowrap text-sm text-white">
+                  {activeIssue.branch_name || "No branch linked"}
+                </p>
               </div>
-              <div className="text-[var(--muted-foreground)]">
-                {activeIssue.pr_url || "No pull request linked"}
+              <div className="min-w-0 text-[var(--muted-foreground)]">
+                <p className="max-w-full overflow-x-auto whitespace-nowrap text-sm text-[var(--muted-foreground)]">
+                  {activeIssue.pr_url || "No pull request linked"}
+                </p>
               </div>
               {activeIssue.pr_url ? (
                 <a

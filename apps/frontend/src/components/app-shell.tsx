@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, FolderKanban, LayoutDashboard, ListTodo, MonitorPlay, RotateCcw, Search } from 'lucide-react'
@@ -17,7 +17,7 @@ import { appRoutes, isProjectsPath } from '@/lib/routes'
 import { connectDashboardSocket } from '@/lib/live'
 import { dashboardRefreshCoalesceMs, refreshDashboardQueries } from '@/lib/query-refresh'
 import type { PendingInterrupt } from '@/lib/types'
-import { cn } from '@/lib/utils'
+import { cn, formatRelativeTimeCompact } from '@/lib/utils'
 
 const nav = [
   { label: 'Overview', to: appRoutes.overview, icon: LayoutDashboard, match: (pathname: string) => pathname === appRoutes.overview },
@@ -218,11 +218,19 @@ export function AppShell() {
     },
   })
 
-  const handleSocketSignal = useEffectEvent(() => {
+  const handleSocketSignal = useCallback(() => {
     setLastRefresh(new Date().toISOString())
-  })
+  }, [])
 
-  const flushSocketRefresh = useEffectEvent(async () => {
+  const clearPendingSocketRefresh = useCallback(() => {
+    if (refreshTimerRef.current === null) {
+      return
+    }
+    window.clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = null
+  }, [])
+
+  const flushSocketRefresh = useCallback(async () => {
     handleSocketSignal()
     await Promise.all([
       queryClient.invalidateQueries({
@@ -231,9 +239,9 @@ export function AppShell() {
       }),
       refreshDashboardQueries(queryClient, latestPathRef.current),
     ])
-  })
+  }, [handleSocketSignal, queryClient])
 
-  const scheduleSocketRefresh = useEffectEvent(() => {
+  const scheduleSocketRefresh = useCallback(() => {
     const delay = dashboardRefreshCoalesceMs(latestPathRef.current)
     if (delay === 0) {
       void flushSocketRefresh()
@@ -243,14 +251,19 @@ export function AppShell() {
       return
     }
     refreshTimerRef.current = window.setTimeout(() => {
-      refreshTimerRef.current = null
+      clearPendingSocketRefresh()
       void flushSocketRefresh()
     }, delay)
-  })
+  }, [clearPendingSocketRefresh, flushSocketRefresh])
 
-  const handleSocketInvalidate = useEffectEvent(() => {
+  const handleSocketInvalidate = useCallback(() => {
     scheduleSocketRefresh()
-  })
+  }, [scheduleSocketRefresh])
+
+  const handleManualRefresh = useCallback(() => {
+    clearPendingSocketRefresh()
+    void flushSocketRefresh()
+  }, [clearPendingSocketRefresh, flushSocketRefresh])
 
   useEffect(() => {
     latestPathRef.current = activePath
@@ -263,12 +276,9 @@ export function AppShell() {
     })
     return () => {
       socket.disconnect()
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current)
-        refreshTimerRef.current = null
-      }
+      clearPendingSocketRefresh()
     }
-  }, [])
+  }, [clearPendingSocketRefresh, handleSocketInvalidate, handleSocketSignal])
 
   useEffect(() => {
     try {
@@ -451,7 +461,15 @@ export function AppShell() {
                   onClick={() => handleInterruptDialogOpenChange(!interruptDialogOpen)}
                 />
               ) : null}
-              <Badge className="border-white/10 bg-white/5 text-white">Updated <CompactRelativeTime value={lastRefresh} /></Badge>
+              <button
+                aria-label={`Refresh dashboard now. Last updated ${formatRelativeTimeCompact(lastRefresh)}.`}
+                className="inline-flex shrink-0 items-center rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-white transition hover:border-white/16 hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60"
+                title="Refresh dashboard now"
+                type="button"
+                onClick={handleManualRefresh}
+              >
+                Updated <CompactRelativeTime value={lastRefresh} />
+              </button>
             </div>
           </header>
 

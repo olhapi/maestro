@@ -19,7 +19,7 @@ import { KanbanBoard } from "@/components/dashboard/kanban-board";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { issueSortOptions, sortIssues, getStateMeta } from "@/lib/dashboard";
 import { appRoutes } from "@/lib/routes";
-import type { DashboardWorkSource, IssueState, IssueSummary } from "@/lib/types";
+import type { DashboardWorkSource, IssueState, IssueStateCounts, IssueSummary } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
 
 type WorkView = "board" | "list";
@@ -29,6 +29,7 @@ export function WorkIssueSurface({
   description,
   items,
   bootstrap,
+  stateCounts,
   sort,
   view,
   onSortChange,
@@ -43,6 +44,7 @@ export function WorkIssueSurface({
   description?: ReactNode;
   items: IssueSummary[];
   bootstrap?: DashboardWorkSource;
+  stateCounts?: Partial<IssueStateCounts>;
   sort: string;
   view: WorkView;
   onSortChange: (sort: string) => void;
@@ -114,6 +116,7 @@ export function WorkIssueSurface({
           <KanbanBoard
             items={sortedItems}
             bootstrap={bootstrap}
+            stateCounts={stateCounts}
             mode={isMobileLayout ? "grouped" : "board"}
             onOpenIssue={onOpenIssue}
             onMoveIssue={onMoveIssue}

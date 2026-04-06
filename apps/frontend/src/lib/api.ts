@@ -8,8 +8,8 @@ import type {
   IssueComment,
   IssueDetail,
   IssueExecutionDetail,
+  IssueListResponse,
   PendingInterruptsResponse,
-  IssueSummary,
   Project,
   ProjectDetailResponse,
   ProjectSummary,
@@ -129,12 +129,7 @@ export const api = {
       if (value !== undefined && value !== "") query.set(key, String(value));
     });
     const suffix = query.toString() ? `?${query.toString()}` : "";
-    return request<{
-      items: IssueSummary[];
-      total: number;
-      limit: number;
-      offset: number;
-    }>(`/api/v1/app/issues${suffix}`, init);
+    return request<IssueListResponse>(`/api/v1/app/issues${suffix}`, init);
   },
   createIssue: (body: Record<string, unknown>) =>
     request<IssueDetail>("/api/v1/app/issues", {

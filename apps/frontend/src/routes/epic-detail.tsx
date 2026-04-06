@@ -17,7 +17,7 @@ import {
   applyIssueAssetChanges,
   summarizeIssueAssetFailures,
 } from '@/lib/issue-assets'
-import { summaryActiveCount, summaryDoneCount } from '@/lib/projects'
+import { summaryActiveCount, summaryDoneCount, summaryTotalCount } from '@/lib/projects'
 import { appRoutes } from '@/lib/routes'
 import type { IssueDetail, IssueState, IssueSummary } from '@/lib/types'
 import { formatRelativeTime } from '@/lib/utils'
@@ -94,7 +94,7 @@ export function EpicDetailPage() {
         }
         stats={
           <>
-            <StatCard label="Issues" value={String(epic.data.issues.items.length)} detail="All work attached to this epic." />
+            <StatCard label="Issues" value={String(summaryTotalCount(epic.data.epic))} detail="All work attached to this epic." />
             <StatCard label="Active" value={String(summaryActiveCount(epic.data.epic))} detail="Issues currently in execution states." />
             <StatCard label="Done" value={String(summaryDoneCount(epic.data.epic))} detail="Completed work inside this epic." />
             <StatCard label="Siblings" value={String(epic.data.sibling_epics.length - 1)} detail="Other epics inside the same project." />
@@ -167,24 +167,46 @@ export function EpicDetailPage() {
             </Link>
           </div>
           <div className="mt-4 grid gap-3 lg:grid-cols-3">
-            {laneStates.map((state) => (
-              <div key={state} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.03] p-3.5">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{getStateMeta(state).label}</p>
-                  <p className="mt-2 text-2xl font-semibold text-white">{groupedIssues[state].length}</p>
+            {laneStates.map((state) => {
+              const stateCount =
+                epic.data.epic.counts[state as keyof typeof epic.data.epic.counts] ??
+                groupedIssues[state].length
+
+              return (
+                <div key={state} className="rounded-[calc(var(--panel-radius)-0.125rem)] border border-white/8 bg-white/[0.03] p-3.5">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">{getStateMeta(state).label}</p>
+                    <p className="mt-2 text-2xl font-semibold text-white">{stateCount}</p>
+                  </div>
+                  <div className="mt-4 grid gap-3">
+                    {groupedIssues[state].length > 0 ? (
+                      groupedIssues[state].map((issue) => (
+                        <IssueCard
+                          key={issue.id}
+                          issue={issue}
+                          bootstrap={bootstrap.data}
+                          compact
+                          onOpen={setPreviewIssue}
+                          onStateChange={(item, nextState) =>
+                            stateMutation.mutate({ identifier: item.identifier, nextState })
+                          }
+                        />
+                      ))
+                    ) : stateCount > 0 ? (
+                      <div className="flex min-h-[180px] flex-col items-center justify-center rounded-[1.25rem] border border-dashed border-white/10 text-center text-sm text-[var(--muted-foreground)]">
+                        <Layers3 className="size-5 text-[var(--accent)]" />
+                        <p className="mt-3">No loaded issues on this page.</p>
+                      </div>
+                    ) : (
+                      <div className="flex min-h-[180px] flex-col items-center justify-center rounded-[1.25rem] border border-dashed border-white/10 text-center text-sm text-[var(--muted-foreground)]">
+                        <Layers3 className="size-5 text-[var(--accent)]" />
+                        <p className="mt-3">No issues in {getStateMeta(state).label.toLowerCase()}.</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="mt-4 grid gap-3">
-                  {groupedIssues[state].length > 0 ? (
-                    groupedIssues[state].map((issue) => <IssueCard key={issue.id} issue={issue} bootstrap={bootstrap.data} compact onOpen={setPreviewIssue} onStateChange={(item, nextState) => stateMutation.mutate({ identifier: item.identifier, nextState })} />)
-                  ) : (
-                    <div className="flex min-h-[180px] flex-col items-center justify-center rounded-[1.25rem] border border-dashed border-white/10 text-center text-sm text-[var(--muted-foreground)]">
-                      <Layers3 className="size-5 text-[var(--accent)]" />
-                      <p className="mt-3">No issues in {getStateMeta(state).label.toLowerCase()}.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </CardContent>
       </Card>

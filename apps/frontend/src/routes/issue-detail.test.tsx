@@ -666,11 +666,17 @@ describe("IssueDetailPage", () => {
     expect(screen.getByText("Debug signals").closest("details")).not.toHaveAttribute("open");
   });
 
-  it("does not show the assigned agent card in the issue overview cards", async () => {
+  it("keeps issue metadata cards shrinkable and scrollable on mobile", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({
       agent_name: "marketing",
       agent_prompt: "Review homepage messaging before implementation.",
+      workspace_path:
+        "/home/olhapi/projects/mvphotography/workspaces/issues/2026/03/29/a-very-long-workspace-path-that-should-scroll",
+      branch_name:
+        "codex/MVPH-2-with-an-exceptionally-long-branch-name-that-should-scroll",
+      pr_url:
+        "https://example.com/pr/99/with/an/exceptionally/long/path/that/should/scroll",
     });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
     vi.mocked(api.getIssue).mockResolvedValue(issue);
@@ -694,9 +700,28 @@ describe("IssueDetailPage", () => {
       expect(screen.getByText("Branch / PR")).toBeInTheDocument();
     });
 
+    const workspaceCard = screen.getByText("Workspace").closest("div");
+    expect(workspaceCard).toHaveClass("min-w-0");
+    expect(within(workspaceCard!).getByText(issue.workspace_path!)).toHaveClass(
+      "max-w-full",
+      "overflow-x-auto",
+      "whitespace-nowrap",
+    );
+
+    const branchCard = screen.getByText("Branch / PR").closest("div");
+    expect(branchCard).toHaveClass("min-w-0");
+    expect(within(branchCard!).getByText(issue.branch_name!)).toHaveClass(
+      "max-w-full",
+      "overflow-x-auto",
+      "whitespace-nowrap",
+    );
+    expect(within(branchCard!).getByText(issue.pr_url!)).toHaveClass(
+      "max-w-full",
+      "overflow-x-auto",
+      "whitespace-nowrap",
+    );
+
     expect(screen.queryByText("Assigned agent")).not.toBeInTheDocument();
-    expect(screen.getByText(issue.branch_name!)).toBeInTheDocument();
-    expect(screen.getByText(issue.pr_url!)).toBeInTheDocument();
   });
 
   it("shows recurring schedule details and triggers run-now", async () => {

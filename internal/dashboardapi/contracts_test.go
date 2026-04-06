@@ -1066,6 +1066,9 @@ func TestIssueRuntimeAndSessionEndpointsExposeContracts(t *testing.T) {
 	if issuesPayload["total"].(float64) != 1 {
 		t.Fatalf("unexpected issues payload: %#v", issuesPayload)
 	}
+	if _, ok := issuesPayload["counts"]; !ok {
+		t.Fatalf("expected issue list counts in payload, got %#v", issuesPayload)
+	}
 
 	getIssue := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)
 	if getIssue.StatusCode != http.StatusOK {
@@ -1276,9 +1279,13 @@ func TestRecurringIssueContractsExposeRecurringFieldsAndRunNow(t *testing.T) {
 	if listIssues.StatusCode != http.StatusOK {
 		t.Fatalf("list recurring issues expected 200, got %d", listIssues.StatusCode)
 	}
-	items := decodeResponse(t, listIssues)["items"].([]interface{})
+	issuesPayload := decodeResponse(t, listIssues)
+	items := issuesPayload["items"].([]interface{})
 	if len(items) != 1 || items[0].(map[string]interface{})["identifier"] != identifier {
 		t.Fatalf("unexpected recurring issue list payload: %#v", items)
+	}
+	if _, ok := issuesPayload["counts"]; !ok {
+		t.Fatal("expected recurring issue list counts in payload")
 	}
 
 	getIssue := requestJSON(t, srv, http.MethodGet, "/api/v1/app/issues/"+identifier, nil)

@@ -678,10 +678,15 @@ func (s *Service) DeleteIssueAsset(ctx context.Context, identifier, assetID stri
 }
 
 func (s *Service) ListIssueSummaries(ctx context.Context, query kanban.IssueQuery) ([]kanban.IssueSummary, int, error) {
+	items, total, _, err := s.ListIssueSummariesWithCounts(ctx, query)
+	return items, total, err
+}
+
+func (s *Service) ListIssueSummariesWithCounts(ctx context.Context, query kanban.IssueQuery) ([]kanban.IssueSummary, int, kanban.IssueStateCounts, error) {
 	if err := s.syncIssueListIfNeeded(ctx, query); err != nil {
-		return nil, 0, err
+		return nil, 0, kanban.IssueStateCounts{}, err
 	}
-	return s.store.ListIssueSummaries(query)
+	return s.store.ListIssueSummariesWithCounts(query)
 }
 
 func (s *Service) BoardOverview(ctx context.Context, projectID string) (map[kanban.State]int, error) {

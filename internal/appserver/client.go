@@ -107,6 +107,8 @@ type Client struct {
 
 	pendingMu           sync.Mutex
 	pendingInteractions map[string]*interactionWaiter
+
+	turnDeadlineReset func()
 }
 
 type interactionWaiter struct {
@@ -717,9 +719,18 @@ func (c *Client) awaitTurnCompletion(ctx context.Context) error {
 	}
 
 	var deadline time.Time
-	if c.cfg.TurnTimeout > 0 {
-		deadline = time.Now().Add(c.cfg.TurnTimeout)
+	c.turnDeadlineReset = func() {
+		if c.cfg.TurnTimeout > 0 {
+			deadline = time.Now().Add(c.cfg.TurnTimeout)
+			return
+		}
+		deadline = time.Time{}
 	}
+	c.turnDeadlineReset()
+	defer func() {
+		c.turnDeadlineReset = nil
+	}()
+
 	lastProgressAt := time.Now()
 
 	for {
@@ -997,6 +1008,9 @@ func (c *Client) waitForPendingInteraction(ctx context.Context, payload protocol
 	}
 	if err := c.sendPendingInteractionResponse(waiter.interaction, waiter.payloadID, response); err != nil {
 		return true, err
+	}
+	if c.turnDeadlineReset != nil {
+		c.turnDeadlineReset()
 	}
 	c.emitResolvedInteractionActivity(waiter.interaction, response)
 	return true, nil
