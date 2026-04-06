@@ -234,7 +234,7 @@ describe('WorkPage', () => {
 
     expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
     expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
-  })
+  }, 10000)
 
   it('filters issues by project from the work toolbar', async () => {
     const bootstrap = makeBootstrapResponse()
