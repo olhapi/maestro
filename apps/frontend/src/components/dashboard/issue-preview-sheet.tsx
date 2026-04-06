@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { IssueDialog } from "@/components/forms";
+import { AutomationDialog, IssueDialog } from "@/components/forms";
 import { MultiCombobox, type MultiComboboxOption } from "@/components/ui/multi-combobox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -268,13 +268,11 @@ export function IssuePreviewSheet({
   const runNowMutation = useMutation({
     mutationFn: (identifier: string) => api.runIssueNow(identifier),
     onSuccess: async () => {
-      toast.success("Recurring issue queued");
+      toast.success("Automation queued");
       await onInvalidate();
     },
     onError: (error) => {
-      toast.error(
-        error instanceof Error ? `Unable to queue recurring issue: ${error.message}` : "Unable to queue recurring issue",
-      );
+      toast.error(error instanceof Error ? `Unable to queue automation: ${error.message}` : "Unable to queue automation");
     },
   });
 
@@ -307,7 +305,7 @@ export function IssuePreviewSheet({
                   ) : null}
                   {activeIssue.issue_type === "recurring" ? (
                     <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">
-                      Recurring
+                      Automation
                     </Badge>
                   ) : null}
                   {activeIssue.project_name ? (
@@ -388,10 +386,10 @@ export function IssuePreviewSheet({
                   {activeIssue.issue_type === "recurring" ? (
                     <span>
                       {activeIssue.next_run_at
-                        ? `Next scheduled run ${formatDateTime(activeIssue.next_run_at)}`
+                        ? `Next automation run ${formatDateTime(activeIssue.next_run_at)}`
                         : activeIssue.enabled === false
-                          ? "Recurring schedule disabled"
-                          : "Recurring schedule ready"}
+                          ? "Automation schedule disabled"
+                          : "Automation schedule ready"}
                     </span>
                   ) : null}
                 </div>
@@ -546,8 +544,20 @@ export function IssuePreviewSheet({
                 </Button>
               ) : null}
             </div>
-            {activeIssue.issue_type === "recurring" ? (
+            {activeIssue.issue_type === "recurring" && activeIssue.project_id ? (
               <div className="flex flex-wrap justify-end gap-3">
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    void navigate({
+                      to: appRoutes.projectAutomations,
+                      params: { projectId: activeIssue.project_id ?? "" },
+                    })
+                  }
+                >
+                  <Workflow className="size-4" />
+                  Project automations
+                </Button>
                 <Button
                   variant="secondary"
                   disabled={runNowMutation.isPending}
@@ -565,30 +575,42 @@ export function IssuePreviewSheet({
       </Sheet>
 
       {bootstrap ? (
-        <IssueDialog
-          open={editOpen}
-          onOpenChange={setEditOpen}
-          initial={activeDetail ?? activeIssue}
-          projects={bootstrap.projects}
-          epics={bootstrap.epics}
-          availableIssues={bootstrap.issues.items}
-          onSubmit={async (body, imageChanges) => {
-            const issue = await api.updateIssue(activeIssue.identifier, body);
-            const result = await applyIssueAssetChanges(
-              issue.identifier,
-              imageChanges,
-            );
-            if (result.failures.length > 0) {
-              toast.error(
-                `Issue updated, but ${summarizeIssueAssetFailures(result)}`,
-              );
-            } else {
-              toast.success("Issue updated");
-            }
-            await onInvalidate();
-            await reloadIssueDetail(activeIssue.identifier);
-          }}
-        />
+        activeIssue.issue_type === "recurring" ? (
+          <AutomationDialog
+            open={editOpen}
+            onOpenChange={setEditOpen}
+            initial={activeDetail ?? activeIssue}
+            projectID={activeIssue.project_id ?? ""}
+            epics={bootstrap.epics}
+            availableIssues={bootstrap.issues.items}
+            onSubmit={async (body) => {
+              const issue = await api.updateIssue(activeIssue.identifier, body);
+              toast.success("Automation updated");
+              await onInvalidate();
+              await reloadIssueDetail(issue.identifier);
+            }}
+          />
+        ) : (
+          <IssueDialog
+            open={editOpen}
+            onOpenChange={setEditOpen}
+            initial={activeDetail ?? activeIssue}
+            projects={bootstrap.projects}
+            epics={bootstrap.epics}
+            availableIssues={bootstrap.issues.items}
+            onSubmit={async (body, imageChanges) => {
+              const issue = await api.updateIssue(activeIssue.identifier, body);
+              const result = await applyIssueAssetChanges(issue.identifier, imageChanges);
+              if (result.failures.length > 0) {
+                toast.error(`Issue updated, but ${summarizeIssueAssetFailures(result)}`);
+              } else {
+                toast.success("Issue updated");
+              }
+              await onInvalidate();
+              await reloadIssueDetail(activeIssue.identifier);
+            }}
+          />
+        )
       ) : null}
 
       {onDelete ? (

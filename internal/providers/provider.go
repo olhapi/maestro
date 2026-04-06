@@ -12,21 +12,22 @@ import (
 var ErrUnsupportedCapability = errors.New("unsupported_provider_capability")
 
 type IssueCreateInput struct {
-	ProjectID   string
-	EpicID      string
-	Title       string
-	Description string
-	IssueType   kanban.IssueType
-	Cron        string
-	Enabled     *bool
-	Priority    int
-	Labels      []string
-	AgentName   string
-	AgentPrompt string
-	State       string
-	BlockedBy   []string
-	BranchName  string
-	PRURL       string
+	ProjectID         string
+	EpicID            string
+	Title             string
+	Description       string
+	IssueType         kanban.IssueType
+	Cron              string
+	Enabled           *bool
+	PermissionProfile kanban.PermissionProfile
+	Priority          int
+	Labels            []string
+	AgentName         string
+	AgentPrompt       string
+	State             string
+	BlockedBy         []string
+	BranchName        string
+	PRURL             string
 }
 
 type IssueCommentAttachment struct {

@@ -1289,8 +1289,8 @@ func TestServiceLocalKanbanBranchCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BoardOverview local: %v", err)
 	}
-	if board[kanban.StateReady] == 0 {
-		t.Fatalf("expected board overview to count local issue, got %#v", board)
+	if len(board) != 0 {
+		t.Fatalf("expected board overview to exclude recurring issue, got %#v", board)
 	}
 
 	refreshed, err := svc.RefreshIssue(context.Background(), issue)

@@ -119,7 +119,7 @@ describe('IssuePreviewSheet', () => {
     expect(screen.getByText(/auto-retries paused after 3 stalled runs/i)).toBeInTheDocument()
   })
 
-  it('shows recurring schedule details and triggers run-now', async () => {
+  it('shows automation schedule details and triggers run-now', async () => {
     const bootstrap = makeBootstrapResponse()
     const summary = makeIssueSummary({ issue_type: 'recurring', next_run_at: '2026-03-09T12:30:00Z' })
     vi.mocked(api.getIssue).mockResolvedValue(
@@ -145,10 +145,11 @@ describe('IssuePreviewSheet', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('Recurring')).toBeInTheDocument()
+      expect(screen.getByText('Automation')).toBeInTheDocument()
     })
 
-    expect(screen.getByText(/next scheduled run/i)).toBeInTheDocument()
+    expect(screen.getByText(/next automation run/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /project automations/i })).toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Run now'))
 
