@@ -779,6 +779,9 @@ export function AutomationDialog({
   );
   const [agentName, setAgentName] = useState(initial?.agent_name ?? "");
   const [agentPrompt, setAgentPrompt] = useState(initial?.agent_prompt ?? "");
+  const [blockedBy, setBlockedBy] = useState(initial?.blocked_by ?? []);
+  const [branchName, setBranchName] = useState(initial?.branch_name ?? "");
+  const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
   const [pending, setPending] = useState(false);
 
   useDialogReset(open, initial?.identifier ?? "__new__", () => {
@@ -792,6 +795,9 @@ export function AutomationDialog({
     setPermissionProfile(initial?.permission_profile ?? "default");
     setAgentName(initial?.agent_name ?? "");
     setAgentPrompt(initial?.agent_prompt ?? "");
+    setBlockedBy(initial?.blocked_by ?? []);
+    setBranchName(initial?.branch_name ?? "");
+    setPrURL(initial?.pr_url ?? "");
   });
 
   const filteredEpics = epics.filter((epic) => epic.project_id === projectID);
@@ -958,6 +964,9 @@ export function AutomationDialog({
                     permission_profile: permissionProfile,
                     agent_name: agentName,
                     agent_prompt: agentPrompt,
+                    blocked_by: blockedBy,
+                    branch_name: branchName,
+                    pr_url: prURL,
                   });
                   onOpenChange(false);
                 } finally {

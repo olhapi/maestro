@@ -91,11 +91,13 @@ export function ProjectAutomationsPage() {
   const toggleEnabledMutation = useMutation({
     mutationFn: ({
       identifier,
+      project_id,
       enabled,
     }: {
       identifier: string;
+      project_id: string;
       enabled: boolean;
-    }) => api.updateIssue(identifier, { enabled }),
+    }) => api.updateIssue(identifier, { project_id, enabled }),
     onSuccess: async () => {
       toast.success("Automation updated");
       await invalidate();
@@ -391,6 +393,7 @@ export function ProjectAutomationsPage() {
                     onClick={() =>
                       toggleEnabledMutation.mutate({
                         identifier: selected.identifier,
+                        project_id: selected.project_id ?? projectId,
                         enabled: selected.enabled === false,
                       })
                     }

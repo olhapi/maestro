@@ -122,6 +122,9 @@ function makeRecurringAutomation() {
     permission_profile: "full-access",
     agent_name: "planner",
     agent_prompt: "Review the nightly sync.",
+    blocked_by: ["ISS-2"],
+    branch_name: "feature/nightly-sync",
+    pr_url: "https://example.com/pr/9",
     project_id: "project-1",
     project_name: "Platform",
     epic_id: "epic-1",
@@ -168,7 +171,10 @@ describe("ProjectAutomationsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /pause/i }))
     await waitFor(() => {
-      expect(api.updateIssue).toHaveBeenCalledWith("ISS-9", { enabled: false })
+      expect(api.updateIssue).toHaveBeenCalledWith("ISS-9", {
+        project_id: "project-1",
+        enabled: false,
+      })
     })
 
     fireEvent.click(screen.getByRole("button", { name: /open legacy detail/i }))
@@ -275,6 +281,9 @@ describe("ProjectAutomationsPage", () => {
           issue_type: "recurring",
           cron: "*/30 * * * *",
           permission_profile: "full-access",
+          blocked_by: ["ISS-2"],
+          branch_name: "feature/nightly-sync",
+          pr_url: "https://example.com/pr/9",
         }),
       )
     })

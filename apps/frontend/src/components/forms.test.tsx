@@ -92,11 +92,29 @@ describe('IssueDialog', () => {
   it('serializes automation fields on submit', async () => {
     const bootstrap = makeBootstrapResponse()
     const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const initial = makeIssueDetail({
+      identifier: 'ISS-9',
+      issue_type: 'recurring',
+      project_id: 'project-1',
+      epic_id: '',
+      labels: [],
+      blocked_by: ['ISS-2'],
+      branch_name: 'feature/nightly-sync',
+      pr_url: 'https://example.com/pr/9',
+      cron: '0 0 * * *',
+      enabled: true,
+      title: 'Nightly sync',
+      description: 'Sync nightly exports.',
+      permission_profile: 'full-access',
+      agent_name: 'planner',
+      agent_prompt: 'Review the recurring task template.',
+    })
 
     renderWithQueryClient(
       <AutomationDialog
         open
         onOpenChange={vi.fn()}
+        initial={initial}
         projectID="project-1"
         epics={bootstrap.epics}
         availableIssues={bootstrap.issues.items}
@@ -120,7 +138,7 @@ describe('IssueDialog', () => {
 
     await selectOption(/permission profile/i, /^full access$/i)
 
-    fireEvent.click(screen.getByRole('button', { name: /create automation/i }))
+    fireEvent.click(screen.getByRole('button', { name: /update automation/i }))
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith(
@@ -136,6 +154,9 @@ describe('IssueDialog', () => {
           permission_profile: 'full-access',
           agent_name: 'marketing',
           agent_prompt: 'Review the recurring task template.',
+          blocked_by: ['ISS-2'],
+          branch_name: 'feature/nightly-sync',
+          pr_url: 'https://example.com/pr/9',
         }),
       )
     })
