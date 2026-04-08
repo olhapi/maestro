@@ -1,6 +1,6 @@
 ---
 title: Install Maestro
-description: Install Maestro, get the local runtime on your machine, and prepare a repo for a handoff you can supervise.
+description: Install Maestro, get the local runtime on your machine, and prepare a repo for a Codex handoff you can supervise.
 section: getting-started
 order: 0
 navLabel: Install
@@ -11,7 +11,7 @@ import DocsMcpSetupAccordion from "./_components/DocsMcpSetupAccordion.astro";
 
 ## Install from npm
 
-Install is the one-time setup. Once `maestro` is on your `PATH`, you can start a local loop in any repo and come back to the same control surface when work is in flight.
+Install is the one-time setup. Once `maestro` is on your `PATH`, you can start a local Codex loop in any repo and come back to the same control surface when work is in flight.
 
 If you are on a supported platform, the published npm package is the fastest path to install or upgrade:
 
@@ -21,15 +21,15 @@ The installed command name is still `maestro`.
 
 ## Install the Maestro skill bundle
 
-If you want Codex and Claude Code to pick up Maestro-specific guidance automatically, install the bundled skill once:
+If you want Codex to pick up Maestro-specific guidance automatically, install the bundled skill once:
 
 <DocsCommandField command={`maestro install --skills`} />
 
-That copies the skill into `~/.agents/skills/maestro` for Codex and `~/.claude/skills/maestro` for Claude Code.
+That copies the skill into `~/.agents/skills/maestro` for Codex.
 
-## Add the MCP server to your coding agent
+## Add the MCP server to Codex
 
-Once `maestro` is on your `PATH`, pick the setup path that matches your coding agent. Codex and Claude Code have direct `mcp add` commands, and the fallback section covers agents that want a manual MCP server entry.
+Once `maestro` is on your `PATH`, use the Codex setup path first. The manual section covers clients that need a direct MCP server entry.
 
 <DocsMcpSetupAccordion />
 
@@ -64,9 +64,9 @@ Contributor Docker build:
 ## What to install first
 
 - Install `go` if you need source builds or local development.
-- Install `codex` before you attempt real orchestration runs that launch the Codex CLI.
-- Install an MCP-capable coding agent if you want to connect to the local queue interactively.
-- Use the npm package when you want the shortest path from machine setup to the `mcp add` command or config entry your coding agent expects.
+- Install `codex` before you attempt real Codex runs that launch the Codex CLI.
+- Install an MCP-capable client if you want to connect to the local queue interactively.
+- Use the npm package when you want the shortest path from machine setup to the `mcp add` command or config entry your Codex setup expects.
 
 ## Contributor tooling
 

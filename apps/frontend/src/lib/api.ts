@@ -67,8 +67,10 @@ export const api = {
   workBootstrap: () => request<WorkBootstrapResponse>("/api/v1/app/work"),
   listProjects: () =>
     request<{ items: ProjectSummary[] }>("/api/v1/app/projects"),
-  getProject: (id: string) =>
-    request<ProjectDetailResponse>(`/api/v1/app/projects/${id}`),
+  getProject: (id: string, sort?: string) =>
+    request<ProjectDetailResponse>(
+      `/api/v1/app/projects/${id}${sort ? `?sort=${encodeURIComponent(sort)}` : ""}`,
+    ),
   createProject: (body: ProjectInput) =>
     request<Project>("/api/v1/app/projects", {
       method: "POST",

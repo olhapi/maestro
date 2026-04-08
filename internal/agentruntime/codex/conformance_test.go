@@ -443,7 +443,7 @@ func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) {
 
 func startSharedAppServerRuntime(t *testing.T, observers agentruntime.Observers) contracttest.StartResult {
 	tracePath := filepath.Join(t.TempDir(), "trace.log")
-	client := mustStartAppServerRuntime(t, fakeappserver.Scenario{
+	scenario := fakeappserver.Scenario{
 		Steps: append(initializeOnlyScenario(),
 			fakeappserver.Step{
 				Match: fakeappserver.Match{Method: "thread/start"},
@@ -466,12 +466,60 @@ func startSharedAppServerRuntime(t *testing.T, observers agentruntime.Observers)
 					{Text: "second prompt"},
 					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-contract", "turnId": "turn-2"}}},
 				},
-				ExitCode: fakeappserver.Int(0),
+				WaitForRelease: "turn-2-completed",
+				ExitCode:       fakeappserver.Int(0),
 			},
 		),
-	}, func(spec *agentruntime.RuntimeSpec) {
-		spec.Env = append(spec.Env, "TRACE_FILE="+tracePath)
-	}, observers)
+	}
+	cfg := fakeappserver.NewConfig(t, scenario)
+	t.Cleanup(cfg.Close)
+
+	releaseOnce := sync.Once{}
+	wrappedObservers := observers
+	wrappedObservers.OnActivityEvent = func(event agentruntime.ActivityEvent) {
+		if observers.OnActivityEvent != nil {
+			observers.OnActivityEvent(event.Clone())
+		}
+		if event.Type == "turn.completed" && event.TurnID == "turn-2" {
+			releaseOnce.Do(func() {
+				cfg.Release("turn-2-completed")
+			})
+		}
+	}
+
+	tmpDir := t.TempDir()
+	workspaceRoot := filepath.Join(tmpDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "ISS-RUNTIME")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+
+	spec := agentruntime.RuntimeSpec{
+		Provider:        agentruntime.ProviderCodex,
+		Transport:       agentruntime.TransportAppServer,
+		Command:         cfg.Command,
+		Workspace:       workspace,
+		WorkspaceRoot:   workspaceRoot,
+		IssueID:         "iss_app",
+		IssueIdentifier: "ISS-APP",
+		Env:             append([]string(nil), cfg.Env...),
+		ReadTimeout:     2 * time.Second,
+		TurnTimeout:     3 * time.Second,
+		StallTimeout:    3 * time.Second,
+		Permissions: agentruntime.PermissionConfig{
+			ThreadSandbox: "workspace-write",
+			TurnSandboxPolicy: map[string]interface{}{
+				"type": "workspaceWrite",
+			},
+			CollaborationMode: "default",
+		},
+	}
+	spec.Env = append(spec.Env, "TRACE_FILE="+tracePath)
+
+	client, err := Start(context.Background(), spec, wrappedObservers)
+	if err != nil {
+		t.Fatalf("Start app-server runtime: %v", err)
+	}
 	return contracttest.StartResult{
 		Client: client,
 		State:  tracePath,

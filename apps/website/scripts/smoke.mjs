@@ -4,12 +4,12 @@ import { join } from "node:path";
 const checks = [
   {
     file: "index.html",
-    text: "Local-first orchestration for coding agents",
+    text: "Local-first Codex orchestration",
     mode: "include",
   },
   {
     file: "index.html",
-    text: "Docs organized around the handoff and the return",
+    text: "Docs organized around the Codex handoff and the return",
     mode: "include",
   },
   {

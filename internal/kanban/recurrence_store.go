@@ -7,11 +7,12 @@ import (
 )
 
 type IssueCreateOptions struct {
-	IssueType   IssueType
-	Cron        string
-	Enabled     *bool
-	AgentName   string
-	AgentPrompt string
+	IssueType         IssueType
+	Cron              string
+	Enabled           *bool
+	PermissionProfile PermissionProfile
+	AgentName         string
+	AgentPrompt       string
 }
 
 func boolToSQLite(v bool) int {

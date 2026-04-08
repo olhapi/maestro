@@ -8,17 +8,17 @@ const isHome = context === "home";
 const sections = [
   {
     description: isHome
-      ? "Attach through MCP, keep the daemon in the middle, and let provider sync plus orchestration stay local."
+      ? "Attach through MCP, keep the daemon in the middle, and let Codex runs plus local state stay on the same machine."
       : "",
     image: isHome
       ? {
-          alt: "Architecture diagram showing the MCP client and HTTP server paths flowing into the Maestro daemon, which coordinates providers, orchestration, storage, and the agent runner.",
+          alt: "Architecture diagram showing the MCP client and HTTP server paths flowing into the Maestro daemon, which coordinates the local store, MCP transport, and Codex runs.",
           height: 780,
           src: "/images/screens/architecture-runtime.svg",
           width: 1280,
         }
       : {
-          alt: "Screenshot of the live loop architecture diagram showing MCP and HTTP entry points flowing into the Maestro runtime, which then coordinates providers, orchestration, storage, and the agent runner.",
+          alt: "Screenshot of the live loop architecture diagram showing MCP and HTTP entry points flowing into the Maestro runtime, which then coordinates the local store, MCP transport, and Codex runs.",
           height: 606,
           src: "/images/screens/architecture-live-loop.png",
           width: 572,

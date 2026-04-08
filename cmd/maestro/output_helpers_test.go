@@ -376,6 +376,42 @@ func TestOutputRenderersCoverTextModes(t *testing.T) {
 	})
 }
 
+func TestPrintWorkflowInitNextStepsBranches(t *testing.T) {
+	var advisory bytes.Buffer
+	printWorkflowInitNextSteps(&advisory, true, "maestro verify --repo /repo", "maestro project create Demo --repo /repo", "maestro run /repo")
+	advisoryText := advisory.String()
+	for _, want := range []string{
+		"Next steps",
+		"Review the warnings and remediation above, then update WORKFLOW.md if needed.",
+		"Re-run readiness checks: maestro verify --repo /repo",
+		"Start the orchestrator after the repo is ready: maestro run /repo",
+	} {
+		if !strings.Contains(advisoryText, want) {
+			t.Fatalf("expected %q in advisory next steps %q", want, advisoryText)
+		}
+	}
+	if strings.Contains(advisoryText, "Register the repo:") {
+		t.Fatalf("expected advisory next steps to omit repo registration, got %q", advisoryText)
+	}
+
+	var clean bytes.Buffer
+	printWorkflowInitNextSteps(&clean, false, "maestro verify --repo /repo", "maestro project create Demo --repo /repo", "maestro run /repo")
+	cleanText := clean.String()
+	for _, want := range []string{
+		"Next steps",
+		"Register the repo: maestro project create Demo --repo /repo",
+		"Start the orchestrator: maestro run /repo",
+		"Re-run readiness checks anytime: maestro verify --repo /repo",
+	} {
+		if !strings.Contains(cleanText, want) {
+			t.Fatalf("expected %q in clean next steps %q", want, cleanText)
+		}
+	}
+	if strings.Contains(cleanText, "Review the warnings and remediation above") {
+		t.Fatalf("expected clean next steps to omit advisory language, got %q", cleanText)
+	}
+}
+
 func TestErrorHelpersAndAPIClientBranches(t *testing.T) {
 	var nilErr *cliError
 	if nilErr.Error() != "" || nilErr.Unwrap() != nil {

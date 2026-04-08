@@ -7,6 +7,8 @@ export const issueSortOptions = [
   { value: 'priority_asc', label: 'Highest priority' },
   { value: 'identifier_asc', label: 'Identifier A-Z' },
   { value: 'state_asc', label: 'State grouping' },
+  { value: 'project_asc', label: 'Project A-Z' },
+  { value: 'epic_asc', label: 'Epic A-Z' },
 ] as const
 
 export const stateMeta: Record<string, { label: string; accent: string; boardTint: string; progressFill: string }> = {
@@ -60,6 +62,17 @@ function compareDatesAscending(left: string, right: string) {
   return new Date(left).getTime() - new Date(right).getTime()
 }
 
+function compareNullableStringsAscending(left?: string, right?: string) {
+  const leftValue = left?.trim() ?? ''
+  const rightValue = right?.trim() ?? ''
+  const leftEmpty = leftValue === ''
+  const rightEmpty = rightValue === ''
+  if (leftEmpty !== rightEmpty) {
+    return leftEmpty ? 1 : -1
+  }
+  return leftValue.localeCompare(rightValue)
+}
+
 export function sortIssues(items: IssueSummary[], sort: string) {
   return [...items].sort((left, right) => {
     switch (sort) {
@@ -92,6 +105,28 @@ export function sortIssues(items: IssueSummary[], sort: string) {
           return left.priority - right.priority
         }
         return compareDatesDescending(left.updated_at, right.updated_at)
+      }
+      case 'project_asc': {
+        const projectDelta = compareNullableStringsAscending(left.project_name, right.project_name)
+        if (projectDelta !== 0) {
+          return projectDelta
+        }
+        const updatedDelta = compareDatesDescending(left.updated_at, right.updated_at)
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
+      }
+      case 'epic_asc': {
+        const epicDelta = compareNullableStringsAscending(left.epic_name, right.epic_name)
+        if (epicDelta !== 0) {
+          return epicDelta
+        }
+        const updatedDelta = compareDatesDescending(left.updated_at, right.updated_at)
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
       }
       case 'updated_desc':
       default: {

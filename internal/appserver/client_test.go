@@ -564,14 +564,19 @@ func TestRunFallsBackToFreshThreadWhenTurnStartThreadIsMissing(t *testing.T) {
 					{JSON: map[string]interface{}{"id": 5, "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-fresh"}}}},
 					{JSON: map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{"threadId": "thread-fresh", "turn": map[string]interface{}{"id": "turn-fresh"}}}},
 				},
-				ExitCode: fakeappserver.Int(0),
+				WaitForRelease: "complete",
+				ExitCode:       fakeappserver.Int(0),
 			},
 		},
 	}
-	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg, release := helperClientConfig(t, workspace, workspaceRoot, scenario)
 	cfg.ResumeThreadID = "thread-stale"
 	cfg.ResumeSource = "required"
 	cfg = withTrace(cfg, traceFile)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		release("complete")
+	}()
 
 	res, err := Run(context.Background(), cfg)
 	if err != nil {
@@ -1323,11 +1328,12 @@ func TestRunStopsWaitingIfAppServerExitsDuringInteraction(t *testing.T) {
 						},
 					},
 				},
-				ExitCode: fakeappserver.Int(1),
+				WaitForRelease: "exit",
+				ExitCode:       fakeappserver.Int(1),
 			},
 		},
 	}
-	cfg, _ := helperClientConfig(t, workspace, workspaceRoot, scenario)
+	cfg, release := helperClientConfig(t, workspace, workspaceRoot, scenario)
 	interrupts := make(chan PendingInteraction, 1)
 	doneIDs := make(chan string, 1)
 	cfg.OnPendingInteraction = func(interaction *PendingInteraction) {
@@ -1356,6 +1362,7 @@ func TestRunStopsWaitingIfAppServerExitsDuringInteraction(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected pending interaction")
 	}
+	release("exit")
 
 	var runErr *RunError
 	select {

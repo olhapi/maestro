@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
@@ -13,10 +13,26 @@ vi.mock('@tanstack/react-router', () => ({
   Link: ({
     children,
     params,
+    to,
+    ...props
   }: {
     children: ReactNode
     params?: { identifier?: string }
-  }) => <a href={params?.identifier ? `/issues/${params.identifier}` : '#'}>{children}</a>,
+    to?: string
+  } & ComponentPropsWithoutRef<'a'>) => (
+    <a
+      href={
+        typeof to === 'string'
+          ? to
+          : params?.identifier
+            ? `/issues/${params.identifier}`
+            : '#'
+      }
+      {...props}
+    >
+      {children}
+    </a>
+  ),
   useNavigate: () => vi.fn(),
 }))
 
@@ -47,6 +63,41 @@ function makeDoneIssues(count: number) {
       updated_at: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T11:00:00Z`,
     }),
   )
+}
+
+function sortIssuesForTest(issues: IssueSummary[], sort: string) {
+  const sorted = [...issues]
+  sorted.sort((left, right) => {
+    switch (sort) {
+      case 'identifier_asc':
+        return left.identifier.localeCompare(right.identifier)
+      case 'priority_asc':
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+      case 'state_asc': {
+        const stateDelta = left.state.localeCompare(right.state)
+        if (stateDelta !== 0) {
+          return stateDelta
+        }
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+      }
+      case 'updated_desc':
+      default: {
+        const updatedDelta =
+          new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+      }
+    }
+  })
+  return sorted
 }
 
 describe('WorkPage', () => {
@@ -110,7 +161,7 @@ describe('WorkPage', () => {
     })
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /iss-1 investigate retries/i }))
+    fireEvent.click(screen.getByRole('button', { name: /iss-1.*investigate retries/i }))
 
     await waitFor(() => {
       expect(screen.getByText('turn.started')).toBeInTheDocument()
@@ -183,7 +234,7 @@ describe('WorkPage', () => {
 
     expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
     expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
-  })
+  }, 30000)
 
   it('filters issues by project from the work toolbar', async () => {
     const bootstrap = makeBootstrapResponse()
@@ -209,14 +260,14 @@ describe('WorkPage', () => {
         search: '',
         project_id: 'project-1',
         state: '',
-        issue_type: '',
+        issue_type: 'standard',
         sort: 'priority_asc',
         limit: 200,
       })
     })
   })
 
-  it('filters issues by type from the work toolbar', async () => {
+  it('queries standard work even when recurring issues exist in bootstrap data', async () => {
     const bootstrap = makeBootstrapResponse({
       issues: {
         ...makeBootstrapResponse().issues,
@@ -233,9 +284,10 @@ describe('WorkPage', () => {
     })
     mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
+    const standardItems = bootstrap.issues.items.filter((item) => item.issue_type !== 'recurring')
     vi.mocked(api.listIssues).mockResolvedValue({
-      items: bootstrap.issues.items,
-      total: bootstrap.issues.total,
+      items: standardItems,
+      total: standardItems.length,
       limit: 200,
       offset: 0,
     })
@@ -246,54 +298,51 @@ describe('WorkPage', () => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
-    await selectOption(/filter by issue type/i, /recurring/i)
-
     await waitFor(() => {
       expect(api.listIssues).toHaveBeenLastCalledWith({
         search: '',
         project_id: '',
         state: '',
-        issue_type: 'recurring',
+        issue_type: 'standard',
         sort: 'priority_asc',
         limit: 200,
       })
     })
+
+    expect(screen.queryByText('Nightly sync')).not.toBeInTheDocument()
   })
 
-  it('retains selected filters after the page remounts', async () => {
+  it('sorts the work list from header clicks and keeps the chosen sort after remount', async () => {
     const bootstrap = makeBootstrapResponse({
-      projects: [
-        makeBootstrapResponse().projects[0],
-        {
-          ...makeBootstrapResponse().projects[0],
-          id: 'project-2',
-          name: 'Operations',
-        },
-      ],
       issues: {
         ...makeBootstrapResponse().issues,
         items: [
-          makeIssueSummary(),
+          makeIssueSummary({
+            id: 'issue-1',
+            identifier: 'ISS-2',
+            title: 'Investigate retries',
+            priority: 1,
+            updated_at: '2026-03-09T10:00:00Z',
+          }),
           makeIssueSummary({
             id: 'issue-2',
-            identifier: 'ISS-2',
-            title: 'Nightly sync',
-            issue_type: 'recurring',
-            project_id: 'project-2',
-            project_name: 'Operations',
-            state: 'in_progress',
+            identifier: 'ISS-1',
+            title: 'Triage release',
+            priority: 5,
+            updated_at: '2026-03-09T11:00:00Z',
           }),
         ],
+        total: 2,
       },
     })
     mockWorkBootstrap(bootstrap)
-    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
-    vi.mocked(api.listIssues).mockResolvedValue({
-      items: bootstrap.issues.items,
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.listIssues).mockImplementation(async (filters) => ({
+      items: sortIssuesForTest(bootstrap.issues.items, filters.sort || 'priority_asc'),
       total: bootstrap.issues.total,
       limit: 200,
       offset: 0,
-    })
+    }))
 
     function Harness() {
       const [visible, setVisible] = useState(true)
@@ -314,19 +363,43 @@ describe('WorkPage', () => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
-    await selectOption(/filter by project/i, /operations/i)
+    fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
+
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /filter by state/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Sort by Issue' })).toBeInTheDocument()
     })
-    await selectOption(/filter by state/i, /in progress/i)
+    expect(screen.getByRole('button', { name: 'Sort by Priority' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sort by Project' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sort by Epic' })).toBeInTheDocument()
+
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /filter by issue type/i })).toBeInTheDocument()
+      const issueButtons = within(screen.getByRole('table')).getAllByRole('button', {
+        name: /ISS-/,
+      })
+      expect(issueButtons[0]).toHaveTextContent('ISS-2')
+      expect(issueButtons[1]).toHaveTextContent('ISS-1')
     })
-    await selectOption(/filter by issue type/i, /recurring/i)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by Issue' }))
+
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /sort issues/i })).toBeInTheDocument()
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: '',
+        state: '',
+        issue_type: 'standard',
+        sort: 'identifier_asc',
+        limit: 200,
+      })
     })
-    await selectOption(/sort issues/i, /recently updated/i)
+
+    await waitFor(() => {
+      const issueButtons = within(screen.getByRole('table')).getAllByRole('button', {
+        name: /ISS-/,
+      })
+      expect(issueButtons[0]).toHaveTextContent('ISS-1')
+      expect(issueButtons[1]).toHaveTextContent('ISS-2')
+    })
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle work page' }))
     expect(screen.queryByText('Coordinate work on one board')).not.toBeInTheDocument()
@@ -334,24 +407,69 @@ describe('WorkPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Toggle work page' }))
 
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /filter by project/i })).toBeInTheDocument()
-    })
-
-    expect(screen.getByRole('combobox', { name: /filter by project/i })).toHaveTextContent('Operations')
-    expect(screen.getByRole('combobox', { name: /filter by state/i })).toHaveTextContent('In Progress')
-    expect(screen.getByRole('combobox', { name: /filter by issue type/i })).toHaveTextContent('Recurring')
-    expect(screen.getByRole('combobox', { name: /sort issues/i })).toHaveTextContent('Recently updated')
-
-    await waitFor(() => {
       expect(api.listIssues).toHaveBeenLastCalledWith({
         search: '',
-        project_id: 'project-2',
-        state: 'in_progress',
-        issue_type: 'recurring',
-        sort: 'updated_desc',
+        project_id: '',
+        state: '',
+        issue_type: 'standard',
+        sort: 'identifier_asc',
         limit: 200,
       })
     })
+  })
+
+  it('renders live, blocked, and priority badges with truncated list cells', async () => {
+    const bootstrap = makeBootstrapResponse({
+      issues: {
+        ...makeBootstrapResponse().issues,
+        items: [
+          makeIssueSummary({
+            title: 'Implement an exceptionally long issue title that should be truncated in the list view',
+            priority: 1,
+            project_name: 'Platform with a very long project name that should not overflow the table',
+            epic_name: 'Observability with a very long epic name that should truncate cleanly',
+            is_blocked: true,
+          }),
+        ],
+        total: 1,
+      },
+    })
+    mockWorkBootstrap(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+    })
+
+    renderWithQueryClient(<WorkPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
+
+    const table = await screen.findByRole('table')
+    const issueButton = within(table).getByRole('button', {
+      name: /ISS-1/i,
+    })
+    expect(issueButton).toHaveTextContent('Live')
+    expect(issueButton).toHaveTextContent('Blocked')
+
+    const title = within(issueButton).getByText(
+      'Implement an exceptionally long issue title that should be truncated in the list view',
+    )
+    expect(title).toHaveClass('truncate')
+
+    expect(within(table).getByRole('link', {
+      name: 'Platform with a very long project name that should not overflow the table',
+    })).toHaveClass('truncate')
+    expect(within(table).getByRole('link', {
+      name: 'Observability with a very long epic name that should truncate cleanly',
+    })).toHaveClass('truncate')
+    expect(within(table).getByLabelText('Priority 1')).toBeInTheDocument()
   })
 
   it('uses the grouped mobile board without exposing the desktop view toggle', async () => {

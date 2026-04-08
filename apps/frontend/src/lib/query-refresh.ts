@@ -23,6 +23,10 @@ function queryKeysForPath(pathname: string) {
   }
 
   if (pathname.startsWith('/projects/')) {
+    if (pathname.includes('/automations')) {
+      const projectId = pathnameParam(pathname, '/projects/')
+      return [['bootstrap'], ['project', projectId], ['project-automations', projectId]] as const
+    }
     return [['bootstrap'], ['project', pathnameParam(pathname, '/projects/')]] as const
   }
 

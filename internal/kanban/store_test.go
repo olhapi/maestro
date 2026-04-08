@@ -2576,6 +2576,33 @@ func TestCountIssuesByState(t *testing.T) {
 		t.Fatalf("unexpected project counts: %#v", projectCounts)
 	}
 
+	recurring, err := store.CreateIssueWithOptions(projectA.ID, "", "Recurring", "", 0, nil, IssueCreateOptions{
+		IssueType: IssueTypeRecurring,
+		Cron:      "0 * * * *",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions recurring: %v", err)
+	}
+	if err := store.UpdateIssueState(recurring.ID, StateReady); err != nil {
+		t.Fatalf("UpdateIssueState recurring: %v", err)
+	}
+
+	countsAfterRecurring, err := store.CountIssuesByState("")
+	if err != nil {
+		t.Fatalf("CountIssuesByState recurring all: %v", err)
+	}
+	if countsAfterRecurring[StateBacklog] != 1 || countsAfterRecurring[StateReady] != 1 || countsAfterRecurring[StateDone] != 1 {
+		t.Fatalf("unexpected global counts after recurring issue: %#v", countsAfterRecurring)
+	}
+
+	projectCountsAfterRecurring, err := store.CountIssuesByState(projectA.ID)
+	if err != nil {
+		t.Fatalf("CountIssuesByState recurring project: %v", err)
+	}
+	if projectCountsAfterRecurring[StateBacklog] != 1 || projectCountsAfterRecurring[StateReady] != 1 || projectCountsAfterRecurring[StateDone] != 0 {
+		t.Fatalf("unexpected project counts after recurring issue: %#v", projectCountsAfterRecurring)
+	}
+
 	backlogIssue, err := store.GetIssue(backlog.ID)
 	if err != nil {
 		t.Fatalf("GetIssue backlog: %v", err)
@@ -4032,6 +4059,27 @@ func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
 		t.Fatalf("SetIssueBlockers blocked: %v", err)
 	}
 
+	alphaProject, err := store.CreateProject("Alpha", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject alpha: %v", err)
+	}
+	alphaProjectIssue, err := store.CreateIssue(alphaProject.ID, "", "Alpha project", "alpha project token", 4, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue alpha project: %v", err)
+	}
+	alphaEpic, err := store.CreateEpic(project.ID, "Alpha epic", "")
+	if err != nil {
+		t.Fatalf("CreateEpic alpha epic: %v", err)
+	}
+	alphaEpicIssue, err := store.CreateIssue(project.ID, alphaEpic.ID, "Alpha epic issue", "alpha epic token", 4, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue alpha epic: %v", err)
+	}
+	unassignedIssue, err := store.CreateIssue("", "", "Unassigned issue", "unassigned token", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateIssue unassigned: %v", err)
+	}
+
 	cases := []struct {
 		name      string
 		query     IssueQuery
@@ -4040,17 +4088,27 @@ func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
 		{
 			name:      "project id sort created",
 			query:     IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 20},
-			wantTotal: 5,
+			wantTotal: 6,
 		},
 		{
 			name:      "project id sort identifier",
 			query:     IssueQuery{ProjectID: project.ID, Sort: "identifier_asc", Limit: 20},
-			wantTotal: 5,
+			wantTotal: 6,
 		},
 		{
 			name:      "project id sort state",
 			query:     IssueQuery{ProjectID: project.ID, Sort: "state_asc", Limit: 20},
-			wantTotal: 5,
+			wantTotal: 6,
+		},
+		{
+			name:      "project asc across projects",
+			query:     IssueQuery{Sort: "project_asc", Limit: 20},
+			wantTotal: 8,
+		},
+		{
+			name:      "epic asc within project",
+			query:     IssueQuery{ProjectID: project.ID, Sort: "epic_asc", Limit: 20},
+			wantTotal: 6,
 		},
 		{
 			name:      "epic id and issue type",
@@ -4065,7 +4123,7 @@ func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
 		{
 			name:      "offset pagination",
 			query:     IssueQuery{ProjectID: project.ID, Sort: "created_asc", Limit: 1, Offset: 1},
-			wantTotal: 5,
+			wantTotal: 6,
 		},
 	}
 
@@ -4088,7 +4146,7 @@ func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIssueSummaries created_asc: %v", err)
 	}
-	if len(items) != 5 || items[0].Identifier != blocker.Identifier || items[4].Identifier != blocked.Identifier {
+	if len(items) != 6 || items[0].Identifier != blocker.Identifier || items[5].Identifier != alphaEpicIssue.Identifier {
 		t.Fatalf("unexpected created_asc order: %#v", items)
 	}
 
@@ -4096,7 +4154,7 @@ func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIssueSummaries identifier_asc: %v", err)
 	}
-	if len(items) != 5 || items[0].Identifier != blocker.Identifier {
+	if len(items) != 6 || items[0].Identifier != blocker.Identifier {
 		t.Fatalf("unexpected identifier_asc order: %#v", items)
 	}
 
@@ -4104,8 +4162,44 @@ func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIssueSummaries state_asc: %v", err)
 	}
-	if len(items) != 5 || items[0].State == "" {
+	if len(items) != 6 || items[0].State == "" {
 		t.Fatalf("unexpected state_asc results: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{Sort: "project_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries project_asc: %v", err)
+	}
+	if len(items) != 8 {
+		t.Fatalf("expected 8 issues for project_asc, got %d", len(items))
+	}
+	if items[0].ProjectName != "Alpha" || items[len(items)-1].ProjectName != "" {
+		t.Fatalf("unexpected project_asc endpoints: %#v", items)
+	}
+	for i := 1; i < len(items)-1; i++ {
+		if items[i].ProjectName != "Matrix" {
+			t.Fatalf("expected Matrix issues in the middle of project_asc order, got %#v", items)
+		}
+	}
+	if items[0].Identifier != alphaProjectIssue.Identifier || items[len(items)-1].Identifier != unassignedIssue.Identifier {
+		t.Fatalf("unexpected project_asc identifiers: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "epic_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries epic_asc: %v", err)
+	}
+	if len(items) != 6 {
+		t.Fatalf("expected 6 issues for epic_asc, got %d", len(items))
+	}
+	if items[0].EpicName != "Alpha epic" || items[len(items)-1].EpicName != "" {
+		t.Fatalf("unexpected epic_asc endpoints: %#v", items)
+	}
+	if items[0].Identifier != alphaEpicIssue.Identifier {
+		t.Fatalf("expected Alpha epic issue first, got %#v", items)
+	}
+	if items[1].EpicName != "Matrix epic" {
+		t.Fatalf("expected Matrix epic issues after Alpha epic, got %#v", items)
 	}
 }
 

@@ -1,6 +1,6 @@
 import { useDeferredValue, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { List, Pencil, Trash2 } from "lucide-react";
+import { Eye, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -30,7 +30,6 @@ import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 
 const allProjectsValue = "__all-projects__";
 const allStatesValue = "__all-states__";
-const allTypesValue = "__all-types__";
 
 function StatCard({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
@@ -52,7 +51,7 @@ export function WorkPage() {
   const { workOverviewFilters, setWorkOverviewFilters } = useGlobalDashboardContext();
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
-  const { issueType, projectID, sort, state } = workOverviewFilters;
+  const { projectID, sort, state } = workOverviewFilters;
   const [view, setView] = useState<"board" | "list">("board");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<IssueDetail | undefined>();
@@ -62,11 +61,19 @@ export function WorkPage() {
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
   const [issuePendingDelete, setIssuePendingDelete] = useState<IssueSummary | null>(null);
 
-  const issuesKey = ["issues", deferredSearch, projectID, state, issueType, sort] as const;
+  const issuesKey = ["issues", deferredSearch, projectID, state, sort] as const;
   const bootstrap = useQuery({ queryKey: ["work-bootstrap"], queryFn: api.workBootstrap });
   const issues = useQuery({
     queryKey: issuesKey,
-    queryFn: () => api.listIssues({ search: deferredSearch, project_id: projectID, state, issue_type: issueType, sort, limit: 200 }),
+    queryFn: () =>
+      api.listIssues({
+        search: deferredSearch,
+        project_id: projectID,
+        state,
+        issue_type: "standard",
+        sort,
+        limit: 200,
+      }),
   });
 
   const updateWorkOverviewFilters = (updates: Partial<typeof workOverviewFilters>) => {
@@ -194,19 +201,6 @@ export function WorkPage() {
                 ))}
               </SelectContent>
             </Select>
-            <Select
-              value={issueType || allTypesValue}
-              onValueChange={(value) => updateWorkOverviewFilters({ issueType: value === allTypesValue ? "" : value })}
-            >
-              <SelectTrigger aria-label="Filter by issue type">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={allTypesValue}>All types</SelectItem>
-                <SelectItem value="standard">Standard</SelectItem>
-                <SelectItem value="recurring">Recurring</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
         </CardHeader>
       </Card>
@@ -232,10 +226,20 @@ export function WorkPage() {
         }}
         renderListActions={(issue) => (
           <>
-            <Button variant="ghost" size="icon" onClick={() => setPreviewIssue(issue)}>
-              <List className="size-4" />
+            <Button
+              aria-label="Open issue preview"
+              title="Open issue preview"
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setPreviewIssue(issue)}
+            >
+              <Eye className="size-4" />
             </Button>
             <Button
+              aria-label="Edit issue"
+              title="Edit issue"
+              type="button"
               variant="ghost"
               size="icon"
               onClick={async () => {
@@ -249,6 +253,7 @@ export function WorkPage() {
             <Button
               variant="ghost"
               size="icon"
+              type="button"
               aria-label="Delete issue"
               title="Delete issue"
               disabled={deleteMutation.isPending}

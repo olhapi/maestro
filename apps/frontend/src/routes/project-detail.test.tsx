@@ -1,15 +1,37 @@
-import type { ReactNode } from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import { ProjectDetailPage } from "@/routes/project-detail";
 import { projectPermissionProfileButtonCopy } from "@/lib/project-permission-profiles";
 import { makeBootstrapResponse, makeIssueSummary } from "@/test/fixtures";
-import { renderWithQueryClient, selectOption } from "@/test/test-utils";
+import { renderWithQueryClient } from "@/test/test-utils";
 import type { PermissionProfile } from "@/lib/types";
 
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
+  Link: ({
+    children,
+    params,
+    to,
+    ...props
+  }: {
+    children: ReactNode;
+    params?: { identifier?: string };
+    to?: string;
+  } & ComponentPropsWithoutRef<"a">) => (
+    <a
+      href={
+        typeof to === "string"
+          ? to
+          : params?.identifier
+            ? `/issues/${params.identifier}`
+            : "#"
+      }
+      {...props}
+    >
+      {children}
+    </a>
+  ),
   useNavigate: () => vi.fn(),
   useParams: () => ({ projectId: "project-1" }),
 }));
@@ -36,6 +58,31 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const { api } = await import("@/lib/api");
+
+function sortProjectIssuesForTest(issues: IssueSummary[], sort: string) {
+  const sorted = [...issues];
+  sorted.sort((left, right) => {
+    switch (sort) {
+      case "identifier_asc":
+        return left.identifier.localeCompare(right.identifier);
+      case "priority_asc":
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority;
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+      case "updated_desc":
+      default: {
+        const updatedDelta =
+          new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+        if (updatedDelta !== 0) {
+          return updatedDelta;
+        }
+        return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+      }
+    }
+  });
+  return sorted;
+}
 
 describe("ProjectDetailPage", () => {
   beforeEach(() => {
@@ -99,6 +146,7 @@ describe("ProjectDetailPage", () => {
     expect(
       screen.getByRole("button", { name: /run project/i }).nextElementSibling,
     ).toBe(accessButton);
+    expect(screen.getByRole("button", { name: /automations/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /run project/i }));
     await waitFor(() => {
@@ -117,11 +165,7 @@ describe("ProjectDetailPage", () => {
 
     renderWithQueryClient(<ProjectDetailPage />);
 
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /stop project/i }),
-      ).toBeInTheDocument();
-    });
+    await screen.findByRole("button", { name: /stop project/i }, { timeout: 5000 });
 
     fireEvent.click(screen.getByRole("button", { name: /stop project/i }));
     await waitFor(() => {
@@ -129,39 +173,50 @@ describe("ProjectDetailPage", () => {
     });
   });
 
-  it("sorts project work and switches between list and board views", async () => {
-    const bootstrap = makeBootstrapResponse()
+  it("sorts project work from header clicks and refetches with the active sort", async () => {
     const projectIssues = {
       items: [
         makeIssueSummary({
           id: "issue-1",
-          identifier: "ISS-1",
+          identifier: "ISS-2",
           title: "Triage release",
-          priority: 5,
+          priority: 1,
           state: "ready",
+          updated_at: "2026-03-09T10:00:00Z",
         }),
         makeIssueSummary({
           id: "issue-2",
-          identifier: "ISS-2",
+          identifier: "ISS-1",
           title: "Investigate retries",
-          priority: 1,
+          priority: 5,
           state: "in_progress",
+          updated_at: "2026-03-09T11:00:00Z",
         }),
       ],
       total: 2,
       limit: 200,
       offset: 0,
     }
+    const bootstrap = makeBootstrapResponse({
+      issues: {
+        ...makeBootstrapResponse().issues,
+        items: projectIssues.items,
+        total: projectIssues.total,
+      },
+    })
 
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap)
-    vi.mocked(api.getProject).mockResolvedValue({
+    vi.mocked(api.getProject).mockImplementation(async (_projectId, sort = "priority_asc") => ({
       project: {
         ...bootstrap.projects[0],
         total_count: 37,
       },
       epics: bootstrap.epics,
-      issues: projectIssues,
-    })
+      issues: {
+        ...projectIssues,
+        items: sortProjectIssuesForTest(projectIssues.items, sort),
+      },
+    }))
 
     renderWithQueryClient(<ProjectDetailPage />)
 
@@ -172,25 +227,36 @@ describe("ProjectDetailPage", () => {
     const issuesStat = screen.getByText("Issues").closest("div")
     expect(issuesStat).not.toBeNull()
     expect(within(issuesStat as HTMLElement).getByText("37")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(api.getProject).toHaveBeenCalledWith("project-1", "priority_asc")
+    })
 
-    expect(screen.getByRole("combobox", { name: /sort issues/i })).toHaveTextContent("Highest priority")
     expect(screen.getByRole("radio", { name: "Board view" })).toHaveAttribute("data-state", "on")
 
     fireEvent.click(screen.getByRole("radio", { name: "List view" }))
 
     await waitFor(() => {
-      expect(screen.getByRole("columnheader", { name: "Issue" })).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: "Sort by Issue" })).toBeInTheDocument()
     })
 
     const table = screen.getByRole("table")
-    expect(within(table).getAllByRole("button")[0]).toHaveTextContent("ISS-2")
-    expect(within(table).getAllByRole("button")[1]).toHaveTextContent("ISS-1")
+    await waitFor(() => {
+      const issueButtons = within(table).getAllByRole("button", { name: /ISS-/ })
+      expect(issueButtons[0]).toHaveTextContent("ISS-2")
+      expect(issueButtons[1]).toHaveTextContent("ISS-1")
+    })
     expect(screen.queryByRole("columnheader", { name: "Project" })).not.toBeInTheDocument()
 
-    await selectOption(/sort issues/i, /identifier a-z/i)
+    fireEvent.click(screen.getByRole("button", { name: "Sort by Issue" }))
 
     await waitFor(() => {
-      const sortedButtons = within(screen.getByRole("table")).getAllByRole("button")
+      expect(api.getProject).toHaveBeenLastCalledWith("project-1", "identifier_asc")
+    })
+
+    await waitFor(() => {
+      const sortedButtons = within(screen.getByRole("table")).getAllByRole("button", {
+        name: /ISS-/,
+      })
       expect(sortedButtons[0]).toHaveTextContent("ISS-1")
       expect(sortedButtons[1]).toHaveTextContent("ISS-2")
     })

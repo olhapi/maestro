@@ -3,6 +3,7 @@ export const appRoutes = {
   work: '/work',
   projects: '/projects',
   projectDetail: '/projects/$projectId',
+  projectAutomations: '/projects/$projectId/automations',
   epicDetail: '/epics/$epicId',
   issueDetail: '/issues/$identifier',
   sessions: '/sessions',

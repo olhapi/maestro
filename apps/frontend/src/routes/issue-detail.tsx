@@ -1,12 +1,12 @@
 import { type ComponentType, type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Paperclip, Pencil, Reply, RotateCcw, Send, Trash2, Upload, X } from "lucide-react";
+import { Paperclip, Pencil, Reply, RotateCcw, Send, Trash2, Upload, Workflow, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { SessionExecutionCard } from "@/components/dashboard/session-execution-card";
-import { IssueDialog } from "@/components/forms";
+import { AutomationDialog, IssueDialog } from "@/components/forms";
 import { Badge } from "@/components/ui/badge";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -841,6 +841,11 @@ export function IssueDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["interrupts"] }),
       queryClient.invalidateQueries({ queryKey: ["sessions"] }),
     ]);
+    if (issue.data?.issue_type === "recurring" && issue.data.project_id) {
+      await queryClient.invalidateQueries({
+        queryKey: ["project-automations", issue.data.project_id],
+      });
+    }
   };
 
   const retryMutation = useMutation({
@@ -853,7 +858,7 @@ export function IssueDetailPage() {
   const runNowMutation = useMutation({
     mutationFn: () => api.runIssueNow(identifier),
     onSuccess: async () => {
-      toast.success("Recurring issue queued");
+      toast.success("Automation queued");
       await invalidate();
     },
   });
@@ -1078,7 +1083,7 @@ export function IssueDetailPage() {
     issue.data.project_id && issue.data.project_name
       ? {
           label: issue.data.project_name,
-          to: appRoutes.projectDetail,
+          to: issue.data.issue_type === "recurring" ? appRoutes.projectAutomations : appRoutes.projectDetail,
           params: { projectId: issue.data.project_id },
         }
       : { label: "Issue" },
@@ -1105,7 +1110,7 @@ export function IssueDetailPage() {
         <Badge>{issue.data.identifier}</Badge>
         <Badge className="border-white/10 bg-white/5 text-white">{getStateMeta(issue.data.state).label}</Badge>
         {issue.data.issue_type === "recurring" ? (
-          <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">Recurring</Badge>
+          <Badge className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100">Automation</Badge>
         ) : null}
         {issue.data.project_name ? (
           <Badge className="border-white/10 bg-white/5 text-white">
@@ -1122,6 +1127,29 @@ export function IssueDetailPage() {
           </Badge>
         ) : null}
       </div>
+
+      {issue.data.issue_type === "recurring" && issue.data.project_id ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[calc(var(--panel-radius)-0.125rem)] border border-cyan-400/15 bg-cyan-400/[0.05] px-4 py-3">
+          <div>
+            <p className="text-sm font-medium text-white">Managed as a project automation</p>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+              Use the automation page for the primary editing experience.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              void navigate({
+                to: appRoutes.projectAutomations,
+                params: { projectId: issue.data.project_id! },
+              })
+            }
+          >
+            <Workflow className="size-4" />
+            Open project automations
+          </Button>
+        </div>
+      ) : null}
 
       <div className="grid items-start gap-[var(--section-gap)] xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="grid min-w-0 gap-[var(--section-gap)]" data-testid="issue-main-column">
@@ -1152,12 +1180,12 @@ export function IssueDetailPage() {
               </div>
               {issue.data.issue_type === "recurring" ? (
                 <div className="min-w-0 rounded-[calc(var(--panel-radius)-0.125rem)] border border-cyan-400/10 bg-cyan-400/[0.04] px-3.5 py-3">
-                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Schedule</p>
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Automation schedule</p>
                   <p className="mt-3 text-white">
-                    {issue.data.enabled === false ? "Disabled" : issue.data.cron || "Recurring"}
+                    {issue.data.enabled === false ? "Paused" : issue.data.cron || "Automation ready"}
                   </p>
                   <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                    {issue.data.next_run_at ? formatDateTime(issue.data.next_run_at) : "No next run scheduled"}
+                    {issue.data.next_run_at ? formatDateTime(issue.data.next_run_at) : "No next automation run scheduled"}
                   </p>
                 </div>
               ) : null}
@@ -1521,24 +1549,42 @@ export function IssueDetailPage() {
         </div>
       </div>
 
-      <IssueDialog
-        open={editOpen}
-        onOpenChange={setEditOpen}
-        initial={issue.data}
-        projects={bootstrap.data.projects}
-        epics={bootstrap.data.epics}
-        availableIssues={bootstrap.data.issues.items}
-        onSubmit={async (body, assetChanges) => {
-          const updated = await api.updateIssue(identifier, body);
-          const result = await applyIssueAssetChanges(updated.identifier, assetChanges);
-          if (result.failures.length > 0) {
-            toast.error(`Issue updated, but ${summarizeIssueAssetFailures(result)}`);
-          } else {
-            toast.success("Issue updated");
-          }
-          await invalidate();
-        }}
-      />
+      {issue.data.issue_type === "recurring" ? (
+        <AutomationDialog
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          initial={issue.data}
+          projectID={issue.data.project_id ?? ""}
+          epics={bootstrap.data.epics}
+          availableIssues={bootstrap.data.issues.items}
+          onSubmit={async (body) => {
+            await api.updateIssue(identifier, body);
+            toast.success("Automation updated");
+            await invalidate();
+            await issue.refetch();
+          }}
+        />
+      ) : (
+        <IssueDialog
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          initial={issue.data}
+          projects={bootstrap.data.projects}
+          epics={bootstrap.data.epics}
+          availableIssues={bootstrap.data.issues.items}
+          onSubmit={async (body, assetChanges) => {
+            const updated = await api.updateIssue(identifier, body);
+            const result = await applyIssueAssetChanges(updated.identifier, assetChanges);
+            if (result.failures.length > 0) {
+              toast.error(`Issue updated, but ${summarizeIssueAssetFailures(result)}`);
+            } else {
+              toast.success("Issue updated");
+            }
+            await invalidate();
+            await issue.refetch();
+          }}
+        />
+      )}
 
       <ConfirmationDialog
         open={deleteConfirmOpen}

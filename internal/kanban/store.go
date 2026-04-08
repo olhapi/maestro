@@ -2635,6 +2635,7 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 	if err != nil {
 		return nil, err
 	}
+	permissionProfile := NormalizePermissionProfile(string(opts.PermissionProfile))
 	prefix, err := s.identifierPrefix(projectID)
 	if err != nil {
 		return nil, err
@@ -2658,7 +2659,7 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 	_, err = tx.Exec(`
 			INSERT INTO issues (id, project_id, epic_id, identifier, issue_type, provider_kind, provider_issue_ref, provider_shadow, title, description, state, workflow_phase, permission_profile, priority, agent_name, agent_prompt, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, PermissionProfileDefault, priority, strings.TrimSpace(opts.AgentName), strings.TrimSpace(opts.AgentPrompt), now, now,
+		id, nullableStringValue(projectID), nullableStringValue(epicID), identifier, issueType, ProviderKindKanban, "", 0, title, description, StateBacklog, WorkflowPhaseImplementation, permissionProfile, priority, strings.TrimSpace(opts.AgentName), strings.TrimSpace(opts.AgentPrompt), now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -2689,7 +2690,7 @@ func (s *Store) CreateIssueWithOptions(projectID, epicID, title, description str
 		"identifier":         identifier,
 		"title":              title,
 		"issue_type":         issueType,
-		"permission_profile": PermissionProfileDefault,
+		"permission_profile": permissionProfile,
 	}
 	if agentName := strings.TrimSpace(opts.AgentName); agentName != "" {
 		payload["agent_name"] = agentName
@@ -3562,10 +3563,11 @@ func (s *Store) ListIssues(filter map[string]interface{}) ([]Issue, error) {
 }
 
 func (s *Store) CountIssuesByState(projectID string) (map[State]int, error) {
-	query := `SELECT state, COUNT(*) FROM issues`
+	query := `SELECT state, COUNT(*) FROM issues WHERE issue_type = ?`
 	args := []interface{}{}
+	args = append(args, IssueTypeStandard)
 	if strings.TrimSpace(projectID) != "" {
-		query += ` WHERE project_id = ?`
+		query += ` AND project_id = ?`
 		args = append(args, projectID)
 	}
 	query += ` GROUP BY state`
@@ -4426,7 +4428,7 @@ func (s *Store) ListProjectSummaries() ([]ProjectSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT project_id, state, COUNT(*) FROM issues GROUP BY project_id, state`)
+	rows, err := s.db.Query(`SELECT project_id, state, COUNT(*) FROM issues WHERE issue_type = ? GROUP BY project_id, state`, IssueTypeStandard)
 	if err != nil {
 		return nil, err
 	}
@@ -4492,10 +4494,10 @@ func (s *Store) ListEpicSummaries(projectID string) ([]EpicSummary, error) {
 		SELECT e.id, COALESCE(p.name, ''), i.state, COUNT(*)
 		FROM epics e
 		LEFT JOIN projects p ON p.id = e.project_id
-		LEFT JOIN issues i ON i.epic_id = e.id
+		LEFT JOIN issues i ON i.epic_id = e.id AND i.issue_type = ?
 		WHERE (? = '' OR e.project_id = ?)
 		GROUP BY e.id, p.name, i.state
-		ORDER BY e.name`, projectID, projectID)
+		ORDER BY e.name`, IssueTypeStandard, projectID, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -4569,6 +4571,10 @@ func (s *Store) ListIssueSummariesWithCounts(query IssueQuery) ([]IssueSummary, 
 		orderBy = "i.identifier ASC"
 	case "state_asc":
 		orderBy = "i.state ASC, CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
+	case "project_asc":
+		orderBy = "CASE WHEN COALESCE(p.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(p.name, '') ASC, i.updated_at DESC, i.identifier ASC"
+	case "epic_asc":
+		orderBy = "CASE WHEN COALESCE(e.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(e.name, '') ASC, i.updated_at DESC, i.identifier ASC"
 	}
 
 	rows, err := s.db.Query(`

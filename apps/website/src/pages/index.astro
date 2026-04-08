@@ -11,17 +11,17 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
 
 <BaseLayout
   activeNav="/"
-  description="Maestro helps developers hand coding work to a local orchestration loop, keep it moving, and step back in with full context through MCP and the control center."
+  description="Maestro helps developers hand work to Codex, keep it moving, and step back in with full context through MCP and the control center."
   path="/"
   title="Maestro"
 >
   <section class="section-shell grid gap-10 pb-18 pt-10 md:pb-24 md:pt-16 lg:grid-cols-[1.05fr_minmax(0,0.95fr)] lg:items-center">
     <div>
       <h1 class="max-w-4xl font-display text-[clamp(2rem,4.4vw,3.45rem)] font-semibold leading-[0.96] tracking-tight text-white">
-        Local-first orchestration for coding agents
+        Local-first Codex orchestration
       </h1>
       <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--muted)] md:text-xl">
-        Maestro keeps your local queue, MCP handoff, and control center aligned so you can offload repetitive execution, let agents keep moving, and return to live context instead of rebuilding the story from scratch.
+        Maestro keeps your local queue, MCP handoff, and control center aligned so Codex can keep moving while you return to live context instead of rebuilding the story from scratch.
       </p>
       <div class="mt-8 flex flex-wrap gap-3">
         <a class="button-primary" href="/docs/quickstart">Quickstart</a>
@@ -47,8 +47,8 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
 
   <section class="section-shell pb-18 md:pb-24">
     <SectionHeading
-      description="Maestro earns the handoff by keeping the tracker, MCP bridge, and runtime supervision on the same machine. The loop can keep moving without turning into a black box."
-      title="Hand work off without losing local context"
+      description="Maestro earns the handoff by keeping the tracker, MCP bridge, and runtime supervision on the same machine. Codex can keep moving without turning into a black box."
+      title="Hand Codex work off without losing local context"
     />
     <div class="mt-8 grid gap-4 md:grid-cols-3">
       {durableSurfaces.map((surface) => <FeatureCard description={surface.description} title={surface.title} />)}
@@ -57,8 +57,8 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
 
   <section class="section-shell pb-18 md:pb-24">
     <SectionHeading
-      description="The walkthrough is about developer re-entry: read queue pressure, route work, inspect a single run, and get back out without babysitting every issue."
-      title="See when to step in and when to leave the loop alone"
+      description="The walkthrough is about developer re-entry: read queue pressure, route Codex work, inspect a single run, and get back out without babysitting every issue."
+      title="See when to step in and when to leave Codex running"
     />
     <div class="mt-8">
       <TourScroller client:visible chapters={tourChapters} mode="home" />
@@ -67,8 +67,8 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
 
   <section class="section-shell pb-18 md:pb-24">
     <SectionHeading
-      description="Install the runtime, write the repo contract once, then launch the daemon so Maestro can keep reading ready work while you move on to review, coding, or planning."
-      title="Three commands to start the loop and let it keep moving"
+      description="Install the runtime, write the repo contract once, then launch the daemon so Maestro can keep reading ready work while Codex keeps moving and you move on to review, coding, or planning."
+      title="Three commands to start Codex and let it keep moving"
     />
     <div class="mt-8 grid gap-4 lg:grid-cols-3">
       {quickstartSteps.map((step) => <CommandBlock client:load command={step.command} detail={step.detail} title={step.title} />)}
@@ -77,8 +77,8 @@ import { docsPreview, durableSurfaces, quickstartSteps, tourChapters } from "../
 
   <section class="section-shell pb-18 md:pb-24">
     <SectionHeading
-      description="Start with install and quickstart, then use the docs to supervise the loop, tune its behavior, or debug it when something drifts."
-      title="Docs organized around the handoff and the return"
+      description="Start with install and quickstart, then use the docs to supervise Codex, tune its behavior, or debug it when something drifts."
+      title="Docs organized around the Codex handoff and the return"
     />
     <div class="mt-8 grid gap-4 md:grid-cols-3">
       {docsPreview.map((item) => <FeatureCard description={item.description} href={item.href} title={item.title} />)}

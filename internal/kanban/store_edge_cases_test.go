@@ -1821,12 +1821,18 @@ func TestKanbanCoverageSummariesRuntimeAndLifecycleBranches(t *testing.T) {
 		t.Fatalf("expected two project summaries, got %#v", projectSummaries)
 	}
 	if projectSummaries[0].Project.ID == customProject.ID {
-		if projectSummaries[0].TotalCount != 3 || projectSummaries[0].ActiveCount != 3 || projectSummaries[0].TerminalCount != 0 {
+		if projectSummaries[0].Counts.Ready != 2 || projectSummaries[0].TotalCount != 2 || projectSummaries[0].ActiveCount != 2 || projectSummaries[0].TerminalCount != 0 {
 			t.Fatalf("unexpected custom project summary: %#v", projectSummaries[0])
 		}
+		if projectSummaries[0].TotalTokensSpent != 30 {
+			t.Fatalf("unexpected custom project token total: %#v", projectSummaries[0])
+		}
 	} else if projectSummaries[1].Project.ID == customProject.ID {
-		if projectSummaries[1].TotalCount != 3 || projectSummaries[1].ActiveCount != 3 || projectSummaries[1].TerminalCount != 0 {
+		if projectSummaries[1].Counts.Ready != 2 || projectSummaries[1].TotalCount != 2 || projectSummaries[1].ActiveCount != 2 || projectSummaries[1].TerminalCount != 0 {
 			t.Fatalf("unexpected custom project summary: %#v", projectSummaries[1])
+		}
+		if projectSummaries[1].TotalTokensSpent != 30 {
+			t.Fatalf("unexpected custom project token total: %#v", projectSummaries[1])
 		}
 	} else {
 		t.Fatalf("expected custom project summary to be present, got %#v", projectSummaries)
@@ -1838,6 +1844,17 @@ func TestKanbanCoverageSummariesRuntimeAndLifecycleBranches(t *testing.T) {
 	}
 	if len(epicSummaries) != 2 {
 		t.Fatalf("expected two custom epic summaries, got %#v", epicSummaries)
+	}
+	if epicSummaries[0].Epic.ID == customEpic.ID {
+		if epicSummaries[0].Counts.Ready != 2 || epicSummaries[0].TotalCount != 2 || epicSummaries[0].ActiveCount != 2 || epicSummaries[0].TerminalCount != 0 {
+			t.Fatalf("unexpected custom epic summary: %#v", epicSummaries[0])
+		}
+	} else if epicSummaries[1].Epic.ID == customEpic.ID {
+		if epicSummaries[1].Counts.Ready != 2 || epicSummaries[1].TotalCount != 2 || epicSummaries[1].ActiveCount != 2 || epicSummaries[1].TerminalCount != 0 {
+			t.Fatalf("unexpected custom epic summary: %#v", epicSummaries[1])
+		}
+	} else {
+		t.Fatalf("expected custom epic summary to be present, got %#v", epicSummaries)
 	}
 	if epicSummaries[0].Epic.ID == emptyEpic.ID {
 		if epicSummaries[0].TotalCount != 0 || epicSummaries[0].ActiveCount != 0 || epicSummaries[0].TerminalCount != 0 {
