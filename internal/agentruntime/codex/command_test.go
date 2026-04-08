@@ -61,7 +61,8 @@ func TestResolveCommandKeepsMatchingDirectCodexCommand(t *testing.T) {
 }
 
 func TestResolveCommandPinsMissingDirectCodexCommand(t *testing.T) {
-	writeFakeNpxCommand(t, codexschema.SupportedVersion)
+	npxPath := writeFakeNpxCommand(t, codexschema.SupportedVersion)
+	t.Setenv("PATH", filepath.Dir(npxPath))
 	command := "codex app-server --model gpt-5"
 
 	resolved, err := ResolveCommand(command)
