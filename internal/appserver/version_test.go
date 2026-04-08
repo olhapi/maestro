@@ -1,8 +1,6 @@
 package appserver
 
 import (
-	"bytes"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +46,7 @@ func TestDetectCodexVersionPinnedNPXCommand(t *testing.T) {
 		"  exit 1\n" +
 		"fi\n" +
 		"shift\n" +
-		"if [ \"$1\" != \"@openai/codex@0.118.0\" ]; then\n" +
+		"if [ \"$1\" != \"@openai/codex@" + codexschema.SupportedVersion + "\" ]; then\n" +
 		"  echo \"unexpected package: $1\" >&2\n" +
 		"  exit 1\n" +
 		"fi\n" +
@@ -57,17 +55,17 @@ func TestDetectCodexVersionPinnedNPXCommand(t *testing.T) {
 		"  echo \"unexpected version probe args: $*\" >&2\n" +
 		"  exit 1\n" +
 		"fi\n" +
-		"printf 'codex-cli 0.118.0\\n'\n"
+		"printf 'codex-cli " + codexschema.SupportedVersion + "\\n'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake npx: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	status, err := DetectCodexVersion("npx -y @openai/codex@0.118.0 app-server")
+	status, err := DetectCodexVersion("npx -y @openai/codex@" + codexschema.SupportedVersion + " app-server")
 	if err != nil {
 		t.Fatalf("DetectCodexVersion: %v", err)
 	}
-	if status.Actual != "0.118.0" {
+	if status.Actual != codexschema.SupportedVersion {
 		t.Fatalf("unexpected version: %+v", status)
 	}
 	if status.ExecutablePath == "" {
@@ -82,43 +80,6 @@ func TestDetectCodexVersionSkipsNonCodexCommand(t *testing.T) {
 	}
 	if status.ExecutablePath != "" || status.Actual != "" {
 		t.Fatalf("expected non-codex command to be ignored, got %+v", status)
-	}
-}
-
-func TestWarnOnCodexVersionMismatch(t *testing.T) {
-	codexVersionCache = sync.Map{}
-	path := writeFakeCodex(t, "0.222.0")
-	buf := &bytes.Buffer{}
-	client := &Client{
-		cfg: ClientConfig{
-			CodexCommand:    path + " app-server",
-			ExpectedVersion: codexschema.SupportedVersion,
-			Workspace:       "/tmp/work",
-			Logger:          slog.New(slog.NewJSONHandler(buf, nil)),
-		},
-	}
-	client.logger = client.newLogger()
-	client.warnOnCodexVersionMismatch()
-	if !strings.Contains(buf.String(), "Codex CLI version mismatch") {
-		t.Fatalf("expected mismatch warning, got %s", buf.String())
-	}
-}
-
-func TestWarnOnCodexVersionMismatchSkipsNonCodexCommands(t *testing.T) {
-	codexVersionCache = sync.Map{}
-	buf := &bytes.Buffer{}
-	client := &Client{
-		cfg: ClientConfig{
-			CodexCommand:    "/bin/sh -lc echo",
-			ExpectedVersion: codexschema.SupportedVersion,
-			Workspace:       "/tmp/work",
-			Logger:          slog.New(slog.NewJSONHandler(buf, nil)),
-		},
-	}
-	client.logger = client.newLogger()
-	client.warnOnCodexVersionMismatch()
-	if buf.Len() != 0 {
-		t.Fatalf("expected no logs for non-codex command, got %s", buf.String())
 	}
 }
 
@@ -167,11 +128,11 @@ func TestCodexVersionInvocationFromCommandBranches(t *testing.T) {
 	if invocation.Executable != "codex" || len(invocation.Args) != 1 || invocation.Args[0] != "--version" {
 		t.Fatalf("unexpected direct codex invocation: %+v", invocation)
 	}
-	invocation, ok = codexVersionInvocationFromCommand("npx -y @openai/codex@0.118.0 app-server --model gpt-5")
+	invocation, ok = codexVersionInvocationFromCommand("npx -y @openai/codex@" + codexschema.SupportedVersion + " app-server --model gpt-5")
 	if !ok {
 		t.Fatal("expected pinned npx invocation to be detected")
 	}
-	if invocation.Executable != "npx" || len(invocation.Args) != 3 || invocation.Args[0] != "-y" || invocation.Args[1] != "@openai/codex@0.118.0" || invocation.Args[2] != "--version" {
+	if invocation.Executable != "npx" || len(invocation.Args) != 3 || invocation.Args[0] != "-y" || invocation.Args[1] != "@openai/codex@"+codexschema.SupportedVersion || invocation.Args[2] != "--version" {
 		t.Fatalf("unexpected npx invocation: %+v", invocation)
 	}
 	if _, ok := codexVersionInvocationFromCommand("npx -y cowsay hello"); ok {

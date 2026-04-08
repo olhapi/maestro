@@ -128,35 +128,12 @@ Issue {{ issue.identifier }}
 	}
 }
 
-func TestRunVerificationWarnsOnCodexVersionMismatch(t *testing.T) {
+func TestRunVerificationResolvesCodexVersionMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	codexPath := filepath.Join(tmp, "codex")
 	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli 9.9.9\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	workflow := `---
-tracker:
-  kind: kanban
-codex:
-  command: ` + codexPath + ` app-server
-  expected_version: ` + codexschema.SupportedVersion + `
----
-Issue {{ issue.identifier }}
-`
-	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
-	if res.Checks["codex_version"] != "warn" {
-		t.Fatalf("expected codex warning, got %+v", res)
-	}
-	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "expected "+codexschema.SupportedVersion+", found 9.9.9") {
-		t.Fatalf("unexpected warnings: %+v", res.Warnings)
-	}
-}
-
-func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
-	tmp := t.TempDir()
 	npxPath := filepath.Join(tmp, "npx")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" != \"-y\" ]; then\n" +
@@ -164,7 +141,7 @@ func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
 		"  exit 1\n" +
 		"fi\n" +
 		"shift\n" +
-		"if [ \"$1\" != \"@openai/codex@0.118.0\" ]; then\n" +
+		"if [ \"$1\" != \"@openai/codex@" + codexschema.SupportedVersion + "\" ]; then\n" +
 		"  echo \"unexpected package: $1\" >&2\n" +
 		"  exit 1\n" +
 		"fi\n" +
@@ -173,7 +150,45 @@ func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
 		"  echo \"unexpected version probe args: $*\" >&2\n" +
 		"  exit 1\n" +
 		"fi\n" +
-		"printf 'codex-cli 9.9.9\\n'\n"
+		"printf 'codex-cli " + codexschema.SupportedVersion + "\\n'\n"
+	if err := os.WriteFile(npxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: ` + codexPath + ` app-server
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if res.Checks["codex_version"] != "ok" {
+		t.Fatalf("expected codex version to resolve through npx, got %+v", res)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("expected no codex warnings after resolution, got %+v", res.Warnings)
+	}
+}
+
+func TestRunVerificationResolvesPinnedNPXCodexVersionMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	npxPath := filepath.Join(tmp, "npx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"-y\" ]; then\n" +
+		"  echo \"unexpected npx args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" = \"@openai/codex@" + codexschema.SupportedVersion + "\" ]; then\n" +
+		"  printf 'codex-cli " + codexschema.SupportedVersion + "\\n'\n" +
+		"else\n" +
+		"  printf 'codex-cli 9.9.9\\n'\n" +
+		"fi\n"
 	if err := os.WriteFile(npxPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +198,7 @@ func TestRunVerificationWarnsOnPinnedNPXCodexVersionMismatch(t *testing.T) {
 tracker:
   kind: kanban
 codex:
-  command: npx -y @openai/codex@0.118.0 app-server
-  expected_version: ` + codexschema.SupportedVersion + `
+  command: npx -y @openai/codex@0.117.0 app-server
 ---
 Issue {{ issue.identifier }}
 `
@@ -192,11 +206,11 @@ Issue {{ issue.identifier }}
 		t.Fatal(err)
 	}
 	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
-	if res.Checks["codex_version"] != "warn" {
-		t.Fatalf("expected codex warning, got %+v", res)
+	if res.Checks["codex_version"] != "ok" {
+		t.Fatalf("expected pinned npx command to resolve to supported version, got %+v", res)
 	}
-	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "expected "+codexschema.SupportedVersion+", found 9.9.9") {
-		t.Fatalf("unexpected warnings: %+v", res.Warnings)
+	if len(res.Warnings) != 0 {
+		t.Fatalf("expected no codex warnings after resolution, got %+v", res.Warnings)
 	}
 }
 

@@ -485,29 +485,29 @@ func TestWorkflowInitRequiresForceToOverwriteExistingFile(t *testing.T) {
 	}
 }
 
-func TestWorkflowInitReturnsSuccessWhenVerificationWarns(t *testing.T) {
+func TestWorkflowInitFallsBackToPinnedCodexCommand(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maestro.db")
 	repoPath := t.TempDir()
 	missingCodex := filepath.Join(t.TempDir(), "codex")
 
 	code, stdout, stderr := runCLI(t, "--db", dbPath, "workflow", "init", repoPath, "--defaults", "--codex-command", missingCodex+" app-server")
 	if code != 0 {
-		t.Fatalf("workflow init should succeed with warnings: %d stderr=%s stdout=%s", code, stderr, stdout)
+		t.Fatalf("workflow init should succeed with fallback: %d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	for _, want := range []string{
 		"Verification",
-		"Warnings:",
-		"codex_version:",
+		"codex_version: ok",
 		"Next steps",
-		"Review the warnings and remediation above",
-		"Re-run readiness checks:",
+		"Register the repo:",
+		"Start the orchestrator:",
+		"Re-run readiness checks anytime:",
 	} {
 		if !strings.Contains(stdout, want) {
-			t.Fatalf("expected warning workflow init output to contain %q, got %q", want, stdout)
+			t.Fatalf("expected fallback workflow init output to contain %q, got %q", want, stdout)
 		}
 	}
-	if strings.Contains(stdout, "Register the repo:") {
-		t.Fatalf("expected advisory next steps without project registration, got %q", stdout)
+	if strings.Contains(stdout, "Warnings:") || strings.Contains(stdout, "Review the warnings and remediation above") {
+		t.Fatalf("expected fallback workflow init to be clean, got %q", stdout)
 	}
 }
 

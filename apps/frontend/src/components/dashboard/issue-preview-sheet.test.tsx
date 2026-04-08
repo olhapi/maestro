@@ -200,6 +200,14 @@ describe('IssuePreviewSheet', () => {
       'Retry now',
       'Delete',
     ])
+    expect(fullPageButton).toHaveAttribute('aria-label', 'Full page')
+    expect(editButton).toHaveAttribute('aria-label', 'Edit issue')
+    expect(retryButton).toHaveAttribute('aria-label', 'Retry now')
+    expect(deleteButton).toHaveAttribute('aria-label', 'Delete')
+    expect(within(fullPageButton).getByText('Full page')).toHaveClass('hidden', 'sm:inline')
+    expect(within(editButton).getByText('Edit issue')).toHaveClass('hidden', 'sm:inline')
+    expect(within(retryButton).getByText('Retry now')).toHaveClass('hidden', 'sm:inline')
+    expect(within(deleteButton).getByText('Delete')).toHaveClass('hidden', 'sm:inline')
     expect(fullPageButton.querySelector('svg')).not.toBeNull()
     expect(editButton.querySelector('svg')).not.toBeNull()
     expect(retryButton.querySelector('svg')).not.toBeNull()

@@ -476,10 +476,9 @@ agent:
 
 # Codex CLI launch and collaboration settings.
 codex:
-  # Exact command Maestro launches for the agent.
+  # Exact command Maestro launches for the agent. Direct Codex commands are
+  # automatically pinned to the supported schema version when needed.
   command: %s
-  # Expected Codex CLI version. Mismatches warn but do not hard-fail.
-  expected_version: %s
   # Approval mode for Codex. %s
   # "never" keeps unattended runs non-interactive, so permission recovery must come
   # from the project or issue permission profile rather than live approval prompts.
@@ -500,8 +499,10 @@ codex:
   stall_timeout_ms: %d
 ---
 
+If Codex is not installed globally, Maestro can fall back to the pinned npx form when the configured direct Codex command does not match the supported schema version.
+
 %s
-`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, reviewEnabledComment, cfg.Phases.Review.Enabled, reviewPrompt, doneEnabledComment, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, agentModeComment, cfg.Agent.Mode, dispatchModeComment, cfg.Agent.DispatchMode, cfg.Codex.Command, cfg.Codex.ExpectedVersion, approvalPolicyComment, cfg.Codex.ApprovalPolicy, initialCollaborationModeComment, cfg.Codex.InitialCollaborationMode, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
+`, cfg.Tracker.Kind, cfg.Tracker.Kind, cfg.Polling.IntervalMs, cfg.Workspace.Root, cfg.Hooks.TimeoutMs, reviewEnabledComment, cfg.Phases.Review.Enabled, reviewPrompt, doneEnabledComment, cfg.Phases.Done.Enabled, donePrompt, cfg.Agent.MaxConcurrentAgents, cfg.Agent.MaxTurns, cfg.Agent.MaxRetryBackoffMs, cfg.Agent.MaxAutomaticRetries, agentModeComment, cfg.Agent.Mode, dispatchModeComment, cfg.Agent.DispatchMode, cfg.Codex.Command, approvalPolicyComment, cfg.Codex.ApprovalPolicy, initialCollaborationModeComment, cfg.Codex.InitialCollaborationMode, cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs, DefaultPromptTemplate()))
 }
 
 func indentBlock(text, prefix string) string {

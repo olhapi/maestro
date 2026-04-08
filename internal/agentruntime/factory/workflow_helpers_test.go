@@ -159,7 +159,6 @@ func TestCloneHelpersCopyNestedValues(t *testing.T) {
 func TestStartWorkflowUsesCodexRuntime(t *testing.T) {
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
 	workflow.Config.Codex.Command = "cat"
-	workflow.Config.Codex.ExpectedVersion = ""
 	workflow.Config.Agent.Mode = config.AgentModeStdio
 	workflow.Config.Agent.DispatchMode = config.DispatchModeParallel
 

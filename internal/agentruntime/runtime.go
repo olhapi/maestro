@@ -42,7 +42,6 @@ type RuntimeSpec struct {
 	Provider        Provider
 	Transport       Transport
 	Command         string
-	ExpectedVersion string
 	Workspace       string
 	WorkspaceRoot   string
 	IssueID         string

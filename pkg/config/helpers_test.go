@@ -9,20 +9,20 @@ import (
 
 func TestNormalizeWorkflowKeysMigratesLegacyFields(t *testing.T) {
 	raw := map[string]interface{}{
-		"tracker_kind":           "kanban",
-		"tracker_active_states":  "ready, in_progress, , in_review",
+		"tracker_kind":            "kanban",
+		"tracker_active_states":   "ready, in_progress, , in_review",
 		"tracker_terminal_states": []interface{}{"done", "cancelled"},
-		"poll_interval":          5000,
-		"workspace_root":        "./workspaces",
-		"hooks_timeout_ms":      1234,
-		"max_concurrent":        5,
-		"max_turns":            6,
-		"max_retry_backoff_ms": 7,
-		"max_automatic_retries": 8,
-		"agent_mode":           "stdio",
-		"dispatch_mode":        "per_project_serial",
-		"codex_command":        "codex app-server",
-		"codex_expected_version": "dev",
+		"poll_interval":           5000,
+		"workspace_root":          "./workspaces",
+		"hooks_timeout_ms":        1234,
+		"max_concurrent":          5,
+		"max_turns":               6,
+		"max_retry_backoff_ms":    7,
+		"max_automatic_retries":   8,
+		"agent_mode":              "stdio",
+		"dispatch_mode":           "per_project_serial",
+		"codex_command":           "codex app-server",
+		"codex_expected_version":  "dev",
 		"codex_approval_policy": map[interface{}]interface{}{
 			"granular": map[interface{}]interface{}{
 				"sandbox_approval":    true,
@@ -63,8 +63,11 @@ func TestNormalizeWorkflowKeysMigratesLegacyFields(t *testing.T) {
 		t.Fatalf("unexpected workspace root: %#v", workspace)
 	}
 	codex := normalized["codex"].(map[string]interface{})
-	if codex["command"] != "codex app-server" || codex["expected_version"] != "dev" {
+	if codex["command"] != "codex app-server" {
 		t.Fatalf("unexpected codex values: %#v", codex)
+	}
+	if _, ok := codex["expected_version"]; ok {
+		t.Fatalf("unexpected codex expected_version migration: %#v", codex)
 	}
 	if _, ok := codex["approval_policy"].(map[string]interface{}); !ok {
 		t.Fatalf("expected approval policy to normalize to map, got %#v", codex["approval_policy"])
@@ -77,10 +80,10 @@ func TestNormalizeWorkflowKeysMigratesLegacyFields(t *testing.T) {
 
 func TestMoveAndSplitHelpers(t *testing.T) {
 	root := map[string]interface{}{
-		"map": map[string]interface{}{"mode": "safe"},
-		"string": "value",
+		"map":     map[string]interface{}{"mode": "safe"},
+		"string":  "value",
 		"numeric": float64(9),
-		"slice": "a, b, ,c",
+		"slice":   "a, b, ,c",
 	}
 	dest := map[string]interface{}{}
 
