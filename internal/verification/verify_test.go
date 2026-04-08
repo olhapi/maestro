@@ -175,6 +175,36 @@ Issue {{ issue.identifier }}
 	}
 }
 
+func TestRunVerificationWarnsWhenPinnedFallbackIsUnavailable(t *testing.T) {
+	tmp := t.TempDir()
+	codexPath := filepath.Join(tmp, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli 9.9.9\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp)
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: ` + codexPath + ` app-server
+---
+Issue {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := Run(tmp, filepath.Join(tmp, "db", "maestro.db"))
+	if !res.OK {
+		t.Fatalf("expected verification to remain successful with a warning, got %+v", res)
+	}
+	if res.Checks["codex_version"] != "warn" {
+		t.Fatalf("expected codex version warning without pinned fallback, got %+v", res)
+	}
+	if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, "\n"), "codex_version:") {
+		t.Fatalf("expected codex version warning entry, got %+v", res.Warnings)
+	}
+}
+
 func TestRunVerificationResolvesPinnedNPXCodexVersionMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	npxPath := filepath.Join(tmp, "npx")

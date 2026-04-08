@@ -130,6 +130,20 @@ func writeFakeCodexAndNpx(t *testing.T, root, codexVersion string) {
 	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func writeFakeCodexOnly(t *testing.T, root, codexVersion string) {
+	t.Helper()
+
+	codexDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll codex dir: %v", err)
+	}
+	fakeCodex := filepath.Join(codexDir, "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli "+codexVersion+"\\n'\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile fake codex: %v", err)
+	}
+	t.Setenv("PATH", codexDir)
+}
+
 func TestRunReportsCommandResolution(t *testing.T) {
 	root := tempRepoRoot(t)
 	workflow := `---
@@ -162,6 +176,92 @@ Hello {{ issue.identifier }}
 	}
 	if report.Checks["skill_install"] != "ok" {
 		t.Fatalf("expected skill install to remain ok, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsWorkflowVersionFailureWithoutPinnedNPX(t *testing.T) {
+	root := tempRepoRoot(t)
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: codex app-server
+  approval_policy: never
+  initial_collaboration_mode: default
+---
+Hello {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	writeFakeCodexOnly(t, root, "1.2.3")
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected workflow version mismatch to fail, got %+v", report)
+	}
+	if report.Checks["workflow_version"] != "fail" {
+		t.Fatalf("expected workflow_version to fail without a pinned npx fallback, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsWorkflowVersionParseFailureWithoutPinnedNPX(t *testing.T) {
+	root := tempRepoRoot(t)
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: codex app-server
+  approval_policy: never
+  initial_collaboration_mode: default
+---
+Hello {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	writeFakeCodexOnly(t, root, "bogus")
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected malformed codex version to fail, got %+v", report)
+	}
+	if report.Checks["workflow_version"] != "fail" {
+		t.Fatalf("expected workflow_version to fail on parse error, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsWorkflowAdvisories(t *testing.T) {
+	root := tempRepoRoot(t)
+	workflow := `---
+tracker:
+  kind: kanban
+agent:
+  mode: app_server
+codex:
+  command: cat
+  approval_policy: never
+  thread_sandbox: danger-full-access
+phases:
+  done:
+    prompt: |
+      Sync origin/main first.
+      Merge the issue branch into local main.
+      Push main to origin.
+---
+## Instructions
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+`
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected workflow advisories to fail, got %+v", report)
+	}
+	if report.Checks["workflow_advisories"] != "fail" {
+		t.Fatalf("expected workflow_advisories to fail, got %+v", report.Checks)
 	}
 }
 
