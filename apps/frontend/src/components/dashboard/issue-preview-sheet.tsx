@@ -265,6 +265,7 @@ export function IssuePreviewSheet({
       toast.error(error instanceof Error ? `Unable to retry issue: ${error.message}` : "Unable to retry issue");
     },
   });
+  const retryActionLabel = retryMutation.isPending ? "Retrying..." : "Retry now";
   const runNowMutation = useMutation({
     mutationFn: (identifier: string) => api.runIssueNow(identifier),
     onSuccess: async () => {
@@ -503,6 +504,7 @@ export function IssuePreviewSheet({
               <Button
                 variant="secondary"
                 className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                aria-label="Full page"
                 onClick={() => {
                   onOpenChange(false);
                   void navigate({
@@ -512,35 +514,38 @@ export function IssuePreviewSheet({
                 }}
               >
                 <Maximize2 className="size-4" />
-                Full page
+                <span className="hidden sm:inline">Full page</span>
               </Button>
               <Button
                 variant="secondary"
                 className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                aria-label="Edit issue"
                 onClick={() => setEditOpen(true)}
               >
                 <Pencil className="size-4" />
-                Edit issue
+                <span className="hidden sm:inline">Edit issue</span>
               </Button>
               <Button
                 variant="secondary"
                 className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
                 disabled={retryMutation.isPending}
+                aria-label={retryActionLabel}
                 onClick={() => {
                   retryMutation.mutate(activeIssue.identifier);
                 }}
               >
                 <RotateCcw className="size-4" />
-                {retryMutation.isPending ? "Retrying..." : "Retry now"}
+                <span className="hidden sm:inline">{retryActionLabel}</span>
               </Button>
               {onDelete ? (
                 <Button
                   variant="destructive"
                   className="h-auto min-h-10 min-w-0 px-2 py-2 text-xs leading-tight sm:px-3 sm:text-sm"
+                  aria-label="Delete"
                   onClick={() => setDeleteDialogOpen(true)}
                 >
                   <Trash2 className="size-4" />
-                  Delete
+                  <span className="hidden sm:inline">Delete</span>
                 </Button>
               ) : null}
             </div>

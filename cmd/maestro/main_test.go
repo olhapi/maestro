@@ -821,6 +821,18 @@ func TestVerifyAndDoctorOutputs(t *testing.T) {
 	if !strings.Contains(stdout, "Doctor") {
 		t.Fatalf("unexpected doctor output: %s", stdout)
 	}
+
+	code, stdout, stderr = runCLI(t, "--db", dbPath, "spec-check", "--repo", repoRootFromCaller(t), "--json")
+	if code != 0 {
+		t.Fatalf("spec-check json failed: %d stderr=%s", code, stderr)
+	}
+	var specCheck map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &specCheck); err != nil {
+		t.Fatalf("decode spec-check json: %v output=%s", err, stdout)
+	}
+	if _, ok := specCheck["checks"]; !ok {
+		t.Fatalf("expected spec-check json to include checks, got %s", stdout)
+	}
 }
 
 func TestCompletionCommand(t *testing.T) {

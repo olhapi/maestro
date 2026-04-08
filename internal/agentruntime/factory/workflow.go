@@ -49,12 +49,12 @@ func RuntimeSpecFromWorkflow(request WorkflowStartRequest) (agentruntime.Runtime
 	if len(env) == 0 {
 		env = os.Environ()
 	}
+	command, _ := codexruntime.ResolveCommand(workflow.Config.Codex.Command)
 	transport := agentruntime.Transport(strings.ToLower(strings.TrimSpace(workflow.Config.Agent.Mode)))
 	return agentruntime.RuntimeSpec{
 		Provider:        agentruntime.ProviderCodex,
 		Transport:       transport,
-		Command:         workflow.Config.Codex.Command,
-		ExpectedVersion: workflow.Config.Codex.ExpectedVersion,
+		Command:         command,
 		Workspace:       request.WorkspacePath,
 		WorkspaceRoot:   workflow.Config.Workspace.Root,
 		IssueID:         request.IssueID,

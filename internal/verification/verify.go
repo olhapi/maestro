@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	codexruntime "github.com/olhapi/maestro/internal/agentruntime/codex"
+	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/internal/kanban"
 	"github.com/olhapi/maestro/pkg/config"
 )
@@ -62,18 +64,27 @@ func Run(repoPath, dbPath string) Result {
 					res.Remediation[advisory.Code] = advisory.Remediation
 				}
 			}
-			status, err := codexruntime.DetectVersion(workflow.Config.Codex.Command)
+			command, err := codexruntime.ResolveCommand(workflow.Config.Codex.Command)
 			switch {
-			case err != nil && status.Command != "":
+			case err != nil:
 				res.Warnings = append(res.Warnings, fmt.Sprintf("codex_version: %v", err))
 				res.Checks["codex_version"] = "warn"
-			case status.ExecutablePath == "":
+			case strings.TrimSpace(command) == "":
 				res.Checks["codex_version"] = "skipped"
-			case workflow.Config.Codex.ExpectedVersion != "" && status.Actual != workflow.Config.Codex.ExpectedVersion:
-				res.Warnings = append(res.Warnings, fmt.Sprintf("codex_version: expected %s, found %s (%s)", workflow.Config.Codex.ExpectedVersion, status.Actual, status.ExecutablePath))
-				res.Checks["codex_version"] = "warn"
 			default:
-				res.Checks["codex_version"] = "ok"
+				status, err := codexruntime.DetectVersion(command)
+				switch {
+				case err != nil && status.Command != "":
+					res.Warnings = append(res.Warnings, fmt.Sprintf("codex_version: %v", err))
+					res.Checks["codex_version"] = "warn"
+				case status.ExecutablePath == "":
+					res.Checks["codex_version"] = "skipped"
+				case status.Actual != codexschema.SupportedVersion:
+					res.Warnings = append(res.Warnings, fmt.Sprintf("codex_version: supported %s, found %s (%s)", codexschema.SupportedVersion, status.Actual, status.ExecutablePath))
+					res.Checks["codex_version"] = "warn"
+				default:
+					res.Checks["codex_version"] = "ok"
+				}
 			}
 		}
 	}

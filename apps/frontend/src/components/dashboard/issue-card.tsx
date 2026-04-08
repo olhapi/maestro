@@ -116,7 +116,7 @@ export function IssueCard({
             {issue.title}
           </p>
         </div>
-        <ArrowUpRight className="size-4 text-[var(--muted-foreground)] transition group-hover:text-white" />
+        <ArrowUpRight className="size-4 shrink-0 text-[var(--muted-foreground)] transition group-hover:text-white" />
       </div>
 
       <div className="mt-2.5 flex flex-wrap gap-x-2 gap-y-1 text-xs text-[var(--muted-foreground)]">

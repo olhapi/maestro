@@ -50,16 +50,16 @@ type appServerClient struct {
 
 func startAppServer(ctx context.Context, spec agentruntime.RuntimeSpec, observers agentruntime.Observers) (agentruntime.Client, error) {
 	client := &appServerClient{}
+	command, _ := ResolveCommand(spec.Command)
 	cfg := appserver.ClientConfig{
 		Executable:               "sh",
-		Args:                     []string{"-lc", spec.Command},
+		Args:                     []string{"-lc", command},
 		Env:                      spec.Env,
 		Workspace:                spec.Workspace,
 		WorkspaceRoot:            spec.WorkspaceRoot,
 		IssueID:                  spec.IssueID,
 		IssueIdentifier:          spec.IssueIdentifier,
-		CodexCommand:             spec.Command,
-		ExpectedVersion:          spec.ExpectedVersion,
+		CodexCommand:             command,
 		ApprovalPolicy:           spec.Permissions.ApprovalPolicy,
 		InitialCollaborationMode: spec.Permissions.CollaborationMode,
 		ThreadSandbox:            spec.Permissions.ThreadSandbox,

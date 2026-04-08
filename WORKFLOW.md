@@ -88,10 +88,9 @@ agent:
 
 # Codex CLI launch and collaboration settings.
 codex:
-  # Exact command Maestro launches for the agent.
+  # Exact command Maestro launches for the agent. Direct Codex commands are
+  # automatically pinned to the supported schema version when needed.
   command: codex app-server
-  # Expected Codex CLI version. Mismatches warn but do not hard-fail.
-  expected_version: 0.118.0
   # Approval mode for Codex. Available values: never, on-request, on-failure, untrusted. Fresh maestro init default: never.
   # "never" keeps unattended runs non-interactive, so permission recovery must come
   # from the project or issue permission profile rather than live approval prompts.
@@ -112,7 +111,7 @@ codex:
   stall_timeout_ms: 300000
 ---
 
-If Codex is not installed globally, `codex.command` can instead be pinned to `npx -y @openai/codex@0.118.0 app-server`.
+If Codex is not installed globally, Maestro can fall back to the pinned `npx -y @openai/codex@0.118.0 app-server` form when the configured direct Codex command does not match the supported schema version.
 
 You are working on issue {{ issue.identifier }}.
 

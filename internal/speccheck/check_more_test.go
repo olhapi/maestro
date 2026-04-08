@@ -101,14 +101,56 @@ func TestInstalledSkillPaths(t *testing.T) {
 	}
 }
 
-func TestRunReportsVersionMismatch(t *testing.T) {
+func writeFakeCodexAndNpx(t *testing.T, root, codexVersion string) {
+	t.Helper()
+
+	codexDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll codex dir: %v", err)
+	}
+	fakeCodex := filepath.Join(codexDir, "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli "+codexVersion+"\\n'\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile fake codex: %v", err)
+	}
+	fakeNpx := filepath.Join(codexDir, "npx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" != \"-y\" ]; then\n" +
+		"  echo \"unexpected npx args: $*\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"shift\n" +
+		"if [ \"$1\" = \"@openai/codex@" + codexschema.SupportedVersion + "\" ]; then\n" +
+		"  printf 'codex-cli " + codexschema.SupportedVersion + "\\n'\n" +
+		"else\n" +
+		"  printf 'codex-cli " + codexVersion + "\\n'\n" +
+		"fi\n"
+	if err := os.WriteFile(fakeNpx, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile fake npx: %v", err)
+	}
+	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func writeFakeCodexOnly(t *testing.T, root, codexVersion string) {
+	t.Helper()
+
+	codexDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll codex dir: %v", err)
+	}
+	fakeCodex := filepath.Join(codexDir, "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli "+codexVersion+"\\n'\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile fake codex: %v", err)
+	}
+	t.Setenv("PATH", codexDir)
+}
+
+func TestRunReportsCommandResolution(t *testing.T) {
 	root := tempRepoRoot(t)
 	workflow := `---
 tracker:
   kind: kanban
 codex:
-  command: codex
-  expected_version: 9.9.9
+  command: codex app-server
   approval_policy: never
   initial_collaboration_mode: default
 ---
@@ -117,33 +159,109 @@ Hello {{ issue.identifier }}
 	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatalf("WriteFile workflow: %v", err)
 	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
+	writeFakeCodexAndNpx(t, root, "1.2.3")
 
 	report := Run(root)
-	if report.OK {
-		t.Fatalf("expected version mismatch to fail, got %+v", report)
+	if !report.OK {
+		t.Fatalf("expected version mismatch to resolve, got %+v", report)
 	}
 	if report.Checks["workflow_load"] != "ok" {
 		t.Fatalf("expected workflow to load, got %+v", report.Checks)
 	}
-	if report.Checks["workflow_version"] != "fail" {
-		t.Fatalf("expected workflow_version to fail, got %+v", report.Checks)
+	if report.Checks["workflow_version"] != "ok" {
+		t.Fatalf("expected workflow_version to resolve through pinned npx, got %+v", report.Checks)
 	}
 	if report.Checks["workflow_prompt_render"] != "ok" {
 		t.Fatalf("expected prompt render to succeed, got %+v", report.Checks)
 	}
 	if report.Checks["skill_install"] != "ok" {
 		t.Fatalf("expected skill install to remain ok, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsWorkflowVersionFailureWithoutPinnedNPX(t *testing.T) {
+	root := tempRepoRoot(t)
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: codex app-server
+  approval_policy: never
+  initial_collaboration_mode: default
+---
+Hello {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	writeFakeCodexOnly(t, root, "1.2.3")
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected workflow version mismatch to fail, got %+v", report)
+	}
+	if report.Checks["workflow_version"] != "fail" {
+		t.Fatalf("expected workflow_version to fail without a pinned npx fallback, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsWorkflowVersionParseFailureWithoutPinnedNPX(t *testing.T) {
+	root := tempRepoRoot(t)
+	workflow := `---
+tracker:
+  kind: kanban
+codex:
+  command: codex app-server
+  approval_policy: never
+  initial_collaboration_mode: default
+---
+Hello {{ issue.identifier }}
+`
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+	writeFakeCodexOnly(t, root, "bogus")
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected malformed codex version to fail, got %+v", report)
+	}
+	if report.Checks["workflow_version"] != "fail" {
+		t.Fatalf("expected workflow_version to fail on parse error, got %+v", report.Checks)
+	}
+}
+
+func TestRunReportsWorkflowAdvisories(t *testing.T) {
+	root := tempRepoRoot(t)
+	workflow := `---
+tracker:
+  kind: kanban
+agent:
+  mode: app_server
+codex:
+  command: cat
+  approval_policy: never
+  thread_sandbox: danger-full-access
+phases:
+  done:
+    prompt: |
+      Sync origin/main first.
+      Merge the issue branch into local main.
+      Push main to origin.
+---
+## Instructions
+5. Create a dedicated issue branch before editing. Use maestro/{{ issue.identifier }}.
+`
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow: %v", err)
+	}
+
+	report := Run(root)
+	if report.OK {
+		t.Fatalf("expected workflow advisories to fail, got %+v", report)
+	}
+	if report.Checks["workflow_advisories"] != "fail" {
+		t.Fatalf("expected workflow_advisories to fail, got %+v", report.Checks)
 	}
 }
 
@@ -178,8 +296,7 @@ func TestRunReportsSuccess(t *testing.T) {
 tracker:
   kind: kanban
 codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
+  command: npx -y @openai/codex@` + codexschema.SupportedVersion + ` app-server
   approval_policy: never
   initial_collaboration_mode: default
 ---
@@ -188,17 +305,7 @@ Hello {{ issue.identifier }}
 	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatalf("WriteFile workflow: %v", err)
 	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
+	writeFakeCodexAndNpx(t, root, "1.2.3")
 
 	report := Run(root)
 	if !report.OK {
@@ -217,8 +324,7 @@ func TestRunReportsConfigDefaultsFailure(t *testing.T) {
 tracker:
   kind: kanban
 codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
+  command: cat
   approval_policy: never
   initial_collaboration_mode: default
 ---
@@ -227,17 +333,6 @@ Hello {{ issue.identifier }}
 	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatalf("WriteFile workflow: %v", err)
 	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
 
 	origDefaultConfig := defaultConfigFunc
 	t.Cleanup(func() {
@@ -264,8 +359,7 @@ func TestRunReportsCodexSchemaFailure(t *testing.T) {
 tracker:
   kind: kanban
 codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
+  command: cat
   approval_policy: never
   initial_collaboration_mode: default
 ---
@@ -274,17 +368,6 @@ Hello {{ issue.identifier }}
 	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatalf("WriteFile workflow: %v", err)
 	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
 
 	report := Run(root)
 	if report.OK {
@@ -301,8 +384,7 @@ func TestRunReportsSkillInstallFailure(t *testing.T) {
 tracker:
   kind: kanban
 codex:
-  command: codex
-  expected_version: ` + codexschema.SupportedVersion + `
+  command: cat
   approval_policy: never
   initial_collaboration_mode: default
 ---
@@ -311,17 +393,6 @@ Hello {{ issue.identifier }}
 	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatalf("WriteFile workflow: %v", err)
 	}
-
-	codexDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll codex dir: %v", err)
-	}
-	fakeCodex := filepath.Join(codexDir, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile fake codex: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", codexDir+string(os.PathListSeparator)+oldPath)
 
 	origInstall := installMaestroFunc
 	t.Cleanup(func() {
@@ -401,14 +472,6 @@ func TestValidateDefaultConfigBranches(t *testing.T) {
 			cfg: func() config.Config {
 				cfg := config.DefaultConfig()
 				cfg.Codex.StallTimeoutMs = 42
-				return cfg
-			},
-		},
-		{
-			name: "init expected version",
-			init: func() config.Config {
-				cfg := config.DefaultInitConfig()
-				cfg.Codex.ExpectedVersion = "0.0.0"
 				return cfg
 			},
 		},
