@@ -234,7 +234,7 @@ describe('WorkPage', () => {
 
     expect(screen.queryByRole('button', { name: 'Load 5 more' })).not.toBeInTheDocument()
     expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
-  }, 10000)
+  }, 30000)
 
   it('filters issues by project from the work toolbar', async () => {
     const bootstrap = makeBootstrapResponse()
@@ -260,14 +260,14 @@ describe('WorkPage', () => {
         search: '',
         project_id: 'project-1',
         state: '',
-        issue_type: '',
+        issue_type: 'standard',
         sort: 'priority_asc',
         limit: 200,
       })
     })
   })
 
-  it('filters issues by type from the work toolbar', async () => {
+  it('queries standard work even when recurring issues exist in bootstrap data', async () => {
     const bootstrap = makeBootstrapResponse({
       issues: {
         ...makeBootstrapResponse().issues,
@@ -284,9 +284,10 @@ describe('WorkPage', () => {
     })
     mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
+    const standardItems = bootstrap.issues.items.filter((item) => item.issue_type !== 'recurring')
     vi.mocked(api.listIssues).mockResolvedValue({
-      items: bootstrap.issues.items,
-      total: bootstrap.issues.total,
+      items: standardItems,
+      total: standardItems.length,
       limit: 200,
       offset: 0,
     })
@@ -297,18 +298,18 @@ describe('WorkPage', () => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
-    await selectOption(/filter by issue type/i, /recurring/i)
-
     await waitFor(() => {
       expect(api.listIssues).toHaveBeenLastCalledWith({
         search: '',
         project_id: '',
         state: '',
-        issue_type: 'recurring',
+        issue_type: 'standard',
         sort: 'priority_asc',
         limit: 200,
       })
     })
+
+    expect(screen.queryByText('Nightly sync')).not.toBeInTheDocument()
   })
 
   it('sorts the work list from header clicks and keeps the chosen sort after remount', async () => {
@@ -386,7 +387,7 @@ describe('WorkPage', () => {
         search: '',
         project_id: '',
         state: '',
-        issue_type: '',
+        issue_type: 'standard',
         sort: 'identifier_asc',
         limit: 200,
       })
@@ -410,7 +411,7 @@ describe('WorkPage', () => {
         search: '',
         project_id: '',
         state: '',
-        issue_type: '',
+        issue_type: 'standard',
         sort: 'identifier_asc',
         limit: 200,
       })

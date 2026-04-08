@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/olhapi/maestro/internal/codexschema"
 )
 
 func assertContainsAll(t *testing.T, text string, wants ...string) {
@@ -118,9 +116,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.Mode != AgentModeAppServer {
 		t.Fatalf("expected app_server mode, got %q", cfg.Agent.Mode)
 	}
-	if cfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
-		t.Fatalf("expected codex expected version %s, got %q", codexschema.SupportedVersion, cfg.Codex.ExpectedVersion)
-	}
 	if cfg.Agent.MaxTurns != 4 || cfg.Agent.MaxRetryBackoffMs != 60000 || cfg.Agent.MaxAutomaticRetries != 8 {
 		t.Fatalf("unexpected agent defaults: %+v", cfg.Agent)
 	}
@@ -177,7 +172,6 @@ agent:
   mode: stdio
 codex:
   command: codex --model test app-server
-  expected_version: ` + codexschema.SupportedVersion + `
   approval_policy: never
   thread_sandbox: workspace-write
   read_timeout_ms: 9999
@@ -211,9 +205,6 @@ Issue {{ issue.identifier }}
 	if workflow.Config.Hooks.BeforeRemove != "echo cleanup" {
 		t.Fatalf("unexpected before_remove hook: %q", workflow.Config.Hooks.BeforeRemove)
 	}
-	if workflow.Config.Codex.ExpectedVersion != codexschema.SupportedVersion {
-		t.Fatalf("unexpected codex expected version: %q", workflow.Config.Codex.ExpectedVersion)
-	}
 	if workflow.Config.Codex.InitialCollaborationMode != InitialCollaborationModeDefault {
 		t.Fatalf("expected default initial collaboration mode, got %q", workflow.Config.Codex.InitialCollaborationMode)
 	}
@@ -238,7 +229,6 @@ tracker:
   kind: kanban
 codex:
   command: codex app-server
-  expected_version: ` + codexschema.SupportedVersion + `
 ---
 Issue {{ issue.identifier }}
 `
@@ -936,7 +926,8 @@ func TestInitWorkflowWritesExpectedFile(t *testing.T) {
 		"Available values: parallel, per_project_serial. Fresh maestro init default: parallel.",
 		"dispatch_mode=per_project_serial forces effective per-project concurrency to 1.",
 		"codex app-server --model test",
-		"expected_version: " + codexschema.SupportedVersion,
+		"automatically pinned to the supported schema version when needed.",
+		"If Codex is not installed globally, Maestro can fall back to the pinned npx form when the configured direct Codex command does not match the supported schema version.",
 		"approval_policy: never",
 		"initial_collaboration_mode: default",
 		"Available values: never, on-request, on-failure, untrusted. Fresh maestro init default: never.",

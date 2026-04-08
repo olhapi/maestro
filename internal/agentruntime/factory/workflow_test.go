@@ -12,8 +12,7 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	workflow := &config.Workflow{Config: config.DefaultConfig()}
 	workflow.Config.Agent.Mode = config.AgentModeStdio
 	workflow.Config.Workspace.Root = "/repo/root"
-	workflow.Config.Codex.Command = "codex app-server"
-	workflow.Config.Codex.ExpectedVersion = "1.2.3"
+	workflow.Config.Codex.Command = "cat"
 	workflow.Config.Codex.ReadTimeoutMs = 11
 	workflow.Config.Codex.TurnTimeoutMs = 22
 	workflow.Config.Codex.StallTimeoutMs = 33
@@ -58,8 +57,8 @@ func TestRuntimeSpecFromWorkflowMapsWorkflowAndClonesMutableFields(t *testing.T)
 	if spec.Transport != agentruntime.TransportStdio {
 		t.Fatalf("expected stdio transport, got %q", spec.Transport)
 	}
-	if spec.Command != workflow.Config.Codex.Command || spec.ExpectedVersion != workflow.Config.Codex.ExpectedVersion {
-		t.Fatalf("expected codex command/version to be copied, got %+v", spec)
+	if spec.Command != workflow.Config.Codex.Command {
+		t.Fatalf("expected codex command to be copied, got %+v", spec)
 	}
 	if spec.Workspace != request.WorkspacePath || spec.WorkspaceRoot != workflow.Config.Workspace.Root {
 		t.Fatalf("expected workspace paths to be preserved, got %+v", spec)

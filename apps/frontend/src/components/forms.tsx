@@ -10,7 +10,6 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { getStateMeta, issueStates } from "@/lib/dashboard";
 import {
@@ -18,8 +17,8 @@ import {
   issueAssetInputAccept,
   type IssueAssetChangeSet,
 } from "@/lib/issue-assets";
-import { canEditIssueType } from "@/lib/issues";
-import type { EpicSummary, IssueDetail, IssueSummary, IssueType, ProjectSummary } from "@/lib/types";
+import { projectPermissionProfileDetails } from "@/lib/project-permission-profiles";
+import type { EpicSummary, IssueDetail, IssueSummary, PermissionProfile, ProjectSummary } from "@/lib/types";
 
 const noEpicValue = "__no-epic__";
 const blockerSearchDebounceMs = 150;
@@ -55,6 +54,21 @@ function dedupeIssues(issues: IssueSummary[]) {
   }
 
   return [...unique.values()];
+}
+
+function labelOptionsForIssues(issues: IssueSummary[]) {
+  const unique = new Set<string>();
+  for (const issue of issues) {
+    for (const label of issue.labels ?? []) {
+      const trimmed = label.trim();
+      if (trimmed) {
+        unique.add(trimmed);
+      }
+    }
+  }
+  return [...unique]
+    .sort((left, right) => left.localeCompare(right))
+    .map((label) => ({ value: label, label }));
 }
 
 function useDialogReset(open: boolean, resetKey: string, reset: () => void) {
@@ -309,9 +323,6 @@ export function IssueDialog({
   const [epicID, setEpicID] = useState(initial?.epic_id ?? "");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [issueType, setIssueType] = useState<IssueType>(initial?.issue_type ?? "standard");
-  const [cron, setCron] = useState(initial?.cron ?? "");
-  const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [state, setState] = useState<string>(initial?.state ?? "backlog");
   const [priority, setPriority] = useState(String(initial?.priority ?? 0));
   const [labels, setLabels] = useState(initial?.labels ?? []);
@@ -328,16 +339,12 @@ export function IssueDialog({
   const [pending, setPending] = useState(false);
   const selectedProject = projects.find((project) => project.id === projectID);
   const supportsEpics = selectedProject?.capabilities?.epics ?? true;
-  const canChangeIssueType = canEditIssueType(initial);
 
   useDialogReset(open, initial?.identifier ?? "__new__", () => {
     setProjectID(initial?.project_id ?? projects[0]?.id ?? "");
     setEpicID(initial?.epic_id ?? "");
     setTitle(initial?.title ?? "");
     setDescription(initial?.description ?? "");
-    setIssueType(initial?.issue_type ?? "standard");
-    setCron(initial?.cron ?? "");
-    setEnabled(initial?.enabled ?? true);
     setState(initial?.state ?? "backlog");
     setPriority(String(initial?.priority ?? 0));
     setLabels(initial?.labels ?? []);
@@ -370,6 +377,7 @@ export function IssueDialog({
       api.listIssues(
         {
           project_id: projectID,
+          issue_type: "standard",
           search: blockerSearch.trim(),
           limit: 25,
           sort: "updated_desc",
@@ -398,6 +406,7 @@ export function IssueDialog({
       controller.abort();
     };
   }, [blockerSearch, open, projectID]);
+
   const visibleRemoteBlockerIssues = useMemo(
     () => (open && blockerSearch.trim().length >= 2 ? remoteBlockerIssues : []),
     [blockerSearch, open, remoteBlockerIssues],
@@ -421,28 +430,7 @@ export function IssueDialog({
     }
   }, [epicID, filteredEpics]);
 
-  useEffect(() => {
-    if (canChangeIssueType) {
-      return;
-    }
-    setIssueType(initial?.issue_type ?? "standard");
-    setCron(initial?.cron ?? "");
-    setEnabled(initial?.enabled ?? true);
-  }, [canChangeIssueType, initial?.cron, initial?.enabled, initial?.issue_type]);
-
-  const labelOptions = useMemo<MultiComboboxOption[]>(() => {
-    const unique = new Set<string>();
-    for (const issue of localProjectIssues) {
-      for (const label of issue.labels ?? []) {
-        const trimmed = label.trim();
-        if (trimmed) {
-          unique.add(trimmed);
-        }
-      }
-    }
-    return [...unique].sort((left, right) => left.localeCompare(right)).map((label) => ({ value: label, label }));
-  }, [localProjectIssues]);
-
+  const labelOptions = useMemo(() => labelOptionsForIssues(localProjectIssues), [localProjectIssues]);
   const blockerOptions = useMemo<MultiComboboxOption[]>(
     () =>
       dedupeIssues([...localProjectIssues, ...visibleRemoteBlockerIssues])
@@ -455,9 +443,7 @@ export function IssueDialog({
     [initial?.identifier, localProjectIssues, visibleRemoteBlockerIssues],
   );
 
-  const visibleExistingAssets = (initial?.assets ?? []).filter(
-    (asset) => !removedAssetIDs.includes(asset.id),
-  );
+  const visibleExistingAssets = (initial?.assets ?? []).filter((asset) => !removedAssetIDs.includes(asset.id));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -468,7 +454,7 @@ export function IssueDialog({
               {isEditing ? `Edit ${initial?.identifier}` : "Create issue"}
             </DialogTitle>
             <DialogDescription className="mt-2 text-sm text-[var(--muted-foreground)]">
-              Shape the issue, set operational metadata, and make it immediately actionable.
+              Shape the issue, set execution metadata, and make it immediately actionable.
             </DialogDescription>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
@@ -520,38 +506,7 @@ export function IssueDialog({
               )}
             </Field>
             <Field label="Title">
-              {({ labelId }) => (
-                <Input aria-labelledby={labelId} value={title} onChange={(event) => setTitle(event.target.value)} />
-              )}
-            </Field>
-            <Field label="Type">
-              {({ labelId }) => (
-                <ToggleGroup
-                  type="single"
-                  value={issueType}
-                  onValueChange={(value) => {
-                    if (value) {
-                      setIssueType(value as IssueType);
-                    }
-                  }}
-                  className="grid h-11 grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-[3px]"
-                  aria-labelledby={labelId}
-                  disabled={!canChangeIssueType}
-                >
-                  <ToggleGroupItem
-                    className="h-full rounded-lg text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
-                    value="standard"
-                  >
-                    Standard
-                  </ToggleGroupItem>
-                  <ToggleGroupItem
-                    className="h-full rounded-lg text-white data-[state=on]:bg-[var(--accent)] data-[state=on]:text-black"
-                    value="recurring"
-                  >
-                    Recurring
-                  </ToggleGroupItem>
-                </ToggleGroup>
-              )}
+              {({ labelId }) => <Input aria-labelledby={labelId} value={title} onChange={(event) => setTitle(event.target.value)} />}
             </Field>
             <Field label="State">
               {({ labelId }) => (
@@ -580,33 +535,6 @@ export function IssueDialog({
                 />
               )}
             </Field>
-            {issueType === "recurring" ? (
-              <>
-                <Field label="Cron">
-                  {({ labelId }) => (
-                    <Input
-                      aria-labelledby={labelId}
-                      value={cron}
-                      onChange={(event) => setCron(event.target.value)}
-                      placeholder="*/30 * * * *"
-                    />
-                  )}
-                </Field>
-                <Field label="Schedule">
-                  {({ labelId }) => (
-                    <div
-                      aria-labelledby={labelId}
-                      className="flex min-h-11 items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-2"
-                    >
-                      <div>
-                        <p className="text-xs text-[var(--muted-foreground)]">Turn recurring runs on or off.</p>
-                      </div>
-                      <Switch aria-labelledby={labelId} checked={enabled} onCheckedChange={setEnabled} />
-                    </div>
-                  )}
-                </Field>
-              </>
-            ) : null}
             <Field label="Labels">
               {({ labelId }) => (
                 <MultiCombobox
@@ -655,17 +583,11 @@ export function IssueDialog({
             </Field>
             <Field label="Branch">
               {({ labelId }) => (
-                <Input
-                  aria-labelledby={labelId}
-                  value={branchName}
-                  onChange={(event) => setBranchName(event.target.value)}
-                />
+                <Input aria-labelledby={labelId} value={branchName} onChange={(event) => setBranchName(event.target.value)} />
               )}
             </Field>
             <Field label="PR URL">
-              {({ labelId }) => (
-                <Input aria-labelledby={labelId} value={prURL} onChange={(event) => setPrURL(event.target.value)} />
-              )}
+              {({ labelId }) => <Input aria-labelledby={labelId} value={prURL} onChange={(event) => setPrURL(event.target.value)} />}
             </Field>
           </div>
           <Field label="Agent prompt">
@@ -679,13 +601,7 @@ export function IssueDialog({
             )}
           </Field>
           <Field label="Description">
-            {({ labelId }) => (
-              <IssueDescriptionField
-                labelledBy={labelId}
-                value={description}
-                onChange={setDescription}
-              />
-            )}
+            {({ labelId }) => <IssueDescriptionField labelledBy={labelId} value={description} onChange={setDescription} />}
           </Field>
           <Field label="Assets">
             {({ labelId }) => (
@@ -711,9 +627,7 @@ export function IssueDialog({
                 </p>
                 {visibleExistingAssets.length > 0 ? (
                   <div className="grid gap-2">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      Attached now
-                    </p>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Attached now</p>
                     {visibleExistingAssets.map((asset) => (
                       <div
                         key={asset.id}
@@ -725,13 +639,7 @@ export function IssueDialog({
                             {formatIssueAssetSize(asset.byte_size)} · {asset.content_type}
                           </p>
                         </div>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          onClick={() =>
-                            setRemovedAssetIDs((current) => [...current, asset.id])
-                          }
-                        >
+                        <Button type="button" variant="secondary" onClick={() => setRemovedAssetIDs((current) => [...current, asset.id])}>
                           Remove
                         </Button>
                       </div>
@@ -740,9 +648,7 @@ export function IssueDialog({
                 ) : null}
                 {removedAssetIDs.length > 0 ? (
                   <div className="grid gap-2">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      Removing on save
-                    </p>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Removing on save</p>
                     {(initial?.assets ?? [])
                       .filter((asset) => removedAssetIDs.includes(asset.id))
                       .map((asset) => (
@@ -752,9 +658,7 @@ export function IssueDialog({
                         >
                           <div className="min-w-0">
                             <p className="truncate text-sm text-white">{asset.filename}</p>
-                            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                              Will be deleted after save
-                            </p>
+                            <p className="mt-1 text-xs text-[var(--muted-foreground)]">Will be deleted after save</p>
                           </div>
                           <Button
                             type="button"
@@ -773,9 +677,7 @@ export function IssueDialog({
                 ) : null}
                 {newAssets.length > 0 ? (
                   <div className="grid gap-2">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
-                      Queued uploads
-                    </p>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Queued uploads</p>
                     {newAssets.map((file, index) => (
                       <div
                         key={`${file.name}-${file.size}-${index}`}
@@ -810,7 +712,7 @@ export function IssueDialog({
               Cancel
             </Button>
             <Button
-              disabled={!projectID || !title.trim() || pending || (issueType === "recurring" && !cron.trim())}
+              disabled={!projectID || !title.trim() || pending}
               onClick={async () => {
                 setPending(true);
                 try {
@@ -820,7 +722,6 @@ export function IssueDialog({
                     title,
                     description,
                     state,
-                    issue_type: issueType,
                     priority: Number(priority),
                     labels,
                     agent_name: agentName,
@@ -829,10 +730,6 @@ export function IssueDialog({
                     branch_name: branchName,
                     pr_url: prURL,
                   };
-                  if (issueType === "recurring") {
-                    body.cron = cron;
-                    body.enabled = enabled;
-                  }
                   await onSubmit(body, {
                     newAssets,
                     removeAssetIDs: removedAssetIDs,
@@ -844,6 +741,240 @@ export function IssueDialog({
               }}
             >
               {pending ? "Saving…" : isEditing ? "Update issue" : "Create issue"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function AutomationDialog({
+  open,
+  onOpenChange,
+  initial,
+  projectID,
+  epics,
+  availableIssues = [],
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initial?: Partial<IssueDetail>;
+  projectID: string;
+  epics: EpicSummary[];
+  availableIssues?: IssueSummary[];
+  onSubmit: (body: Record<string, unknown>) => Promise<void>;
+}) {
+  const isEditing = Boolean(initial?.identifier);
+  const [epicID, setEpicID] = useState(initial?.epic_id ?? "");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [cron, setCron] = useState(initial?.cron ?? "");
+  const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [priority, setPriority] = useState(String(initial?.priority ?? 0));
+  const [labels, setLabels] = useState(initial?.labels ?? []);
+  const [permissionProfile, setPermissionProfile] = useState<PermissionProfile>(
+    initial?.permission_profile ?? "default",
+  );
+  const [agentName, setAgentName] = useState(initial?.agent_name ?? "");
+  const [agentPrompt, setAgentPrompt] = useState(initial?.agent_prompt ?? "");
+  const [blockedBy, setBlockedBy] = useState(initial?.blocked_by ?? []);
+  const [branchName, setBranchName] = useState(initial?.branch_name ?? "");
+  const [prURL, setPrURL] = useState(initial?.pr_url ?? "");
+  const [pending, setPending] = useState(false);
+
+  useDialogReset(open, initial?.identifier ?? "__new__", () => {
+    setEpicID(initial?.epic_id ?? "");
+    setTitle(initial?.title ?? "");
+    setDescription(initial?.description ?? "");
+    setCron(initial?.cron ?? "");
+    setEnabled(initial?.enabled ?? true);
+    setPriority(String(initial?.priority ?? 0));
+    setLabels(initial?.labels ?? []);
+    setPermissionProfile(initial?.permission_profile ?? "default");
+    setAgentName(initial?.agent_name ?? "");
+    setAgentPrompt(initial?.agent_prompt ?? "");
+    setBlockedBy(initial?.blocked_by ?? []);
+    setBranchName(initial?.branch_name ?? "");
+    setPrURL(initial?.pr_url ?? "");
+  });
+
+  const filteredEpics = epics.filter((epic) => epic.project_id === projectID);
+  useEffect(() => {
+    if (!epicID) return;
+    if (!filteredEpics.some((epic) => epic.id === epicID)) {
+      setEpicID("");
+    }
+  }, [epicID, filteredEpics]);
+
+  const localProjectIssues = useMemo(
+    () => dedupeIssues(availableIssues.filter((issue) => issue.project_id === projectID)),
+    [availableIssues, projectID],
+  );
+  const labelOptions = useMemo(() => labelOptionsForIssues(localProjectIssues), [localProjectIssues]);
+
+  const permissionProfileOptionDescription = projectPermissionProfileDetails[permissionProfile].description;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(96vw,860px)] overflow-y-auto">
+        <div className="space-y-6">
+          <div>
+            <DialogTitle className="text-xl font-semibold text-white">
+              {isEditing ? `Edit automation ${initial?.identifier}` : "Create automation"}
+            </DialogTitle>
+            <DialogDescription className="mt-2 text-sm text-[var(--muted-foreground)]">
+              Define a recurring project automation. State, blockers, branch, and PR live outside this template view.
+            </DialogDescription>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Automation name">
+              {({ labelId }) => <Input aria-labelledby={labelId} value={title} onChange={(event) => setTitle(event.target.value)} />}
+            </Field>
+            <Field label="Epic">
+              {({ labelId }) => (
+                <Select value={epicID || noEpicValue} onValueChange={(value) => setEpicID(value === noEpicValue ? "" : value)}>
+                  <SelectTrigger aria-labelledby={labelId}>
+                    <SelectValue placeholder="No epic" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={noEpicValue}>No epic</SelectItem>
+                    {filteredEpics.map((epic) => (
+                      <SelectItem key={epic.id} value={epic.id}>
+                        {epic.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </Field>
+            <Field label="Priority">
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  type="number"
+                  min={0}
+                  value={priority}
+                  onChange={(event) => setPriority(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Permission profile">
+              {({ labelId }) => (
+                <div className="grid gap-2">
+                  <Select value={permissionProfile} onValueChange={(value) => setPermissionProfile(value as PermissionProfile)}>
+                    <SelectTrigger aria-labelledby={labelId}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(projectPermissionProfileDetails) as PermissionProfile[]).map((profile) => (
+                        <SelectItem key={profile} value={profile}>
+                          {projectPermissionProfileDetails[profile].label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-[var(--muted-foreground)]">{permissionProfileOptionDescription}</p>
+                </div>
+              )}
+            </Field>
+            <Field label="Labels">
+              {({ labelId }) => (
+                <MultiCombobox
+                  key={`automation-labels-${projectID}`}
+                  labelledBy={labelId}
+                  value={labels}
+                  onChange={setLabels}
+                  options={labelOptions}
+                  allowCreate
+                  placeholder="Select or create labels"
+                  emptyText="No labels found."
+                  createLabel={(value) => `Create label "${value}"`}
+                />
+              )}
+            </Field>
+            <Field label="Automation schedule">
+              {({ labelId }) => (
+                <div className="grid gap-2 rounded-xl border border-white/10 bg-black/20 px-4 py-3" aria-labelledby={labelId}>
+                  <Input
+                    aria-labelledby={labelId}
+                    value={cron}
+                    onChange={(event) => setCron(event.target.value)}
+                    placeholder="*/30 * * * *"
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs text-[var(--muted-foreground)]">Pause this automation without deleting it.</p>
+                    </div>
+                    <Switch aria-labelledby={labelId} checked={enabled} onCheckedChange={setEnabled} />
+                  </div>
+                </div>
+              )}
+            </Field>
+            <Field label="Assigned agent">
+              {({ labelId }) => (
+                <Input
+                  aria-labelledby={labelId}
+                  value={agentName}
+                  onChange={(event) => setAgentName(event.target.value)}
+                  placeholder="marketing"
+                />
+              )}
+            </Field>
+          </div>
+          <Field label="Agent prompt">
+            {({ labelId }) => (
+              <Textarea
+                aria-labelledby={labelId}
+                value={agentPrompt}
+                onChange={(event) => setAgentPrompt(event.target.value)}
+                placeholder="Review the landing page copy and suggest stronger messaging."
+              />
+            )}
+          </Field>
+          <Field label="Template">
+            {({ labelId }) => (
+              <IssueDescriptionField
+                labelledBy={labelId}
+                value={description}
+                onChange={setDescription}
+              />
+            )}
+          </Field>
+          <div className="flex justify-end gap-3">
+            <Button variant="secondary" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!projectID || !title.trim() || !cron.trim() || pending}
+              onClick={async () => {
+                setPending(true);
+                try {
+                  await onSubmit({
+                    project_id: projectID,
+                    epic_id: epicID,
+                    title,
+                    description,
+                    issue_type: "recurring",
+                    cron,
+                    enabled,
+                    priority: Number(priority),
+                    labels,
+                    permission_profile: permissionProfile,
+                    agent_name: agentName,
+                    agent_prompt: agentPrompt,
+                    blocked_by: blockedBy,
+                    branch_name: branchName,
+                    pr_url: prURL,
+                  });
+                  onOpenChange(false);
+                } finally {
+                  setPending(false);
+                }
+              }}
+            >
+              {pending ? "Saving…" : isEditing ? "Update automation" : "Create automation"}
             </Button>
           </div>
         </div>

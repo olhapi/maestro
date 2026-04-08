@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/olhapi/maestro/internal/codexschema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -75,7 +74,6 @@ type AgentConfig struct {
 
 type CodexConfig struct {
 	Command                  string      `yaml:"command"`
-	ExpectedVersion          string      `yaml:"expected_version"`
 	ApprovalPolicy           interface{} `yaml:"approval_policy"`
 	InitialCollaborationMode string      `yaml:"initial_collaboration_mode"`
 	TurnTimeoutMs            int         `yaml:"turn_timeout_ms"`
@@ -137,8 +135,7 @@ func DefaultConfig() Config {
 			DispatchMode:        DispatchModeParallel,
 		},
 		Codex: CodexConfig{
-			Command:         "codex app-server",
-			ExpectedVersion: codexschema.SupportedVersion,
+			Command: "codex app-server",
 			ApprovalPolicy: map[string]interface{}{
 				"granular": map[string]interface{}{
 					"sandbox_approval":    true,
@@ -526,7 +523,6 @@ func normalizeWorkflowKeys(raw map[string]interface{}) (map[string]interface{}, 
 	moveString(out, agent, "agent_mode", "mode")
 	moveString(out, agent, "dispatch_mode", "dispatch_mode")
 	moveString(out, codex, "codex_command", "command")
-	moveString(out, codex, "codex_expected_version", "expected_version")
 	moveValue(out, codex, "codex_approval_policy", "approval_policy")
 	moveString(out, codex, "codex_initial_collaboration_mode", "initial_collaboration_mode")
 	moveNumeric(out, codex, "codex_turn_timeout_ms", "turn_timeout_ms")
@@ -744,9 +740,6 @@ func applyDefaults(c *Config) error {
 	}
 	if strings.TrimSpace(c.Codex.Command) == "" {
 		c.Codex.Command = defaults.Codex.Command
-	}
-	if strings.TrimSpace(c.Codex.ExpectedVersion) == "" {
-		c.Codex.ExpectedVersion = defaults.Codex.ExpectedVersion
 	}
 	normalizedApprovalPolicy, err := normalizeApprovalPolicyValue(c.Codex.ApprovalPolicy, c.Codex.ApprovalPolicy != nil)
 	if err != nil {

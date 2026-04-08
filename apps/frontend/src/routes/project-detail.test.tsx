@@ -146,6 +146,7 @@ describe("ProjectDetailPage", () => {
     expect(
       screen.getByRole("button", { name: /run project/i }).nextElementSibling,
     ).toBe(accessButton);
+    expect(screen.getByRole("button", { name: /automations/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /run project/i }));
     await waitFor(() => {
@@ -164,11 +165,7 @@ describe("ProjectDetailPage", () => {
 
     renderWithQueryClient(<ProjectDetailPage />);
 
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /stop project/i }),
-      ).toBeInTheDocument();
-    });
+    await screen.findByRole("button", { name: /stop project/i }, { timeout: 5000 });
 
     fireEvent.click(screen.getByRole("button", { name: /stop project/i }));
     await waitFor(() => {

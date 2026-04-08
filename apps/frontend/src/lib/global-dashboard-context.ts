@@ -1,7 +1,6 @@
 import { createContext, useContext, type Dispatch, type SetStateAction } from "react";
 
 export type WorkOverviewFilters = {
-  issueType: string;
   projectID: string;
   sort: string;
   state: string;
@@ -15,7 +14,6 @@ export type GlobalDashboardContextValue = {
 export const defaultWorkOverviewFilters: WorkOverviewFilters = {
   projectID: "",
   state: "",
-  issueType: "",
   sort: "priority_asc",
 };
 

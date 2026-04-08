@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	codexruntime "github.com/olhapi/maestro/internal/agentruntime/codex"
 	"github.com/olhapi/maestro/internal/codexschema"
 	"github.com/olhapi/maestro/pkg/config"
 	"github.com/olhapi/maestro/skills"
@@ -47,11 +48,27 @@ func Run(repoRoot string) Report {
 	} else {
 		checks["workflow_load"] = "ok"
 
-		if workflow.Config.Codex.ExpectedVersion == codexschema.SupportedVersion {
-			checks["workflow_version"] = "ok"
-		} else {
+		command, err := codexruntime.ResolveCommand(workflow.Config.Codex.Command)
+		switch {
+		case err != nil:
 			ok = false
 			checks["workflow_version"] = "fail"
+		case command == "":
+			checks["workflow_version"] = "skipped"
+		default:
+			status, err := codexruntime.DetectVersion(command)
+			switch {
+			case err != nil && status.Command != "":
+				ok = false
+				checks["workflow_version"] = "fail"
+			case status.ExecutablePath == "":
+				checks["workflow_version"] = "skipped"
+			case status.Actual != codexschema.SupportedVersion:
+				ok = false
+				checks["workflow_version"] = "fail"
+			default:
+				checks["workflow_version"] = "ok"
+			}
 		}
 
 		if err := validateWorkflowPromptRender(workflow.PromptTemplate); err != nil {
@@ -123,17 +140,11 @@ func validateDefaultConfig() error {
 	if cfg.Tracker.Kind != config.TrackerKindKanban {
 		return fmt.Errorf("default tracker kind = %q", cfg.Tracker.Kind)
 	}
-	if cfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
-		return fmt.Errorf("default expected_version = %q", cfg.Codex.ExpectedVersion)
-	}
 	if cfg.Codex.InitialCollaborationMode != config.InitialCollaborationModeDefault {
 		return fmt.Errorf("default initial_collaboration_mode = %q", cfg.Codex.InitialCollaborationMode)
 	}
 	if cfg.Codex.TurnTimeoutMs != 1800000 || cfg.Codex.ReadTimeoutMs != 10000 || cfg.Codex.StallTimeoutMs != 300000 {
 		return fmt.Errorf("unexpected codex timeout defaults: turn=%d read=%d stall=%d", cfg.Codex.TurnTimeoutMs, cfg.Codex.ReadTimeoutMs, cfg.Codex.StallTimeoutMs)
-	}
-	if initCfg.Codex.ExpectedVersion != codexschema.SupportedVersion {
-		return fmt.Errorf("default init expected_version = %q", initCfg.Codex.ExpectedVersion)
 	}
 	if initCfg.Codex.InitialCollaborationMode != config.InitialCollaborationModeDefault {
 		return fmt.Errorf("default init initial_collaboration_mode = %q", initCfg.Codex.InitialCollaborationMode)

@@ -192,9 +192,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
-		Limit:  100,
-		Offset: 0,
-		Sort:   "updated_desc",
+		IssueType: string(kanban.IssueTypeStandard),
+		Limit:     100,
+		Offset:    0,
+		Sort:      "updated_desc",
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -263,9 +264,10 @@ func (s *Server) handleWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issues, total, err := s.service.ListIssueSummaries(r.Context(), kanban.IssueQuery{
-		Limit:  100,
-		Offset: 0,
-		Sort:   "updated_desc",
+		IssueType: string(kanban.IssueTypeStandard),
+		Limit:     100,
+		Offset:    0,
+		Sort:      "updated_desc",
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -447,6 +449,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		}
 		issues, total, counts, err := s.service.ListIssueSummariesWithCounts(r.Context(), kanban.IssueQuery{
 			ProjectID: id,
+			IssueType: string(kanban.IssueTypeStandard),
 			Sort:      sort,
 			Limit:     200,
 			Offset:    0,
@@ -584,10 +587,11 @@ func (s *Server) handleEpic(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		issues, total, counts, err := s.service.ListIssueSummariesWithCounts(r.Context(), kanban.IssueQuery{
-			EpicID: id,
-			Sort:   "updated_desc",
-			Limit:  200,
-			Offset: 0,
+			EpicID:    id,
+			IssueType: string(kanban.IssueTypeStandard),
+			Sort:      "updated_desc",
+			Limit:     200,
+			Offset:    0,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -662,41 +666,48 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPost:
 		var body struct {
-			ProjectID   string   `json:"project_id"`
-			EpicID      string   `json:"epic_id"`
-			Title       string   `json:"title"`
-			Description string   `json:"description"`
-			IssueType   string   `json:"issue_type"`
-			Cron        string   `json:"cron"`
-			Enabled     *bool    `json:"enabled"`
-			Priority    int      `json:"priority"`
-			Labels      []string `json:"labels"`
-			AgentName   string   `json:"agent_name"`
-			AgentPrompt string   `json:"agent_prompt"`
-			State       string   `json:"state"`
-			BlockedBy   []string `json:"blocked_by"`
-			BranchName  string   `json:"branch_name"`
-			PRURL       string   `json:"pr_url"`
+			ProjectID         string   `json:"project_id"`
+			EpicID            string   `json:"epic_id"`
+			Title             string   `json:"title"`
+			Description       string   `json:"description"`
+			IssueType         string   `json:"issue_type"`
+			Cron              string   `json:"cron"`
+			Enabled           *bool    `json:"enabled"`
+			PermissionProfile string   `json:"permission_profile"`
+			Priority          int      `json:"priority"`
+			Labels            []string `json:"labels"`
+			AgentName         string   `json:"agent_name"`
+			AgentPrompt       string   `json:"agent_prompt"`
+			State             string   `json:"state"`
+			BlockedBy         []string `json:"blocked_by"`
+			BranchName        string   `json:"branch_name"`
+			PRURL             string   `json:"pr_url"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
 		}
+		permissionProfile, err := kanban.ParsePermissionProfile(body.PermissionProfile)
+		if err != nil {
+			writeError(w, appErrorStatus(err), err)
+			return
+		}
 		detail, err := s.service.CreateIssue(r.Context(), providers.IssueCreateInput{
-			ProjectID:   body.ProjectID,
-			EpicID:      body.EpicID,
-			Title:       strings.TrimSpace(body.Title),
-			Description: strings.TrimSpace(body.Description),
-			IssueType:   kanban.IssueType(strings.TrimSpace(body.IssueType)),
-			Cron:        strings.TrimSpace(body.Cron),
-			Enabled:     body.Enabled,
-			Priority:    body.Priority,
-			Labels:      body.Labels,
-			AgentName:   strings.TrimSpace(body.AgentName),
-			AgentPrompt: strings.TrimSpace(body.AgentPrompt),
-			State:       body.State,
-			BlockedBy:   body.BlockedBy,
-			BranchName:  body.BranchName,
-			PRURL:       body.PRURL,
+			ProjectID:         body.ProjectID,
+			EpicID:            body.EpicID,
+			Title:             strings.TrimSpace(body.Title),
+			Description:       strings.TrimSpace(body.Description),
+			IssueType:         kanban.IssueType(strings.TrimSpace(body.IssueType)),
+			Cron:              strings.TrimSpace(body.Cron),
+			Enabled:           body.Enabled,
+			PermissionProfile: permissionProfile,
+			Priority:          body.Priority,
+			Labels:            body.Labels,
+			AgentName:         strings.TrimSpace(body.AgentName),
+			AgentPrompt:       strings.TrimSpace(body.AgentPrompt),
+			State:             body.State,
+			BlockedBy:         body.BlockedBy,
+			BranchName:        body.BranchName,
+			PRURL:             body.PRURL,
 		})
 		if err != nil {
 			writeError(w, appErrorStatus(err), err)
@@ -745,20 +756,21 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, detail)
 		case http.MethodPatch:
 			var body struct {
-				ProjectID   string   `json:"project_id"`
-				EpicID      string   `json:"epic_id"`
-				Title       string   `json:"title"`
-				Description string   `json:"description"`
-				IssueType   *string  `json:"issue_type"`
-				Cron        *string  `json:"cron"`
-				Enabled     *bool    `json:"enabled"`
-				Priority    int      `json:"priority"`
-				Labels      []string `json:"labels"`
-				AgentName   *string  `json:"agent_name"`
-				AgentPrompt *string  `json:"agent_prompt"`
-				BlockedBy   []string `json:"blocked_by"`
-				BranchName  string   `json:"branch_name"`
-				PRURL       string   `json:"pr_url"`
+				ProjectID         string   `json:"project_id"`
+				EpicID            string   `json:"epic_id"`
+				Title             string   `json:"title"`
+				Description       string   `json:"description"`
+				IssueType         *string  `json:"issue_type"`
+				Cron              *string  `json:"cron"`
+				Enabled           *bool    `json:"enabled"`
+				PermissionProfile *string  `json:"permission_profile"`
+				Priority          int      `json:"priority"`
+				Labels            []string `json:"labels"`
+				AgentName         *string  `json:"agent_name"`
+				AgentPrompt       *string  `json:"agent_prompt"`
+				BlockedBy         []string `json:"blocked_by"`
+				BranchName        string   `json:"branch_name"`
+				PRURL             string   `json:"pr_url"`
 			}
 			if !decodeJSON(w, r, &body) {
 				return
@@ -788,6 +800,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			}
 			if body.Enabled != nil {
 				updates["enabled"] = *body.Enabled
+			}
+			if body.PermissionProfile != nil {
+				updates["permission_profile"] = strings.TrimSpace(*body.PermissionProfile)
 			}
 			detail, err := s.service.UpdateIssue(r.Context(), identifier, updates)
 			if err != nil {

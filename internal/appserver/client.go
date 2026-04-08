@@ -35,7 +35,6 @@ type ClientConfig struct {
 	Prompt                   string
 	Title                    string
 	CodexCommand             string
-	ExpectedVersion          string
 	ApprovalPolicy           interface{}
 	InitialCollaborationMode string
 	ThreadSandbox            string
@@ -202,7 +201,6 @@ func Start(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	client.session.IssueID = cfg.IssueID
 	client.session.IssueIdentifier = cfg.IssueIdentifier
 	client.logger = client.newLogger()
-	client.warnOnCodexVersionMismatch()
 	client.session.ProcessID = cmd.Process.Pid
 	client.logger.Info("Codex app-server process started", "pid", cmd.Process.Pid)
 
@@ -1893,30 +1891,6 @@ func (c *Client) writeOutput(line string, stderr bool) {
 	}
 	_, _ = c.output.WriteString(line)
 	_ = c.output.WriteByte('\n')
-}
-
-func (c *Client) warnOnCodexVersionMismatch() {
-	if strings.TrimSpace(c.cfg.ExpectedVersion) == "" {
-		return
-	}
-	status, err := DetectCodexVersion(c.cfg.CodexCommand)
-	if err != nil {
-		if strings.TrimSpace(c.cfg.CodexCommand) != "" {
-			c.logger.Warn("Unable to detect Codex CLI version", "command", c.cfg.CodexCommand, "error", err)
-		}
-		return
-	}
-	if status.ExecutablePath == "" || status.Actual == "" {
-		return
-	}
-	if status.Actual != c.cfg.ExpectedVersion {
-		c.logger.Warn("Codex CLI version mismatch",
-			"command", c.cfg.CodexCommand,
-			"executable", status.ExecutablePath,
-			"expected_version", c.cfg.ExpectedVersion,
-			"actual_version", status.Actual,
-		)
-	}
 }
 
 func validateWorkspaceCWD(workspace, workspaceRoot string) error {

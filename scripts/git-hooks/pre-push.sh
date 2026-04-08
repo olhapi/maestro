@@ -13,11 +13,11 @@ rosetta_x64_smoke_ready() {
     return 1
   fi
 
-  if ! command -v bash >/dev/null 2>&1; then
+  if ! [ -x /bin/bash ]; then
     return 1
   fi
 
-  arch -x86_64 bash -c '
+  arch -x86_64 /bin/bash -c '
     [ "$(node -p "process.arch" 2>/dev/null)" = "x64" ] &&
     npm --version >/dev/null 2>&1 &&
     go version >/dev/null 2>&1 &&

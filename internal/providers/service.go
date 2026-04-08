@@ -1089,11 +1089,12 @@ func IsUnsupported(err error) bool {
 func providerIssueCreateLocalUpdates(providerIssue *kanban.Issue, input IssueCreateInput) map[string]interface{} {
 	updates := make(map[string]interface{})
 	for key, value := range map[string]string{
-		"epic_id":      providerIssue.EpicID,
-		"agent_name":   providerIssue.AgentName,
-		"agent_prompt": providerIssue.AgentPrompt,
-		"branch_name":  providerIssue.BranchName,
-		"pr_url":       providerIssue.PRURL,
+		"epic_id":            providerIssue.EpicID,
+		"agent_name":         providerIssue.AgentName,
+		"agent_prompt":       providerIssue.AgentPrompt,
+		"branch_name":        providerIssue.BranchName,
+		"pr_url":             providerIssue.PRURL,
+		"permission_profile": string(providerIssue.PermissionProfile),
 	} {
 		if trimmed, ok := preferredStringValue(inputValueForKey(input, key), value); ok {
 			updates[key] = trimmed
@@ -1126,6 +1127,7 @@ func providerIssueLocalUpdatePayload(issue *kanban.Issue, updates map[string]int
 	addString("agent_prompt", issue.AgentPrompt)
 	addString("branch_name", issue.BranchName)
 	addString("pr_url", issue.PRURL)
+	addString("permission_profile", string(issue.PermissionProfile))
 	if raw, ok := updates["permission_profile"]; ok {
 		if value, ok := stringUpdateValue(raw); ok {
 			localUpdates["permission_profile"] = value
@@ -1146,6 +1148,8 @@ func inputValueForKey(input IssueCreateInput, key string) string {
 		return input.BranchName
 	case "pr_url":
 		return input.PRURL
+	case "permission_profile":
+		return string(input.PermissionProfile)
 	default:
 		return ""
 	}
