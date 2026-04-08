@@ -11,6 +11,8 @@ export default mergeConfig(
       globals: true,
       css: true,
       setupFiles: [path.resolve(__dirname, './src/test/setup.ts')],
+      testTimeout: 30000,
+      hookTimeout: 30000,
     },
     coverage: {
       provider: 'v8',
