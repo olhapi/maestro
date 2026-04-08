@@ -1049,3 +1049,59 @@ func TestRemoveIssuePRNumberColumnInjectedFailure(t *testing.T) {
 		t.Fatal("expected removeIssuePRNumberColumn to fail")
 	}
 }
+
+func TestStoreMigrationScopesProviderRefIndexByProject(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "provider-ref-migration.db")
+	base := openSQLiteStoreAt(t, dbPath)
+	if _, err := base.db.Exec(`DROP INDEX IF EXISTS idx_issues_provider_ref_unique`); err != nil {
+		t.Fatalf("drop current provider ref index: %v", err)
+	}
+	if _, err := base.db.Exec(`CREATE UNIQUE INDEX idx_issues_provider_ref_unique ON issues(provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`); err != nil {
+		t.Fatalf("create legacy provider ref index: %v", err)
+	}
+	if err := base.Close(); err != nil {
+		t.Fatalf("close legacy store: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	alpha, err := store.CreateProjectWithProvider("Alpha Project", "", "", "", testProviderKind, "alpha-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider alpha: %v", err)
+	}
+	beta, err := store.CreateProjectWithProvider("Beta Project", "", "", "", testProviderKind, "beta-ref", nil)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider beta: %v", err)
+	}
+
+	if _, err := store.UpsertProviderIssue(alpha.ID, &Issue{
+		Identifier:       "ALPHA-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
+		Title:            "Alpha ready",
+		State:            StateReady,
+	}); err != nil {
+		t.Fatalf("UpsertProviderIssue alpha: %v", err)
+	}
+	if _, err := store.UpsertProviderIssue(beta.ID, &Issue{
+		Identifier:       "BETA-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
+		Title:            "Beta ready",
+		State:            StateReady,
+	}); err != nil {
+		t.Fatalf("UpsertProviderIssue beta: %v", err)
+	}
+
+	counts, err := store.CountIssueSummariesByState(IssueQuery{})
+	if err != nil {
+		t.Fatalf("CountIssueSummariesByState: %v", err)
+	}
+	if counts.Ready != 2 {
+		t.Fatalf("expected migration to allow two ready issues with the same provider ref, got %#v", counts)
+	}
+}

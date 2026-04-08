@@ -5248,6 +5248,78 @@ func TestProviderIssueLookupHelpers(t *testing.T) {
 	}
 }
 
+func TestUpsertProviderIssueScopesProviderRefsToProject(t *testing.T) {
+	store := setupTestStore(t)
+
+	alpha, err := store.CreateProjectWithProvider(
+		"Alpha Project",
+		"",
+		"",
+		"",
+		testProviderKind,
+		"alpha-ref",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider alpha: %v", err)
+	}
+	beta, err := store.CreateProjectWithProvider(
+		"Beta Project",
+		"",
+		"",
+		"",
+		testProviderKind,
+		"beta-ref",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateProjectWithProvider beta: %v", err)
+	}
+
+	if _, err := store.UpsertProviderIssue(alpha.ID, &Issue{
+		Identifier:       "ALPHA-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
+		Title:            "Alpha ready",
+		State:            StateReady,
+	}); err != nil {
+		t.Fatalf("UpsertProviderIssue alpha: %v", err)
+	}
+	if _, err := store.UpsertProviderIssue(beta.ID, &Issue{
+		Identifier:       "BETA-1",
+		ProviderKind:     testProviderKind,
+		ProviderIssueRef: "ext-1",
+		Title:            "Beta ready",
+		State:            StateReady,
+	}); err != nil {
+		t.Fatalf("UpsertProviderIssue beta: %v", err)
+	}
+
+	alphaIssues, err := store.ListIssues(map[string]interface{}{"project_id": alpha.ID})
+	if err != nil {
+		t.Fatalf("ListIssues alpha: %v", err)
+	}
+	if len(alphaIssues) != 1 || alphaIssues[0].Identifier != "ALPHA-1" {
+		t.Fatalf("expected alpha project to keep its own provider issue, got %#v", alphaIssues)
+	}
+
+	betaIssues, err := store.ListIssues(map[string]interface{}{"project_id": beta.ID})
+	if err != nil {
+		t.Fatalf("ListIssues beta: %v", err)
+	}
+	if len(betaIssues) != 1 || betaIssues[0].Identifier != "BETA-1" {
+		t.Fatalf("expected beta project to keep its own provider issue, got %#v", betaIssues)
+	}
+
+	counts, err := store.CountIssueSummariesByState(IssueQuery{})
+	if err != nil {
+		t.Fatalf("CountIssueSummariesByState: %v", err)
+	}
+	if counts.Ready != 2 {
+		t.Fatalf("expected both projects' ready issues to be counted, got %#v", counts)
+	}
+}
+
 func TestReconcileProviderIssuesRemovesDeletedBlockersAndReactivatesCommands(t *testing.T) {
 	store := setupTestStore(t)
 

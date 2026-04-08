@@ -579,7 +579,10 @@ func (s *Store) ensureIssueColumns() error {
 			return err
 		}
 	}
-	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_provider_ref_unique ON issues(provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`); err != nil {
+	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_issues_provider_ref_unique`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_provider_ref_unique ON issues(project_id, provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_issues_issue_type ON issues(issue_type)`); err != nil {
@@ -1100,7 +1103,7 @@ func (s *Store) removeIssuePRNumberColumn() (err error) {
 		`CREATE INDEX idx_issues_state ON issues(state)`,
 		`CREATE INDEX idx_issues_project ON issues(project_id)`,
 		`CREATE INDEX idx_issues_epic ON issues(epic_id)`,
-		`CREATE UNIQUE INDEX idx_issues_provider_ref_unique ON issues(provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`,
+		`CREATE UNIQUE INDEX idx_issues_provider_ref_unique ON issues(project_id, provider_kind, provider_issue_ref) WHERE provider_issue_ref <> ''`,
 		`CREATE INDEX idx_issues_issue_type ON issues(issue_type)`,
 	} {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -3053,7 +3056,7 @@ func (s *Store) ReconcileProviderIssues(projectID, providerKind string, issues [
 		}
 	}()
 
-	rows, err := tx.Query(`SELECT id, project_id, provider_issue_ref, provider_shadow FROM issues WHERE provider_kind = ? AND provider_issue_ref <> ''`, providerKind)
+	rows, err := tx.Query(`SELECT id, project_id, provider_issue_ref, provider_shadow FROM issues WHERE project_id = ? AND provider_kind = ? AND provider_issue_ref <> ''`, projectID, providerKind)
 	if err != nil {
 		return err
 	}
@@ -3348,7 +3351,7 @@ func (s *Store) UpsertProviderIssue(projectID string, incoming *Issue) (*Issue, 
 		}
 	}()
 	var currentID string
-	err = tx.QueryRow(`SELECT id FROM issues WHERE provider_kind = ? AND provider_issue_ref = ?`, providerKind, providerIssueRef).Scan(&currentID)
+	err = tx.QueryRow(`SELECT id FROM issues WHERE project_id = ? AND provider_kind = ? AND provider_issue_ref = ?`, projectID, providerKind, providerIssueRef).Scan(&currentID)
 	switch {
 	case err == sql.ErrNoRows:
 		id := generateID("iss")

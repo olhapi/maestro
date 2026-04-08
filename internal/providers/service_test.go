@@ -474,7 +474,7 @@ func TestServiceSyncIssuesPreservesLocalFieldsOnProviderShadowUpdates(t *testing
 	}
 }
 
-func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
+func TestServiceSyncIssuesKeepsProviderIssuesScopedPerProject(t *testing.T) {
 	store, err := kanban.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -509,8 +509,8 @@ func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
 	existing, err := store.UpsertProviderIssue(sourceProject.ID, &kanban.Issue{
 		ProviderKind:     "stub",
 		ProviderIssueRef: "stub-moved",
-		Identifier:       "STUB-MOVED",
-		Title:            "Moved issue",
+		Identifier:       "STUB-SOURCE",
+		Title:            "Source issue",
 		State:            kanban.StateReady,
 	})
 	if err != nil {
@@ -527,8 +527,8 @@ func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
 			return []kanban.Issue{{
 				ProviderKind:     "stub",
 				ProviderIssueRef: "stub-moved",
-				Identifier:       "STUB-MOVED",
-				Title:            "Moved issue",
+				Identifier:       "STUB-TARGET",
+				Title:            "Target issue",
 				State:            kanban.StateReady,
 			}}, nil
 		},
@@ -538,12 +538,31 @@ func TestServiceSyncIssuesMovesProviderShadowAcrossProjects(t *testing.T) {
 		t.Fatalf("SyncIssues target: %v", err)
 	}
 
-	moved, err := store.GetIssue(existing.ID)
+	source, err := store.GetIssue(existing.ID)
 	if err != nil {
-		t.Fatalf("GetIssue moved: %v", err)
+		t.Fatalf("GetIssue source: %v", err)
 	}
-	if moved.ProjectID != targetProject.ID {
-		t.Fatalf("expected moved issue project %s, got %#v", targetProject.ID, moved)
+	if source.ProjectID != sourceProject.ID {
+		t.Fatalf("expected source issue to remain in project %s, got %#v", sourceProject.ID, source)
+	}
+
+	target, err := store.GetIssueByIdentifier("STUB-TARGET")
+	if err != nil {
+		t.Fatalf("GetIssueByIdentifier target: %v", err)
+	}
+	if target.ProjectID != targetProject.ID {
+		t.Fatalf("expected target issue in project %s, got %#v", targetProject.ID, target)
+	}
+	if target.ProviderIssueRef != "stub-moved" {
+		t.Fatalf("expected target issue to keep provider ref, got %#v", target)
+	}
+
+	issues, err := store.ListIssues(map[string]interface{}{"provider_kind": "stub"})
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected both projects to keep their provider issues, got %d issues: %#v", len(issues), issues)
 	}
 }
 
