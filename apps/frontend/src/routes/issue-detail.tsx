@@ -1151,7 +1151,7 @@ export function IssueDetailPage() {
         </div>
       ) : null}
 
-      <div className="grid items-start gap-[var(--section-gap)] xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid gap-[var(--section-gap)]">
         <div className="grid min-w-0 gap-[var(--section-gap)]" data-testid="issue-main-column">
           <Card>
             <CardContent className="grid gap-3 pt-[var(--panel-padding)] sm:grid-cols-2 xl:grid-cols-3">
@@ -1373,180 +1373,180 @@ export function IssueDetailPage() {
             </CardContent>
           </Card>
 
-          <SessionExecutionCard
-            approvingPlan={planApprovalResponseMutation.isPending}
-            continuing={retryMutation.isPending}
-            execution={execution.data}
-            issueTotalTokens={issue.data.total_tokens_spent}
-            onApprovePlan={(note) => {
-              planApprovalResponseMutation.mutate({ approved: true, note });
-            }}
-            onContinue={() => {
-              retryMutation.mutate();
-            }}
-            onRequestPlanRevision={(note) => {
-              planApprovalResponseMutation.mutate({ approved: false, note });
-            }}
-          />
-        </div>
-
-        <div className="grid content-start gap-[var(--section-gap)]" data-testid="issue-control-rail">
-          <Card>
-            <CardHeader>
-              <CardTitle>Issue actions</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-2.5">
-              <Select
-                value={issue.data.state}
-                disabled={stateMutation.isPending}
-                onValueChange={(value) => {
-                  stateMutation.mutate(value as IssueState);
-                }}
-              >
-                <SelectTrigger aria-label="Issue state">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableStates.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {getStateMeta(value).label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="grid gap-2">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Agent permissions</p>
+          <div className="grid gap-[var(--section-gap)]" data-testid="issue-management-section">
+            <Card>
+              <CardHeader>
+                <CardTitle>Issue actions</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-2.5">
                 <Select
-                  value={issue.data.permission_profile ?? "default"}
-                  onValueChange={async (value) => {
-                    await permissionMutation.mutateAsync(value as PermissionProfile);
+                  value={issue.data.state}
+                  disabled={stateMutation.isPending}
+                  onValueChange={(value) => {
+                    stateMutation.mutate(value as IssueState);
                   }}
                 >
-                  <SelectTrigger aria-label="Agent permissions" disabled={permissionMutation.isPending}>
+                  <SelectTrigger aria-label="Issue state">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="default">{permissionProfileLabels.default}</SelectItem>
-                    <SelectItem value="full-access">{permissionProfileLabels["full-access"]}</SelectItem>
-                    <SelectItem value="plan-then-full-access">{permissionProfileLabels["plan-then-full-access"]}</SelectItem>
+                    {availableStates.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {getStateMeta(value).label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-[var(--muted-foreground)]">
-                  {permissionProfileHelpText(issue.data.permission_profile, issue.data.project_permission_profile)}
-                </p>
-              </div>
-              <div className="grid grid-cols-3 gap-2.5" data-testid="issue-actions-row">
-                <Button
-                  variant="secondary"
-                  size="icon"
-                  className="h-12 w-full"
-                  onClick={() => setEditOpen(true)}
-                  aria-label="Edit issue"
-                  title="Edit issue"
-                >
-                  <Pencil className="size-4" />
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="icon"
-                  className="h-12 w-full"
-                  onClick={() => retryMutation.mutate()}
-                  disabled={retryMutation.isPending}
-                  aria-label={retryActionLabel}
-                  title={retryActionLabel}
-                >
-                  <RotateCcw className="size-4" />
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="icon"
-                  className="h-12 w-full"
-                  onClick={() => setDeleteConfirmOpen(true)}
-                  disabled={deleteMutation.isPending}
-                  aria-label="Delete"
-                  title="Delete"
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-              {issue.data.issue_type === "recurring" ? (
-                <Button variant="secondary" onClick={() => runNowMutation.mutate()} disabled={runNowMutation.isPending}>
-                  <RotateCcw className="size-4" />
-                  Run now
-                </Button>
-              ) : null}
-            </CardContent>
-          </Card>
+                <div className="grid gap-2">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">Agent permissions</p>
+                  <Select
+                    value={issue.data.permission_profile ?? "default"}
+                    onValueChange={async (value) => {
+                      await permissionMutation.mutateAsync(value as PermissionProfile);
+                    }}
+                  >
+                    <SelectTrigger aria-label="Agent permissions" disabled={permissionMutation.isPending}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">{permissionProfileLabels.default}</SelectItem>
+                      <SelectItem value="full-access">{permissionProfileLabels["full-access"]}</SelectItem>
+                      <SelectItem value="plan-then-full-access">{permissionProfileLabels["plan-then-full-access"]}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    {permissionProfileHelpText(issue.data.permission_profile, issue.data.project_permission_profile)}
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-2.5" data-testid="issue-actions-row">
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    className="h-12 w-full"
+                    onClick={() => setEditOpen(true)}
+                    aria-label="Edit issue"
+                    title="Edit issue"
+                  >
+                    <Pencil className="size-4" />
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    className="h-12 w-full"
+                    onClick={() => retryMutation.mutate()}
+                    disabled={retryMutation.isPending}
+                    aria-label={retryActionLabel}
+                    title={retryActionLabel}
+                  >
+                    <RotateCcw className="size-4" />
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="icon"
+                    className="h-12 w-full"
+                    onClick={() => setDeleteConfirmOpen(true)}
+                    disabled={deleteMutation.isPending}
+                    aria-label="Delete"
+                    title="Delete"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+                {issue.data.issue_type === "recurring" ? (
+                  <Button variant="secondary" onClick={() => runNowMutation.mutate()} disabled={runNowMutation.isPending}>
+                    <RotateCcw className="size-4" />
+                    Run now
+                  </Button>
+                ) : null}
+              </CardContent>
+            </Card>
 
-          <Card>
-            <CardHeader className="pb-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle>Agent commands</CardTitle>
-                <span className="text-xs text-[var(--muted-foreground)]">
-                  {agentCommands.length} total
-                </span>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 pt-0">
-              <div className="relative">
-                <Textarea
-                  value={commandDraft}
-                  onChange={(event) => setCommandDraft(event.target.value)}
-                  className="min-h-[140px] resize-none pb-16 pr-16"
-                  placeholder="Tell the agent what it missed or what it should do next."
-                  onKeyDown={(event) => {
-                    handleAgentCommandTextAreaKeyDown(event, commandDraft.trim().length > 0 && !commandMutation.isPending, () => {
-                      commandMutation.mutate(commandDraft.trim());
-                    });
-                  }}
-                />
-                <Button
-                  type="button"
-                  size="icon"
-                  className="absolute bottom-4 right-3"
-                  onClick={() => commandMutation.mutate(commandDraft.trim())}
-                  disabled={!commandDraft.trim() || commandMutation.isPending}
-                  aria-label="Send to agent"
-                  title="Send to agent"
-                >
-                  <Send className="size-4 shrink-0" />
-                </Button>
-              </div>
-              <div className="space-y-2.5 border-t border-white/8 pt-4">
-                {agentCommands.length === 0 ? (
-                  <p className="text-sm text-[var(--muted-foreground)]">No follow-up commands sent yet.</p>
-                ) : (
-                  agentCommands.map((command) => (
-                    <AgentCommandEntry
-                      key={command.id}
-                      command={command}
-                      editingCommandID={editingCommandID}
-                      onCancelEdit={() => setEditingCommandID(null)}
-                      onSaveEdit={async (commandID, body) => {
-                        await updateCommandMutation.mutateAsync({ commandID, command: body });
-                      }}
-                      onStartDelete={(targetCommand) => {
-                        setEditingCommandID(null);
-                        setDeleteCommandTarget(targetCommand);
-                      }}
-                      onStartEdit={(targetCommand) => {
-                        setDeleteCommandTarget(null);
-                        setEditingCommandID(targetCommand.id);
-                      }}
-                      onStartSteer={(targetCommand) => {
-                        setDeleteCommandTarget(null);
-                        setEditingCommandID(null);
-                        steerCommandMutation.mutate({ commandID: targetCommand.id });
-                      }}
-                      steerPending={steerCommandMutation.isPending}
-                      updatePending={updateCommandMutation.isPending}
-                    />
-                  ))
-                )}
-              </div>
-            </CardContent>
-          </Card>
+            <Card>
+              <CardHeader className="pb-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle>Agent commands</CardTitle>
+                  <span className="text-xs text-[var(--muted-foreground)]">
+                    {agentCommands.length} total
+                  </span>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-0">
+                <div className="relative">
+                  <Textarea
+                    value={commandDraft}
+                    onChange={(event) => setCommandDraft(event.target.value)}
+                    className="min-h-[140px] resize-none pb-16 pr-16"
+                    placeholder="Tell the agent what it missed or what it should do next."
+                    onKeyDown={(event) => {
+                      handleAgentCommandTextAreaKeyDown(event, commandDraft.trim().length > 0 && !commandMutation.isPending, () => {
+                        commandMutation.mutate(commandDraft.trim());
+                      });
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    className="absolute bottom-4 right-3"
+                    onClick={() => commandMutation.mutate(commandDraft.trim())}
+                    disabled={!commandDraft.trim() || commandMutation.isPending}
+                    aria-label="Send to agent"
+                    title="Send to agent"
+                  >
+                    <Send className="size-4 shrink-0" />
+                  </Button>
+                </div>
+                <div className="space-y-2.5 border-t border-white/8 pt-4">
+                  {agentCommands.length === 0 ? (
+                    <p className="text-sm text-[var(--muted-foreground)]">No follow-up commands sent yet.</p>
+                  ) : (
+                    agentCommands.map((command) => (
+                      <AgentCommandEntry
+                        key={command.id}
+                        command={command}
+                        editingCommandID={editingCommandID}
+                        onCancelEdit={() => setEditingCommandID(null)}
+                        onSaveEdit={async (commandID, body) => {
+                          await updateCommandMutation.mutateAsync({ commandID, command: body });
+                        }}
+                        onStartDelete={(targetCommand) => {
+                          setEditingCommandID(null);
+                          setDeleteCommandTarget(targetCommand);
+                        }}
+                        onStartEdit={(targetCommand) => {
+                          setDeleteCommandTarget(null);
+                          setEditingCommandID(targetCommand.id);
+                        }}
+                        onStartSteer={(targetCommand) => {
+                          setDeleteCommandTarget(null);
+                          setEditingCommandID(null);
+                          steerCommandMutation.mutate({ commandID: targetCommand.id });
+                        }}
+                        steerPending={steerCommandMutation.isPending}
+                        updatePending={updateCommandMutation.isPending}
+                      />
+                    ))
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </div>
+
+        <SessionExecutionCard
+          approvingPlan={planApprovalResponseMutation.isPending}
+          continuing={retryMutation.isPending}
+          execution={execution.data}
+          issueTotalTokens={issue.data.total_tokens_spent}
+          onApprovePlan={(note) => {
+            planApprovalResponseMutation.mutate({ approved: true, note });
+          }}
+          onContinue={() => {
+            retryMutation.mutate();
+          }}
+          onRequestPlanRevision={(note) => {
+            planApprovalResponseMutation.mutate({ approved: false, note });
+          }}
+        />
       </div>
 
       {issue.data.issue_type === "recurring" ? (

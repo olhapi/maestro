@@ -1246,7 +1246,7 @@ describe("IssueDetailPage", () => {
     });
   });
 
-  it("keeps the composer in the rail and renders command history in the main column", async () => {
+  it("keeps the composer with the issue actions and renders execution triage below the main content", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({ state: "done" });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
@@ -1315,15 +1315,18 @@ describe("IssueDetailPage", () => {
     });
 
     const mainColumn = screen.getByTestId("issue-main-column");
-    const controlRail = screen.getByTestId("issue-control-rail");
+    const managementSection = screen.getByTestId("issue-management-section");
+    const executionTriage = screen.getByText("Execution triage");
 
-    expect(within(mainColumn).getByText("Execution triage")).toBeInTheDocument();
+    expect(within(mainColumn).queryByText("Execution triage")).not.toBeInTheDocument();
     expect(within(mainColumn).queryByText("Command history")).not.toBeInTheDocument();
-    expect(within(controlRail).getByText("Issue actions")).toBeInTheDocument();
-    expect(within(controlRail).getByText("Agent commands")).toBeInTheDocument();
+    expect(within(managementSection).getByText("Issue actions")).toBeInTheDocument();
+    expect(within(managementSection).getByText("Agent commands")).toBeInTheDocument();
     expect(screen.queryByText("Command history")).not.toBeInTheDocument();
-    expect(within(controlRail).queryByText("Latest command")).not.toBeInTheDocument();
-    expect(within(controlRail).queryByText("Follow-up command")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-control-rail")).not.toBeInTheDocument();
+    expect(mainColumn.compareDocumentPosition(executionTriage) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
 
     fireEvent.change(screen.getByPlaceholderText(/tell the agent/i), {
       target: { value: "Merge the branch to master." },
@@ -1339,13 +1342,10 @@ describe("IssueDetailPage", () => {
     });
 
     await waitFor(() => {
-      expect(
-        within(controlRail).getByText("Waiting for unblock"),
-      ).toBeInTheDocument();
+      expect(within(managementSection).getByText("Waiting for unblock")).toBeInTheDocument();
     });
-    expect(within(mainColumn).queryByText("Merge the branch to master.")).not.toBeInTheDocument();
     expect(
-      within(controlRail).getByText("Merge the branch to master."),
+      within(managementSection).getByText("Merge the branch to master."),
     ).toBeInTheDocument();
     expect(
       within(screen.getByTestId("agent-command-cmd-1")).getByRole("button", { name: /edit command/i }),
@@ -1732,7 +1732,7 @@ describe("IssueDetailPage", () => {
     });
   });
 
-  it("keeps the state selector under issue actions and removes the extra control cards", async () => {
+  it("keeps the state selector with issue actions", async () => {
     const bootstrap = makeBootstrapResponse();
     const issue = makeIssueDetail({ state: "backlog" });
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap);
@@ -1761,9 +1761,9 @@ describe("IssueDetailPage", () => {
       expect(screen.getByText("Issue actions")).toBeInTheDocument();
     });
 
-    const controlRail = screen.getByTestId("issue-control-rail");
-    expect(within(controlRail).queryByText("Live adjustments")).not.toBeInTheDocument();
-    expect(within(controlRail).queryByText("Blockers")).not.toBeInTheDocument();
+    const managementSection = screen.getByTestId("issue-management-section");
+    expect(within(managementSection).getByRole("combobox", { name: /issue state/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("issue-control-rail")).not.toBeInTheDocument();
 
     await selectOption(/issue state/i, /ready/i);
 
