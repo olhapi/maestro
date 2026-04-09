@@ -3,12 +3,15 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  stripSearchParams,
+  type RouterHistory,
   useRouterState,
 } from '@tanstack/react-router'
 
 import { AppShell } from '@/components/app-shell'
 import { ComponentErrorBoundary } from '@/components/ui/component-error-boundary'
 import { Card } from '@/components/ui/card'
+import { workSearchDefaults, workSearchSchema } from '@/lib/work-url-state'
 
 function lazyPage<T extends Record<string, ComponentType>>(loader: () => Promise<T>, key: keyof T, label: string) {
   return function LazyComponent() {
@@ -64,6 +67,10 @@ const overviewRoute = createRoute({
 const workRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/work',
+  validateSearch: workSearchSchema,
+  search: {
+    middlewares: [stripSearchParams(workSearchDefaults)],
+  },
   component: WorkPage,
 })
 
@@ -121,10 +128,15 @@ const routeTree = rootRoute.addChildren([
   sessionDetailRoute,
 ])
 
-export const router = createRouter({
-  routeTree,
-  defaultPreload: 'intent',
-})
+export function createAppRouter(history?: RouterHistory) {
+  return createRouter({
+    routeTree,
+    defaultPreload: 'intent',
+    ...(history ? { history } : {}),
+  })
+}
+
+export const router = createAppRouter()
 
 declare module '@tanstack/react-router' {
   interface Register {

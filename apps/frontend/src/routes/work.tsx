@@ -1,5 +1,6 @@
 import { useDeferredValue, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 import { Eye, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -21,12 +22,14 @@ import {
 import { api } from "@/lib/api";
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { getStateMeta, issueStatesFor } from "@/lib/dashboard";
-import { useGlobalDashboardContext } from "@/lib/global-dashboard-context";
 import {
   applyIssueAssetChanges,
   summarizeIssueAssetFailures,
 } from "@/lib/issue-assets";
 import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
+import type { WorkSearch } from "@/lib/work-url-state";
+
+const workRouteApi = getRouteApi("/work");
 
 const allProjectsValue = "__all-projects__";
 const allStatesValue = "__all-states__";
@@ -48,11 +51,9 @@ function StatCard({ label, value, detail }: { label: string; value: string; deta
 export function WorkPage() {
   const queryClient = useQueryClient();
   const isMobileLayout = useIsMobileLayout();
-  const { workOverviewFilters, setWorkOverviewFilters } = useGlobalDashboardContext();
-  const [search, setSearch] = useState("");
-  const deferredSearch = useDeferredValue(search);
-  const { projectID, sort, state } = workOverviewFilters;
-  const [view, setView] = useState<"board" | "list">("board");
+  const { query, projectId, sort, state, view } = workRouteApi.useSearch();
+  const navigate = workRouteApi.useNavigate();
+  const deferredQuery = useDeferredValue(query);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<IssueDetail | undefined>();
   const [composerDefaults, setComposerDefaults] = useState<Partial<IssueDetail>>({
@@ -61,14 +62,14 @@ export function WorkPage() {
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
   const [issuePendingDelete, setIssuePendingDelete] = useState<IssueSummary | null>(null);
 
-  const issuesKey = ["issues", deferredSearch, projectID, state, sort] as const;
+  const issuesKey = ["issues", deferredQuery, projectId, state, sort] as const;
   const bootstrap = useQuery({ queryKey: ["work-bootstrap"], queryFn: api.workBootstrap });
   const issues = useQuery({
     queryKey: issuesKey,
     queryFn: () =>
       api.listIssues({
-        search: deferredSearch,
-        project_id: projectID,
+        search: deferredQuery,
+        project_id: projectId,
         state,
         issue_type: "standard",
         sort,
@@ -76,8 +77,15 @@ export function WorkPage() {
       }),
   });
 
-  const updateWorkOverviewFilters = (updates: Partial<typeof workOverviewFilters>) => {
-    setWorkOverviewFilters((current) => ({ ...current, ...updates }));
+  const updateSearch = (updates: Partial<WorkSearch>) => {
+    navigate({
+      replace: true,
+      resetScroll: false,
+      search: (current) => ({
+        ...current,
+        ...updates,
+      }),
+    });
   };
 
   const invalidate = async () => {
@@ -125,6 +133,8 @@ export function WorkPage() {
   }
 
   const availableStates = issueStatesFor(issues.data.items);
+  const projectIsKnown = !projectId || bootstrap.data.projects.some((project) => project.id === projectId);
+  const stateIsKnown = !state || availableStates.includes(state);
 
   return (
     <div className="grid gap-[var(--section-gap)]">
@@ -165,13 +175,13 @@ export function WorkPage() {
         <CardHeader className="flex-col gap-3 lg:flex-row lg:items-center">
           <div className="grid w-full gap-2.5 lg:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,210px))]">
             <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
+              value={query}
+              onChange={(event) => updateSearch({ query: event.target.value })}
               placeholder="Search by identifier, title, or description"
             />
             <Select
-              value={projectID || allProjectsValue}
-              onValueChange={(value) => updateWorkOverviewFilters({ projectID: value === allProjectsValue ? "" : value })}
+              value={projectId || allProjectsValue}
+              onValueChange={(value) => updateSearch({ projectId: value === allProjectsValue ? "" : value })}
             >
               <SelectTrigger aria-label="Filter by project">
                 <SelectValue />
@@ -183,11 +193,14 @@ export function WorkPage() {
                     {project.name}
                   </SelectItem>
                 ))}
+                {projectId && !projectIsKnown ? (
+                  <SelectItem value={projectId}>Unknown project</SelectItem>
+                ) : null}
               </SelectContent>
             </Select>
             <Select
               value={state || allStatesValue}
-              onValueChange={(value) => updateWorkOverviewFilters({ state: value === allStatesValue ? "" : value })}
+              onValueChange={(value) => updateSearch({ state: value === allStatesValue ? "" : value })}
             >
               <SelectTrigger aria-label="Filter by state">
                 <SelectValue />
@@ -199,6 +212,9 @@ export function WorkPage() {
                     {getStateMeta(value).label}
                   </SelectItem>
                 ))}
+                {state && !stateIsKnown ? (
+                  <SelectItem value={state}>{getStateMeta(state).label}</SelectItem>
+                ) : null}
               </SelectContent>
             </Select>
           </div>
@@ -212,8 +228,8 @@ export function WorkPage() {
         stateCounts={issues.data.counts}
         sort={sort}
         view={view}
-        onSortChange={(value) => updateWorkOverviewFilters({ sort: value })}
-        onViewChange={setView}
+        onSortChange={(value) => updateSearch({ sort: value })}
+        onViewChange={(value) => updateSearch({ view: value })}
         onOpenIssue={setPreviewIssue}
         onMoveIssue={(issue, nextState) => stateMutation.mutate({ identifier: issue.identifier, nextState })}
         onCreateIssue={(nextState) => {

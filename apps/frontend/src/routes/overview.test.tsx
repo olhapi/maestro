@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, vi } from 'vitest'
 
-import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { OverviewPage } from '@/routes/overview'
 import { makeBootstrapResponse } from '@/test/fixtures'
@@ -88,9 +87,7 @@ function renderOverviewWithBootstrapData(bootstrap = makeBootstrapResponse()) {
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
-        <GlobalDashboardProvider>
-          <OverviewPage />
-        </GlobalDashboardProvider>
+        <OverviewPage />
       </TooltipProvider>
     </QueryClientProvider>,
   )

@@ -1,40 +1,21 @@
-import { useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { vi } from 'vitest'
+import { createMemoryHistory, RouterProvider, type RouterHistory } from '@tanstack/react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
-import { WorkPage } from '@/routes/work'
+import { createAppRouter } from '@/router'
 import { makeBootstrapResponse, makeIssueDetail, makeIssueSummary, makeWorkBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient, selectOption } from '@/test/test-utils'
+import type { IssueSummary } from '@/lib/types'
 
 const initialInnerWidth = window.innerWidth
 
-vi.mock('@tanstack/react-router', () => ({
-  Link: ({
-    children,
-    params,
-    to,
-    ...props
-  }: {
-    children: ReactNode
-    params?: { identifier?: string }
-    to?: string
-  } & ComponentPropsWithoutRef<'a'>) => (
-    <a
-      href={
-        typeof to === 'string'
-          ? to
-          : params?.identifier
-            ? `/issues/${params.identifier}`
-            : '#'
-      }
-      {...props}
-    >
-      {children}
-    </a>
-  ),
-  useNavigate: () => vi.fn(),
-}))
+vi.mock('@/components/app-shell', async () => {
+  const { Outlet } = await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')
+
+  return {
+    AppShell: () => <Outlet />,
+  }
+})
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -65,6 +46,19 @@ function makeDoneIssues(count: number) {
   )
 }
 
+function compareNullableStringsAscending(left?: string, right?: string) {
+  const leftValue = left?.trim() ?? ''
+  const rightValue = right?.trim() ?? ''
+  const leftEmpty = leftValue === ''
+  const rightEmpty = rightValue === ''
+
+  if (leftEmpty !== rightEmpty) {
+    return leftEmpty ? 1 : -1
+  }
+
+  return leftValue.localeCompare(rightValue)
+}
+
 function sortIssuesForTest(issues: IssueSummary[], sort: string) {
   const sorted = [...issues]
   sorted.sort((left, right) => {
@@ -86,6 +80,28 @@ function sortIssuesForTest(issues: IssueSummary[], sort: string) {
         }
         return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
       }
+      case 'project_asc': {
+        const projectDelta = compareNullableStringsAscending(left.project_name, right.project_name)
+        if (projectDelta !== 0) {
+          return projectDelta
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
+      }
+      case 'epic_asc': {
+        const epicDelta = compareNullableStringsAscending(left.epic_name, right.epic_name)
+        if (epicDelta !== 0) {
+          return epicDelta
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
+      }
       case 'updated_desc':
       default: {
         const updatedDelta =
@@ -100,9 +116,9 @@ function sortIssuesForTest(issues: IssueSummary[], sort: string) {
   return sorted
 }
 
-describe('WorkPage', () => {
-  const mockWorkBootstrap = (bootstrap = makeBootstrapResponse()) => {
-    vi.mocked(api.workBootstrap).mockResolvedValue(makeWorkBootstrapResponse({
+function mockWorkBootstrap(bootstrap = makeBootstrapResponse()) {
+  vi.mocked(api.workBootstrap).mockResolvedValue(
+    makeWorkBootstrapResponse({
       generated_at: bootstrap.generated_at,
       overview: {
         board: bootstrap.overview.board,
@@ -116,19 +132,47 @@ describe('WorkPage', () => {
       epics: bootstrap.epics,
       issues: bootstrap.issues,
       sessions: bootstrap.sessions,
-    }))
-  }
+    }),
+  )
+}
 
-  beforeEach(() => {
-    Object.defineProperty(window, 'innerWidth', {
-      configurable: true,
-      writable: true,
-      value: initialInnerWidth,
-    })
-    window.dispatchEvent(new Event('resize'))
+async function renderWorkRoute(options: {
+  history?: RouterHistory
+  initialEntries?: string[]
+} = {}) {
+  const history =
+    options.history ?? createMemoryHistory({ initialEntries: options.initialEntries ?? ['/work'] })
+  const router = createAppRouter(history)
+
+  await act(async () => {
+    await router.load()
   })
 
-  it('renders board data from bootstrap and issues queries', async () => {
+  const rendered = renderWithQueryClient(<RouterProvider router={router} />)
+
+  return {
+    history,
+    router,
+    ...rendered,
+  }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: initialInnerWidth,
+  })
+  window.dispatchEvent(new Event('resize'))
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('WorkPage', () => {
+  it('hydrates work filters from the URL and queries issues with those filters', async () => {
     const bootstrap = makeBootstrapResponse()
     mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
@@ -137,9 +181,133 @@ describe('WorkPage', () => {
       total: bootstrap.issues.total,
       limit: 200,
       offset: 0,
+      counts: bootstrap.issues.counts,
     })
 
-    renderWithQueryClient(<WorkPage />)
+    const { history } = await renderWorkRoute({
+      initialEntries: [
+        '/work?query=Investigate&projectId=project-1&state=ready&sort=updated_desc&view=list',
+      ],
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
+    })
+
+    expect(screen.getByPlaceholderText('Search by identifier, title, or description')).toHaveValue('Investigate')
+    expect(screen.getByRole('combobox', { name: /filter by project/i })).toHaveTextContent('Platform')
+    expect(screen.getByRole('combobox', { name: /filter by state/i })).toHaveTextContent('Ready')
+    expect(screen.getByRole('radio', { name: 'List view' })).toHaveAttribute('data-state', 'on')
+    expect(screen.getByRole('button', { name: 'Sort by Updated' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Updated' })).toHaveAttribute('aria-sort', 'descending')
+    expect(history.location.href).toContain('query=Investigate')
+    expect(history.location.href).toContain('projectId=project-1')
+    expect(history.location.href).toContain('state=ready')
+    expect(history.location.href).toContain('sort=updated_desc')
+    expect(history.location.href).toContain('view=list')
+    expect(api.listIssues).toHaveBeenLastCalledWith({
+      search: 'Investigate',
+      project_id: 'project-1',
+      state: 'ready',
+      issue_type: 'standard',
+      sort: 'updated_desc',
+      limit: 200,
+    })
+  })
+
+  it('strips default work search params back out of the URL', async () => {
+    const bootstrap = makeBootstrapResponse()
+    mockWorkBootstrap(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+      counts: bootstrap.issues.counts,
+    })
+
+    const { history } = await renderWorkRoute({
+      initialEntries: [
+        '/work?query=Investigate&projectId=project-1&state=ready&sort=updated_desc&view=list',
+      ],
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'List view' })).toHaveAttribute('data-state', 'on')
+    })
+
+    await selectOption(/filter by project/i, /all projects/i)
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: 'Investigate',
+        project_id: '',
+        state: 'ready',
+        issue_type: 'standard',
+        sort: 'updated_desc',
+        limit: 200,
+      })
+      expect(screen.getByRole('combobox', { name: /filter by state/i })).toBeInTheDocument()
+    })
+    await selectOption(/filter by state/i, /all states/i)
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: 'Investigate',
+        project_id: '',
+        state: '',
+        issue_type: 'standard',
+        sort: 'updated_desc',
+        limit: 200,
+      })
+      expect(screen.getByRole('button', { name: 'Sort by Priority' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by Priority' }))
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: 'Investigate',
+        project_id: '',
+        state: '',
+        issue_type: 'standard',
+        sort: 'priority_asc',
+        limit: 200,
+      })
+      expect(screen.getByRole('radio', { name: 'Board view' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Board view' }))
+
+    fireEvent.change(screen.getByPlaceholderText('Search by identifier, title, or description'), {
+      target: { value: '' },
+    })
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: '',
+        state: '',
+        issue_type: 'standard',
+        sort: 'priority_asc',
+        limit: 200,
+      })
+      expect(history.location.href).toBe('/work')
+    })
+  })
+
+  it('renders board data and toggles the view through the URL', async () => {
+    const bootstrap = makeBootstrapResponse()
+    mockWorkBootstrap(bootstrap)
+    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
+    vi.mocked(api.listIssues).mockResolvedValue({
+      items: bootstrap.issues.items,
+      total: bootstrap.issues.total,
+      limit: 200,
+      offset: 0,
+      counts: bootstrap.issues.counts,
+    })
+
+    const { history } = await renderWorkRoute()
 
     await waitFor(() => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
@@ -153,13 +321,13 @@ describe('WorkPage', () => {
     expect(screen.queryByText('Create issue')).not.toBeInTheDocument()
     expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Board view' })).toHaveAttribute('data-state', 'on')
-    expect(screen.queryByRole('button', { name: /collapse backlog status row/i })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
+
     await waitFor(() => {
       expect(screen.getByRole('columnheader', { name: 'Issue' })).toBeInTheDocument()
+      expect(history.location.href).toContain('view=list')
     })
-    expect(screen.getByText('Triage, route, and monitor work in one surface')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /iss-1.*investigate retries/i }))
 
@@ -215,7 +383,7 @@ describe('WorkPage', () => {
       },
     })
 
-    renderWithQueryClient(<WorkPage />)
+    await renderWorkRoute()
 
     await waitFor(() => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
@@ -236,7 +404,7 @@ describe('WorkPage', () => {
     expect(screen.getAllByText(/Done task \d+/)).toHaveLength(35)
   }, 30000)
 
-  it('filters issues by project from the work toolbar', async () => {
+  it('persists project and state filters in the URL across remounts', async () => {
     const bootstrap = makeBootstrapResponse()
     mockWorkBootstrap(bootstrap)
     vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail())
@@ -245,21 +413,53 @@ describe('WorkPage', () => {
       total: bootstrap.issues.total,
       limit: 200,
       offset: 0,
+      counts: bootstrap.issues.counts,
     })
 
-    renderWithQueryClient(<WorkPage />)
+    const firstRender = await renderWorkRoute()
 
     await waitFor(() => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
     })
 
     await selectOption(/filter by project/i, /platform/i)
-
     await waitFor(() => {
       expect(api.listIssues).toHaveBeenLastCalledWith({
         search: '',
         project_id: 'project-1',
         state: '',
+        issue_type: 'standard',
+        sort: 'priority_asc',
+        limit: 200,
+      })
+      expect(screen.getByRole('combobox', { name: /filter by state/i })).toBeInTheDocument()
+    })
+    await selectOption(/filter by state/i, /ready/i)
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: 'project-1',
+        state: 'ready',
+        issue_type: 'standard',
+        sort: 'priority_asc',
+        limit: 200,
+      })
+      expect(firstRender.history.location.href).toContain('projectId=project-1')
+      expect(firstRender.history.location.href).toContain('state=ready')
+    })
+
+    firstRender.unmount()
+
+    await renderWorkRoute({ history: firstRender.history })
+
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /filter by project/i })).toHaveTextContent('Platform')
+      expect(screen.getByRole('combobox', { name: /filter by state/i })).toHaveTextContent('Ready')
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: 'project-1',
+        state: 'ready',
         issue_type: 'standard',
         sort: 'priority_asc',
         limit: 200,
@@ -283,16 +483,19 @@ describe('WorkPage', () => {
       },
     })
     mockWorkBootstrap(bootstrap)
-    vi.mocked(api.getIssue).mockResolvedValue(makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }))
+    vi.mocked(api.getIssue).mockResolvedValue(
+      makeIssueDetail({ issue_type: 'recurring', cron: '*/15 * * * *', enabled: true }),
+    )
     const standardItems = bootstrap.issues.items.filter((item) => item.issue_type !== 'recurring')
     vi.mocked(api.listIssues).mockResolvedValue({
       items: standardItems,
       total: standardItems.length,
       limit: 200,
       offset: 0,
+      counts: bootstrap.issues.counts,
     })
 
-    renderWithQueryClient(<WorkPage />)
+    await renderWorkRoute()
 
     await waitFor(() => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
@@ -342,22 +545,10 @@ describe('WorkPage', () => {
       total: bootstrap.issues.total,
       limit: 200,
       offset: 0,
+      counts: bootstrap.issues.counts,
     }))
 
-    function Harness() {
-      const [visible, setVisible] = useState(true)
-
-      return (
-        <GlobalDashboardProvider>
-          <button onClick={() => setVisible((current) => !current)} type="button">
-            Toggle work page
-          </button>
-          {visible ? <WorkPage /> : null}
-        </GlobalDashboardProvider>
-      )
-    }
-
-    renderWithQueryClient(<Harness />)
+    const firstRender = await renderWorkRoute()
 
     await waitFor(() => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
@@ -367,7 +558,9 @@ describe('WorkPage', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Sort by Issue' })).toBeInTheDocument()
+      expect(firstRender.history.location.href).toContain('view=list')
     })
+
     expect(screen.getByRole('button', { name: 'Sort by Priority' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sort by Project' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sort by Epic' })).toBeInTheDocument()
@@ -391,20 +584,12 @@ describe('WorkPage', () => {
         sort: 'identifier_asc',
         limit: 200,
       })
+      expect(firstRender.history.location.href).toContain('sort=identifier_asc')
     })
 
-    await waitFor(() => {
-      const issueButtons = within(screen.getByRole('table')).getAllByRole('button', {
-        name: /ISS-/,
-      })
-      expect(issueButtons[0]).toHaveTextContent('ISS-1')
-      expect(issueButtons[1]).toHaveTextContent('ISS-2')
-    })
+    firstRender.unmount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle work page' }))
-    expect(screen.queryByText('Coordinate work on one board')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle work page' }))
+    await renderWorkRoute({ history: firstRender.history })
 
     await waitFor(() => {
       expect(api.listIssues).toHaveBeenLastCalledWith({
@@ -415,6 +600,11 @@ describe('WorkPage', () => {
         sort: 'identifier_asc',
         limit: 200,
       })
+      const issueButtons = within(screen.getByRole('table')).getAllByRole('button', {
+        name: /ISS-/,
+      })
+      expect(issueButtons[0]).toHaveTextContent('ISS-1')
+      expect(issueButtons[1]).toHaveTextContent('ISS-2')
     })
   })
 
@@ -441,9 +631,10 @@ describe('WorkPage', () => {
       total: bootstrap.issues.total,
       limit: 200,
       offset: 0,
+      counts: bootstrap.issues.counts,
     })
 
-    renderWithQueryClient(<WorkPage />)
+    await renderWorkRoute()
 
     await waitFor(() => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
@@ -463,12 +654,16 @@ describe('WorkPage', () => {
     )
     expect(title).toHaveClass('truncate')
 
-    expect(within(table).getByRole('link', {
-      name: 'Platform with a very long project name that should not overflow the table',
-    })).toHaveClass('truncate')
-    expect(within(table).getByRole('link', {
-      name: 'Observability with a very long epic name that should truncate cleanly',
-    })).toHaveClass('truncate')
+    expect(
+      within(table).getByRole('link', {
+        name: 'Platform with a very long project name that should not overflow the table',
+      }),
+    ).toHaveClass('truncate')
+    expect(
+      within(table).getByRole('link', {
+        name: 'Observability with a very long epic name that should truncate cleanly',
+      }),
+    ).toHaveClass('truncate')
     expect(within(table).getByLabelText('Priority 1')).toBeInTheDocument()
   })
 
@@ -491,9 +686,10 @@ describe('WorkPage', () => {
         total: bootstrap.issues.total,
         limit: 200,
         offset: 0,
+        counts: bootstrap.issues.counts,
       })
 
-      renderWithQueryClient(<WorkPage />)
+      await renderWorkRoute()
 
       await waitFor(() => {
         expect(screen.getByText('Review work state by state')).toBeInTheDocument()
@@ -536,10 +732,11 @@ describe('WorkPage', () => {
       total: bootstrap.issues.total,
       limit: 200,
       offset: 0,
+      counts: bootstrap.issues.counts,
     })
     vi.mocked(api.deleteIssue).mockResolvedValue({ deleted: true })
 
-    renderWithQueryClient(<WorkPage />)
+    await renderWorkRoute()
 
     await waitFor(() => {
       expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
@@ -557,9 +754,7 @@ describe('WorkPage', () => {
     const confirmDialog = await screen.findByRole('dialog', {
       name: /delete iss-1\?/i,
     })
-    fireEvent.click(
-      within(confirmDialog).getByRole('button', { name: /delete issue/i }),
-    )
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: /delete issue/i }))
 
     await waitFor(() => {
       expect(api.deleteIssue).toHaveBeenCalledWith('ISS-1')

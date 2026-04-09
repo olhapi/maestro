@@ -31,6 +31,7 @@ import {
   summaryTokenSpend,
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
+import type { WorkSort } from "@/lib/work-url-state";
 import type { EpicSummary, IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 import { formatCompactNumber, formatRelativeTime } from "@/lib/utils";
 
@@ -119,7 +120,7 @@ export function ProjectDetailPage() {
     Partial<IssueDetail>
   >({ project_id: projectId, state: "backlog" });
   const [issueDialogOpen, setIssueDialogOpen] = useState(false);
-  const [sort, setSort] = useState("priority_asc");
+  const [sort, setSort] = useState<WorkSort>("priority_asc");
   const [view, setView] = useState<"board" | "list">("board");
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
 
