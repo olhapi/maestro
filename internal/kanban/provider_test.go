@@ -1021,7 +1021,7 @@ func TestUpsertProviderIssueFailureBranches(t *testing.T) {
 			t.Fatalf("Close base store: %v", err)
 		}
 
-		faulty := openFaultySQLiteStoreAt(t, dbPath, "select id from issues where provider_kind = ? and provider_issue_ref = ?")
+		faulty := openFaultySQLiteStoreAt(t, dbPath, "select id from issues where project_id = ? and provider_kind = ? and provider_issue_ref = ?")
 		if err := faulty.configureConnection(); err != nil {
 			t.Fatalf("configureConnection faulty store: %v", err)
 		}
