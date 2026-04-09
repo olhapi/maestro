@@ -4,7 +4,6 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { AppShell } from '@/components/app-shell'
-import { GlobalDashboardProvider } from '@/components/dashboard/global-dashboard-context'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { makeBootstrapResponse, makeWorkBootstrapResponse } from '@/test/fixtures'
 import { renderWithQueryClient } from '@/test/test-utils'
@@ -205,9 +204,7 @@ function renderWithProviders(queryClient: QueryClient) {
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
-        <GlobalDashboardProvider>
-          <AppShell />
-        </GlobalDashboardProvider>
+        <AppShell />
       </TooltipProvider>
     </QueryClientProvider>,
   )

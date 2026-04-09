@@ -12,6 +12,7 @@ import {
 import { useIsMobileLayout } from "@/hooks/use-is-mobile-layout";
 import { getSessionForIssue, getStateMeta } from "@/lib/dashboard";
 import { appRoutes } from "@/lib/routes";
+import type { WorkSort, WorkView } from "@/lib/work-url-state";
 import type {
   DashboardWorkSource,
   IssueState,
@@ -19,8 +20,6 @@ import type {
   IssueSummary,
 } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
-
-type WorkView = "board" | "list";
 
 const issueSortColumns = [
   { value: "identifier_asc", label: "Issue", ariaSort: "ascending" as const },
@@ -52,9 +51,9 @@ export function WorkIssueSurface({
   items: IssueSummary[];
   bootstrap?: DashboardWorkSource;
   stateCounts?: Partial<IssueStateCounts>;
-  sort: string;
+  sort: WorkSort;
   view: WorkView;
-  onSortChange: (sort: string) => void;
+  onSortChange: (sort: WorkSort) => void;
   onViewChange: (view: WorkView) => void;
   onOpenIssue: (issue: IssueSummary) => void;
   onMoveIssue: (issue: IssueSummary, nextState: IssueState) => void;
