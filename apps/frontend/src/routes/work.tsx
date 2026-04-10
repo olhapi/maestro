@@ -27,7 +27,10 @@ import {
   summarizeIssueAssetFailures,
 } from "@/lib/issue-assets";
 import type { IssueDetail, IssueState, IssueSummary } from "@/lib/types";
-import type { WorkSearch } from "@/lib/work-url-state";
+import {
+  normalizeWorkSort,
+  type WorkSearch,
+} from "@/lib/work-url-state";
 
 const workRouteApi = getRouteApi("/work");
 
@@ -61,6 +64,7 @@ export function WorkPage() {
   });
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
   const [issuePendingDelete, setIssuePendingDelete] = useState<IssueSummary | null>(null);
+  const requestSort = normalizeWorkSort(sort);
 
   const issuesKey = ["issues", deferredQuery, projectId, state, sort] as const;
   const bootstrap = useQuery({ queryKey: ["work-bootstrap"], queryFn: api.workBootstrap });
@@ -72,7 +76,7 @@ export function WorkPage() {
         project_id: projectId,
         state,
         issue_type: "standard",
-        sort,
+        sort: requestSort,
         limit: 200,
       }),
   });

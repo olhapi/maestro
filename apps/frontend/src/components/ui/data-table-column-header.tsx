@@ -9,13 +9,13 @@ export function DataTableColumnHeader<TData, TValue>({
   column,
   title,
   onSortChange,
-  sortValue,
+  nextSort,
   className,
 }: {
   column: Column<TData, TValue>;
   title: string;
   onSortChange: (sort: WorkSort) => void;
-  sortValue: WorkSort;
+  nextSort: WorkSort;
   className?: string;
 }) {
   if (!column.getCanSort()) {
@@ -34,7 +34,7 @@ export function DataTableColumnHeader<TData, TValue>({
       size="sm"
       type="button"
       variant="ghost"
-      onClick={() => onSortChange(sortValue)}
+      onClick={() => onSortChange(nextSort)}
     >
       <span className="truncate">{title}</span>
       {isSorted === "desc" ? (

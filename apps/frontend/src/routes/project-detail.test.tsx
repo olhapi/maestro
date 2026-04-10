@@ -59,17 +59,122 @@ vi.mock("@/lib/api", () => ({
 
 const { api } = await import("@/lib/api");
 
+function compareNullableStringsAscending(left?: string, right?: string) {
+  const leftValue = left?.trim() ?? "";
+  const rightValue = right?.trim() ?? "";
+  const leftEmpty = leftValue === "";
+  const rightEmpty = rightValue === "";
+
+  if (leftEmpty !== rightEmpty) {
+    return leftEmpty ? 1 : -1;
+  }
+
+  return leftValue.localeCompare(rightValue);
+}
+
+function compareNullableStringsDescending(left?: string, right?: string) {
+  const leftValue = left?.trim() ?? "";
+  const rightValue = right?.trim() ?? "";
+  const leftEmpty = leftValue === "";
+  const rightEmpty = rightValue === "";
+
+  if (leftEmpty !== rightEmpty) {
+    return leftEmpty ? 1 : -1;
+  }
+
+  return rightValue.localeCompare(leftValue);
+}
+
 function sortProjectIssuesForTest(issues: IssueSummary[], sort: string) {
+  const normalizedSort = sort === "none" ? "priority_asc" : sort;
   const sorted = [...issues];
   sorted.sort((left, right) => {
-    switch (sort) {
+    switch (normalizedSort) {
       case "identifier_asc":
         return left.identifier.localeCompare(right.identifier);
+      case "identifier_desc":
+        return right.identifier.localeCompare(left.identifier);
       case "priority_asc":
         if (left.priority !== right.priority) {
           return left.priority - right.priority;
         }
         return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+      case "priority_desc":
+        if (left.priority !== right.priority) {
+          return right.priority - left.priority;
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+      case "state_asc": {
+        const stateDelta = left.state.localeCompare(right.state);
+        if (stateDelta !== 0) {
+          return stateDelta;
+        }
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority;
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+      }
+      case "state_desc": {
+        const stateDelta = right.state.localeCompare(left.state);
+        if (stateDelta !== 0) {
+          return stateDelta;
+        }
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority;
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+      }
+      case "project_asc": {
+        const projectDelta = compareNullableStringsAscending(left.project_name, right.project_name);
+        if (projectDelta !== 0) {
+          return projectDelta;
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+        if (updatedDelta !== 0) {
+          return updatedDelta;
+        }
+        return left.identifier.localeCompare(right.identifier);
+      }
+      case "project_desc": {
+        const projectDelta = compareNullableStringsDescending(left.project_name, right.project_name);
+        if (projectDelta !== 0) {
+          return projectDelta;
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+        if (updatedDelta !== 0) {
+          return updatedDelta;
+        }
+        return left.identifier.localeCompare(right.identifier);
+      }
+      case "epic_asc": {
+        const epicDelta = compareNullableStringsAscending(left.epic_name, right.epic_name);
+        if (epicDelta !== 0) {
+          return epicDelta;
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+        if (updatedDelta !== 0) {
+          return updatedDelta;
+        }
+        return left.identifier.localeCompare(right.identifier);
+      }
+      case "epic_desc": {
+        const epicDelta = compareNullableStringsDescending(left.epic_name, right.epic_name);
+        if (epicDelta !== 0) {
+          return epicDelta;
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+        if (updatedDelta !== 0) {
+          return updatedDelta;
+        }
+        return left.identifier.localeCompare(right.identifier);
+      }
+      case "updated_asc": {
+        const updatedDelta = new Date(left.updated_at).getTime() - new Date(right.updated_at).getTime();
+        if (updatedDelta !== 0) {
+          return updatedDelta;
+        }
+        return new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+      }
       case "updated_desc":
       default: {
         const updatedDelta =
@@ -173,7 +278,7 @@ describe("ProjectDetailPage", () => {
     });
   });
 
-  it("sorts project work from header clicks and refetches with the active sort", async () => {
+  it("cycles project work sorting through asc, desc, and none", async () => {
     const projectIssues = {
       items: [
         makeIssueSummary({
@@ -259,6 +364,25 @@ describe("ProjectDetailPage", () => {
       })
       expect(sortedButtons[0]).toHaveTextContent("ISS-1")
       expect(sortedButtons[1]).toHaveTextContent("ISS-2")
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by Issue" }))
+
+    await waitFor(() => {
+      expect(api.getProject).toHaveBeenLastCalledWith("project-1", "identifier_desc")
+      expect(screen.getByRole("columnheader", { name: "Issue" })).toHaveAttribute(
+        "aria-sort",
+        "descending",
+      )
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by Issue" }))
+
+    await waitFor(() => {
+      expect(api.getProject).toHaveBeenLastCalledWith("project-1", "priority_asc")
+      expect(screen.getByRole("columnheader", { name: "Issue" })).not.toHaveAttribute(
+        "aria-sort",
+      )
     })
   });
 

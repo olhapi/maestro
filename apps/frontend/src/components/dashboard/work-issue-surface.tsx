@@ -113,7 +113,7 @@ export function WorkIssueSurface({
       ) : (
         <div className="m-0">
           <Card>
-            <CardContent className="pt-[var(--panel-padding)]">
+            <CardContent className="!px-0 pt-[var(--panel-padding)]">
               <WorkIssueTable
                 bootstrap={bootstrap}
                 items={items}

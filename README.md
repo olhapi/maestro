@@ -384,10 +384,10 @@ Repo-managed Git hooks stay targeted:
 - staged frontend changes run frontend lint and tests
 - staged website changes run Astro checks and website tests
 - staged workspace and hook changes run the full `pnpm verify` suite
-- `pnpm verify` runs the JS lint/test/check/smoke flow, npm packaging unit test, and Go build/test/coverage/race gates
+- `pnpm verify` runs the Go build/test/coverage/race gates first, then the JS lint/test/check/smoke flow and npm packaging unit test
 - `pnpm run verify:pre-push` adds current-host npm packaging smoke, the shared retry stress test, and the full retry-safety harness on top of `pnpm verify`
 - package-scoped root commands such as `pnpm run frontend:test` and `pnpm run website:build` now go through `turbo --filter=...` so they benefit from task caching too
-- `pre-push` now runs `pnpm run verify:pre-push`, leaving GitHub Actions with the cross-platform packaging matrix and registry smoke coverage
+- `pre-push` now runs `pnpm run verify:pre-push`, keeping the Go/agent suite local before the web gates while GitHub Actions handles the lean web/package checks and nightly Codex E2E coverage
 
 ## License
 

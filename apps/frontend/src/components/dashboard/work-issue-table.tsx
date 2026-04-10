@@ -35,32 +35,116 @@ type IssueColumnId =
 
 const sortableColumns: Record<
   Exclude<IssueColumnId, "actions">,
-  { sort: WorkSort; ariaSort: "ascending" | "descending"; label: string }
+  {
+    label: string;
+    primarySort: WorkSort;
+    alternateSort: WorkSort;
+    primaryAriaSort: "ascending" | "descending";
+  }
 > = {
-  identifier: { sort: "identifier_asc", ariaSort: "ascending", label: "Issue" },
-  state: { sort: "state_asc", ariaSort: "ascending", label: "State" },
-  priority: { sort: "priority_asc", ariaSort: "ascending", label: "Priority" },
-  project: { sort: "project_asc", ariaSort: "ascending", label: "Project" },
-  epic: { sort: "epic_asc", ariaSort: "ascending", label: "Epic" },
-  updated: { sort: "updated_desc", ariaSort: "descending", label: "Updated" },
+  identifier: {
+    alternateSort: "identifier_desc",
+    label: "Issue",
+    primaryAriaSort: "ascending",
+    primarySort: "identifier_asc",
+  },
+  state: {
+    alternateSort: "state_desc",
+    label: "State",
+    primaryAriaSort: "ascending",
+    primarySort: "state_asc",
+  },
+  priority: {
+    alternateSort: "priority_desc",
+    label: "Priority",
+    primaryAriaSort: "ascending",
+    primarySort: "priority_asc",
+  },
+  project: {
+    alternateSort: "project_desc",
+    label: "Project",
+    primaryAriaSort: "ascending",
+    primarySort: "project_asc",
+  },
+  epic: {
+    alternateSort: "epic_desc",
+    label: "Epic",
+    primaryAriaSort: "ascending",
+    primarySort: "epic_asc",
+  },
+  updated: {
+    alternateSort: "updated_asc",
+    label: "Updated",
+    primaryAriaSort: "descending",
+    primarySort: "updated_desc",
+  },
 };
 
 function sortingForWorkSort(sort: WorkSort): SortingState {
   switch (sort) {
     case "identifier_asc":
       return [{ id: "identifier", desc: false }];
+    case "identifier_desc":
+      return [{ id: "identifier", desc: true }];
     case "state_asc":
       return [{ id: "state", desc: false }];
+    case "state_desc":
+      return [{ id: "state", desc: true }];
     case "priority_asc":
       return [{ id: "priority", desc: false }];
+    case "priority_desc":
+      return [{ id: "priority", desc: true }];
     case "project_asc":
       return [{ id: "project", desc: false }];
+    case "project_desc":
+      return [{ id: "project", desc: true }];
     case "epic_asc":
       return [{ id: "epic", desc: false }];
+    case "epic_desc":
+      return [{ id: "epic", desc: true }];
     case "updated_desc":
-    default:
       return [{ id: "updated", desc: true }];
+    case "updated_asc":
+      return [{ id: "updated", desc: false }];
+    case "none":
+    default:
+      return [];
   }
+}
+
+function getColumnSortState(
+  columnId: Exclude<IssueColumnId, "actions">,
+  sort: WorkSort,
+): "ascending" | "descending" | undefined {
+  const columnSort = sortableColumns[columnId];
+  if (sort === columnSort.primarySort) {
+    return columnSort.primaryAriaSort;
+  }
+  if (sort === columnSort.alternateSort) {
+    return columnSort.primaryAriaSort === "ascending" ? "descending" : "ascending";
+  }
+  return undefined;
+}
+
+function getNextSort(
+  columnId: Exclude<IssueColumnId, "actions">,
+  sort: WorkSort,
+): WorkSort {
+  const columnSort = sortableColumns[columnId];
+  if (sort === columnSort.primarySort) {
+    return columnSort.alternateSort;
+  }
+  if (sort === columnSort.alternateSort) {
+    return "none";
+  }
+  return columnSort.primarySort;
+}
+
+function getEdgePaddingClass(index: number, total: number) {
+  return cn(
+    index === 0 ? "pl-[var(--panel-padding)]" : "",
+    index === total - 1 ? "pr-[var(--panel-padding)]" : "",
+  );
 }
 
 function getColumnWidthClass(columnId: IssueColumnId, showProjectColumn: boolean) {
@@ -80,15 +164,6 @@ function getColumnWidthClass(columnId: IssueColumnId, showProjectColumn: boolean
     case "actions":
       return "w-[120px]";
   }
-}
-
-function getAriaSort(
-  columnId: Exclude<IssueColumnId, "actions">,
-  sort: WorkSort,
-): "ascending" | "descending" | undefined {
-  return sortableColumns[columnId].sort === sort
-    ? sortableColumns[columnId].ariaSort
-    : undefined;
 }
 
 function IssueIdentityCell({
@@ -135,12 +210,14 @@ function issueColumns({
   onOpenIssue,
   onSortChange,
   renderListActions,
+  sort,
   showProjectColumn,
 }: {
   bootstrap?: DashboardWorkSource;
   onOpenIssue: (issue: IssueSummary) => void;
   onSortChange: (sort: WorkSort) => void;
   renderListActions?: (issue: IssueSummary) => ReactNode;
+  sort: WorkSort;
   showProjectColumn: boolean;
 }): ColumnDef<IssueSummary>[] {
   const columns: ColumnDef<IssueSummary>[] = [
@@ -152,7 +229,7 @@ function issueColumns({
           column={column}
           title={sortableColumns.identifier.label}
           onSortChange={onSortChange}
-          sortValue={sortableColumns.identifier.sort}
+          nextSort={getNextSort("identifier", sort)}
         />
       ),
       cell: ({ row }) => (
@@ -167,7 +244,7 @@ function issueColumns({
           column={column}
           title={sortableColumns.state.label}
           onSortChange={onSortChange}
-          sortValue={sortableColumns.state.sort}
+          nextSort={getNextSort("state", sort)}
         />
       ),
       cell: ({ row }) => (
@@ -184,7 +261,7 @@ function issueColumns({
           column={column}
           title={sortableColumns.priority.label}
           onSortChange={onSortChange}
-          sortValue={sortableColumns.priority.sort}
+          nextSort={getNextSort("priority", sort)}
         />
       ),
       cell: ({ row }) =>
@@ -218,7 +295,7 @@ function issueColumns({
             column={column}
             title={sortableColumns.project.label}
             onSortChange={onSortChange}
-            sortValue={sortableColumns.project.sort}
+            nextSort={getNextSort("project", sort)}
           />
         ),
         cell: ({ row }) =>
@@ -249,7 +326,7 @@ function issueColumns({
           column={column}
           title={sortableColumns.epic.label}
           onSortChange={onSortChange}
-          sortValue={sortableColumns.epic.sort}
+          nextSort={getNextSort("epic", sort)}
         />
       ),
       cell: ({ row }) =>
@@ -276,7 +353,7 @@ function issueColumns({
           column={column}
           title={sortableColumns.updated.label}
           onSortChange={onSortChange}
-          sortValue={sortableColumns.updated.sort}
+          nextSort={getNextSort("updated", sort)}
         />
       ),
       cell: ({ row }) => (
@@ -292,7 +369,7 @@ function issueColumns({
       {
         id: "actions",
         header: () => (
-          <div className="flex h-8 items-center justify-end px-2 text-xs font-medium leading-4 normal-case">
+          <div className="flex h-8 items-center justify-end text-xs font-medium leading-4 normal-case">
             Actions
           </div>
         ),
@@ -333,6 +410,7 @@ export function WorkIssueTable({
       onOpenIssue,
       onSortChange,
       renderListActions,
+      sort,
       showProjectColumn,
     }),
     state: {
@@ -351,12 +429,12 @@ export function WorkIssueTable({
         <TableHeader className="text-xs uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
           {table.getHeaderGroups().map((headerGroup) => (
             <TableRow key={headerGroup.id}>
-              {headerGroup.headers.map((header) => {
+              {headerGroup.headers.map((header, headerIndex) => {
                 const columnId = header.column.id as IssueColumnId;
                 const ariaSort =
                   columnId === "actions"
                     ? undefined
-                    : getAriaSort(columnId, sort);
+                    : getColumnSortState(columnId, sort);
 
                 return (
                   <TableHead
@@ -364,6 +442,7 @@ export function WorkIssueTable({
                     aria-sort={ariaSort}
                     className={cn(
                       "px-0 pb-4 align-bottom",
+                      getEdgePaddingClass(headerIndex, headerGroup.headers.length),
                       getColumnWidthClass(columnId, showProjectColumn),
                       columnId === "actions" ? "text-right" : "",
                     )}
@@ -382,29 +461,34 @@ export function WorkIssueTable({
           ))}
         </TableHeader>
         <TableBody>
-          {table.getRowModel().rows.map((row) => (
-            <TableRow key={row.id}>
-              {row.getVisibleCells().map((cell) => (
-                <TableCell
-                  key={cell.id}
-                  className={cn(
-                    "px-0 py-4 align-top overflow-hidden",
-                    getColumnWidthClass(cell.column.id as IssueColumnId, showProjectColumn),
-                    cell.column.id === "state" ||
-                      cell.column.id === "priority" ||
-                      cell.column.id === "updated" ||
-                      cell.column.id === "actions"
-                      ? ""
-                      : "min-w-0",
-                    cell.column.id === "updated" ? "whitespace-nowrap" : "",
-                    cell.column.id === "actions" ? "text-right" : "",
-                  )}
-                >
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </TableCell>
-              ))}
-            </TableRow>
-          ))}
+          {table.getRowModel().rows.map((row) => {
+            const visibleCells = row.getVisibleCells();
+
+            return (
+              <TableRow key={row.id}>
+                {visibleCells.map((cell, cellIndex) => (
+                  <TableCell
+                    key={cell.id}
+                    className={cn(
+                      "px-0 py-4 align-top overflow-hidden",
+                      getEdgePaddingClass(cellIndex, visibleCells.length),
+                      getColumnWidthClass(cell.column.id as IssueColumnId, showProjectColumn),
+                      cell.column.id === "state" ||
+                        cell.column.id === "priority" ||
+                        cell.column.id === "updated" ||
+                        cell.column.id === "actions"
+                        ? ""
+                        : "min-w-0",
+                      cell.column.id === "updated" ? "whitespace-nowrap" : "",
+                      cell.column.id === "actions" ? "text-right" : "",
+                    )}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                ))}
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>
