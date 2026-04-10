@@ -251,9 +251,11 @@ describe('WorkPage', () => {
       ],
     })
 
-    await waitFor(() => {
-      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
-    })
+    await screen.findByRole(
+      'heading',
+      { name: 'Coordinate work on one board' },
+      { timeout: 5000 },
+    )
 
     expect(screen.getByPlaceholderText('Search by identifier, title, or description')).toHaveValue('Investigate')
     expect(screen.getByRole('combobox', { name: /filter by project/i })).toHaveTextContent('Platform')
