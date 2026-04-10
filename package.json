@@ -20,7 +20,7 @@
     "verify:website": "pnpm website:check && pnpm website:test",
     "verify:web": "pnpm lint && pnpm test && pnpm check && pnpm smoke",
     "verify:go": "make build && make test && make test-cover && make test-race",
-    "verify:package": "node --test packaging/npm/root/lib/get-exe-path.test.js scripts/smoke_installed_dashboard.test.mjs scripts/verify-pipeline.test.mjs && bash ./scripts/publish_npm_release.test.sh",
+    "verify:package": "node --test packaging/npm/root/lib/get-exe-path.test.js scripts/smoke_installed_dashboard.test.mjs scripts/verify-pipeline.test.mjs && bash ./scripts/e2e_harness_bootstrap.test.sh && bash ./scripts/publish_npm_release.test.sh",
     "release:npm": "./scripts/publish_npm_release.sh",
     "hooks:pre-commit": "./scripts/git-hooks/pre-commit.sh",
     "hooks:pre-push": "./scripts/git-hooks/pre-push.sh",

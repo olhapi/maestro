@@ -27,6 +27,7 @@ KEEP_HARNESS="${E2E_KEEP_HARNESS:-1}"
 ORCH_PID=""
 
 cd "$ROOT_DIR"
+ENSURE_DASHBOARD_DIST_BIN="${MAESTRO_ENSURE_DASHBOARD_DIST_BIN:-$ROOT_DIR/scripts/ensure_dashboard_dist.sh}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -211,6 +212,7 @@ fi
 mkdir -p "$BIN_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$DB_PATH")"
 
 echo "Building Maestro binary into $MAESTRO_BIN"
+"$ENSURE_DASHBOARD_DIST_BIN"
 go build -o "$MAESTRO_BIN" ./cmd/maestro
 
 PROJECT_ID="$("$MAESTRO_BIN" project create "Image E2E Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"

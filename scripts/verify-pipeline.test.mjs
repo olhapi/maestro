@@ -35,6 +35,15 @@ test('verify:ci excludes the Go suite', () => {
   assert.ok(!ci.includes('go test ./...'), 'verify:ci should not run go test ./...')
 })
 
+test('verify:package keeps the real codex harness bootstrap regression test', () => {
+  const pkg = SCRIPTS['verify:package']
+  assert.ok(pkg, 'missing script: verify:package')
+  assert.ok(
+    pkg.includes('scripts/e2e_harness_bootstrap.test.sh'),
+    'verify:package should keep the real codex harness bootstrap regression test',
+  )
+})
+
 test('verify:pre-push keeps the full pre-push gate', () => {
   const prePush = SCRIPTS['verify:pre-push']
   assert.ok(prePush, 'missing script: verify:pre-push')
