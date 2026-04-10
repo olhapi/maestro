@@ -59,19 +59,50 @@ function compareNullableStringsAscending(left?: string, right?: string) {
   return leftValue.localeCompare(rightValue)
 }
 
+function compareNullableStringsDescending(left?: string, right?: string) {
+  const leftValue = left?.trim() ?? ''
+  const rightValue = right?.trim() ?? ''
+  const leftEmpty = leftValue === ''
+  const rightEmpty = rightValue === ''
+
+  if (leftEmpty !== rightEmpty) {
+    return leftEmpty ? 1 : -1
+  }
+
+  return rightValue.localeCompare(leftValue)
+}
+
 function sortIssuesForTest(issues: IssueSummary[], sort: string) {
+  const normalizedSort = sort === 'none' ? 'priority_asc' : sort
   const sorted = [...issues]
   sorted.sort((left, right) => {
-    switch (sort) {
+    switch (normalizedSort) {
       case 'identifier_asc':
         return left.identifier.localeCompare(right.identifier)
+      case 'identifier_desc':
+        return right.identifier.localeCompare(left.identifier)
       case 'priority_asc':
         if (left.priority !== right.priority) {
           return left.priority - right.priority
         }
         return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+      case 'priority_desc':
+        if (left.priority !== right.priority) {
+          return right.priority - left.priority
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
       case 'state_asc': {
         const stateDelta = left.state.localeCompare(right.state)
+        if (stateDelta !== 0) {
+          return stateDelta
+        }
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority
+        }
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+      }
+      case 'state_desc': {
+        const stateDelta = right.state.localeCompare(left.state)
         if (stateDelta !== 0) {
           return stateDelta
         }
@@ -91,6 +122,17 @@ function sortIssuesForTest(issues: IssueSummary[], sort: string) {
         }
         return left.identifier.localeCompare(right.identifier)
       }
+      case 'project_desc': {
+        const projectDelta = compareNullableStringsDescending(left.project_name, right.project_name)
+        if (projectDelta !== 0) {
+          return projectDelta
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
+      }
       case 'epic_asc': {
         const epicDelta = compareNullableStringsAscending(left.epic_name, right.epic_name)
         if (epicDelta !== 0) {
@@ -101,6 +143,25 @@ function sortIssuesForTest(issues: IssueSummary[], sort: string) {
           return updatedDelta
         }
         return left.identifier.localeCompare(right.identifier)
+      }
+      case 'epic_desc': {
+        const epicDelta = compareNullableStringsDescending(left.epic_name, right.epic_name)
+        if (epicDelta !== 0) {
+          return epicDelta
+        }
+        const updatedDelta = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
+      }
+      case 'updated_asc': {
+        const updatedDelta =
+          new Date(left.updated_at).getTime() - new Date(right.updated_at).getTime()
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return new Date(left.created_at).getTime() - new Date(right.created_at).getTime()
       }
       case 'updated_desc':
       default: {
@@ -190,9 +251,11 @@ describe('WorkPage', () => {
       ],
     })
 
-    await waitFor(() => {
-      expect(screen.getByText('Coordinate work on one board')).toBeInTheDocument()
-    })
+    await screen.findByRole(
+      'heading',
+      { name: 'Coordinate work on one board' },
+      { timeout: 5000 },
+    )
 
     expect(screen.getByPlaceholderText('Search by identifier, title, or description')).toHaveValue('Investigate')
     expect(screen.getByRole('combobox', { name: /filter by project/i })).toHaveTextContent('Platform')
@@ -515,7 +578,7 @@ describe('WorkPage', () => {
     expect(screen.queryByText('Nightly sync')).not.toBeInTheDocument()
   })
 
-  it('sorts the work list from header clicks and keeps the chosen sort after remount', async () => {
+  it('cycles work list sorting through asc, desc, and none while preserving none in the URL', async () => {
     const bootstrap = makeBootstrapResponse({
       issues: {
         ...makeBootstrapResponse().issues,
@@ -587,6 +650,49 @@ describe('WorkPage', () => {
       expect(firstRender.history.location.href).toContain('sort=identifier_asc')
     })
 
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sort by Issue' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by Issue' }))
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: '',
+        state: '',
+        issue_type: 'standard',
+        sort: 'identifier_desc',
+        limit: 200,
+      })
+      expect(firstRender.history.location.href).toContain('sort=identifier_desc')
+      expect(screen.getByRole('columnheader', { name: 'Issue' })).toHaveAttribute(
+        'aria-sort',
+        'descending',
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sort by Issue' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by Issue' }))
+
+    await waitFor(() => {
+      expect(api.listIssues).toHaveBeenLastCalledWith({
+        search: '',
+        project_id: '',
+        state: '',
+        issue_type: 'standard',
+        sort: 'priority_asc',
+        limit: 200,
+      })
+      expect(firstRender.history.location.href).toContain('sort=none')
+      expect(screen.getByRole('columnheader', { name: 'Issue' })).not.toHaveAttribute(
+        'aria-sort',
+      )
+    })
+
     firstRender.unmount()
 
     await renderWorkRoute({ history: firstRender.history })
@@ -597,14 +703,17 @@ describe('WorkPage', () => {
         project_id: '',
         state: '',
         issue_type: 'standard',
-        sort: 'identifier_asc',
+        sort: 'priority_asc',
         limit: 200,
       })
+      expect(screen.getByRole('columnheader', { name: 'Issue' })).not.toHaveAttribute(
+        'aria-sort',
+      )
       const issueButtons = within(screen.getByRole('table')).getAllByRole('button', {
         name: /ISS-/,
       })
-      expect(issueButtons[0]).toHaveTextContent('ISS-1')
-      expect(issueButtons[1]).toHaveTextContent('ISS-2')
+      expect(issueButtons[0]).toHaveTextContent('ISS-2')
+      expect(issueButtons[1]).toHaveTextContent('ISS-1')
     })
   })
 

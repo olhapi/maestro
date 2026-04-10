@@ -4201,6 +4201,60 @@ func TestListIssueSummariesCoversAdditionalFilterAndSortBranches(t *testing.T) {
 	if items[1].EpicName != "Matrix epic" {
 		t.Fatalf("expected Matrix epic issues after Alpha epic, got %#v", items)
 	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "priority_desc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries priority_desc: %v", err)
+	}
+	if len(items) != 6 || items[0].Identifier != recurring.Identifier || items[len(items)-1].Identifier != blocker.Identifier {
+		t.Fatalf("unexpected priority_desc order: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "identifier_desc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries identifier_desc: %v", err)
+	}
+	if len(items) != 6 || items[0].Identifier != alphaEpicIssue.Identifier || items[len(items)-1].Identifier != blocker.Identifier {
+		t.Fatalf("unexpected identifier_desc order: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "state_desc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries state_desc: %v", err)
+	}
+	if len(items) != 6 || items[0].State != StateReady || items[len(items)-1].State != StateBacklog {
+		t.Fatalf("unexpected state_desc order: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{Sort: "project_desc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries project_desc: %v", err)
+	}
+	if len(items) != 8 {
+		t.Fatalf("expected 8 issues for project_desc, got %d", len(items))
+	}
+	if items[0].ProjectName != "Matrix" || items[6].ProjectName != "Alpha" || items[7].ProjectName != "" {
+		t.Fatalf("unexpected project_desc endpoints: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "epic_desc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries epic_desc: %v", err)
+	}
+	if len(items) != 6 {
+		t.Fatalf("expected 6 issues for epic_desc, got %d", len(items))
+	}
+	if items[0].EpicName != "Matrix epic" || items[2].EpicName != "Alpha epic" || items[3].EpicName != "" {
+		t.Fatalf("unexpected epic_desc endpoints: %#v", items)
+	}
+
+	items, _, err = store.ListIssueSummaries(IssueQuery{ProjectID: project.ID, Sort: "updated_asc", Limit: 20})
+	if err != nil {
+		t.Fatalf("ListIssueSummaries updated_asc: %v", err)
+	}
+	if len(items) != 6 || items[0].Identifier != blocker.Identifier || items[len(items)-1].Identifier != alphaEpicIssue.Identifier {
+		t.Fatalf("unexpected updated_asc order: %#v", items)
+	}
 }
 
 func TestConcurrentAccess(t *testing.T) {

@@ -31,7 +31,10 @@ import {
   summaryTokenSpend,
 } from "@/lib/projects";
 import { appRoutes } from "@/lib/routes";
-import type { WorkSort } from "@/lib/work-url-state";
+import {
+  normalizeWorkSort,
+  type WorkSort,
+} from "@/lib/work-url-state";
 import type { EpicSummary, IssueDetail, IssueState, IssueSummary } from "@/lib/types";
 import { formatCompactNumber, formatRelativeTime } from "@/lib/utils";
 
@@ -123,6 +126,7 @@ export function ProjectDetailPage() {
   const [sort, setSort] = useState<WorkSort>("priority_asc");
   const [view, setView] = useState<"board" | "list">("board");
   const [previewIssue, setPreviewIssue] = useState<IssueSummary>();
+  const requestSort = normalizeWorkSort(sort);
 
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -130,7 +134,7 @@ export function ProjectDetailPage() {
   });
   const project = useQuery({
     queryKey: ["project", projectId, sort],
-    queryFn: () => api.getProject(projectId, sort),
+    queryFn: () => api.getProject(projectId, requestSort),
   });
 
   const invalidate = async () => {

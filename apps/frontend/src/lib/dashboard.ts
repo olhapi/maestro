@@ -1,15 +1,8 @@
 import type { DashboardRuntimeSource, IssueState, IssueSummary, PausedEntry, RetryEntry, Session } from '@/lib/types'
 
-export const issueStates: IssueState[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled']
+import { normalizeWorkSort, type WorkSort } from '@/lib/work-url-state'
 
-export const issueSortOptions = [
-  { value: 'updated_desc', label: 'Recently updated' },
-  { value: 'priority_asc', label: 'Highest priority' },
-  { value: 'identifier_asc', label: 'Identifier A-Z' },
-  { value: 'state_asc', label: 'State grouping' },
-  { value: 'project_asc', label: 'Project A-Z' },
-  { value: 'epic_asc', label: 'Epic A-Z' },
-] as const
+export const issueStates: IssueState[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled']
 
 export const stateMeta: Record<string, { label: string; accent: string; boardTint: string; progressFill: string }> = {
   backlog: { label: 'Backlog', accent: 'text-slate-200', boardTint: 'from-slate-500/20 to-slate-900/20', progressFill: 'bg-slate-400/90' },
@@ -73,11 +66,21 @@ function compareNullableStringsAscending(left?: string, right?: string) {
   return leftValue.localeCompare(rightValue)
 }
 
-export function sortIssues(items: IssueSummary[], sort: string) {
+function compareNullableStringsDescending(left?: string, right?: string) {
+  const leftValue = left?.trim() ?? ''
+  const rightValue = right?.trim() ?? ''
+  const leftEmpty = leftValue === ''
+  const rightEmpty = rightValue === ''
+  if (leftEmpty !== rightEmpty) {
+    return leftEmpty ? 1 : -1
+  }
+  return rightValue.localeCompare(leftValue)
+}
+
+export function sortIssues(items: IssueSummary[], sort: WorkSort) {
+  const normalizedSort = normalizeWorkSort(sort)
   return [...items].sort((left, right) => {
-    switch (sort) {
-      case 'created_asc':
-        return compareDatesAscending(left.created_at, right.created_at)
+    switch (normalizedSort) {
       case 'priority_asc': {
         const leftPriorityGroup = left.priority > 0 ? 0 : 1
         const rightPriorityGroup = right.priority > 0 ? 0 : 1
@@ -89,10 +92,38 @@ export function sortIssues(items: IssueSummary[], sort: string) {
         }
         return compareDatesDescending(left.updated_at, right.updated_at)
       }
+      case 'priority_desc': {
+        const leftPriorityGroup = left.priority > 0 ? 0 : 1
+        const rightPriorityGroup = right.priority > 0 ? 0 : 1
+        if (leftPriorityGroup !== rightPriorityGroup) {
+          return leftPriorityGroup - rightPriorityGroup
+        }
+        if (left.priority !== right.priority) {
+          return right.priority - left.priority
+        }
+        return compareDatesDescending(left.updated_at, right.updated_at)
+      }
       case 'identifier_asc':
         return left.identifier.localeCompare(right.identifier)
+      case 'identifier_desc':
+        return right.identifier.localeCompare(left.identifier)
       case 'state_asc': {
         const stateDelta = left.state.localeCompare(right.state)
+        if (stateDelta !== 0) {
+          return stateDelta
+        }
+        const leftPriorityGroup = left.priority > 0 ? 0 : 1
+        const rightPriorityGroup = right.priority > 0 ? 0 : 1
+        if (leftPriorityGroup !== rightPriorityGroup) {
+          return leftPriorityGroup - rightPriorityGroup
+        }
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority
+        }
+        return compareDatesDescending(left.updated_at, right.updated_at)
+      }
+      case 'state_desc': {
+        const stateDelta = right.state.localeCompare(left.state)
         if (stateDelta !== 0) {
           return stateDelta
         }
@@ -117,6 +148,17 @@ export function sortIssues(items: IssueSummary[], sort: string) {
         }
         return left.identifier.localeCompare(right.identifier)
       }
+      case 'project_desc': {
+        const projectDelta = compareNullableStringsDescending(left.project_name, right.project_name)
+        if (projectDelta !== 0) {
+          return projectDelta
+        }
+        const updatedDelta = compareDatesDescending(left.updated_at, right.updated_at)
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
+      }
       case 'epic_asc': {
         const epicDelta = compareNullableStringsAscending(left.epic_name, right.epic_name)
         if (epicDelta !== 0) {
@@ -127,6 +169,24 @@ export function sortIssues(items: IssueSummary[], sort: string) {
           return updatedDelta
         }
         return left.identifier.localeCompare(right.identifier)
+      }
+      case 'epic_desc': {
+        const epicDelta = compareNullableStringsDescending(left.epic_name, right.epic_name)
+        if (epicDelta !== 0) {
+          return epicDelta
+        }
+        const updatedDelta = compareDatesDescending(left.updated_at, right.updated_at)
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return left.identifier.localeCompare(right.identifier)
+      }
+      case 'updated_asc': {
+        const updatedDelta = compareDatesAscending(left.updated_at, right.updated_at)
+        if (updatedDelta !== 0) {
+          return updatedDelta
+        }
+        return compareDatesAscending(left.created_at, right.created_at)
       }
       case 'updated_desc':
       default: {

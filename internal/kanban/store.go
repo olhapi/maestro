@@ -4570,14 +4570,26 @@ func (s *Store) ListIssueSummariesWithCounts(query IssueQuery) ([]IssueSummary, 
 		orderBy = "i.created_at ASC"
 	case "priority_asc":
 		orderBy = "CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
+	case "priority_desc":
+		orderBy = "CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END DESC, i.updated_at DESC"
 	case "identifier_asc":
 		orderBy = "i.identifier ASC"
+	case "identifier_desc":
+		orderBy = "i.identifier DESC"
 	case "state_asc":
 		orderBy = "i.state ASC, CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
+	case "state_desc":
+		orderBy = "i.state DESC, CASE WHEN i.priority > 0 THEN 0 ELSE 1 END ASC, CASE WHEN i.priority > 0 THEN i.priority END ASC, i.updated_at DESC"
 	case "project_asc":
 		orderBy = "CASE WHEN COALESCE(p.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(p.name, '') ASC, i.updated_at DESC, i.identifier ASC"
+	case "project_desc":
+		orderBy = "CASE WHEN COALESCE(p.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(p.name, '') DESC, i.updated_at DESC, i.identifier ASC"
 	case "epic_asc":
 		orderBy = "CASE WHEN COALESCE(e.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(e.name, '') ASC, i.updated_at DESC, i.identifier ASC"
+	case "epic_desc":
+		orderBy = "CASE WHEN COALESCE(e.name, '') = '' THEN 1 ELSE 0 END ASC, COALESCE(e.name, '') DESC, i.updated_at DESC, i.identifier ASC"
+	case "updated_asc":
+		orderBy = "i.updated_at ASC, i.created_at ASC"
 	}
 
 	rows, err := s.db.Query(`
