@@ -18,6 +18,7 @@ KEEP_HARNESS="${E2E_KEEP_HARNESS:-1}"
 ORCH_PID=""
 
 cd "$ROOT_DIR"
+ENSURE_DASHBOARD_DIST_BIN="${MAESTRO_ENSURE_DASHBOARD_DIST_BIN:-$ROOT_DIR/scripts/ensure_dashboard_dist.sh}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -97,6 +98,7 @@ require_cmd sqlite3
 mkdir -p "$BIN_DIR" "$ARTIFACTS_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$(dirname "$DB_PATH")"
 
 echo "Building Maestro binary into $MAESTRO_BIN"
+"$ENSURE_DASHBOARD_DIST_BIN"
 go build -o "$MAESTRO_BIN" ./cmd/maestro
 
 CODEX_COMMAND="${E2E_CODEX_COMMAND:-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd . --add-dir $(printf '%q' "$HARNESS_ROOT") -}"

@@ -21,6 +21,7 @@ ORCH_PID=""
 
 cd "$ROOT_DIR"
 export MAESTRO_DAEMON_REGISTRY_DIR="$DAEMON_REGISTRY_DIR"
+ENSURE_DASHBOARD_DIST_BIN="${MAESTRO_ENSURE_DASHBOARD_DIST_BIN:-$ROOT_DIR/scripts/ensure_dashboard_dist.sh}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -223,6 +224,7 @@ require_cmd git
 mkdir -p "$BIN_DIR" "$WORKSPACES_DIR" "$LOGS_DIR" "$REPOS_DIR" "$(dirname "$DB_PATH")"
 
 echo "Building Maestro binary into $MAESTRO_BIN"
+"$ENSURE_DASHBOARD_DIST_BIN"
 go build -o "$MAESTRO_BIN" ./cmd/maestro
 echo "Building fake app-server into $FAKE_APPSERVER_BIN"
 go build -o "$FAKE_APPSERVER_BIN" ./cmd/maestro-fake-appserver
