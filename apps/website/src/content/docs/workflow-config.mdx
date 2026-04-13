@@ -55,7 +55,7 @@ codex:
 - `codex.initial_collaboration_mode`: controls the startup mode for fresh `app_server` threads. Use `default` for unattended execution-first runs, or `plan` when you explicitly want a plan-gated startup. Pair `plan` with `approval_policy: on-request` if you want the agent to ask clarifying questions and wait for approval. This does not affect `stdio` or resumed threads.
 - `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms`: set the run budget and inactivity limits.
 
-If you do not want to preinstall Codex, Maestro can automatically fall back to the pinned `npx -y @openai/codex@0.118.0 app-server` form when the configured direct Codex command does not match the supported schema version.
+If you do not want to preinstall Codex, Maestro can automatically fall back to the pinned `npx -y @openai/codex@0.120.0 app-server` form when the configured direct Codex command does not match the supported schema version.
 
 Permission selection is no longer configured in `WORKFLOW.md`. Maestro resolves runtime sandbox access from DB-backed permission profiles:
 

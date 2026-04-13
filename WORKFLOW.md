@@ -111,7 +111,7 @@ codex:
   stall_timeout_ms: 300000
 ---
 
-If Codex is not installed globally, Maestro can fall back to the pinned `npx -y @openai/codex@0.118.0 app-server` form when the configured direct Codex command does not match the supported schema version.
+If Codex is not installed globally, Maestro can fall back to the pinned `npx -y @openai/codex@0.120.0 app-server` form when the configured direct Codex command does not match the supported schema version.
 
 You are working on issue {{ issue.identifier }}.
 
