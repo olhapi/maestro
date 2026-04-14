@@ -1,39 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="${MAESTRO_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 "$ROOT_DIR/scripts/ensure_dashboard_dist.sh"
 
-declare -A package_dirs=()
-while IFS= read -r file; do
-  dir="$(dirname "$file")"
-  rel="${dir#"$ROOT_DIR"/}"
-  case "$rel" in
-    cmd/maestro-fake-appserver|\
-    internal/testutil/*|\
-    internal/agentruntime/contracttest|\
-    internal/agentruntime/fake|\
-    internal/agentruntime/testadapter|\
-    internal/appserver/protocol/gen)
-      continue
-      ;;
-  esac
-  package_dirs["$rel"]=1
-done < <(
-  find "$ROOT_DIR/cmd" "$ROOT_DIR/internal" "$ROOT_DIR/pkg" "$ROOT_DIR/skills" \
-    -type f -name '*.go' ! -name '*_test.go' | sort -u
-)
-
-packages=()
-for rel in "${!package_dirs[@]}"; do
-  packages+=("$rel")
-done
-IFS=$'\n' packages=($(printf '%s\n' "${packages[@]}" | sort))
-unset IFS
-
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+
+package_list="$tmpdir/packages.txt"
+find "$ROOT_DIR/cmd" "$ROOT_DIR/internal" "$ROOT_DIR/pkg" "$ROOT_DIR/skills" \
+  -type f -name '*.go' ! -name '*_test.go' | sort -u | while IFS= read -r file; do
+    dir="$(dirname "$file")"
+    rel="${dir#"$ROOT_DIR"/}"
+    case "$rel" in
+      cmd/maestro-fake-appserver|internal/testutil/*|internal/agentruntime/contracttest|internal/agentruntime/fake|internal/agentruntime/testadapter|internal/appserver/protocol/gen)
+        continue
+        ;;
+    esac
+    printf '%s\n' "$rel"
+  done | sort -u >"$package_list"
+
+packages=()
+while IFS= read -r rel; do
+  [[ -n "$rel" ]] || continue
+  packages+=("$rel")
+done <"$package_list"
+unset IFS
 
 # Set COVERAGE_VERBOSE=1 to print the full per-package table.
 verbose="${COVERAGE_VERBOSE:-0}"

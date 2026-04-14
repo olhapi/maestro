@@ -42,6 +42,10 @@ test('verify:package keeps the real codex harness bootstrap regression test', ()
     pkg.includes('scripts/e2e_harness_bootstrap.test.sh'),
     'verify:package should keep the real codex harness bootstrap regression test',
   )
+  assert.ok(
+    pkg.includes('scripts/check_coverage.test.sh'),
+    'verify:package should keep the Bash compatibility regression test for coverage checks',
+  )
 })
 
 test('verify:pre-push keeps the full pre-push gate', () => {

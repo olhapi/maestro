@@ -103,6 +103,98 @@ EOF
     "$bin_dir/ensure-dashboard-dist"
 }
 
+make_project_create_mock_toolchain() {
+  local bin_dir="$1"
+  mkdir -p "$bin_dir"
+
+  cat >"$bin_dir/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'codex %s\n' "$*" >>"$LOG_FILE"
+exit 0
+EOF
+
+  cat >"$bin_dir/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'go %s\n' "$*" >>"$LOG_FILE"
+if [[ "${1:-}" != "build" ]]; then
+  exit 0
+fi
+
+output=""
+while (($#)); do
+  case "$1" in
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$output" ]]; then
+  printf 'missing go build output path\n' >>"$LOG_FILE"
+  exit 91
+fi
+
+cat >"$output" <<'INNER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'maestro %s\n' "$*" >>"$LOG_FILE"
+if [[ "${1:-}" == "project" && "${2:-}" == "create" ]]; then
+  repo_path=""
+  shift 2
+  while (($#)); do
+    case "$1" in
+      --repo)
+        repo_path="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  if [[ -z "$repo_path" ]]; then
+    printf 'missing repo path for project create\n' >&2
+    exit 41
+  fi
+  git -C "$repo_path" rev-parse --show-toplevel >/dev/null 2>&1 || exit 42
+  git -C "$repo_path" rev-parse HEAD >/dev/null 2>&1 || exit 43
+  if [[ "$(git -C "$repo_path" branch --show-current)" != "main" ]]; then
+    exit 44
+  fi
+  printf 'proj_test\n'
+  exit 0
+fi
+exit 45
+INNER
+chmod +x "$output"
+EOF
+
+  cat >"$bin_dir/sqlite3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'sqlite3 %s\n' "$*" >>"$LOG_FILE"
+exit 67
+EOF
+
+  cat >"$bin_dir/ensure-dashboard-dist" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ensure-dashboard\n' >>"$LOG_FILE"
+EOF
+
+  chmod +x \
+    "$bin_dir/codex" \
+    "$bin_dir/go" \
+    "$bin_dir/sqlite3" \
+    "$bin_dir/ensure-dashboard-dist"
+}
+
 cleanup_sentinel() {
   rm -f "$ROOT_DIR/internal/dashboardui/dist/.e2e-bootstrap-sentinel"
 }
@@ -144,8 +236,59 @@ test_scripts_bootstrap_dashboard_dist_before_build() {
   done
 }
 
+test_scripts_initialize_git_repo_before_project_create() {
+  local scripts=(
+    "$ROOT_DIR/scripts/e2e_real_codex.sh"
+    "$ROOT_DIR/scripts/e2e_real_codex_phases.sh"
+    "$ROOT_DIR/scripts/e2e_real_codex_issue_images.sh"
+  )
+
+  local script
+  for script in "${scripts[@]}"; do
+    local tmp_dir bin_dir log_file stdout_file stderr_file harness_root repo_top normalized_harness_root current_branch
+    tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-harness-git-bootstrap.XXXXXX")"
+    bin_dir="$tmp_dir/bin"
+    log_file="$tmp_dir/log.txt"
+    stdout_file="$tmp_dir/stdout.txt"
+    stderr_file="$tmp_dir/stderr.txt"
+    harness_root="$tmp_dir/harness"
+
+    make_project_create_mock_toolchain "$bin_dir"
+    : >"$log_file"
+
+    if PATH="$bin_dir:$PATH" \
+      LOG_FILE="$log_file" \
+      MAESTRO_ENSURE_DASHBOARD_DIST_BIN="$bin_dir/ensure-dashboard-dist" \
+      E2E_ROOT="$harness_root" \
+      bash "$script" >"$stdout_file" 2>"$stderr_file"; then
+      fail "expected $(basename "$script") to stop after the mocked project create path"
+    fi
+
+    assert_contains "$log_file" "maestro project create"
+    repo_top="$(git -C "$harness_root" rev-parse --show-toplevel 2>/dev/null || true)"
+    normalized_harness_root="$(cd "$harness_root" && pwd -P)"
+    if [[ -n "$repo_top" ]]; then
+      repo_top="$(cd "$repo_top" && pwd -P)"
+    fi
+    if [[ "$repo_top" != "$normalized_harness_root" ]]; then
+      fail "expected $harness_root to be a git repo before project create for $(basename "$script")"
+    fi
+    if ! git -C "$harness_root" rev-parse HEAD >/dev/null 2>&1; then
+      fail "expected $harness_root to have an initial commit for $(basename "$script")"
+    fi
+    current_branch="$(git -C "$harness_root" branch --show-current)"
+    if [[ "$current_branch" != "main" ]]; then
+      fail "expected $harness_root to be on main before project create for $(basename "$script"), got '$current_branch'"
+    fi
+    if ! git -C "$harness_root" ls-files --error-unmatch WORKFLOW.md >/dev/null 2>&1; then
+      fail "expected WORKFLOW.md to be tracked in $harness_root for $(basename "$script")"
+    fi
+  done
+}
+
 main() {
   test_scripts_bootstrap_dashboard_dist_before_build
+  test_scripts_initialize_git_repo_before_project_create
 }
 
 main "$@"

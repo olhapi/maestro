@@ -36,6 +36,20 @@ require_cmd() {
   fi
 }
 
+init_git_repo() {
+  local repo_path="$1"
+  (
+    cd "$repo_path"
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
+    git init -q
+    git config user.name "Maestro E2E"
+    git config user.email "e2e@example.com"
+    git add WORKFLOW.md
+    git commit -q -m "test init"
+    git branch -M main
+  )
+}
+
 cleanup() {
   local exit_code="$?"
   if [[ -n "$ORCH_PID" ]] && kill -0 "$ORCH_PID" >/dev/null 2>&1; then
@@ -215,8 +229,6 @@ echo "Building Maestro binary into $MAESTRO_BIN"
 "$ENSURE_DASHBOARD_DIST_BIN"
 go build -o "$MAESTRO_BIN" ./cmd/maestro
 
-PROJECT_ID="$("$MAESTRO_BIN" project create "Image E2E Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
-
 cat >"$WORKFLOW_PATH" <<EOF
 ---
 tracker:
@@ -271,6 +283,10 @@ Issue title: {{ issue.title }}
 Issue description:
 {{ issue.description }}
 EOF
+
+init_git_repo "$HARNESS_ROOT"
+
+PROJECT_ID="$("$MAESTRO_BIN" project create "Image E2E Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
 
 echo "Creating image e2e issue in $DB_PATH"
 ISSUE_IDENTIFIER="$("$MAESTRO_BIN" issue create "Read attached image text" --project "$PROJECT_ID" --desc "Inspect the attached image and answer with only the text shown in it." --db "$DB_PATH" --quiet)"
