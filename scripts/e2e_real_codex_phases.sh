@@ -27,6 +27,20 @@ require_cmd() {
   fi
 }
 
+init_git_repo() {
+  local repo_path="$1"
+  (
+    cd "$repo_path"
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
+    git init -q
+    git config user.name "Maestro E2E"
+    git config user.email "e2e@example.com"
+    git add WORKFLOW.md
+    git commit -q -m "test init"
+    git branch -M main
+  )
+}
+
 cleanup() {
   local exit_code="$?"
   stop_orchestrator
@@ -265,6 +279,8 @@ Requirements:
 3. Verify every file you create with shell commands before changing issue state.
 4. Stop immediately after the requested state transition succeeds.
 EOF
+
+init_git_repo "$HARNESS_ROOT"
 
 PROJECT_ID="$("$MAESTRO_BIN" project create "Real Codex E2E Phase Project" --repo "$HARNESS_ROOT" --db "$DB_PATH" --quiet)"
 start_project "$PROJECT_ID"
