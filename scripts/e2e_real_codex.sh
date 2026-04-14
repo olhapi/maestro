@@ -185,8 +185,8 @@ PROJECT_ID="$("$MAESTRO_BIN" project create "Real Codex E2E Project" --repo "$HA
 start_project "$PROJECT_ID"
 
 echo "Creating e2e issues in $DB_PATH"
-ISSUE_ONE="$("$MAESTRO_BIN" issue create "Create first e2e artifact" --project "$PROJECT_ID" --desc "Create file artifact-one.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 1" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
-ISSUE_TWO="$("$MAESTRO_BIN" issue create "Create second e2e artifact" --project "$PROJECT_ID" --desc "Create file artifact-two.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 2" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_ONE="$("$MAESTRO_BIN" issue create "Create first e2e artifact" --project "$PROJECT_ID" --desc "Create file artifact-one.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 1" --db "$DB_PATH" --quiet)"
+ISSUE_TWO="$("$MAESTRO_BIN" issue create "Create second e2e artifact" --project "$PROJECT_ID" --desc "Create file artifact-two.txt in the shared artifacts directory with exactly this single line of text: maestro e2e ok 2" --db "$DB_PATH" --quiet)"
 
 "$MAESTRO_BIN" issue move "$ISSUE_ONE" ready --db "$DB_PATH" >/dev/null
 "$MAESTRO_BIN" issue move "$ISSUE_TWO" ready --db "$DB_PATH" >/dev/null

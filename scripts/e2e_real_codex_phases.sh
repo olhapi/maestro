@@ -286,8 +286,8 @@ PROJECT_ID="$("$MAESTRO_BIN" project create "Real Codex E2E Phase Project" --rep
 start_project "$PROJECT_ID"
 
 echo "Creating phase e2e issues in $DB_PATH"
-ISSUE_REVIEW="$("$MAESTRO_BIN" issue create "Phase flow through review" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
-ISSUE_SKIP="$("$MAESTRO_BIN" issue create "Phase flow skipping review" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" | sed -E 's/^Created issue ([^:]+): .*$/\1/')"
+ISSUE_REVIEW="$("$MAESTRO_BIN" issue create "Phase flow through review" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
+ISSUE_SKIP="$("$MAESTRO_BIN" issue create "Phase flow skipping review" --project "$PROJECT_ID" --desc "placeholder" --db "$DB_PATH" --quiet)"
 
 update_issue_description "$ISSUE_REVIEW" "$(cat <<EOF
 Implementation-phase requirements for $ISSUE_REVIEW:

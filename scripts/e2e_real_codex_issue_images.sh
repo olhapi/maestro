@@ -72,6 +72,31 @@ issue_title() {
   "$MAESTRO_BIN" issue show "$1" --db "$DB_PATH" | awk -F': *' '/^Title:/{sub(/^ +/, "", $2); print $2}'
 }
 
+workspace_path_for_issue() {
+  local issue_identifier="$1"
+  python3 - "$DB_PATH" "$issue_identifier" <<'PY'
+import sqlite3
+import sys
+
+db_path, issue_identifier = sys.argv[1:3]
+conn = sqlite3.connect(db_path)
+row = conn.execute(
+    """
+    SELECT w.path
+    FROM workspaces AS w
+    JOIN issues AS i ON i.id = w.issue_id
+    WHERE i.identifier = ?
+    LIMIT 1
+    """,
+    (issue_identifier,),
+).fetchone()
+conn.close()
+if not row or not row[0]:
+    raise SystemExit(1)
+print(row[0])
+PY
+}
+
 fixture_upload_path() {
   local fixture_path="$1"
   local fixture_name ext
@@ -194,7 +219,7 @@ PY
 find_staged_image_path() {
   local workspace_path="$1"
   local image_id="$2"
-  local stage_dir="$workspace_path/.maestro/issue-images"
+  local stage_dir="$workspace_path/.maestro/issue-assets"
   local match_count=0
   local match_path=""
   local path
@@ -320,7 +345,10 @@ if ! wait_for_done "$ISSUE_IDENTIFIER"; then
   exit 1
 fi
 
-WORKSPACE_PATH="$WORKSPACES_DIR/$ISSUE_IDENTIFIER"
+if ! WORKSPACE_PATH="$(workspace_path_for_issue "$ISSUE_IDENTIFIER")"; then
+  echo "failed to resolve workspace path for $ISSUE_IDENTIFIER from $DB_PATH" >&2
+  exit 1
+fi
 STAGED_IMAGE_PATH="$(find_staged_image_path "$WORKSPACE_PATH" "$IMAGE_ID")"
 assert_file_exists "$STAGED_IMAGE_PATH"
 assert_files_identical "$IMAGE_FIXTURE" "$STAGED_IMAGE_PATH" "staged image"

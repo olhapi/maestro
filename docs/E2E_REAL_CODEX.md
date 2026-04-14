@@ -49,7 +49,7 @@ The image harness verifies the new app-server image path:
 
 - Maestro attaches a local PNG to an issue through the normal issue-image storage flow
 - the harness reuploads the fixture under an opaque filename so the expected OCR text is not leaked through image metadata
-- app-server mode stages that attachment into the issue workspace under `.maestro/issue-images`, and the staged bytes must match the original fixture exactly
+- app-server mode stages that attachment into the issue workspace under `.maestro/issue-assets`, and the staged bytes must match the original fixture exactly
 - the real Codex app-server receives the image as multimodal input and returns only `MAESTRO`
 - Maestro persists that final answer in issue activity, which the harness extracts from the raw final-answer payload and compares exactly
 
