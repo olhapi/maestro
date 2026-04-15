@@ -76,7 +76,7 @@ func main() {
 						},
 					},
 				})
-				return
+				time.Sleep(100 * time.Millisecond)
 			case "input":
 				emit(envelope{
 					ID:     1000,
