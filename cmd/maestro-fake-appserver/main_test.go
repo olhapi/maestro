@@ -77,8 +77,8 @@ func TestCompleteScenarioWaitsForStdinClose(t *testing.T) {
 
 	select {
 	case err := <-done:
-		t.Fatalf("helper exited before stdin was closed: %v\nstderr:\n%s", err, stderr.String())
-	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("helper exited immediately after turn/completed: %v\nstderr:\n%s", err, stderr.String())
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	if err := stdin.Close(); err != nil {
