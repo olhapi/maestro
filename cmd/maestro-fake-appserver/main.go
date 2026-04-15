@@ -76,7 +76,6 @@ func main() {
 						},
 					},
 				})
-				return
 			case "input":
 				emit(envelope{
 					ID:     1000,
