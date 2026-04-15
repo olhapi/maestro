@@ -47,6 +47,7 @@ type ThreadStartParams struct {
 	Sandbox               *SandboxMode           `json:"sandbox"`
 	ServiceName           *string                `json:"serviceName"`
 	ServiceTier           *ServiceTier           `json:"serviceTier"`
+	SessionStartSource    *ThreadStartSource     `json:"sessionStartSource"`
 }
 
 type PurpleGranularAskForApproval struct {
@@ -115,6 +116,8 @@ type ThreadStartResponseThread struct {
 	Cwd string `json:"cwd"`
 	// Whether the thread is ephemeral and should not be materialized on disk.
 	Ephemeral bool `json:"ephemeral"`
+	// Source thread id when this thread was created by forking another thread.
+	ForkedFromID *string `json:"forkedFromId"`
 	// Optional Git metadata captured when the thread was created.
 	GitInfo *PurpleGitInfo `json:"gitInfo"`
 	ID      string         `json:"id"`
@@ -169,13 +172,19 @@ type PurpleThreadStatus struct {
 }
 
 type PurpleTurn struct {
+	// Unix timestamp (in seconds) when the turn completed.
+	CompletedAt *int64 `json:"completedAt"`
+	// Duration between turn start and completion in milliseconds, if known.
+	DurationMS *int64 `json:"durationMs"`
 	// Only populated when the Turn's status is failed.
 	Error *PurpleTurnError `json:"error"`
 	ID    string           `json:"id"`
 	// Only populated on a `thread/resume` or `thread/fork` response. For all other responses
 	// and notifications returning a Turn, the items field will be an empty list.
-	Items  []PurpleThreadItem `json:"items"`
-	Status TurnStatus         `json:"status"`
+	Items []PurpleThreadItem `json:"items"`
+	// Unix timestamp (in seconds) when the turn started.
+	StartedAt *int64     `json:"startedAt"`
+	Status    TurnStatus `json:"status"`
 }
 
 type PurpleTurnError struct {
@@ -368,6 +377,7 @@ type PurpleMemoryCitationEntry struct {
 }
 
 type PurpleMCPToolCallResult struct {
+	Meta              interface{}   `json:"_meta"`
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
 }
@@ -453,13 +463,19 @@ type TurnStartResponse struct {
 }
 
 type TurnStartResponseTurn struct {
+	// Unix timestamp (in seconds) when the turn completed.
+	CompletedAt *int64 `json:"completedAt"`
+	// Duration between turn start and completion in milliseconds, if known.
+	DurationMS *int64 `json:"durationMs"`
 	// Only populated when the Turn's status is failed.
 	Error *FluffyTurnError `json:"error"`
 	ID    string           `json:"id"`
 	// Only populated on a `thread/resume` or `thread/fork` response. For all other responses
 	// and notifications returning a Turn, the items field will be an empty list.
-	Items  []FluffyThreadItem `json:"items"`
-	Status TurnStatus         `json:"status"`
+	Items []FluffyThreadItem `json:"items"`
+	// Unix timestamp (in seconds) when the turn started.
+	StartedAt *int64     `json:"startedAt"`
+	Status    TurnStatus `json:"status"`
 }
 
 type FluffyTurnError struct {
@@ -652,6 +668,7 @@ type FluffyMemoryCitationEntry struct {
 }
 
 type FluffyMCPToolCallResult struct {
+	Meta              interface{}   `json:"_meta"`
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
 }
@@ -673,6 +690,8 @@ type ThreadStartedNotificationThread struct {
 	Cwd string `json:"cwd"`
 	// Whether the thread is ephemeral and should not be materialized on disk.
 	Ephemeral bool `json:"ephemeral"`
+	// Source thread id when this thread was created by forking another thread.
+	ForkedFromID *string `json:"forkedFromId"`
 	// Optional Git metadata captured when the thread was created.
 	GitInfo *FluffyGitInfo `json:"gitInfo"`
 	ID      string         `json:"id"`
@@ -727,13 +746,19 @@ type FluffyThreadStatus struct {
 }
 
 type FluffyTurn struct {
+	// Unix timestamp (in seconds) when the turn completed.
+	CompletedAt *int64 `json:"completedAt"`
+	// Duration between turn start and completion in milliseconds, if known.
+	DurationMS *int64 `json:"durationMs"`
 	// Only populated when the Turn's status is failed.
 	Error *TentacledTurnError `json:"error"`
 	ID    string              `json:"id"`
 	// Only populated on a `thread/resume` or `thread/fork` response. For all other responses
 	// and notifications returning a Turn, the items field will be an empty list.
-	Items  []TentacledThreadItem `json:"items"`
-	Status TurnStatus            `json:"status"`
+	Items []TentacledThreadItem `json:"items"`
+	// Unix timestamp (in seconds) when the turn started.
+	StartedAt *int64     `json:"startedAt"`
+	Status    TurnStatus `json:"status"`
 }
 
 type TentacledTurnError struct {
@@ -926,6 +951,7 @@ type TentacledMemoryCitationEntry struct {
 }
 
 type TentacledMCPToolCallResult struct {
+	Meta              interface{}   `json:"_meta"`
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
 }
@@ -936,13 +962,19 @@ type TurnStartedNotification struct {
 }
 
 type TurnStartedNotificationTurn struct {
+	// Unix timestamp (in seconds) when the turn completed.
+	CompletedAt *int64 `json:"completedAt"`
+	// Duration between turn start and completion in milliseconds, if known.
+	DurationMS *int64 `json:"durationMs"`
 	// Only populated when the Turn's status is failed.
 	Error *StickyTurnError `json:"error"`
 	ID    string           `json:"id"`
 	// Only populated on a `thread/resume` or `thread/fork` response. For all other responses
 	// and notifications returning a Turn, the items field will be an empty list.
-	Items  []StickyThreadItem `json:"items"`
-	Status TurnStatus         `json:"status"`
+	Items []StickyThreadItem `json:"items"`
+	// Unix timestamp (in seconds) when the turn started.
+	StartedAt *int64     `json:"startedAt"`
+	Status    TurnStatus `json:"status"`
 }
 
 type StickyTurnError struct {
@@ -1135,6 +1167,7 @@ type StickyMemoryCitationEntry struct {
 }
 
 type StickyMCPToolCallResult struct {
+	Meta              interface{}   `json:"_meta"`
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
 }
@@ -1145,13 +1178,19 @@ type TurnCompletedNotification struct {
 }
 
 type TurnCompletedNotificationTurn struct {
+	// Unix timestamp (in seconds) when the turn completed.
+	CompletedAt *int64 `json:"completedAt"`
+	// Duration between turn start and completion in milliseconds, if known.
+	DurationMS *int64 `json:"durationMs"`
 	// Only populated when the Turn's status is failed.
 	Error *IndigoTurnError `json:"error"`
 	ID    string           `json:"id"`
 	// Only populated on a `thread/resume` or `thread/fork` response. For all other responses
 	// and notifications returning a Turn, the items field will be an empty list.
-	Items  []IndigoThreadItem `json:"items"`
-	Status TurnStatus         `json:"status"`
+	Items []IndigoThreadItem `json:"items"`
+	// Unix timestamp (in seconds) when the turn started.
+	StartedAt *int64     `json:"startedAt"`
+	Status    TurnStatus `json:"status"`
 }
 
 type IndigoTurnError struct {
@@ -1344,6 +1383,7 @@ type IndigoMemoryCitationEntry struct {
 }
 
 type IndigoMCPToolCallResult struct {
+	Meta              interface{}   `json:"_meta"`
 	Content           []interface{} `json:"content"`
 	StructuredContent interface{}   `json:"structuredContent"`
 }
@@ -1698,6 +1738,13 @@ type ServiceTier string
 const (
 	Fast ServiceTier = "fast"
 	Flex ServiceTier = "flex"
+)
+
+type ThreadStartSource string
+
+const (
+	Clear   ThreadStartSource = "clear"
+	Startup ThreadStartSource = "startup"
 )
 
 // See
