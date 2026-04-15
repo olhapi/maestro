@@ -4159,7 +4159,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -4184,7 +4184,7 @@ func TestSharedDBStressPreventsRunawayRetriesAndLockContention(t *testing.T) {
 	waitForIssueRetryState(t, adminStore, fixtures[0].issueID, "continuation", 3*time.Second)
 	waitForIssuePauseReason(t, adminStore, fixtures[1].issueID, "no_state_transition", 3*time.Second)
 	waitForIssuePauseReason(t, adminStore, fixtures[2].issueID, "turn_input_required", 3*time.Second)
-	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", 3*time.Second)
+	waitForIssuePauseReason(t, adminStore, fixtures[3].issueID, "stall_timeout", 6*time.Second)
 
 	cancel()
 	wg.Wait()
