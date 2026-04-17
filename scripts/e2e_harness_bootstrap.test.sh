@@ -399,6 +399,10 @@ if [[ "${1:-}" == "issue" && "${2:-}" == "images" && "${3:-}" == "add" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "issue" && "${2:-}" == "update" ]]; then
+  exit 0
+fi
+
 if [[ "${1:-}" == "issue" && "${2:-}" == "move" ]]; then
   exit 0
 fi
@@ -654,6 +658,12 @@ test_image_harness_uses_project_workspace_and_issue_assets_dir() {
     bash "$ROOT_DIR/scripts/e2e_real_codex_issue_images.sh" >"$stdout_file" 2>"$stderr_file"
 
   assert_contains "$log_file" "maestro run $harness_root --workflow $harness_root/WORKFLOW.md --db $harness_root/.maestro/maestro.db --port"
+  assert_contains "$log_file" "maestro issue update IMAG-1 --permission-profile full-access --db $harness_root/.maestro/maestro.db --quiet"
+  assert_in_order "$log_file" \
+    "maestro issue create" \
+    "maestro issue images add" \
+    "maestro issue update IMAG-1 --permission-profile full-access --db $harness_root/.maestro/maestro.db --quiet" \
+    "maestro issue move IMAG-1 ready --db $harness_root/.maestro/maestro.db"
   assert_contains "$stdout_file" "Real Codex app-server image e2e flow completed successfully."
   assert_contains "$stdout_file" "staged image -> $harness_root/workspaces/image-e2e-project/IMAG-1/.maestro/issue-assets/ast_img-uploaded-issue-image.png"
   assert_contains "$stdout_file" "final answer MAESTRO"

@@ -286,9 +286,6 @@ codex:
   # across local ChatGPT logins and GitHub Actions API-key runs.
   command: codex app-server -c model=gpt-5.3-codex
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
   read_timeout_ms: 5000
   turn_timeout_ms: 300000
   stall_timeout_ms: 300000
@@ -321,6 +318,10 @@ ISSUE_IDENTIFIER="$("$MAESTRO_BIN" issue create "Read attached image text" --pro
 UPLOAD_IMAGE_PATH="$(fixture_upload_path "$IMAGE_FIXTURE")"
 cp "$IMAGE_FIXTURE" "$UPLOAD_IMAGE_PATH"
 IMAGE_ID="$("$MAESTRO_BIN" issue images add "$ISSUE_IDENTIFIER" "$UPLOAD_IMAGE_PATH" --db "$DB_PATH" --quiet)"
+
+# Codex 0.121 ignores the legacy sandbox keys above, so the DB-backed issue
+# permission profile must grant the access this app-server turn needs.
+"$MAESTRO_BIN" issue update "$ISSUE_IDENTIFIER" --permission-profile full-access --db "$DB_PATH" --quiet >/dev/null
 
 "$MAESTRO_BIN" issue move "$ISSUE_IDENTIFIER" ready --db "$DB_PATH" >/dev/null
 
