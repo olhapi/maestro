@@ -121,6 +121,20 @@ func TestResolveCommandKeepsPinnedNPXCommand(t *testing.T) {
 	}
 }
 
+func TestResolveCommandPinsUnquotedConfigCommand(t *testing.T) {
+	path := writeFakeCodexCommand(t, "0.222.0")
+	command := path + " app-server -c model=gpt-5.3-codex"
+
+	resolved, err := ResolveCommand(command)
+	if err != nil {
+		t.Fatalf("ResolveCommand: %v", err)
+	}
+	want := "npx -y @openai/codex@" + codexschema.SupportedVersion + " app-server -c model=gpt-5.3-codex"
+	if resolved != want {
+		t.Fatalf("expected unquoted config command to be pinned, got %q", resolved)
+	}
+}
+
 func TestResolveCommandLeavesQuotedCodexCommandUntouched(t *testing.T) {
 	path := writeFakeCodexCommand(t, "0.222.0")
 	command := path + ` app-server --model "foo bar"`
