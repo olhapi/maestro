@@ -281,7 +281,9 @@ agent:
   max_retry_backoff_ms: 5000
   mode: app_server
 codex:
-  command: codex app-server
+  # Pin the app-server model so multimodal behavior stays deterministic across
+  # local ChatGPT logins and GitHub Actions API-key runs.
+  command: codex app-server -c 'model="gpt-5.3-codex"'
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
