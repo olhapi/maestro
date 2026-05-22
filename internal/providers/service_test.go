@@ -1845,11 +1845,21 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 		}
 	}
 
+	var active atomic.Int32
+	var maxActive atomic.Int32
 	var started atomic.Int32
 	svc := NewService(store)
 	svc.providers["stub"] = &stubProvider{
 		kind: "stub",
 		getFunc: func(ctx context.Context, project *kanban.Project, identifier string) (*kanban.Issue, error) {
+			current := active.Add(1)
+			defer active.Add(-1)
+			for {
+				observed := maxActive.Load()
+				if current <= observed || maxActive.CompareAndSwap(observed, current) {
+					break
+				}
+			}
 			started.Add(1)
 			for started.Load() < int32(len(projectRefs)) {
 				select {
@@ -1873,7 +1883,6 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 		},
 	}
 
-	start := time.Now()
 	issue, err := svc.GetIssueByIdentifier(context.Background(), "STUB-FAST-1")
 	if err != nil {
 		t.Fatalf("GetIssueByIdentifier: %v", err)
@@ -1881,8 +1890,8 @@ func TestServiceGetIssueByIdentifierColdMissQueriesProjectsInParallel(t *testing
 	if issue.Identifier != "STUB-FAST-1" {
 		t.Fatalf("unexpected issue returned: %#v", issue)
 	}
-	if elapsed := time.Since(start); elapsed >= 40*time.Millisecond {
-		t.Fatalf("expected parallel provider probes, lookup took %v", elapsed)
+	if got := maxActive.Load(); got != int32(len(projectRefs)) {
+		t.Fatalf("expected all provider probes to overlap, max active probes=%d", got)
 	}
 }
 
